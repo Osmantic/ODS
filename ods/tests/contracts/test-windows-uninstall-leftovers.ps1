@@ -7,7 +7,7 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw "ods.ps1 does not parse: $($errors[0].Message)" }
-foreach ($name in @('Invoke-Uninstall', 'Remove-ODSDockerProjectByLabel', 'Get-ODSDockerProjectResourceNames', 'Test-ODSArgumentPresent', 'Assert-ODSDockerProjectOwnership', 'Test-ODSUninstallPathOwned', 'Resolve-ODSUninstallLiteral', 'Test-ODSUninstallCommandOwned', 'Test-ODSUninstallTaskOwned', 'Stop-ODSUninstallOwnedHelpers')) {
+foreach ($name in @('Invoke-Uninstall', 'Remove-ODSDockerProjectByLabel', 'Get-ODSDockerProjectResourceNames', 'Test-ODSArgumentPresent', 'Assert-ODSDockerProjectOwnership', 'Test-ODSUninstallPathOwned', 'Resolve-ODSUninstallLiteral', 'Test-ODSUninstallCommandOwned', 'Test-ODSUninstallTaskOwned', 'Test-ODSUninstallStartupLauncherOwned', 'Stop-ODSUninstallOwnedHelpers')) {
     $definition = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     if (-not $definition) { throw "ods.ps1 no longer defines $name" }
     . ([scriptblock]::Create($definition.Extent.Text))
@@ -147,9 +147,32 @@ try {
     Check (-not (Test-ODSUninstallCommandOwned ('powershell.exe -Command "Get-FileHash ''{0}/ods.ps1''"' -f $InstallDir))) 'reading an owned file does not authorize killing an unrelated shell'
     Check (-not (Test-ODSUninstallCommandOwned ('python.exe -c "print(''{0}/agent.py'')"' -f $InstallDir))) 'Python inline data references do not establish script ownership'
     Check (-not (Test-ODSUninstallCommandOwned ('python.exe ''{0}/agent.py''' -f $InstallDir))) 'single quotes do not invent Windows argument grouping'
+    $bashExe = 'C:\Program Files\Git\bin\bash.exe'
+    $upgradeWrapper = Join-Path $InstallDir 'logs\bootstrap-run.sh'
+    $upgradeTask = [pscustomobject]@{Actions=@([pscustomobject]@{Execute=$bashExe; Arguments=('"{0}"' -f $upgradeWrapper)})}
+    Check (Test-ODSUninstallTaskOwned $upgradeTask) 'the generated Git Bash model-upgrade task is owned by this install'
+    Check (Test-ODSUninstallCommandOwned ('"{0}" "{1}"' -f $bashExe, $upgradeWrapper)) 'a running Git Bash upgrade wrapper is recognized by its exact script path'
+    foreach ($otherArguments in @(
+        ('"{0}"' -f (Join-Path $InstallDir 'scripts\bootstrap-upgrade.sh')),
+        '"C:\AnotherInstallation\ods\logs\bootstrap-run.sh"',
+        ('"{0}" --foreign' -f $upgradeWrapper),
+        ('-c "echo {0}"' -f $upgradeWrapper),
+        'bootstrap-run.sh'
+    )) {
+        $otherTask = [pscustomobject]@{Actions=@([pscustomobject]@{Execute=$bashExe; Arguments=$otherArguments})}
+        Check (-not (Test-ODSUninstallTaskOwned $otherTask)) 'a non-exact Git Bash task is preserved'
+    }
     $generated = ('$env:PATH=''C:/Docker;''+$env:PATH; $agentArgs=@(''-3'')+@(''{0}/scripts/ods-host-agent.py'',''--port'',''3003''); Set-Location ''{0}''; Start-Process -FilePath ''C:/Python/py.exe'' -ArgumentList $agentArgs -WindowStyle Hidden -Wait' -f $InstallDir)
     $encoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($generated))
     Check (Test-ODSUninstallTaskOwned ([pscustomobject]@{Actions=@([pscustomobject]@{Execute='powershell.exe';Arguments="-NoProfile -EncodedCommand $encoded"})})) 'the generated array and py launcher is recognized without evaluation'
+    $vbs = "' ODS Host Agent login startup launcher`r`nSet WshShell = CreateObject(`"WScript.Shell`")`r`nWshShell.Run `"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encoded`", 0, False`r`n"
+    Check (Test-ODSUninstallStartupLauncherOwned $vbs) 'the generated commented Startup launcher is owned by this install'
+    Check (Test-ODSUninstallStartupLauncherOwned ($vbs -replace "^' ODS Host Agent login startup launcher`r`n", '')) 'an older uncommented Startup launcher remains recognized'
+    $foreignEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("Start-Process python.exe -ArgumentList @('C:/Foreign/agent.py')"))
+    $foreignVbs=$vbs.Replace($encoded, $foreignEncoded)
+    Check (-not (Test-ODSUninstallStartupLauncherOwned $foreignVbs)) 'a foreign Startup launcher is preserved'
+    Check (-not (Test-ODSUninstallStartupLauncherOwned ($vbs + 'WshShell.Run "calc.exe", 0, False'))) 'extra Startup commands do not establish ownership'
+    Check (-not (Test-ODSUninstallStartupLauncherOwned ($vbs.Replace('ODS Host Agent login startup launcher', 'Other startup launcher')))) 'lookalike Startup comments do not establish ownership'
     foreach ($snippet in @(
         ('Write-Host ''{0}/agent.py''' -f $InstallDir),
         ('function NeverCalled {{ Start-Process python.exe -ArgumentList @(''{0}/agent.py'') }}' -f $InstallDir),

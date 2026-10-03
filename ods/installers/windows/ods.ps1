@@ -627,6 +627,16 @@ function Test-ODSUninstallCommandOwned {
             # Inline commands and unknown switches cannot establish script execution.
             return $false
         }
+    } elseif ($program -match '^bash(\.exe)?$') {
+        # Native model upgrades use Git Bash with exactly one generated ODS
+        # wrapper. Do not infer ownership from -c, another script, or a shared
+        # bash.exe location.
+        if ($argv.Count -ne 1 -or -not (Test-ODSUninstallPathOwned $argv[0])) { return $false }
+        try {
+            $expected=[IO.Path]::GetFullPath((Join-Path $InstallDir 'logs\bootstrap-run.sh'))
+            $actual=[IO.Path]::GetFullPath($argv[0])
+            return $actual.Equals($expected, [StringComparison]::OrdinalIgnoreCase)
+        } catch { return $false }
     } elseif ($program -match '^(python(?:3(?:\.\d+)?)?|pythonw|py)(\.exe)?$') {
         foreach ($arg in $argv) {
             if ($arg -in @('-u','-B','-E','-s','-S') -or $arg -match '^-[23](?:\.\d+)?$') { continue }
@@ -652,6 +662,15 @@ function Test-ODSUninstallTaskOwned {
     return $true
 }
 
+function Test-ODSUninstallStartupLauncherOwned {
+    param([string]$Content)
+    if ([string]::IsNullOrWhiteSpace($Content)) { return $false }
+    # Both native installer paths write the exact comment before this VBS
+    # launcher. Older generated files omitted it. Reject any extra commands.
+    $launcher=[regex]::Match($Content.Trim(), '(?i)^(?:'' ODS Host Agent login startup launcher\r?\n)?Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "([^"\r\n]+)", 0, False$')
+    return ($launcher.Success -and (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value))
+}
+
 function Stop-ODSUninstallOwnedHelpers {
     # Shared executable locations, ports and stale PID files cannot identify
     # an installation. Only a helper's executable/script path can do that.
@@ -667,7 +686,7 @@ function Stop-ODSUninstallOwnedHelpers {
     $owned=@{}
     foreach ($process in $processes) {
         if ($ancestors.ContainsKey([int]$process.ProcessId)) { continue }
-        if ([string]$process.Name -notmatch '^(python(?:3(?:\.\d+)?)?|pythonw|py|powershell|pwsh|wscript|cscript|opencode|llama-server|lemonade-server)(\.exe)?$') { continue }
+        if ([string]$process.Name -notmatch '^(python(?:3(?:\.\d+)?)?|pythonw|py|bash|powershell|pwsh|wscript|cscript|opencode|llama-server|lemonade-server)(\.exe)?$') { continue }
         if ((Test-ODSUninstallPathOwned ([string]$process.ExecutablePath)) -or
             (Test-ODSUninstallCommandOwned ([string]$process.CommandLine) ([string]$process.Name))) {
             $owned[[int]$process.ProcessId]=$true
@@ -697,8 +716,7 @@ function Stop-ODSUninstallOwnedHelpers {
         $entry = Join-Path $startup 'ods-host-agent.vbs'
         if (Test-Path -LiteralPath $entry) {
             $content=Get-Content -LiteralPath $entry -Raw -ErrorAction Stop
-            $launcher=[regex]::Match($content.Trim(), '(?i)^Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "([^"\r\n]+)", 0, False$')
-            if ($launcher.Success -and (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value)) {
+            if (Test-ODSUninstallStartupLauncherOwned $content) {
                 Remove-Item -LiteralPath $entry -Force -ErrorAction Stop
             }
         }
