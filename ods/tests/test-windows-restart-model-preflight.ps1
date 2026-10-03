@@ -13,7 +13,7 @@ $InstallDir = $root
 $script:Calls = @()
 $script:Backend = 'llama-server'
 $script:Failure = ''
-$script:EnvMap = @{}
+$script:EnvMap = @{ODS_VERSION='legacy'}
 function Read-ODSEnv { return $script:EnvMap }
 function Test-Install { }
 function Ensure-LlamaCpuBudget { }
@@ -72,6 +72,8 @@ $script:EnvMap = @{ENABLE_DEVTOOLS='invalid'}
 Assert-True (-not (Test-ODSOpenCodeAutoStart)) 'Invalid Dev Tools selection launched OpenCode'
 $script:EnvMap = @{ENABLE_DEVTOOLS='true'}
 Assert-True (Test-ODSOpenCodeAutoStart) 'Selected Dev Tools did not start OpenCode'
-$script:EnvMap = @{}
+$script:EnvMap = @{ODS_VERSION='legacy'}
 Assert-True (Test-ODSOpenCodeAutoStart) 'Legacy Windows install changed default behavior'
+$script:EnvMap = @{}
+Assert-True (-not (Test-ODSOpenCodeAutoStart)) 'Unreadable or empty .env launched optional OpenCode'
 Write-Host '[PASS] Windows restart preflight and OpenCode start selection contracts'

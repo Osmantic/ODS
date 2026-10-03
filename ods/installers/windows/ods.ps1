@@ -812,6 +812,9 @@ function Read-ODSEnv {
 
 function Test-ODSOpenCodeAutoStart {
     $envMap = Read-ODSEnv
+    # A missing or unreadable .env yields an empty map. Do not treat a broken
+    # install as a legacy opt-in and launch a retained optional runtime.
+    if ($envMap.Count -eq 0) { return $false }
     # Legacy Windows installs did not persist this selection. They keep their
     # previous start behavior until the installer records an explicit choice.
     if (-not $envMap.ContainsKey("ENABLE_DEVTOOLS")) { return $true }

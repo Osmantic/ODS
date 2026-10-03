@@ -707,6 +707,7 @@ function New-ODSEnv {
     if ($enableDevTools -notin @('true', 'false')) {
         throw "Invalid ENABLE_DEVTOOLS value in .env"
     }
+    $enableDevTools = $enableDevTools.ToLowerInvariant()
 
     $bindAddressDefault = if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" }
     $bindAddress = if ($EnableLan) {

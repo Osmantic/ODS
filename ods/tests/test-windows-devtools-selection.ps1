@@ -34,6 +34,10 @@ try {
     Generate-Env
     Assert-Selection 'true'
 
+    $env:ODS_WINDOWS_DEVTOOLS_SELECTED = 'TRUE'
+    Generate-Env
+    Assert-Selection 'true'
+
     $env:ODS_WINDOWS_DEVTOOLS_SELECTED = 'invalid'
     $failed = $false
     try { Generate-Env } catch { $failed = $_.Exception.Message -eq 'Invalid ODS_WINDOWS_DEVTOOLS_SELECTED value' }
