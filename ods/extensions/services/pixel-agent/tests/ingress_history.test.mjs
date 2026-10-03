@@ -27,7 +27,7 @@ async function fixture(t, verification={status:'none'}) {
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify(verification));
     if(req.url==='/pixel-ods/subagent-delivery') return res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'}));
-    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,...(spoof?{pixel_artifacts:spoof}:{}),choices:[{finish_reason:'stop',message:{role:'assistant',content:answer}}]}));}
+    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}const completion={id:runId,...(spoof?{pixel_artifacts:spoof}:{}),choices:[{finish_reason:'stop',message:{role:'assistant',content:answer}}]};if(body.stream){res.setHeader('content-type','text/event-stream');return res.end(`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`)}return res.end(JSON.stringify(completion));}
     res.statusCode=404;res.end('{}');
   });
   const imageStore=createChatImageStore(path.join(dir,'images'));
@@ -36,8 +36,25 @@ async function fixture(t, verification={status:'none'}) {
   t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(dir,{recursive:true,force:true})});
   async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json',...(body.messages?.at(-1)?.images?{'x-ods-image-turn':'1'}:{})},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
   const chat=(request_id,messages)=>post('/v1/chat/completions',{user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages:[{role:'system',content:'Trusted identity'},...messages.slice(-3,-1),u(messages.at(-1).content+'\nDelivery contract')],stream:false});
-  return {ledger,imageStore,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}}};
+  return {ledger,imageStore,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}},async rawChat(body){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,text:await response.text()}}};
 }
+
+test('anonymous Open WebUI chat forwards with an ephemeral identity when history storage is installed',async t=>{
+  const f=await fixture(t);
+  const request={model:'portal/default',messages:[u('Answer with 4')],stream:true};
+  for(let i=0;i<2;i++){
+    const result=await f.rawChat(request);
+    assert.equal(result.status,200,result.text);
+    assert.match(result.text,/data: \[DONE\]/);
+  }
+  const chats=f.calls.filter(call=>call.path==='/v1/chat/completions');
+  assert.equal(chats.length,2);
+  for(const chat of chats)assert.match(chat.body.user,/^ods-[a-f0-9]{64}$/);
+  assert.notEqual(chats[0].body.user,chats[1].body.user);
+  assert.equal(f.ledger.read(user),null,'anonymous turns must not create a stable owner history');
+  const snapshot=await f.rawChat({...request,history_snapshot:{schemaVersion:1,messages:request.messages}});
+  assert.equal(snapshot.status,503,'a history snapshot still requires a stable user');
+});
 
 test('image turn reaches gateway as bytes, caches privately and replays without another call',async t=>{
   const f=await fixture(t);
