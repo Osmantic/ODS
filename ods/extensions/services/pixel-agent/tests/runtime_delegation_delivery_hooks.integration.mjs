@@ -93,12 +93,17 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       abortRunAndDrain:(sessionId,sessionKey)=>abortAndDrainAgentHarnessRun({
         sessionId:resolveActiveEmbeddedRunSessionId(sessionKey)||sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'}),
       execControl:{signal:()=>true}});
+    const announcementInMessage=m=>{
+      const content=m?.content;
+      return typeof content==='string'?content.includes('Internal task completion event')
+        :Array.isArray(content)&&content.some(part=>typeof part?.text==='string'&&part.text.includes('Internal task completion event'));
+    };
     const record=(hook,event,ctx,extra={})=>appendFileSync(${JSON.stringify(eventsFile)},JSON.stringify({
       at:new Date().toISOString(),
       hook,agentId:ctx.agentId,runId:ctx.runId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,trigger:ctx.trigger,
       provenance:ctx.inputProvenance,success:event.success,text:event.lastAssistantMessage,
       messageRoles:event.messages?.map(m=>m.role),
-      eventAnnouncement:JSON.stringify(event.messages??[]).includes('Internal task completion event'),
+      eventAnnouncement:event.messages?.some(announcementInMessage)??false,
       promptAnnouncement:typeof event.prompt==='string'&&event.prompt.includes('Internal task completion event'),
       lastStopReason:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.stopReason,
       lastText:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.content?.filter(c=>c.type==='text').map(c=>c.text).join(''),...extra})+'\\n');
@@ -134,9 +139,10 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',event,ctx,{decision});return decision;});
       api.registerHttpRoute({path:'/pixel-ods/abort',auth:'gateway',match:'exact',handler:async(req,res)=>{
         const parts=[];for await(const p of req)parts.push(p);const {user}=JSON.parse(Buffer.concat(parts));
+        const stopRequestedAt=new Date().toISOString();
         const delegated=registry.cancel(user),parent=sharedGuard.abortUserRun(user);
         const [d,p]=await Promise.all([delegated,parent]);
-        record('cancel',{}, {},{result:d,parent:p});
+        record('cancel',{}, {},{result:d,parent:p,stopRequestedAt});
         res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({aborted:d.tracked?d.aborted:p}));return true;
       }});
       api.on('before_tool_call',(event,ctx)=>{const decision=registry.blocked(ctx,event);registry.before(event,ctx,decision);record('before-tool',event,ctx,{toolName:event.toolName,toolCallId:ctx.toolCallId,params:event.params,decision});return decision;});
@@ -379,7 +385,9 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     if(interim==='cancel'&&process.env.ODS_HOOK_EVIDENCE_PATH&&existsSync(eventsFile)){
       try {
         const hookEvents=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-        const owner=hookEvents.find(e=>e.hook==='prompt'&&e.sessionId&&!e.sessionKey?.includes(':subagent:'));
+        const cancelAt=hookEvents.findLastIndex(e=>e.hook==='cancel');
+        const owner=hookEvents.slice(0,cancelAt<0?undefined:cancelAt)
+          .filter(e=>e.hook==='prompt'&&e.trigger==='user'&&e.sessionId&&!e.sessionKey?.includes(':subagent:')).at(-1);
         const file=owner&&join(root,'state','agents','pixel','sessions',owner.sessionId+'.jsonl');
         if(file&&existsSync(file)){
           const transcript=readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
@@ -389,7 +397,9 @@ test(`real gateway deferred delegation waits for two children and a verified rev
             recovery:JSON.stringify(e.message??{}).includes('RECOVER_AFTER_STOP')}));
           writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel-transcript.debug',JSON.stringify(timeline,null,2));
         }
-      } catch {} // A diagnostic failure must not hide the original assertion.
+      } catch(error) {
+        try {writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel-transcript.error',String(error));} catch {}
+      } // A diagnostic failure must not hide the original assertion.
     }
     if(child&&child.exitCode===null){const done=once(child,'close');process.kill(-child.pid,'SIGTERM');await Promise.race([done,delay(3000)]);if(child.exitCode===null)process.kill(-child.pid,'SIGKILL');}
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
