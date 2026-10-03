@@ -19516,6 +19516,19 @@ def _capture_perplexica_config(
     required = ("modelProviders", "preferences")
     if any(key not in values for key in required):
         raise RuntimeError("Perplexica config is missing model provider preferences")
+    # Vane hydrates the official OpenAI catalog into GET responses. That is
+    # not a restorable copy of the persisted chatModels array. An owner route
+    # using this provider is independent of the local ODS model activation.
+    providers = values.get("modelProviders")
+    if isinstance(providers, list):
+        openai_provider = next(
+            (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+            None,
+        )
+        config = openai_provider.get("config") if isinstance(openai_provider, dict) else None
+        if isinstance(config, dict) and config.get("baseURL") == "https://api.openai.com/v1":
+            logger.info("Preserving owner Perplexica OpenAI route during local model activation")
+            return None
     return {
         "url": url,
         "values": {key: values[key] for key in required},
@@ -19728,6 +19741,9 @@ def _restore_perplexica_config(snapshot: dict) -> None:
     )
     if not isinstance(old_provider, dict) or not old_provider.get("id"):
         raise RuntimeError("Perplexica rollback snapshot is missing its OpenAI provider")
+    old_config = old_provider.get("config")
+    if isinstance(old_config, dict) and old_config.get("baseURL") == "https://api.openai.com/v1":
+        raise RuntimeError("Perplexica rollback snapshot contains a hydrated OpenAI catalog")
     current = _perplexica_http_json(url).get("values")
     current_providers = current.get("modelProviders") if isinstance(current, dict) else None
     if not isinstance(current_providers, list):

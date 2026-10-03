@@ -2313,6 +2313,7 @@ class TestPerplexicaModelRoute:
         current["modelProviders"][0]["config"] = {
             "baseURL": "http://new/v1", "apiKey": "new-key",
         }
+
         current["preferences"].update({
             "defaultChatProvider": "openai-provider", "defaultChatModel": "new-model",
         })
@@ -2333,6 +2334,24 @@ class TestPerplexicaModelRoute:
         assert [post["key"] for post in posts] == [
             "modelProviders.0.chatModels", "modelProviders.0.config", "preferences",
         ]
+
+    def test_official_openai_catalog_is_not_taken_as_restorable_route(self, monkeypatch):
+        snapshot = self._snapshot()
+        snapshot["values"]["modelProviders"][0]["config"]["baseURL"] = "https://api.openai.com/v1"
+        posts = []
+
+        def fake_http(_url, payload=None):
+            if payload is not None:
+                posts.append(payload)
+            return {"values": json.loads(json.dumps(snapshot["values"]))}
+
+        monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
+        assert _mod._capture_perplexica_config(
+            {}, {"exists": True, "running": True},
+        ) is None
+        with pytest.raises(RuntimeError, match="hydrated OpenAI catalog"):
+            _mod._restore_perplexica_config(snapshot)
+        assert posts == []
 
 
 class TestDownstreamRouteVerification:
