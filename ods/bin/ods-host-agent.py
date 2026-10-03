@@ -6072,6 +6072,14 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
             bash, "-c", 'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
             "ods-whisper-cache", str(helper), str(INSTALL_DIR),
         ]
+    elif service_id == "comfyui":
+        # The base fragment is only `services: {}`. NVIDIA bind mounts live in
+        # an overlay, so generic pre-creation misses them on a lean Library add.
+        # Prepare UID 1000 data for rootful Docker too, before Compose starts.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_comfyui_data_ownership "$2"',
+            "ods-comfyui-data", str(helper), str(INSTALL_DIR),
+        ]
     try:
         result = subprocess.run(
             command,

@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LIB="$ROOT_DIR/lib/rootless-ownership.sh"
 TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_PARENT="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+TMP_RESOLVED="$(cd "$TMP_DIR" && pwd -P)"
+case "$TMP_RESOLVED" in
+    "$TMP_PARENT"/*) trap 'rm -rf -- "$TMP_DIR"' EXIT ;;
+    *) echo "FAIL: temporary test directory escaped $TMP_PARENT" >&2; exit 1 ;;
+esac
 
 pass_count=0
 fail() {
@@ -192,6 +197,71 @@ pass "rootful Library Whisper add-back prepares its UID 1000 cache"
 grep -q "^$INSTALL_DIR|whisper$" "$CALLS" \
     || fail "rootless Library Whisper cache bypassed namespace repair"
 pass "rootless Library Whisper add-back keeps its namespace repair"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    install_dir="$TMP_DIR/comfy-library-rootful"
+    mkdir -p "$install_dir/data"
+    unset ODS_ROOTLESS_COMPOSE_FLAGS
+    printf '%s\n' '-f docker-compose.base.yml -f extensions/services/comfyui/compose.nvidia.yaml' \
+        > "$install_dir/.compose-flags"
+    uname() { printf 'Linux\n'; }
+    ods_docker_rootless_state() { return 1; }
+    _ods_rootless_container_state() { printf 'absent\n'; }
+    id() { [[ "$1" == -g ]] && printf '4242\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_ensure_directory() { mkdir -p "$1/$2"; }
+    _ods_rootless_fix_directory() { printf 'fix:%s:%s\n' "$2" "$3" >> "$CALLS"; }
+    docker() { printf 'docker:%s\n' "$*" >> "$CALLS"; }
+    ods_prepare_comfyui_data_ownership "$install_dir"
+    [[ -d "$install_dir/data/comfyui/workflows" ]]
+) || fail "rootful NVIDIA ComfyUI Library data preparation"
+[[ "$(grep -c '^fix:data/comfyui/.*:1000:4242$' "$CALLS")" == 4 ]] \
+    || fail "rootful NVIDIA ComfyUI bind sources did not use container UID and install group"
+[[ "$(grep -c '^docker:.*--user 1000:1000.*test -w /data$' "$CALLS")" == 4 ]] \
+    || fail "rootful NVIDIA ComfyUI UID 1000 write checks were skipped"
+pass "rootful NVIDIA ComfyUI Library add prepares only its writable bind sources"
+
+(
+    source "$LIB"
+    install_dir="$TMP_DIR/comfy-library-amd"
+    mkdir -p "$install_dir/data"
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f docker-compose.base.yml -f extensions/services/comfyui/compose.amd.yaml"
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_container_state() { return 1; }
+    docker() { return 1; }
+    ods_prepare_comfyui_data_ownership "$install_dir"
+    [[ ! -e "$install_dir/data/comfyui" ]]
+) || fail "AMD ComfyUI Library path was changed by NVIDIA ownership preparation"
+pass "AMD ComfyUI Library data remains untouched"
+
+(
+    source "$LIB"
+    install_dir="$TMP_DIR/comfy-library-running"
+    mkdir -p "$install_dir/data"
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/comfyui/compose.nvidia.yaml"
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_container_state() { printf 'running\n'; }
+    docker() { return 1; }
+    ! ods_prepare_comfyui_data_ownership "$install_dir"
+    [[ ! -e "$install_dir/data/comfyui" ]]
+) || fail "running ComfyUI was mutated during Library repair"
+pass "running ComfyUI blocks ownership mutation before directory creation"
+
+(
+    source "$LIB"
+    install_dir="$TMP_DIR/comfy-library-symlink"
+    mkdir -p "$install_dir/data/comfyui" "$TMP_DIR/comfy-outside"
+    ln -s "$TMP_DIR/comfy-outside" "$install_dir/data/comfyui/models"
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/comfyui/compose.nvidia.yaml"
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_container_state() { printf 'absent\n'; }
+    docker() { return 1; }
+    ! ods_prepare_comfyui_data_ownership "$install_dir"
+    [[ ! -e "$install_dir/data/comfyui/output" ]]
+) || fail "symlinked ComfyUI bind source was followed during Library repair"
+pass "ComfyUI Library repair refuses a symlink before mutation"
 
 : > "$CALLS"
 (
