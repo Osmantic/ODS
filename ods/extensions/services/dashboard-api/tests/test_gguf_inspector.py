@@ -150,6 +150,103 @@ def test_hybrid_layout_keys_are_normalized(tmp_path):
     assert estimated_context_kv_gb(result, 65536) == 2.0
 
 
+def gemma4_header_kvs(*, block_count=60, global_layers=range(5, 60, 6), sliding_heads=16,
+                      global_heads=4, window=1024, shared_kv_layers=0, per_layer_heads=True):
+    """Gemma 4 GGUF header keys, defaulting to Gemma 4 31B's.
+
+    The defaults are the header of gemma-4-31B-it (tower2 model vault: the
+    QAT Q4_0 and UD-Q8_K_XL GGUFs, read 2026-09-26; google/gemma-4-31B-it
+    config.json says the same): 60 layers, full attention on every sixth,
+    per-layer KV heads 16 (sliding) / 4 (full), key_length 512 for the full
+    layers and key_length_swa 256 for the sliding ones.
+    """
+    full = set(global_layers)
+    pattern = [layer not in full for layer in range(block_count)]
+    heads = [global_heads if layer in full else sliding_heads for layer in range(block_count)]
+    kv_heads = (ARR, (U32, heads)) if per_layer_heads else (U32, sliding_heads)
+    return [
+        ("general.architecture", STR, "gemma4"),
+        ("gemma4.block_count", U32, block_count),
+        ("gemma4.context_length", U32, 262144),
+        ("gemma4.embedding_length", U32, 5376),
+        ("gemma4.attention.head_count", U32, 32),
+        ("gemma4.attention.head_count_kv", *kv_heads),
+        ("gemma4.attention.key_length", U32, 512),
+        ("gemma4.attention.value_length", U32, 512),
+        ("gemma4.attention.sliding_window", U32, window),
+        ("gemma4.attention.shared_kv_layers", U32, shared_kv_layers),
+        ("gemma4.attention.sliding_window_pattern", ARR, (BOOL, pattern)),
+        ("gemma4.attention.key_length_swa", U32, 256),
+        ("gemma4.attention.value_length_swa", U32, 256),
+    ]
+
+
+def test_gemma4_sliding_window_header_is_read_as_its_layout(tmp_path):
+    path = _write(tmp_path, "gemma-4-31B-it-Q4_K_M.gguf", build_gguf(gemma4_header_kvs()))
+
+    result = inspect_gguf(path)
+
+    # The same layout the reviewed catalog row declares (config/model-library.json).
+    assert {key: result[key] for key in (
+        "block_count", "attention_layer_count", "attention_head_count_kv",
+        "attention_key_length", "attention_value_length", "sliding_window",
+        "sliding_window_layer_count", "sliding_window_head_count_kv",
+        "sliding_window_key_length", "sliding_window_value_length",
+    )} == {
+        "block_count": 60, "attention_layer_count": 10, "attention_head_count_kv": 4,
+        "attention_key_length": 512, "attention_value_length": 512, "sliding_window": 1024,
+        "sliding_window_layer_count": 50, "sliding_window_head_count_kv": 16,
+        "sliding_window_key_length": 256, "sliding_window_value_length": 256,
+    }
+    # The raw per-layer list stays available in the metadata.
+    assert len(result["metadata"]["gemma4.attention.head_count_kv"]) == 60
+
+    from model_memory import kv_bytes_per_token, sliding_window_kv_bytes_per_cell
+
+    # Only the 10 full-attention layers grow with the context: 10 GiB of KV
+    # at 131072, not the ~210 GiB of every layer at 512 dims.
+    assert kv_bytes_per_token(result) == 10 * 4 * (512 + 512) * 2
+    assert sliding_window_kv_bytes_per_cell(result) == 50 * 16 * (256 + 256) * 2
+
+
+def test_gemma4_shared_kv_layers_hold_no_cache(tmp_path):
+    # google/gemma-4-E2B-it config.json: 35 layers, full attention on every
+    # fifth, the last 20 reuse earlier layers' KV (num_kv_shared_layers), so
+    # 3 full and 12 sliding layers hold a cache (llama.cpp b9014 on tower3
+    # logged 384 MiB + 12 MiB of KV at 65536).
+    path = _write(tmp_path, "gemma-4-E2B-it-Q4_K_M.gguf", build_gguf(gemma4_header_kvs(
+        block_count=35, global_layers=range(4, 35, 5), sliding_heads=1, global_heads=1,
+        window=512, shared_kv_layers=20, per_layer_heads=False,
+    )))
+
+    result = inspect_gguf(path)
+
+    assert result["attention_layer_count"] == 3
+    assert result["attention_head_count_kv"] == 1
+    assert result["sliding_window_layer_count"] == 12
+    assert result["sliding_window_head_count_kv"] == 1
+
+
+@pytest.mark.parametrize("change", ["short_pattern", "mixed_full_heads", "no_window"])
+def test_unreadable_sliding_window_header_keeps_the_dense_reading(tmp_path, change):
+    kvs = {key: (vtype, value) for key, vtype, value in gemma4_header_kvs()}
+    if change == "short_pattern":
+        kvs["gemma4.attention.sliding_window_pattern"] = (ARR, (BOOL, [True] * 59))
+    elif change == "mixed_full_heads":
+        heads = [4 if layer % 6 == 5 else 16 for layer in range(60)]
+        heads[5] = 8
+        kvs["gemma4.attention.head_count_kv"] = (ARR, (U32, heads))
+    else:
+        del kvs["gemma4.attention.sliding_window"]
+    path = _write(tmp_path, "gemma.gguf", build_gguf([(key, *value) for key, value in kvs.items()]))
+
+    result = inspect_gguf(path)
+
+    assert "sliding_window" not in result
+    assert "attention_layer_count" not in result
+    assert isinstance(result["attention_head_count_kv"], list)
+
+
 def test_large_tokenizer_header_preserves_architecture_and_mtp_metadata(tmp_path):
     # Current vocabularies can exceed the old 8 MiB header limit. Keep the
     # inspection bounded while reading the structural metadata after the vocab.

@@ -68,6 +68,54 @@ def test_phi4_dashboard_defaults_to_fitting_context(data_dir, tmp_path):
     assert maximum["fitsVram"] is False
 
 
+def test_downloaded_gemma4_31b_row_and_switch_plan_share_the_sliding_window_estimate(
+    data_dir, tmp_path, monkeypatch,
+):
+    """tower1 UI r33 (RTX 5090, 2026-09-26): once the GGUF was on disk, the
+    Models row read its header as dense attention and disabled Run with
+    "Requires 227.1 GB VRAM; the detected GPU has 31.8 GB total.", while the
+    switch plan and the host agent estimate the catalog row."""
+    import performance_oracle
+    from gguf_inspector import inspect_gguf
+    from model_memory import required_model_memory_gb
+    from test_gguf_inspector import build_gguf, gemma4_header_kvs
+
+    install_dir = tmp_path / "ods"
+    models_dir = install_dir / "data" / "models"
+    models_dir.mkdir(parents=True)
+    raw = next(item for item in _official_model_catalog() if item["id"] == "gemma4-31b-q4")
+    gguf = models_dir / raw["gguf_file"]
+    gguf.write_bytes(build_gguf(gemma4_header_kvs()))
+    # The Gemma 4 31B header, with the pinned artifact's size on disk.
+    monkeypatch.setattr(
+        performance_oracle, "inspect_gguf",
+        lambda path: {**inspect_gguf(path), "size_bytes": raw["size_bytes"]},
+    )
+    gpu = _gpu("NVIDIA GeForce RTX 5090", total_mb=32607)
+
+    payload = build_models_payload(
+        gpu, None, 0, install_dir, data_dir, catalog=[raw], evidence=[],
+        downloaded_files_override={gguf.name: gguf},
+    )
+
+    row = next(item for item in payload["models"] if item["id"] == raw["id"])
+    assert row["metadata"]["source"] == "gguf"
+    assert row["contextLength"] == 131072
+    assert row["estimatedRequired"] == 28.84
+    assert row["fitsVram"] is True
+    listed = next(option for option in row["contextOptions"] if option["contextLength"] == 131072)
+    assert listed["estimatedRequired"] == 28.84
+    assert listed["fitsVram"] is True
+    # A switch plans the catalog row (routers/models.py) and the host agent
+    # budgets it (bin/ods-host-agent.py): the same context and the same number.
+    catalog_row = normalize_catalog_entry(raw)
+    plan = planned_model_context(catalog_row, gpu, 64)
+    assert plan["fits"] is True
+    assert plan["context_length"] == 131072
+    assert plan["required_gb"] == row["estimatedRequired"]
+    assert required_model_memory_gb(catalog_row, context_length=131072) == row["estimatedRequired"]
+
+
 def test_performance_env_readers_share_matching_quote_contract(monkeypatch, tmp_path):
     (tmp_path / ".env").write_text(
         "PAIRED='catalog-v2'\n"
