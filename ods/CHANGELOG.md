@@ -19,6 +19,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   text (maintainer names, test machine names, private workflow terms, personal
   home paths or LAN addresses) would reach the Pixel workspace template or the
   agent and stack templates.
+- Support bundles now mask credentials by format wherever they appear (provider
+  API keys such as OpenAI, Anthropic, Hugging Face, GitHub, Slack and AWS, JWTs
+  and PEM private keys), not only under secret-looking key names, and mask every
+  secret value from the installation's `.env` wherever a log echoes it. The
+  bundle directory and archive are owner-only. Before this change, 28 of 28
+  tested credential formats survived in log lines, JSON values and custom
+  headers.
 - NVIDIA Secure Boot enrollment no longer installs a root systemd unit to
   resume the install after the reboot. That unit ran the user-writable
   `install.sh` as root at every boot. The installer refuses root, so the

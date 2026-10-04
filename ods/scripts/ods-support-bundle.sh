@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_VERSION="1"
-REDACTION_VERSION="1"
+REDACTION_VERSION="2"
 DEFAULT_LOG_TAIL=200
 MAX_LOG_CONTAINERS=25
 COMMAND_TIMEOUT="${ODS_SUPPORT_COMMAND_TIMEOUT:-60}"
@@ -119,6 +119,8 @@ mkdir -p \
     "$BUNDLE_DIR/manifest" \
     "$BUNDLE_DIR/system" \
     "$BUNDLE_DIR/validation"
+# Files are redacted after they are written; keep the bundle owner-only.
+chmod 700 "$BUNDLE_DIR"
 
 shell_quote() {
     printf "%q" "$1"
@@ -135,7 +137,7 @@ redact_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
 
-    "$PYTHON_CMD" - "$file" <<'PY'
+    "$PYTHON_CMD" - "$file" "$ROOT_DIR/.env" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -147,6 +149,51 @@ except OSError:
     raise SystemExit(0)
 
 secret_word = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)"
+
+# Credential formats that are recognizable without a key name.
+token_formats = [
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY-----|.*\Z)",
+    r"\b(?:sk|pk)-(?:ant-|proj-|lf-)?[A-Za-z0-9_-]{20,}",
+    r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
+    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}",
+    r"\bgithub_pat_[A-Za-z0-9_]{40,}",
+    r"\bglpat-[A-Za-z0-9_-]{20,}",
+    r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"\bAIza[0-9A-Za-z_-]{35}",
+    r"\bhf_[A-Za-z0-9]{30,}",
+    r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+    r"\b(?:gsk|npm)_[A-Za-z0-9]{36,}",
+    r"\br8_[A-Za-z0-9]{30,}",
+    r"\b(?:pplx|xai)-[A-Za-z0-9]{40,}",
+    r"\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}",
+    r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}",
+    r"\bpypi-AgE[A-Za-z0-9_-]{20,}",
+    r"\bdop_v1_[a-f0-9]{64}",
+    r"\btskey-[a-z]+-[A-Za-z0-9-]{10,}",
+    r"\bBSA[A-Za-z0-9_-]{20,}",
+]
+for token_format in token_formats:
+    text = re.sub(token_format, "[REDACTED]", text, flags=re.S)
+
+# This installation's own secrets, wherever a log or command echoes them.
+env_path = Path(sys.argv[2])
+known_secrets = set()
+try:
+    env_lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+except OSError:
+    env_lines = []
+for line in env_lines:
+    key, separator, value = line.partition("=")
+    key = key.strip()
+    if key.startswith("export "):
+        key = key[7:].strip()
+    value = value.strip().strip("\"'")
+    if (separator and re.search(secret_word, key, re.I)
+            and len(value) >= 12 and not re.search(r"\s", value)):
+        known_secrets.add(value)
+for value in sorted(known_secrets, key=len, reverse=True):
+    text = text.replace(value, "[REDACTED]")
 
 patterns = [
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
@@ -815,7 +862,8 @@ collect_docker
 write_evidence
 write_manifest
 
-tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
+chmod -R go-rwx "$BUNDLE_DIR"
+(umask 077 && tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME")
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     write_summary_json
