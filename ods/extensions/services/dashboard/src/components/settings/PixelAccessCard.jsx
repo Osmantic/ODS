@@ -173,7 +173,9 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
     </div>
     {confirming ? <div role="dialog" aria-labelledby="pixel-access-confirm-title" className="rounded-lg border border-theme-border p-4 space-y-3">
       <h3 id="pixel-access-confirm-title" className="font-semibold">Confirm Full Access</h3>
-      <p>Portal can modify or delete files the owner account can access on the agent runtime, including files outside its workspace. Existing operating system restrictions remain. The gateway restarts to verify access; new requests may need to be retried during the change.</p>
+      <p>Full Access turns off Portal’s sandbox and per-command approval. Portal then runs commands directly as the owner account on the agent runtime and can read, change or delete any file that account can, including outside its workspace.</p>
+      <p>Web search and page fetching stay on, so text from the web can influence those commands. If the owner account can use Docker (the docker group), that is equivalent to root on that machine.</p>
+      <p>The gateway restarts to verify access; new requests may need to be retried during the change.</p>
       <label className="flex items-start gap-2"><input type="checkbox" checked={confirmed} onChange={event => setConfirmed(event.target.checked)} />I understand and authorize Full Access.</label>
       <div className="flex gap-3">
         <button type="button" disabled={disabled || !confirmed} onClick={() => { void change('full-access') }} className="rounded-lg border border-theme-border bg-theme-surface-hover text-theme-text px-3 py-2 disabled:opacity-40">Confirm and enable</button>

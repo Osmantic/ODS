@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- The Portal Full Access confirmation now says what it turns off. It disables
+  the sandbox and per-command approval, so commands run directly as the owner
+  account, while web search and page fetching stay on. It also notes that
+  docker group membership is equivalent to root. It previously said that
+  existing operating system restrictions remain.
 - The host agent now keeps only the newest 20 `.env` backups in
   `data/config-backups/`. Each Dashboard settings save added another full copy
   of every secret, with no limit. Only regular files that match the backup
