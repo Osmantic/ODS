@@ -43,7 +43,8 @@ Macs with Docker Desktop, and Windows with WSL2 and Docker Desktop are
 supported; on most Linux distributions the installer installs Docker for you. See the
 [Support Matrix](docs/SUPPORT-MATRIX.md) for what is validated on each
 platform. The Portal agent needs Ubuntu 24.04/26.04 or Debian 12 with systemd;
-other Linux hosts use Hermes.
+on other Linux hosts, choose Full Stack (or pass `--all` or `--hermes`) to get the
+Hermes agent, which Core Only leaves off.
 
 ### Do I need an internet connection?
 **Initial setup:** Yes, to download models and container images.

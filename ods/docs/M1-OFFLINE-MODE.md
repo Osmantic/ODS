@@ -59,7 +59,7 @@ cost-map fetch, n8n and the Whisper Hugging Face client.
 | Kokoro TTS | ✅ | `--voice` flag |
 | Qdrant (RAG) | ✅ | `--rag` flag |
 | Portal (Pixel) | ⚠️ | Default agent on qualified hosts; chat works, web search and fetch need the network |
-| Hermes Agent | ✅ | Opt-in with `--hermes`; local LLM only |
+| Hermes Agent | ✅ | On with Full Stack, `--all` or `--hermes`; local LLM only |
 | n8n workflows | ⚠️ | Local execution, but many integrations need internet |
 | OpenClaw | ⚠️ | Deprecated; only if explicitly enabled with `--openclaw` |
 
