@@ -989,8 +989,8 @@ else
                             ui_status_line error "Downloaded file is corrupt (SHA256 mismatch)"
                             ai "  Expected: $GGUF_SHA256"
                             ai "  Got:      $ACTUAL_HASH"
-                            rm -f "$GGUF_DIR/$GGUF_FILE"
-                            ai_warn "Corrupt file removed. Re-run installer to download again."
+                            rm -f "$GGUF_DIR/$GGUF_FILE" "$GGUF_DIR/$GGUF_FILE.part"
+                            ai_warn "Corrupt file and partial downloads removed. Re-run installer to download again."
                             _dl_success=false
                         fi
                     else
