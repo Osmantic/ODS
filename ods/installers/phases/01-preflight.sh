@@ -87,12 +87,12 @@ _phase01_check_required_network() {
 _phase01_check_required_network
 
 # Check optional tools (warn but don't fail)
-OPTIONAL_TOOLS_MISSING=""
+OPTIONAL_TOOLS_MISSING=()
 if ! command -v rsync &> /dev/null; then
-    OPTIONAL_TOOLS_MISSING="$OPTIONAL_TOOLS_MISSING rsync"
+    OPTIONAL_TOOLS_MISSING+=("rsync")
 fi
-if [[ -n "$OPTIONAL_TOOLS_MISSING" ]]; then
-    warn "Optional tools missing:$OPTIONAL_TOOLS_MISSING"
+if [[ ${#OPTIONAL_TOOLS_MISSING[@]} -gt 0 ]]; then
+    warn "Optional tools missing: ${OPTIONAL_TOOLS_MISSING[*]}"
     echo "  These are needed for update/backup scripts. Install with:"
     case "$PKG_MANAGER" in
         dnf)    echo "  sudo dnf install$OPTIONAL_TOOLS_MISSING" ;;
