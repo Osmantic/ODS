@@ -122,6 +122,7 @@ _HF_AVATAR_CACHE: dict[tuple[str, str], tuple[float, str | None]] = {}
 _HF_AVATAR_CACHE_LOCK = threading.Lock()
 _IMPORTED_MODELS_LOCK = threading.Lock()
 _last_recorded_throughput_sample = None
+_pending_throughput_sample = None
 _MODEL_DISCOVERY_TIMEOUT_SECONDS = float(os.environ.get("DASHBOARD_MODEL_DISCOVERY_TIMEOUT", "15.0"))
 _MIN_MODEL_CONTEXT = 1024
 _MAX_MODEL_CONTEXT = 9007199254740991
@@ -1421,6 +1422,17 @@ def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
     return float(metrics.get("tokens_per_second") or 0)
 
 
+def _complete_throughput_record(task: asyncio.Task, sample_key: tuple) -> None:
+    """Keep in-flight deduplication until the actual publication settles."""
+    global _last_recorded_throughput_sample, _pending_throughput_sample
+    error = None if task.cancelled() else task.exception()
+    failed = task.cancelled() or error is not None or task.result() is False
+    if failed and _last_recorded_throughput_sample == sample_key:
+        _last_recorded_throughput_sample = None
+    if not failed and _pending_throughput_sample and _pending_throughput_sample[0] == sample_key:
+        _pending_throughput_sample = None
+
+
 def _model_management() -> dict:
     """Project capability evidence; a network topology flag grants no control."""
     if not _external_lemonade_runtime():
@@ -1447,7 +1459,7 @@ def _model_management() -> dict:
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
-    global _last_recorded_throughput_sample
+    global _last_recorded_throughput_sample, _pending_throughput_sample
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
@@ -1502,8 +1514,8 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
     if (gpu_info and loaded_model and live_tps > 0
             and sample_key[1] is not None and sample_key != _last_recorded_throughput_sample
-            and loaded_entry.get("metadata", {}).get("source") != "runtime"):
-        _last_recorded_throughput_sample = sample_key
+            and loaded_entry.get("metadata", {}).get("source") != "runtime"
+            and (_pending_throughput_sample is None or _pending_throughput_sample[0] != sample_key)):
         signature = build_sample_signature(
             loaded_entry or {"id": loaded_model, "gguf": _read_active_model()},
             gpu_info,
@@ -1511,22 +1523,34 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             INSTALL_DIR,
             _installed_model_path(loaded_entry["gguf"]) if loaded_entry.get("gguf") else None,
         )
-        await asyncio.to_thread(
-            record_model_performance,
-            loaded_model,
-            gpu_info.name,
-            gpu_info.gpu_backend,
-            live_tps,
-            model_id=signature.get("model_id"),
-            gguf=signature.get("gguf"),
-            quantization=signature.get("quantization"),
-            architecture=signature.get("architecture"),
-            context_length=signature.get("context_length"),
-            decode_read_mb=signature.get("decode_read_mb"),
-            vram_total_mb=signature.get("vram_total_mb"),
-            os_name=signature.get("os"),
-            flags=signature.get("flags"),
+        # Retain only the latest proved measurement, including its original
+        # model/context signature. A later retained poll can retry publication
+        # without treating its current metrics as a new observation.
+        _pending_throughput_sample = (
+            sample_key,
+            (loaded_model, gpu_info.name, gpu_info.gpu_backend, live_tps),
+            {
+                "model_id": signature.get("model_id"),
+                "gguf": signature.get("gguf"),
+                "quantization": signature.get("quantization"),
+                "architecture": signature.get("architecture"),
+                "context_length": signature.get("context_length"),
+                "decode_read_mb": signature.get("decode_read_mb"),
+                "vram_total_mb": signature.get("vram_total_mb"),
+                "os_name": signature.get("os"),
+                "flags": signature.get("flags"),
+            },
         )
+    pending = _pending_throughput_sample
+    if pending and pending[0] == sample_key and sample_key != _last_recorded_throughput_sample:
+        _last_recorded_throughput_sample = sample_key
+        recording = asyncio.create_task(asyncio.to_thread(
+            record_model_performance, *pending[1], **pending[2],
+        ))
+        recording.add_done_callback(lambda task: _complete_throughput_record(task, sample_key))
+        # A disconnected catalogue request cannot stop the filesystem worker.
+        # Retain its sample ownership until publication actually finishes.
+        await asyncio.shield(recording)
     payload["odsMode"] = ODS_MODE_EFFECTIVE
     payload["configuredMode"] = _configured_ods_mode()
     payload["llmBackend"] = LLM_BACKEND or "unknown"
