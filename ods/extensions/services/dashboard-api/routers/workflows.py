@@ -5,6 +5,11 @@ import json
 import logging
 import re
 
+try:
+    from asyncio import timeout as _async_timeout
+except ImportError:  # Python 3.10 standalone deployments
+    from async_timeout import timeout as _async_timeout
+
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -58,15 +63,25 @@ def load_workflow_catalog() -> dict:
         return DEFAULT_WORKFLOW_CATALOG
 
 
-async def get_n8n_workflows() -> list[dict]:
-    """Get all workflows from n8n API."""
-    try:
-        headers = _n8n_headers()
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with session.get(f"{N8N_URL}/api/v1/workflows", headers=headers) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return data.get("data", [])
+def _n8n_data_items(data: object) -> list[dict]:
+    """Accept only a complete n8n list envelope before exposing its rows."""
+    if not isinstance(data, dict):
+        raise ValueError("n8n list response must be a JSON object")
+    items = data.get("data")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        raise ValueError("n8n list response data must be an array of objects")
+    return items
+
+
+async def _read_workflow_pages(session, headers: dict) -> list[dict]:
+    workflows = []
+    params = {}
+    seen_cursors = set()
+    while True:
+        async with session.get(f"{N8N_URL}/api/v1/workflows", headers=headers, params=params) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+            else:
                 # Falling through to the empty list silently makes a rejected
                 # request indistinguishable from "this install has no
                 # workflows". n8n's public API requires a key that nothing
@@ -88,7 +103,25 @@ async def get_n8n_workflows() -> list[dict]:
                         resp.status,
                         N8N_URL,
                     )
-    except (aiohttp.ClientError, OSError, json.JSONDecodeError) as e:
+                return []
+        workflows.extend(_n8n_data_items(data))
+        cursor = data.get("nextCursor")
+        if cursor is None or cursor == "":
+            return workflows
+        if not isinstance(cursor, str) or cursor in seen_cursors:
+            raise HTTPException(status_code=502, detail="n8n returned an invalid or repeated workflow cursor")
+        seen_cursors.add(cursor)
+        params = {"cursor": cursor}
+
+
+async def get_n8n_workflows() -> list[dict]:
+    """Get the complete inventory with a deadline shared by every page."""
+    try:
+        headers = _n8n_headers()
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
+            async with _async_timeout(5):
+                return await _read_workflow_pages(session, headers)
+    except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError) as e:
         logger.warning(f"Failed to fetch workflows from n8n: {e}")
     return []
 
@@ -324,9 +357,9 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
             async with session.get(f"{N8N_URL}/api/v1/executions", headers=headers, params={"workflowId": n8n_wf["id"], "limit": limit}) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    return {"workflowId": workflow_id, "n8nId": n8n_wf["id"], "executions": data.get("data", [])}
+                    return {"workflowId": workflow_id, "n8nId": n8n_wf["id"], "executions": _n8n_data_items(data)}
                 else:
                     return {"executions": [], "error": "Failed to fetch executions"}
-    except (aiohttp.ClientError, OSError, json.JSONDecodeError):
+    except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError):
         logger.exception("Failed to fetch workflow executions")
         return {"executions": [], "error": "Failed to fetch executions"}
