@@ -146,6 +146,7 @@ tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
 tests/test-preset-import-export.sh
+tests/test-preset-macos-appledouble.sh
 tests/test-preview-inspection.mjs
 tests/test-restore-data-transaction-contract.sh
 tests/test-restore-empty-config.sh

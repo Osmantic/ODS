@@ -863,7 +863,12 @@ write_evidence
 write_manifest
 
 chmod -R go-rwx "$BUNDLE_DIR"
-(umask 077 && tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME")
+# macOS `tar` (bsdtar) embeds AppleDouble `._*` metadata companions for files
+# that carry extended attributes. They unpack as real `._*` files wherever the
+# bundle is opened and break tooling that decodes bundle files as text.
+# COPYFILE_DISABLE tells bsdtar to omit them; GNU tar ignores it. Same guard as
+# the backup archive in ods-backup.sh.
+(umask 077 && COPYFILE_DISABLE=1 tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME")
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     write_summary_json
