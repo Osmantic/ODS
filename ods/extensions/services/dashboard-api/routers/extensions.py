@@ -373,9 +373,28 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+def _comfyui_overlay_available() -> bool:
+    """Only advertise ComfyUI when its selected GPU overlay defines a service."""
+    if GPU_BACKEND not in {"amd", "nvidia"}:
+        return False
+    overlay = EXTENSIONS_DIR / "comfyui" / f"compose.{GPU_BACKEND}.yaml"
+    try:
+        info = overlay.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+            return False
+        data = yaml.safe_load(overlay.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return False
+    services = data.get("services") if isinstance(data, dict) else None
+    service = services.get("comfyui") if isinstance(services, dict) else None
+    return isinstance(service, dict) and bool(service.get("build") or service.get("image"))
+
+
 def _qualified_builtin_selection(service_id: str) -> dict:
     """Expose Add controls only for individually qualified built-in services."""
     if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+        return {}
+    if service_id == "comfyui" and not _comfyui_overlay_available():
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
@@ -497,6 +516,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # activated this optional fragment. Use the current selection plus the
     # polled health result so Add/Retry/Disable remain truthful without an API
     # restart. Error/install progress above still takes precedence.
+    if (ext_id == "comfyui" and ext.get("catalog_source") == "builtin"
+            and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
+            and not _comfyui_overlay_available()):
+        return "incompatible"
     selection = _qualified_builtin_selection(ext_id)
     if selection:
         if not selection["library_selected"]:
@@ -4417,6 +4440,13 @@ def _activate_service(service_id: str) -> dict:
     upstream by _get_missing_deps_transitive.
     """
     ext_dir = _resolve_extension_dir(service_id)
+    if (service_id == "comfyui"
+            and ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
+            and not _comfyui_overlay_available()):
+        raise HTTPException(
+            status_code=409,
+            detail="ComfyUI requires a compatible NVIDIA or AMD GPU overlay",
+        )
 
     disabled_compose = ext_dir / "compose.yaml.disabled"
     enabled_compose = ext_dir / "compose.yaml"
