@@ -5,6 +5,18 @@
 # shellcheck disable=SC2034
 set -euo pipefail
 
+# Phase 03 uses Bash 4 features; macOS ships 3.2. Re-exec under a modern Bash
+# as the other phase 03 and ods-cli suites do.
+if (( BASH_VERSINFO[0] < 4 )); then
+    for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [[ -x "$modern_bash" ]]; then
+            exec "$modern_bash" "$0" "$@"
+        fi
+    done
+    printf '[SKIP] phase 03 requires Bash 4+\n'
+    exit 0
+fi
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -36,6 +48,10 @@ run_case() (
     signal() { :; }
     ods_pixel_resolve_enablement() { printf 'pixel\n'; }
     ods_pixel_model_route_class() { printf 'lemonade\n'; }
+    # Phase 03 resolves Pixel's web search provider and asks whether Portal
+    # should be the default chat; both live in libraries this fixture omits.
+    ods_pixel_resolve_search_provider() { printf 'searxng\n'; }
+    ods_should_default_portal_chat() { return 1; }
     prompts=0 agent_prompts=0
     read() {
         local prompt="$2" target="${*: -1}" response=''
@@ -51,9 +67,9 @@ run_case() (
     [[ "$HERMES_EXPLICIT" == "$explicit" && "$OPENCLAW_EXPLICIT" == "$explicit" ]]
     [[ "$ENABLE_PIXEL_RUNTIME" == true ]]
     if [[ "$explicit" == true ]]; then
-        [[ "$prompts" == 6 && "$agent_prompts" == 0 ]]
+        [[ "$prompts" == 7 && "$agent_prompts" == 0 ]]
     else
-        [[ "$prompts" == 8 && "$agent_prompts" == 2 ]]
+        [[ "$prompts" == 9 && "$agent_prompts" == 2 ]]
     fi
     printf 'PASS: %s\n' "$label"
 )
