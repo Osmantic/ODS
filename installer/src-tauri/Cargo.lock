@@ -654,6 +654,7 @@ dependencies = [
 name = "ods-installer"
 version = "3.0.0"
 dependencies = [
+ "fs2",
  "serde",
  "serde_json",
  "sys-info",
@@ -852,6 +853,16 @@ checksum = "df420e2e84819663797d1ec6544b13c5be84629e7bb00dc960d6917db2987843"
 dependencies = [
  "mac",
  "new_debug_unreachable",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
