@@ -26,7 +26,7 @@ It should feel that way for everyone.
 
 </div>
 
-ODS installs and wires together everything you need to run AI locally, so you do not have to assemble Ollama, Open WebUI, n8n, ComfyUI, and privacy tools by hand:
+ODS sets up a model route, Dashboard, and browser chat. On Portal-qualified Linux and the recommended Windows/WSL path, fresh Core uses Portal chat and lets you add Open WebUI and other supported services from the Extensions Library. Available features include:
 
 - **Local model inference** — run open models on your own hardware
 - **ChatGPT-style web UI** — talk to your models from any browser
@@ -131,7 +131,7 @@ a stable release or audited commit manually.
 
 Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the public ODS source ZIP and delegates installation to Ubuntu/WSL2. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
-After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
+After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). The fresh default Core selection keeps Open WebUI out of the WSL stack; you can add it from the Dashboard Extensions Library, where it uses **http://localhost:3000**. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
 
 WSL GPU access must be checked separately. NVIDIA needs a supported Windows driver and GPU access inside WSL/Docker. On AMD, Windows setup runs Lemonade through an ODS task bound to the selected WSL installation. Once that ownership is verified, Dashboard **Models** supports compatible GGUF downloads (including Hugging Face), activation, context changes, and unload/resume. An independently configured Lemonade service remains externally managed. Older ODS tasks without the installation binding require an installer rerun; see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#manage-amd-models-from-portal) and [WSL2 GPU guide](ods/docs/WINDOWS-WSL2-GPU-GUIDE.md).
 
@@ -152,9 +152,9 @@ cd $installDir
 
 Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missing, run the same command from a source checkout as `.\ods\installers\windows\ods.ps1 uninstall --force`. It verifies the containers' Compose installation directory before removing resources. A shared `ods` project name does not authorize removing another Windows or WSL installation. Unattached volumes with no verifiable owner are preserved, with an error naming the resource; `--force` does not bypass this check.
 
-> **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
+> **API endpoint:** Linux Docker installs using managed local inference expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. When Open WebUI is selected, it uses **http://localhost:3000**.
 
-> **No GPU?** ODS also runs in cloud mode — same full stack, powered by OpenAI/Anthropic/Together APIs instead of local inference:
+> **No GPU?** ODS also runs in cloud mode using OpenAI/Anthropic/Together APIs instead of managed local inference. On qualified Linux/WSL hosts, Core still uses Dashboard/Portal; optional services remain opt-in:
 > ```bash
 > ./install.sh --cloud
 > ```
@@ -174,14 +174,14 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 |----------|--------|
 | **What is it?** | A local AI server stack for your own hardware, with a one-command Linux/macOS installer and a PowerShell installer for Windows. |
 | **Who is it for?** | People who want private AI at home, in a lab, or on a workstation without hand-wiring a dozen services. |
-| **What do I get?** | Local inference, Open WebUI chat, a control dashboard, voice, agents, workflows, RAG, search, image generation, privacy tools, observability, and developer tools. |
+| **What do I get?** | A selected model route, Dashboard and browser chat. Portal-qualified Linux and recommended Windows/WSL Core use Portal chat; other hosts keep their supported chat path. Additional services include voice, workflows, RAG, search, image generation, privacy tools, observability, and developer tools; defaults vary by platform. |
 | **What does it run on?** | Linux, Windows with WSL2/Docker Desktop, and macOS Apple Silicon. |
 | **Is cloud required?** | No. Local mode is the default; cloud and hybrid API modes are optional. |
 
 | If you know... | ODS adds... |
 |----------------|----------------------|
 | **Ollama / llama.cpp** | The surrounding server stack: chat, dashboard, voice, RAG, workflows, agents, privacy, and service management. |
-| **Open WebUI** | A full installer and control plane around Open WebUI, plus pre-wired local services. |
+| **Open WebUI** | Dashboard and Portal chat on Portal-qualified Linux/WSL Core; add Open WebUI from the Extensions Library when you want its separate interface. |
 | **AnythingLLM** | Broader local AI appliance behavior beyond RAG: inference, chat, voice, workflows, image generation, and ops. |
 | **n8n self-hosted AI starter kits** | Workflow automation as one part of a larger private AI server. |
 
@@ -289,7 +289,7 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 ## What's In The Box
 
 ### Chat & Inference
-- **Open WebUI** — full-featured chat interface with conversation history, web search, document upload, and [30+ languages](https://docs.openwebui.com)
+- **Open WebUI** — optional on fresh Portal-qualified Linux/WSL Core; a separate chat interface with conversation history, web search, document upload, and [30+ languages](https://docs.openwebui.com)
 - **llama-server** — high-performance LLM inference with continuous batching, auto-selected for your GPU; Linux Docker host API defaults to `localhost:11434`, native macOS/Windows paths use `localhost:8080`, and container API runs on `8080`
 - **LiteLLM** — API gateway supporting local/cloud/hybrid modes
 - **TEI Embeddings** — text embedding service for RAG and search workflows
@@ -299,7 +299,7 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 - **Kokoro** — text-to-speech
 
 ### Agents & Automation
-- **Portal** — bundled core conversational assistant on Apple Silicon macOS and qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, including qualified WSL2 installations through the Linux installer. No private repository access or separate license flag is required; available in the Dashboard and through a compatible Open WebUI model route. The native PowerShell installer does not install the Portal host runtime.
+- **Portal** — bundled core conversational assistant on Apple Silicon macOS and qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, including qualified WSL2 installations through the Linux installer. No private repository access or separate license flag is required; available from the Dashboard chat card. The native PowerShell installer does not install the Portal host runtime.
 - **Hermes Agent** — independent general-purpose agent, available alongside Portal; includes memory, skills, and a proxy with optional owner-card gating; direct access by default
 - **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)
