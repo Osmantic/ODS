@@ -171,7 +171,7 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 >
-> **Linux distros:** CI smoke-tests package-manager detection and installer prerequisites on Ubuntu 26.04/24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41, Rocky Linux 9, Arch Linux, Manjaro, CachyOS and openSUSE Tumbleweed. Broader install coverage runs in the maintainers' distro lab and hardware fleet described in the [Validation Matrix](ods/docs/VALIDATION-MATRIX.md). On openSUSE, install Docker before running ODS. [Open an issue](https://github.com/Osmantic/ODS/issues) if your distro doesn't work.
+> **Linux distros:** CI smoke-tests package-manager detection and installer prerequisites on Ubuntu 26.04/24.04/22.04, Debian 12, Linux Mint 21.3, Fedora 41, Rocky Linux 9, Arch Linux, Manjaro, CachyOS and openSUSE Tumbleweed. Broader install coverage runs in the maintainers' distro lab and hardware fleet described in the [Validation Matrix](ods/docs/VALIDATION-MATRIX.md). On openSUSE the installer installs Docker from the distribution's own packages. [Open an issue](https://github.com/Osmantic/ODS/issues) if your distro doesn't work.
 >
 > **Release validation:** Operational changes run through a release-grade gate
 > that covers zero-prereq bootstrap, clean installs, product behavior,

@@ -298,6 +298,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   localhost. The card now shows the Dashboard's LAN address
   (`http://<your-ip>:3011`, sign-in required) only when LAN access is
   enabled.
+- On openSUSE, the Linux installer now installs Docker and the Compose plugin
+  from the distribution's own packages (`zypper install docker
+  docker-compose`). It used to pipe get.docker.com, which refuses openSUSE, so
+  Docker had to be installed by hand first. get.docker.com remains the
+  fallback for the SLES variants it supports.
 - The Qwen3.5-2B model used for CPU-only and lightweight installs, and as the
   fast-start bootstrap model, is now downloaded from a fixed Hugging Face
   commit and verified against its SHA-256 on Linux and macOS. The tier maps

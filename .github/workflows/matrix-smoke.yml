@@ -247,6 +247,23 @@ jobs:
             exit 1
           fi
 
+      - name: Docker from distribution packages (zypper)
+        if: matrix.expected_pkg == 'zypper'
+        shell: bash
+        run: |
+          # Phase 05 installs Docker on openSUSE from its own repositories,
+          # because get.docker.com refuses the distribution.
+          export LOG_FILE=/dev/null
+          log() { echo "[INFO] $1"; }
+          warn() { echo "[WARN] $1"; }
+          error() { echo "[ERROR] $1"; exit 1; }
+          source installers/lib/packaging.sh
+          detect_pkg_manager
+          pkg_install docker docker-compose-plugin
+          docker --version
+          docker compose version
+          echo "PASS: Docker and the Compose plugin install from zypper packages"
+
       - name: Test installer bash syntax
         run: |
           bash -n install-core.sh

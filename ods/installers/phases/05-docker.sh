@@ -165,9 +165,20 @@ else
             error "No container runtime is installed and privileged package installation is unavailable. Install Docker or Podman first, then re-run ODS."
         fi
         case "$PKG_MANAGER" in
-            apt|zypper)
-                # Docker CE via get.docker.com (supports Debian/Ubuntu/Fedora/SLES)
+            apt)
+                # Docker CE via get.docker.com (supports Debian/Ubuntu)
                 if ! _docker_install_from_script; then
+                    error "Docker installation failed. Check network connectivity and try again."
+                fi
+                ;;
+            zypper)
+                # openSUSE and SLES ship Docker and the Compose plugin in their
+                # own repositories; get.docker.com refuses openSUSE. Keep the
+                # script as the fallback for the SLES variants it supports.
+                if pkg_install docker docker-compose-plugin; then
+                    ods_sudo systemctl enable --now docker.service 2>>"$LOG_FILE" \
+                        || warn "Could not enable docker.service; start it with: sudo systemctl enable --now docker"
+                elif ! _docker_install_from_script; then
                     error "Docker installation failed. Check network connectivity and try again."
                 fi
                 ;;
