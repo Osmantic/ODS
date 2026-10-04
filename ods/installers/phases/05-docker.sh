@@ -594,13 +594,18 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                     fi
                     ;;
                 pacman)
-                    # nvidia-container-toolkit is in AUR; check for common AUR helpers
-                    if command -v yay &>/dev/null; then
-                        yay -S --noconfirm nvidia-container-toolkit 2>>"$LOG_FILE" || \
-                            error "Failed to install nvidia-container-toolkit via yay."
-                    elif command -v paru &>/dev/null; then
-                        paru -S --noconfirm nvidia-container-toolkit 2>>"$LOG_FILE" || \
-                            error "Failed to install nvidia-container-toolkit via paru."
+                    local aur_cmd=""
+                    if command -v yay &>/dev/null; then aur_cmd="yay"; fi
+                    if [[ -z "$aur_cmd" ]] && command -v paru &>/dev/null; then aur_cmd="paru"; fi
+
+                    if [[ -n "$aur_cmd" ]]; then
+                        if [[ $EUID -eq 0 && -n "${SUDO_USER:-}" ]]; then
+                            sudo -u "$SUDO_USER" "$aur_cmd" -S --noconfirm nvidia-container-toolkit 2>>"$LOG_FILE" || \
+                                error "Failed to install nvidia-container-toolkit via $aur_cmd."
+                        else
+                            "$aur_cmd" -S --noconfirm nvidia-container-toolkit 2>>"$LOG_FILE" || \
+                                error "Failed to install nvidia-container-toolkit via $aur_cmd."
+                        fi
                     else
                         warn "nvidia-container-toolkit requires an AUR helper (yay or paru)."
                         warn "Install one, then run: yay -S nvidia-container-toolkit"
