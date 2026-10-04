@@ -35,4 +35,12 @@ fi
 grep -Fxq 'privilege-check' "$tmp/privilege-calls"
 grep -Fxq 'apt-get update -qq' "$tmp/privilege-calls"
 grep -Fxq 'apt-get install -y jq' "$tmp/privilege-calls"
+# An unset manager must select the existing default even under nounset.
+unset PKG_MANAGER
+: > "$tmp/privilege-calls"
+if ods_preflight_require_jq >"$tmp/install.out" 2>&1; then
+    echo 'real install accepted a still-missing jq' >&2; exit 1
+fi
+grep -Fxq 'apt-get install -y jq' "$tmp/privilege-calls"
+if grep -Fq 'unbound variable' "$tmp/install.out"; then exit 1; fi
 printf '%s\n' 'installer dry-run jq prerequisite tests passed'
