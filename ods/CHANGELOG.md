@@ -348,6 +348,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- Rerunning the installer (an update) no longer fails with "Embeddings model
+  prefetch failed" after Embeddings was added from Extensions. The Embeddings
+  service downloads the model itself, as root, so the installer could not
+  write into that cache. The installer now leaves a cache owned by the service
+  alone; fresh installs still prefetch the model and still stop if that fails.
 - Model compatibility verdicts recorded on named test machines now apply only
   to an install that sets `ODS_FLEET_HOST_ID` or `ODS_COMPATIBILITY_HOST`. The
   Dashboard used to fall back to the computer's own name, so a machine called

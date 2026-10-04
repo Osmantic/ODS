@@ -321,6 +321,15 @@ _phase11_prefetch_embeddings_model() {
     fi
 
     mkdir -p "$cache_dir"
+    # Embeddings added after install (from Extensions) have the TEI container
+    # download the model itself, as root. That cache belongs to the running
+    # service, which completes it on its own; an installer rerun cannot write
+    # into it and must not stop an update over it.
+    local model_cache="$cache_dir/models--${model//\//--}"
+    if [[ -d "$model_cache" && ! -w "$model_cache" ]]; then
+        ai_ok "Embeddings model already cached by the Embeddings service"
+        return 0
+    fi
     ai "Caching embeddings model for RAG: $model"
     if [[ -n "$revision" ]]; then
         "$python_cmd" "$helper" "$model" "$cache_dir" --revision "$revision" >> "$LOG_FILE" 2>&1 &

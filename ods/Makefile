@@ -28,6 +28,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-tier-map.sh
 	@python3 tests/test-model-library-pinned-urls.py
 	@bash tests/test-installer-context-parity.sh
+	@bash tests/test-embeddings-prefetch-service-cache.sh
 	@bash tests/test-hermes-context-floor.sh
 	@bash tests/test-install-menu-hermes-flag.sh
 	@bash tests/test-custom-menu-agent-flags.sh
