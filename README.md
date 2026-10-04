@@ -39,7 +39,9 @@ ODS installs and wires together everything you need to run AI locally, so you do
 No cloud required. No subscriptions required. Inference, chat history and your files stay on your machine, and ODS collects no telemetry. By default it goes online only to download models and container images, to check GitHub for ODS releases, and to run web searches the Portal agent makes for you; [the FAQ](ods/FAQ.md#is-my-data-private) explains each one and how to turn it off. Cloud and hybrid API modes are optional when you want them.
 
 > **Status: V3 pre-release.** The installers below install the current `main`
-> branch, which receives fixes continuously and is not a signed release.
+> branch, which receives fixes continuously and is not a signed release; the
+> [verified installer preview](ods/docs/VERIFIED_INSTALL_PREVIEW.md) stays
+> separate until a signed release passes end-to-end testing.
 > Existing installations pick up code fixes by re-running the installer
 > ([how](ods/SECURITY.md#updating-an-existing-installation)); `ods update` refreshes
 > container images only. `v3.0.0` is the latest published source release; check the
