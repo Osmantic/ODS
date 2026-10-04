@@ -510,6 +510,22 @@ proxy_is_enabled() {
         || [[ -f "${INSTALL_DIR}/data/user-extensions/ods-proxy/compose.yaml" ]]
 }
 
+# A BIND_ADDRESS other than loopback publishes Open WebUI beyond this Mac,
+# with or without the ODS proxy, so it needs the same sign-in enforcement.
+bind_is_network() {
+    local bind
+    bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
+    bind="${bind#\"}"; bind="${bind%\"}"; bind="${bind#\'}"; bind="${bind%\'}"
+    case "${bind:-127.0.0.1}" in
+        127.0.0.1|::1|\[::1\]|localhost) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+network_access_is_enabled() {
+    proxy_is_enabled || bind_is_network
+}
+
 webui_is_selected() {
     local flags="$1"
     local services
@@ -918,7 +934,7 @@ cmd_start() {
 
     if [[ "$service" == "ods-proxy" ]]; then
         prepare_proxy_start "$flags" || return 1
-    elif [[ -z "$service" || "$service" == "open-webui" ]] && proxy_is_enabled; then
+    elif [[ -z "$service" || "$service" == "open-webui" ]] && network_access_is_enabled; then
         require_proxy_auth || return 1
     fi
 
@@ -1017,7 +1033,7 @@ cmd_restart() {
 
     if [[ "$service" == "ods-proxy" ]]; then
         prepare_proxy_start "$flags" || return 1
-    elif [[ -z "$service" || "$service" == "open-webui" ]] && proxy_is_enabled; then
+    elif [[ -z "$service" || "$service" == "open-webui" ]] && network_access_is_enabled; then
         require_proxy_auth || return 1
     fi
 

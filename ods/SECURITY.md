@@ -83,8 +83,8 @@ For headless servers accessible from other machines on the same network:
 
 `--lan` sets `BIND_ADDRESS=0.0.0.0` and turns on Open WebUI sign-in
 (`WEBUI_AUTH=true`). If you change `BIND_ADDRESS` in the Dashboard Settings
-tab instead, set `WEBUI_AUTH=true` in the same place before you run
-`ods restart`.
+tab instead, saving a non-loopback address turns sign-in on as well, and
+`ods restart` applies it.
 
 This publishes the Dashboard (sign-in required from the network) and Open WebUI
 on the selected interface. Backend APIs, native inference and extension ports

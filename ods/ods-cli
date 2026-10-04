@@ -180,6 +180,22 @@ _ods_cli_proxy_enabled() {
         || [[ -f "$INSTALL_DIR/data/user-extensions/ods-proxy/compose.yaml" ]]
 }
 
+# A BIND_ADDRESS other than loopback publishes Open WebUI beyond this machine,
+# with or without the ODS proxy, so it needs the same sign-in enforcement.
+_ods_cli_bind_is_network() {
+    local bind
+    bind="$(_env_get_raw BIND_ADDRESS)"
+    bind="${bind#\"}"; bind="${bind%\"}"; bind="${bind#\'}"; bind="${bind%\'}"
+    case "${bind:-127.0.0.1}" in
+        127.0.0.1|::1|\[::1\]|localhost) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+_ods_cli_network_access_enabled() {
+    _ods_cli_proxy_enabled || _ods_cli_bind_is_network
+}
+
 _ods_cli_require_proxy_auth() {
     [[ -f "$INSTALL_DIR/.env" ]] \
         || error "Cannot enable network access without $INSTALL_DIR/.env."
@@ -1709,7 +1725,7 @@ cmd_restart() {
     if [[ "$resolved_service" == "ods-proxy" ]]; then
         _ods_cli_prepare_proxy_start "${flags[@]}"
     elif [[ -z "$resolved_service" || "$resolved_service" == "open-webui" ]] \
-        && _ods_cli_proxy_enabled; then
+        && _ods_cli_network_access_enabled; then
         _ods_cli_require_proxy_auth
     fi
 
@@ -1953,7 +1969,7 @@ cmd_start() {
     if [[ "$resolved_service" == "ods-proxy" ]]; then
         _ods_cli_prepare_proxy_start "${flags[@]}"
     elif [[ -z "$resolved_service" || "$resolved_service" == "open-webui" ]] \
-        && _ods_cli_proxy_enabled; then
+        && _ods_cli_network_access_enabled; then
         _ods_cli_require_proxy_auth
     fi
 

@@ -2148,10 +2148,15 @@ def _normalize_model_download_status(status_path: Path, data: dict) -> dict:
 
 def load_env(env_path: Path) -> dict:
     """Parse .env file, return dict of key=value pairs."""
-    env = {}
     if not env_path.exists():
-        return env
-    for line in env_path.read_text(encoding="utf-8").splitlines():
+        return {}
+    return parse_env_text(env_path.read_text(encoding="utf-8"))
+
+
+def parse_env_text(text: str) -> dict:
+    """Parse .env text, return dict of key=value pairs."""
+    env = {}
+    for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
@@ -6291,7 +6296,7 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             ok, error = _prepare_proxy_auth_start(flags)
             if not ok:
                 return False, error
-        elif service_id == "open-webui" and _proxy_compose_enabled():
+        elif service_id == "open-webui" and _network_auth_required(load_env(INSTALL_DIR / ".env")):
             ok, error = _persist_proxy_auth_required()
             if not ok:
                 return False, error
@@ -6476,6 +6481,17 @@ def _proxy_compose_enabled() -> bool:
     )
 
 
+def _bind_address_is_network(value: object) -> bool:
+    """Return whether a BIND_ADDRESS value publishes ports beyond loopback."""
+    bind = str(value or "").strip().strip("\"'").lower() or "127.0.0.1"
+    return bind not in {"127.0.0.1", "::1", "[::1]", "localhost"}
+
+
+def _network_auth_required(env: dict) -> bool:
+    """Open WebUI must require sign-in once the proxy or BIND_ADDRESS exposes it."""
+    return _proxy_compose_enabled() or _bind_address_is_network(env.get("BIND_ADDRESS"))
+
+
 def _persist_proxy_auth_required() -> tuple[bool, str]:
     """Persist network-safe Open WebUI auth while serializing .env writers."""
     env_path = INSTALL_DIR / ".env"
@@ -6642,7 +6658,7 @@ def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = Tr
     compose_env = os.environ.copy()
     for key in ("GGUF_FILE", "LLM_MODEL", "LEMONADE_MODEL", "MAX_CONTEXT", "CTX_SIZE"):
         compose_env.pop(key, None)
-    if "open-webui" in service_ids and _proxy_compose_enabled():
+    if "open-webui" in service_ids and _network_auth_required(load_env(INSTALL_DIR / ".env")):
         compose_env["WEBUI_AUTH"] = "true"
     try:
         result = subprocess.run(
@@ -11109,7 +11125,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 400, {"error": "raw_text required"})
             return
         enforced_values = {}
-        if _proxy_compose_enabled():
+        if _network_auth_required(parse_env_text(raw_text)):
             raw_text = _upsert_env_text(raw_text, "WEBUI_AUTH", "true")
             enforced_values["WEBUI_AUTH"] = "true"
         backup = body.get("backup", True)

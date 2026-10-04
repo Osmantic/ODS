@@ -46,12 +46,18 @@ require 'force-recreate open-webui' "$LINUX_CLI" \
     "Linux must apply authentication before starting the proxy"
 require 'resolved_service.*open-webui' "$LINUX_CLI" \
     "Linux Open WebUI-only lifecycle commands must preserve proxy authentication"
+require '_ods_cli_proxy_enabled \|\| _ods_cli_bind_is_network' "$LINUX_CLI" \
+    "Linux must require Open WebUI sign-in for a network BIND_ADDRESS as well as the proxy"
+require '&& _ods_cli_network_access_enabled; then' "$LINUX_CLI" \
+    "Linux start and restart must enforce sign-in whenever Open WebUI is network-reachable"
 require 'require_proxy_auth' "$MACOS_CLI" \
     "macOS service management must enforce proxy authentication"
 require 'force-recreate open-webui' "$MACOS_CLI" \
     "macOS must apply authentication before starting the proxy"
-require 'service.*open-webui.*proxy_is_enabled' "$MACOS_CLI" \
+require 'service.*open-webui.*network_access_is_enabled' "$MACOS_CLI" \
     "macOS Open WebUI-only lifecycle commands must preserve proxy authentication"
+require 'proxy_is_enabled \|\| bind_is_network' "$MACOS_CLI" \
+    "macOS must require Open WebUI sign-in for a network BIND_ADDRESS as well as the proxy"
 require 'Set-ODSProxyAuthRequired' "$WINDOWS_CLI" \
     "Windows extension management must enforce proxy authentication"
 require 'ODS_PROXY_AUTH_PREFLIGHT_FAILED' "$WINDOWS_CLI" \

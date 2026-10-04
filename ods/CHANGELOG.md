@@ -14,6 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the command that finishes the install, and the installer's preflight removes
   `ods-install-resume.service` left by older versions (not in
   `--preflight-only` or dry-run mode).
+- Open WebUI sign-in is now enforced whenever `BIND_ADDRESS` publishes it
+  beyond loopback, not only when the ODS proxy is installed. Saving a
+  network `BIND_ADDRESS` in Dashboard Settings writes `WEBUI_AUTH=true`, and
+  `ods start` / `ods restart` (Linux, WSL and macOS) and the host agent's
+  Open WebUI start and recreate paths apply it before the container starts.
+  Previously a localhost-only install moved to `0.0.0.0` this way kept Open
+  WebUI's single-user mode, whose built-in `admin@localhost` account has the
+  password `admin`.
 - Vulnerability reports now go through GitHub private vulnerability reporting
   (Security → Report a vulnerability) or `security@osmantic.com`; `SECURITY.md`
   no longer asks reporters to open public issues. The security guide now covers

@@ -5297,6 +5297,32 @@ class TestHandleEnvUpdate:
         assert response["enforced_values"] == {"WEBUI_AUTH": "true"}
         assert "raw_text" not in response
 
+    @pytest.mark.parametrize("bind", ["0.0.0.0", "192.168.1.20", '"0.0.0.0"'])
+    def test_network_bind_forces_auth_without_proxy(self, env_update_env, bind):
+        install_dir, _ = env_update_env
+        body = _make_body(f"ODS_AGENT_KEY=newvalue\nBIND_ADDRESS={bind}\nWEBUI_AUTH=false\n")
+        handler = _FakeHandler(body)
+
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        env_text = (install_dir / ".env").read_text(encoding="utf-8")
+        assert env_text.count("WEBUI_AUTH=true") == 1
+        assert "WEBUI_AUTH=false" not in env_text
+        assert handler.parse_response()["enforced_values"] == {"WEBUI_AUTH": "true"}
+
+    @pytest.mark.parametrize("bind", ["127.0.0.1", "::1", "localhost", ""])
+    def test_loopback_bind_keeps_local_auth_choice(self, env_update_env, bind):
+        install_dir, _ = env_update_env
+        body = _make_body(f"ODS_AGENT_KEY=newvalue\nBIND_ADDRESS={bind}\nWEBUI_AUTH=false\n")
+        handler = _FakeHandler(body)
+
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        assert "WEBUI_AUTH=false" in (install_dir / ".env").read_text(encoding="utf-8")
+        assert handler.parse_response()["enforced_values"] == {}
+
     def test_413_oversize_body(self, env_update_env):
         # Construct headers claiming body is too large; rfile content is irrelevant.
         handler = _FakeHandler(b"x", headers={"Content-Length": str(_mod.MAX_BODY + 999999) if hasattr(_mod, "MAX_BODY") else "100000"})
