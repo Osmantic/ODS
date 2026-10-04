@@ -1,0 +1,29 @@
+name: Desktop Docker readiness
+
+on:
+  pull_request:
+    paths:
+      - "installer/src-tauri/src/docker.rs"
+      - "installer/docker-tests/**"
+      - ".github/workflows/desktop-docker-readiness.yml"
+  push:
+    branches: [main]
+    paths:
+      - "installer/src-tauri/src/docker.rs"
+      - "installer/docker-tests/**"
+      - ".github/workflows/desktop-docker-readiness.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  docker-command-readiness:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Test production command readiness
+        run: cargo test --locked --manifest-path installer/docker-tests/Cargo.toml
