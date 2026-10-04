@@ -72,8 +72,11 @@ for the repository automation policy and the rules for AI-assisted PRs.
   API and frontend, Linux integration smoke, install readiness, release-tree
   portability and runtime security policy) to pass.
 - New tests must run in CI: add them to a workflow step or to
-  `ods/tests/ci-suite.txt`. A check fails when a test under `ods/tests` is not
-  run anywhere and not recorded, with a reason, in `ods/tests/ci-not-run.txt`.
+  `ods/tests/ci-suite.txt`. A service's own `tests/` directory runs in its
+  service's workflow job; for a service with no other job, add it to
+  `.github/workflows/test-service-suites.yml`. A check fails when a test under
+  `ods/tests` or `ods/extensions/services/*/tests` is not run anywhere and not
+  recorded, with a reason, in `ods/tests/ci-not-run.txt`.
 - Report security issues privately through
   [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new),
   not in PRs or issues.

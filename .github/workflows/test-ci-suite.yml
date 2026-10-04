@@ -18,8 +18,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Every test under ods/tests runs in CI or is recorded as not run
-        run: python3 .github/scripts/list-unwired-tests.py --check
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install PyYAML to read workflow steps
+        run: python -m pip install 'PyYAML>=6,<7'
+      - name: Every test runs in CI or is recorded as not run
+        run: python .github/scripts/list-unwired-tests.py --check
 
   suite:
     runs-on: ubuntu-latest
