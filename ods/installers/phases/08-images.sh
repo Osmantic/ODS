@@ -182,7 +182,13 @@ else
                 PULL_LIST[$_llama_index]="${_validated_llama_image}|${_llama_label}"
                 if [[ -f "$INSTALL_DIR/.env" ]]; then
                     if grep -q '^LLAMA_SERVER_IMAGE=' "$INSTALL_DIR/.env"; then
-                        sed -i.bak "s|^LLAMA_SERVER_IMAGE=.*|LLAMA_SERVER_IMAGE=${_validated_llama_image}|" "$INSTALL_DIR/.env" && rm -f "$INSTALL_DIR/.env.bak"
+                        _env_tmp="$(mktemp "${INSTALL_DIR}/.env.XXXXXX")"
+                        if sed "s|^LLAMA_SERVER_IMAGE=.*|LLAMA_SERVER_IMAGE=${_validated_llama_image}|" "$INSTALL_DIR/.env" > "$_env_tmp"; then
+                            chmod 600 "$_env_tmp"
+                            mv "$_env_tmp" "$INSTALL_DIR/.env"
+                        else
+                            rm -f "$_env_tmp"
+                        fi
                     else
                         printf '\nLLAMA_SERVER_IMAGE=%s\n' "$_validated_llama_image" >> "$INSTALL_DIR/.env"
                     fi
