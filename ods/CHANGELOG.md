@@ -232,6 +232,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- `get-ods.sh` no longer deletes a directory that has no `.env` unless it is
+  empty or still carries the ODS source tree. A `data/` directory kept by
+  `ods-uninstall.sh --keep-data`, or an unrelated directory named by
+  `ODS_INSTALL_DIR`, now stops the bootstrap with instructions instead of
+  being removed by `--force` or a "y" answer. The reinstall prompt now reads
+  its answer from the terminal, so it works under `curl | bash`, and stops
+  cleanly when no terminal exists. The bootstrap banner no longer claims the
+  source is verified.
 - Windows `ods.ps1 uninstall` no longer stops at "Docker cleanup is incomplete"
   when a volume or network with the `ods` compose label is not in the saved
   compose files (an older release or a since-disabled extension). It now removes

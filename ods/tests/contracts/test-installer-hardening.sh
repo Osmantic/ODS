@@ -234,6 +234,8 @@ assert_contains "$bootstrap" '"\$\{ODS_UI_MODE:-auto\}" == "plain"' "bootstrap s
 assert_contains "$bootstrap" 'Removing incomplete install because --force was provided' "bootstrap --force should remove incomplete install dirs without prompting"
 assert_contains "$bootstrap" 'Re-run with --force to remove it automatically' "bootstrap --non-interactive should fail with a force hint instead of prompting"
 assert_contains "$bootstrap" 'remove_install_dir()' "bootstrap should centralize incomplete install cleanup"
+assert_contains "$bootstrap" 'incomplete_install_is_removable "\$INSTALL_DIR" \|\| refuse_unidentified_incomplete_install' "bootstrap should only remove incomplete installs that are empty or carry the ODS source tree"
+assert_contains "$bootstrap" 'read -r response < /dev/tty' "bootstrap prompts should read the answer from the terminal, not the piped script"
 assert_contains "$bootstrap" 'sudo -n rm -rf -- "\$target_dir"' "bootstrap --force should retry root-owned container data cleanup with sudo -n"
 assert_contains "$bootstrap" 'root-owned container data' "bootstrap sudo fallback should explain root-owned Docker data cleanup"
 assert_contains "$bootstrap" 'validate_force_reinstall_target()' "bootstrap should fingerprint a complete install before forced replacement"

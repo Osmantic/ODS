@@ -230,17 +230,23 @@ esac
         write(self.install / 'stranded-leftover', 'from the interrupted run\n')
         return inode
 
-    def bootstrap(self, *args, platform='macos', keep_models=True):
+    def bootstrap(self, *args, platform='macos', keep_models=True, interactive=False):
         env = dict(self.env, ODS_PLATFORM_OVERRIDE=platform)
         path = [str(self.common_bin), env['PATH']]
         if platform == 'macos':
             path.insert(0, str(self.macos_bin))
         env['PATH'] = os.pathsep.join(path)
-        flags = ['--non-interactive', '--force'] + (['--keep-models'] if keep_models else [])
+        if interactive:
+            flags = []
+        else:
+            flags = ['--non-interactive', '--force'] + (['--keep-models'] if keep_models else [])
         if platform == 'macos':
             flags += ['--recommended', '--pixel', '--no-bootstrap']
+        # A new session has no controlling terminal, as under CI or `curl | bash`
+        # in a non-interactive shell, so /dev/tty cannot be opened.
         result = subprocess.run(['bash', str(BOOTSTRAP), *flags, *args], env=env,
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+            start_new_session=interactive)
         return result, result.stdout + result.stderr
 
     def assert_untouched(self, output, env=True):
@@ -380,6 +386,41 @@ esac
         self.assertIn('Removing incomplete install because --force was provided', output)
         self.assertNotIn('Resuming that reinstall', output)
         self.assertIsNone(json.loads(self.result.read_text())['model'])
+
+    def test_force_refuses_directory_without_ods_source(self):
+        # What `ods-uninstall.sh --keep-data` leaves behind: data only.
+        write(self.install / 'data/n8n/database.sqlite', 'kept workflows\n')
+        result, output = self.bootstrap(keep_models=False)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn('Refusing to remove', output)
+        self.assertEqual((self.install / 'data/n8n/database.sqlite').read_text(), 'kept workflows\n')
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertFalse(self.result.exists(), output)
+        self.assertFalse(self.sudo_calls.exists(), output)
+
+    def test_force_replaces_empty_install_directory(self):
+        self.install.mkdir()
+        result, output = self.bootstrap(keep_models=False)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn('Removing incomplete install because --force was provided', output)
+        self.assertTrue(self.result.exists(), output)
+
+    def test_prompt_without_terminal_leaves_incomplete_install(self):
+        self.make_stranded()
+        result, output = self.bootstrap(interactive=True)
+        self.assertEqual(result.returncode, 1, output)
+        self.assertIn('No terminal is available to answer', output)
+        self.assertTrue((self.install / 'stranded-leftover').exists(), output)
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertFalse(self.result.exists(), output)
+
+    def test_prompt_refuses_directory_without_ods_source(self):
+        write(self.install / 'data/open-webui/webui.db', 'kept chats\n')
+        result, output = self.bootstrap(interactive=True)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn('Refusing to remove', output)
+        self.assertNotIn('Remove and reinstall?', output)
+        self.assertEqual((self.install / 'data/open-webui/webui.db').read_text(), 'kept chats\n')
 
     def test_candidate_without_reinstall_preflight_is_refused_before_uninstall(self):
         self.make_installed()

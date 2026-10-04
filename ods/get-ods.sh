@@ -206,6 +206,29 @@ validate_force_reinstall_target() {
     [[ -f "$target_dir/docker-compose.yml" && ! -L "$target_dir/docker-compose.yml" ]] || return 1
 }
 
+# An incomplete install with no .env is only ours to delete when it is empty or
+# still carries the ODS source tree (the bootstrap copies the tree before the
+# installer runs). Anything else, such as the data/ directory that
+# `ods-uninstall.sh --keep-data` leaves behind, or an unrelated directory named
+# by ODS_INSTALL_DIR, is left for the owner to move or remove.
+incomplete_install_is_removable() {
+    local target_dir="$1" target_real
+
+    [[ "$target_dir" == /* ]] || return 1
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || return 1
+    target_real="$(cd -P -- "$target_dir" 2>/dev/null && pwd -P)" || return 1
+    [[ "$target_real" != / && "$target_real" != "$(cd -P -- "$HOME" 2>/dev/null && pwd -P)" ]] || return 1
+    if [[ -z "$(ls -A -- "$target_dir" 2>/dev/null)" ]]; then
+        return 0
+    fi
+    [[ -f "$target_dir/ods-cli" && ! -L "$target_dir/ods-cli" ]] || return 1
+    [[ -f "$target_dir/ods-uninstall.sh" && ! -L "$target_dir/ods-uninstall.sh" ]] || return 1
+}
+
+refuse_unidentified_incomplete_install() {
+    error "Refusing to remove $INSTALL_DIR: it has no .env and is not an ODS source tree. It may hold data kept by 'ods-uninstall.sh --keep-data'. Move it aside or remove it yourself, then re-run."
+}
+
 is_truthy() {
     case "${1:-}" in
         1|true|TRUE|yes|YES|y|Y) return 0 ;;
@@ -364,7 +387,7 @@ cat << 'BANNER'
 BANNER
 echo -e "${NC}"
 echo -e "${BRIGHT_MAGENTA}  O D S   B O O T S T R A P${NC}  ${GREEN}Acquiring the local stack${NC}"
-echo -e "${CYAN}  The full ODSGATE sequence begins after the source is verified.${NC}"
+echo -e "${CYAN}  The full ODSGATE sequence begins after the source is fetched.${NC}"
 echo ""
 
 # ── Detect OS ──────────────────────────────────────
@@ -536,14 +559,23 @@ if [[ -d "$INSTALL_DIR" ]]; then
         warn "Directory exists but incomplete install at $INSTALL_DIR"
         echo ""
         if [[ "$BOOTSTRAP_FORCE" == "true" ]]; then
+            incomplete_install_is_removable "$INSTALL_DIR" || refuse_unidentified_incomplete_install
             echo "  Removing incomplete install because --force was provided."
             remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
         elif [[ "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
             echo "  Aborting. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
             exit 1
         else
+            incomplete_install_is_removable "$INSTALL_DIR" || refuse_unidentified_incomplete_install
             echo -n "  Remove and reinstall? [y/N] "
-            read -r response
+            # Under `curl | bash` stdin is this script, so answer from the
+            # terminal. Without one, stop rather than guess.
+            response=""
+            if ! { read -r response < /dev/tty; } 2>/dev/null; then
+                echo ""
+                echo "  No terminal is available to answer. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
+                exit 1
+            fi
             if [[ "$response" =~ ^[Yy]$ ]]; then
                 remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
             else
