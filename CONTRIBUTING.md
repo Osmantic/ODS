@@ -57,7 +57,23 @@ human review and appropriate validation before release.
 
 See
 **[ods/docs/AI_WORKFLOW_GUARDRAILS.md](ods/docs/AI_WORKFLOW_GUARDRAILS.md)**
-for the repository automation policy.
+for the repository automation policy and the rules for AI-assisted PRs.
+
+## Opening a Pull Request
+
+- Target `main`. The `public-beta` branch was promoted into `main` on
+  2026-09-24 and no longer accepts changes.
+- Keep each PR to one focused change and link the issue it fixes. Batch closely
+  related fixes into a single PR instead of opening one PR per line.
+- Keep at most ten PRs open at a time, and rebase or close your own stale PRs.
+  Outside-contributor PRs with no activity for 14 days may be closed; you are
+  welcome to reopen or resubmit them rebased on `main`.
+- The default branch requires the core CI checks (lint, secret scan, dashboard
+  API and frontend, Linux integration smoke, install readiness, release-tree
+  portability and runtime security policy) to pass.
+- Report security issues privately through
+  [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new),
+  not in PRs or issues.
 
 ## Full Contributor Guide
 

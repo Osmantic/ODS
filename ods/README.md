@@ -93,14 +93,12 @@ ODS-managed Whisper, Kokoro, and ComfyUI unless you pass `--no-voice` and/or
 
 ### Instant Start (Bootstrap Mode)
 
-By default, ODS uses **bootstrap mode** for instant gratification:
+By default, ODS uses **bootstrap mode** so you can start before the full model arrives:
 
-1. Starts immediately with a tiny 1.5B model (downloads in <1 minute)
-2. You can start chatting within **2 minutes** of running the installer
-3. The full model downloads in the background
-4. Use the Dashboard **Models** page to download and load larger catalog models
-
-No more staring at download bars. Start playing immediately.
+1. It starts Qwen3.5 2B (about 1.3 GB) as soon as the core services are up
+2. You can chat while the full model for your hardware downloads in the background
+3. Once that download is verified, ODS restarts the model server on the full model
+4. Use the Dashboard **Models** page to download and load other catalog models
 
 Hermes-enabled installs keep this fast-start path: the bootstrap model runs at a
 64K context floor so the agent can start cleanly, then the background full-model
@@ -141,7 +139,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with
 Hermes disabled. Start in normal PowerShell; feature preparation may request
 administrator approval and a restart. The runtime lives at `~/ods` inside Ubuntu;
-manage it there with `./ods status`. Docker Desktop must expose Docker/Compose
+manage it there with `ods status` (or `./ods-cli status`). Docker Desktop must expose Docker/Compose
 to that distribution. Existing native Windows installations are not migrated.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
@@ -154,8 +152,9 @@ data, configuration, and runtime files are replaced. Without `--keep-models`,
 `--force` keeps its normal full cleanup behavior. The option requires an
 identified existing installation and is consumed by the bootstrap, not `install.sh`.
 
-Preservation temporarily uses `~/.ods-models-backup`; an existing backup or a
-symlink conflict blocks replacement. Resolve that backup manually before retrying.
+Preservation temporarily uses a `.models-backup` directory next to the
+installation (for example `~/ods.models-backup`); an existing backup, a legacy
+`~/.ods-models-backup`, or a symlink conflict blocks replacement. Resolve that backup manually before retrying.
 If moving the models fails, remaining files stay in the original model directory
 and/or the backup for recovery. Restored models follow the ordinary installer
 validation and download path; retention does not itself verify their contents.
@@ -195,7 +194,7 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
 | **Portal** | Core conversational assistant in Dashboard; default chat on fresh qualified Linux installs | Private Unix socket; no host TCP port | Core feature on qualified hosts |
-| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
+| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Optional |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
@@ -347,8 +346,8 @@ Full guide: [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
 ### Installer Architecture
 
-The installer is modular — 19 library modules, a shared service registry, and
-13 ordered phases. The architecture doc also maps the generated config writers
+The installer is modular — 41 library modules, a shared service registry, and
+14 ordered phase files. The architecture doc also maps the generated config writers
 that have to stay in sync across Linux, macOS, Windows, bootstrap upgrades, and
 host-agent model activation.
 Want to add a hardware tier, swap the theme, or skip a phase? Start with the
@@ -358,7 +357,7 @@ before shipping.
 ```
 installers/lib/       # Pure function libraries (colors, GPU detection, tier mapping)
 installers/phases/    # Sequential install steps (01-preflight through 13-summary)
-install-core.sh       # Thin orchestrator (~150 lines)
+install-core.sh       # Orchestrator that sources the libraries and runs the phases
 ```
 
 Every file has a standardized header: Purpose, Expects, Provides, Modder notes.
