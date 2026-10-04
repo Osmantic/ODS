@@ -29,6 +29,56 @@ sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
 
 
+@pytest.mark.parametrize("saved", ["hf_rotated", "", None])
+def test_huggingface_fallback_uses_saved_token_at_sdk_boundary(tmp_path, monkeypatch, saved):
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setenv("HF_TOKEN", "hf_old_process_token")
+    if saved is not None:
+        (tmp_path / ".env").write_text(f'HF_TOKEN="{saved}"\n', encoding="utf-8")
+    calls = []
+    artifact = tmp_path / "hub-artifact.gguf"
+    artifact.write_bytes(b"gguf fixture")
+    hub = types.ModuleType("huggingface_hub")
+
+    def download(**kwargs):
+        # The SDK's default uses HF_TOKEN or a cached login; an explicit False
+        # disables both. Observe the worker's resolved authentication choice.
+        token = kwargs.get("token")
+        effective = (os.environ.get("HF_TOKEN") or "hf_cached_login") if token is None else token
+        calls.append((kwargs, effective))
+        return str(artifact)
+
+    hub.hf_hub_download = download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
+
+    class Worker:
+        returncode = 0
+
+        def __init__(self, cmd, **kwargs):
+            self.cmd = cmd
+            self.env = kwargs["env"]
+
+        def communicate(self, timeout):
+            with monkeypatch.context() as child:
+                child.setattr(sys, "argv", ["-c", *self.cmd[3:]])
+                child.setattr(os, "environ", self.env)
+                exec(self.cmd[2], {"__name__": "__main__"})
+            return "", ""
+
+    monkeypatch.setattr(_mod.subprocess, "Popen", Worker)
+    destination = tmp_path / "download.gguf.part"
+    ok, error = _mod._download_huggingface_artifact(
+        "https://huggingface.co/org/model/resolve/main/model.gguf",
+        destination, threading.Event(),
+    )
+    assert (ok, error) == (True, "")
+    assert destination.read_bytes() == artifact.read_bytes()
+    expected = saved if saved is not None else "hf_old_process_token"
+    assert calls[0][1] == (expected or False)
+    assert calls[0][0].get("token") == (expected or False)
+    assert _mod._model_download_proc is None
+
+
 def test_host_selection_serializes_dependency_decisions_with_cli_helper(tmp_path, monkeypatch):
     """The agent uses the installed host selector, including ordered stops."""
     scripts = tmp_path / "scripts"
