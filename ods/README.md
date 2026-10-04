@@ -472,16 +472,19 @@ ods mode                               # Show current mode
 
 ## Comparison
 
-| Feature | ODS | Ollama + WebUI | LocalAI |
-|---------|:---:|:---:|:---:|
-| Full-stack one-command install | **LLM + agent + workflows + RAG** | LLM + chat only | LLM only |
-| Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + CPU/cloud fallback** (Intel Arc by manual `--tier`) | No | No |
-| AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
-| Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Portal on qualified hosts; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
-| Workflow automation | **n8n (400+ integrations)** | No | No |
-| LLM usage monitoring | **Open WebUI built-in** | No | No |
-| Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |
+ODS builds on tools you may already use rather than replacing them. It installs them, wires them
+together, and gives you one place to run them.
+
+| If you use… | It gives you | ODS adds |
+|---|---|---|
+| **Ollama, llama.cpp or LM Studio** | Local model serving | Hardware-aware model choice, the surrounding services, and a dashboard to manage them |
+| **Open WebUI** | A chat UI with RAG, voice and image-generation integrations | Installs and configures it next to local inference, speech, search and image services, and manages sign-in and network exposure |
+| **LocalAI** | An OpenAI-compatible API with text, audio and image backends | A dashboard, the Portal agent, workflows, and a catalog of add-on apps around local inference |
+| **n8n's self-hosted AI starter kit** | Workflow automation with a local model | Workflows as one part of a managed local AI server |
+
+ODS's own focus is the layer around those tools: detecting your hardware (NVIDIA, AMD Strix Halo,
+Apple Silicon, with CPU and cloud fallbacks; Intel Arc by manual `--tier`), choosing and verifying
+models, lifecycle commands (install, update, backup, uninstall), and an extension catalog.
 
 ---
 
