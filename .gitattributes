@@ -1,3 +1,10 @@
+# Every text file is LF in the repository, in checkouts and in `git archive`
+# output, whatever the local core.autocrlf says. Git for Windows defaults to
+# core.autocrlf=true, which turned Python, JavaScript and other unpinned files
+# into CRLF in Windows checkouts and archives, so they no longer matched the
+# bytes users download. The rules below override this one where needed.
+* text=auto eol=lf
+
 # Force LF line endings for all shell scripts and Docker-mounted files.
 # Windows Git's core.autocrlf converts LF→CRLF on checkout, which breaks
 # shell shebangs inside Linux Docker containers (kernel reads #!/bin/sh\r
