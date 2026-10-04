@@ -70,7 +70,9 @@ jobs:
 
       - name: Windows Portal Setup Contracts (PowerShell 7)
         shell: pwsh
-        run: ./tests/contracts/test-windows-portal-setup.ps1
+        run: |
+          ./tests/contracts/test-windows-portal-setup.ps1
+          ./tests/contracts/test-windows-portal-retained-model.ps1
 
       - name: Standalone Windows ComfyUI data isolation
         if: runner.os == 'Windows'
@@ -80,7 +82,9 @@ jobs:
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
-        run: ./tests/contracts/test-windows-portal-setup.ps1
+        run: |
+          ./tests/contracts/test-windows-portal-setup.ps1
+          ./tests/contracts/test-windows-portal-retained-model.ps1
 
       - name: Windows Portal Prerequisite Contracts (PowerShell 7)
         shell: pwsh
@@ -103,7 +107,9 @@ jobs:
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 tests/test-wsl-portal-readiness.py -v
+        run: |
+          python3 tests/test-wsl-portal-readiness.py -v
+          python3 tests/test-windows-portal-retained-journal.py -v
 
       - name: WSL Sign-in Recovery Contracts (PowerShell 7)
         if: runner.os == 'Windows'

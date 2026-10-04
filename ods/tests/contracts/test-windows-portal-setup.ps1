@@ -79,6 +79,19 @@ function Reset-Scenario {
     $script:amdArgs = @()
     $script:linuxHome = '/home/user'
     $script:amdBinding = @()
+    $script:installInvoked = $false
+    $script:amdInitialized = $false
+    $script:postflightCalls = 0
+    $script:postflightRouteChange = $false
+    $script:postflightDigestChange = $false
+    $script:checkLockOnInstall = $false
+    $script:mutexWasHeld = $false
+    $script:simulateStoppedResume = $false
+    $script:simulatedResumeStarted = $false
+    $script:resumeStartFails = $false
+    $script:rollbackFails = $false
+    $script:resumeTaskState = 'Disabled'
+    $script:resumeIntentWanted = $false
     $script:distroListFailure = $null
     $script:initProbes = @()
 }
@@ -107,8 +120,48 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
 }
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Get-ODSPortalAmdPlan([string]$SourceRoot) { $script:calls.Add('amd-plan'); return $script:amdPlan }
+function Get-ODSPortalControlMutexName { return "ODS-Portal-Setup-Contract-Test-$PID" }
+function Get-ODSPortalManagedConfiguration($Request) {
+    $digest = if ($script:installInvoked -and $script:postflightDigestChange) { 'b' * 64 } else { 'a' * 64 }
+    return [pscustomobject]@{ PlanDigest=$digest; Task=[pscustomobject]@{State=$script:resumeTaskState};
+        TaskName='owned'; Plan=[pscustomobject]@{Port=13305} }
+}
+function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir, [bool]$TierRequested = $false) {
+    if ($script:simulateStoppedResume -and -not $script:simulatedResumeStarted) {
+        $script:ODSPortalResumeAttempted = $true
+        $script:ODSPortalResumedPlanDigest = 'a' * 64
+        $script:simulatedResumeStarted = $true
+        $script:amdInitialized = $true
+        $script:resumeTaskState = 'Ready'
+        $script:resumeIntentWanted = $true
+        $script:calls.Add('resume-start')
+        if ($script:resumeStartFails) { throw 'injected model start failure' }
+    }
+    if ($script:amdInitialized -and $null -ne $script:amdPlan) {
+        if ($script:installInvoked) { $script:postflightCalls++ }
+        $model = if ($script:installInvoked -and $script:postflightRouteChange) { 'other' } else { 'fixture' }
+        if ($script:simulateStoppedResume) { return @('--lemonade-url', 'http://localhost:8080', '--lemonade-model', $model) }
+        return @('--lemonade-model', $model)
+    }
+    return $null
+}
+function Invoke-ODSPortalModelControl($Request) {
+    if ($Request.action -cne 'stop' -or $Request.expectedPlanDigest -cne ('a' * 64)) {
+        throw 'rollback used an unexpected model operation or plan'
+    }
+    $script:calls.Add('resume-stop')
+    if ($script:rollbackFails) { throw 'injected rollback failure' }
+    $script:resumeTaskState = 'Disabled'
+    $script:resumeIntentWanted = $false
+    return [pscustomobject]@{running=$false;planDigest=('a' * 64)}
+}
+function Get-ODSPortalStateDir { return [IO.Path]::GetTempPath() }
+function Test-ODSPortalLemonadeWanted { return $script:resumeIntentWanted }
+function Get-ODSPortalTaskEngineId { return 0 }
+function Get-NetTCPConnection { return @() }
 function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro, [string]$WslInstallDir) {
     $script:calls.Add('amd-lemonade:' + $Plan.GpuName)
+    $script:amdInitialized = $true
     $script:amdBinding = @($WslDistro, $WslInstallDir)
     return $script:amdArgs
 }
@@ -128,6 +181,21 @@ function Initialize-ODSPortalUbuntuUser([string]$Distro) {
 }
 function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal, [string]$DockerDesktopPath = '', [string]$StateRoot = '') {
     $script:calls.Add('install:' + $Distro)
+    if ($script:checkLockOnInstall) {
+        $probe = Start-Job -ScriptBlock {
+            param($Name)
+            $mutex = [Threading.Mutex]::new($false, $Name)
+            $held = $false
+            try { $held = $mutex.WaitOne(0); return $held }
+            finally { if ($held) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+        } -ArgumentList (Get-ODSPortalControlMutexName)
+        try {
+            $null = Wait-Job -Job $probe -Timeout 10
+            if ($probe.State -ne 'Completed') { throw 'model lock probe did not complete' }
+            $script:mutexWasHeld = -not [bool](Receive-Job -Job $probe)
+        } finally { Remove-Job -Job $probe -Force }
+    }
+    $script:installInvoked = $true
     $script:openPortal = $OpenPortal
     $script:capturedArguments = $LinuxArguments
     $script:capturedRoot = $InstallRoot
@@ -312,10 +380,65 @@ try {
     Reset-Scenario
     $script:amdPlan = $fixturePlan
     $script:amdArgs = $fixtureLemonadeArgs
+    $script:checkLockOnInstall = $true
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host installs through Windows Lemonade'
+    Check ($script:mutexWasHeld -and $script:postflightCalls -eq 1) 'AMD model lock spans Linux install and successful route recheck'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:simulateStoppedResume = $true
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0 -and
+        $script:calls.Contains('resume-start') -and -not $script:calls.Contains('resume-stop') -and
+        $script:resumeTaskState -eq 'Ready') 'successful fresh WSL setup keeps the resumed selected Windows model running'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:simulateStoppedResume = $true; $script:delegateCode = 17
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 17 -and
+        $script:calls.Contains('resume-stop') -and $script:resumeTaskState -eq 'Disabled' -and
+        -not $script:resumeIntentWanted) 'failed Linux install restores the formerly stopped Windows model task'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:simulateStoppedResume = $true; $script:postflightRouteChange = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'model route changed during Linux setup' -and
+        $script:calls.Contains('resume-stop') -and $script:resumeTaskState -eq 'Disabled') 'postflight route failure restores the formerly stopped model task'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:simulateStoppedResume = $true; $script:resumeStartFails = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'injected model start failure' -and
+        $script:calls.Contains('resume-stop') -and $script:resumeTaskState -eq 'Disabled') 'start failure after task enable restores stopped intent and task'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:simulateStoppedResume = $true
+    $script:delegateCode = 17; $script:rollbackFails = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'Linux installer exited 17' -and $message -match 'injected rollback failure' -and
+        $script:calls.Contains('resume-stop')) 'unverified rollback reports both setup and restoration failures'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:postflightRouteChange = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'model route changed during Linux setup') 'postflight refuses a changed native model route'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:postflightDigestChange = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'model route changed during Linux setup') 'postflight refuses a changed private plan digest'
     Check (($script:capturedArguments -join ' ') -match '--pixel --no-hermes --no-openclaw --lemonade-url http://localhost:8080 --lemonade-model extra\.Qwen3\.5-9B-Q4_K_M\.gguf --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304 --tier 2$') 'AMD host passes the Lemonade route and GPU tier to Linux'
     Check ($script:calls.IndexOf('amd-lemonade:AMD Radeon RX 9070 XT') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'Lemonade is ready before the Linux installer starts'
     Check (($script:amdBinding -join '|') -ceq 'Ubuntu-24.04|/home/user/ods' -and $script:capturedRoot -ceq '/home/user/ods') 'default AMD binding and delegated install use the same explicit Linux path'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:delegateCode = 17
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 17) 'failed Linux install preserves its exit code under model lock'
+    $releasedProbe = Start-Job -ScriptBlock {
+        param($Name)
+        $mutex = [Threading.Mutex]::new($false, $Name)
+        $held = $false
+        try { $held = $mutex.WaitOne(0); return $held }
+        finally { if ($held) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+    } -ArgumentList (Get-ODSPortalControlMutexName)
+    try {
+        $null = Wait-Job -Job $releasedProbe -Timeout 10
+        Check ($releasedProbe.State -eq 'Completed' -and [bool](Receive-Job -Job $releasedProbe)) 'failed Linux install releases the model lock'
+    } finally { Remove-Job -Job $releasedProbe -Force }
     Reset-Scenario
     $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:linuxHome = "/home/some user's home"
     $null = Invoke-ODSPortalSetup @{} 'unused'
@@ -342,6 +465,7 @@ try {
     $script:amdArgs = @()
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host that declines Lemonade still installs'
     Check (-not (($script:capturedArguments -join ' ') -match 'lemonade|--tier')) 'declined Lemonade keeps the CPU route'
+    Check ($script:postflightCalls -eq 0) 'declined Lemonade does not require native model postflight'
     Reset-Scenario
     $script:nvidiaDriver = 576
     $script:amdPlan = $fixturePlan
