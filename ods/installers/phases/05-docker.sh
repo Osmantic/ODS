@@ -186,7 +186,17 @@ else
             xbps)
                 # Void Linux -- runit service management
                 pkg_install docker
-                ods_sudo ln -s /etc/sv/docker /var/service/ 2>/dev/null || true
+                if ! $DRY_RUN; then
+                    ods_sudo ln -s /etc/sv/docker /var/service/ 2>/dev/null || true
+                fi
+                ;;
+            apk)
+                # Alpine -- OpenRC service management
+                pkg_install docker
+                if ! $DRY_RUN; then
+                    ods_sudo rc-update add docker boot 2>>"$LOG_FILE" || true
+                    ods_sudo service docker start 2>>"$LOG_FILE" || true
+                fi
                 ;;
             apk)
                 # Alpine -- OpenRC service management
