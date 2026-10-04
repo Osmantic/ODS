@@ -9,14 +9,16 @@ on:
     paths:
       - "ods/extensions/library/services/**"
       - "ods/docker-compose.base.yml"
-      - ".github/scripts/validate-library-compose.sh"
+      - "ods/extensions/services/*/compose.yaml"
+      - ".github/scripts/validate-library-compose.py"
       - ".github/workflows/validate-library-compose.yml"
   pull_request:
     branches: [main]
     paths:
       - "ods/extensions/library/services/**"
       - "ods/docker-compose.base.yml"
-      - ".github/scripts/validate-library-compose.sh"
+      - "ods/extensions/services/*/compose.yaml"
+      - ".github/scripts/validate-library-compose.py"
       - ".github/workflows/validate-library-compose.yml"
 
 permissions:
@@ -32,5 +34,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML to read recipe manifests
+        run: python -m pip install 'PyYAML>=6,<7'
+
       - name: docker compose config for every recipe on the core stack
-        run: bash .github/scripts/validate-library-compose.sh
+        run: python .github/scripts/validate-library-compose.py
