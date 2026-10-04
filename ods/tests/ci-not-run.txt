@@ -26,5 +26,3 @@ tests/test-tts-full.sh                        live: needs a running ODS stack (r
 tests/test-windows-cli-model.sh               windows: drives powershell.exe
 
 # Rotted while unexecuted; the repairs are in #6567.
-tests/test-custom-menu-agent-flags.sh         rotted: fixture lacks newer phase 03 libraries; repair in #6567
-tests/test-tmpfile-cleanup.sh                 rotted: two static checks point at moved code; repair in #6567

@@ -42,6 +42,7 @@ tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
 tests/test-comfyui-user-dir-persisted.sh
 tests/test-compose-image-discovery.sh
+tests/test-custom-menu-agent-flags.sh
 tests/test-dashboard-approval-terminal-proxy.py
 tests/test-dashboard-image-upload.py
 tests/test-disk-check-install-dir.sh
@@ -157,6 +158,7 @@ tests/test-session-cleanup.sh
 tests/test-simulate-installers-exit-codes.sh
 tests/test-templates.sh
 tests/test-tier-map-parity.sh
+tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
 tests/test-unix-restart-recreate-env.sh
