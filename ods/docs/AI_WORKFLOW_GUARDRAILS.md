@@ -24,9 +24,7 @@ Reasons:
 deliberate policy change: follow [Reintroducing automation](#reintroducing-automation)
 and update that test in the same reviewed PR.
 
-Code owners for high-risk paths are listed in
-[`.github/CODEOWNERS`](../../.github/CODEOWNERS), and the default branch
-requires the core CI checks to pass.
+The default branch requires the core CI checks to pass.
 
 ## AI-Assisted Contributions
 
