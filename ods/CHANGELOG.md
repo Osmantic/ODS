@@ -289,6 +289,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- Model compatibility verdicts recorded on named test machines now apply only
+  to an install that sets `ODS_FLEET_HOST_ID` or `ODS_COMPATIBILITY_HOST`. The
+  Dashboard used to fall back to the computer's own name, so a machine called
+  `mac-mini`, `spark` or `windows-laptop` received another machine's verdicts.
 - `ods model list` on Linux and WSL now resolves each tier from the installed
   tier map, the same way `ods model swap` does, and marks models that are
   already downloaded. It used to print a hard-coded list that still named

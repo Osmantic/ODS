@@ -329,21 +329,14 @@ def model_compatibility_runtime_context(
         getattr(gpu_info, "gpu_backend", None)
         or runtime_value("GPU_BACKEND")
     )
-    explicit_host_values = {
+    # Host-scoped catalog evidence was recorded on named fleet machines. Match it
+    # only against an explicit identity, never the machine's own hostname, so a
+    # user's computer that happens to share a fleet name gets no fleet verdicts.
+    host_values = {
         normalize_key(value)
         for value in (
             runtime_value("ODS_FLEET_HOST_ID"),
             runtime_value("ODS_COMPATIBILITY_HOST"),
-        )
-        if normalize_key(value)
-    }
-    host_values = explicit_host_values or {
-        normalize_key(value)
-        for value in (
-            runtime_value("ODS_DEVICE_NAME"),
-            runtime_value("COMPUTERNAME"),
-            runtime_value("HOSTNAME"),
-            platform.node(),
         )
         if normalize_key(value)
     }

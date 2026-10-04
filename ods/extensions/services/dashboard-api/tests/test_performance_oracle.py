@@ -850,6 +850,45 @@ def test_model_payload_applies_host_scoped_app_compatibility_from_install_env(da
     assert strixy_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "unknown"
 
 
+def test_host_scope_ignores_a_machine_name_that_matches_a_fleet_host(monkeypatch, tmp_path):
+    # A user's machine that happens to share a fleet host's name gets no
+    # fleet-scoped verdicts; only an explicit identity selects them.
+    import performance_oracle
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("ODS_DEVICE_NAME=strixy\n", encoding="utf-8")
+    for key in ("ODS_FLEET_HOST_ID", "ODS_COMPATIBILITY_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOSTNAME", "strixy")
+    monkeypatch.setenv("COMPUTERNAME", "strixy")
+    monkeypatch.setattr(performance_oracle.platform, "node", lambda: "strixy")
+    model = {
+        "id": "scoped-model",
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Global block",
+                "scopedOverrides": [{
+                    "status": "verified", "reason": "Fleet proof", "hostScope": ["strixy"],
+                    "expiresAt": "2999-01-01T00:00:00Z",
+                }],
+            },
+        },
+    }
+
+    context = model_compatibility_runtime_context(install_dir)
+    assert context["hosts"] == [] and context["host"] == ""
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
+
+    (install_dir / ".env").write_text("ODS_COMPATIBILITY_HOST=strixy\n", encoding="utf-8")
+    explicit = model_compatibility_runtime_context(install_dir)
+    assert explicit["hosts"] == ["strixy"]
+    assert model_app_compatibility(model, runtime_context=explicit)["perplexica"]["status"] == "verified"
+
+
 def test_real_catalog_gemma_perplexica_block_is_global():
     by_id = {model["id"]: model for model in _official_model_catalog()}
     model = by_id["gemma3-4b-it-q4"]
