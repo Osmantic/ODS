@@ -135,6 +135,20 @@ def _get_cached_release_payload(allow_stale: bool = False) -> Optional[dict]:
     return None
 
 
+def _update_check_disabled() -> bool:
+    """Honor DISABLE_UPDATE_CHECK=true in .env (written by `--offline`)."""
+    env_file = Path(INSTALL_DIR) / ".env"
+    disabled = False
+    try:
+        for line in _read_utf8(env_file).splitlines():
+            if line.startswith("DISABLE_UPDATE_CHECK="):
+                value = parse_env_value(line.split("=", 1)[1]).strip().lower()
+                disabled = value in {"true", "1", "yes"}
+    except OSError:
+        return False
+    return disabled
+
+
 def _normalize_version(value: Optional[str]) -> str:
     """Normalize a version string for comparison and display.
 
@@ -174,7 +188,7 @@ def _build_version_result(current: str, payload: Optional[dict], check_status: s
         "update_available": False,
         "changelog_url": None,
         "checked_at": None,
-        "check_status": check_status if payload else ("checking" if check_status == "checking" else "unavailable"),
+        "check_status": check_status if payload else (check_status if check_status in {"checking", "disabled"} else "unavailable"),
     }
     if not payload:
         return result
@@ -240,6 +254,8 @@ def _ensure_release_refresh() -> asyncio.Task:
 async def get_version(force: bool = False):
     """Get current ODS version without blocking page load on GitHub."""
     current = await asyncio.to_thread(_read_current_version)
+    if await asyncio.to_thread(_update_check_disabled):
+        return _build_version_result(current, None, "disabled")
     cached = _get_cached_release_payload()
     if cached and not force:
         return _build_version_result(current, cached)

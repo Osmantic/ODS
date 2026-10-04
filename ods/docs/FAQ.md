@@ -141,12 +141,18 @@ Plus: No usage caps, no rate limits, no surprise bills.
 
 ### Is it really private?
 
-**Yes, 100%.** Your prompts never leave your local network.
+Inference and chat history stay on your machine, and ODS collects no
+telemetry. Unless you configure a cloud or remote provider, prompts are not
+sent to model providers. By default ODS reaches the internet only to download
+models and images, to check GitHub for ODS releases, and to run web searches
+the Portal agent makes for you through its search provider. See
+[Is my data private?](../FAQ.md#is-my-data-private) for how to turn each off.
 
-- No data sent to cloud providers
-- No logging by third parties
+- No data sent to cloud model providers unless you configure one
+- No usage telemetry from ODS or its bundled services
 - No training data contribution
-- Full GDPR/HIPAA compliance capability
+- Running locally can support GDPR/HIPAA programs; compliance depends on how you
+  deploy and operate it
 
 ### Can I use it with sensitive data?
 

@@ -10,6 +10,9 @@ services:
       - no-new-privileges:true
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_KEY:-}
+      # Use the cost map bundled in the pinned image instead of fetching it
+      # from GitHub at every start.
+      - LITELLM_LOCAL_MODEL_COST_MAP=True
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - TOGETHER_API_KEY=${TOGETHER_API_KEY:-}

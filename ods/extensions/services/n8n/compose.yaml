@@ -23,6 +23,9 @@ services:
       - ODS_BIND_ADDRESS=${BIND_ADDRESS:-127.0.0.1}
       - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-auto}
       - GENERIC_TIMEZONE=${TIMEZONE:-UTC}
+      # n8n sends diagnostics and checks for new versions by default.
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_VERSION_NOTIFICATIONS_ENABLED=false
     volumes:
       - ./extensions/services/n8n/n8n-cookie-policy.sh:/opt/ods/n8n-cookie-policy.sh:ro,z
       - ./extensions/services/n8n/n8n-entrypoint.sh:/opt/ods/n8n-entrypoint.sh:ro,z

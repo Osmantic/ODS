@@ -110,6 +110,9 @@ services:
       - no-new-privileges:true
     environment:
       ENABLE_OLLAMA_API: "false"
+      # ODS pins and updates Open WebUI itself; the upstream "new version"
+      # check only calls GitHub and advertises releases ODS has not qualified.
+      ENABLE_VERSION_UPDATE_CHECK: "false"
       # Switchboard: OPEN_WEBUI_LLM_BASE_URL overrides to the LiteLLM gateway
       # (ods/current) in enabled mode; default is byte-identical to the prior
       # direct llama-server route for legacy/observe.

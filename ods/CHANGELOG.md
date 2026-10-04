@@ -45,6 +45,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects a llama.cpp image without a digest.
 
 ### Changed
+- Privacy defaults: bundled services no longer phone home. Open WebUI's
+  upstream version check, Qdrant usage telemetry, LiteLLM's start-up cost-map
+  fetch from GitHub, n8n diagnostics and version notifications, and the
+  Whisper Hugging Face client's telemetry are off. The dashboard now honors
+  `DISABLE_UPDATE_CHECK=true`, which `--offline` already writes, and skips its
+  GitHub release check. The FAQs and offline-mode guide now list exactly what
+  ODS contacts by default, including the Portal agent's web search provider,
+  and how to turn each off.
 - Retired the AI GitHub workflows (`ai-issue-triage`, `claude-review`,
   `issue-to-pr`, `autonomous-code-scanner`, `nightly-code-review`,
   `nightly-docs-update`, `release-notes`). The repository holds no model API

@@ -35,11 +35,20 @@ ODS is a turnkey local AI stack that runs entirely on your own hardware. It incl
 **After setup:** No. ODS is designed for offline/air-gapped operation. All models run locally.
 
 ### Is my data private?
-Yes. Everything runs on your hardware:
-- Conversations never leave your machine
-- Voice processing is local
-- API calls to external services go through the Privacy Shield (PII redaction)
-- No telemetry or analytics
+Inference, chat history, voice processing and your documents stay on your
+hardware, and ODS does not collect telemetry. Bundled services run with their
+own usage telemetry and update checks turned off. By default ODS reaches the
+internet only to:
+- download models and container images, at install time and when you add models;
+- check GitHub for new ODS releases (set `DISABLE_UPDATE_CHECK=true` in `.env` to stop it);
+- run web searches the Portal agent makes for you, through its search provider.
+  Fresh Pixel installs use OpenClaw's keyless Parallel search; set
+  `PIXEL_WEB_SEARCH_PROVIDER=searxng` in `.env` before installing (or re-run the
+  installer) to use the bundled local SearXNG instead.
+
+Optional features such as cloud mode, remote model providers, the OpenCode web
+UI's search, and n8n templates contact their own services when you turn them on.
+The optional Privacy Shield redacts PII from requests you route through it.
 
 ### How much does it cost?
 ODS is **free and open source** (Apache 2.0 license). You only pay for:

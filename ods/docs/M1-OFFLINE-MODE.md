@@ -6,7 +6,7 @@
 
 M1 mode configures ODS for fully air-gapped operation:
 - **No cloud API calls** — All inference runs locally
-- **No telemetry** — Nothing phones home
+- **No update checks** — The dashboard stops checking GitHub for ODS releases
 - **Local RAG** — Qdrant replaces web search
 - **GGUF embeddings** — Memory search works without external APIs
 
@@ -41,8 +41,12 @@ M1 mode configures ODS for fully air-gapped operation:
 
 - **Web search** — Brave/Perplexity APIs require internet
 - **Cloud APIs** — OpenAI, Anthropic keys cleared
-- **Telemetry** — All usage tracking disabled
-- **Update checks** — No auto-update pings
+- **Update checks** — `DISABLE_UPDATE_CHECK=true` stops the dashboard's GitHub
+  release check
+
+Bundled services ship with their own usage telemetry and update checks turned
+off in every install, not only offline ones: Open WebUI, Qdrant, LiteLLM's
+cost-map fetch, n8n and the Whisper Hugging Face client.
 
 ## Post-Installation
 
