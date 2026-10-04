@@ -3,8 +3,10 @@ import hashlib
 import importlib.util
 import io
 import os
+import stat
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -143,6 +145,113 @@ class CheckpointTests(unittest.TestCase):
         status = manager.status()
         self.assertEqual(status["state"], "error")
         self.assertEqual(status["error"], "checkpoint_missing_or_changed")
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_library_reenable_chmod_reverifies_saved_checkpoint_without_download(self):
+        manager, opener = self.manager()
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(self.finish(manager)["state"], "done")
+        final = self.target / checkpoint.FILENAME
+        before = final.stat()
+        time.sleep(0.01)
+        os.chmod(final, before.st_mode ^ stat.S_IWGRP)
+        after = final.stat()
+        self.assertEqual((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+                         (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns))
+        self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+
+        self.assertEqual(manager.status()["state"], "verifying")
+        self.assertEqual(self.finish(manager)["state"], "done")
+        self.assertEqual(final.read_bytes(), self.payload)
+        self.assertEqual(len(opener.requests), 1)  # initial transfer only
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_same_inode_tamper_with_restored_mtime_fails_reverification(self):
+        manager, opener = self.manager()
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(self.finish(manager)["state"], "done")
+        final = self.target / checkpoint.FILENAME
+        before = final.stat()
+        time.sleep(0.01)
+        final.write_bytes(b"X" * len(self.payload))
+        os.utime(final, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = final.stat()
+        self.assertEqual((after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns),
+                         (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns))
+        self.assertNotEqual(after.st_ctime_ns, before.st_ctime_ns)
+
+        self.assertEqual(manager.status()["state"], "verifying")
+        result = self.finish(manager)
+        self.assertEqual(result["state"], "error")
+        self.assertEqual(result["error"], "checkpoint_missing_or_changed")
+        self.assertEqual(len(opener.requests), 1)
+        failed_worker = manager._thread
+        self.assertEqual(manager.status()["state"], "error")
+        self.assertIs(manager._thread, failed_worker)  # no repeated 7 GB hash loop
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_prior_agent_false_error_recovers_only_after_full_hash(self):
+        manager, opener = self.manager()
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(self.finish(manager)["state"], "done")
+        final = self.target / checkpoint.FILENAME
+        stage = self.root / ".ods-comfy-checkpoint"
+        manager._write(stage, "error", 0, "checkpoint_missing_or_changed")
+
+        self.assertEqual(manager.status()["state"], "verifying")
+        self.assertEqual(self.finish(manager)["state"], "done")
+        self.assertEqual(final.read_bytes(), self.payload)
+        self.assertEqual(len(opener.requests), 1)
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_reverification_is_single_flight_and_has_no_download_cancel(self):
+        manager, _ = self.manager()
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(self.finish(manager)["state"], "done")
+        final = self.target / checkpoint.FILENAME
+        os.chmod(final, final.stat().st_mode ^ stat.S_IWGRP)
+        entered, release = threading.Event(), threading.Event()
+        original_verify = manager._verify
+
+        def held_verify(*args, **kwargs):
+            if not kwargs.get("report_progress", True):
+                entered.set()
+                release.wait(5)
+            return original_verify(*args, **kwargs)
+
+        with patch.object(manager, "_verify", side_effect=held_verify):
+            self.assertEqual(manager.status()["state"], "verifying")
+            self.assertTrue(entered.wait(5))
+            worker = manager._thread
+            self.assertEqual(manager.status()["state"], "verifying")
+            self.assertIs(manager._thread, worker)
+            with self.assertRaises(checkpoint.CheckpointError) as failure:
+                manager.cancel()
+            self.assertEqual(failure.exception.code, "checkpoint_not_running")
+            release.set()
+            self.assertEqual(self.finish(manager)["state"], "done")
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_replacement_during_metadata_reverification_never_promotes(self):
+        manager, _ = self.manager()
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(self.finish(manager)["state"], "done")
+        final = self.target / checkpoint.FILENAME
+        os.chmod(final, final.stat().st_mode ^ stat.S_IWGRP)
+        original_verify = manager._verify
+
+        def swap_after_hash(*args, **kwargs):
+            identity = original_verify(*args, **kwargs)
+            replacement = self.target / "replacement.tmp"
+            replacement.write_bytes(b"X" * len(self.payload))
+            os.replace(replacement, final)
+            return identity
+
+        with patch.object(manager, "_verify", side_effect=swap_after_hash):
+            self.assertEqual(manager.status()["state"], "verifying")
+            result = self.finish(manager)
+        self.assertEqual(result["state"], "error")
+        self.assertEqual(result["error"], "checkpoint_missing_or_changed")
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_replacement_during_publication_is_never_reported_verified(self):

@@ -41,3 +41,31 @@ it('requires a separate size confirmation before ComfyUI downloads a model', asy
     '/api/extensions/comfyui/checkpoint/download', expect.objectContaining({ method: 'POST' }),
   ))
 })
+
+it('shows automatic checkpoint reverification without a false download cancel action', async () => {
+  const fetchMock = vi.fn(async (url) => {
+    if (url === '/api/extensions/catalog') return response({
+      agent_available: true,
+      extensions: [{ id: 'comfyui', name: 'ComfyUI', source: 'core', status: 'enabled',
+        library_manageable: true, library_selected: true,
+        features: [{ category: 'tools', icon: 'Box' }] }],
+      summary: { total: 1, installed: 1 },
+    })
+    if (url === '/api/webui/selection') return response({ enabled: false, supported: false })
+    if (url === '/api/templates') return response({ templates: [] })
+    if (url === '/api/extensions/comfyui/checkpoint') return response({
+      selected: true,
+      catalog: { model_id: 'sdxl_lightning_4step', name: 'SDXL Lightning 4-step',
+        size_label: '6.94 GB', size_bytes: 6938040682 },
+      download: { state: 'verifying', reverify_only: true, bytes_done: 6938040682,
+        bytes_total: 6938040682, error: null },
+    })
+    throw new Error(`Unmocked fetch: ${url}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  expect(await screen.findByText('Verifying the model…')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Cancel download' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Download image model' })).not.toBeInTheDocument()
+  expect(screen.queryByText(/ComfyUI can open without a model/)).not.toBeInTheDocument()
+})

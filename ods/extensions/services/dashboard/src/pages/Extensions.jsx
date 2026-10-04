@@ -1040,13 +1040,13 @@ function ComfyCheckpointControl({ agentOffline }) {
       <div className="font-semibold text-theme-text">Image model</div>
       {!snapshot && !error && <p className="mt-1">Checking the optional checkpoint…</p>}
       {snapshot && !snapshot.selected && <p className="mt-1">Add ComfyUI to download an image model. Adding the app does not download it.</p>}
-      {snapshot?.selected && state !== 'done' && state !== 'existing_unverified' && state !== 'unsupported' && <p className="mt-1">ComfyUI can open without a model. Download SDXL Lightning 4-step only if you want local image generation.</p>}
+      {snapshot?.selected && !active && state !== 'done' && state !== 'existing_unverified' && state !== 'unsupported' && <p className="mt-1">ComfyUI can open without a model. Download SDXL Lightning 4-step only if you want local image generation.</p>}
       {state === 'existing_unverified' && <p className="mt-1">An image model is already present. Verify its integrity before using it.</p>}
       {state === 'done' && <p className="mt-1 text-green-400">SDXL Lightning 4-step is downloaded and verified.</p>}
       {active && (
         <div className="mt-2">
           <div>{state === 'verifying' ? 'Verifying the model…' : state === 'cancelling' ? 'Cancelling…' : `Downloading ${progress}%`}</div>
-          <progress className="mt-1 w-full" value={progress} max="100" aria-label="Image model download progress" />
+          {!download?.reverify_only && <progress className="mt-1 w-full" value={progress} max="100" aria-label="Image model download progress" />}
         </div>
       )}
       {download?.error && <p className="mt-1 text-amber-300">{COMFY_DOWNLOAD_ERRORS[download.error] || 'The model download needs attention.'}</p>}
@@ -1068,7 +1068,7 @@ function ComfyCheckpointControl({ agentOffline }) {
           </div>
         </div>
       )}
-      {active && <button disabled={busy || agentOffline} className="mt-2 rounded border border-theme-border px-3 py-1.5 disabled:opacity-50"
+      {active && !download?.reverify_only && <button disabled={busy || agentOffline} className="mt-2 rounded border border-theme-border px-3 py-1.5 disabled:opacity-50"
         onClick={() => action('/api/extensions/comfyui/checkpoint/cancel', {})}>Cancel download</button>}
     </div>
   )

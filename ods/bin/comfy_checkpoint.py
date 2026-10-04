@@ -87,6 +87,13 @@ def _file_identity(info: os.stat_result) -> dict:
             "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
 
 
+def _same_content_identity(previous: dict, current: dict) -> bool:
+    """Keep replacement/size/mtime changes distinct from a metadata-only chmod."""
+    return isinstance(previous, dict) and all(
+        previous.get(key) == current[key] for key in ("dev", "ino", "size", "mtime_ns")
+    )
+
+
 def _open_dir_chain(root: Path, parts: tuple) -> int:
     """Hold each fixed directory hop so later container-side renames cannot redirect I/O."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -169,6 +176,7 @@ class CheckpointManager:
         self._cancel = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._reverifying = False
 
     def _target(self) -> Path:
         if self.backend not in _TARGET_PARTS:
@@ -187,7 +195,8 @@ class CheckpointManager:
         return stage / "status.json"
 
     def _write(self, stage: Path, state: str, bytes_done: int,
-               error: Optional[str] = None, verified_file: Optional[dict] = None) -> dict:
+               error: Optional[str] = None, verified_file: Optional[dict] = None,
+               failed_file: Optional[dict] = None) -> dict:
         value = {
             "state": state, "model_id": MODEL_ID, "bytes_done": bytes_done,
             "bytes_total": SIZE_BYTES, "sha256_expected": SHA256,
@@ -196,6 +205,8 @@ class CheckpointManager:
         }
         if verified_file is not None:
             value["verified_file"] = verified_file
+        if failed_file is not None:
+            value["failed_file"] = failed_file
         with self._mutex:
             _atomic_json(self._status_file(stage), value)
         return value
@@ -239,12 +250,112 @@ class CheckpointManager:
                         info = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
                     finally:
                         os.close(target_fd)
-                    if (not stat.S_ISREG(info.st_mode)
-                            or value.get("verified_file") != _file_identity(info)):
-                        value = self._write(stage, "error", 0, "checkpoint_missing_or_changed")
+                    identity = _file_identity(info)
+                    verified = value.get("verified_file")
+                    if not stat.S_ISREG(info.st_mode) or not _same_content_identity(verified, identity):
+                        value = self._write(stage, "error", 0, "checkpoint_missing_or_changed",
+                                            failed_file=identity if stat.S_ISREG(info.st_mode) else None)
+                    elif verified != identity:
+                        queued = self._queue_existing_reverification(stage, value, identity)
+                        return {key: item for key, item in {
+                            **value, "state": "verifying" if queued else "error",
+                            "error": None if queued else "checkpoint_reverify_unavailable",
+                            "reverify_only": queued,
+                        }.items() if key not in ("verified_file", "failed_file")}
                 except (CheckpointError, OSError):
                     value = self._write(stage, "error", 0, "checkpoint_missing_or_changed")
-            return {key: item for key, item in value.items() if key != "verified_file"}
+            elif (value.get("state") == "error"
+                  and value.get("error") == "checkpoint_missing_or_changed"):
+                # Older agents already poisoned a valid receipt on chmod. A
+                # full pinned hash can repair it without owner download consent.
+                # A known-bad file is retried only after its identity changes.
+                try:
+                    target_fd = self._target_fd()
+                    try:
+                        info = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
+                    finally:
+                        os.close(target_fd)
+                    if (stat.S_ISREG(info.st_mode) and info.st_size == SIZE_BYTES
+                            and value.get("failed_file") != _file_identity(info)):
+                        queued = self._queue_existing_reverification(
+                            stage, value, _file_identity(info))
+                        return {key: item for key, item in {
+                            **value, "state": "verifying" if queued else "error",
+                            "error": None if queued else "checkpoint_reverify_unavailable",
+                            "reverify_only": queued,
+                        }.items() if key not in ("verified_file", "failed_file")}
+                except (CheckpointError, OSError):
+                    pass
+            return {key: item for key, item in value.items()
+                    if key not in ("verified_file", "failed_file")}
+
+    def _queue_existing_reverification(self, stage: Path, receipt: dict,
+                                       observed: dict) -> bool:
+        """Re-hash an existing file off the status request; never download."""
+        if self._reverifying:
+            return True
+        if self._running:
+            return False
+        try:
+            lock_fd = self._acquire()
+        except CheckpointError as exc:
+            # Another agent process may hold the lock. A later status retries.
+            return exc.code == "checkpoint_busy"
+        self._cancel.clear()
+        self._running = True
+        self._reverifying = True
+        try:
+            self._thread = threading.Thread(
+                target=self._reverify_metadata_changed_file,
+                args=(stage, receipt, observed, lock_fd), daemon=True,
+            )
+            self._thread.start()
+        except RuntimeError:
+            self._running = False
+            self._reverifying = False
+            os.close(lock_fd)
+            return False
+        return True
+
+    def _reverify_metadata_changed_file(self, stage: Path, receipt: dict,
+                                        observed: dict, lock_fd: int) -> None:
+        target_fd = None
+        try:
+            target_fd = self._target_fd()
+            before = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
+            if (not stat.S_ISREG(before.st_mode)
+                    or not _same_content_identity(observed, _file_identity(before))):
+                raise CheckpointError("checkpoint_missing_or_changed")
+            identity = self._verify(Path(FILENAME), stage, dir_fd=target_fd,
+                                    report_progress=False)
+            after = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
+            if (not _same_content_identity(observed, identity)
+                    or _file_identity(after) != identity):
+                raise CheckpointError("checkpoint_missing_or_changed")
+            with self._mutex:
+                if _read_json(self._status_file(stage)) == receipt:
+                    self._write(stage, "done", SIZE_BYTES, verified_file=identity)
+        except (CheckpointError, OSError, ValueError):
+            with self._mutex:
+                if _read_json(self._status_file(stage)) == receipt:
+                    failed = None
+                    if target_fd is not None:
+                        try:
+                            current = os.stat(FILENAME, dir_fd=target_fd,
+                                              follow_symlinks=False)
+                            if stat.S_ISREG(current.st_mode):
+                                failed = _file_identity(current)
+                        except OSError:
+                            pass
+                    self._write(stage, "error", 0, "checkpoint_missing_or_changed",
+                                failed_file=failed)
+        finally:
+            if target_fd is not None:
+                os.close(target_fd)
+            os.close(lock_fd)
+            with self._mutex:
+                self._running = False
+                self._reverifying = False
 
     def _acquire(self) -> int:
         if not _supported_host():
@@ -303,7 +414,7 @@ class CheckpointManager:
 
     def cancel(self) -> dict:
         with self._mutex:
-            if not self._running:
+            if not self._running or self._reverifying:
                 raise CheckpointError("checkpoint_not_running")
             self._cancel.set()
             stage = self._stage()
@@ -453,8 +564,10 @@ class CheckpointManager:
             if done != SIZE_BYTES:
                 raise CheckpointError("checkpoint_incomplete", 502)
 
-    def _verify(self, path: Path, stage: Path, *, dir_fd: Optional[int] = None) -> dict:
-        self._write(stage, "verifying", SIZE_BYTES)
+    def _verify(self, path: Path, stage: Path, *, dir_fd: Optional[int] = None,
+                report_progress: bool = True) -> dict:
+        if report_progress:
+            self._write(stage, "verifying", SIZE_BYTES)
         digest = hashlib.sha256()
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
         fd = os.open(str(path), flags, dir_fd=dir_fd)
