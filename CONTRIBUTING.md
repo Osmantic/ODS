@@ -79,6 +79,13 @@ for the repository automation policy and the rules for AI-assisted PRs.
   recorded, with a reason, in `ods/tests/ci-not-run.txt`. Only executions count:
   a Makefile target (no workflow runs `make`), a lint or syntax check, or a
   mention in another script does not.
+- Commit with a real identity. The *Commit identities* check rejects placeholder
+  names and example or machine-local email domains (`user@example.com`,
+  `me@laptop.local`); a GitHub noreply address is fine.
+- The *Python Type Check* jobs fail on new mypy errors in dashboard-api,
+  token-spy, privacy-shield and `ods/scripts`. Existing errors are recorded in
+  `.github/mypy-baseline.json`; lower it with `.github/scripts/mypy-ratchet.py
+  --update` when you fix some.
 - Report security issues privately through
   [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new),
   not in PRs or issues.
