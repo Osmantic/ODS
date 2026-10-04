@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- The host agent now keeps only the newest 20 `.env` backups in
+  `data/config-backups/`. Each Dashboard settings save added another full copy
+  of every secret, with no limit. Only regular files that match the backup
+  name pattern are pruned, and a pruning failure never fails the save.
 - Before Pixel's workspace-guidance migration changes `AGENTS.md` or
   `MEMORY.md` in an existing owner workspace, it now keeps the original files
   in a private `.ods-workspace-guidance-backups/` directory beside the

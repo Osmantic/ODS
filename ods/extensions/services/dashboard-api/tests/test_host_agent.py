@@ -5277,6 +5277,59 @@ class TestHandleEnvUpdate:
             "ODS_AGENT_KEY=second\n"
         )
 
+    def test_backups_keep_only_the_newest_copies(self, env_update_env):
+        install_dir, data_dir = env_update_env
+        backups = data_dir / "config-backups"
+        backups.mkdir(parents=True)
+        old = [backups / f".env.backup.202601{day:02d}-120000.fixture{day}" for day in range(1, 26)]
+        for path in old:
+            path.write_text("OLD_SECRET=value\n", encoding="utf-8")
+        unrelated = [backups / "notes.txt", backups / ".env.backup.manual"]
+        for path in unrelated:
+            path.write_text("owner file\n", encoding="utf-8")
+
+        handler = _FakeHandler(_make_body("ODS_AGENT_KEY=newvalue\n"))
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        created = data_dir.parent / handler.parse_response()["backup_path"]
+        kept = sorted(path.name for path in backups.glob(".env.backup.2*"))
+        assert len(kept) == _mod.ENV_BACKUP_RETENTION
+        assert created.name in kept
+        # The 19 newest fixtures survive; the oldest six are pruned.
+        assert kept[:-1] == sorted(path.name for path in old[-(_mod.ENV_BACKUP_RETENTION - 1):])
+        assert all(path.exists() for path in unrelated)
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+    def test_backup_pruning_ignores_links(self, env_update_env):
+        install_dir, data_dir = env_update_env
+        backups = data_dir / "config-backups"
+        backups.mkdir(parents=True)
+        target = data_dir / "outside.env"
+        target.write_text("KEEP=1\n", encoding="utf-8")
+        link = backups / ".env.backup.20200101-000000.link"
+        link.symlink_to(target)
+        for day in range(1, 26):
+            (backups / f".env.backup.202601{day:02d}-120000.fixture{day}").write_text("x\n", encoding="utf-8")
+
+        _mod.AgentHandler._handle_env_update(_FakeHandler(_make_body("ODS_AGENT_KEY=newvalue\n")))
+
+        assert link.is_symlink() and target.read_text(encoding="utf-8") == "KEEP=1\n"
+
+    def test_pruning_failure_keeps_the_save_successful(self, env_update_env, monkeypatch):
+        install_dir, data_dir = env_update_env
+
+        def fail(*_args, **_kwargs):
+            raise OSError("read-only backup directory")
+
+        monkeypatch.setattr(_mod, "_prune_env_backups", fail)
+        handler = _FakeHandler(_make_body("ODS_AGENT_KEY=newvalue\n"))
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        assert (data_dir.parent / handler.parse_response()["backup_path"]).exists()
+        assert "ODS_AGENT_KEY=newvalue" in (install_dir / ".env").read_text(encoding="utf-8")
+
     def test_proxy_enabled_forces_auth_and_reports_saved_value(self, env_update_env):
         install_dir, _ = env_update_env
         proxy_dir = _mod.EXTENSIONS_DIR / "ods-proxy"

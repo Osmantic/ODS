@@ -41,8 +41,10 @@ grep -E "(PASSWORD|SECRET|KEY)=" .env | grep -i changeme
 ```
 
 Dashboard settings saves keep a copy of the previous `.env` under
-`data/config-backups/`. Those copies contain the same secrets as `.env`, so
-treat `data/` as sensitive (see [What's Stored](#whats-stored)).
+`data/config-backups/` (owner-only, newest 20 kept). Those copies contain the
+same secrets as `.env`, so treat `data/` as sensitive (see
+[What's Stored](#whats-stored)). After rotating a secret, delete the older
+copies that still hold the old value.
 
 ### Manual Secret Rotation
 

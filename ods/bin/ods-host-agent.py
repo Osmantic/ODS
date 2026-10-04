@@ -2889,6 +2889,10 @@ def _restore_bound_env_file(path: Path, snapshot: dict) -> None:
                 raise
 
 
+ENV_BACKUP_RETENTION = 20
+_ENV_BACKUP_NAME = re.compile(r"\.env\.backup\.(\d{8}-\d{6})\.[A-Za-z0-9_]+")
+
+
 def _copy_unique_env_backup(env_path: Path, backup_dir: Path) -> Path:
     """Copy ``.env`` to a collision-resistant, owner-readable backup file."""
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -2909,7 +2913,31 @@ def _copy_unique_env_backup(env_path: Path, backup_dir: Path) -> Path:
     except OSError:
         backup_path.unlink(missing_ok=True)
         raise
+    try:
+        _prune_env_backups(backup_dir, keep=backup_path)
+    except OSError as exc:
+        # The new backup exists; failing to prune old copies must not turn a
+        # successful configuration save into an error.
+        logger.warning("Could not prune old .env backups in %s: %s", backup_dir, exc)
     return backup_path
+
+
+def _prune_env_backups(backup_dir: Path, *, keep: Path) -> None:
+    """Keep the newest ENV_BACKUP_RETENTION full ``.env`` copies.
+
+    Each copy holds every secret, so they must not accumulate without bound.
+    Only regular files with this writer's exact name pattern are candidates;
+    anything else in the directory is left alone.
+    """
+    backups = []
+    for entry in os.scandir(backup_dir):
+        match = _ENV_BACKUP_NAME.fullmatch(entry.name)
+        if match and entry.is_file(follow_symlinks=False):
+            backups.append((match[1], entry.stat(follow_symlinks=False).st_ctime_ns, entry.name))
+    backups.sort(reverse=True)
+    for _timestamp, _changed, name in backups[ENV_BACKUP_RETENTION:]:
+        if name != keep.name:
+            (backup_dir / name).unlink(missing_ok=True)
 
 
 def _read_setup_json(path: Path) -> tuple[bool, dict | None]:
