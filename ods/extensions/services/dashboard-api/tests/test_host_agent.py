@@ -48,7 +48,7 @@ def test_huggingface_fallback_uses_saved_token_at_sdk_boundary(tmp_path, monkeyp
         calls.append((kwargs, effective))
         return str(artifact)
 
-    hub.hf_hub_download = download
+    monkeypatch.setattr(hub, "hf_hub_download", download, raising=False)
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
 
     class Worker:
