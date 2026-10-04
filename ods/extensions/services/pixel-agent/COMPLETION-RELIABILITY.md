@@ -547,6 +547,27 @@ cancelled request. A later message sees none of this.
 before, during and after a revision is armed; the real-harness fixture
 `tests/runtime_cancel_recovery.integration.mjs` cancels through the ingress.
 
+## Revisions after a context overflow
+
+OpenClaw sends a `before_agent_finalize` revision as the next attempt's prompt.
+When that attempt stops at the pre-prompt context check, the recovery
+(compaction, or truncation of the run's tool results) retries with the owner's
+original message instead, and the revision never reaches the model. In the
+fleet event search this happened three times in rounds 105–112 (a chat already
+holding the website and coding journeys): the model answered the same request
+again with the same unread citation, the one source revision was spent, and
+the answer was delivered as failed with that link neutralised. An attempt that
+sends the owner's message again, alone or with a retry note OpenClaw appends,
+while a revision of the same run is unanswered therefore carries that revision
+as model-only context (`prependContext`, never persisted as owner text): a
+fixed note, then the revision's reason and instruction as OpenClaw would have
+sent them. This applies to every revision kind and ends once the next final
+answer is judged. It adds no model pass and resets no revision budget, and the
+harness still refuses a revision after side effects.
+`tests/revision_prompt_retry.test.mjs` replays the fleet sequence, and
+`tests/runtime_revision_prompt_retry.integration.mjs` reproduces the
+compaction and truncation routes with the pinned runtime.
+
 ## Search availability
 
 Existing SearXNG installations can report HTTP 200 with zero results while their
