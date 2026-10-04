@@ -8,6 +8,11 @@ baseline fails; a count below it is reported so the baseline can be lowered.
 
   mypy-ratchet.py --target NAME < mypy-output.txt           compare
   mypy-ratchet.py --target NAME --update < mypy-output.txt  rewrite NAME's baseline
+
+Update a baseline only after fixing errors, or when a reviewed dependency bump
+changes mypy's messages. Produce the output the way the workflow does (Linux,
+Python 3.11, the pinned mypy, the service's requirements.lock): other platforms
+can report different errors. The job log prints the full mypy output.
 """
 import argparse
 from collections import Counter
