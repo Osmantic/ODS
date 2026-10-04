@@ -3859,19 +3859,25 @@ cmd_model() {
             return 0
             ;;
         list)
+            # Resolve every tier with the same tier map `swap` uses, so the
+            # list shows exactly what a swap would load.
+            local list_tier list_line
             echo -e "${BLUE}━━━ Available Tiers ━━━${NC}"
-            echo "  T0         — qwen3.5-2b (< 8GB RAM, any GPU)"
-            echo "  T1         — qwen3.5-9b (<12GB VRAM)"
-            echo "  T2         — qwen3.5-9b (12-19GB, larger context)"
-            echo "  T3         — qwen3-30b-a3b (20-47GB)"
-            echo "  T4         — qwen3-30b-a3b (48GB+)"
-            echo "  SH         — qwen3-30b-a3b (Strix Halo unified)"
-            echo "  SH_LARGE   — qwen3-coder-next (90GB+ unified)"
-            echo "  NV_ULTRA   — qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)"
-            echo "  ARC        — Intel Arc 12GB+"
-            echo "  ARC_LITE   — Intel Arc 6-8GB"
+            for list_tier in T0 T1 T2 T3 T4 SH SH_LARGE NV_ULTRA ARC ARC_LITE; do
+                list_line="$(
+                    . "$INSTALL_DIR/installers/lib/tier-map.sh"
+                    TIER="$list_tier"
+                    [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
+                    [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
+                    resolve_tier_config >/dev/null
+                    downloaded=""
+                    [[ -s "$INSTALL_DIR/data/models/$GGUF_FILE" ]] && downloaded=" [downloaded]"
+                    printf '  %-10s %-22s %s%s' "$list_tier" "$LLM_MODEL" "$TIER_NAME" "$downloaded"
+                )" || error "Could not resolve tier $list_tier from the tier map"
+                echo "$list_line"
+            done
             echo ""
-            echo "Usage: ods model swap <tier>"
+            echo "Usage: ods model swap <tier>   (the tier's model file must already be downloaded)"
             ;;
         swap)
             local tier="${2:-}"

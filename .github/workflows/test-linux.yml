@@ -430,6 +430,11 @@ jobs:
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
 
+      - name: CLI Model List and Activation Contracts
+        run: |
+          bash tests/test-ods-cli-model-list.sh
+          bash tests/contracts/test-ods-cli-model-activation.sh
+
       - name: Preset Export Archive Permissions
         run: bash tests/test-preset-export-permissions.sh
 

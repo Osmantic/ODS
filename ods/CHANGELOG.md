@@ -282,6 +282,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- `ods model list` on Linux and WSL now resolves each tier from the installed
+  tier map, the same way `ods model swap` does, and marks models that are
+  already downloaded. It used to print a hard-coded list that still named
+  retired tier models.
 - The Qwen3.5-2B model used for CPU-only and lightweight installs, and as the
   fast-start bootstrap model, is now downloaded from a fixed Hugging Face
   commit and verified against its SHA-256 on Linux and macOS. The tier maps
