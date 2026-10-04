@@ -43,8 +43,10 @@ ods_sudo() {
 
     if [[ "${INTERACTIVE:-true}" != "true" ]]; then
         sudo -n "$@"
+        return $?
     else
         sudo "$@"
+        return $?
     fi
 }
 
