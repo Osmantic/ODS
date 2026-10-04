@@ -10,11 +10,10 @@
 # Provides: ods_sudo(), ods_prepare_sudo()
 # ============================================================================
 
-# ODS_SUDO_AVAILABLE is set by ods_prepare_sudo(). It is "true" only when we can
-# run privileged commands without an interactive prompt (either we are root, or
-# sudo is cached / passwordless). Anything else is "false" and the installer
-# proceeds rootless, skipping the root-only extras. Default to unset → treated
-# as available by ods_sudo() for backward-compat when prepare was never called.
+command -v ai >/dev/null 2>&1 || ai() { echo "[INFO] $*"; }
+command -v ai_warn >/dev/null 2>&1 || ai_warn() { echo "[WARN] $*" >&2; }
+command -v ai_bad >/dev/null 2>&1 || ai_bad() { echo "[ERROR] $*" >&2; }
+
 export ODS_SUDO_AVAILABLE="${ODS_SUDO_AVAILABLE:-}"
 
 # ods_sudo_available: true when privileged commands can run without a prompt.
