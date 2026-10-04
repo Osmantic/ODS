@@ -4,10 +4,11 @@ import asyncio
 import json
 import logging
 import re
+import sys
 
-try:
+if sys.version_info >= (3, 11):
     from asyncio import timeout as _async_timeout
-except ImportError:  # Python 3.10 standalone deployments
+else:  # Python 3.10 standalone deployments
     from async_timeout import timeout as _async_timeout
 
 import aiohttp
@@ -75,7 +76,7 @@ def _n8n_data_items(data: object) -> list[dict]:
 
 async def _read_workflow_pages(session, headers: dict) -> list[dict]:
     workflows = []
-    params = {}
+    params: dict[str, str] = {}
     seen_cursors = set()
     while True:
         async with session.get(f"{N8N_URL}/api/v1/workflows", headers=headers, params=params) as resp:

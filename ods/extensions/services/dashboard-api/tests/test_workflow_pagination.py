@@ -4,6 +4,7 @@ import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -17,7 +18,7 @@ from security import verify_api_key
 @pytest.fixture
 def n8n_inventory(monkeypatch):
     cursor = base64.b64encode(json.dumps({"limit": 100, "offset": 100}, separators=(",", ":")).encode()).decode()
-    state = {"cursor": cursor, "seen": [], "status": 200, "repeat": False, "key": "first-key", "deleted": [], "payloads": {}}
+    state: dict[str, Any] = {"cursor": cursor, "seen": [], "status": 200, "repeat": False, "key": "first-key", "deleted": [], "payloads": {}}
 
     class Handler(BaseHTTPRequestHandler):
         def do_DELETE(self):
