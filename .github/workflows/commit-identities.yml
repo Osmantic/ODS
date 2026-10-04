@@ -1,0 +1,35 @@
+name: Commit identities
+
+# Placeholder identities (User Name <user@example.com>) and machine-local ones
+# (portal@local, me@laptop.local) make history unattributable and can leak host
+# names. This rejects them on the commits a PR adds; it never rewrites anything.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  identities:
+    name: commit-identities
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Self-test the check
+        run: python -m unittest discover -s .github/scripts -p test_check_commit_identities.py
+
+      - name: Check the PR's commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python .github/scripts/check-commit-identities.py "$BASE" "$HEAD"
