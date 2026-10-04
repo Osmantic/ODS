@@ -298,15 +298,16 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-whisper-port-conflict.ps1
 
-      - name: Every PowerShell test runs in this workflow
+      - name: Every PowerShell test runs in a workflow
         shell: pwsh
         run: |
-          $workflow = Get-Content -Raw ../.github/workflows/lint-powershell.yml
+          # Tests run from this directory (./tests/...) or the repository root (./ods/tests/...).
+          $workflows = (Get-ChildItem ../.github/workflows -Filter '*.yml' | Get-Content -Raw) -join "`n"
           $missing = Get-ChildItem tests -Recurse -Filter 'test-*.ps1' |
-            ForEach-Object { './' + [IO.Path]::GetRelativePath((Get-Location).Path, $_.FullName).Replace('\', '/') } |
-            Where-Object { -not $workflow.Contains($_) }
+            ForEach-Object { [IO.Path]::GetRelativePath((Get-Location).Path, $_.FullName).Replace('\', '/') } |
+            Where-Object { -not $workflows.Contains('/' + $_) }
           if ($missing) {
-            $missing | ForEach-Object { Write-Host "::error::$_ is not run by lint-powershell.yml" }
+            $missing | ForEach-Object { Write-Host "::error::ods/$_ is not run by any workflow" }
             exit 1
           }
-          Write-Host 'Every PowerShell test under ods/tests runs in this workflow.'
+          Write-Host 'Every PowerShell test under ods/tests runs in a workflow.'
