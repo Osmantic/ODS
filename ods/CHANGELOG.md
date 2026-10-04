@@ -37,6 +37,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rejects a llama.cpp image without a digest.
 
 ### Changed
+- Retired the AI GitHub workflows (`ai-issue-triage`, `claude-review`,
+  `issue-to-pr`, `autonomous-code-scanner`, `nightly-code-review`,
+  `nightly-docs-update`, `release-notes`). The repository holds no model API
+  secrets, so they only produced skipped "green" reviews and failures, and
+  `release-notes.yml` let untrusted PR titles steer an agent with release
+  write access. A CI contract keeps them out until a reviewed redesign.
+  `.github/CODEOWNERS` now requests maintainer review for installer, auth,
+  compose, workflow, and vendored Pixel paths, and
+  `docs/AI_WORKFLOW_GUARDRAILS.md` sets the policy for AI-assisted PRs.
 - Windows: `install.ps1` now installs ODS inside Ubuntu/WSL2 with Pixel
   (`--pixel --no-hermes --no-openclaw`) instead of the native Windows stack.
   It prepares WSL and Ubuntu 24.04 when needed, and stops with instructions,

@@ -246,9 +246,6 @@ test: ## Run unit and contract tests
 	@echo "=== fleet host lock behavior ==="
 	@bash tests/test-fleet-host-lock.sh
 	@echo ""
-	@echo "=== issue-to-pr security check ==="
-	@bash tests/test-issue-to-pr-security.sh
-	@echo ""
 	@echo "=== documented security suites (SECURITY_AUDIT.md) ==="
 	@bash tests/test-secret-security.sh
 	@bash tests/test-openclaw-device-auth-default.sh
