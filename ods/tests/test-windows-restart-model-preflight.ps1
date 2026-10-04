@@ -28,6 +28,7 @@ function Start-NativeInferenceServer { $script:Calls += 'start-model' }
 function Get-ODSRunningComposeServices { param($ComposeFlags) return @('dashboard') }
 function Invoke-ODSDockerCompose { param($InstallDir, $ComposeFlags, $ComposeArgs) $script:Calls += 'compose'; return 0 }
 function Invoke-BootstrapUpgradeResume { $script:Calls += 'bootstrap' }
+function Invoke-Agent { param($Action) $script:Calls += "agent-$Action" }
 function Write-AI { param($Message) }
 function Write-AISuccess { param($Message) }
 function Write-AIWarn { param($Message) }
@@ -42,7 +43,7 @@ foreach ($backend in @('llama-server', 'lemonade')) {
     }
     $script:Calls = @(); $script:Failure = ''
     Invoke-Restart
-    Assert-True (($script:Calls -join ',') -eq 'verify,stop-opencode,stop-model,start-model,compose,start-opencode,bootstrap') 'Restart did not preserve verification/stop/start order'
+    Assert-True (($script:Calls -join ',') -eq 'verify,stop-opencode,stop-model,start-model,compose,agent-restart,start-opencode,bootstrap') 'Restart did not preserve verification/stop/start order'
 }
 $script:Backend = 'none'; $script:Calls = @(); $script:Failure = 'No native model should be required'
 Invoke-Restart
