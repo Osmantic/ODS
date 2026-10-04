@@ -1066,7 +1066,7 @@ else
             # image download after the installer itself releases the lock.
             (
                 _phase11_close_inherited_fds_for_daemon
-                exec nohup env \
+                exec nohup env -u ODS_INSTALL_LOCK -u FLOCK_FD \
                     SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
                     SDXL_MODEL="$SDXL_MODEL" \
                     SDXL_URL="$SDXL_URL" \
