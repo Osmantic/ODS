@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- Vulnerability reports now go through GitHub private vulnerability reporting
+  (Security → Report a vulnerability) or `security@osmantic.com`; `SECURITY.md`
+  no longer asks reporters to open public issues. The security guide now covers
+  the full set of generated secrets, a rotation recipe that works with every
+  generated value, the Open WebUI `admin@localhost` account to secure before LAN
+  exposure, the trust boundary for local browsers, `ods-network` containers,
+  the host agent and Pixel Full Access, and how to apply code fixes to an
+  existing installation (`ods update` refreshes images only).
 - Native Windows uninstall now verifies each container's Compose installation
   directory before any mutation. A shared `ods` project label cannot authorize
   removing another WSL/Windows installation or unattached volumes of unknown
