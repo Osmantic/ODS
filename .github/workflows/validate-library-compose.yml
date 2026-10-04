@@ -1,0 +1,34 @@
+name: Validate extension library compose
+
+# The Dashboard's Extensions page installs these recipes on users' machines.
+# validate-compose.yml covers the core stack and bundled services; this runs
+# `docker compose config` on every library recipe and its GPU overlays.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ods/extensions/library/services/**"
+      - "ods/extensions/library/validate-compose.sh"
+      - ".github/workflows/validate-library-compose.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ods/extensions/library/services/**"
+      - "ods/extensions/library/validate-compose.sh"
+      - ".github/workflows/validate-library-compose.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  library-compose:
+    name: Validate library recipes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: docker compose config for every recipe
+        run: bash ods/extensions/library/validate-compose.sh
