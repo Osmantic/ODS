@@ -54,6 +54,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      # Token Spy's dashboard escaping tests execute the served JavaScript.
+      - if: matrix.service == 'token-spy'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "22"
+
       - name: Install the locked dependencies and test tools
         run: |
           python -m pip install --require-hashes -r requirements.lock

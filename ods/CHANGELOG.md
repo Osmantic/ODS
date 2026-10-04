@@ -54,6 +54,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     take many minutes on a large install.
   - Chats and models without a chosen function-calling mode now use Open
     WebUI's Native tool calling.
+- Token Spy's dashboard now shows agent and model names as text
+  (GHSA-7jvf-39fc-rwr6). The programs that send requests through Token Spy
+  supply those names, and the dashboard inserted them into the page as HTML, so
+  a crafted name could run script in the browser of whoever opened the
+  dashboard, where the Token Spy API key is held for the session. The reset
+  button also no longer places the agent name inside inline JavaScript.
 - The Portal Full Access confirmation now says what it turns off. It disables
   the sandbox and per-command approval, so commands run directly as the owner
   account, while web search and page fetching stay on. It also notes that

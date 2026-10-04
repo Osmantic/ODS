@@ -2121,6 +2121,13 @@ function fmtCost(n) {
   return '$' + n.toFixed(4);
 }
 
+// Agent and model names come from API callers; escape them before any innerHTML.
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => (
+    {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]
+  ));
+}
+
 function recLabel(rec) {
   const labels = {
     healthy: 'Healthy', monitor: 'Monitor', compact_soon: 'Compact Soon',
@@ -2129,9 +2136,8 @@ function recLabel(rec) {
   return labels[rec] || rec;
 }
 
-async function resetSession(agent) {
+async function resetSession(agent, btn) {
   if (!confirm('Reset ' + agent + '? This will kill the active session and force a fresh start.')) return;
-  const btn = document.getElementById('reset-' + agent);
   if (btn) { btn.disabled = true; btn.textContent = 'Resetting...'; }
   try {
     const res = await _authFetch('/api/reset-session?agent=' + encodeURIComponent(agent), { method: 'POST' });
@@ -2156,13 +2162,13 @@ function renderSessionPanel(sessions) {
     const showReset = ['reset_recommended', 'compact_soon', 'monitor'].includes(rec);
     const isLocal = s.is_local_model;
     const cardClass = 'session-card' + (isLocal ? ' local-model' : '');
-    const agentLabel = s.agent + (isLocal ? '<span class="agent-type">\u26A1 Self-Hosted</span>' : '');
+    const agentLabel = esc(s.agent) + (isLocal ? '<span class="agent-type">\u26A1 Self-Hosted</span>' : '');
     const limit = s.session_char_limit || 200000;
     const pct = limit > 0 ? Math.round((s.current_history_chars / limit) * 100) : 0;
     const barColor = pct > 80 ? '#da3633' : pct > 60 ? '#9e6a03' : '#238636';
     const historyWarn = s.current_history_chars > limit;
     return '<div class="' + cardClass + '">' +
-      '<h3>' + agentLabel + ' <span class="status-badge status-' + rec + '">' + recLabel(rec) + '</span></h3>' +
+      '<h3>' + agentLabel + ' <span class="status-badge status-' + esc(rec) + '">' + esc(recLabel(rec)) + '</span></h3>' +
       '<div class="session-stat"><span class="label">Session turns</span><span>' + s.current_session_turns + '</span></div>' +
       '<div class="session-stat"><span class="label">History size</span><span' + (historyWarn ? ' style="color:#da3633;font-weight:600"' : '') + '>' + fmt(s.current_history_chars) + ' / ' + fmt(limit) + ' (' + pct + '%)</span></div>' +
       '<div class="session-stat" style="font-size:0.8em;color:#8b949e;margin-top:-4px"><span class="label"></span><span>~' + fmt(Math.round(s.current_history_chars / 4)) + ' / ' + fmt(Math.round(limit / 4)) + ' tokens</span></div>' +
@@ -2175,7 +2181,8 @@ function renderSessionPanel(sessions) {
         '<div class="session-stat"><span class="label">Cache write %</span><span>' + (s.cache_write_pct_last_5 * 100).toFixed(1) + '%</span></div>' +
         '<div class="session-stat"><span class="label">Session total cost</span><span class="cost">' + fmtCost(s.cost_since_last_reset) + '</span></div>'
       ) +
-      (showReset ? '<button class="reset-btn" id="reset-' + s.agent + '" onclick="resetSession(\\'' + s.agent + '\\')">Reset Session</button>' : '') +
+      // The handler reads the name from data-agent, so no caller text reaches inline JavaScript.
+      (showReset ? '<button class="reset-btn" data-agent="' + esc(s.agent) + '" onclick="resetSession(this.dataset.agent, this)">Reset Session</button>' : '') +
     '</div>';
   }).join('');
 }
@@ -2205,9 +2212,9 @@ function renderSummary(data) {
     '<div class="card"><h3>Cache Efficiency</h3><div class="value cache">' + cacheReadPct + '%</div><div class="sub">' + fmt(totalCacheRead) + ' reads / ' + fmt(totalCacheWrite) + ' writes</div></div>';
   data.forEach(d => {
     if (d.is_local_model) {
-      html += '<div class="card" style="border-color:#3fb95044;background:linear-gradient(135deg,#161b22,#0d1a12)"><h3>' + d.agent.toUpperCase() + ' <span style="color:#3fb950;font-size:10px;background:#3fb95018;border:1px solid #3fb95044;padding:2px 7px;border-radius:10px;font-weight:600;letter-spacing:0.5px">\u26A1 SELF-HOSTED</span></h3><div class="value">' + d.turns + ' turns</div><div class="sub" style="color:#3fb950">$0.00 \u2014 local GPU | ~' + fmt(d.avg_input_tokens) + ' tokens/turn</div></div>';
+      html += '<div class="card" style="border-color:#3fb95044;background:linear-gradient(135deg,#161b22,#0d1a12)"><h3>' + esc(d.agent.toUpperCase()) + ' <span style="color:#3fb950;font-size:10px;background:#3fb95018;border:1px solid #3fb95044;padding:2px 7px;border-radius:10px;font-weight:600;letter-spacing:0.5px">\u26A1 SELF-HOSTED</span></h3><div class="value">' + d.turns + ' turns</div><div class="sub" style="color:#3fb950">$0.00 \u2014 local GPU | ~' + fmt(d.avg_input_tokens) + ' tokens/turn</div></div>';
     } else {
-      html += '<div class="card"><h3>' + d.agent.toUpperCase() + '</h3><div class="value">' + d.turns + ' turns</div><div class="sub">' + fmtCost(d.total_cost) + ' | avg ' + fmt(d.avg_input_tokens) + ' in/turn</div></div>';
+      html += '<div class="card"><h3>' + esc(d.agent.toUpperCase()) + '</h3><div class="value">' + d.turns + ' turns</div><div class="sub">' + fmtCost(d.total_cost) + ' | avg ' + fmt(d.avg_input_tokens) + ' in/turn</div></div>';
     }
   });
   el.innerHTML = html;
@@ -2357,8 +2364,8 @@ function renderTable(usage) {
     const model = (u.model || '').startsWith('claude-') ? (u.model || '').replace('claude-', '').split('-2')[0] : (u.model || '');
     return '<tr>' +
       '<td>' + t + '</td>' +
-      '<td>' + u.agent + '</td>' +
-      '<td>' + model + '</td>' +
+      '<td>' + esc(u.agent) + '</td>' +
+      '<td>' + esc(model) + '</td>' +
       '<td class="tokens">' + fmt(u.input_tokens) + '</td>' +
       '<td class="tokens">' + fmt(u.output_tokens) + '</td>' +
       '<td class="cache">' + fmt(u.cache_read_tokens) + '</td>' +
