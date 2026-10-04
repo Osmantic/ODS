@@ -37,7 +37,7 @@ The installer will:
 2. **Pick the right model** — selects optimal model size for your RAM
 3. **Download llama-server** — native macOS arm64 binary with Metal support
 4. **Download your model** — GGUF file sized for your hardware
-5. **Start Core Docker services** — chat UI, Dashboard, and LiteLLM gateway; search, workflows, voice, and other extras are opt-in
+5. **Start Core Docker services** — Dashboard, LiteLLM gateway, and Portal support; Open WebUI, search, workflows, voice, and other extras are opt-in
 6. **Activate native Pixel** — use the public bundled source, with the gateway and managed helpers on macOS and ingress/sandbox services in Docker
 7. **Install OpenCode if selected** — browser-based AI coding IDE on port 3003
 
@@ -48,7 +48,7 @@ future login starts while keeping the binary, config, and current session.
 
 Fresh interactive Enter and unattended installs select Core. With native Portal,
 Pixel uses its keyless `parallel-free` search provider, so Core does not start
-Token Spy or SearXNG. LiteLLM remains available to the chat UI and Portal.
+Token Spy or SearXNG. LiteLLM remains available to Portal and, when selected, Open WebUI.
 Select Full Stack or pass `--recommended` to add the optional support bundle;
 Perplexica and other selected search consumers also bring in SearXNG. Existing
 installations keep their previous default posture, and the native Pixel guard
@@ -60,13 +60,14 @@ requires the managed update path for an already installed Portal.
 
 ## Open the UI
 
-- **Chat UI:** http://localhost:3000
+- **Portal chat (fresh Core default):** http://localhost:3001/pixel
 - **Dashboard:** http://localhost:3001
+- **Open WebUI (when selected or retained):** http://localhost:3000
 - **OpenCode (IDE, when selected):** http://localhost:3003
 
-The normal loopback-only install opens the Chat UI directly without an account.
-A network-bound or ODS proxy install keeps authentication enabled and prompts
-the first user to create the admin account.
+Fresh Core installs do not start Open WebUI. An existing install retains its
+selection; `--with-webui` adds it explicitly. ODS proxy requires Open WebUI.
+The Dashboard and Portal use the installer-selected authentication and binding.
 
 ---
 
@@ -78,20 +79,20 @@ macOS Host
   ├── Pixel gateway + managed host helpers (native)
   ├── OpenCode web IDE (optional native LaunchAgent)
   └── Docker Desktop
-        ├── Open WebUI (port 3000)
+        ├── Open WebUI (optional, port 3000)
         ├── Dashboard (port 3001)
         ├── LiteLLM API Gateway (port 4000)
-        ├── n8n Workflows (port 5678)
-        ├── Qdrant Vector DB (port 6333)
-        ├── SearXNG Search (port 8888)
-        ├── Perplexica Deep Research (port 3004)
+        ├── n8n Workflows (optional, port 5678)
+        ├── Qdrant Vector DB (optional, port 6333)
+        ├── SearXNG Search (optional, port 8888)
+        ├── Perplexica Deep Research (optional, port 3004)
         ├── Pixel edge, ingress, sandbox and workspace preview
         ├── Hermes Agent + auth proxy (optional alternative)
         ├── OpenClaw Agents (port 7860, deprecated optional)
-        ├── TEI Embeddings (port 8090)
-        ├── Whisper STT (port 9000)
-        ├── Kokoro TTS (port 8880)
-        └── Privacy Shield (port 8085)
+        ├── TEI Embeddings (optional, port 8090)
+        ├── Whisper STT (optional, port 9000)
+        ├── Kokoro TTS (optional, port 8880)
+        └── Privacy Shield (optional, port 8085)
 ```
 
 llama-server runs natively for full Metal GPU utilization. Docker containers reach it via `host.docker.internal:8080`.

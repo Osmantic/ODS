@@ -26,7 +26,7 @@ It should feel that way for everyone.
 
 </div>
 
-ODS installs and wires together everything you need to run AI locally, so you do not have to assemble Ollama, Open WebUI, n8n, ComfyUI, and privacy tools by hand:
+ODS starts with a local model, LiteLLM, a Dashboard, and Portal/Pixel chat on qualified hosts. Add Open WebUI, voice, workflows, search, image generation, and privacy tools when you need them instead of installing them all on day one. Ordinary Linux installs use Open WebUI as the chat fallback when Pixel is not qualified. Together, the core and optional services provide:
 
 - **Local model inference** — run open models on your own hardware
 - **ChatGPT-style web UI** — talk to your models from any browser
@@ -131,7 +131,7 @@ a stable release or audited commit manually.
 
 Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the public ODS source ZIP and delegates installation to Ubuntu/WSL2. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
-After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
+After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). **http://localhost:3000** serves the separate Open WebUI only when it was selected. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
 
 WSL GPU access must be checked separately. NVIDIA needs a supported Windows driver and GPU access inside WSL/Docker. On AMD, Windows setup runs Lemonade through an ODS task bound to the selected WSL installation. Once that ownership is verified, Dashboard **Models** supports compatible GGUF downloads (including Hugging Face), activation, context changes, and unload/resume. An independently configured Lemonade service remains externally managed. Older ODS tasks without the installation binding require an installer rerun; see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#manage-amd-models-from-portal) and [WSL2 GPU guide](ods/docs/WINDOWS-WSL2-GPU-GUIDE.md).
 
@@ -152,9 +152,11 @@ cd $installDir
 
 Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missing, run the same command from a source checkout as `.\ods\installers\windows\ods.ps1 uninstall --force`. It verifies the containers' Compose installation directory before removing resources. A shared `ods` project name does not authorize removing another Windows or WSL installation. Unattached volumes with no verifiable owner are preserved, with an error naming the resource; `--force` does not bypass this check.
 
-> **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
+> **API endpoint:** Ordinary local Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI uses **http://localhost:3000** only when selected or when it is the fallback chat UI.
 
-> **No GPU?** ODS also runs in cloud mode — same full stack, powered by OpenAI/Anthropic/Together APIs instead of local inference:
+> **API-only Linux install:** `--gateway-only --external-llm-url <URL>` uses an external model instead of downloading or starting ODS-managed inference. It requires a reachable upstream and does not provide the normal Portal/Pixel chat setup by itself.
+
+> **No GPU?** ODS can use hosted model APIs in cloud mode. Service selection remains separate from the inference choice:
 > ```bash
 > ./install.sh --cloud
 > ```
@@ -174,14 +176,14 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 |----------|--------|
 | **What is it?** | A local AI server stack for your own hardware, with a one-command Linux/macOS installer and a PowerShell installer for Windows. |
 | **Who is it for?** | People who want private AI at home, in a lab, or on a workstation without hand-wiring a dozen services. |
-| **What do I get?** | Local inference, Open WebUI chat, a control dashboard, voice, agents, workflows, RAG, search, image generation, privacy tools, observability, and developer tools. |
+| **What do I get?** | A hardware-selected local model, LiteLLM, the Dashboard, and Portal/Pixel chat on qualified hosts. Ordinary Linux installs use Open WebUI as the chat fallback when Pixel is not qualified; voice, workflows, RAG, search, image generation, privacy tools, and developer tools are opt-ins. Existing installs retain their selections. |
 | **What does it run on?** | Linux, Windows with WSL2/Docker Desktop, and macOS Apple Silicon. |
 | **Is cloud required?** | No. Local mode is the default; cloud and hybrid API modes are optional. |
 
 | If you know... | ODS adds... |
 |----------------|----------------------|
 | **Ollama / llama.cpp** | The surrounding server stack: chat, dashboard, voice, RAG, workflows, agents, privacy, and service management. |
-| **Open WebUI** | A full installer and control plane around Open WebUI, plus pre-wired local services. |
+| **Open WebUI** | A local model, Dashboard, and Portal/Pixel on qualified hosts, with Open WebUI available as an opt-in or fallback chat UI. |
 | **AnythingLLM** | Broader local AI appliance behavior beyond RAG: inference, chat, voice, workflows, image generation, and ops. |
 | **n8n self-hosted AI starter kits** | Workflow automation as one part of a larger private AI server. |
 
@@ -278,7 +280,7 @@ cd ODS/ods
 ./install.sh
 ```
 
-The installer detects your chip, picks the right model for your unified memory, launches llama-server natively with Metal acceleration, and starts all other services in Docker. Manage with `./ods-macos.sh status`.
+The installer detects your chip, picks the right model for your unified memory, launches llama-server natively with Metal acceleration, and starts the selected Core services in Docker. Additional services are opt-ins. Manage with `./ods-macos.sh status`.
 
 See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 
@@ -288,8 +290,10 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 
 ## What's In The Box
 
+This is the available component catalog, not the fresh-install service list. Fresh Core installs keep optional services off; existing installations retain their selected services. Add supported extras through install choices or the Dashboard Extensions Library.
+
 ### Chat & Inference
-- **Open WebUI** — full-featured chat interface with conversation history, web search, document upload, and [30+ languages](https://docs.openwebui.com)
+- **Open WebUI (optional or fallback)** — full-featured chat interface with conversation history, web search, document upload, and [30+ languages](https://docs.openwebui.com)
 - **llama-server** — high-performance LLM inference with continuous batching, auto-selected for your GPU; Linux Docker host API defaults to `localhost:11434`, native macOS/Windows paths use `localhost:8080`, and container API runs on `8080`
 - **LiteLLM** — API gateway supporting local/cloud/hybrid modes
 - **TEI Embeddings** — text embedding service for RAG and search workflows
