@@ -22,8 +22,8 @@ Environment variables (set in `.env`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `N8N_USER` | `admin@ods.local` | Admin email address (required) |
-| `N8N_PASS` | *(required)* | Admin password — set before first start |
+| `N8N_USER` | `admin@ods.local` | Generated; not used by the bundled n8n version (see below) |
+| `N8N_PASS` | *(required)* | Generated; not used by the bundled n8n version (see below) |
 | `N8N_PORT` | `5678` | External port (maps to internal 5678) |
 | `N8N_AUTH` | `true` | Deprecated: n8n v2.x has built-in user management |
 | `N8N_HOST` | `localhost` | Hostname used in generated URLs |
@@ -96,8 +96,14 @@ docker compose logs n8n
 ```
 
 **Cannot log in:**
-- Verify `N8N_USER` and `N8N_PASS` are set in `.env`
-- Credentials are read on first start; to change them, update `.env` and recreate the container: `docker compose up -d --force-recreate n8n`
+- The bundled n8n version does not create an account from `N8N_USER` and
+  `N8N_PASS`. Its owner account is the one created on the first-run screen
+  at http://localhost:5678; create it as soon as you enable n8n, because
+  until an owner exists anything that can reach n8n can create one.
+- If you have lost the owner password, reset it inside the container:
+  `docker exec -it ods-n8n n8n user-management:reset`. It returns the owner
+  to the first-run state and removes other users; workflows and credentials
+  move to the owner. Then create the owner again right away.
 
 **Webhooks not receiving external traffic:**
 - Put n8n behind an HTTPS reverse proxy and set `N8N_WEBHOOK_URL` to its public URL (e.g. `https://n8n.example.com`)

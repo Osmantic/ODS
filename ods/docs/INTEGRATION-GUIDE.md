@@ -154,7 +154,9 @@ ODS includes n8n for workflow automation. Access at `http://localhost:5678`.
 ### Creating Workflows
 
 1. Open n8n at http://localhost:5678
-2. Log in with the credentials from your `.env` (`N8N_USER` / `N8N_PASS`)
+2. On first visit, create n8n's owner account (do this as soon as n8n is
+   enabled; the bundled version does not use `N8N_USER` / `N8N_PASS`), then
+   sign in with it
 3. Create a new workflow or import from the n8n template library
 4. Use the "HTTP Request" node pointed at `http://llama-server:8080/v1/chat/completions` (Docker-internal URL)
 
