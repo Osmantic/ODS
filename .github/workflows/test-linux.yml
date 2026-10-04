@@ -336,6 +336,7 @@ jobs:
       - name: ODS Doctor Tests
         run: |
           bash tests/test-ods-doctor.sh
+          bash tests/test-ods-doctor-voice-selection.sh
           bash tests/test-doctor-native-lifecycle.sh
 
       - name: Windows Report Command Tests
@@ -502,6 +503,9 @@ jobs:
           bash tests/test-external-services.sh
           bash tests/test-gateway-only-linux.sh
           bash tests/test-portal-no-webui-selection.sh
+          bash tests/test-lean-linux-defaults.sh
+          bash tests/test-installed-feature-defaults.sh
+          bash tests/test-phase08-selected-images.sh
           bash tests/test-linux-devtools-opt-in.sh
           bash tests/test-pixel-node-provision.sh
           bash tests/test-dashboard-data-permissions.sh
