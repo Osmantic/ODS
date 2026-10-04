@@ -501,6 +501,10 @@ else
 
         [[ "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]] || return 0
         command -v systemctl >/dev/null 2>&1 || return 0
+        [[ -n "$port" && "$port" =~ ^[0-9]+$ ]] || {
+            ai_warn "Skipping $service_label firewall rule; port is missing or invalid: '${port:-unset}'"
+            return 0
+        }
         ods_sudo_available || {
             ai_warn "Skipping $service_label firewall rule; privileged firewall access is unavailable."
             return 0
