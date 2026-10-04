@@ -1,0 +1,24 @@
+# Tests under ods/tests that no CI job runs, each with the reason.
+# Format: <path relative to ods/>  <reason>. Fix a test and move it to
+# ci-suite.txt (or a workflow step); delete one that is obsolete.
+# .github/scripts/list-unwired-tests.py --check keeps this list complete.
+
+# Live probes that need a running macOS host and arguments; run by the fleet harness.
+tests/test-macos-native-idle.py               live-probe: needs --url and a running native llama-server
+tests/test-macos-pixel-handover.py            live-probe: needs a running native Pixel install
+tests/test-macos-pixel-lifecycle.py           live-probe: needs a running native Pixel install
+tests/test-macos-bootstrap-resume.sh          macos-only: sources installers/macos/lib/native-llama-service.sh
+
+# Needs live services or a PowerShell host.
+tests/test-dashboard-integration.sh           live: probes a running dashboard-api
+tests/test-windows-llm-endpoint.sh            windows: drives PowerShell scripts
+
+# Rotted while unwired (failed on ubuntu-latest, 2026-10-03); fix, then move to ci-suite.txt.
+tests/test-bootstrap-mode.sh                  rotted: compose validation fixture is out of date
+tests/test-disk-space-preflight.sh            rotted: expected low-disk message changed
+tests/test-restore-safety-ux.sh               rotted: restore cancel exit code changed
+tests/test-voice-repair-command.sh            rotted: expects `repair voice` in ods-cli help
+tests/test_persona_running_containers.py      rotted: fake lacks the llm_port argument added to the context builder
+tests/test-ods-cli-bootstrap-env-refresh.sh   rotted: fixture does not fake the Hermes readiness wait
+tests/test-cli-bootstrap-compose-wait.sh      rotted: fixture does not fake the Hermes readiness wait
+tests/contracts/test-ods-cli-contracts.py     rotted: expects a remote-provider usage line in ods-cli help
