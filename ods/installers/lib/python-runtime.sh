@@ -43,10 +43,9 @@ ods_python_is_env_managed() {
 }
 
 ods_ensure_python_runtime() {
-    local pycmd
     pycmd="$(ods_detect_python_cmd 2>/dev/null || true)"
     if [[ -n "$pycmd" ]]; then
-        printf '%s' "$pycmd"
+        printf '%s\n' "$pycmd"
         return 0
     fi
 
