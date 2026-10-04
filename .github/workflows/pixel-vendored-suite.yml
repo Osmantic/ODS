@@ -1,0 +1,43 @@
+name: Vendored Pixel suites
+
+# ODS maintains the Pixel source under ods/vendor/pixel; run its own static and
+# end-to-end (fake Docker/systemd) suites whenever that source changes.
+on:
+  pull_request:
+    paths:
+      - 'ods/vendor/pixel/**'
+      - '.github/workflows/pixel-vendored-suite.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ods/vendor/pixel/**'
+      - '.github/workflows/pixel-vendored-suite.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-vendored-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pixel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ods/vendor/pixel
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+      - name: Install suite tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq age ripgrep > /dev/null
+      - name: Pixel static suite
+        run: bash tests/static.sh
+      - name: Pixel end-to-end suite (fake Docker and systemd)
+        run: bash tests/e2e.sh
