@@ -20,14 +20,17 @@
 ## Install
 
 ```bash
-git clone https://github.com/Osmantic/ODS.git
-cd ODS/ods
+git clone https://github.com/Osmantic/ODS.git ~/src/ODS
+cd ~/src/ODS/ods
 ./install.sh
 ```
 
-For the public beta, add `--single-branch --branch public-beta` to the clone
-command. The hosted installer and an unqualified clone select `main`, not the
-beta. Back up existing configuration and data before updating. Existing native
+Clone outside your home folder's `ods` path: macOS disks are case-insensitive,
+so a clone at `~/ODS` is the same folder as the default install directory
+`~/ods`, and the installer refuses to install into its own checkout.
+
+The clone tracks `main`, as the hosted installer does. Back up existing
+configuration and data before updating. Existing native
 Pixel installations use the managed native update/migration path; the base
 installer intentionally stops instead of overwriting protected runtime state.
 

@@ -46,18 +46,21 @@ curl -fsSL https://install.osmantic.com/ods.sh | bash
 
 The hosted endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
-[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
-stable release or audited commit manually.
+[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install an
+audited commit manually; no release has qualified for the verified channel yet.
 
 Do not run this command from Windows PowerShell; use the Windows installer below.
 
 ### Manual Clone
 
 ```bash
-git clone https://github.com/Osmantic/ODS.git
-cd ODS
+git clone https://github.com/Osmantic/ODS.git ~/src/ODS
+cd ~/src/ODS
 ./install.sh
 ```
+
+On macOS, keep the clone out of `~/ODS`: the disk is case-insensitive, so that
+is the same folder as the default install directory `~/ods`.
 
 ### Windows
 

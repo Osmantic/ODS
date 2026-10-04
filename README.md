@@ -102,7 +102,7 @@ It keeps its Docker project and data separate from a full ODS installation.
 The hosted Linux/macOS endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
 [Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
-a stable release or audited commit manually.
+an audited commit manually; no release has qualified for the verified channel yet.
 
 Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the public ODS source ZIP and delegates installation to Ubuntu/WSL2. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
