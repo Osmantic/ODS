@@ -17,7 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createToolLoopGuard, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {REQUESTED_CONTROL_NAME_REVISION_INSTRUCTION} from '../plugin/requested-literals.mjs';
-import {PREVIEW_INSPECTION_TOOL, boundInspectionControls, boundInspectionPageErrors, boundStaticPreviewInspection,
+import {PREVIEW_INSPECTION_TOOL, boundInspectionControls, boundInspectionPageErrors, preservesVisibilityInspection,
   boundVisibilityInspection} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, TRANSITION_UNTESTED, createWorkspacePreviewInspectTool, inspectionPlanHash,
   validateIncompleteInspectionReceipt, normalizeWorkspacePreviewInspectionParams} from '../plugin/workspace-preview-inspect.mjs';
@@ -320,7 +320,10 @@ test('an incomplete result yields its receipt\'s load-time names and never inter
   assert.deepEqual(validateIncompleteInspectionReceipt(result.details, request), inner);
   assert.deepEqual(JSON.parse(JSON.stringify(boundInspectionControls(args, result, receipt))),
     {siteId: receipt.siteId, sha256: receipt.sha256, controls: TOWER2.controls['tower2-repaired']});
-  for (const bound of [boundVisibilityInspection, boundStaticPreviewInspection, boundInspectionPageErrors]) {
+  // A proof of this snapshot is not preserved by an incomplete result either.
+  const preserves = (params, value, preview) =>
+    preservesVisibilityInspection({siteId: preview.siteId, sha256: preview.sha256}, params, value, preview) || undefined;
+  for (const bound of [boundVisibilityInspection, preserves, boundInspectionPageErrors]) {
     assert.equal(bound(args, result, receipt), undefined, bound.name);
     assert.equal(bound(args, {...result, isError: undefined}, receipt), undefined, `${bound.name} without isError`);
   }
