@@ -77,6 +77,11 @@ def workspace(tmp_path):
     return root
 
 
+def backup_runs(workspace):
+    root = workspace.parent / guidance.BACKUP_DIRECTORY
+    return sorted(root.iterdir()) if root.exists() else []
+
+
 def test_real_migration_and_noop_rerun_preserve_file_identity_and_modes(workspace):
     assert guidance.migrate_workspace(workspace) == {'AGENTS.md': 'migrated', 'MEMORY.md': 'migrated'}
     identities = {p.name: (p.stat().st_ino, p.stat().st_mtime_ns) for p in workspace.iterdir()}
@@ -85,10 +90,61 @@ def test_real_migration_and_noop_rerun_preserve_file_identity_and_modes(workspac
     assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in workspace.iterdir())
 
 
+def test_owner_workspace_keeps_replaced_bytes_outside_the_workspace(workspace):
+    guidance.migrate_workspace(workspace)
+    guidance.migrate_workspace(workspace)  # A no-op rerun writes no further backup.
+    runs = backup_runs(workspace)
+    assert len(runs) == 1 and runs[0].name.startswith('workspace-')
+    assert {p.name: p.read_bytes() for p in runs[0].iterdir()} == {'AGENTS.md': AGENTS, 'MEMORY.md': MEMORY}
+    assert stat.S_IMODE(runs[0].parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(runs[0].stat().st_mode) == 0o700
+    assert all(stat.S_IMODE(p.stat().st_mode) == 0o600 for p in runs[0].iterdir())
+    assert not list(workspace.glob('*' + guidance.BACKUP_DIRECTORY + '*'))
+
+
+def test_group_writable_workspace_parent_still_gets_private_backups(workspace):
+    workspace.parent.chmod(0o775)  # Common for directories created under umask 002.
+    assert guidance.migrate_workspace(workspace) == {'AGENTS.md': 'migrated', 'MEMORY.md': 'migrated'}
+    run, = backup_runs(workspace)
+    assert stat.S_IMODE(run.parent.stat().st_mode) == 0o700
+    assert (run / 'AGENTS.md').read_bytes() == AGENTS
+
+
+@pytest.mark.parametrize('fault', ['symlink', 'shared'])
+def test_unsafe_backup_directory_prevents_all_mutation(workspace, fault):
+    root = workspace.parent / guidance.BACKUP_DIRECTORY
+    outside = workspace.parent / 'outside-backups'
+    outside.mkdir(mode=0o700)
+    if fault == 'symlink':
+        root.symlink_to(outside, target_is_directory=True)
+    else:
+        root.mkdir(mode=0o700)
+        root.chmod(0o750)
+    with pytest.raises((OSError, ValueError)):
+        guidance.migrate_workspace(workspace)
+    assert (workspace / 'AGENTS.md').read_bytes() == AGENTS
+    assert (workspace / 'MEMORY.md').read_bytes() == MEMORY
+    assert not list(outside.iterdir())
+
+
+def test_failed_backup_prevents_all_mutation(workspace, monkeypatch):
+    original = guidance._write_backup
+    def fail_second(directory, name, body):
+        if name == 'MEMORY.md':
+            raise OSError('backup device full')
+        original(directory, name, body)
+    monkeypatch.setattr(guidance, '_write_backup', fail_second)
+    with pytest.raises(OSError, match='backup device full'):
+        guidance.migrate_workspace(workspace)
+    assert (workspace / 'AGENTS.md').read_bytes() == AGENTS
+    assert (workspace / 'MEMORY.md').read_bytes() == MEMORY
+
+
 def test_missing_profile_is_reported_without_creating_it(workspace):
     (workspace / 'MEMORY.md').unlink()
     assert guidance.migrate_workspace(workspace) == {'AGENTS.md': 'migrated', 'MEMORY.md': 'absent'}
     assert not (workspace / 'MEMORY.md').exists()
+    assert [p.name for p in backup_runs(workspace)[0].iterdir()] == ['AGENTS.md']
 
 
 @pytest.mark.parametrize('fault', ['symlink', 'hardlink', 'oversized', 'writable', 'invalid-utf8', 'fifo'])
@@ -114,6 +170,7 @@ def test_unsafe_second_file_prevents_all_mutation(workspace, fault):
         guidance.migrate_workspace(workspace)
     assert (workspace / 'AGENTS.md').read_bytes() == AGENTS
     assert outside.read_bytes() == MEMORY
+    assert backup_runs(workspace) == []
 
 
 def test_symlink_workspace_and_foreign_owner_are_refused(workspace, monkeypatch):
@@ -199,8 +256,10 @@ _ods_pixel_reconcile_workspace_guidance owner "$HOME" "$2"
     result = subprocess.run(['bash', '-c', script, 'guidance-test', str(ROOT), str(workspace)],
                             text=True, capture_output=True, check=True)
     assert '"AGENTS.md": "migrated"' in result.stdout
+    assert 'ODS kept the replaced workspace guidance in ' + str(workspace.parent / guidance.BACKUP_DIRECTORY) in result.stderr
     assert (workspace / 'openclaw.json').read_bytes() == b'{"owner":"unchanged"}'
     assert guidance.MARKER not in (workspace / 'AGENTS.md').read_bytes()
+    assert (backup_runs(workspace)[0] / 'AGENTS.md').read_bytes() == AGENTS
 
 
 @pytest.mark.parametrize('fault', ['symlink', 'writable', 'invalid-utf8', 'edited-policy'])
@@ -250,6 +309,8 @@ def test_generated_copy_with_group_write_is_tightened_only_below_private_generat
     assert stat.S_IMODE(destination.stat().st_mode) == 0o775
     assert guidance.migrate_workspace(destination, generated=True)['AGENTS.md'] == 'migrated'
     assert stat.S_IMODE(destination.stat().st_mode) == 0o700
+    # A generated workspace is a fresh template copy, not owner data to keep.
+    assert not (generated / guidance.BACKUP_DIRECTORY).exists()
 
 
 def test_generated_permission_repair_refuses_public_parent(workspace):

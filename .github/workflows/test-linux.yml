@@ -308,6 +308,9 @@ jobs:
           python3 tests/test-extension-build-context-materialization.py
           python3 tests/test-install-footprint-contract.py
 
+      - name: Seeded Content Privacy
+        run: python3 tests/test-seeded-content-privacy.py
+
       - name: Validate Manifests Tests
         run: |
           bash tests/test-validate-manifests.sh

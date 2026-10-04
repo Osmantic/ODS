@@ -60,6 +60,31 @@ profile has a placeholder `anthropic/claude-sonnet-4-5` default, which is never
 sent because that lane is owner-pinned. `tests/test-cloud-model-ids.py` tracks
 both IDs and fails once a re-vendor drops them.
 
+## Pending upstream change: retired workspace guidance
+
+`workspace-template/AGENTS.md` still carries one retired section, and
+`MEMORY.md` one matching entry, describing a maintainer's private multi-machine
+workflow. They arrived with ODS #6156 and apply to no user installation.
+Removing them changes this bundle, and Pixel installs releases by version: an
+existing installation refuses different source with the version it already runs
+("Pixel 4.3.28 is already the active release"). The removal therefore ships with
+the next Pixel source release, qualified through the held source upgrade on real
+installations.
+
+Until then:
+
+- `installers/lib/pixel-workspace-guidance.py` replaces the exact retired bytes
+  with neutral model-routing guidance: in the generated workspace at configure
+  time, and in an existing owner workspace before the gateway restarts. Edited
+  copies stay in place and are reported for review. The original files of an
+  owner workspace are kept in a private `.ods-workspace-guidance-backups/`
+  directory beside the workspace, outside what the agent reads.
+- The `pixel-ods` plugin's bootstrap hook substitutes the same section at run
+  time when a workspace still holds the exact old default.
+- `tests/test-seeded-content-privacy.py` fails CI if owner-private or
+  fleet-specific text reaches the template by any other route, or if the
+  retired block changes so that the migration no longer recognizes it.
+
 ## ODS access-release coordination adaptation
 
 This change adds the public installer-only access proof and release-transaction

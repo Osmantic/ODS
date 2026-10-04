@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- Before Pixel's workspace-guidance migration changes `AGENTS.md` or
+  `MEMORY.md` in an existing owner workspace, it now keeps the original files
+  in a private `.ods-workspace-guidance-backups/` directory beside the
+  workspace, outside what the agent reads. If the backup cannot be written,
+  nothing is changed. A new CI check fails when owner-private or fleet-specific
+  text (maintainer names, test machine names, private workflow terms, personal
+  home paths or LAN addresses) would reach the Pixel workspace template or the
+  agent and stack templates.
 - NVIDIA Secure Boot enrollment no longer installs a root systemd unit to
   resume the install after the reboot. That unit ran the user-writable
   `install.sh` as root at every boot. The installer refuses root, so the
