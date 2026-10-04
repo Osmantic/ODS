@@ -1,0 +1,77 @@
+name: Upstream advisory watch
+
+# Weekly: check the upstream versions ODS pins against the GitHub Advisory
+# Database and keep one tracking issue current. Pull requests that change a
+# pin get the same report in the job summary, without failing.
+on:
+  schedule:
+    - cron: '43 6 * * 1'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ods/docker-compose.base.yml'
+      - 'ods/extensions/services/n8n/compose.yaml'
+      - 'ods/extensions/services/litellm/compose.yaml'
+      - 'ods/extensions/services/openclaw/compose.yaml'
+      - 'ods/vendor/pixel/OPENCLAW-COMPATIBILITY.json'
+      - 'ods/installers/macos/lib/constants.sh'
+      - '.github/scripts/check-upstream-advisories.py'
+      - '.github/workflows/upstream-advisories.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Report advisories for pinned versions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/check-upstream-advisories.py
+
+  track:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Check pinned versions
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          python3 .github/scripts/check-upstream-advisories.py --fail-on high > report.md
+          status=$?
+          set -e
+          [[ "$status" -le 1 ]] || exit "$status"
+          echo "affected=$([[ "$status" -eq 1 ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AFFECTED: ${{ steps.check.outputs.affected }}
+        run: |
+          title="Pinned upstream versions have known high or critical advisories"
+          number="$(gh issue list --state open --search "in:title \"$title\"" --json number,title \
+            --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)"
+          if [[ "$AFFECTED" == "true" ]]; then
+            {
+              cat report.md
+              echo
+              echo "Updated by the weekly upstream advisory watch. Upgrading a pin needs the usual validation; close this issue when no pinned version is affected."
+            } > body.md
+            if [[ -n "$number" ]]; then
+              gh issue edit "$number" --body-file body.md
+            else
+              gh issue create --title "$title" --body-file body.md
+            fi
+          elif [[ -n "$number" ]]; then
+            gh issue close "$number" --comment "No high or critical advisory affects a pinned version any more."
+          fi
