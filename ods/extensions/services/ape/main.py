@@ -102,7 +102,16 @@ logger = logging.getLogger("ape")
 API_KEY = _API_KEY or secrets.token_hex(32)
 
 if not _API_KEY:
-    logger.warning(f"APE_API_KEY not set - auto-generated key: {API_KEY[:16]}... (set APE_API_KEY env var to use a fixed key)")
+    # Deliberately no key material. The old message logged API_KEY[:16] — 16 of
+    # 64 hex chars of a live credential, into container logs that get collected
+    # into support bundles. The prefix never helped anyone either: a caller
+    # cannot authenticate with a fraction of the key, so it leaked without
+    # serving the message's purpose.
+    logger.warning(
+        "APE_API_KEY not set - generated an ephemeral key for this process. "
+        "It changes on every restart and cannot be recovered from these logs; "
+        "set APE_API_KEY to pin a stable key."
+    )
 
 if not STRICT_MODE:
     logger.warning("WARNING: APE is running in advisory mode. Tool calls are logged but NOT blocked. Set APE_STRICT_MODE=true to enforce policies.")
