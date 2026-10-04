@@ -6,7 +6,7 @@
 Every author and committer must have a name that is not a template placeholder
 ("User Name") and an email on a real domain: not a reserved example domain
 (RFC 2606, RFC 6761), and not a machine-local name such as `portal@local`,
-`root@DESKTOP-1A6OPC9` or `me@laptop.local`. GitHub noreply addresses are fine.
+`root@DESKTOP-ABC1234` or `me@laptop.local`. GitHub noreply addresses are fine.
 """
 import subprocess
 import sys

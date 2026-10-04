@@ -1,4 +1,4 @@
-"""Self-test for the commit identity check, using identities seen on main."""
+"""Self-test for the commit identity check, with synthetic identities of each kind seen on main."""
 
 import importlib.util
 import os
@@ -18,10 +18,10 @@ class CommitIdentities(unittest.TestCase):
     def test_placeholders_and_machine_local_identities_are_rejected(self):
         for name, email in [
             ('User Name', 'user@example.com'),
-            ('patil2001', 'patil2001@example.com'),
-            ('Portal (Tower2 local repair)', 'portal@local'),
-            ('Gabriel Santana', 'gabrielsantana@MacBook-Air-de-Gabriel.local'),
-            ('root', 'root@DESKTOP-1A6OPC9'),
+            ('someone', 'someone@example.com'),
+            ('Portal agent', 'portal@local'),
+            ('A Person', 'person@MacBook-Air.local'),
+            ('root', 'root@DESKTOP-ABC1234'),
             ('Dev', 'dev@box.lan'),
             ('Dev', 'dev@printer.home.arpa'),
             ('Dev', 'dev@ci.example.org'),
@@ -32,11 +32,11 @@ class CommitIdentities(unittest.TestCase):
 
     def test_real_and_noreply_identities_pass(self):
         for name, email in [
-            ('Mike Bradley', 'michael@lightheartlabs.com'),
-            ('Gabriel Madureira', '50086597+gabsprogrammer@users.noreply.github.com'),
+            ('Jane Doe', 'jane@company.dev'),
+            ('Octo Cat', '12345678+octocat@users.noreply.github.com'),
             ('GitHub', 'noreply@github.com'),
             ('Claude', 'noreply@anthropic.com'),
-            ('Tang Vu', 'tangminhvu2212@gmail.com'),
+            ('Jane Doe', 'jane.doe@gmail.com'),
             ('Someone', 'someone@examples.com'),
         ]:
             with self.subTest(email=email):
