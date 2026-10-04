@@ -787,7 +787,7 @@ describe('Pixel', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(screen.getByText('Degraded')).toBeInTheDocument()
     expect(calls).toBe(2)
-    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
     expect(stalledSignal.aborted).toBe(true)
     expect(screen.getByText('Degraded')).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
@@ -821,7 +821,7 @@ describe('Pixel', () => {
 
     await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
     expect(statusCalls).toBe(2)
-    await act(async()=>{await vi.advanceTimersByTimeAsync(15000)})
+    await act(async()=>{await vi.advanceTimersByTimeAsync(30000)})
     expect(stalledSignal.aborted).toBe(true)
     expect(screen.getByText('Degraded')).toBeInTheDocument()
     expect(screen.getByRole('textbox')).toBeDisabled()

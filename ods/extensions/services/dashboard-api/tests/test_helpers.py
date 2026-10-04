@@ -910,13 +910,13 @@ class TestGetLoadedModel:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failure", ["timeout", "unavailable", "http-error"])
-    async def test_wsl_lemonade_never_reuses_identity_after_failed_observation(self, monkeypatch, failure):
+    async def test_wsl_lemonade_never_reuses_identity_after_failed_observation(self, monkeypatch, caplog, failure):
         from host_agent_client import AgentHTTPError, AgentTimeout, AgentUnavailable
 
         errors = {
-            "timeout": AgentTimeout("fixture timeout"),
-            "unavailable": AgentUnavailable("fixture unavailable"),
-            "http-error": AgentHTTPError(503, "fixture unavailable"),
+            "timeout": AgentTimeout("private origin and token"),
+            "unavailable": AgentUnavailable("private origin and token"),
+            "http-error": AgentHTTPError(503, "private origin and token"),
         }
         monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
         monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
@@ -933,6 +933,10 @@ class TestGetLoadedModel:
         assert await get_loaded_model() is None
         assert agent.await_count == 2
         client.assert_not_awaited()
+        assert "private origin and token" not in caplog.text
+        assert type(errors[failure]).__name__ in caplog.text
+        if failure == "http-error":
+            assert "HTTP 503" in caplog.text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("transport", ["", "direct"])

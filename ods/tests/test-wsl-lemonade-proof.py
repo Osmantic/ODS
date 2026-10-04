@@ -182,6 +182,17 @@ class WindowsLemonadeTelemetry(unittest.TestCase):
             self.assertNotIn("stats", agent._read_external_lemonade_observation(ENV))
             self.assertEqual([call.args[1] for call in request.call_args_list], ["/health", "/models", "/health"])
 
+    def test_observation_failure_logs_only_stage_and_exception_class(self):
+        with patch.object(agent, "_lemonade_container_body",
+                          side_effect=OSError("private origin and token")), \
+                self.assertLogs(agent.logger, level="WARNING") as captured, \
+                self.assertRaises(OSError):
+            agent._read_external_lemonade_observation(ENV)
+        log = "\n".join(captured.output)
+        self.assertIn("health_start", log)
+        self.assertIn("OSError", log)
+        self.assertNotIn("private origin and token", log)
+
     def test_model_context_changes_and_other_loaded_runtimes_reject_stats(self):
         changed = copy.deepcopy(self.health)
         changed["all_models_loaded"][0]["recipe_options"]["ctx_size"] = 32768
