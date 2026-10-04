@@ -3216,7 +3216,7 @@ cmd_purge() {
     if [[ -d "$_data_dir" ]]; then
         log "Some files are owned by root (created by Docker). Removing via container..."
         if command -v docker &>/dev/null; then
-            docker run --rm -v "$_data_dir:/purge-target" alpine \
+            docker run --rm -v "$_data_dir:/purge-target" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 \
                 sh -c 'rm -rf /purge-target/* /purge-target/.[!.]* 2>/dev/null; true' 2>/dev/null \
                 || warn "Docker cleanup failed (non-fatal)"
             rm -rf "$_data_dir" 2>/dev/null || true
