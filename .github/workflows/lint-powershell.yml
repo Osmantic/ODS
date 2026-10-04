@@ -249,56 +249,57 @@ jobs:
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
 
       - name: Windows Docker Pull Contract
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/contracts/test-windows-docker-pull.ps1
 
       - name: WSL Lifecycle JSON Sharing Contract
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/contracts/test-wsl-json-sharing.ps1
 
       - name: WSL Relay Lifetime Contract
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/contracts/test-wsl-relay-lifetime.ps1
 
       - name: Windows AMD Memory Detection
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/test-windows-amd-memory-detection.ps1
 
       - name: Windows Hermes SOUL Refresh
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/test-windows-hermes-soul-refresh.ps1
 
       - name: Windows llama-server Memory Budget
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/test-windows-llama-memory-budget.ps1
 
       - name: Windows OpenCode Runtime
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/test-windows-opencode-runtime.ps1
 
       - name: Windows Restart Model Preflight
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/test-windows-restart-model-preflight.ps1
 
       - name: Windows Whisper Port Conflict
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: pwsh
         run: ./tests/test-windows-whisper-port-conflict.ps1
 
       - name: Windows Whisper Port Conflict (Windows PowerShell)
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
         run: ./tests/test-windows-whisper-port-conflict.ps1
 
       - name: Every PowerShell test runs in a workflow
+        if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           # Tests run from this directory (./tests/...) or the repository root (./ods/tests/...).
