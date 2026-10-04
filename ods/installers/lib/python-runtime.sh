@@ -14,6 +14,9 @@
 #           ods_ensure_python_module()
 # ============================================================================
 
+command -v ai_bad >/dev/null 2>&1 || ai_bad() { echo "[ERROR] $*" >&2; }
+command -v error >/dev/null 2>&1 || error() { echo "[FATAL] $*" >&2; exit 1; }
+
 [[ -f "${SCRIPT_DIR:-$(pwd)}/lib/python-cmd.sh" ]] && . "${SCRIPT_DIR:-$(pwd)}/lib/python-cmd.sh"
 
 ods_python_cmd_path() {
