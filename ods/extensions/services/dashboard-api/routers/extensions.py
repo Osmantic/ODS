@@ -3615,6 +3615,12 @@ def _install_from_library(service_id: str, *, operation_id: str | None = None) -
     """
     dest = USER_EXTENSIONS_DIR / service_id
 
+    if dest.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to reinstall symlinked extension directory: {service_id}",
+        )
+
     # Re-check under lock to prevent double-install race.
     if dest.is_symlink():
         raise HTTPException(
@@ -3784,6 +3790,12 @@ def _install_extension(service_id: str, api_key: str, operation_id: str | None =
     _assert_not_core(service_id)
 
     dest = USER_EXTENSIONS_DIR / service_id
+
+    if dest.is_symlink():
+        raise HTTPException(
+            status_code=409,
+            detail=f"Refusing to reinstall symlinked extension directory: {service_id}",
+        )
 
     # Early check (non-authoritative, rechecked under lock in _install_from_library)
     if dest.is_symlink():
