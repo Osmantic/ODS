@@ -187,9 +187,10 @@ _ods_related_compose_containers() {
         '
 }
 
-if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; then
-    _pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"
-    _pre_ods_findings=()
+_ods_check_legacy_install_candidates() {
+    local _pre_ods_install_dir="${ODS_LEGACY_INSTALL_DIR:-}"
+    local -a _pre_ods_findings=()
+    local _pre_ods_candidate _pre_ods_containers
     if [[ -n "$_pre_ods_install_dir" && -d "$_pre_ods_install_dir" ]] && {
         [[ -f "$_pre_ods_install_dir/.env" ]] ||
         [[ -f "$_pre_ods_install_dir/docker-compose.yml" ]] ||
@@ -214,8 +215,12 @@ if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; 
         printf '%s\n' "${_pre_ods_findings[@]}" | sed 's/^/[related install] /' >&2
         error "Existing related install detected before first ODS install. Stop, uninstall, or migrate the older stack first. To run both intentionally, set ODS_ALLOW_LEGACY_PARALLEL=1 and choose non-conflicting ports/install paths."
     fi
-    unset _pre_ods_install_dir _pre_ods_findings _pre_ods_candidate _pre_ods_containers
+}
+
+if [[ ! -d "$INSTALL_DIR" ]] && ! _ods_truthy "${ODS_ALLOW_LEGACY_PARALLEL:-}"; then
+    _ods_check_legacy_install_candidates
 fi
+unset -f _ods_check_legacy_install_candidates
 
 # Existing installation — update in place (secrets and data are preserved).
 # A --preflight-only run is checking a host whose installation is about to be
