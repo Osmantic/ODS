@@ -17,7 +17,15 @@ while IFS= read -r test; do
         *.sh) command=(bash "$test") ;;
         *.mjs) command=(node --test "$test") ;;
         */test_*.py) command=(python3 -m pytest -q -p no:cacheprovider "$test") ;;
-        *.py) command=(python3 "$test") ;;
+        *.py)
+            # A hyphenated file that defines test functions is a pytest module;
+            # running it with python3 would only define the tests.
+            if grep -qE '^(def test_|class Test)|^    def test_' "$test"; then
+                command=(python3 -m pytest -q -p no:cacheprovider "$test")
+            else
+                command=(python3 "$test")
+            fi
+            ;;
         *) echo "[FAIL] unsupported test type: $test"; failed+=("$test"); continue ;;
     esac
     echo "::group::$test"

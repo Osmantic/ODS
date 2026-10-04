@@ -102,10 +102,23 @@ for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
         service_name=$(basename "$(dirname "$compose_file")")
 
-        # Services with external port mappings
-        if grep -q "ports:" "$compose_file"; then
-            # Check if ports are bound to localhost only
-            if grep -A10 "ports:" "$compose_file" | grep -q "127\.0\.0\.1:"; then
+        # Services with external port mappings. Comments are ignored: a compose
+        # file may explain why it has no `ports:` block.
+        compose_body="$(grep -v '^[[:space:]]*#' "$compose_file")"
+        # The list items of each `ports:` block, not other lines that happen to
+        # mention 127.0.0.1 (such as a healthcheck URL).
+        port_lines="$(awk '
+            /^[[:space:]]*ports:/ { match($0, /^[[:space:]]*/); indent = RLENGTH; inblock = 1; next }
+            inblock {
+                if ($0 ~ /^[[:space:]]*$/) next
+                match($0, /^[[:space:]]*/)
+                if (RLENGTH <= indent) { inblock = 0; next }
+                if ($0 ~ /^[[:space:]]*-/) print
+            }' <<< "$compose_body")"
+        if [[ -n "$port_lines" ]]; then
+            # Localhost-only when every published port binds 127.0.0.1, directly or
+            # as the BIND_ADDRESS default (LAN mode is an explicit opt-in).
+            if ! grep -v -q "127\.0\.0\.1" <<< "$port_lines"; then
                 internal_services=$((internal_services + 1))
                 pass "Service '$service_name' exposed only to localhost"
             else
@@ -114,6 +127,11 @@ for compose_file in "${compose_files[@]}"; do
                 case "$service_name" in
                     dashboard|dashboard-api|open-webui)
                         skip "Service '$service_name' externally exposed (expected for UI/API)"
+                        ;;
+                    ods-proxy)
+                        # The documented LAN-facing proxy: ODS_PROXY_BIND defaults to
+                        # 0.0.0.0 so it is the one service the LAN reaches.
+                        skip "Service '$service_name' externally exposed (the LAN-facing proxy)"
                         ;;
                     *)
                         fail "Service '$service_name' may be externally exposed" "Review port binding configuration"
@@ -149,7 +167,13 @@ fi
 host_network_count=0
 for compose_file in "${compose_files[@]}"; do
     if [[ -f "$compose_file" ]]; then
-        if grep -q "network_mode.*host" "$compose_file"; then
+        if grep -v '^[[:space:]]*#' "$compose_file" | grep -q "network_mode.*host"; then
+            if [[ "$(basename "$(dirname "$compose_file")")" == tailscale ]]; then
+                # Tailscale's daemon must own the host's network namespace for the
+                # device's tailnet address (documented in its compose file).
+                skip "Tailscale uses host networking (required for the tailnet interface)"
+                continue
+            fi
             host_network_count=$((host_network_count + 1))
             fail "Service uses host networking in $(basename "$compose_file")" "Breaks container isolation"
         fi

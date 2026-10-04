@@ -75,8 +75,10 @@ for the repository automation policy and the rules for AI-assisted PRs.
   `ods/tests/ci-suite.txt`. A service's own `tests/` directory runs in its
   service's workflow job; for a service with no other job, add it to
   `.github/workflows/test-service-suites.yml`. A check fails when a test under
-  `ods/tests` or `ods/extensions/services/*/tests` is not run anywhere and not
-  recorded, with a reason, in `ods/tests/ci-not-run.txt`.
+  `ods/tests` or `ods/extensions/services/*/tests` is not executed by CI and not
+  recorded, with a reason, in `ods/tests/ci-not-run.txt`. Only executions count:
+  a Makefile target (no workflow runs `make`), a lint or syntax check, or a
+  mention in another script does not.
 - Report security issues privately through
   [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new),
   not in PRs or issues.
