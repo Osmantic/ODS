@@ -72,7 +72,41 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
-    @pytest.mark.parametrize("service_id", ["perplexica", "searxng"])
+    def test_user_token_spy_shadows_disabled_builtin(self, test_client, monkeypatch, tmp_path):
+        catalog = [{**_make_catalog_ext("token-spy", "Token Spy"),
+                    "catalog_source": "user"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        user_dir = tmp_path / "user" / "token-spy"
+        user_dir.mkdir(parents=True)
+        (user_dir / "compose.yaml").write_text("services: {token-spy: {image: user/spy}}\n")
+        builtin = tmp_path / "builtin" / "token-spy"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml.disabled").write_text(
+            "services: {token-spy: {image: built-in/spy}}\n")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+
+        with patch("helpers.get_cached_services", return_value=[
+                _make_service_status("token-spy")]):
+            response = test_client.get(
+                "/api/extensions/catalog", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        row = next(item for item in response.json()["extensions"]
+                   if item["id"] == "token-spy")
+        assert row["source"] == "user"
+        assert row["status"] == "enabled"
+        assert "library_manageable" not in row
+        assert "app_path" not in row
+
+        with patch("helpers.get_cached_services", return_value=[
+                _make_service_status("token-spy")]):
+            detail = test_client.get(
+                "/api/extensions/token-spy", headers=test_client.auth_headers)
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "enabled"
+        assert "library_manageable" not in detail.json()
+        assert "app_path" not in detail.json()
+
+    @pytest.mark.parametrize("service_id", ["perplexica", "searxng", "token-spy"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):
         catalog = [{**_make_catalog_ext(service_id, service_id), "catalog_source": "builtin"}]
@@ -104,6 +138,14 @@ class TestExtensionsCatalog:
         row = catalog_row([_make_service_status(service_id)])
         assert row["status"] == "enabled"
         assert row["library_selected"] is True
+        if service_id == "token-spy":
+            assert row["app_path"] == "/usage"
+            with patch("helpers.get_cached_services", return_value=[
+                    _make_service_status(service_id)]):
+                detail = test_client.get(
+                    "/api/extensions/token-spy", headers=test_client.auth_headers)
+            assert detail.status_code == 200
+            assert detail.json()["app_path"] == "/usage"
 
         enabled.rename(disabled)
         row = catalog_row([])
