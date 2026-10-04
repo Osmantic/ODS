@@ -29,7 +29,7 @@ ods_podman_ensure_dockerhub_search() {
     # passes no extra argument instead, which the Python side already treats
     # as "no fallback sources".
     if python3 - "$target_conf" "$effective_search_json" \
-        ${source_confs[@]+"${source_confs[@]}"} <<'PY'
+        "${source_confs[@]}" <<'PY'
 import ast
 import json
 import os
