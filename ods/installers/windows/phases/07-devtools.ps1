@@ -40,6 +40,7 @@ if ($dryRun) {
 Write-AI "Setting up OpenCode AI coding assistant..."
 
 . (Join-Path $PSScriptRoot '../lib/opencode-runtime.ps1')
+. (Join-Path $PSScriptRoot '../lib/host-agent-lifecycle.ps1')
 $_ocReady = Install-ODSOpenCode
 if ($_ocReady) { Write-AISuccess "OpenCode v$($script:OPENCODE_VERSION) ready" }
 
@@ -402,15 +403,8 @@ if (Test-Path $_agentScript) {
             }
         }
 
-        # Kill existing agent on reinstall (matches Linux force-restart pattern)
-        if (Test-Path $script:ODS_AGENT_PID_FILE) {
-            $_oldPid = $null
-            try {
-                $_oldPid = [int](Get-Content $script:ODS_AGENT_PID_FILE -Raw).Trim()
-                Stop-Process -Id $_oldPid -Force -ErrorAction SilentlyContinue
-            } catch { }
-            Remove-Item $script:ODS_AGENT_PID_FILE -Force -ErrorAction SilentlyContinue
-        }
+        # Refuse foreign PID, listener, task or Startup resources on reinstall.
+        Stop-ODSHostAgentOwnedResources -InstallDir $installDir -PidFile $script:ODS_AGENT_PID_FILE -Port $script:ODS_AGENT_PORT -TaskName $script:ODS_AGENT_TASK_NAME -StartupFolder ([Environment]::GetFolderPath("Startup"))
 
         # Ensure data directory exists for PID and log files
         $pidDir = Split-Path $script:ODS_AGENT_PID_FILE

@@ -7,7 +7,8 @@ $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
 if ($errors.Count -gt 0) { throw "ods.ps1 does not parse: $($errors[0].Message)" }
-foreach ($name in @('Invoke-Uninstall', 'Remove-ODSDockerProjectByLabel', 'Get-ODSDockerProjectResourceNames', 'Test-ODSArgumentPresent', 'Assert-ODSDockerProjectOwnership', 'Test-ODSUninstallPathOwned', 'Resolve-ODSUninstallLiteral', 'Test-ODSUninstallCommandOwned', 'Test-ODSUninstallTaskOwned', 'Test-ODSUninstallStartupLauncherOwned', 'Stop-ODSUninstallOwnedHelpers')) {
+. (Join-Path $PSScriptRoot '../../installers/windows/lib/host-agent-lifecycle.ps1')
+foreach ($name in @('Invoke-Uninstall', 'Remove-ODSDockerProjectByLabel', 'Get-ODSDockerProjectResourceNames', 'Test-ODSArgumentPresent', 'Assert-ODSDockerProjectOwnership', 'Stop-ODSUninstallOwnedHelpers')) {
     $definition = $ast.Find({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
     if (-not $definition) { throw "ods.ps1 no longer defines $name" }
     . ([scriptblock]::Create($definition.Extent.Text))

@@ -211,6 +211,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Native Windows Host Agent Ownership (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-host-agent-ownership.ps1
+
+      - name: Native Windows Host Agent Ownership (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-host-agent-ownership.ps1
+
       - name: Windows Install Model Proof
         shell: pwsh
         run: ./tests/contracts/test-windows-install-model-proof.ps1
