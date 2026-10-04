@@ -1250,7 +1250,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
 ):
     from routers import remote_provider_status as rps
 
-    calls = []
+    calls: list[tuple[object, ...]] = []
     agent_calls = []
 
     class FakeResponse:

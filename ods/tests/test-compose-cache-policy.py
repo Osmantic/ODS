@@ -327,7 +327,10 @@ def test_source_receipt_is_bound_to_recipe_bytes(installed):
 @pytest.mark.parametrize('document', [
     {'services': {'example': {'read_only': False}}},
     {'networks': {'example-sandbox': {'internal': False}}},
-    {'services': {'another-service': {'image': 'example/app:1', 'networks': ['example-sandbox']}}},
+    # Declaring the sandbox's name in the joining file passes the general
+    # network check, so the sandbox rule itself must refuse the join.
+    {'services': {'another-service': {'image': 'example/app:1', 'networks': ['example-sandbox']}},
+     'networks': {'example-sandbox': {}}},
 ])
 def test_compose_merge_cannot_weaken_or_join_source_sandbox(installed, document):
     source_recipe(installed)
@@ -342,9 +345,26 @@ def test_another_extension_cannot_attach_to_a_source_sandbox(installed):
     other = installed / 'data/user-extensions/other/compose.yaml'
     other.parent.mkdir()
     other.write_text(json.dumps({'services': {'other': {'image': 'example/app:1',
-                                                      'networks': ['example-sandbox']}}}))
+                                                      'networks': ['example-sandbox']}},
+                                 'networks': {'example-sandbox': {}}}))
     with pytest.raises(ValueError, match='sandbox.*joined'):
         POLICY.validate_flags(installed, flags() + ['-f', str(other)])
+
+
+@pytest.mark.parametrize('overlay', [False, True])
+def test_joining_a_network_the_file_does_not_declare_is_refused(installed, overlay):
+    # GHSA-4rpc: an extension file may join only the default network or one it
+    # declares, so it cannot reach another recipe's sandbox by name alone.
+    source_recipe(installed)
+    if overlay:
+        path = fragment(installed).with_name('compose.cpu.yaml')
+    else:
+        path = installed / 'data/user-extensions/other/compose.yaml'
+        path.parent.mkdir()
+    path.write_text(json.dumps({'services': {'other': {'image': 'example/app:1',
+                                                     'networks': ['example-sandbox']}}}))
+    with pytest.raises(ValueError, match="joins network 'example-sandbox' that its file does not declare"):
+        POLICY.validate_flags(installed, flags() + ['-f', str(path)])
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX dynamic resolver integration')
