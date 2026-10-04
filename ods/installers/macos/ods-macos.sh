@@ -133,8 +133,26 @@ get_compose_flags() {
 _get_base_compose_flags() {
     ensure_hermes_dashboard_session_token
 
+    local gateway_only external_selected
+    gateway_only="$(read_env_value "${INSTALL_DIR}/.env" "ODS_GATEWAY_ONLY")"
+    external_selected="$(read_env_value "${INSTALL_DIR}/.env" "EXTERNAL_LLM_URL")"
+    if [[ "$gateway_only" == true && -z "$external_selected" ]]; then
+        ai_err "Saved gateway-only selection has no external model route."
+        return 1
+    fi
+
     local flags_file="${INSTALL_DIR}/.compose-flags"
     if [[ -f "$flags_file" ]]; then
+        if [[ "$gateway_only" == true ]]; then
+            local saved_flags
+            saved_flags="$(cat "$flags_file")"
+            if [[ " $saved_flags " != *" -f docker-compose.cloud.yml "* \
+                || " $saved_flags " != *" -f docker-compose.external-llm.yml "* \
+                || " $saved_flags " == *" -f installers/macos/docker-compose.macos.yml "* ]]; then
+                ai_err "Saved gateway-only Compose flags are incomplete or include native inference."
+                return 1
+            fi
+        fi
         macos_model_store_compose_flags "$(cat "$flags_file")"
         return $?
     fi
@@ -154,13 +172,21 @@ _get_base_compose_flags() {
         # Pass --gpu-count for parity with the Linux paths even though there's
         # currently no docker-compose.multigpu-apple.yml — keeps the contract
         # uniform across all resolver call sites.
-        ENABLE_OPEN_WEBUI="$webui_enabled" "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" \
+        ODS_GATEWAY_ONLY="${gateway_only:-false}" \
+            ODS_EXTERNAL_LLM_SELECTED="$(if [[ -n "$external_selected" ]]; then echo true; else echo false; fi)" \
+            ENABLE_OPEN_WEBUI="$webui_enabled" \
+            "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" \
             --tier "${TIER:-1}" \
             --gpu-backend "${GPU_BACKEND:-apple}" \
             --gpu-count "${GPU_COUNT:-1}" \
             --ods-mode "$ods_mode"
         return
+    fi
+    # An API-only route must never fall back to the native Metal sidecar.
+    if [[ "$gateway_only" == true ]]; then
+        ai_err "The Compose resolver is required for this gateway-only installation."
+        return 1
     fi
     # Last resort: preserve cloud/local overlay selection on older installs.
     local flags="-f docker-compose.base.yml"

@@ -676,13 +676,15 @@ show_install_menu() {
         1)
             signal "Acknowledged."
             log "Selected: Full Stack"
-            ENABLE_VOICE=true
+            [[ "${WHISPER_EXPLICIT:-false}" == true ]] || ENABLE_WHISPER=true
+            [[ "${TTS_EXPLICIT:-false}" == true ]] || ENABLE_TTS=true
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
             ENABLE_RECOMMENDED=true
             # --hermes/--no-hermes on the command line wins over the preset
             # (the Windows Pixel path passes --no-hermes).
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
+            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES_PROXY=true
             [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
             [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=true
@@ -706,11 +708,13 @@ show_install_menu() {
         2)
             signal "Acknowledged."
             log "Selected: Core Only"
-            ENABLE_VOICE=false
+            [[ "${WHISPER_EXPLICIT:-false}" == true ]] || ENABLE_WHISPER=false
+            [[ "${TTS_EXPLICIT:-false}" == true ]] || ENABLE_TTS=false
             ENABLE_WORKFLOWS=false
             ENABLE_RAG=false
             ENABLE_RECOMMENDED=false
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=false
+            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES_PROXY=false
             [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=false
             [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=false
@@ -719,6 +723,8 @@ show_install_menu() {
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
+            # Core does not publish the optional LAN magic-link proxy.
+            ENABLE_ODS_PROXY=false
             ;;
         3)
             signal "Acknowledged."

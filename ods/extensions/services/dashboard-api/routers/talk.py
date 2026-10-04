@@ -23,7 +23,7 @@ from starlette.requests import ClientDisconnect
 
 import hermes_bridge
 import session_signer
-from config import INSTALL_DIR, SERVICES
+from config import INSTALL_DIR, load_enabled_service_config
 from helpers import check_service_health, get_llama_context_size, get_loaded_model
 from performance_oracle import (
     find_catalog_model,
@@ -367,7 +367,7 @@ def _require_session(request: Request) -> tuple[str, int]:
 
 
 async def _service_state(service_id: str) -> dict[str, Any]:
-    cfg = SERVICES.get(service_id)
+    cfg = load_enabled_service_config(service_id)
     if not cfg:
         return {"configured": False, "status": "not_configured"}
     try:
@@ -430,9 +430,8 @@ async def _stream_speech(text: str) -> AsyncIterator[bytes]:
     nearly-instant playback for the operator on ODS Talk.
 
     On a mid-stream Kokoro error we log + end the response cleanly. The
-    browser then hears truncated audio (half a sentence) rather than
-    silence — strictly better UX than the previous buffer-then-503
-    failure mode, which the SPA had to silently swallow.
+    browser may hear truncated audio. The route checks for the first chunk
+    before committing HTTP 200 so a zero-audio failure becomes HTTP 503.
     """
     payload = {
         "model": _tts_model(),
@@ -766,7 +765,9 @@ async def talk_status(request: Request) -> dict[str, Any]:
     )
     talk_block_reason = _hermes_talk_block_reason(model_compatibility)
     text_chat_ready = hermes.get("status") == "healthy" and not talk_block_reason
-    voice_ready = whisper.get("status") == "healthy" and tts.get("status") == "healthy"
+    # Audio messages transcribe through Whisper and then submit to Hermes.
+    # Kokoro is only needed to speak the reply, not to send the message.
+    audio_message_ready = text_chat_ready and whisper.get("status") == "healthy"
     return {
         "ok": True,
         "session": {"expires_at": expires_at},
@@ -779,7 +780,7 @@ async def talk_status(request: Request) -> dict[str, Any]:
         "capabilities": {
             "text_chat": text_chat_ready,
             "tts": tts.get("status") == "healthy",
-            "audio_message": voice_ready,
+            "audio_message": audio_message_ready,
             "live_mic_requires_secure_context": True,
         },
         # User-facing copy (never the catalog's internal fleet note).
@@ -1019,8 +1020,25 @@ async def talk_speak(request: Request, text: str = Form(...)) -> StreamingRespon
         raise HTTPException(status_code=422, detail="Text is required.")
     if len(clean) > MAX_MESSAGE_CHARS:
         raise HTTPException(status_code=413, detail="Text is too long.")
+    stream = _stream_speech(clean)
+    try:
+        while not (first_chunk := await stream.__anext__()):
+            pass
+    except StopAsyncIteration as exc:
+        # StreamingResponse commits HTTP 200 before iterating its body. A
+        # failed first Kokoro request must reach the browser as a failure.
+        raise HTTPException(status_code=503, detail="Speech audio is unavailable right now.") from exc
+
+    async def stream_with_first_chunk() -> AsyncIterator[bytes]:
+        try:
+            yield first_chunk
+            async for chunk in stream:
+                yield chunk
+        finally:
+            await stream.aclose()
+
     return StreamingResponse(
-        _stream_speech(clean),
+        stream_with_first_chunk(),
         media_type="audio/mpeg",
         # X-Accel-Buffering: no tells nginx (and similar reverse proxies)
         # NOT to buffer the audio stream — otherwise our streaming work

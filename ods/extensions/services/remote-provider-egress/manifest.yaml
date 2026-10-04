@@ -16,7 +16,8 @@ service:
   external_link: false
   type: docker
   gpu_backends: [all]
-  category: core
+  compose_file: compose.yaml
+  category: optional
   depends_on: []
   startup_check: true
   description: >

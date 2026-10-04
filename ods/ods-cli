@@ -1031,6 +1031,37 @@ _compose_run_with_summary() {
     local _rc=0
     docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
 
+    # A first Windows/WSL start can reveal a Docker Desktop bind that the
+    # preflight could not classify while the container was still running.
+    # cmd_start supplies these scoped values only after its initial recovery.
+    # The helper must prove a stale selected ODS bind before any recreation.
+    local _wsl_bind_repair_failed=false
+    if (( _rc != 0 )) && $_is_compose_up \
+       && [[ -n "${_ods_wsl_bind_retry_helper:-}" ]] \
+       && grep -Eiq 'error mounting |failed to mount|not a directory|is a directory' "$_compose_log"; then
+        local _bind_check_rc=0
+        "${ODS_PYTHON_CMD:-python3}" "$_ods_wsl_bind_retry_helper" --install-dir "$INSTALL_DIR" \
+            --service "$_ods_wsl_bind_retry_service" --check -- "${_ods_wsl_bind_retry_flags[@]}" || _bind_check_rc=$?
+        if (( _bind_check_rc == 2 )); then
+            warn "Docker reported a proven stale WSL bind; repairing the selected ODS service and retrying once."
+            if "${ODS_PYTHON_CMD:-python3}" "$_ods_wsl_bind_retry_helper" --install-dir "$INSTALL_DIR" \
+                --service "$_ods_wsl_bind_retry_service" -- "${_ods_wsl_bind_retry_flags[@]}"; then
+                : >"$_compose_log"
+                _rc=0
+                docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
+                if (( _rc != 0 )) && grep -Eiq 'error mounting |failed to mount|not a directory|is a directory' "$_compose_log"; then
+                    # One guarded repair and one Compose retry is the limit.
+                    _wsl_bind_repair_failed=true
+                fi
+            else
+                _wsl_bind_repair_failed=true
+            fi
+        elif (( _bind_check_rc != 0 )); then
+            # A paused/foreign/ambiguous mount is a refusal, not a retry hint.
+            _wsl_bind_repair_failed=true
+        fi
+    fi
+
     local _pull_max_attempts="${ODS_COMPOSE_PULL_RETRY_ATTEMPTS:-3}"
     if ! [[ "$_pull_max_attempts" =~ ^[0-9]+$ ]] || (( _pull_max_attempts < 1 )); then
         _pull_max_attempts=3
@@ -1054,7 +1085,7 @@ _compose_run_with_summary() {
         docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
     done
 
-    if (( _rc != 0 )) && $_is_compose_up \
+    if (( _rc != 0 )) && $_is_compose_up && ! $_wsl_bind_repair_failed \
        && grep -Eiq 'port is already allocated|Bind for .* failed: port is already allocated' "$_compose_log"; then
         warn "Docker reported a port allocation race; waiting briefly and retrying once."
         sleep "${ODS_COMPOSE_PORT_RETRY_DELAY:-10}"
@@ -1074,7 +1105,7 @@ _compose_run_with_summary() {
         _name_conflict_retries=1
     fi
     local _name_conflict_attempt=0
-    while (( _rc != 0 )) && $_is_compose_up; do
+    while (( _rc != 0 )) && $_is_compose_up && ! $_wsl_bind_repair_failed; do
         if grep -Eiq 'container name "/?ods-[^"]+" is already in use by container "[0-9a-fA-F]+"' "$_compose_log"; then
             if (( _name_conflict_attempt >= _name_conflict_retries )); then
                 break
@@ -1978,12 +2009,15 @@ cmd_start() {
     # WSL-only: recover stale Docker Desktop bind mounts before Compose starts.
     # The helper itself no-ops on non-WSL and non-Docker-Desktop hosts; the
     # uname gate here keeps Python from being a hard requirement on plain Linux.
+    local _ods_wsl_bind_retry_helper=""
+    local _ods_wsl_bind_retry_service="$resolved_service"
+    local -a _ods_wsl_bind_retry_flags=("${flags[@]}")
     if [[ "$(uname -r 2>/dev/null)" == *[Mm]icrosoft* ]]; then
-        local _wsl_bind_recovery="$INSTALL_DIR/scripts/wsl-bind-recovery.py"
-        if [[ ! -f "$_wsl_bind_recovery" ]]; then
-            error "WSL bind-mount recovery helper is missing: $_wsl_bind_recovery. Reinstall or update ODS before starting services."
+        _ods_wsl_bind_retry_helper="$INSTALL_DIR/scripts/wsl-bind-recovery.py"
+        if [[ ! -f "$_ods_wsl_bind_retry_helper" ]]; then
+            error "WSL bind-mount recovery helper is missing: $_ods_wsl_bind_retry_helper. Reinstall or update ODS before starting services."
         fi
-        if ! "${ODS_PYTHON_CMD:-python3}" "$_wsl_bind_recovery" --install-dir "$INSTALL_DIR" --service "$resolved_service" -- "${flags[@]}"; then
+        if ! "${ODS_PYTHON_CMD:-python3}" "$_ods_wsl_bind_retry_helper" --install-dir "$INSTALL_DIR" --service "$resolved_service" -- "${flags[@]}"; then
             error "WSL bind-mount recovery failed; service start was cancelled."
         fi
     fi

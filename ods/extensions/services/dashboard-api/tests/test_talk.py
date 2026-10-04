@@ -1,5 +1,7 @@
 """Tests for the ODS Talk mobile portal API."""
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -25,6 +27,53 @@ def talk_client(test_client, signed_talk_cookie, monkeypatch):
     monkeypatch.setattr("routers.talk.get_llama_context_size", no_live_context)
     test_client.cookies.set("ods-session", signed_talk_cookie)
     return test_client
+
+
+def test_talk_tts_status_follows_library_marker_without_api_restart(
+    talk_client, monkeypatch, tmp_path,
+):
+    import config
+
+    tts_dir = tmp_path / "tts"
+    tts_dir.mkdir()
+    (tts_dir / "manifest.yaml").write_text(
+        "schema_version: ods.services.v1\n"
+        "service:\n"
+        "  id: tts\n"
+        "  name: Test Kokoro\n"
+        "  type: docker\n"
+        "  gpu_backends: [all]\n"
+        "  default_host: tts\n"
+        "  port: 8880\n"
+        "  health: /health\n"
+        "  compose_file: compose.yaml\n",
+        encoding="utf-8",
+    )
+    selected = tts_dir / "compose.yaml"
+    disabled = tts_dir / "compose.yaml.disabled"
+    disabled.write_text("services: {tts: {image: test/kokoro}}\n", encoding="utf-8")
+    monkeypatch.setattr(config, "EXTENSIONS_DIR", tmp_path)
+
+    async def healthy_tts(service_id, cfg):
+        assert service_id == "tts"
+        assert cfg["port"] == 8880
+        return SimpleNamespace(status="healthy")
+
+    monkeypatch.setattr("routers.talk.check_service_health", healthy_tts)
+
+    before = talk_client.get("/api/talk/status").json()
+    assert before["services"]["tts"] == {"configured": False, "status": "not_configured"}
+    assert before["capabilities"]["tts"] is False
+
+    disabled.rename(selected)
+    enabled = talk_client.get("/api/talk/status").json()
+    assert enabled["services"]["tts"] == {"configured": True, "status": "healthy"}
+    assert enabled["capabilities"]["tts"] is True
+
+    selected.rename(disabled)
+    after = talk_client.get("/api/talk/status").json()
+    assert after["services"]["tts"] == before["services"]["tts"]
+    assert after["capabilities"]["tts"] is False
 
 
 TALK_NOT_SUPPORTED_COPY = (
@@ -182,6 +231,43 @@ def test_talk_status_requires_session(talk_client, monkeypatch):
     assert data["capabilities"]["tts"] is True
     assert data["capabilities"]["audio_message"] is True
     assert data["capabilities"]["live_mic_requires_secure_context"] is True
+
+
+@pytest.mark.parametrize(
+    ("states", "expected_audio", "expected_tts"),
+    [
+        ({"hermes": "healthy", "whisper": "healthy", "tts": "down"}, True, False),
+        ({"hermes": "down", "whisper": "healthy", "tts": "healthy"}, False, True),
+        ({"hermes": "healthy", "whisper": "down", "tts": "healthy"}, False, True),
+    ],
+)
+def test_talk_audio_capability_matches_hermes_and_whisper(
+    talk_client, monkeypatch, states, expected_audio, expected_tts,
+):
+    async def service_state(service_id):
+        return {"configured": True, "status": states[service_id], "id": service_id}
+
+    monkeypatch.setattr("routers.talk._service_state", service_state)
+    capabilities = talk_client.get("/api/talk/status").json()["capabilities"]
+
+    assert capabilities["audio_message"] is expected_audio
+    assert capabilities["tts"] is expected_tts
+
+
+def test_talk_audio_capability_requires_compatible_model(talk_client, monkeypatch):
+    async def service_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def incompatible_model():
+        return {"hermesTalk": {"status": "unsupported_until_revalidated"}}
+
+    monkeypatch.setattr("routers.talk._service_state", service_state)
+    monkeypatch.setattr("routers.talk._active_model_app_compatibility", incompatible_model)
+    capabilities = talk_client.get("/api/talk/status").json()["capabilities"]
+
+    assert capabilities["text_chat"] is False
+    assert capabilities["audio_message"] is False
+    assert capabilities["tts"] is True
 
 
 def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_client, monkeypatch):
@@ -390,10 +476,7 @@ def test_talk_speak_streams_audio(talk_client, monkeypatch):
 
 
 def test_talk_speak_handles_empty_stream(talk_client, monkeypatch):
-    """If Kokoro errors before any audio is produced, the streaming
-    response should close cleanly with empty body — the SPA's `if (!resp.ok
-    || !resp.body)` short-circuit then suppresses playback without
-    interrupting the text chat."""
+    """A failed first Kokoro request must not look like successful audio."""
     async def fake_stream(text):
         # Kokoro upstream failure: nothing to yield.
         if False:
@@ -402,8 +485,8 @@ def test_talk_speak_handles_empty_stream(talk_client, monkeypatch):
     monkeypatch.setattr("routers.talk._stream_speech", fake_stream)
 
     resp = talk_client.post("/api/talk/speak", data={"text": "silent"})
-    assert resp.status_code == 200
-    assert resp.content == b""
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Speech audio is unavailable right now."
 
 
 # ----------------------------------------------------------------------

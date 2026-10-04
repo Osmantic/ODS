@@ -1,4 +1,4 @@
-"""Dedicated WebUI add-back route stays authenticated and host-owned."""
+"""Dedicated WebUI selection route stays authenticated and host-owned."""
 
 from unittest.mock import patch
 
@@ -18,16 +18,26 @@ def test_selection_reports_only_public_booleans(test_client):
     }) as agent:
         response = test_client.get("/api/webui/selection", headers=test_client.auth_headers)
     assert response.status_code == 200
-    assert response.json() == {"enabled": False, "supported": True}
+    assert response.json() == {"enabled": False, "supported": True, "disable_supported": False}
     assert response.headers["cache-control"] == "no-store"
     agent.assert_called_once_with("GET", "/v1/webui/selection", timeout=5)
 
 
-def test_add_back_accepts_only_explicit_enable_and_proxies_to_host(test_client):
+def test_selection_exposes_only_host_verified_disable_availability(test_client):
+    with patch("routers.extensions.request_agent_json", return_value={
+        "enabled": True, "supported": True, "disable_supported": True,
+        "private": "never expose",
+    }):
+        response = test_client.get("/api/webui/selection", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json() == {"enabled": True, "supported": True, "disable_supported": True}
+
+
+def test_add_back_accepts_explicit_enable_and_proxies_to_host(test_client):
     with patch("routers.extensions.request_agent_json", return_value={
         "enabled": True, "action": "enabled", "private": "never expose",
     }) as agent:
-        invalid = test_client.post("/api/webui/selection", json={"enabled": False}, headers=test_client.auth_headers)
+        invalid = test_client.post("/api/webui/selection", json={"enabled": "true"}, headers=test_client.auth_headers)
         assert invalid.status_code == 400
         agent.assert_not_called()
         response = test_client.post("/api/webui/selection", json={"enabled": True}, headers=test_client.auth_headers)
@@ -35,6 +45,23 @@ def test_add_back_accepts_only_explicit_enable_and_proxies_to_host(test_client):
     assert response.json() == {"enabled": True, "action": "enabled"}
     assert response.headers["cache-control"] == "no-store"
     agent.assert_called_once_with("POST", "/v1/webui/selection", payload={"enabled": True}, timeout=900)
+
+
+def test_disable_proxies_explicit_boolean_and_keeps_private_agent_data_out(test_client):
+    with patch("routers.extensions.request_agent_json", return_value={
+        "enabled": False, "action": "disabled", "private": "never expose",
+    }) as agent:
+        response = test_client.post("/api/webui/selection", json={"enabled": False}, headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json() == {"enabled": False, "action": "disabled"}
+    assert response.headers["cache-control"] == "no-store"
+    agent.assert_called_once_with("POST", "/v1/webui/selection", payload={"enabled": False}, timeout=900)
+
+
+def test_disable_rejects_an_unverified_agent_result(test_client):
+    with patch("routers.extensions.request_agent_json", return_value={"enabled": True, "action": "disabled"}):
+        response = test_client.post("/api/webui/selection", json={"enabled": False}, headers=test_client.auth_headers)
+    assert response.status_code == 502
 
 
 def test_add_back_reconciliation_failure_is_not_reported_as_success(test_client):

@@ -138,7 +138,11 @@ if (-not (Test-Path -LiteralPath $_extensionsLock -PathType Leaf)) {
 }
 & icacls $_extensionsLock /grant "*S-1-1-0:M" /C /Q | Out-Null
 
-# ── Copy source tree (skip if running in-place) ───────────────────────────────
+# Copy source tree (skip if running in-place).
+$sourceRoot = [IO.Path]::GetFullPath($sourceRoot)
+$installDir = [IO.Path]::GetFullPath($installDir)
+if ($sourceRoot.Length -gt [IO.Path]::GetPathRoot($sourceRoot).Length) { $sourceRoot = $sourceRoot.TrimEnd('\', '/') }
+if ($installDir.Length -gt [IO.Path]::GetPathRoot($installDir).Length) { $installDir = $installDir.TrimEnd('\', '/') }
 if ($sourceRoot -ne $installDir) {
     Write-AI "Copying source files to $installDir..."
 
@@ -173,12 +177,22 @@ if ($sourceRoot -ne $installDir) {
     $robocopyArgs += @($devOnlyFiles | ForEach-Object {
         Join-Path $sourceRoot $_
     })
+    # Keep selection markers out of broad copy: their presence records the
+    # owner's choice, including when migrating a legacy base-Compose route.
+    foreach ($_remoteId in @('remote-provider-egress', 'remote-provider-ssh-tunnel')) {
+        foreach ($_markerName in @('compose.yaml', 'compose.yaml.disabled')) {
+            $robocopyArgs += Join-Path $sourceRoot "extensions\services\$_remoteId\$_markerName"
+        }
+    }
     & robocopy @robocopyArgs | Out-Null
     if ($LASTEXITCODE -gt 7) {
         Write-AIError "File copy failed (robocopy exit code: $LASTEXITCODE)."
         Write-AI "  Try re-running with --Force or check that $installDir is writable."
         throw "ODS_INSTALL_ABORTED"
     }
+
+    . (Join-Path $sourceRoot 'installers\windows\lib\remote-provider-source-copy.ps1')
+    Sync-ODSWindowsRemoteProviderRecipes -InstallDir $installDir -SourceRoot $sourceRoot
 
     # Robocopy exclusions leave files copied by older installers in place.
     # Move managed-upgrade leftovers to a recoverable backup instead of
@@ -194,6 +208,19 @@ if ($sourceRoot -ne $installDir) {
     Write-AISuccess "Source files installed to $installDir"
 } else {
     Write-AI "Running in-place (source == install directory) -- skipping file copy"
+    try {
+        $inPlaceRemotePlan = Get-ODSWindowsRemoteProviderSelections -InstallDir $installDir
+        foreach ($_remoteId in $inPlaceRemotePlan.Keys) {
+            if ($inPlaceRemotePlan[$_remoteId].Enabled -and -not (Test-Path -LiteralPath (
+                Join-Path $installDir "extensions\services\$_remoteId\compose.yaml") -PathType Leaf)) {
+                throw "Selected remote-provider recipe is missing: $_remoteId"
+            }
+        }
+    } catch {
+        throw ("Cannot reconcile remote-provider choices during an in-place source update. " +
+            "Restore the prior selection from a trusted backup, or use an independent source checkout " +
+            "and a fresh install directory. No service choice was changed. Details: " + $_.Exception.Message)
+    }
 }
 
 # Copy extensions library to data dir for dashboard portal installs.
@@ -324,9 +351,9 @@ if ($amdLemonadeRuntime -and $amdLemonadeRuntime.container_image) {
     $_lemonadeServerImage = $amdLemonadeRuntime.container_image
 }
 $_enableWebSearch = Test-ODSWindowsSearxngNeeded `
+    -EnableSearxng $enableSearxng `
     -EnableRecommended $enableRecommended `
     -EnableDeepResearch $enableDeepResearch `
-    -EnableHermes $enableHermes `
     -EnableOpenClaw $enableOpenClaw
 $envResult = New-ODSEnv `
     -InstallDir     $installDir `
@@ -345,6 +372,7 @@ $envResult = New-ODSEnv `
     -LemonadeServerImage $_lemonadeServerImage `
     -SystemRamGB    $systemRamGB `
     -WhisperCudaEnabled $whisperCudaSupported `
+    -EnableRecommended $enableRecommended `
     -EnableLangfuse $enableLangfuse `
     -SwitchboardMode $env:ODS_MODEL_SWITCHBOARD `
     -EnableLan      $lanFlag `

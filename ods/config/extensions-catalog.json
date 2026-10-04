@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T11:32:07Z",
+  "generated_at": "2026-10-03T19:15:13Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1247,7 +1247,7 @@
     {
       "id": "comfyui",
       "name": "ComfyUI (Image Generation)",
-      "description": "Generate images with FLUX.1 via ComfyUI",
+      "description": "Build image workflows in ComfyUI; add a model before first generation",
       "category": "optional",
       "gpu_backends": [
         "amd",
@@ -1264,7 +1264,7 @@
         {
           "id": "images",
           "name": "Image Generation",
-          "description": "Generate images with FLUX.1 via ComfyUI",
+          "description": "Build image workflows in ComfyUI; add a model before first generation",
           "icon": "Image",
           "category": "creative",
           "requirements": {
@@ -1276,7 +1276,7 @@
           "enabled_services_all": [
             "comfyui"
           ],
-          "setup_time": "Ready",
+          "setup_time": "Model setup may be needed",
           "priority": 5,
           "launch": {
             "type": "service",
@@ -1446,6 +1446,7 @@
           }
         }
       ],
+      "ui_path": "/_utils/",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -1494,6 +1495,7 @@
           }
         }
       ],
+      "ui_path": "/playground",
       "startup_check": true,
       "startup_timeout": 120,
       "configuration_scope": "declared-environment-keys"
@@ -1701,6 +1703,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -1862,6 +1865,7 @@
           }
         }
       ],
+      "ui_path": "/ui",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -2092,6 +2096,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/info",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -3598,9 +3603,7 @@
         "all"
       ],
       "compose_file": "compose.yaml",
-      "depends_on": [
-        "searxng"
-      ],
+      "depends_on": [],
       "port": 9119,
       "external_port_default": 0,
       "health_endpoint": "/api/status",
@@ -3618,7 +3621,7 @@
         {
           "key": "SEARXNG_URL",
           "default": "http://searxng:8080",
-          "description": "Hermes web-search backend. Defaults to ODS's bundled SearXNG service."
+          "description": "Optional self-hosted search backend. Add SearXNG separately in Library; Hermes may use an upstream online keyless fallback when it is absent."
         }
       ],
       "tags": [],
@@ -3626,7 +3629,7 @@
         {
           "id": "hermes-agent",
           "name": "Hermes Agent",
-          "description": "Generalist self-improving agent — chat, tools, persistent memory, scheduled tasks",
+          "description": "Generalist agent with chat, tools, memory, and scheduled tasks. Add SearXNG separately for a self-hosted search backend.",
           "icon": "Bot",
           "category": "productivity",
           "requirements": {
@@ -3750,6 +3753,7 @@
           ]
         }
       ],
+      "ui_path": "/auth/ods",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -4528,6 +4532,7 @@
           }
         }
       ],
+      "ui_path": "/editor",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -4872,6 +4877,7 @@
           }
         }
       ],
+      "ui_path": "/admin/",
       "startup_check": true,
       "startup_timeout": 300,
       "configuration_scope": "declared-environment-keys"
@@ -5491,6 +5497,7 @@
           }
         }
       ],
+      "ui_path": "/webui",
       "llm": {
         "consumes": true,
         "route": "gateway",
@@ -5574,6 +5581,7 @@
           }
         }
       ],
+      "ui_path": "/index.php/admin",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -5769,6 +5777,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/ui/",
       "llm": {
         "consumes": true,
         "route": "gateway",
@@ -6813,6 +6822,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -7368,7 +7378,7 @@
     {
       "id": "ods-proxy",
       "name": "ODS (Web)",
-      "description": "Caddy reverse proxy fronting ODS's web surface on port 80 with host-based routing. Without this extension, the dashboard / chat / API services bind to 127.0.0.1 by default, so `http://<device>.local` doesn't resolve to anything. With it, each surface gets its own subdomain on the mDNS hostname:\n    <device>.local           → 302 redirect to chat\n    chat.<device>.local      → Open WebUI (root-mounted)\n    dashboard.<device>.local → ODS Dashboard (operator UI)\n    auth.<device>.local      → dashboard-api (magic-link redemption)\n    api.<device>.local       → dashboard-api (admin /api/*)\n    hermes.<device>.local    → hermes-proxy (when enabled)\n    talk.<device>.local      → dashboard /talk (mobile owner portal)\nPer-subdomain routing means every backend stays root-mounted (no subpath gymnastics) and the ods-session cookie can be Domain-scoped to <device>.local so SSO works across all of them.\n",
+      "description": "Optional LAN gateway that gives ODS Dashboard, chat, API, and Talk separate .local addresses. See README.md for routing and cookie details.\n",
       "category": "optional",
       "gpu_backends": [
         "all"
@@ -8743,6 +8753,7 @@
           }
         }
       ],
+      "ui_path": "/_/",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -8852,6 +8863,39 @@
       ],
       "startup_check": true,
       "startup_timeout": 180,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "privacy-shield",
+      "name": "Privacy Shield (PII Protection)",
+      "description": "Optional PII redaction proxy for OpenAI-compatible clients. Apps must point at its endpoint; adding it does not automatically reroute Portal. It forwards to the selected LLM route.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8085,
+      "external_port_default": 8085,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "ui_path": "/docs",
+      "llm": {
+        "consumes": true,
+        "route": "direct",
+        "switchboard_exempt": true,
+        "switchboard_exempt_reason": "Inline PII-scrubbing proxy that sits in front of the LLM; it terminates the OpenAI request, scrubs, and forwards. It is a gateway-peer, not a stable-alias client, so it addresses the backend directly rather than ods/current.",
+        "pinning": "none",
+        "min_context": 0,
+        "probe": {
+          "kind": "completion",
+          "path": "/v1/chat/completions",
+          "auth": "env:SHIELD_API_KEY"
+        }
+      },
+      "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
     {
@@ -8979,6 +9023,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -9109,6 +9154,7 @@
           }
         }
       ],
+      "ui_path": "/.web/",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -9283,11 +9329,11 @@
       "id": "remote-provider-egress",
       "name": "Remote Provider Egress",
       "description": "Internal-only OpenAI-compatible egress boundary for optional remote LLM providers. It reads generated remote routing state and a private provider secret file, enforces the remote-provider egress policy, and exposes no host port.\n",
-      "category": "core",
+      "category": "optional",
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [],
       "port": 8091,
       "external_port_default": 0,
@@ -9321,6 +9367,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9329,12 +9376,14 @@
       "id": "remote-provider-ssh-tunnel",
       "name": "Remote Provider SSH Tunnel",
       "description": "Internal-only SSH transport supervisor scaffold for optional remote LLM providers. It reads generated remote routing state and private SSH custody files, reports a redacted fail-closed plan, and exposes no host port.\n",
-      "category": "core",
+      "category": "optional",
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
-      "depends_on": [],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "remote-provider-egress"
+      ],
       "port": 18090,
       "external_port_default": 0,
       "health_endpoint": "/health",
@@ -9377,6 +9426,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9613,6 +9663,7 @@
           }
         }
       ],
+      "ui_path": "/web/admin",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -10565,6 +10616,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/dashboard",
       "llm": {
         "consumes": true,
         "route": "direct",
@@ -10708,6 +10760,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/docs",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -11475,7 +11528,7 @@
     {
       "id": "whisper",
       "name": "Whisper (STT)",
-      "description": "Talk to your AI with your voice",
+      "description": "Speech-to-text service. ODS Talk also needs Hermes and Kokoro.",
       "category": "optional",
       "gpu_backends": [
         "all"
@@ -11490,28 +11543,28 @@
       "features": [
         {
           "id": "voice",
-          "name": "Voice Assistant",
-          "description": "Talk to your AI with your voice",
+          "name": "ODS Talk",
+          "description": "Hermes handles the conversation, Whisper accepts audio messages, and Kokoro speaks replies",
           "icon": "Mic",
           "category": "voice",
           "requirements": {
             "services": [
               "whisper",
               "tts",
-              "open-webui"
+              "hermes"
             ],
             "vram_gb": 0
           },
           "enabled_services_all": [
             "whisper",
             "tts",
-            "open-webui"
+            "hermes"
           ],
           "setup_time": "~5 minutes",
           "priority": 2,
           "launch": {
-            "type": "service",
-            "service": "open-webui"
+            "type": "internal",
+            "path": "/talk"
           },
           "gpu_backends": [
             "all"

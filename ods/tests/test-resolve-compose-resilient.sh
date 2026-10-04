@@ -51,10 +51,11 @@ marker_flags=$(ODS_EXTERNAL_LLM_SELECTED=true EXTERNAL_LLM_URL="" \
         --script-dir "$ROOT_DIR" --tier 1 --gpu-backend cpu 2>/dev/null)
 if contains_path "$marker_flags" "docker-compose.external-llm.yml" \
     && contains_path "$marker_flags" "docker-compose.gateway-only.yml" \
-    && ! contains_path "$marker_flags" "perplexica/compose.local.yaml"; then
-    pass "Persisted external-route marker excludes managed Perplexica inference"
+    && ! contains_path "$marker_flags" "perplexica/compose.local.yaml" \
+    && ! contains_path "$marker_flags" "privacy-shield/compose.local.yaml"; then
+    pass "Persisted external-route marker excludes managed extension inference"
 else
-    fail "Persisted external-route marker resolved a local Perplexica dependency"
+    fail "Persisted external-route marker resolved a local extension dependency"
 fi
 
 # 2. --skip-broken flag is accepted
@@ -699,6 +700,13 @@ else
     fail "Managed-local Hermes lost its llama-server health overlay"
 fi
 
+if printf '%s\n' "$real_managed_flags" | grep -Fq \
+    "extensions/services/privacy-shield/compose.local.yaml"; then
+    pass "Managed-local Privacy Shield keeps its llama-server health overlay"
+else
+    fail "Managed-local Privacy Shield lost its llama-server health overlay"
+fi
+
 if printf '%s\n' "$real_external_flags" | grep -Fq \
     "extensions/services/hermes/compose.local.yaml"; then
     fail "External-LLM Hermes retained a managed llama-server dependency"
@@ -764,8 +772,14 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
             in_dashboard { print }
         ' "$compose_config_file" | grep -Fq 'ODS_MODEL_SWITCHBOARD: observe'; then
             fail "Rendered Dashboard API lacks the effective external switchboard mode"
+        elif ! awk '
+            /^  privacy-shield:/ { in_shield = 1; next }
+            in_shield && /^  [^ ]/ { exit }
+            in_shield { print }
+        ' "$compose_config_file" | grep -Fq 'TARGET_API_URL: http://host.docker.internal:11434/v1'; then
+            fail "Rendered Privacy Shield does not forward to the selected external model"
         else
-            pass "Real external-LLM Compose stack routes ODS Talk and Dashboard model discovery externally"
+            pass "Real external-LLM Compose stack routes ODS Talk, Dashboard, and Privacy Shield externally"
         fi
     else
         fail "Real external-LLM Compose stack failed docker compose config"

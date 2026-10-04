@@ -628,11 +628,56 @@ function Wait-ODSWslCommandProcess($Process,[DateTime]$Deadline,[switch]$Mutatio
     $cancelled
 }
 
-function Complete-ODSWslCommand($Identity,[string]$Token,[string]$Output,[int]$ExitCode) {
+function Get-ODSWslMutationKind($Identity,[string[]]$Arguments,[switch]$AsRoot) {
+    if ($AsRoot -and $Arguments.Count -eq 3 -and $Arguments[0] -ceq '/usr/bin/systemctl') {
+        return "native:$($Arguments[1]):$($Arguments[2])"
+    }
+    if ($Arguments.Count -eq 4 -and $Arguments[0] -ceq 'python3' -and
+        $Arguments[1] -ceq "$($Identity.installRoot)/installers/lib/wsl_stack.py" -and
+        $Arguments[2] -cin @('compose-start','compose-stop') -and
+        $Arguments[3] -ceq $Identity.installRoot) { return "stack:$($Arguments[2])" }
+    if ($Arguments.Count -eq 3 -and $Arguments[0] -ceq '/usr/bin/python3' -and
+        $Arguments[1] -ceq "$($Identity.installRoot)/lib/wsl-agent-address.py") { return 'agent-address' }
+    'other'
+}
+
+function New-ODSWslExitObservation($Identity,[string]$Token,[string]$Kind,
+    [string]$StartedUtc,[int]$ClientPid,[string]$ClientStartTicks,
+    [int]$ExitCode,[string]$Output,[string]$ErrorOutput) {
     $suffix="`nODS_WSL_COMPLETED_${Token}:${ExitCode}`n"
-    if (-not $Output.EndsWith($suffix,[StringComparison]::Ordinal)) { throw 'WSL stack command exited without its Linux completion acknowledgement' }
+    $record=@{
+        schemaVersion=1;id=$Identity.id;token=$Token;kind=$Kind;state='client-exited';
+        startedUtc=$StartedUtc;endedUtc=(Get-ODSWslUtcNow).ToString('o');
+        clientPid=$ClientPid;clientStartTicks=$ClientStartTicks;clientExitCode=$ExitCode;
+        completionSuffixPresent=$Output.EndsWith($suffix,[StringComparison]::Ordinal);
+        stdoutChars=$Output.Length;stderrChars=$ErrorOutput.Length
+    }
+    # Native commands use exact allowlisted unit names. Preserve a bounded
+    # tail to distinguish WSL client errors, CRLF, and missing output. Other
+    # commands may print application data, so record lengths only. The caller
+    # persists this record only when Linux completion remains ambiguous.
+    if ($Kind.StartsWith('native:',[StringComparison]::Ordinal)) {
+        $record.stdoutTail=$Output.Substring([Math]::Max(0,$Output.Length-256))
+        $record.stderrTail=$ErrorOutput.Substring([Math]::Max(0,$ErrorOutput.Length-1024))
+    }
+    $record
+}
+
+function Complete-ODSWslCommand($Identity,[string]$Token,[string]$Output,[int]$ExitCode,$Observation=$null) {
+    $suffix="`nODS_WSL_COMPLETED_${Token}:${ExitCode}`n"
+    if (-not $Output.EndsWith($suffix,[StringComparison]::Ordinal)) {
+        if ($Observation) {
+            # This private receipt survives the next boot and a later command.
+            # It never grants permission to retry or marks pending complete.
+            try { Write-ODSWslJson (Join-Path $Identity.directory 'command-failure.json') $Observation } catch { }
+        }
+        throw 'WSL stack command exited without its Linux completion acknowledgement'
+    }
     # GNU timeout and the Compose adapter reserve 124/137 for a potentially
     # interrupted descendant. Ordinary errors remain immediately retryable.
+    if ($ExitCode -in @(124,137) -and $Observation) {
+        try { Write-ODSWslJson (Join-Path $Identity.directory 'command-failure.json') $Observation } catch { }
+    }
     if ($ExitCode -notin @(124,137)) {
         Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') @{schemaVersion=1;state='completed';id=$Identity.id;token=$Token}
     }
@@ -693,17 +738,25 @@ function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Second
     $info.UseShellExecute=$false; $info.CreateNoWindow=$true
     $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
     $process = [Diagnostics.Process]::new(); $process.StartInfo=$info; $started=$false
+    $clientPid=0; $clientStartTicks=$null
+    $startedUtc=(Get-ODSWslUtcNow).ToString('o')
+    $kind='other'
+    if ($Mutation) { try { $kind=Get-ODSWslMutationKind $Identity $Arguments -AsRoot:$AsRoot } catch { } }
     try {
         if (-not $process.Start()) { throw 'Could not launch the bound WSL command' }
         $started=$true
         $null=$process.Handle
+        $clientPid=$process.Id
+        try { $clientStartTicks=$process.StartTime.ToUniversalTime().Ticks.ToString() } catch { }
         $stdout=$process.StandardOutput.ReadToEndAsync(); $stderr=$process.StandardError.ReadToEndAsync()
         $deadline=(Get-ODSWslUtcNow).AddSeconds($Seconds + 30)
         $cancelled=Wait-ODSWslCommandProcess $process $deadline -Mutation:$Mutation
         if (-not $stdout.Wait(5000) -or -not $stderr.Wait(5000)) { throw [TimeoutException]::new('WSL command output did not close after the client exited') }
         $output=$stdout.GetAwaiter().GetResult(); $errorOutput=$stderr.GetAwaiter().GetResult()
         if ($Mutation) {
-            $output=Complete-ODSWslCommand $Identity $token $output $process.ExitCode
+            $observation=$null
+            try { $observation=New-ODSWslExitObservation $Identity $token $kind $startedUtc $clientPid $clientStartTicks $process.ExitCode $output $errorOutput } catch { }
+            $output=Complete-ODSWslCommand $Identity $token $output $process.ExitCode $observation
         }
         if ($process.ExitCode -ne 0) { throw [IO.IOException]::new('WSL startup command failed: ' + $errorOutput.Trim()) }
         if ($cancelled) { throw $cancelled }
@@ -1030,13 +1083,17 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     $units=@($plan.nativeUnits)
     if ($Action -eq 'stop') {
         foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'stop' $unit }
+    } else {
+        # The native ingress/preview units own the WSL socket target mounts.
+        # Start them before Docker Desktop recreates Edge's bind views. A
+        # stopped stack otherwise gives Compose a plain/stale /pixel-runtime.
+        [Array]::Reverse($units)
+        foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
     # Compose always executes as the ordinary Linux owner, never as root.
     Invoke-ODSWslCommand $Identity @('python3',$program,"compose-$Action",$Identity.installRoot)
     if ($Action -eq 'start') {
         if ($plan.hostAgentRestart -or ($agentAddress -and $agentAddress.changed)) { Invoke-ODSWslNativeUnit $Identity 'restart' 'ods-host-agent.service' }
-        [Array]::Reverse($units)
-        foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
 }
 

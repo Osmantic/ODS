@@ -620,6 +620,55 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+function Convert-ODSWindowsNativeFallbackHermesEnv {
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvText,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$NativePort
+    )
+
+    # Phase 06 may have generated a Lemonade LiteLLM route before the native
+    # server is launched. If Lemonade fails, an observe/legacy service plan
+    # omits LiteLLM. Retarget only the managed default; keep custom URLs and
+    # enabled-switchboard routes intact.
+    if ($EnvText -match '(?m)^ODS_MODEL_SWITCHBOARD=enabled\r?$' -or
+        $EnvText -notmatch '(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$') {
+        return $EnvText
+    }
+    $EnvText = $EnvText -replace '(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$',
+        "HERMES_LLM_BASE_URL=http://host.docker.internal:$NativePort/v1"
+    $EnvText = $EnvText -replace '(?m)^HERMES_LLM_API_KEY=[^\r\n]*\r?$',
+        'HERMES_LLM_API_KEY=sk-ods-hermes-local'
+    return $EnvText
+}
+
+function Set-ODSWindowsNativeFallbackEnvFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$NativePort,
+        [bool]$EnableRecommended = $false
+    )
+
+    # Generated .env is UTF-8 without a BOM. PowerShell 5.1 otherwise reads
+    # it using the system code page and can corrupt non-ASCII owner values.
+    $envText = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $envText = $envText -replace '(?m)^ODS_MODE=.*$', 'ODS_MODE=local'
+    $envText = $envText -replace '(?m)^LLM_BACKEND=.*$', 'LLM_BACKEND=llama-server'
+    $envText = $envText -replace '(?m)^LLM_API_BASE_PATH=.*$', 'LLM_API_BASE_PATH=/v1'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_RUNTIME=.*$', 'AMD_INFERENCE_RUNTIME=llama-server'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_BACKEND=.*$', 'AMD_INFERENCE_BACKEND=vulkan'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_LOCATION=.*$', 'AMD_INFERENCE_LOCATION=host'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_PORT=.*$', "AMD_INFERENCE_PORT=$NativePort"
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$', 'AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$', 'AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_MANAGED=.*$', 'AMD_INFERENCE_MANAGED=true'
+    $envText = $envText -replace '(?m)^LEMONADE_MODEL=.*$', 'LEMONADE_MODEL='
+    if (-not $EnableRecommended) {
+        $envText = Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $envText -NativePort $NativePort
+    }
+    Write-ODSPrivateEnvFile -Path $Path -Content $envText
+    return $envText
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -654,6 +703,7 @@ function New-ODSEnv {
         [int]$SystemRamGB = 0,
         [bool]$WhisperCudaEnabled = $true,
         [string]$SwitchboardMode = "",
+        [bool]$EnableRecommended = $false,
         # Mirror the install-time ENABLE_LANGFUSE toggle from phase 03 into
         # .env's LANGFUSE_ENABLED default. Re-install preserves whatever the
         # user already had in .env (via Get-EnvOrNew), so manual
@@ -692,6 +742,23 @@ function New-ODSEnv {
         return $Default
     }
 
+    # The native installer records its Dev Tools choice before phase 06. Keep
+    # that choice across reruns, including when OpenCode binaries are retained.
+    # Older Windows installs had no selection and started OpenCode by default.
+    $devToolsSelection = [string]$env:ODS_WINDOWS_DEVTOOLS_SELECTED
+    if ($devToolsSelection -notin @('', 'true', 'false')) {
+        throw "Invalid ODS_WINDOWS_DEVTOOLS_SELECTED value"
+    }
+    $enableDevTools = if ($devToolsSelection) {
+        $devToolsSelection
+    } else {
+        Get-EnvOrNew "ENABLE_DEVTOOLS" "true"
+    }
+    if ($enableDevTools -notin @('true', 'false')) {
+        throw "Invalid ENABLE_DEVTOOLS value in .env"
+    }
+    $enableDevTools = $enableDevTools.ToLowerInvariant()
+
     function Get-PositiveEnvInteger { param([string]$Key, [int]$Default)
         $raw = ([string](Get-EnvOrNew $Key ([string]$Default))).Trim()
         if ($raw.Length -ge 2 -and (
@@ -726,6 +793,9 @@ function New-ODSEnv {
 
     $webuiPort = Resolve-WindowsODSPort `
         -Name "WEBUI_PORT" -DefaultPort 3000 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
+    $comfyuiPort = Resolve-WindowsODSPort `
+        -Name "COMFYUI_PORT" -DefaultPort 8188 `
         -ExistingEnv $existingEnv -InstallDir $InstallDir
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
@@ -989,6 +1059,14 @@ function New-ODSEnv {
     $hermesLlmApiKey = $(if ($hermesUsesModelRouter) { "no-key" } elseif ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
     $openWebuiLlmBaseUrl = Get-EnvOrNew "OPEN_WEBUI_LLM_BASE_URL" $(if ($switchboardMode -eq "enabled") { "http://litellm:4000" } else { "" })
     $openWebuiLlmApiKey = Get-EnvOrNew "OPEN_WEBUI_LLM_API_KEY" $(if ($switchboardMode -eq "enabled") { $litellmKey } else { "" })
+    # On a local switchboard -> observe/legacy transition, the previous
+    # generated gateway URL is stale. Compose must fall back to local inference
+    # when the service plan omits LiteLLM. Preserve custom external endpoints.
+    if ($ODSMode -ne "cloud" -and $switchboardMode -ne "enabled" -and
+        $openWebuiLlmBaseUrl -in @("http://litellm:4000", "http://litellm:4000/v1")) {
+        $openWebuiLlmBaseUrl = ""
+        $openWebuiLlmApiKey = ""
+    }
 
     # Timezone -- convert Windows timezone ID to IANA for Docker containers
     $tz = $(try {
@@ -1103,7 +1181,9 @@ REMOTE_PROVIDER_DATA_GID=0
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
+ENABLE_DEVTOOLS=$enableDevTools
 ODS_MODEL_SWITCHBOARD=$switchboardMode
+ODS_WINDOWS_RECOMMENDED_SELECTED=$(if ($EnableRecommended) { "true" } else { "false" })
 LLM_BACKEND=$llmBackend
 LLM_API_URL=$llmApiUrl
 OPEN_WEBUI_LLM_BASE_URL=$openWebuiLlmBaseUrl
@@ -1186,6 +1266,7 @@ COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 #=== Ports ===
 OLLAMA_PORT=11434
 WEBUI_PORT=$webuiPort
+COMFYUI_PORT=$comfyuiPort
 WHISPER_PORT=$whisperPort
 TTS_PORT=8880
 N8N_PORT=5678

@@ -70,7 +70,7 @@ from runtime_projection import active_runtime_projection
 from cloud_telemetry import get_cloud_throughput
 from agent_monitor import collect_metrics
 from routers import (
-    workflows, features, setup, updates, agents, privacy, extensions,
+    workflows, features, setup, updates, agents, privacy, extensions, comfy_checkpoint,
     gpu as gpu_router, resources, voice, models as models_router, model_state as model_state_router,
     model_routes as model_routes_router, remote_provider_status, templates,
     auth as auth_router,
@@ -1222,6 +1222,7 @@ app.include_router(updates.router)
 app.include_router(agents.router)
 app.include_router(privacy.router)
 app.include_router(extensions.router)
+app.include_router(comfy_checkpoint.router)
 app.include_router(gpu_router.router)
 app.include_router(resources.router)
 app.include_router(voice.router)

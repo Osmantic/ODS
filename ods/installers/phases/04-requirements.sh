@@ -301,7 +301,7 @@ _phase04_lemonade_uses_host_9000() {
     return 1
 }
 
-if [[ "${ENABLE_VOICE:-false}" == "true" ]] && _phase04_lemonade_uses_host_9000; then
+if [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == "true" ]] && _phase04_lemonade_uses_host_9000; then
     _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
     if [[ "$_whisper_port_for_check" == "9000" ]]; then
         # Lemonade's native router can reserve host port 9000 on AMD systems.
@@ -318,7 +318,20 @@ fi
 # For the generated Whisper default, select ODS's established alternate only
 # when it is also free on both sides of the WSL boundary. Explicit non-default
 # ports remain untouched and are reported by the normal conflict loop below.
-if [[ "${ENABLE_VOICE:-false}" == "true" ]]; then
+# A fresh lean WSL install writes the Whisper port and Pixel's matching port
+# mirror even though Whisper is not selected yet. Check that future Library
+# port now, but leave a process override or any retained installation alone.
+_phase04_whisper_lean_wsl_default() {
+    [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" != "true" ]] || return 1
+    declare -F ods_is_wsl_host >/dev/null 2>&1 || return 1
+    ods_is_wsl_host || return 1
+    [[ -z "${WHISPER_PORT:-}" ]] || return 1
+    [[ -n "${INSTALL_DIR:-}" ]] || return 1
+    [[ ! -e "$INSTALL_DIR/.env" && ! -L "$INSTALL_DIR/.env" ]]
+}
+
+if [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == "true" ]] \
+    || _phase04_whisper_lean_wsl_default; then
     _whisper_port_for_check="${WHISPER_PORT:-${SERVICE_PORTS[whisper]:-9000}}"
     if [[ "$_whisper_port_for_check" == "9000" ]] \
         && declare -F ods_windows_host_port_in_use >/dev/null 2>&1 \
@@ -332,10 +345,15 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]]; then
         done
         if [[ -n "$_whisper_alternate" ]]; then
             WHISPER_PORT="$_whisper_alternate"
+            export WHISPER_PORT
             SERVICE_PORTS[whisper]="$_whisper_alternate"
-            log "Windows host port 9000 is occupied; checking Whisper on ${_whisper_alternate}"
+            log "Windows host port 9000 is occupied; Whisper will use ${_whisper_alternate} when selected"
         else
-            warn "Windows host port 9000 is occupied and Whisper alternates 9100 and 9001 are unavailable"
+            if [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == "true" ]]; then
+                warn "Windows host port 9000 is occupied and Whisper alternates 9100 and 9001 are unavailable"
+            else
+                log "Whisper add-back needs a free host port: 9000, 9100 and 9001 are occupied"
+            fi
         fi
         unset _whisper_alternate _whisper_candidate
     fi
@@ -346,7 +364,8 @@ fi
 PORTS_TO_CHECK=""
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
 [[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
-[[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
+[[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000}"
+[[ "${ENABLE_TTS:-${ENABLE_VOICE:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"
 [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[qdrant]:-6333}"
 [[ "$ENABLE_COMFYUI" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[comfyui]:-8188}"

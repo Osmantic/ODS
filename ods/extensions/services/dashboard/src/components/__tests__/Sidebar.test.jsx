@@ -1,7 +1,8 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import { render } from '../../test/test-utils'
 import Sidebar from '../Sidebar' // eslint-disable-line no-unused-vars
 import { getSidebarExternalLinks } from '../../plugins/registry'
+import { notifyExtensionCatalogChanged } from '../../lib/extensionCatalogEvents'
 
 vi.mock('../../plugins/registry', () => ({
   getSidebarNavItems: vi.fn(() => [
@@ -79,6 +80,51 @@ describe('Sidebar', () => {
     expect(link).toHaveAttribute('href', url)
     expect(link).toHaveAttribute('target', '_blank')
     expect(link.rel.split(' ')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']))
+  })
+
+  test('refreshes added application links without remounting or polling', async () => {
+    getSidebarExternalLinks.mockImplementation(({ apiLinks }) => apiLinks.map(link => ({
+      ...link, icon: () => <span />,
+    })))
+    let links = [{ key: 'first', label: 'First app', url: 'https://first.example', healthy: true }]
+    const fetchMock = vi.fn(async (url) => ({
+      ok: true,
+      json: async () => url === '/api/external-links' ? links : {},
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+    expect(await screen.findByRole('link', { name: 'First app' })).toBeInTheDocument()
+    links = [...links, { key: 'second', label: 'Second app', url: 'https://second.example', healthy: true }]
+    act(() => notifyExtensionCatalogChanged())
+    expect(await screen.findByRole('link', { name: 'Second app' })).toHaveAttribute('href', 'https://second.example')
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/external-links')).toHaveLength(2)
+  })
+
+  test('a slower old refresh cannot replace newer application links', async () => {
+    getSidebarExternalLinks.mockImplementation(({ apiLinks }) => apiLinks.map(link => ({
+      ...link, icon: () => <span />,
+    })))
+    let finishOld
+    let linkFetches = 0
+    vi.stubGlobal('fetch', vi.fn((url) => {
+      if (url === '/api/service-tokens') return Promise.resolve({ ok: true, json: async () => ({}) })
+      linkFetches += 1
+      if (linkFetches === 2) return new Promise(resolve => { finishOld = resolve })
+      const label = linkFetches === 1 ? 'Initial app' : 'New app'
+      return Promise.resolve({ ok: true, json: async () => [
+        { key: label, label, url: 'https://example.test', healthy: true },
+      ] })
+    }))
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+    expect(await screen.findByRole('link', { name: 'Initial app' })).toBeInTheDocument()
+    act(() => notifyExtensionCatalogChanged())
+    act(() => notifyExtensionCatalogChanged())
+    expect(await screen.findByRole('link', { name: 'New app' })).toBeInTheDocument()
+    await act(async () => finishOld({ ok: true, json: async () => [
+      { key: 'old', label: 'Old app', url: 'https://old.example', healthy: true },
+    ] }))
+    expect(screen.queryByRole('link', { name: 'Old app' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'New app' })).toBeInTheDocument()
   })
 
   test('leads a stopped OpenCode to its page instead of a dead Offline entry', () => {
