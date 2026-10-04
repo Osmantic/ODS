@@ -6,6 +6,7 @@ import {createWorkspaceArtifactAdmission,normalizeWorkspaceArtifact} from '../pl
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
+import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
@@ -42,7 +43,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     conversationImageLifecycle,
-    bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
+    bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
     delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
@@ -80,6 +81,17 @@ test('guard rewritten cron params survive admission and receive the default', as
   assert.equal(result.params.name, 'guard-approved');
   assert.equal(result.params.delivery.mode, 'none');
   assert.equal(params.delivery, undefined);
+});
+
+test('agent cron calls cannot create command jobs through the actual hook', async () => {
+  const {callbacks, calls, activity} = hooks();
+  const command = {...event, params: {action: 'add', payload: {kind: 'Command', argv: ['id']}}};
+  const result = await callbacks.before_tool_call(command, context);
+  assert.equal(result?.block, true);
+  assert.match(result.blockReason, /cannot run OS commands/);
+  // Refused before native admission, like any other guard denial.
+  assert.deepEqual(calls, ['guard']);
+  assert.deepEqual(activity, ['blocked']);
 });
 
 test('held native gate wins over allowed or rewritten cron requests', async () => {

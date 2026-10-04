@@ -12,6 +12,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account, while web search and page fetching stay on. It also notes that
   docker group membership is equivalent to root. It previously said that
   existing operating system restrictions remain.
+- Pixel's agent can no longer create or edit command-type scheduled jobs.
+  OpenClaw 2026.6.33, which Pixel pins, rejected only the exact payload kind
+  `command` and lowercased it afterwards, so a kind such as `Command` became a
+  command job that runs in the gateway process outside the sandbox
+  (GHSA-8xxh-v4vc-qvm4, fixed upstream in 2026.7.1). The Pixel plugin now
+  refuses any agent cron add or update whose payload kind normalizes to
+  `command`. Command jobs the owner creates through the CLI are unaffected.
 - The host agent now keeps only the newest 20 `.env` backups in
   `data/config-backups/`. Each Dashboard settings save added another full copy
   of every secret, with no limit. Only regular files that match the backup
