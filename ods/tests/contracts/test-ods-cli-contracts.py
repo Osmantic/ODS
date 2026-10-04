@@ -29,7 +29,7 @@ COMMANDS = {
     "model": ("cmd_model", "model [current|list|swap]"),
     "remote-provider": (
         "cmd_remote_provider",
-        "remote-provider [status|plan|configure|test|disable|remove|peer-models]",
+        "remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]",
     ),
     "stt": ("cmd_stt", "stt [current|status|download]"),
     "backup": ("cmd_backup", "backup [options]"),

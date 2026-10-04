@@ -12,7 +12,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 pass() { echo -e "${GREEN}✓${NC} $1"; }
-fail() { echo -e "${RED}✗${NC} $1"; exit 1; }
+fail() { echo -e "${RED}✗${NC} $1"; [[ -z "${out:-}" ]] || printf '%s\n' "$out" >&2; exit 1; }
 info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
 [[ -x "$ODS_RESTORE" ]] || fail "ods-restore.sh not found or not executable"
@@ -24,6 +24,10 @@ FAKE_ODS="$TMP/ods"
 mkdir -p "$FAKE_ODS/.backups"
 # minimal marker so 'is this a ODS dir' check passes
 mkdir -p "$FAKE_ODS/data"
+
+# ods-restore.sh sources its libraries relative to ODS_DIR
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$SCRIPT_DIR/../lib/backup-paths.sh" "$FAKE_ODS/lib/"
 
 # Create a minimal backup (manifest only, no data dirs)
 BID="20260101-000000"

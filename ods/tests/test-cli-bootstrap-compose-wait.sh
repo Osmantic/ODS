@@ -71,6 +71,11 @@ case "${1:-}" in
         fi
         exit 0
         ;;
+    inspect)
+        # This fixture has no Hermes; restart's readiness wait must skip it.
+        [[ " $* " == *" ods-hermes "* ]] && exit 1
+        exit 0
+        ;;
 esac
 exit 0
 SH

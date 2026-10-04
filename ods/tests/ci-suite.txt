@@ -3,6 +3,7 @@
 # .mjs with node --test, test_*.py with pytest, other .py with python3.
 # Add new tests here, to an existing workflow step, or to ci-not-run.txt with a reason;
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
+tests/contracts/test-ods-cli-contracts.py
 tests/contracts/test-remote-provider-cli.py
 tests/contracts/test-wsl-lifecycle.sh
 tests/pixel_settings/test_pixel_settings_store.py
@@ -14,10 +15,12 @@ tests/test-bootstrap-pixel-catalog-permissions.sh
 tests/test-bootstrap-upgrade-sha-retry.sh
 tests/test-bootstrap-upgrade-windows-native-llama.sh
 tests/test-catalog-invalid-manifest.py
+tests/test-cli-bootstrap-compose-wait.sh
 tests/test-compose-image-discovery.sh
 tests/test-dashboard-approval-terminal-proxy.py
 tests/test-dashboard-image-upload.py
 tests/test-disk-check-install-dir.sh
+tests/test-disk-space-preflight.sh
 tests/test-doctor-command.sh
 tests/test-env-set-literal-key.sh
 tests/test-external-llm-auth.sh
@@ -46,6 +49,7 @@ tests/test-macos-lean-feature-selection.sh
 tests/test-model-integrity.sh
 tests/test-model-library-verdicts.py
 tests/test-nonroot-image-source-modes.sh
+tests/test-ods-cli-bootstrap-env-refresh.sh
 tests/test-ods-cli-restart-hermes-ready.sh
 tests/test-ods-cli-rollback-delegation.sh
 tests/test-ods-cli-update-verification.sh
@@ -70,6 +74,7 @@ tests/test-preset-diff.sh
 tests/test-preset-import-export.sh
 tests/test-preview-inspection.mjs
 tests/test-restore-data-transaction-contract.sh
+tests/test-restore-safety-ux.sh
 tests/test-rollback-compose-stack.sh
 tests/test-service-registry-cache.sh
 tests/test-service-registry-encoding.py
@@ -78,6 +83,7 @@ tests/test-tier-map-parity.sh
 tests/test-update-backup-restore-configs.sh
 tests/test-update-compose-restart-contract.sh
 tests/test-update-current-branch-contract.sh
+tests/test-voice-repair-command.sh
 tests/test-webui-compose-selection.py
 tests/test-windows-amd-memory-detection.sh
 tests/test-windows-env-dotfile-recovery.sh
@@ -104,6 +110,7 @@ tests/test_macos_snapshot_definition.py
 tests/test_matrix_zypper_transport.py
 tests/test_model_library_native_context.py
 tests/test_perplexica_windows_config.py
+tests/test_persona_running_containers.py
 tests/test_pixel_access_http.py
 tests/test_pixel_access_reconcile.py
 tests/test_pixel_activity.py
