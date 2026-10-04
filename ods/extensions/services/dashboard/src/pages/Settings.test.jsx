@@ -334,3 +334,75 @@ it.each([true,false])('locks the environment draft until its pending save settle
   expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
   expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
 })
+
+it.each([true, false])('protects saved settings while runtime apply is pending and recovers (success=%s)', async success => {
+  const plan = {status:'pending',supported:true,services:['litellm'],summary:'Restart LiteLLM.'}
+  const {fetchMock} = renderSettings(url => url === '/api/settings/env'
+    ? response({...editor,applyPlan:plan}) : null)
+  const field = await screen.findByLabelText('LAN Host IP')
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options) => url === '/api/settings/env/apply'
+    ? new Promise(resolve => {finish = resolve})
+    : options?.method === 'PUT'
+      ? response({...editor,values:JSON.parse(options.body).values,applyPlan:plan})
+      : original(url, options))
+
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(field).toBeDisabled()
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  expect(within(env).getByRole('button',{name:'Reload'})).toBeDisabled()
+  screen.getAllByRole('button',{name:'Refresh',exact:true}).forEach(button => expect(button).toBeDisabled())
+  expect(screen.getByRole('button',{name:'Applying...'})).toBeDisabled()
+  const navigation = new Event('beforeunload',{cancelable:true})
+  window.dispatchEvent(navigation)
+  expect(navigation.defaultPrevented).toBe(true)
+  const envReads = () => fetchMock.mock.calls.filter(([url, options]) => url === '/api/settings/env' && !options?.method)
+  expect(envReads()).toHaveLength(1)
+
+  await act(async () => finish(response(success ? {message:'Runtime applied.'}
+    : {detail:'Host restart failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.10')
+  screen.getAllByRole('button',{name:'Refresh',exact:true}).forEach(button => expect(button).toBeEnabled())
+  if (!success) {
+    expect(screen.getByText('Host restart failed')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+    await act(async () => finish(response({message:'Runtime applied.'})))
+  }
+  expect(screen.getByText('Runtime applied.')).toBeInTheDocument()
+  const settledNavigation = new Event('beforeunload',{cancelable:true})
+  window.dispatchEvent(settledNavigation)
+  expect(settledNavigation.defaultPrevented).toBe(false)
+
+  // A later save gets its own pending plan rather than being settled by the
+  // earlier apply response. Mutating buttons are available again.
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  expect(field).toHaveValue('192.168.1.25')
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+})
+
+it.each([['Refresh',true],['Refresh',false],['Reload',true],['Reload',false]])('does not start runtime apply before an environment %s settles (success=%s)', async (action, success) => {
+  const plan = {status:'pending',supported:true,services:['litellm'],summary:'Restart LiteLLM.'}
+  const {fetchMock} = renderSettings(url => url === '/api/settings/env'
+    ? response({...editor,applyPlan:plan}) : null)
+  const field = await screen.findByLabelText('LAN Host IP')
+  let finish
+  const original = fetchMock.getMockImplementation()
+  fetchMock.mockImplementation((url, options) => url === '/api/settings/env'
+    ? new Promise(resolve => {finish = resolve}) : original(url, options))
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  fireEvent.click(within(env).getByRole('button',{name:action,exact:true}))
+  expect(field).toBeDisabled()
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/env/apply')).toBe(false)
+  await act(async () => finish(response(success ? {...editor,applyPlan:plan}
+    : {detail:'Environment read failed'}, success ? 200 : 503)))
+  expect(field).toBeEnabled()
+  expect(field).toHaveValue('192.168.1.10')
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled()
+  if (!success && action === 'Reload') expect(screen.getByText('Environment read failed')).toBeInTheDocument()
+})
