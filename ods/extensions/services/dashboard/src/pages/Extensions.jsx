@@ -127,31 +127,62 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  const pollTokens = useRef({})
+  const catalogRequestSeq = useRef(0)
+  const catalogMutationEpoch = useRef(0)
+  const catalogRefreshRequest = useRef(0)
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
   const recoveryTrackers = useRef({})
 
+  const stopPoller = (serviceId) => {
+    clearInterval(activePollers.current[serviceId])
+    delete activePollers.current[serviceId]
+    delete pollTokens.current[serviceId]
+    delete recoveryTrackers.current[serviceId]
+  }
+
+  const beginCatalogMutation = (serviceId) => {
+    // Only a submitted mutation invalidates reads; opening a dialog does not.
+    catalogMutationEpoch.current += 1
+    catalogRequestSeq.current += 1
+    catalogRefreshRequest.current += 1
+    setRefreshing(false)
+    stopPoller(serviceId)
+  }
+
   const pollProgress = (serviceId) => {
     if (activePollers.current[serviceId]) return
+    const token = Symbol(serviceId)
+    pollTokens.current[serviceId] = token
+    const ownsPoller = () => pollTokens.current[serviceId] === token
     recoveryTrackers.current[serviceId] = createRecoveryTracker({
       threshold: 3,
       onThresholdReached: () => {
+        if (!ownsPoller()) return
         setPollingLost(true)
-        // Attempt to recover catalog state — if the backend is back,
-        // the next successful poll will clear the banner.
         fetchCatalog()
       },
-      onRecovered: () => setPollingLost(prev => (prev ? false : prev)),
+      onRecovered: () => {
+        if (ownsPoller()) setPollingLost(false)
+      },
     })
+    let polling = false
     activePollers.current[serviceId] = setInterval(async () => {
+      if (polling || !ownsPoller()) return
+      polling = true
+      // Capture anew for each tick so another service's mutation only
+      // invalidates the in-flight tick, not this service's future polling.
+      const epoch = catalogMutationEpoch.current
+      const isCurrent = () => ownsPoller() && epoch === catalogMutationEpoch.current
       try {
         const res = await fetchJson(`/api/extensions/${serviceId}/progress`)
-        // Successful fetch (regardless of HTTP status) means the dashboard
-        // is reachable again — reset the failure counter and clear the banner.
+        if (!isCurrent()) return
         recoveryTrackers.current[serviceId]?.recordSuccess()
         if (!res.ok) return
         const data = await res.json()
+        if (!isCurrent()) return
         if (data.status === 'idle') {
           setProgressMap(prev => {
             if (!(serviceId in prev)) return prev
@@ -163,42 +194,37 @@ export default function Extensions({ compact = false }) {
           setProgressMap(prev => ({ ...prev, [serviceId]: data }))
         }
         if (data.status === 'error') {
-          clearInterval(activePollers.current[serviceId])
-          delete activePollers.current[serviceId]
-          delete recoveryTrackers.current[serviceId]
+          stopPoller(serviceId)
           setToast({ type: 'error', text: data.error || 'Installation failed' })
           setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           fetchCatalog()
         } else if (data.status === 'started' || data.status === 'idle') {
-          // Enable can finish without an install-progress record. Keep checking
-          // live health even when progress is idle after the selection changed.
-          // Refresh catalog — if it shows "enabled" (long-running service)
-          // or "cli_installed" (one-shot CLI tool whose container exits
-          // after init), we're done.
+          // Poll and manual refresh share ordering. A late health snapshot
+          // must not overwrite a newer refresh or a completed mutation.
+          const request = ++catalogRequestSeq.current
           const catRes = await fetchJson('/api/extensions/catalog')
+          if (!isCurrent() || request !== catalogRequestSeq.current) return
           if (!catRes.ok) return
           const catData = await catRes.json()
+          if (!isCurrent() || request !== catalogRequestSeq.current) return
           setCatalog(catData)
           const ext = catData.extensions?.find(e => e.id === serviceId)
           if (ext && (ext.status === 'enabled' || ext.status === 'cli_installed')) {
-            clearInterval(activePollers.current[serviceId])
-            delete activePollers.current[serviceId]
-            delete recoveryTrackers.current[serviceId]
+            stopPoller(serviceId)
             const successText = ext.status === 'cli_installed'
               ? `${ext.name || 'Extension'} installed — run via \`docker compose run --rm ${serviceId}\`.`
               : 'Extension installed and started.'
             setToast({ type: 'success', text: successText })
             setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           }
-          // If not yet "enabled" / "cli_installed", keep polling — healthcheck still running
         }
       } catch (err) {
-        // Dashboard-api may be mid-restart, or the browser briefly lost
-        // network. Tracker counts consecutive failures; surfaces a banner
-        // after 3 via onThresholdReached so the user isn't left staring
-        // at a silent spinner forever.
+        // A stopped/replaced poll must not affect the replacement's tracker.
+        if (!isCurrent()) return
         console.warn('poll fetch failed:', err)
         recoveryTrackers.current[serviceId]?.recordFailure()
+      } finally {
+        polling = false
       }
     }, 3000)
   }
@@ -211,8 +237,12 @@ export default function Extensions({ compact = false }) {
       .then(d => setTemplates(d.templates || []))
       .catch(() => {})
     return () => {
+      catalogMutationEpoch.current += 1
+      catalogRequestSeq.current += 1
+      catalogRefreshRequest.current += 1
       Object.values(activePollers.current).forEach(clearInterval)
       activePollers.current = {}
+      pollTokens.current = {}
       recoveryTrackers.current = {}
     }
   }, [])
@@ -223,14 +253,18 @@ export default function Extensions({ compact = false }) {
     const installing = catalog.extensions.filter(e => e.status === 'installing' || e.status === 'setting_up')
     installing.forEach(e => pollProgress(e.id))
     // Fetch progress once for errored extensions to show the error message
+    const epoch = catalogMutationEpoch.current
+    let cancelled = false
     catalog.extensions.filter(e => e.status === 'error').forEach(async (e) => {
       try {
         const res = await fetchJson(`/api/extensions/${e.id}/progress`)
-        if (!res.ok) return
+        if (cancelled || epoch !== catalogMutationEpoch.current || !res.ok) return
         const data = await res.json()
+        if (cancelled || epoch !== catalogMutationEpoch.current) return
         if (data.status === 'error') setProgressMap(prev => ({ ...prev, [e.id]: data }))
       } catch { /* ignore */ }
     })
+    return () => { cancelled = true }
   }, [catalog])
 
   useEffect(() => {
@@ -285,19 +319,31 @@ export default function Extensions({ compact = false }) {
   const openDialog = dialog => setConfirm({ ...dialog, id: ++dialogSeq.current })
 
   const fetchCatalog = async () => {
+    const request = ++catalogRequestSeq.current
+    const epoch = catalogMutationEpoch.current
+    const refresh = ++catalogRefreshRequest.current
+    const isCurrent = () => request === catalogRequestSeq.current && epoch === catalogMutationEpoch.current
     try {
       if (!catalog) setLoading(true)
       setRefreshing(true)
       setError(null)
-      const res = await fetchJson(`/api/extensions/catalog`)
+      const res = await fetchJson('/api/extensions/catalog')
+      if (!isCurrent()) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setCatalog(await res.json())
+      const data = await res.json()
+      if (!isCurrent()) return
+      setCatalog(data)
     } catch (err) {
+      if (!isCurrent()) return
       setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load extensions catalog')
       console.error('Extensions fetch error:', err)
     } finally {
-      setLoading(false)
-      setRefreshing(false)
+      // A newer poll may supersede this data without owning the Refresh
+      // button. Settle its spinner unless a newer manual refresh owns it.
+      if (refresh === catalogRefreshRequest.current) {
+        setLoading(false)
+        setRefreshing(false)
+      }
     }
   }
 
@@ -313,6 +359,7 @@ export default function Extensions({ compact = false }) {
   }
 
   const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false } = {}) => {
+    beginCatalogMutation(serviceId)
     setMutating(serviceId)
     setConfirm(null)
     setDepConfirm(null)
@@ -413,6 +460,9 @@ export default function Extensions({ compact = false }) {
     } catch (err) {
       const base = friendlyError(err.message) || `Failed to ${action} extension`
       setToast({ type: 'error', text: base })
+      // A refused mutation may leave an installation running. Reconcile
+      // its state and resume catalog-driven polling after invalidation.
+      await fetchCatalog()
     } finally {
       setMutating(null)
     }
@@ -421,6 +471,7 @@ export default function Extensions({ compact = false }) {
   const handleWebuiAdd = async () => {
     if (webuiAddInFlight.current) return
     webuiAddInFlight.current = true
+    beginCatalogMutation('open-webui')
     setMutating('open-webui')
     setConfirm(null)
     try {
