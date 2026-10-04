@@ -8457,7 +8457,9 @@ class TestModelDownloadFileIntegrity:
         _mod.AgentHandler._handle_model_download(handler)
 
         assert handler.response_code == 200
-        assert handler.parse_response()["status"] == "already_downloaded"
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
         status = json.loads(status_path.read_text(encoding="utf-8"))
         assert status["status"] == "complete"
         assert status["model"] == "test-model.gguf"

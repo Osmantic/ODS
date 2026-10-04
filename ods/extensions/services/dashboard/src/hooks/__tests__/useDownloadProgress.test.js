@@ -67,6 +67,23 @@ describe('useDownloadProgress', () => {
     expect(result.current.progress.percent).toBe(100)
   })
 
+  test('polls existing-artifact verification through completion', async () => {
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ status: 'verifying', model: 'existing.gguf', bytesTotal: 1104 }),
+    })
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.isDownloading).toBe(true))
+    expect(result.current.progress.status).toBe('verifying')
+    fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ status: 'complete', model: 'existing.gguf', updatedAt: '2026-10-04T12:00:00Z' }),
+    })
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.isDownloading).toBe(false)
+    expect(result.current.progress).toBeNull()
+    expect(result.current.completedDownload.model).toBe('existing.gguf')
+  })
   test('clears progress when status is complete', async () => {
     fetch.mockResolvedValue({
       ok: true,

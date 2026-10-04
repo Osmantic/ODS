@@ -12423,49 +12423,6 @@ class AgentHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Existing files are reusable only after exact catalog verification.
-        # This intentionally hashes them before returning already_downloaded;
-        # non-empty alone is not evidence that a prior transfer completed.
-        valid_preexisting_files = set()
-        invalid_existing_files = {}
-        try:
-            for filename, target in artifact_paths.items():
-                valid, reason = _verify_model_artifact(target, artifact_by_file[filename])
-                if valid:
-                    valid_preexisting_files.add(filename)
-                elif target.exists():
-                    invalid_existing_files[filename] = reason
-        except Exception:
-            _end_model_lifecycle("model_download")
-            raise
-
-        if len(valid_preexisting_files) == len(download_plan):
-            # A previous process can leave stale "downloading" status after the
-            # final file is already on disk. Normalize that here so the
-            # dashboard stops showing phantom progress.
-            _write_model_status(status_path, "complete", gguf_file, 0, 0)
-            _end_model_lifecycle("model_download")
-            json_response(self, 200, {"status": "already_downloaded"})
-            return
-
-        for filename, reason in invalid_existing_files.items():
-            logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
-            try:
-                artifact_paths[filename].unlink(missing_ok=True)
-            except OSError as exc:
-                _end_model_lifecycle("model_download")
-                json_response(
-                    self,
-                    500,
-                    {"error": f"Invalid model artifact could not be replaced: {filename}: {exc}"},
-                )
-                return
-        pending_download_plan = [
-            (idx, fn, url)
-            for idx, (fn, url) in enumerate(download_plan, 1)
-            if fn not in valid_preexisting_files
-        ]
-
         # Check for concurrent download
         with _model_download_lock:
             if _model_download_thread is not None and _model_download_thread.is_alive():
@@ -12532,6 +12489,35 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 try:
                     models_dir.mkdir(parents=True, exist_ok=True)
+                    # Reverification can hash many gigabytes after an agent
+                    # restart. Own it in the acknowledged, cancellable worker,
+                    # just like verification of newly downloaded artifacts.
+                    valid_preexisting_files = set()
+                    invalid_existing_files = {}
+                    for filename, target in artifact_paths.items():
+                        if target.exists():
+                            _write_model_status(status_path, "verifying", filename, 0, target.stat().st_size)
+                        valid, reason = _verify_model_artifact(
+                            target, artifact_by_file[filename], _model_download_cancel,
+                        )
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        if valid:
+                            valid_preexisting_files.add(filename)
+                        elif target.exists():
+                            invalid_existing_files[filename] = reason
+                    for filename, reason in invalid_existing_files.items():
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
+                        artifact_paths[filename].unlink(missing_ok=True)
+                    pending_download_plan = [
+                        (idx, fn, url)
+                        for idx, (fn, url) in enumerate(download_plan, 1)
+                        if fn not in valid_preexisting_files
+                    ]
                     for _part_idx, part_file_name, part_url in pending_download_plan:
                         url_error = _model_download_url_error(part_url)
                         if url_error:
@@ -12546,7 +12532,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                             )
                             return
                     label = gguf_file if len(download_plan) == 1 else f"{gguf_file} ({len(download_plan)} parts)"
-                    _write_model_status(status_path, "downloading", label, 0, 0)
+                    if pending_download_plan:
+                        _write_model_status(status_path, "downloading", label, 0, 0)
 
                     for part_idx, part_file_name, part_url in pending_download_plan:
                         if _model_download_cancel.is_set():

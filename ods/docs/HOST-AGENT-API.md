@@ -312,3 +312,13 @@ Protections in place:
 The Dashboard API (`extensions/services/dashboard-api/routers/extensions.py`) communicates with the host agent via the `AGENT_URL` environment variable (constructed from `ODS_AGENT_HOST` and `ODS_AGENT_PORT` in `config.py`). It uses `ODS_AGENT_KEY` for authentication. The connection flows through Docker's `host.docker.internal` DNS name by default, allowing the containerized API to reach the host-bound agent.
 
 If the host agent is unreachable, mutation operations (install, enable, disable) still succeed at the file level but return `"restart_required": true` to signal that `ods restart` is needed.
+
+## Model download verification
+
+`POST /v1/model/download` acknowledges an accepted operation with
+`{"status": "started"}`. Existing artifacts are verified inside the same
+cancellable worker as new transfers; an accepted request does not prove that
+the model is ready. Poll `GET /v1/model/status` for `verifying`, `complete`,
+`cancelled` or `failed`, and use `POST /v1/model/download/cancel` to cancel
+verification or transfer. Verified existing artifacts are reused without a
+network download. Cancelled verification preserves preexisting files.
