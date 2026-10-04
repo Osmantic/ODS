@@ -31,11 +31,13 @@ known limitations, and performance expectations.
 
 ### Future / untested
 
-Intel Arc B-series (Battlemage) cards ≥ 12 GB will automatically map to the
-`ARC` tier. Cards < 12 GB will map to `ARC_LITE`.
-Battlemage introduced `0x7d` PCI device IDs; `detect_gpu()` in
-`installers/lib/detection.sh` may need an update when those cards become
-more widely available.
+Intel Arc B-series (Battlemage) cards ≥ 12 GB automatically map to the
+`ARC` tier. Cards < 12 GB map to `ARC_LITE`.
+Battlemage cards (e.g. B580, B570, B50/B60 Pro) report PCI device IDs
+0xE202, 0xE209, 0xE20B-0xE20D, 0xE210-0xE212, 0xE216 and 0xE220-0xE223,
+which `detect_gpu()` in `installers/lib/detection.sh` recognizes alongside
+the Alchemist/DG2 IDs. Battlemage uses the `xe` kernel driver, so VRAM is
+read from `tile0/physical_vram_size_bytes` rather than `lmem_total_bytes`.
 
 ---
 
