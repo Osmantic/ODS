@@ -35,14 +35,14 @@ _docker_cmd_arr() {
 }
 
 docker_run() {
-    # shellcheck disable=SC2207
-    local -a cmd=($(_docker_cmd_arr))
+    local -a cmd
+    read -ra cmd <<< "$(_docker_cmd_arr)"
     "${cmd[@]}" "$@"
 }
 
 docker_compose_run() {
-    # shellcheck disable=SC2207
-    local -a cmd=($(_docker_cmd_arr))
+    local -a cmd
+    read -ra cmd <<< "$(_docker_cmd_arr)"
     "${cmd[@]}" compose "$@"
 }
 
