@@ -270,6 +270,9 @@ jobs:
       - name: Model Catalog Artifact Pins
         run: python3 tests/test-model-library-pinned-urls.py
 
+      - name: README Model Tables Match the Selector
+        run: python3 tests/test-readme-model-tables.py
+
       - name: Active Model Preservation Tests
         run: python3 tests/test-preserve-active-model.py
 
