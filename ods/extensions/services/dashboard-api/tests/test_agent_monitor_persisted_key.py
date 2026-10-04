@@ -2,6 +2,7 @@
 
 import json
 import threading
+from typing import TypedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -13,9 +14,14 @@ from routers import agents
 from security import verify_api_key
 
 
+class TelemetryState(TypedDict):
+    key: str
+    seen: list[str | None]
+
+
 @pytest.fixture
 def telemetry(monkeypatch, tmp_path):
-    state = {"key": "generated-key", "seen": []}
+    state: TelemetryState = {"key": "generated-key", "seen": []}
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
