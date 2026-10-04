@@ -50,6 +50,7 @@ tests/test-disk-space-preflight.sh
 tests/test-docker-image-pull-retry.sh
 tests/test-doctor-command.sh
 tests/test-doctor-extension-diagnostics.sh
+tests/test-embeddings-prefetch-service-cache.sh
 tests/test-enable-gpu-validation.sh
 tests/test-env-example-inline-comments.sh
 tests/test-env-set-literal-key.sh
