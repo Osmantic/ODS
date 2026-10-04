@@ -3,7 +3,6 @@
 # .mjs with node --test, test_*.py with pytest, other .py with python3.
 # Add new tests here, to an existing workflow step, or to ci-not-run.txt with a reason;
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
-tests/contracts/test-ods-cli-model-activation.sh
 tests/contracts/test-remote-provider-cli.py
 tests/contracts/test-wsl-lifecycle.sh
 tests/pixel_settings/test_pixel_settings_store.py

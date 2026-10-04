@@ -42,8 +42,11 @@ def named_by_runner(test):
     for pattern in patterns:
         if pattern == rel or fnmatch.fnmatch(rel, pattern):
             return True
-        if not Path(pattern).suffix and rel.startswith(pattern.rstrip('/') + '/'):
-            return True  # a directory run such as `pytest tests/pixel_inference`
+        directory = pattern.rstrip('/')
+        # A directory run names a subdirectory, such as `pytest tests/pixel_inference`;
+        # a bare `tests/` in prose or a comment is not a runner.
+        if '/' in directory and not Path(directory).suffix and rel.startswith(directory + '/'):
+            return True
     return any(name in text for path, text in texts.items() if path != test)
 
 
