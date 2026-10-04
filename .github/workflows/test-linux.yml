@@ -521,6 +521,7 @@ jobs:
           python3 tests/contracts/test-remote-provider-egress-service.py
           python3 tests/contracts/test-llama-spec-default.py
           python3 -m unittest -v tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
+          bash tests/test-macos-install-overlap.sh
 
       - name: WSL Windows Runtime Ownership and Retirement Contracts
         run: |

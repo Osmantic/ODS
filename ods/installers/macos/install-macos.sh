@@ -1258,8 +1258,42 @@ _ensure_macos_pyyaml() {
     exit 1
 }
 
+# The README clones the repository and runs ods/install.sh from the checkout.
+# On a case-insensitive volume (the APFS default) ~/ods and a clone at ~/ODS are
+# the same directory, so a string comparison misses that the install target is
+# the checkout itself: the product would be copied into the clone and uninstall
+# would delete it. Compare by inode and refuse any overlap other than running
+# the installer from the install directory itself.
+_ods_macos_install_dir_overlaps_source() {
+    local install_dir="$1" source_dir="$2" dir
+    [[ -n "$install_dir" && -n "$source_dir" ]] || return 1
+    if [[ -e "$install_dir" ]]; then
+        # The install target is an ancestor of the checkout, e.g. the clone root.
+        dir="$(cd -P -- "$source_dir/.." 2>/dev/null && pwd -P)" || return 1
+        while [[ -n "$dir" && "$dir" != "/" ]]; do
+            [[ "$dir" -ef "$install_dir" ]] && return 0
+            dir="$(dirname -- "$dir")"
+        done
+        [[ "$install_dir" -ef "$source_dir" ]] && return 1
+    fi
+    # The install target is inside the checkout.
+    dir="$(dirname -- "$install_dir")"
+    while [[ -n "$dir" && "$dir" != "/" && "$dir" != "." ]]; do
+        [[ -e "$dir" && "$dir" -ef "$source_dir" ]] && return 0
+        dir="$(dirname -- "$dir")"
+    done
+    return 1
+}
+
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+if _ods_macos_install_dir_overlaps_source "$INSTALL_DIR" "$SOURCE_ROOT"; then
+    ai_err "The install directory ${INSTALL_DIR} overlaps this source checkout (${SOURCE_ROOT})."
+    ai "  On a case-insensitive disk, ~/ods and a clone at ~/ODS are the same folder."
+    ai "  Move the checkout (for example: mv ~/ODS ~/src/ODS) or set ODS_INSTALL_DIR"
+    ai "  to a separate path, then run the installer again. Nothing was changed."
+    exit 1
+fi
 _macos_apply_fresh_feature_defaults
 _macos_resolve_webui_selection || exit 1
 if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then

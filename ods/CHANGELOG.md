@@ -275,6 +275,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   commit and verified against its SHA-256 on Linux and macOS. The tier maps
   previously fetched it from `resolve/main` with no checksum, and the bootstrap
   checked a hash against a moving branch. The pin matches the catalog entry.
+- macOS: the installer refuses to run when the install directory overlaps
+  the source checkout (the clone root, an ancestor, or a folder inside it),
+  comparing directories by identity rather than spelling. On the default
+  case-insensitive APFS volume, the README steps (clone to `~/ODS`, install to
+  `~/ods`) previously copied ODS into the clone itself, and uninstall then
+  deleted the clone. Running the installer from the install directory, as the
+  bootstrap does, is unchanged.
 - `get-ods.sh` no longer deletes a directory that has no `.env` unless it is
   empty or still carries the ODS source tree. A `data/` directory kept by
   `ods-uninstall.sh --keep-data`, or an unrelated directory named by
