@@ -16,6 +16,7 @@ on:
       - 'ods/vendor/pixel/OPENCLAW-COMPATIBILITY.json'
       - 'ods/installers/macos/lib/constants.sh'
       - '.github/scripts/check-upstream-advisories.py'
+      - '.github/scripts/test_check_upstream_advisories.py'
       - '.github/workflows/upstream-advisories.yml'
 
 permissions:
@@ -28,6 +29,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Self-test the range handling
+        run: python3 -m unittest discover -s .github/scripts -p test_check_upstream_advisories.py
       - name: Report advisories for pinned versions
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -42,6 +45,8 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Self-test the range handling
+        run: python3 -m unittest discover -s .github/scripts -p test_check_upstream_advisories.py
       - name: Check pinned versions
         id: check
         env:

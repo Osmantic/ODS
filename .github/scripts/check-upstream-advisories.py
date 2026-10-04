@@ -96,6 +96,20 @@ def in_range(version, spec):
     return True
 
 
+def repository_range_affects(version, vulnerability):
+    """Whether a repository advisory's range covers version; None if unparseable.
+
+    Some advisories put the range's upper bound in `patched_versions`, e.g.
+    vulnerable '>= 0.211.0' with patched '< 1.122.0'. A patched value that starts
+    with a comparison operator is read as part of the vulnerable range.
+    """
+    affected = in_range(version, vulnerability.get('vulnerable_version_range') or '')
+    patched = (vulnerability.get('patched_versions') or '').strip()
+    if affected and re.match(r'(<=|>=|<|>)', patched):
+        return in_range(version, patched)
+    return affected
+
+
 def collect(ecosystem, package, version, repository):
     """Map GHSA id -> (severity, summary, url, fixed-in) from both sources."""
     found, unparsed = {}, 0
@@ -111,7 +125,7 @@ def collect(ecosystem, package, version, repository):
             for vulnerability in advisory.get('vulnerabilities') or []:
                 if (vulnerability.get('package') or {}).get('name') != package:
                     continue
-                affected = in_range(version, vulnerability.get('vulnerable_version_range') or '')
+                affected = repository_range_affects(version, vulnerability)
                 if affected is None:
                     unparsed += 1
                 elif affected and advisory['ghsa_id'] not in found:
