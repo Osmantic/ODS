@@ -27,11 +27,15 @@ The Linux installer detects the distro via `/etc/os-release` and chooses the rig
 
 | Distro family   | Package manager | Typical distros                    | Notes |
 |-----------------|----------------|------------------------------------|-------|
-| Debian/Ubuntu   | apt            | Ubuntu 22.04/24.04/26.04, Debian 11/12   | Most tested; Docker install via get.docker.com or distro packages. |
-| Fedora / RHEL   | dnf            | Fedora 38/39/40/41                | Well supported. |
-| Arch            | pacman         | Arch Linux, CachyOS               | Supported; ensure curl and optional jq/rsync. |
-| openSUSE        | zypper         | openSUSE Tumbleweed, Leap        | Supported. |
+| Debian/Ubuntu   | apt            | Ubuntu 22.04/24.04/26.04, Debian 12, Linux Mint 21.3 | Most tested; Docker install via get.docker.com or distro packages. |
+| Fedora / RHEL   | dnf            | Fedora 41, Rocky Linux 9          | Package-manager and syntax checks in CI. |
+| Arch            | pacman         | Arch Linux, Manjaro, CachyOS      | Package-manager and syntax checks in CI; ensure curl and optional jq/rsync. |
+| openSUSE        | zypper         | openSUSE Tumbleweed               | Package-manager and syntax checks in CI; install Docker before running the installer. |
 | Other           | (detected)     | Derivatives of above               | Installer falls back to apt-style messages when unknown. |
+
+The distributions listed are the ones in the CI distro matrix, which checks
+package-manager detection, prerequisite installation and installer syntax in
+containers; it does not run full installs.
 
 **Minimum versions:** We test on current LTS and recent stable releases. Older versions may work but are not guaranteed; see [SUPPORT-MATRIX.md](SUPPORT-MATRIX.md) for tier definitions.
 

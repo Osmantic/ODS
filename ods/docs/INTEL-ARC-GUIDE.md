@@ -100,15 +100,11 @@ sudo intel_gpu_top
 
 ## Installation
 
-The ODS installer auto-detects Intel Arc and selects the correct tier:
+Hardware detection does not identify Intel Arc yet, so pass the tier yourself:
 
 ```bash
-# Automatic (recommended)
-./install.sh
-
-# Force a specific tier manually
-./install.sh --tier ARC
-./install.sh --tier ARC_LITE
+./install.sh --tier ARC        # Arc cards with 12 GB or more (A770)
+./install.sh --tier ARC_LITE   # Arc cards under 12 GB (A750, A380)
 ```
 
 ### What the installer does for Intel Arc

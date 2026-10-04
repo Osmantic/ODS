@@ -2,37 +2,55 @@
 
 Frequently asked questions about installing, running, and troubleshooting ODS.
 
-> **Also see:** [`docs/FAQ.md`](docs/FAQ.md) for hardware requirements, pricing, and comparisons with alternatives.
+> **Also see:** [`docs/FAQ.md`](docs/FAQ.md) for hardware sizing and how ODS
+> compares with other local AI tools.
 
 ---
 
 ## General Questions
 
 ### What is ODS?
-ODS is a turnkey local AI stack that runs entirely on your own hardware. It includes:
-- LLM inference via llama-server (qwen2.5-32b-instruct)
-- Web dashboard for chat and model management
-- Voice capabilities (STT via Whisper, TTS via Kokoro)
-- Workflow automation via n8n
-- API gateway with privacy shield for external services
+ODS installs a local AI stack on your own hardware:
+
+- a local model server (llama.cpp's `llama-server`; Lemonade on Linux AMD;
+  native Metal on macOS) running a model the installer picks from its catalog
+  for your hardware;
+- the ODS Dashboard (http://localhost:3001), with the Portal chat agent on
+  qualified Linux hosts and the Models page for downloading and switching
+  models;
+- Open WebUI (http://localhost:3000) as the chat UI on hosts without Portal.
+
+The default **Core Only** install is deliberately small. **Full Stack** (or
+`ods enable <service>` later) adds voice (Whisper speech-to-text through
+Speaches, Kokoro text-to-speech), n8n workflows, RAG (Qdrant and embeddings),
+Privacy Shield, LiteLLM, Hermes, ComfyUI and more.
 
 ### What are the minimum requirements?
-**Minimum (bootstrap mode):**
-- Any modern CPU
-- 8GB RAM
-- 10GB disk space
-- Docker + Docker Compose
+The installer checks free disk space (a blocker) and recommends RAM (a warning)
+for your hardware tier, and it needs room for the chosen model plus 15 GB:
 
-**Recommended (full experience):**
-- NVIDIA GPU with 24GB+ VRAM (RTX 3090/4090)
-- 32GB+ system RAM
-- 100GB+ SSD storage
-- Ubuntu 22.04/24.04/26.04 or WSL2 on Windows
+| Hardware (GPU memory) | Free disk | Recommended RAM |
+|-----------------------|-----------|-----------------|
+| NVIDIA GPU under 4 GB (tier 0) | 15 GB | 4 GB |
+| CPU only, or GPU 4-11 GB (tier 1) | 30 GB | 16 GB |
+| 12-19 GB (tier 2) | 50 GB | 32 GB |
+| 20-39 GB (tier 3) | 80 GB | 48 GB |
+| 40-89 GB (tier 4) | 150 GB | 64 GB |
+| AMD Strix Halo, under 90 GB / 90 GB or more | 80 / 120 GB | 64 / 96 GB |
+
+Linux (Ubuntu, Debian, Fedora/RHEL, Arch and openSUSE families), Apple Silicon
+Macs with Docker Desktop, and Windows with WSL2 and Docker Desktop are
+supported; on most Linux distributions the installer installs Docker for you. See the
+[Support Matrix](docs/SUPPORT-MATRIX.md) for what is validated on each
+platform. The Portal agent needs Ubuntu 24.04/26.04 or Debian 12 with systemd;
+other Linux hosts use Hermes.
 
 ### Do I need an internet connection?
-**Initial setup:** Yes, to download models and Docker images.
+**Initial setup:** Yes, to download models and container images.
 
-**After setup:** No. ODS is designed for offline/air-gapped operation. All models run locally.
+**After setup:** Inference, chat and your files work offline. A few optional
+features (web search, update checks, cloud providers) use the network; see
+the next answer.
 
 ### Is my data private?
 Inference, chat history, voice processing and your documents stay on your
@@ -51,155 +69,117 @@ UI's search, and n8n templates contact their own services when you turn them on.
 The optional Privacy Shield redacts PII from requests you route through it.
 
 ### How much does it cost?
-ODS is **free and open source** (Apache 2.0 license). You only pay for:
-- Your hardware (one-time cost)
-- Electricity to run it
+ODS is free and open source. Original ODS code is Apache-2.0; some bundled
+components have their own licenses (see [Licensing](LICENSING.md)). You pay
+only for your hardware and its electricity.
 
 ---
 
 ## Installation
 
 ### The installer fails with "Docker not found"
-**Linux:**
-```bash
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-newgrp docker
-```
+**Linux:** the installer installs Docker itself on supported distributions. If
+it could not, install Docker Engine for your distribution
+(https://docs.docker.com/engine/install/), add yourself to the `docker` group
+(`sudo usermod -aG docker $USER`), log out and back in, and re-run the installer.
 
-**Windows:**
-Install Docker Desktop from https://docs.docker.com/desktop/install/windows-install/
-Enable WSL2 backend in Docker Desktop settings.
+**Windows and macOS:** install Docker Desktop, start it once, then re-run the
+installer. On Windows, Docker Desktop must use the WSL2 backend.
 
 ### "Permission denied" when running install.sh
-Make the script executable:
-```bash
-chmod +x install.sh
-./install.sh
-```
+Run it with Bash from the `ods` folder: `bash install.sh`. Do not run the
+installer as root or with `sudo`; it asks for `sudo` itself when it needs it.
 
-### The installer hangs during model download
-This is normal for large models (20GB+). The installer shows progress bars with:
-- Download speed
-- Time elapsed
-- ETA
-
-**To speed up:** Use a wired connection. WiFi can be unstable for large downloads.
-
-**To restart:** The installer resumes partial downloads automatically.
+### The installer seems stuck while downloading a model
+Large models take a while. Downloads resume if interrupted, and the full model
+downloads in the background after the bootstrap model is running (see the next
+question), so you can use ODS meanwhile. Progress is in
+`~/ods/logs/model-upgrade.log`.
 
 ### Bootstrap mode started but I want the full model now
-```bash
-./scripts/upgrade-model.sh
-```
-
-This hot-swaps from the 1.5B bootstrap model to your full model without downtime.
+ODS starts with a small Qwen3.5 2B model (about 1.3 GB) so you can chat right
+away. It downloads your full model in the background and switches to it
+automatically once the download is verified; the Dashboard shows the progress.
+Chat pauses briefly while the model server restarts on the new model. If the
+download failed or stalled, `ods restart` retries it.
 
 ### How do I skip bootstrap mode?
 ```bash
 ./install.sh --no-bootstrap
 ```
 
-This downloads the full model first. You'll wait longer before first use.
+The installer downloads the full model first, so you wait longer before first
+use. On Windows, use `-NoBootstrap`.
 
 ### How do I switch to a different model?
-Use the `ods` CLI:
-```bash
-ods model current              # See what's running
-ods model list                 # Show available tiers and models
-ods model swap T3              # Switch to Tier 3 (e.g., Qwen3 30B-A3B)
-```
+Use Dashboard → Models: download a catalog model (or import a GGUF from Hugging
+Face), choose a context size, and load it. If the new model fails its health
+check, ODS restores the previous one automatically.
 
-The model file must already be downloaded. If it isn't, pre-fetch it first:
-```bash
-./scripts/pre-download.sh --tier 3
-```
+On Linux and WSL, `ods model current` shows the active model, and
+`ods model swap <tier>` switches to that tier's default model if it is already
+downloaded. See [Model Management](docs/MODEL-MANAGEMENT.md).
 
 ### Can I use my own GGUF model?
-Yes. Drop the single `.gguf` file into `data/models/`, then open Dashboard ->
-Models and load the local entry. For headless maintenance or older installs,
-update `.env`:
-```bash
-GGUF_FILE=my-model.gguf
-LLM_MODEL=my-model
-```
-Restart the inference server:
-```bash
-docker compose restart llama-server
-```
-The model will load in ~30-120 seconds depending on size. If it fails, ODS automatically rolls back to the previous model.
+Yes. Copy the single `.gguf` file into `~/ods/data/models/`, then load it from
+Dashboard → Models. Editing `GGUF_FILE` and `LLM_MODEL` in `.env` by hand
+bypasses the health check and the automatic rollback; if you do it anyway,
+apply it with `ods restart llama-server`.
 
-On Lemonade installs, load the model through ODS rather than only
-opening it in the Lemonade app. The Lemonade app can load the file for direct
-testing, but Open WebUI uses ODS's persisted LiteLLM route and may
-switch Lemonade back to the configured/default model on the next chat.
+On Lemonade installs, load the model through ODS rather than only opening it
+in the Lemonade app. The Lemonade app can load the file for direct testing, but
+Open WebUI uses ODS's persisted LiteLLM route and may switch Lemonade back to
+the configured model on the next chat.
 
-### What models are available?
-The installer auto-selects based on your GPU, but you can switch between any tier:
-
-| Tier | Model | Min VRAM |
-|------|-------|----------|
-| T1 | Qwen3.5 9B | 8 GB |
-| T2 | Qwen3.5 9B | 12 GB |
-| T3 | Qwen3 30B-A3B | 20 GB |
-| T4 | Qwen3 30B-A3B (MoE) | 40 GB |
-| SH_COMPACT | Qwen3 30B-A3B (MoE) | 64 GB unified |
-| SH_LARGE | Qwen3 Coder Next 80B (MoE) | 90 GB unified |
-
-Run `ods model list` for the full list on your system.
+### Which model will I get?
+The installer measures your GPU memory (or system RAM) and picks a model and
+context size from its catalog; the
+[hardware table in the README](../README.md#hardware-auto-detection) shows the
+current picks. Dashboard → Models lists every catalog model with a memory
+estimate, so you can choose a different one.
 
 ### NVIDIA GPU not detected
-**Check driver:**
+**Check the driver:**
 ```bash
 nvidia-smi
 ```
 
-**If missing:** Install NVIDIA drivers:
-```bash
-# Ubuntu
-sudo apt update
-sudo apt install nvidia-driver-550
-sudo reboot
-```
+ODS needs NVIDIA driver **570 or newer** (575 or newer for GPU-accelerated
+Whisper; older drivers run Whisper on the CPU). On Ubuntu the installer offers
+to install driver 570 and asks you to reboot. Blackwell GPUs need the open
+kernel modules (`sudo apt install nvidia-open`). The installer also sets up the
+NVIDIA Container Toolkit for Docker.
 
-**Check Docker runtime:**
-```bash
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-```
+**On WSL2:** update the driver in Windows only. Never install NVIDIA drivers
+inside Ubuntu.
 
 ### "CUDA out of memory" errors
-Your GPU doesn't have enough VRAM. Options:
-1. Use a smaller model (qwen2.5-7b-instruct instead of 32b)
-2. All models use GGUF Q4_K_M quantization by default
-3. Reduce `CTX_SIZE` in `.env` (try 4096)
-4. Run on CPU only (slower but works)
+The model and its context don't fit in GPU memory. In Dashboard → Models,
+choose a shorter context or a smaller model; each option shows a memory
+estimate. Advanced: set `LLAMA_ARG_CACHE_TYPE_K=q8_0` and
+`LLAMA_ARG_CACHE_TYPE_V=q8_0` in `.env`, then run `ods restart llama-server`.
+To run on the CPU only (slow), reinstall with `GPU_BACKEND=cpu ./install.sh`.
 
 ### Windows: WSL2 installation fails
-Enable WSL2 manually:
+Run `.\install.ps1` from a normal (not elevated) PowerShell window; it guides
+WSL2, Ubuntu and Docker Desktop setup. To enable WSL2 by hand:
 ```powershell
 wsl --install -d Ubuntu-24.04
-wsl --set-default-version 2
 ```
 
-Then restart the installer.
+Restart Windows if asked, then run the installer again. See the
+[Windows Quickstart](docs/WINDOWS-QUICKSTART.md).
 
 ### The web dashboard won't load
-**Check if services are running:**
 ```bash
-docker compose ps
+ods status
+ods logs dashboard
+ods logs dashboard-api
 ```
 
-**Check logs:**
-```bash
-docker compose logs dashboard-api
-docker compose logs llama-server
-```
-
-**Common fixes:**
-- Wait 30 seconds for services to start
-- Check http://localhost:3001 (direct API) vs http://localhost:3000 (UI)
-- Restart: `docker compose restart`
+Give the services a minute after starting. The Dashboard is
+http://localhost:3001 (its API listens on 3002); Open WebUI, if installed, is
+http://localhost:3000. Restart with `ods restart`.
 
 ### How do I uninstall?
 **Linux/macOS:**
@@ -240,123 +220,99 @@ For a full removal, use `./ods-uninstall.sh --force`. If an older `ods stop` alr
 ## Usage
 
 ### How do I access the web interface?
-```
-http://localhost:3000
-```
-
-On first run, the installer displays a QR code. Scan it with your phone for instant mobile access.
+Open http://localhost:3001 for the ODS Dashboard (Portal, Models, services and
+settings). Open WebUI, if installed, is at http://localhost:3000. The installer
+prints the exact addresses when it finishes.
 
 ### What's the default password?
-The installer generates secure random passwords and displays them at the end. Look for:
-```
-✓ Dashboard URL: http://localhost:3000
-✓ API Key: dsf8a9s7df8a9s7df...
-```
+There is no default password, and the installer prints only addresses. On the
+ODS computer, http://localhost:3001 opens without signing in. From another
+device you sign in with a dashboard password you choose.
 
-Passwords are also saved to `.env` in the ods directory.
-
-### How do I change the password?
-Edit `.env`:
-```bash
-nano .env
-# Change: DASHBOARD_PASSWORD=your-new-password
-docker compose restart dashboard
-```
+To set or change it, open Your profile → Change dashboard password, or run
+`ods dashboard-login` on the ODS computer for a one-time link. Generated
+service secrets (for example n8n's `N8N_USER` and `N8N_PASS`) are in
+`~/ods/.env`, which only your user can read.
 
 ### Can I access from other devices on my network?
-Yes! Use your machine's local IP:
-```
-http://192.168.1.xxx:3000
-```
-
-The installer shows this URL with a QR code at the end.
+Yes. Reinstall with `./install.sh --lan`, or set `BIND_ADDRESS=0.0.0.0` in
+Dashboard → Settings → Advanced and run `ods restart`. The Dashboard is then at
+`http://<your-ip>:3011` and always asks for sign-in; Open WebUI, if installed,
+is at `http://<your-ip>:3000` with its sign-in turned on. For
+`http://<device>.local` addresses, enable the ODS proxy
+(`ods enable ods-proxy`). Read
+[Quick LAN Access](SECURITY.md#quick-lan-access) first: it explains which
+passwords to set before you expose anything.
 
 ### How do I create a workflow?
-1. Open http://localhost:3000/workflows
-2. Click "New Workflow"
-3. Select a template or start from scratch
-4. Connect nodes (triggers → actions)
-5. Save and activate
+Workflows run in n8n, which is optional: choose Full Stack or `--workflows`
+when installing, or run `ods enable n8n` and then `ods start n8n`. Open
+http://localhost:5678 and sign in with `N8N_USER` and `N8N_PASS` from
+`~/ods/.env` (change that password in n8n). Create a workflow, add a trigger
+and actions, save it, and switch it to Active.
 
 ### What's n8n?
-n8n is the workflow engine built into ODS. It provides:
-- Visual workflow editor
-- 400+ integrations (GitHub, Slack, email, etc.)
-- Webhook triggers
-- Scheduled jobs
-- AI agent capabilities
+n8n is the optional workflow engine bundled with ODS. It provides a visual
+editor, hundreds of integrations, webhook triggers, scheduled jobs and AI
+agent nodes that can use your local model.
 
-### Can I connect to external APIs?
-Yes, through the **Privacy Shield**:
-1. Configure the shield service (runs on port 8085)
-2. Route API calls through `http://localhost:8085/proxy/{service}`
-3. PII is automatically redacted before leaving your network
+### Can I send requests to cloud APIs?
+Yes, optionally. Add `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` to `.env`, run
+`ods mode cloud` (or `ods mode hybrid`), then `ods restart`; LiteLLM then routes
+requests to your provider.
+
+To strip personal data from requests first, enable Privacy Shield
+(`ods enable privacy-shield`, then `ods start privacy-shield`) and send
+OpenAI-style requests to `http://localhost:8085/chat/completions` with
+`Authorization: Bearer <SHIELD_API_KEY from .env>`. Only requests sent to port
+8085 are scrubbed.
 
 ### How do I use voice features?
-**Prerequisites:** Microphone and speakers/headphones
+Voice is optional: choose Full Stack or `--voice` when installing, or run
+`ods enable whisper` and `ods enable tts`. Talk to ODS at
+http://localhost:3001/talk (ODS Talk), or use Open WebUI's voice mode if it is
+installed.
 
-1. Open the Voice page in the dashboard
-2. Click "Start Conversation"
-3. Allow microphone access
-4. Speak naturally — the system handles STT → LLM → TTS automatically
+### Which speech-to-text model is used?
+`deepdml/faster-whisper-large-v3-turbo-ct2` on NVIDIA GPUs with driver 575 or
+newer, and `Systran/faster-whisper-base` elsewhere. Change it with
+`AUDIO_STT_MODEL` in `.env`, then run `ods restart` and `ods stt download`.
+`ods stt status` shows what is installed.
 
-### Which STT model should I use?
-| Model | Speed | Accuracy | Use Case |
-|-------|-------|----------|----------|
-| tiny | ~400ms | Good | Quick commands |
-| base | ~700ms | Better | General use |
-| small | ~2s | Best | Accuracy critical |
-| large-v3 | ~8s | Excellent | Offline transcription |
-
-Default is `base`. Change in Settings → Voice.
-
-### Which TTS voice is best?
-Kokoro provides high-quality voices. Options:
-- `af_bella` — Natural female (default)
-- `af_nicole` — Professional female
-- `am_adam` — Natural male
-- `am_michael` — Professional male
-
-Preview voices in Settings → Voice → Test.
+### Which text-to-speech voice is used?
+Kokoro's `af_heart` voice by default. Set `AUDIO_TTS_VOICE` in `.env` (for
+example `af_bella`, `am_adam` or `am_michael`) and run `ods restart` to change it.
 
 ---
 
 ## Troubleshooting
 
 ### Where are the logs?
-**All services:**
 ```bash
-docker compose logs -f
+ods logs <service>          # e.g. ods logs llm, ods logs dashboard-api
+ods logs <service> 500      # more lines
 ```
 
-**Specific service:**
-```bash
-docker compose logs -f llama-server
-docker compose logs -f dashboard-api
-docker compose logs -f whisper
-docker compose logs -f tts
-```
-
-**To file:**
-```bash
-docker compose logs > ods.log 2>&1
-```
+`ods list` shows the service names. ODS has no top-level `docker-compose.yml`,
+so plain `docker compose logs` fails in `~/ods`; for raw Compose access use
+`docker compose $(cat .compose-flags) logs -f`. On macOS, use
+`~/ods/ods-macos.sh logs <service>`.
 
 ### How do I restart everything?
 ```bash
 ods restart
 ```
 
-Or restart specific services:
+Or restart one service:
 ```bash
 ods restart llama-server
 ```
 
-### "Connection refused" to API
-1. Check if the API container is running: `docker compose ps dashboard-api`
-2. Check logs: `docker compose logs dashboard-api`
-3. Verify port 3001 is not in use: `sudo lsof -i :3001`
-4. Restart: `docker compose restart dashboard-api`
+### "Connection refused" to the API
+1. Check the services: `ods status`
+2. Read the API log: `ods logs dashboard-api`
+3. Check that nothing else uses port 3002: `sudo lsof -i :3002`
+4. Restart it: `ods restart dashboard-api`
 
 ### Models won't load
 **Check disk space:**
@@ -364,62 +320,35 @@ ods restart llama-server
 df -h
 ```
 
-Models need ~20GB per model. Free up space if needed.
-
-**Check model download:**
+**Check the model files:**
 ```bash
-ls -la data/models/
+ls -la ~/ods/data/models/
 ```
 
-If empty or incomplete, re-download:
-```bash
-./scripts/pre-download.sh
-```
+If a download is missing or incomplete, download the model again from
+Dashboard → Models, or run `ods restart` to resume a stalled bootstrap upgrade.
 
 ### Voice quality is poor
-**STT issues:**
-- Check microphone input level
-- Reduce background noise
-- Try a different STT model (base → small)
+**Speech-to-text:** check the microphone level, reduce background noise, or
+choose a larger `AUDIO_STT_MODEL`.
 
-**TTS issues:**
-- Check speaker/headphone connection
-- Adjust TTS speed in Settings
-- Try different voices
+**Text-to-speech:** check the speakers or headphones, or try another
+`AUDIO_TTS_VOICE`.
 
 ### Slow response times
-**Check GPU utilization:**
+**Check GPU use:**
 ```bash
 nvidia-smi
+ods gpu status
 ```
 
-If GPU is at 100%, you're GPU-bound. Solutions:
-- Reduce concurrent requests
-- Use a smaller model
-- Enable KV cache quantization
-
-**Check if using CPU:**
-If `nvidia-smi` shows no process, the model is running on CPU (very slow). Fix GPU detection issues above.
-
-### "Rate limit exceeded" errors
-The Privacy Shield has rate limiting to prevent abuse. Default: 100 requests/minute.
-
-To increase:
-1. Edit `.env`
-2. Change `RATE_LIMIT_REQUESTS_PER_MINUTE=100`
-3. Restart: `docker compose restart privacy-shield`
+If the GPU is fully busy, use a smaller model or a shorter context in
+Dashboard → Models. If no `llama-server` process appears in `nvidia-smi`, the
+model is running on the CPU; see "NVIDIA GPU not detected" above.
 
 ### Workflows not triggering
-**Check webhook URL:**
-Must be accessible from the triggering service.
-
-**Check n8n logs:**
-```bash
-docker compose logs n8n
-```
-
-**Verify workflow is active:**
-In the workflow editor, toggle must be ON (green).
+Check that the webhook URL is reachable from the service that calls it, read
+`ods logs n8n`, and make sure the workflow is switched to Active in the editor.
 
 ### Docker volumes taking too much space
 Use the ODS uninstaller with `--keep-data` if you want to remove the
@@ -433,132 +362,109 @@ review. Avoid Docker-wide volume cleanup commands on a host with other apps.
 ## Advanced
 
 ### How do I add a custom model?
-See [How do I switch to a different model?](#how-do-i-switch-to-a-different-model) and [Can I use my own GGUF model?](#can-i-use-my-own-gguf-model) above.
-
-**Short version:** Drop your `.gguf` file into `data/models/`, set `GGUF_FILE` and `LLM_MODEL` in `.env`, run `docker compose restart llama-server`. Rollback is automatic on failure.
+See [How do I switch to a different model?](#how-do-i-switch-to-a-different-model)
+and [Can I use my own GGUF model?](#can-i-use-my-own-gguf-model) above.
 
 ### How do I enable HTTPS?
-For production deployments, use a reverse proxy (nginx, Caddy, Traefik) in front of ODS:
-
-```bash
-# Example with Caddy (auto-HTTPS with Let's Encrypt)
-caddy reverse-proxy --from your-domain.com --to localhost:3000
-```
-
-For local development, browsers accept self-signed certs at `https://localhost`.
+ODS has no built-in HTTPS; the optional ODS proxy and Tailscale add-on are
+HTTP only. For TLS, put your own reverse proxy (Caddy, nginx, Traefik) in front
+of ODS, or reach it over a private VPN such as Tailscale. See
+[Exposing to Internet](SECURITY.md#exposing-to-internet-not-recommended). The Dashboard asks
+for sign-in when it is reached through a proxy.
 
 ### Can I run on multiple GPUs?
-Yes! Edit `docker-compose.nvidia.yml` to expose multiple GPUs:
-```yaml
-deploy:
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: 2  # Number of GPUs
-          capabilities: [gpu]
+Yes. The installer detects multiple GPUs and assigns them automatically. Use
+`ods gpu status` and `ods gpu assignment` to inspect the assignment and
+`ods gpu reassign` (`--auto` or `--manual`) to change it. Don't edit the compose
+files.
+
+### How do I back up my data?
+```bash
+ods backup                # chats, workflows, vectors and agent state
+ods backup -t full -c     # also downloaded models, compressed
+ods restore               # restore a backup
 ```
 
-### How do I backup my data?
-**Configs and data:**
-```bash
-tar -czf ods-backup.tar.gz .env data/
-```
-
-**Models (large):**
-```bash
-rsync -av models/ /backup/location/models/
-```
+Backups go to `~/ods/.backups` (the newest five are kept). On Portal (Pixel)
+installs, ordinary backups refuse to run because they can't capture Portal's
+state; `ods backup -t config` still works.
 
 ### How do I update ODS?
+`ods update` refreshes the container images and recreates the containers; it
+does not change ODS code. To get new ODS code, including security fixes:
+
 ```bash
-./ods-update.sh
+ods backup
+git clone --depth 1 https://github.com/Osmantic/ODS.git ~/ods-update
+cd ~/ods-update/ods && ./install.sh
 ```
 
-Or manually:
-```bash
-git pull
-docker compose pull
-docker compose up -d
-```
+This updates `~/ods` in place and keeps `.env` and `data/`. Don't use `--force`
+or uninstall and reinstall to update. `~/ods` is not a git checkout, so
+`git pull` there does nothing. See
+[Updating an existing installation](SECURITY.md#updating-an-existing-installation).
 
-This pulls latest code, updates Docker images, and migrates data.
+### Where is the data stored?
+In folders under `~/ods/data/` rather than Docker volumes: for example n8n's
+workflows and credentials in `~/ods/data/n8n/` and Open WebUI's in
+`~/ods/data/open-webui/`. Stop a service before copying its files, or use
+`ods backup`.
 
-### Where is the database?
-SQLite databases are in Docker volumes:
-- `ods_n8n-data` — Workflows and credentials
-- `ods_agent-monitor` — Metrics and logs
-
-Access via:
-```bash
-docker compose exec n8n sqlite3 /tmp/.n8n/database.sqlite
-```
-
-### Can I use OpenAI/Anthropic APIs?
-Yes, through the Privacy Shield. Configure in Settings → API Keys.
-
-Your requests go: You → Shield (PII redaction) → OpenAI → Shield (deanonymization) → You
+### Can I use OpenAI or Anthropic models?
+Yes. See [Can I send requests to cloud APIs?](#can-i-send-requests-to-cloud-apis)
+above.
 
 ### How do I monitor performance?
-Open the Dashboard → Metrics page for:
-- GPU utilization and temperature
-- Request latency (P50, P95, P99)
-- Token throughput
-- Active connections
-
-Or use the API:
-```bash
-curl http://localhost:3001/api/metrics
-```
+Dashboard → GPU Monitor shows per-GPU use, memory and temperature, and
+Dashboard → Usage shows token and cost history. `ods gpu status` shows the GPU
+view in a terminal.
 
 ### What ports are used?
+All ports bind to 127.0.0.1 unless you enable LAN access.
+
 | Port | Service |
 |------|---------|
-| 3000 | Open WebUI (chat interface) |
-| 3001 | Dashboard |
+| 3001 | ODS Dashboard |
+| 3011 | Dashboard from other devices (sign-in required; LAN mode only) |
 | 3002 | Dashboard API |
-| 8080 | llama-server API |
-| 8085 | Privacy Shield |
-| 5678 | n8n workflow editor |
-| 7880 | LiveKit voice server |
-| 9000 | Whisper STT |
-| 8880 | Kokoro TTS |
-| 6333 | Qdrant vector DB |
-| 8090 | Embeddings service |
+| 3000 | Open WebUI (when installed) |
+| 11434 | Model server API (llama-server; 8080 for native llama-server on macOS) |
+| 4000 | LiteLLM (when enabled) |
+| 8085 | Privacy Shield (when enabled) |
+| 5678 | n8n (when enabled) |
+| 9000 | Whisper speech-to-text (when enabled) |
+| 8880 | Kokoro text-to-speech (when enabled) |
+| 6333 | Qdrant vector database (when enabled) |
+| 8090 | Embeddings (when enabled) |
+| 80 | ODS proxy (when enabled) |
 
-### How do I change the port?
-Edit `.env`:
-```bash
-DASHBOARD_PORT=8080
-```
-
-Then restart: `docker compose up -d`
+### How do I change a port?
+Set the service's `*_PORT` variable in `~/ods/.env` (for example
+`WEBUI_PORT=3100`) and run `ods restart`.
 
 ---
 
 ## Getting Help
 
 ### Documentation
-- Main README: `ods/README.md`
-- Installer Architecture: `docs/INSTALLER-ARCHITECTURE.md`
-- Security: `SECURITY.md`
+- Main README: [`README.md`](../README.md)
+- Product overview: [`ods/README.md`](README.md)
+- Security: [`SECURITY.md`](SECURITY.md)
+- Installer architecture: [`docs/INSTALLER-ARCHITECTURE.md`](docs/INSTALLER-ARCHITECTURE.md)
 
 ### Community
-- GitHub Issues: https://github.com/Osmantic/ODS/issues
-- Discord: #general channel
+- Questions: [GitHub Discussions](https://github.com/Osmantic/ODS/discussions)
+- Bugs: [GitHub Issues](https://github.com/Osmantic/ODS/issues)
+- Security problems: report them privately through
+  [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new)
+  or security@osmantic.com, never in a public issue.
 
 ### Debug info for bug reports
-Include this output:
+Create a redacted support bundle and attach it to your issue after reviewing it:
+
 ```bash
-# Collect system info
-echo "=== Docker Compose ===" && docker compose version
-echo "=== Services ===" && docker compose ps
-echo "=== Recent Logs ===" && docker compose logs --tail=50
-echo "=== GPU ===" && nvidia-smi 2>/dev/null || echo "No GPU"
+cd ~/ods
+scripts/ods-support-bundle.sh
 ```
 
-Copy the output into your GitHub issue.
-
----
-
-*Last updated: 2026-03-05*
+See [Support Bundle](docs/SUPPORT-BUNDLE.md) for what it contains.

@@ -36,7 +36,7 @@ Utility scripts for diagnostics, testing, validation, and operations.
 | `upgrade-model.sh` | Legacy model-directory swap helper; use [`../docs/MODEL-MANAGEMENT.md`](../docs/MODEL-MANAGEMENT.md) for current GGUF workflows | Yes |
 | `migrate-config.sh` | Migrate config between versions | No |
 | `session-cleanup.sh` | OpenClaw session lifecycle | Yes |
-| `pre-download.sh` | Pre-download models for offline use | No |
+| `pre-download.sh` | Legacy Hugging Face pre-download helper (pre-GGUF tier names); download GGUF models from Dashboard → Models instead | No |
 | `llm-cold-storage.sh` | Archive/restore models | No |
 
 ## Installer Support

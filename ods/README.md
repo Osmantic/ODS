@@ -26,11 +26,11 @@ boundary and third-party notices.
 
 > | Platform | Status |
 > |----------|--------|
-> | **Linux** (NVIDIA + AMD + Intel Arc) | **Supported** — install and run today |
+> | **Linux** (NVIDIA + AMD Strix Halo) | **Supported** — install and run today; Intel Arc is experimental |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 >
-> All three platforms are fully supported with one-command installers. See [`docs/SUPPORT-MATRIX.md`](docs/SUPPORT-MATRIX.md) for detailed tier status.
+> All three platforms have one-command installers. See [`docs/SUPPORT-MATRIX.md`](docs/SUPPORT-MATRIX.md) for each platform's support tier.
 
 See [`docs/SUPPORT-MATRIX.md`](docs/SUPPORT-MATRIX.md) for current support tiers and platform status.
 Launch-claim guardrails: [`docs/PLATFORM-TRUTH-TABLE.md`](docs/PLATFORM-TRUTH-TABLE.md)
@@ -77,7 +77,7 @@ Claude Code, and Codex CLI install. Use `./install.sh --with-devtools` to add
 those host tools; `--no-devtools` skips future installs without removing any
 existing binaries. The Custom menu offers the same separate choice.
 
-The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open **http://localhost:3000** and start chatting.
+The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open the address it prints when it finishes: **http://localhost:3001** for the ODS Dashboard and Portal, or **http://localhost:3000** for Open WebUI on hosts that use it.
 
 On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.
 
@@ -465,7 +465,7 @@ ods mode                               # Show current mode
 | Feature | ODS | Ollama + WebUI | LocalAI |
 |---------|:---:|:---:|:---:|
 | Full-stack one-command install | **LLM + agent + workflows + RAG** | LLM + chat only | LLM only |
-| Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
+| Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + CPU/cloud fallback** (Intel Arc by manual `--tier`) | No | No |
 | AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
 | Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
 | Autonomous AI agent | **Portal on qualified hosts; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
