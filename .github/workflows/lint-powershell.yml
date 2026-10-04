@@ -247,3 +247,66 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Docker Pull Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-docker-pull.ps1
+
+      - name: WSL Lifecycle JSON Sharing Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-json-sharing.ps1
+
+      - name: WSL Relay Lifetime Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-relay-lifetime.ps1
+
+      - name: Windows AMD Memory Detection
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-amd-memory-detection.ps1
+
+      - name: Windows Hermes SOUL Refresh
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-hermes-soul-refresh.ps1
+
+      - name: Windows llama-server Memory Budget
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-llama-memory-budget.ps1
+
+      - name: Windows OpenCode Runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-opencode-runtime.ps1
+
+      - name: Windows Restart Model Preflight
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-restart-model-preflight.ps1
+
+      - name: Windows Whisper Port Conflict
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-whisper-port-conflict.ps1
+
+      - name: Windows Whisper Port Conflict (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-whisper-port-conflict.ps1
+
+      - name: Every PowerShell test runs in this workflow
+        shell: pwsh
+        run: |
+          $workflow = Get-Content -Raw ../.github/workflows/lint-powershell.yml
+          $missing = Get-ChildItem tests -Recurse -Filter 'test-*.ps1' |
+            ForEach-Object { './' + [IO.Path]::GetRelativePath((Get-Location).Path, $_.FullName).Replace('\', '/') } |
+            Where-Object { -not $workflow.Contains($_) }
+          if ($missing) {
+            $missing | ForEach-Object { Write-Host "::error::$_ is not run by lint-powershell.yml" }
+            exit 1
+          }
+          Write-Host 'Every PowerShell test under ods/tests runs in this workflow.'
