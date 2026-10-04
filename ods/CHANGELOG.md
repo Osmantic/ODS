@@ -247,6 +247,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- The Qwen3.5-2B model used for CPU-only and lightweight installs, and as the
+  fast-start bootstrap model, is now downloaded from a fixed Hugging Face
+  commit and verified against its SHA-256 on Linux and macOS. The tier maps
+  previously fetched it from `resolve/main` with no checksum, and the bootstrap
+  checked a hash against a moving branch. The pin matches the catalog entry.
 - `get-ods.sh` no longer deletes a directory that has no `.env` unless it is
   empty or still carries the ODS source tree. A `data/` directory kept by
   `ods-uninstall.sh --keep-data`, or an unrelated directory named by
