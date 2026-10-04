@@ -290,7 +290,7 @@ cd $installDir
 .\ods.ps1 uninstall --force
 ```
 
-Use `--keep-data` or `--keep-models` if you want to preserve local state.
+Use `--keep-data` or `--keep-models` if you want to preserve local state. `--keep-data` keeps only the `data` folder inside the install directory; it still deletes `.env` (your settings and generated secrets) and `config\`. Copy `.env` somewhere safe first if you may reinstall over the kept data.
 
 If the runtime folder is partial and `.\ods.ps1` is missing, run the same cleanup from a source checkout:
 

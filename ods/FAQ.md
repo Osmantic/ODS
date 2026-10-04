@@ -199,6 +199,8 @@ cd $installDir
 
 These use ODS's saved compose stack when available, remove the matching containers and volumes, and then remove the install directory. Use `--keep-data` or `--keep-models` if you want to preserve local state.
 
+`--keep-data` keeps only the `data` folder inside the install directory. It still deletes `.env` (your settings and generated secrets) and `config/`, and on Linux and macOS the backups in `~/.ods`. If you plan to reinstall over the kept data, copy those somewhere safe first and put `.env` back before running the installer; without it, the installer generates new secrets.
+
 On Windows, if the runtime folder is partial and `.\ods.ps1` is missing, run the cleanup from a source checkout:
 
 ```powershell
@@ -352,7 +354,8 @@ Check that the webhook URL is reachable from the service that calls it, read
 
 ### Docker volumes taking too much space
 Use the ODS uninstaller with `--keep-data` if you want to remove the
-application while keeping its volumes. For a full ODS removal, run
+application while keeping its volumes (back up `.env` first; see the uninstall
+answer above). For a full ODS removal, run
 `./ods-uninstall.sh --force`; it checks volume ownership before deleting
 data. If it cannot prove ownership, it leaves the volumes for individual
 review. Avoid Docker-wide volume cleanup commands on a host with other apps.

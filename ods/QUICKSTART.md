@@ -106,7 +106,14 @@ cd $installDir
 .\ods.ps1 uninstall --force
 ```
 
-Use `--keep-data` or `--keep-models` to preserve local state. If the Windows
+Use `--keep-data` or `--keep-models` to preserve local state. `--keep-data`
+keeps only the `data` folder inside the install directory. It still deletes
+`.env` (your settings and generated secrets) and `config/`, and on Linux and
+macOS the backups in `~/.ods`. If you plan to reinstall over the kept data,
+copy those somewhere safe first and put `.env` back before running the
+installer; without it, the installer generates new secrets.
+
+If the Windows
 runtime folder is partial and `.\ods.ps1` is missing, run
 `.\ods\installers\windows\ods.ps1 uninstall --force` from a source checkout.
 
