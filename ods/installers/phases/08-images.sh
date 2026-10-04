@@ -120,7 +120,7 @@ fi
 [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126|TEI — embedding engine")
 
 if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FLAGS:-}" ]]; then
-    read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"
+    eval "local -a _phase08_compose_flags_arr=(${COMPOSE_FLAGS:-})" 2>/dev/null || read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"
     _phase08_compose_images=()
     _phase08_compose_image_output=""
     if _phase08_compose_image_output="$(ods_compose_external_images "${DOCKER_COMPOSE_CMD:-docker compose}" "${_phase08_compose_flags_arr[@]}" 2>>"$LOG_FILE")"; then
