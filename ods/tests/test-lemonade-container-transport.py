@@ -38,10 +38,11 @@ class OwnershipTests(unittest.TestCase):
     def process(self, stdout=b"", code=0, stderr=b""):
         return subprocess.CompletedProcess([], code, stdout, stderr)
 
-    def run_request(self, info=None, candidates=None, response=b'{"status":"ok"}', path="/health", **kwargs):
+    def run_request(self, info=None, candidates=None, response=b'{"status":"ok"}',
+                    path="/health", code=0, stderr=b"", **kwargs):
         results = [self.process(candidates if candidates is not None else (CONTAINER_ID + "\n").encode()),
                    self.process(json.dumps(self.info if info is None else info).encode()),
-                   self.process(response)]
+                   self.process(response, code=code, stderr=stderr)]
         with patch.object(transport.subprocess, "run", side_effect=results) as run:
             result = transport.request(self.root, API_BASE, path, **kwargs)
         return result, run.call_args_list
@@ -132,11 +133,65 @@ class OwnershipTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 2)
 
     def test_output_limit_and_process_timeout_fail(self):
-        with self.assertRaises(OSError):
-            self.run_request(response=b"x" * 65537)
+        with self.assertLogs(transport._LOG, level="WARNING") as logs:
+            with self.assertRaises(OSError):
+                self.run_request(response=b"x" * 65537)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("stage=exec reason=output_limit exit_code=0", logs.output[0])
         with patch.object(transport.subprocess, "run", side_effect=subprocess.TimeoutExpired("docker", 10)):
             with self.assertRaises(subprocess.TimeoutExpired):
                 transport.request(self.root, API_BASE, "/health")
+
+    def test_worker_wall_deadline_has_fixed_nonsecret_diagnostic(self):
+        with self.assertLogs(transport._LOG, level="WARNING") as logs:
+            with self.assertRaises(OSError):
+                self.run_request(response=b"", code=124,
+                                 stderr=b"Lemonade request timed out\n")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("stage=exec reason=worker_wall_deadline exit_code=124", logs.output[0])
+        self.assertRegex(logs.output[0], r"elapsed_ms=\d+$")
+
+    def test_docker_timeout_keeps_exception_type_and_logs_safe_stage(self):
+        with self.assertLogs(transport._LOG, level="WARNING") as logs:
+            with patch.object(transport.subprocess, "run",
+                              side_effect=subprocess.TimeoutExpired("secret-command", 10)):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    transport.request(self.root, API_BASE, "/health")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("stage=ps reason=subprocess_timeout exit_code=none", logs.output[0])
+        self.assertNotIn("secret-command", logs.output[0])
+
+    def test_docker_spawn_error_logs_safe_stage_without_exception_text(self):
+        with self.assertLogs(transport._LOG, level="WARNING") as logs:
+            with patch.object(transport.subprocess, "run",
+                              side_effect=OSError("secret endpoint and key")):
+                with self.assertRaises(OSError):
+                    transport.request(self.root, API_BASE, "/health")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("stage=ps reason=subprocess_os_error exit_code=none", logs.output[0])
+        self.assertNotIn("secret", logs.output[0])
+
+    def test_nonzero_worker_stderr_is_not_logged(self):
+        secret = b"secret-token-that-must-not-be-logged"
+        with self.assertLogs(transport._LOG, level="WARNING") as logs:
+            with self.assertRaises(OSError):
+                self.run_request(response=b"", code=124,
+                                 stderr=b"Lemonade request timed out\n" + secret)
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("stage=exec reason=nonzero_exit exit_code=124", logs.output[0])
+        self.assertNotIn(secret.decode(), logs.output[0])
+
+    def test_inspect_failure_has_correct_stage_without_stderr(self):
+        secret = b"secret-from-docker-inspect"
+        results = [self.process((CONTAINER_ID + "\n").encode()),
+                   self.process(b"", code=1, stderr=secret)]
+        with self.assertLogs(transport._LOG, level="WARNING") as logs:
+            with patch.object(transport.subprocess, "run", side_effect=results):
+                with self.assertRaises(OSError):
+                    transport.request(self.root, API_BASE, "/health")
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("stage=inspect reason=nonzero_exit exit_code=1", logs.output[0])
+        self.assertNotIn(secret.decode(), logs.output[0])
 
 
 class HTTPHandler(BaseHTTPRequestHandler):
