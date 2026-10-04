@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- NVIDIA Secure Boot enrollment no longer installs a root systemd unit to
+  resume the install after the reboot. That unit ran the user-writable
+  `install.sh` as root at every boot. The installer refuses root, so the
+  unit failed every time and never removed itself. The reboot screen now prints
+  the command that finishes the install, and the installer's preflight removes
+  `ods-install-resume.service` left by older versions (not in
+  `--preflight-only` or dry-run mode).
 - Vulnerability reports now go through GitHub private vulnerability reporting
   (Security → Report a vulnerability) or `security@osmantic.com`; `SECURITY.md`
   no longer asks reporters to open public issues. The security guide now covers

@@ -827,6 +827,16 @@ assert_contains "installers/lib/detection.sh" 'for mod_path in /lib/modules/"\$\
 assert_not_contains "installers/lib/detection.sh" 'for mod_path in /lib/modules/\$\{kver\}/updates/dkms/nvidia\*\.ko\*' \
   "NVIDIA DKMS module glob still expands an unquoted kernel release"
 
+echo "[contract] Secure Boot enrollment never installs a root resume unit"
+assert_not_contains "installers/lib/detection.sh" '/etc/systemd/system/' \
+  "Secure Boot enrollment must not write a systemd unit that runs the user-writable installer as root"
+assert_contains "installers/lib/detection.sh" 'resume_command="cd ' \
+  "Secure Boot enrollment must tell the owner how to finish the install"
+assert_contains "installers/phases/01-preflight.sh" '^_ods_remove_obsolete_resume_unit$' \
+  "preflight must remove the obsolete root resume unit left by older installers"
+assert_contains "installers/phases/01-preflight.sh" 'PREFLIGHT_ONLY:-false\}" == "true" \]\] && return 0' \
+  "obsolete resume-unit cleanup must not run in --preflight-only mode"
+
 echo "[contract] catalog selector output is parsed without eval"
 assert_contains "lib/safe-env.sh" 'load_model_selector_env_from_output' "safe env loader missing model selector allowlist"
 assert_contains "scripts/select-model.py" 'return f' "model selector no longer emits parser-friendly quoted values"

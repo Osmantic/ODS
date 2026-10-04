@@ -903,10 +903,12 @@ fix_nvidia_secure_boot() {
     mok_pass=$(openssl rand -hex 4)
     printf '%s\n%s\n' "$mok_pass" "$mok_pass" | ods_sudo mokutil --import "$mok_dir/MOK.der" 2>>"$LOG_FILE"
 
-    # --- Auto-resume: create a systemd oneshot so the install continues
-    #     automatically after reboot (user doesn't have to re-run manually)
-    local svc_name="ods-install-resume"
-    local resume_args="--force --non-interactive"
+    # The install cannot finish until the key is enrolled at the next boot.
+    # Earlier versions installed a root systemd unit to re-run this
+    # user-writable installer after the reboot; the installer refuses root,
+    # so that unit failed at every boot and never removed itself. The owner
+    # re-runs the installer instead (01-preflight removes any old unit).
+    local resume_args=""
     $ENABLE_VOICE && resume_args="$resume_args --voice"
     $ENABLE_WORKFLOWS && resume_args="$resume_args --workflows"
     $ENABLE_RAG && resume_args="$resume_args --rag"
@@ -915,34 +917,8 @@ fix_nvidia_secure_boot() {
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
     [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
-
-    ods_sudo tee /etc/systemd/system/${svc_name}.service > /dev/null << SVCEOF
-[Unit]
-Description=ODS Install (auto-resume after Secure Boot enrollment)
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/bash ${SCRIPT_DIR}/install.sh ${resume_args}
-ExecStartPost=/bin/rm -f /etc/systemd/system/${svc_name}.service
-ExecStartPost=/bin/systemctl daemon-reload
-WorkingDirectory=${SCRIPT_DIR}
-Environment="HOME=${HOME}"
-Environment="USER=${USER}"
-StandardOutput=journal+console
-StandardError=journal+console
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-    if ! ods_sudo systemctl daemon-reload; then
-        error "Could not reload systemd after installing the auto-resume unit."
-    fi
-    if ! ods_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"; then
-        error "Could not enable ${svc_name}.service; installation cannot safely resume after reboot."
-    fi
-    log "Auto-resume service installed: ${svc_name}.service"
+    local resume_command="cd \"${SCRIPT_DIR}\" && ./install.sh${resume_args}"
+    log "Secure Boot key enrollment pending; resume with: $resume_command"
 
     # --- Show a clean, friendly reboot screen ---
     echo ""
@@ -963,9 +939,13 @@ SVCEOF
     echo -e "${GRN}|${NC}     ${BGRN}3.${NC} Type password:  ${BGRN}${mok_pass}${NC}                            ${GRN}|${NC}"
     echo -e "${GRN}|${NC}     ${BGRN}4.${NC} Select \"Reboot\"                                     ${GRN}|${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
-    echo -e "${GRN}|${NC}   Installation will ${BGRN}continue automatically${NC} after reboot.    ${GRN}|${NC}"
+    echo -e "${GRN}|${NC}   Then ${BGRN}re-run the installer${NC} to finish (command below).    ${GRN}|${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
+    echo ""
+    echo "  After the reboot, finish installing with:"
+    echo ""
+    echo "    $resume_command"
     echo ""
 
     if $INTERACTIVE; then
@@ -974,6 +954,6 @@ SVCEOF
     fi
 
     # Non-interactive mode: exit cleanly (not an error — reboot is a normal install phase)
-    ai "Reboot this machine to continue installation."
+    ai "Reboot this machine, enroll the key, then run: $resume_command"
     exit 0
 }
