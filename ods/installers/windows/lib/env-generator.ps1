@@ -727,6 +727,9 @@ function New-ODSEnv {
     $webuiPort = Resolve-WindowsODSPort `
         -Name "WEBUI_PORT" -DefaultPort 3000 `
         -ExistingEnv $existingEnv -InstallDir $InstallDir
+    $comfyuiPort = Resolve-WindowsODSPort `
+        -Name "COMFYUI_PORT" -DefaultPort 8188 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
     # Keep Whisper's container port unchanged, but move its host port out of the
@@ -1186,6 +1189,7 @@ COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 #=== Ports ===
 OLLAMA_PORT=11434
 WEBUI_PORT=$webuiPort
+COMFYUI_PORT=$comfyuiPort
 WHISPER_PORT=$whisperPort
 TTS_PORT=8880
 N8N_PORT=5678

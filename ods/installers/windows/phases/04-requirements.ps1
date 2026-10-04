@@ -31,19 +31,27 @@ function Test-WindowsPortInUse {
     .SYNOPSIS
         Check whether a local TCP port is already listening.
     .OUTPUTS
-        @{ InUse; ProcessName; ProcessId }
+        @{ InUse; ProcessName; ProcessId; Listeners }
     #>
     param([int]$Port)
 
     # Get-NetTCPConnection is available on Windows 8+ / Server 2012+
     try {
-        $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
-        if ($conn) {
-            $proc = Get-Process -Id $conn[0].OwningProcess -ErrorAction SilentlyContinue
+        $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+        if ($connections.Count) {
+            $listeners = @($connections | ForEach-Object {
+                [pscustomobject]@{
+                    LocalAddress = [string]$_.LocalAddress
+                    LocalPort = [int]$_.LocalPort
+                    ProcessId = [int]$_.OwningProcess
+                }
+            })
+            $proc = Get-Process -Id $listeners[0].ProcessId -ErrorAction SilentlyContinue
             return @{
                 InUse       = $true
                 ProcessName = $(if ($proc) { $proc.ProcessName } else { "unknown" })
-                ProcessId   = $conn[0].OwningProcess
+                ProcessId   = $listeners[0].ProcessId
+                Listeners   = $listeners
             }
         }
     } catch {
@@ -61,12 +69,15 @@ function Test-WindowsPortInUse {
                     InUse       = $true
                     ProcessName = $(if ($proc) { $proc.ProcessName } else { "pid $pid_" })
                     ProcessId   = [int]$pid_
+                    # The legacy fallback does not enumerate every local bind.
+                    # It can report a conflict but cannot prove reuse is safe.
+                    Listeners   = @()
                 }
             }
         } catch { }
     }
 
-    return @{ InUse = $false; ProcessName = ""; ProcessId = 0 }
+    return @{ InUse = $false; ProcessName = ""; ProcessId = 0; Listeners = @() }
 }
 
 function Resolve-WindowsLlmPreflightPort {
@@ -152,16 +163,163 @@ function Test-WindowsODSLemonadeOwnsPort {
         return $false
     }
 
-    $listenerPid = [int]$PortResult.ProcessId
-    return [bool]@($LemonadeProcesses | Where-Object {
-        $_.ProcessId -and [int]$_.ProcessId -eq $listenerPid
-    }).Count
+    $listeners = @($PortResult.Listeners)
+    if (-not $listeners.Count) { return $false }
+    foreach ($listener in $listeners) {
+        $listenerPid = [int]$listener.ProcessId
+        if (-not $listenerPid -or -not @($LemonadeProcesses | Where-Object {
+            $_.ProcessId -and [int]$_.ProcessId -eq $listenerPid
+        }).Count) { return $false }
+    }
+    return $true
+}
+
+function Get-WindowsODSExpectedComposeService {
+    param([string]$ServiceLabel)
+    $services = @{
+        'Open WebUI (chat)' = 'open-webui'
+        'Dashboard' = 'dashboard'
+        'Dashboard API' = 'dashboard-api'
+        'llama-server (LLM)' = 'llama-server'
+        'LiteLLM (API gateway)' = 'litellm'
+        'SearXNG (search)' = 'searxng'
+        'Token Spy (usage monitor)' = 'token-spy'
+        'Whisper (STT)' = 'whisper'
+        'Kokoro (TTS)' = 'tts'
+        'n8n (workflows)' = 'n8n'
+        'Qdrant (vector DB)' = 'qdrant'
+        'TEI (embeddings)' = 'embeddings'
+        'Hermes auth proxy' = 'hermes-proxy'
+        'OpenClaw (agents)' = 'openclaw'
+        'ComfyUI (image generation)' = 'comfyui'
+        'APE (agent policy engine)' = 'ape'
+        'Perplexica (deep research)' = 'perplexica'
+        'Privacy Shield' = 'privacy-shield'
+    }
+    return $services[$ServiceLabel]
+}
+
+function Get-WindowsODSComposePortBindings {
+    param([string]$InstallDir)
+
+    $unknown = @{ Verified = $false; Bindings = @(); ExpectedRoot = '' }
+    if ([string]::IsNullOrWhiteSpace($InstallDir) -or
+        -not [IO.Path]::IsPathRooted($InstallDir) -or
+        -not (Get-Command docker -ErrorAction SilentlyContinue)) {
+        return $unknown
+    }
+    try {
+        $expected = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
+        # Inspect every running container. A second project may temporarily
+        # advertise the same endpoint during a Docker Desktop port transfer.
+        $ids = @(& docker ps --format '{{.ID}}' 2>$null)
+        if ($LASTEXITCODE -ne 0) { return $unknown }
+        $bindings = @()
+        foreach ($id in $ids) {
+            if ([string]::IsNullOrWhiteSpace([string]$id)) { continue }
+            $raw = @(& docker container inspect ([string]$id) 2>$null)
+            if ($LASTEXITCODE -ne 0 -or -not $raw.Count) { return $unknown }
+            $items = @(($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
+            if ($items.Count -ne 1) { return $unknown }
+            $container = $items[0]
+            if (-not $container.State.Running -or
+                [string]::IsNullOrWhiteSpace([string]$container.Id)) {
+                return $unknown
+            }
+            $labels = $container.Config.Labels
+            $workingDir = [string]$labels.'com.docker.compose.project.working_dir'
+            $actual = ''
+            if (-not [string]::IsNullOrWhiteSpace($workingDir) -and
+                [IO.Path]::IsPathRooted($workingDir)) {
+                $actual = [IO.Path]::GetFullPath($workingDir).TrimEnd('\', '/')
+            }
+            if (-not $container.NetworkSettings.Ports) { continue }
+            foreach ($publishedPort in $container.NetworkSettings.Ports.PSObject.Properties) {
+                if ($publishedPort.Name -notmatch '/tcp$') { continue }
+                foreach ($entry in @($publishedPort.Value)) {
+                    if (-not $entry) { continue }
+                    $hostPort = 0
+                    if (-not [int]::TryParse([string]$entry.HostPort, [ref]$hostPort) -or
+                        $hostPort -lt 1 -or $hostPort -gt 65535 -or
+                        [string]::IsNullOrWhiteSpace([string]$entry.HostIp)) {
+                        return $unknown
+                    }
+                    $bindings += [pscustomobject]@{
+                        ContainerId = [string]$container.Id
+                        Project = [string]$labels.'com.docker.compose.project'
+                        WorkingDir = $actual
+                        Service = [string]$labels.'com.docker.compose.service'
+                        HostIp = [string]$entry.HostIp
+                        HostPort = $hostPort
+                    }
+                }
+            }
+        }
+        return @{ Verified = $true; Bindings = @($bindings); ExpectedRoot = $expected }
+    } catch {
+        # Missing, changing, or malformed Docker metadata is never authority to
+        # bypass the ordinary occupied-port gate.
+        return $unknown
+    }
+}
+
+function Test-WindowsODSDockerBrokerListener {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+        if (-not $process -or [string]::IsNullOrWhiteSpace($programFiles) -or
+            -not [string]::Equals([string]$process.ProcessName,
+                'com.docker.backend', [StringComparison]::OrdinalIgnoreCase) -or
+            -not [IO.Path]::IsPathRooted([string]$process.Path)) { return $false }
+        $expected = [IO.Path]::GetFullPath((Join-Path $programFiles `
+            'Docker\Docker\resources\com.docker.backend.exe'))
+        $actual = [IO.Path]::GetFullPath([string]$process.Path)
+        return [string]::Equals($actual, $expected,
+            [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Test-WindowsODSComposeOwnsListeners {
+    param(
+        [hashtable]$PortResult,
+        [int]$Port,
+        [string]$Service,
+        [hashtable]$Ownership
+    )
+    if (-not $PortResult.InUse -or -not $Ownership.Verified -or
+        [string]::IsNullOrWhiteSpace($Service)) { return $false }
+    $listeners = @($PortResult.Listeners)
+    if (-not $listeners.Count) { return $false }
+    $seen = @{}
+    foreach ($listener in $listeners) {
+        $address = [string]$listener.LocalAddress
+        if ([string]::IsNullOrWhiteSpace($address) -or
+            [int]$listener.LocalPort -ne $Port -or
+            -not (Test-WindowsODSDockerBrokerListener -ProcessId ([int]$listener.ProcessId)) -or
+            $seen.ContainsKey($address)) { return $false }
+        $seen[$address] = $true
+        $bindingMatches = @($Ownership.Bindings | Where-Object {
+            $_.HostPort -eq $Port -and $_.HostIp -eq $address
+        })
+        if ($bindingMatches.Count -ne 1) { return $false }
+        $binding = $bindingMatches[0]
+        if ($binding.Project -ne 'ods' -or $binding.Service -ne $Service -or
+            -not [string]::Equals([string]$binding.WorkingDir,
+                [string]$Ownership.ExpectedRoot,
+                [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    }
+    return $true
 }
 
 function Get-WindowsODSSelectedPortConflicts {
     param(
         [System.Collections.IDictionary]$PortsToCheck,
-        [switch]$UsesNativeLemonade
+        [switch]$UsesNativeLemonade,
+        [string]$InstallDir = ''
     )
 
     $managedLemonadeProcesses = @()
@@ -169,6 +327,7 @@ function Get-WindowsODSSelectedPortConflicts {
         $managedLemonadeProcesses = @(Get-WindowsODSLemonadeProcesses)
     }
     $conflicts = @()
+    $ownership = $null
     foreach ($service in $PortsToCheck.Keys) {
         $port = [int]$PortsToCheck[$service]
         $result = Test-WindowsPortInUse -Port $port
@@ -179,6 +338,17 @@ function Get-WindowsODSSelectedPortConflicts {
                 -LemonadeProcesses $managedLemonadeProcesses)) {
             Write-AI "  Port $port is already owned by the managed Lemonade runtime; it will be reused."
             continue
+        }
+        $composeService = Get-WindowsODSExpectedComposeService -ServiceLabel $service
+        if ($composeService -and $InstallDir) {
+            if ($null -eq $ownership) {
+                $ownership = Get-WindowsODSComposePortBindings -InstallDir $InstallDir
+            }
+            if (Test-WindowsODSComposeOwnsListeners -PortResult $result -Port $port `
+                -Service $composeService -Ownership $ownership) {
+                Write-AI "  Port $port belongs to this ODS installation's $composeService container; continuing."
+                continue
+            }
         }
         $conflicts += "  Port $port ($service) in use by: $($result.ProcessName) (PID $($result.ProcessId))"
     }
@@ -334,7 +504,8 @@ if ($enableHermes -or $enableOpenClaw) {
     $_portsToCheck["APE (agent policy engine)"] = 7890
 }
 if ($enableComfyui) {
-    $_portsToCheck["ComfyUI (image generation)"] = 8188
+    $_portsToCheck["ComfyUI (image generation)"] = Resolve-WindowsODSPort `
+        -Name "COMFYUI_PORT" -DefaultPort 8188 -InstallDir $installDir
 }
 if ($enableDeepResearch) {
     $_portsToCheck["Perplexica (deep research)"] = 3004
@@ -344,7 +515,8 @@ if ($enablePrivacyShield) {
 }
 
 $_portConflicts = @(Get-WindowsODSSelectedPortConflicts `
-    -PortsToCheck $_portsToCheck -UsesNativeLemonade:$_usesNativeLemonade)
+    -PortsToCheck $_portsToCheck -UsesNativeLemonade:$_usesNativeLemonade `
+    -InstallDir $installDir)
 if (-not (Assert-WindowsODSSelectedPortAvailability `
     -Conflicts $_portConflicts -NonInteractive:$nonInteractive `
     -Force:$force -DryRun:$dryRun)) {
