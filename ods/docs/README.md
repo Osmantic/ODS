@@ -205,5 +205,4 @@ canonical source and treat older recipes as context.
 | [../SECURITY.md](../SECURITY.md) | Everyone | Security guide and disclosure |
 | [../../SECURITY_AUDIT.md](../../SECURITY_AUDIT.md) | Maintainers / reviewers | Historical security audit with current remediation status and receipts |
 | [../CHANGELOG.md](../CHANGELOG.md) | Everyone | Version history |
-| [COMPOSABILITY-EXECUTION-BOARD.md](COMPOSABILITY-EXECUTION-BOARD.md) | Maintainers | Internal project tracking |
 | [OSS-LAUNCH-CHECKLIST.md](OSS-LAUNCH-CHECKLIST.md) | Maintainers | Open-source launch tasks |
