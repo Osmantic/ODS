@@ -8,13 +8,15 @@ on:
     branches: [main]
     paths:
       - "ods/extensions/library/services/**"
-      - "ods/extensions/library/validate-compose.sh"
+      - "ods/docker-compose.base.yml"
+      - ".github/scripts/validate-library-compose.sh"
       - ".github/workflows/validate-library-compose.yml"
   pull_request:
     branches: [main]
     paths:
       - "ods/extensions/library/services/**"
-      - "ods/extensions/library/validate-compose.sh"
+      - "ods/docker-compose.base.yml"
+      - ".github/scripts/validate-library-compose.sh"
       - ".github/workflows/validate-library-compose.yml"
 
 permissions:
@@ -30,5 +32,5 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: docker compose config for every recipe
-        run: bash ods/extensions/library/validate-compose.sh
+      - name: docker compose config for every recipe on the core stack
+        run: bash .github/scripts/validate-library-compose.sh
