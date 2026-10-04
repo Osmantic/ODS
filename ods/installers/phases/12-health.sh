@@ -319,7 +319,7 @@ elif content in (None, "") and reasoning and choice.get("finish_reason") == "len
     print("reasoning token received; one-token probe exhausted")
 else:
     raise SystemExit("completion response contained no usable inference token")
-' "$container_url" "$model" 2>&1
+' "${container_url:-}" "${model:-}" 2>&1
     )" || {
         ai_bad "External ${provider} probe did not return a usable inference token."
         ai "Check the saved probe error for provider response or connectivity problems before changing network settings."

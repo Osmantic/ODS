@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 PHASE = Path(__file__).resolve().parents[1] / "installers/phases/12-health.sh"
 SOURCE = PHASE.read_text().split('exec -i "$dashboard_container" python -c \'', 1)[1]
-PROBE = compile(SOURCE.split('\' "$container_url" "$model"', 1)[0], str(PHASE), "exec")
+PROBE = compile(SOURCE.split('\' "${container_url:-}" "${model:-}"', 1)[0], str(PHASE), "exec")
 
 
 class CompletionProbeTests(unittest.TestCase):
