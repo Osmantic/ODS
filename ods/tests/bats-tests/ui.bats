@@ -307,6 +307,17 @@ setup() {
     refute_output --partial "Your data never leaves"
 }
 
+@test "show_success_card: shows the LAN address only when one is given" {
+    export ODS_MODE="local"
+    run show_success_card "" "http://localhost:3001" "192.168.1.20:3011"
+    assert_success
+    assert_output --partial "Access from other devices"
+    assert_output --partial "http://192.168.1.20:3011"
+    run show_success_card "" "http://localhost:3001" ""
+    assert_success
+    refute_output --partial "Access from other devices"
+}
+
 @test "show_success_card: cloud mode discloses provider data flow" {
     export ODS_MODE="cloud"
     run show_success_card "http://localhost:3000" "http://localhost:3001" ""

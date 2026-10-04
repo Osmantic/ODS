@@ -59,8 +59,17 @@ else
     if [[ -z "$_summary_chat_url" && "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _summary_chat_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel"
     fi
-    show_success_card "$_summary_chat_url" "http://localhost:3001" "$LOCAL_IP"
-    unset _summary_chat_url
+    # Port 3001 is loopback-only. Other devices reach the Dashboard on the
+    # sign-in listener, and only when LAN access is enabled.
+    _summary_lan_address=""
+    _summary_bind="$(sed -n 's/^BIND_ADDRESS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+    if [[ -n "$LOCAL_IP" && "$_summary_bind" == "0.0.0.0" ]]; then
+        _summary_remote_port="$(sed -n 's/^DASHBOARD_REMOTE_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+        [[ "$_summary_remote_port" =~ ^[0-9]+$ ]] || _summary_remote_port=3011
+        _summary_lan_address="${LOCAL_IP}:${_summary_remote_port}"
+    fi
+    show_success_card "$_summary_chat_url" "http://localhost:3001" "$_summary_lan_address"
+    unset _summary_chat_url _summary_lan_address _summary_bind _summary_remote_port
 fi
 
 # Mark the setup wizard as already completed for fresh installs. The

@@ -293,6 +293,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tier map, the same way `ods model swap` does, and marks models that are
   already downloaded. It used to print a hard-coded list that still named
   retired tier models.
+- The Linux installer's success card no longer tells you to open
+  `http://<your-ip>:3001` from other devices. That port only listens on
+  localhost. The card now shows the Dashboard's LAN address
+  (`http://<your-ip>:3011`, sign-in required) only when LAN access is
+  enabled.
 - The Qwen3.5-2B model used for CPU-only and lightweight installs, and as the
   fast-start bootstrap model, is now downloaded from a fixed Hugging Face
   commit and verified against its SHA-256 on Linux and macOS. The tier maps

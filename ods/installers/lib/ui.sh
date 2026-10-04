@@ -735,7 +735,7 @@ show_install_menu() {
 show_success_card() {
     local webui_url=$1
     local dashboard_url=$2
-    local ip_addr=$3
+    local lan_address=$3  # host:port other devices can reach, or empty
 
     if ods_ui_cinematic; then
         printf '\a'  # terminal bell only for a human terminal
@@ -756,9 +756,9 @@ show_success_card() {
         printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
     fi
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
-    if [[ -n "$ip_addr" ]]; then
+    if [[ -n "$lan_address" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"
-        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${ip_addr}:3001"
+        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${lan_address}"
         echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     fi
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
