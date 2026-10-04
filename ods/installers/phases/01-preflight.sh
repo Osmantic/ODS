@@ -274,7 +274,7 @@ check_docker_desktop_sharing() {
     command -v docker >/dev/null 2>&1 || return 0
 
     local os_string=""
-    os_string=$(docker info --format '{{json .OperatingSystem}}' 2>/dev/null || true)
+    os_string=$(docker info --format '{{json .OperatingSystem}}' 2>>/dev/null || true)
     case "$os_string" in
         *"Docker Desktop"*) ;;
         *) return 0 ;;
