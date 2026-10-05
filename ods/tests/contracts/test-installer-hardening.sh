@@ -814,6 +814,7 @@ if PATH="$blackwell_bin:$PATH" bash -c '
   ai_bad() { :; }
   error() { echo "$1"; return 42; }
   source installers/lib/detection.sh
+  ods_is_wsl_host() { return 1; }
   validate_nvidia_blackwell_open_modules
 ' >"$tmpdir/blackwell-proprietary.out" 2>"$tmpdir/blackwell-proprietary.err"; then
   echo "[FAIL] proprietary Blackwell module should block install"
@@ -845,6 +846,7 @@ PATH="$open_bin:$PATH" bash -c '
   ai_bad() { :; }
   error() { echo "$1"; return 42; }
   source installers/lib/detection.sh
+  ods_is_wsl_host() { return 1; }
   validate_nvidia_blackwell_open_modules
 '
 

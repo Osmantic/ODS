@@ -100,7 +100,20 @@ def docker_path(transport):
         )
         or not info.st_mode & 0o111
     ):
-        raise ValueError("unsafe-inspection-docker")
+        raise ValueError(
+            "unsafe-inspection-docker: "
+            + json.dumps({
+                "path": str(path), "resolved": str(resolved),
+                "mode": oct(stat.S_IMODE(info.st_mode)),
+                "uid": info.st_uid, "gid": info.st_gid, "links": info.st_nlink,
+                "transport": transport,
+            }, sort_keys=True)
+            + ". The inspector requires a root-owned executable that cannot be "
+            "modified by other users. The read-only Docker Desktop WSL CLI is "
+            "accepted only when its mount and parent directories verify. "
+            "Check the resolved file and its mount with stat and findmnt; "
+            "do not chmod the Docker Desktop mount or disable this check."
+        )
     return str(path)
 
 

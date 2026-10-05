@@ -26,6 +26,24 @@ PROTOCOL_SPEC.loader.exec_module(protocol)
 IMAGE = "sha256:" + "a" * 64
 
 
+def test_rejected_docker_reports_custody_metadata(monkeypatch):
+    original_stat = Path.stat
+    binary = Path('/usr/bin/docker')
+    monkeypatch.setattr(Path, 'resolve', lambda path, **kwargs: path)
+    monkeypatch.setattr(Path, 'stat', lambda path, **kwargs:
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o777, st_uid=1000,
+                        st_gid=1000, st_nlink=1)
+        if path == binary else original_stat(path, **kwargs))
+    with pytest.raises(ValueError, match='unsafe-inspection-docker') as failure:
+        module.docker_path('local')
+    message = str(failure.value)
+    assert '"resolved": "/usr/bin/docker"' in message
+    assert '"mode": "0o777"' in message
+    assert '"uid": 1000' in message
+    assert '"transport": "local"' in message
+    assert 'do not chmod' in message
+
+
 @pytest.mark.parametrize('docker,socket', [
     ('/Applications/OrbStack.app/Contents/MacOS/xbin/docker', '/Users/owner/.orbstack/run/docker.sock'),
     ('/Applications/Docker.app/Contents/Resources/bin/docker', '/Users/owner/.docker/run/docker.sock'),

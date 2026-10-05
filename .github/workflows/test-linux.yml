@@ -289,7 +289,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Pixel Inspection Upgrade Cleanup Contracts
-        run: python3 -m pytest -q tests/test_pixel_inspection_upgrade_dispatch.py tests/test_preview_inspection_distribution.py tests/test_preview_select.py
+        run: python3 -m pytest -q tests/test_pixel_inspection_upgrade_dispatch.py tests/test_preview_inspection_distribution.py tests/test_preview_select.py tests/test_pixel_verify_lifecycle.py
 
       - name: Pixel Native Integration Contracts
         run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py

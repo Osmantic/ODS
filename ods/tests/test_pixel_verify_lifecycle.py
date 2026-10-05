@@ -377,13 +377,66 @@ def test_access_reproof_precedes_config_generating_bootstrap():
     reproof = "_ods_pixel_reprove_access_marker_if_needed \"$owner\" \"$home\""
     bootstrap = '"$pixel_root/pixel" bootstrap --apply'
     resume = '_ods_pixel_resume_completed_release "$owner" "$home"'
-    assert install.count(reproof) == 2
-    first = install.index(reproof)
-    second = install.index(reproof, first + len(reproof))
-    assert install.index("_ods_pixel_initial_unconfigured_marker \"$owner\" \"$home\"") < first
-    assert '[[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]' in install[:first]
-    assert first < install.index(bootstrap) < install.index(resume) < second
-    assert 'if [[ "$initial_access_reproved" != true ]]; then' in install[install.index(resume):second]
+    assert install.count(reproof) == 1
+    proof = install.index(reproof)
+    initial = install.index('_ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root"')
+    assert '[[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]' in install[:initial]
+    assert initial < install.index(bootstrap) < install.index(resume) < proof
+    assert 'if [[ "$initial_access_reproved" != true ]]; then' in install[install.index(resume):proof]
+
+
+@pytest.mark.parametrize('fault', [None, 'one-plugin', 'gateway', 'agent', 'plugin',
+    'disabled', 'integer-enabled', 'version', 'meta', 'writable', 'symlink',
+    'hardlink', 'active', 'ready', 'foreign', 'wrong-source'])
+def test_interrupted_first_bootstrap_accepts_only_inert_pinned_plugin_config(tmp_path, fault):
+    import json
+    import os
+    source = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    start = source.index('_ods_pixel_initial_unconfigured_marker() {')
+    helper = source[start:source.index('\n_ods_pixel_reprove_access_marker_if_needed() {', start)]
+    marker = tmp_path / '.config/ods/pixel-managed.json'
+    marker.parent.mkdir(parents=True)
+    value = dict(schema_version=2, manager='ods', state='installing',
+                 initial_active_state='absent', install_dir=str(tmp_path), pixel_source_ref='a' * 40)
+    if fault == 'ready': value['state'] = 'ready'
+    if fault == 'foreign': value['install_dir'] = '/another-install'
+    if fault == 'wrong-source': value['pixel_source_ref'] = 'b' * 40
+    marker.write_text(json.dumps(value))
+    config = tmp_path / '.openclaw/openclaw.json'
+    config.parent.mkdir()
+    document = dict(plugins={'entries': {key: {'enabled': True} for key in ('discord', 'searxng', 'llama-cpp')}},
+                    meta={'lastTouchedVersion': '2026.6.33', 'lastTouchedAt': '2026-10-05T17:40:13.020Z'})
+    if fault == 'one-plugin': document['plugins']['entries'] = {'discord': {'enabled': True}}
+    if fault == 'gateway': document['gateway'] = {'bind': 'lan'}
+    if fault == 'agent': document['agents'] = {'defaults': {'sandbox': {'mode': 'off'}}}
+    if fault == 'plugin': document['plugins']['entries']['ambient'] = {'enabled': True}
+    if fault == 'disabled': document['plugins']['entries']['discord']['enabled'] = False
+    if fault == 'integer-enabled': document['plugins']['entries']['discord']['enabled'] = 1
+    if fault == 'version': document['meta']['lastTouchedVersion'] = 'unreviewed'
+    if fault == 'meta': document['meta']['extra'] = True
+    config.write_text(json.dumps(document))
+    config.chmod(0o600 if fault != 'writable' else 0o666)
+    if fault == 'symlink':
+        target = config.with_name('target.json')
+        config.rename(target)
+        config.symlink_to(target)
+    if fault == 'hardlink': os.link(config, config.with_name('linked.json'))
+    if fault == 'active':
+        current = tmp_path / '.local/share/pixel/current'
+        current.parent.mkdir(parents=True)
+        current.symlink_to(current.parent / 'missing-release')
+    manifest = tmp_path / 'RELEASE-MANIFEST.json'
+    manifest.write_text(json.dumps({'openclaw': '2026.6.33'}))
+    before = config.read_bytes()
+    script = r'''
+set -eu
+INSTALL_DIR=$1
+PIXEL_SOURCE_REF=$(printf 'a%.0s' {1..40})
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+''' + helper + '\n_ods_pixel_initial_unconfigured_marker owner "$1" "$1"\n'
+    result = subprocess.run(['bash', '-c', script, 'test', str(tmp_path)], capture_output=True, text=True)
+    assert (result.returncode == 0) == (fault in (None, 'one-plugin')), result.stderr
+    assert config.read_bytes() == before
 
 
 def test_partial_release_reproof_waits_for_verified_resume(tmp_path):

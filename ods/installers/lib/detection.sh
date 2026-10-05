@@ -720,6 +720,9 @@ nvidia_kernel_module_flavor() {
 }
 
 validate_nvidia_blackwell_open_modules() {
+    # WSL uses the Windows display driver through /dev/dxg. Linux module
+    # metadata is not applicable and installing a Linux driver breaks it.
+    ods_is_wsl_host && return 0
     nvidia_blackwell_hardware_detected || return 0
 
     local flavor
@@ -746,6 +749,11 @@ validate_nvidia_blackwell_open_modules() {
 }
 
 fix_nvidia_secure_boot() {
+    if ods_is_wsl_host; then
+        ai_warn "NVIDIA GPU access is unavailable in WSL. Check the NVIDIA Windows driver and Docker Desktop GPU integration."
+        ai "Do not install NVIDIA drivers or change Secure Boot inside WSL."
+        return 1
+    fi
     # Step 1: Is there even NVIDIA hardware on this machine?
     if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
         return 1  # No hardware — nothing to fix

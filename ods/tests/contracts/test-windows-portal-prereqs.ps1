@@ -16,6 +16,29 @@ Check ((Get-ODSPortalDistroLauncherName 'Ubuntu-24.04') -eq 'ubuntu2404.exe') 'm
 Check ((Get-ODSPortalDistroLauncherName 'Ubuntu') -eq 'ubuntu.exe') 'maps Ubuntu to its launcher'
 Check ($null -eq (Get-ODSPortalDistroLauncherName 'Debian')) 'no launcher guess for other distros'
 
+foreach ($case in @(
+    @('Ubuntu-24.04', 'Ubuntu-24.04'),
+    @('Ubuntu Dev', '"Ubuntu Dev"'),
+    @('', '""'),
+    @('a"b', '"a\"b"'),
+    @('C:\with space\', '"C:\with space\\"'))) {
+    Check ((ConvertTo-ODSPortalProcessArgument $case[0]) -ceq $case[1]) 'process arguments preserve spaces, quotes and trailing backslashes'
+}
+
+$capturedConfig = & {
+    function Invoke-ODSPortalWslInput([string]$Distro, [string[]]$Command, [string]$Text) {
+        [pscustomobject]@{ Distro = $Distro; Command = $Command; Text = $Text }
+    }
+    Set-ODSPortalWslConf 'Ubuntu Dev' @('user', 'default', 'maria', 'boot', 'systemd', 'true')
+}
+Check ($capturedConfig.Distro -ceq 'Ubuntu Dev' -and ($capturedConfig.Command -join '|') -ceq '/bin/sh|-s|--|/etc/wsl.conf|user|default|maria|boot|systemd|true') 'first-account configuration uses the fixed shell writer before Python exists'
+Check ($capturedConfig.Text -match '^#!/bin/sh' -and $capturedConfig.Text -notmatch 'python3') 'shell writer is loaded from the installer bundle'
+foreach ($settings in @(@('boot', 'systemd'), @('user', 'default', "maria`nroot"), @('boot', 'command', 'anything'))) {
+    $rejected = $false
+    try { Set-ODSPortalWslConf 'Ubuntu Dev' $settings } catch { $rejected = $true }
+    Check $rejected 'configuration rejects unsupported or malformed settings before calling WSL'
+}
+
 # The resume script must re-run the same entry point with the same options,
 # and hostile-looking values must stay literal strings.
 $options = [ordered]@{ Distro='Ubuntu-24.04'; Voice=[switch]$true; NoLangfuse=$true; DryRun=$true; InstallDir="/home/o'brien/ods `$(x)"; Tier=''; Rag=$false }
@@ -87,14 +110,14 @@ if ($IsLinux) {
         # Turning on systemd for an existing Ubuntu keeps its other wsl.conf settings.
         $env:PATH = $fake + [IO.Path]::PathSeparator + $env:PATH
         try { $null = Set-ODSPortalWslConf 'Ubuntu-24.04' @('boot', 'systemd', 'true') } finally { $env:PATH = $previousPath }
-        Check ((Get-Content -LiteralPath (Join-Path $fake 'args') -Raw).Trim() -eq '--distribution Ubuntu-24.04 --user root --exec python3 - boot systemd true') 'wsl.conf writer runs as root with fixed arguments'
+        Check ((Get-Content -LiteralPath (Join-Path $fake 'args') -Raw).Trim() -eq '--distribution Ubuntu-24.04 --user root --exec /bin/sh -s -- /etc/wsl.conf boot systemd true') 'wsl.conf writer runs as root without Python'
         $conf = Join-Path $fake 'wsl.conf'
         Set-Content -LiteralPath $conf -Value "[user]`ndefault=maria`n`n[network]`nhostname=pc`n" -NoNewline
-        $writer = (Get-Content -LiteralPath (Join-Path $fake 'stdin') -Raw).Replace("'/etc/wsl.conf'", "'" + $conf + "'")
-        $writer | python3 - boot systemd true
+        $writer = Get-Content -LiteralPath (Join-Path $fake 'stdin') -Raw
+        $writer | /bin/sh -s -- $conf boot systemd true
         Check ($LASTEXITCODE -eq 0) 'wsl.conf writer succeeds on an existing file'
         $written = Get-Content -LiteralPath $conf -Raw
-        Check ($written -match '(?m)^default = maria$' -and $written -match '(?m)^hostname = pc$' -and $written -match '(?ms)^\[boot\]\s+systemd = true') 'wsl.conf writer adds systemd and keeps existing settings'
+        Check ($written -match '(?m)^default=maria$' -and $written -match '(?m)^hostname=pc$' -and $written -match '(?ms)^\[boot\]\s+systemd = true') 'wsl.conf writer adds systemd and keeps existing settings'
     } finally { Remove-Item -LiteralPath $fake -Recurse -Force }
 }
 

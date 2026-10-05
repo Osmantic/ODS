@@ -347,6 +347,19 @@ _ods_pixel_source_transition_required() {
     [[ "$state" =~ ^(ready|installing|deactivating)$ \
         && "$source_ref" =~ ^[0-9a-f]{40}$ ]] || return 2
     [[ "$state" == deactivating || "$source_ref" != "$requested_ref" ]] && return 0
+    # An interrupted bootstrap has not installed a release or access
+    # coordinator yet. There is no authority baseline to migrate. Keep the
+    # ordinary source-copy path only for the exact inert initial state.
+    if [[ "$state" == installing \
+        && ! -e /var/lib/ods-pixel-access && ! -L /var/lib/ods-pixel-access \
+        && ! -e /etc/ods/pixel-access.json && ! -L /etc/ods/pixel-access.json \
+        && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
+        && ! -e /etc/systemd/system/openclaw-gateway.service \
+        && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
+        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
+            "$INSTALL_DIR/data/pixel/source-$source_ref"; then
+        return 1
+    fi
     # The Pixel pin alone does not identify the ODS host integration. Preserve
     # its installed source until cleanup can validate privileged mirrors, even
     # when an upgrade retains the same developer Pixel checkout.
@@ -2669,8 +2682,8 @@ _ods_pixel_initial_unconfigured_marker() {
     [[ -f "$home/.config/ods/pixel-managed.json" && ! -L "$home/.config/ods/pixel-managed.json" ]] || return 1
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
         "$home/.config/ods/pixel-managed.json" "$home/.openclaw/openclaw.json" \
-        "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" <<'PY'
-import json, os, pathlib, re, sys
+        "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" "${3:-}" <<'PY'
+import json, os, pathlib, re, stat, sys
 marker = json.load(open(sys.argv[1]))
 initial = (
     set(marker) == {"schema_version", "manager", "state", "initial_active_state",
@@ -2682,11 +2695,44 @@ initial = (
     and re.fullmatch(r"[0-9a-f]{40}", marker["pixel_source_ref"])
     and marker["pixel_source_ref"] == sys.argv[5]
 )
-raise SystemExit(0 if initial and not os.path.lexists(sys.argv[2]) and not any(
+if not initial or any(
     os.path.lexists(pathlib.Path(sys.argv[4]) / ".local/share/pixel" / name)
     for name in ("current", "runtime-attestation.json", ".ods-uninstall-current",
                  ".ods-uninstall-runtime-attestation")
-) else 1)
+):
+    raise SystemExit(1)
+config_path = pathlib.Path(sys.argv[2])
+if not os.path.lexists(config_path):
+    raise SystemExit(0)
+# A cancelled first bootstrap can leave only plugin-enable entries, before
+# configure/apply has created any gateway, agent, workspace or access mode.
+# Accept this exact inert shape, never an arbitrary partial configuration.
+fd = os.open(config_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+with os.fdopen(fd, 'rb') as handle:
+    info = os.fstat(handle.fileno())
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
+        raise SystemExit(1)
+    config = json.load(handle)
+if not sys.argv[6]:
+    raise SystemExit(1)
+manifest = json.loads((pathlib.Path(sys.argv[6]) / 'RELEASE-MANIFEST.json').read_text())
+plugins = config.get('plugins') if isinstance(config, dict) else None
+meta = config.get('meta') if isinstance(config, dict) else None
+if (set(config) != {'plugins', 'meta'} or not isinstance(plugins, dict)
+        or set(plugins) != {'entries'} or not isinstance(meta, dict)
+        or set(meta) != {'lastTouchedVersion', 'lastTouchedAt'}
+        or meta['lastTouchedVersion'] != manifest['openclaw']
+        or not isinstance(meta['lastTouchedAt'], str)
+        or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z', meta['lastTouchedAt'])):
+    raise SystemExit(1)
+entries = plugins['entries']
+if (not isinstance(entries, dict) or not entries
+        or not set(entries) <= {'discord', 'searxng', 'llama-cpp'}
+        or any(not isinstance(value, dict) or set(value) != {'enabled'}
+               or value['enabled'] is not True for value in entries.values())):
+    raise SystemExit(1)
+raise SystemExit(0)
 PY
 }
 
@@ -5266,15 +5312,11 @@ ods_pixel_install_default_agent() {
             return 1
         fi
     fi
-    # Only a proven first install may reprove before bootstrap creates its
-    # initial config. Retained and partial releases must resume their durable
+    # Only a proven first bootstrap (empty or plugin-only) has no access mode
+    # to reprove. Retained and partial releases must resume their durable
     # transition below before access-mode reproof, as they did previously.
     if [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]] \
-        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" >>"$pixel_log" 2>&1; then
-        if ! _ods_pixel_reprove_access_marker_if_needed "$owner" "$home" "" >>"$pixel_log" 2>&1; then
-            ai_bad "Pixel's initial access marker could not be verified before bootstrap. See $pixel_log."
-            return 1
-        fi
+        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
         initial_access_reproved=true
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
