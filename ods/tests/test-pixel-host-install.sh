@@ -544,6 +544,24 @@ inactive_home="$TEST_ROOT/inactive-conflict-home"
 inactive_pixel_root="$TEST_ROOT/inactive-conflict-source"
 inactive_release="$inactive_home/.local/share/pixel/releases/4.3.27"
 inactive_log="$TEST_ROOT/inactive-conflict-apply.log"
+for shared_error in \
+    'Shared live sandbox tag exists without an active Pixel release and is not valid for the reviewed candidate' \
+    'Shared live sandbox tag exists without an active Pixel release and does not match the reviewed candidate'; do
+    printf '[pixel] ERROR: %s\n' "$shared_error" >"$inactive_log"
+    check _ods_pixel_shared_sandbox_conflict "$owner" "$TEST_ROOT" "$inactive_log"
+done
+printf '%s\n' '[pixel] ERROR: Release already exists but is not byte-exact to the reviewed plan: /example' >"$inactive_log"
+if _ods_pixel_shared_sandbox_conflict "$owner" "$TEST_ROOT" "$inactive_log"; then
+    fail "inactive release directory was misclassified as a shared Docker tag conflict"
+else
+    pass "inactive release directory is distinct from retained Docker state"
+fi
+printf '%s\n' 'quoted [pixel] ERROR: Shared live sandbox tag exists without an active Pixel release and is not valid for the reviewed candidate' >"$inactive_log"
+if _ods_pixel_shared_sandbox_conflict "$owner" "$TEST_ROOT" "$inactive_log"; then
+    fail "non-exact shared tag diagnostic was accepted"
+else
+    pass "shared tag diagnostic requires the exact Pixel failure"
+fi
 mkdir -p "$inactive_home/.config/ods" "$inactive_release" "$inactive_pixel_root"
 chmod 0700 "$inactive_home/.config/ods" "$inactive_home/.local/share/pixel" \
     "$inactive_home/.local/share/pixel/releases"

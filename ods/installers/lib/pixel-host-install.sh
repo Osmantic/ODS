@@ -3107,6 +3107,17 @@ finally:
 PY
 }
 
+# Docker Desktop can retain this shared tag after its Ubuntu distribution was
+# removed. This is distinct from an inactive release directory on this host.
+# Never reinterpret another UID's image as our candidate or retire its tag.
+_ods_pixel_shared_sandbox_conflict() {
+    local owner="$1" home="$2" apply_log="$3"
+    ods_pixel_run_as_owner "$owner" "$home" grep -Fxq \
+        -e '[pixel] ERROR: Shared live sandbox tag exists without an active Pixel release and is not valid for the reviewed candidate' \
+        -e '[pixel] ERROR: Shared live sandbox tag exists without an active Pixel release and does not match the reviewed candidate' \
+        -- "$apply_log"
+}
+
 # Pixel deliberately preserves a release that was rolled back after live
 # mutation as audit evidence.  A later ODS retry can render a different plan
 # for the same Pixel version (for example after an ODS-managed route change),
@@ -5559,6 +5570,12 @@ ods_pixel_install_default_agent() {
                 ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
             else
                 ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
+                if _ods_pixel_shared_sandbox_conflict "$owner" "$home" "$apply_attempt"; then
+                    ai_bad "Pixel found a shared Docker sandbox image that does not match this installation. Recreating Ubuntu does not clear Docker Desktop images; the Linux UID may have changed."
+                    ai "No shared image tag was changed. Check the exact image and every installation using this Docker engine before recovery."
+                    ai "Recovery steps: $INSTALL_DIR/docs/WINDOWS-QUICKSTART.md (Retained Pixel sandbox after recreating Ubuntu). Apply evidence: $apply_attempt"
+                    return 1
+                fi
                 if _ods_pixel_retire_inactive_conflicting_release \
                     "$owner" "$home" "$pixel_root" "$apply_attempt" >>"$pixel_log" 2>&1; then
                     ai "Archived an exact, inactive ODS-owned Pixel release that conflicted with the current reviewed plan; retrying once..."

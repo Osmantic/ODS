@@ -235,6 +235,74 @@ cd $env:USERPROFILE\ods
 .\ods.ps1 uninstall --force
 ```
 
+## Retained Pixel sandbox after recreating Ubuntu
+
+Removing an Ubuntu distribution does not remove images from Docker Desktop.
+If Pixel reports `Shared live sandbox tag exists without an active Pixel release`,
+the shared `openclaw-sandbox:bookworm-slim` tag can still belong to the previous
+installation. For example, its sandbox can be built for UID 1000 while the new
+Ubuntu account is UID 1001. A matching Pixel version alone is insufficient.
+This is separate from the `unsafe-inspection-docker` executable-permissions error.
+
+In the new Ubuntu terminal, inspect the engine, current account, image and all
+containers using that image (including stopped containers):
+
+```bash
+id -u
+docker info --format '{{.ID}}'
+docker image inspect openclaw-sandbox:bookworm-slim \
+  --format 'ID={{.Id}} tags={{json .RepoTags}} user={{.Config.User}} labels={{json .Config.Labels}}'
+docker ps -a --no-trunc --filter ancestor=openclaw-sandbox:bookworm-slim \
+  --format '{{.ID}} {{.Names}} {{.Status}}'
+```
+
+No listed containers is necessary but does not prove that another WSL
+installation has stopped using this shared tag. Check those installations too.
+If any still uses it, stop here and retain the tag; use a separate Docker engine
+for the new deployment or retire the old deployment through its own uninstall.
+
+Only when you have confirmed the old installation is retired, preserve its exact
+image under another tag before removing **only the old shared tag**. Replace
+the placeholder below with the complete `sha256:...` ID from inspection. The
+retention tag includes that immutable image ID. Keep other Docker/Pixel
+installation work stopped during this operation: Docker does not provide an
+atomic compare-and-remove operation for tags shared by several installations.
+The checks below reject changed identities and any remaining containers.
+
+```bash
+(
+  set -euo pipefail
+  old_id='sha256:PASTE_FULL_64_HEX_ID'
+  [[ "$old_id" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo 'Enter the full old image ID.' >&2; exit 1; }
+  live='openclaw-sandbox:bookworm-slim'
+  retained="pixel-sandbox-retained:sha256-${old_id#sha256:}"
+  engine=$(docker info --format '{{.ID}}')
+  [[ -n "$engine" ]]
+  [[ $(docker image inspect "$live" --format '{{.Id}}') == "$old_id" ]]
+  consumers=$(docker ps -aq --filter "ancestor=$old_id")
+  [[ -z "$consumers" ]] || { echo 'Containers still reference this image; nothing changed.' >&2; exit 1; }
+  if docker image inspect "$retained" >/dev/null 2>&1; then
+    [[ $(docker image inspect "$retained" --format '{{.Id}}') == "$old_id" ]]
+  else
+    docker image tag "$old_id" "$retained"
+  fi
+  [[ $(docker image inspect "$retained" --format '{{.Id}}') == "$old_id" ]]
+  [[ $(docker info --format '{{.ID}}') == "$engine" ]]
+  [[ $(docker image inspect "$live" --format '{{.Id}}') == "$old_id" ]]
+  consumers=$(docker ps -aq --filter "ancestor=$old_id")
+  [[ -z "$consumers" ]]
+  docker image rm "$live"
+  printf 'Old image preserved as %s. Rerun the ODS installer.\n' "$retained"
+)
+```
+
+Do not use `--force`, remove the image by ID, prune images/volumes, or reset
+Docker Desktop. The retention tag keeps the old image available. Rerun the same
+ODS installation command: Pixel must validate and activate the new account's
+candidate itself. Do not retag the candidate manually or edit the UID labels.
+If image removal fails or any identity changed during review, stop and inspect
+the current state instead of retrying with force.
+
 ## Uninstall WSL ODS
 
 Inside Ubuntu, use your chosen runtime directory:
