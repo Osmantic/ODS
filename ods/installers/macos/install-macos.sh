@@ -581,6 +581,7 @@ if context < 1024:
     raise SystemExit("OpenCode requires at least 1024 context tokens")
 output_limit = min(32768, context // 4)
 provider_id = "llama-server"
+previous_model_ref = data.get("model")
 provider = data.setdefault("provider", {}).setdefault(provider_id, {})
 provider.update({
     "npm": "@ai-sdk/openai-compatible",
@@ -593,8 +594,32 @@ provider.update({
         }
     },
 })
-data["model"] = f"{provider_id}/{model_name}"
+model_ref = f"{provider_id}/{model_name}"
+data["model"] = model_ref
 data.setdefault("$schema", "https://opencode.ai/config.json")
+
+# The OpenCode web composer resolves an agent model before the root default.
+# Keep fresh built-in agents on ODS while preserving independent owner choices.
+agents = data.get("agent")
+if agents is None:
+    agents = {}
+    data["agent"] = agents
+if isinstance(agents, dict):
+    for name in ("build", "plan"):
+        agent = agents.get(name)
+        if agent is None:
+            agent = {}
+            agents[name] = agent
+        if not isinstance(agent, dict):
+            continue
+        selected = agent.get("model")
+        follows_previous_ods_route = (
+            isinstance(previous_model_ref, str)
+            and previous_model_ref.startswith(f"{provider_id}/")
+            and selected == previous_model_ref
+        )
+        if selected is None or follows_previous_ods_route:
+            agent["model"] = model_ref
 
 payload = json.dumps(data, indent=2) + "\n"
 
