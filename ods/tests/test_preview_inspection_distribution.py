@@ -191,7 +191,10 @@ def test_inspection_unit_supports_external_docker_daemon():
         ROOT / "extensions/services/pixel-agent/host/pixel-preview-inspection.service"
     ).read_text()
     assert "Requires=pixel-workspace-preview.service\n" in unit
-    assert "Wants=docker.service\n" in unit
+    # Ordering is useful for an enabled native daemon, but the inspector must
+    # never activate a different daemon behind the selected Desktop endpoint.
+    dependencies = [line for line in unit.splitlines() if line.startswith(('Wants=', 'Requires='))]
+    assert all('docker.service' not in line and 'docker.socket' not in line for line in dependencies)
     assert "After=docker.service pixel-workspace-preview.service\n" in unit
     assert "ProcSubset=pid\n" in unit
 
