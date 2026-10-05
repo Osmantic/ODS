@@ -1143,6 +1143,27 @@ test('shows a cancel control while downloading', () => {
   expect(cancelDownload).toHaveBeenCalledTimes(1)
 })
 
+test('shows plain active status during indeterminate fallback without backend diagnostics', () => {
+  useModelsMock.mockReturnValue(baseState({ models: [model()] }))
+  useDownloadProgressMock.mockReturnValue(baseDownloadState({
+    isDownloading: true,
+    progress: {
+      status: 'downloading',
+      model: 'qwen3.5-9b-q4',
+      indeterminate: true,
+      percent: null,
+      message: 'Retry 1/3: curl TLS error; Hugging Face Hub fallback active',
+    },
+  }))
+
+  renderModels()
+  expect(screen.getByText('Download active; progress is unavailable')).toBeVisible()
+  expect(screen.getByLabelText('Transfer active')).toBeVisible()
+  expect(screen.queryByText(/curl TLS error/)).not.toBeInTheDocument()
+  expect(screen.queryByText('68%')).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /cancel/i })).toBeEnabled()
+})
+
 test('shows cancellation state and errors without hiding active progress', () => {
   useModelsMock.mockReturnValue(baseState({ models: [model()] }))
   useDownloadProgressMock.mockReturnValue(baseDownloadState({

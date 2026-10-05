@@ -8943,6 +8943,7 @@ class TestModelDownloadFileIntegrity:
         child_envs = []
         status_path = install_dir / "data" / "model-download-status.json"
         part_tmp = install_dir / "data" / "models" / "hf-model.gguf.part"
+        part_tmp.write_bytes(b"stale curl partial")
 
         class HubProc:
             def __init__(self, cmd, *args, **kwargs):
@@ -8986,9 +8987,59 @@ class TestModelDownloadFileIntegrity:
         status = json.loads(status_path.read_text(encoding="utf-8"))
         assert status["status"] == "downloading"
         assert status["model"] == "hf-model.gguf"
-        assert status["bytesTotal"] == len(payload)
+        assert status["progressKind"] == "indeterminate"
+        assert status["bytesDownloaded"] == 0
+        assert status["bytesTotal"] == 0
         assert "curl exited with code 35" in status["error"]
         assert "Hugging Face Hub fallback active" in status["error"]
+
+    def test_huggingface_fallback_poll_does_not_restore_stale_curl_progress(
+        self, tmp_path, monkeypatch,
+    ):
+        payload = b"downloaded through hf hub"
+        model = {
+            "gguf_file": "hf-model.gguf",
+            "gguf_url": "https://huggingface.co/org/model-GGUF/resolve/main/hf-model.gguf",
+            "gguf_sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        install_dir = self._setup_env(tmp_path, monkeypatch, library_models=[model])
+        part_tmp = install_dir / "data" / "models" / "hf-model.gguf.part"
+        part_tmp.write_bytes(b"stale curl partial")
+        status_path = install_dir / "data" / "model-download-status.json"
+        observed = []
+
+        class FailedCurl:
+            def __init__(self, cmd, *args, **kwargs):
+                self.returncode = 35
+
+            def communicate(self, timeout=None):
+                return "", "TLS connection failed"
+
+            def kill(self):
+                self.returncode = -9
+
+        def fake_hub(_url, destination, _cancel, **kwargs):
+            _mod._write_model_status(
+                kwargs["status_path"], "downloading", kwargs["status_label"],
+                0, 0, "Hugging Face Hub fallback active",
+                progress_kind="indeterminate",
+            )
+            time.sleep(2.2)  # Allow the independent curl progress poll to run.
+            observed.append(json.loads(status_path.read_text(encoding="utf-8")))
+            destination.write_bytes(payload)
+            return True, ""
+
+        monkeypatch.setattr(_mod.subprocess, "Popen", FailedCurl)
+        monkeypatch.setattr(_mod, "_download_huggingface_artifact", fake_hub)
+        handler = _FakeHandler(json.dumps(model).encode("utf-8"))
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=5)
+        assert not _mod._model_download_thread.is_alive()
+        assert observed[0]["progressKind"] == "indeterminate"
+        assert observed[0]["bytesDownloaded"] == 0
+        assert observed[0]["bytesTotal"] == 0
+        assert (part_tmp.with_suffix("")).read_bytes() == payload
 
     def test_huggingface_fallback_timeout_is_bounded(self, tmp_path, monkeypatch):
         model = {
