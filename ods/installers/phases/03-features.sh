@@ -787,9 +787,10 @@ run_custom() {
   local n=${#LLAMA_GPUS_CUSTOM[@]}
   local min_rank=100
   if [[ $n -gt 1 ]]; then
+    local x y r
     for ((x=0; x<n; x++)); do
       for ((y=x+1; y<n; y++)); do
-        local r; r=$(get_rank "${LLAMA_GPUS_CUSTOM[$x]}" "${LLAMA_GPUS_CUSTOM[$y]}")
+        r=$(get_rank "${LLAMA_GPUS_CUSTOM[$x]}" "${LLAMA_GPUS_CUSTOM[$y]}" 2>/dev/null || echo 0)
         [[ $r -lt $min_rank ]] && min_rank=$r
       done
     done
