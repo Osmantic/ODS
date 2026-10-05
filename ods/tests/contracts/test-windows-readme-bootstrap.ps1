@@ -6,6 +6,10 @@ $quickstart = Get-Content -LiteralPath (Join-Path $root 'ods/docs/WINDOWS-QUICKS
 $pattern = '(?s)```powershell\s*(.*?)\s*```'
 $code = [regex]::Match($readme, $pattern).Groups[1].Value
 if (-not $code -or $code -cne [regex]::Match($quickstart, $pattern).Groups[1].Value) { throw 'Public Windows installation blocks differ.' }
+foreach ($relative in @('ods/README.md', 'ods/QUICKSTART.md', 'ods/docs/FAQ.md')) {
+    $document = (Get-Content -LiteralPath (Join-Path $root $relative) -Raw).Replace("`r`n", "`n")
+    if (-not $document.Contains($code.Replace("`r`n", "`n"))) { throw "Public Windows installation block differs in $relative." }
+}
 $tokens = $null; $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseInput($code, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count -or $ast.EndBlock.Statements.Count -ne 1) { throw 'Paste block must parse as one complete statement.' }

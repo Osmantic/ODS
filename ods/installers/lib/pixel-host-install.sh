@@ -356,7 +356,7 @@ _ods_pixel_source_transition_required() {
         && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
         && ! -e /etc/systemd/system/openclaw-gateway.service \
         && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
-        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
+        && PIXEL_SOURCE_REF="$requested_ref" _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
             "$INSTALL_DIR/data/pixel/source-$source_ref"; then
         return 1
     fi

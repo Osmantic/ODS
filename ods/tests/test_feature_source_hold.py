@@ -126,7 +126,7 @@ def test_initial_bootstrap_source_refresh_requires_absent_host_deployment(tmp_pa
         (tmp_path / 'state').symlink_to(tmp_path / 'missing')
     script = ('set -eu\nINSTALL_DIR=$1\n'
               '_ods_pixel_source_transition_state(){ printf "installing|%s\\n" "$3"; }\n'
-              '_ods_pixel_initial_unconfigured_marker(){ return ' + ('1' if artifact == 'configured' else '0') + '; }\n'
+              '_ods_pixel_initial_unconfigured_marker(){ test "${PIXEL_SOURCE_REF:?}" = "' + 'a'*40 + '" || exit 9; return ' + ('1' if artifact == 'configured' else '0') + '; }\n'
               '_ODS_PIXEL_FEATURE_SOURCE_CHANGED=true\n' + function + '\n'
               '_ods_pixel_source_transition_required owner "$1" ' + 'a'*40 + ' /candidate\n')
     result = subprocess.run(['bash', '-c', script, 'fixture', str(tmp_path)], capture_output=True, text=True)
