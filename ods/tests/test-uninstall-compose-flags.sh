@@ -45,10 +45,22 @@ emit_filtered() {
 if [[ "${1:-}" == "ps" ]]; then
     if [[ " $* " == *" label=com.docker.compose.project="* ||
           " $* " == *" label=com.docker.compose.project "* ]]; then
-        [[ -z "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]] || printf '%s\n' "$DOCKER_RESIDUAL_CONTAINER_ID"
-        if [[ -n "${DOCKER_PROFILE_STATE_FILE:-}" && -s "$DOCKER_PROFILE_STATE_FILE" ]]; then
-            cat "$DOCKER_PROFILE_STATE_FILE"
-        fi
+        # Docker's path-list scan uses formatted metadata, while the full
+        # ownership inspection still requests only immutable container IDs.
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            if [[ " $* " == *" --format "* ]]; then
+                printf '{"Id":"%s","workingDir":"%s","configFiles":"%s/docker-compose.base.yml"}\n' \
+                    "$container_id" "$INSTALL_DIR" "$INSTALL_DIR"
+            else
+                printf '%s\n' "$container_id"
+            fi
+        done < <(
+            [[ -z "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]] || printf '%s\n' "$DOCKER_RESIDUAL_CONTAINER_ID"
+            if [[ -n "${DOCKER_PROFILE_STATE_FILE:-}" && -s "$DOCKER_PROFILE_STATE_FILE" ]]; then
+                cat "$DOCKER_PROFILE_STATE_FILE"
+            fi
+        )
         exit 0
     fi
     NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
