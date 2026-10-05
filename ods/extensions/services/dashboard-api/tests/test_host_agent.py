@@ -212,7 +212,7 @@ def test_extension_start_and_disable_share_host_graph_lock(tmp_path, monkeypatch
 
 
 def test_host_selection_endpoint_requires_auth_and_preserves_batch(
-    monkeypatch, host_agent_wire_client,
+    monkeypatch, host_agent_wire_client, tmp_path,
 ):
     import threading
     import urllib.error
@@ -223,12 +223,28 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
 
     calls = []
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "selection-wire-secret")
-    monkeypatch.setattr(
-        _mod, "_apply_extension_selection",
-        lambda service_ids, activate, expected_sha256=None: calls.append(
-            (service_ids, activate, expected_sha256)
-        ) or ("enabled" if activate else "disabled"),
-    )
+    user_root = tmp_path / "user-extensions"
+    builtin_root = tmp_path / "builtins"
+    user_root.mkdir()
+    builtin_root.mkdir()
+    monkeypatch.setattr(ext_router, "USER_EXTENSIONS_DIR", user_root)
+    monkeypatch.setattr(ext_router, "EXTENSIONS_DIR", builtin_root)
+    for service_id in ("search", "consumer"):
+        directory = user_root / service_id
+        directory.mkdir()
+        (directory / "compose.yaml.disabled").write_text("services: {}\n")
+
+    def apply_selection(service_ids, activate, expected_sha256=None):
+        # Model the host's committed marker change as well as its wire receipt.
+        calls.append((service_ids, activate, expected_sha256))
+        for service_id in service_ids:
+            directory = user_root / service_id
+            before = "compose.yaml.disabled" if activate else "compose.yaml"
+            after = "compose.yaml" if activate else "compose.yaml.disabled"
+            (directory / before).rename(directory / after)
+        return "enabled" if activate else "disabled"
+
+    monkeypatch.setattr(_mod, "_apply_extension_selection", apply_selection)
     server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -251,6 +267,8 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
             post(body)
         assert rejected.value.code == 401
         assert calls == []
+        assert all((user_root / sid / "compose.yaml.disabled").is_file()
+                   for sid in ("search", "consumer"))
 
         host_agent_wire_client(server.server_address[1], key="selection-wire-secret")
         result = ext_router._select_extensions_on_host(
@@ -258,6 +276,9 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
         )
         assert result["action"] == "enabled"
         assert result["service_ids"] == ["search", "consumer"]
+        assert all((user_root / sid / "compose.yaml").is_file()
+                   and not (user_root / sid / "compose.yaml.disabled").exists()
+                   for sid in ("search", "consumer"))
         assert calls == [(["search", "consumer"], True, digests)]
 
         with pytest.raises(urllib.error.HTTPError) as rejected:
