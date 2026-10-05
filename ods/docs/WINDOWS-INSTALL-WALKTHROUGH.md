@@ -163,6 +163,12 @@ background.
 # Full stack with everything
 .\ods\installers\windows\install-windows.ps1 -All
 
+# Add OpenCode, Claude Code, and Codex CLI to an otherwise normal install
+.\ods\installers\windows\install-windows.ps1 -DevTools
+
+# Disable their login task on a rerun, without removing binaries or stopping a session
+.\ods\installers\windows\install-windows.ps1 -NoDevTools
+
 # Simulate installer planning without making changes
 .\ods\installers\windows\install-windows.ps1 -DryRun
 
@@ -173,6 +179,12 @@ background.
 $installDir = "D:\Apps\ods"
 .\ods\installers\windows\install-windows.ps1 -InstallDir $installDir
 ```
+
+Fresh native Windows installs skip the developer tools. A rerun keeps them
+selected only when the ODS OpenCode login task is enabled; a disabled task stays
+disabled. `-NoDevTools` disables that ODS-owned login task without deleting
+binaries or stopping a current session. The ODS host agent remains part of the
+install in either case.
 
 ---
 

@@ -210,6 +210,10 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1
 
+      - name: Windows Developer Tools Selection Contract
+        shell: pwsh
+        run: ./tests/test-windows-devtools-selection.ps1
+
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1

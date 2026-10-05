@@ -31,6 +31,8 @@
 #   .\install-windows.ps1 --Cloud          # Cloud-only (no local GPU)
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
+#   .\install-windows.ps1 -DevTools       # Install OpenCode, Claude Code, Codex CLI
+#   .\install-windows.ps1 -NoDevTools     # Disable their login task on a rerun
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
@@ -59,6 +61,8 @@ param(
     [switch]$Cloud,
     [switch]$Comfyui,
     [switch]$NoComfyui,
+    [switch]$DevTools,
+    [switch]$NoDevTools,
     [switch]$Lan,
     [switch]$Langfuse,
     [switch]$NoLangfuse,
@@ -93,6 +97,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "devtools-selection.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -126,12 +131,19 @@ $noHermesFlag   = $NoHermes.IsPresent
 $allFlag        = $All.IsPresent
 $comfyuiFlag    = $Comfyui.IsPresent
 $noComfyuiFlag  = $NoComfyui.IsPresent
+$devToolsFlag   = $DevTools.IsPresent
+$noDevToolsFlag = $NoDevTools.IsPresent
 $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
+$enableDevTools = Resolve-ODSWindowsDevToolsSelection `
+    -ExplicitEnable $devToolsFlag -ExplicitDisable $noDevToolsFlag -All $allFlag `
+    -TaskName $script:OPENCODE_TASK_NAME `
+    -ExpectedLauncher (Join-Path $script:OPENCODE_DIR 'start-opencode.ps1')
+$env:ODS_WINDOWS_DEVTOOLS_SELECTED = if ($enableDevTools) { 'true' } else { 'false' }
 
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
 function Get-UsableWindowsBash {
@@ -2003,6 +2015,7 @@ litellm_settings:
                 $wrapperContent = @"
 #!/bin/bash
 set -uo pipefail
+export ODS_WINDOWS_DEVTOOLS_SELECTED="$($enableDevTools.ToString().ToLowerInvariant())"
 mkdir -p "`$(dirname "$bashUpgradeLog")"
 echo "`$`$" > "$bashUpgradePidFile"
 exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($fullTierConfig.GgufUrl)" "$($fullTierConfig.GgufSha256)" "$($fullTierConfig.LlmModel)" "$($fullTierConfig.MaxContext)" "$($script:BOOTSTRAP_GGUF_FILE)" > "$bashUpgradeLog" 2> "$bashUpgradeErrLog" < /dev/null
@@ -2114,19 +2127,21 @@ if ($dryRun) {
 }
 
 # ── Service health checks ─────────────────────────────────────────────────────
-$opencodeSync = Sync-WindowsOpenCodeConfigFromEnv -InstallDir $installDir `
-    -GpuBackend $gpuInfo.Backend -UseLemonade:$useLemonade -CloudMode:$cloudMode `
-    -DefaultModelId $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel `
-    -DefaultContextLimit ([int]$tierConfig.MaxContext) -SkipIfUnavailable
-switch ($opencodeSync.Status) {
-    "created" {
-        Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
-    }
-    "updated" {
-        Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
-    }
-    "regenerated" {
-        Write-AISuccess "OpenCode config regenerated for active model (model: $($opencodeSync.ModelName))"
+if ($enableDevTools) {
+    $opencodeSync = Sync-WindowsOpenCodeConfigFromEnv -InstallDir $installDir `
+        -GpuBackend $gpuInfo.Backend -UseLemonade:$useLemonade -CloudMode:$cloudMode `
+        -DefaultModelId $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel `
+        -DefaultContextLimit ([int]$tierConfig.MaxContext) -SkipIfUnavailable
+    switch ($opencodeSync.Status) {
+        "created" {
+            Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
+        }
+        "updated" {
+            Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
+        }
+        "regenerated" {
+            Write-AISuccess "OpenCode config regenerated for active model (model: $($opencodeSync.ModelName))"
+        }
     }
 }
 
@@ -2595,12 +2610,23 @@ if ($SummaryJsonPath) {
             comfyui      = $enableComfyui
             deepResearch = $enableDeepResearch
             privacyShield = $enablePrivacyShield
+            devTools     = $enableDevTools
         }
         healthy    = $allHealthy
         timestamp  = (Get-Date -Format "o")
     }
     Write-Utf8NoBom -Path $SummaryJsonPath -Content ($summary | ConvertTo-Json -Depth 3)
     Write-AI "Summary written to $SummaryJsonPath"
+}
+
+# Commit an explicit opt-out only after installer setup and verification finish.
+# Preflight, model, or Compose failures must leave the existing login task as it was.
+if ($noDevToolsFlag -and -not $dryRun) {
+    if (Disable-ODSWindowsOpenCodeLoginTask `
+        -TaskName $script:OPENCODE_TASK_NAME `
+        -ExpectedLauncher (Join-Path $script:OPENCODE_DIR 'start-opencode.ps1')) {
+        Write-AI 'Disabled the ODS OpenCode login task; existing binaries and sessions remain.'
+    }
 }
 
 $global:LASTEXITCODE = 0
