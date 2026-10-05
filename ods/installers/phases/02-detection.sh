@@ -246,7 +246,7 @@ validate_nvidia_blackwell_open_modules
 if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     DRIVER_VERSION=""
     if raw_driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null); then
-        DRIVER_VERSION=$(echo "$raw_driver" | head -1 | cut -d. -f1)
+        DRIVER_VERSION=$(echo "$raw_driver" | head -1 | cut -d. -f1 | tr -dc '0-9')
     fi
     if [[ -n "$DRIVER_VERSION" && "$DRIVER_VERSION" =~ ^[0-9]+$ ]]; then
         log "NVIDIA driver: $DRIVER_VERSION"
