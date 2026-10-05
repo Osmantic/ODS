@@ -116,6 +116,13 @@ release_model_router_swap_gate() {
     fi
 }
 
+should_prewarm_hermes_prompt() {
+    local switchboard_mode="$1"
+    # Hermes uses ods/current through model-router in switchboard mode. Its
+    # warm-up would wait on the admission gate held by this same swap.
+    [[ "$switchboard_mode" != "enabled" || -z "${MODEL_ROUTER_SWAP_GATE_TOKEN:-}" ]]
+}
+
 acquire_model_router_swap_gate() {
     local switchboard_mode token drain_attempts state active queued gate consecutive_idle=0
     switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD | tr '[:upper:]' '[:lower:]')"
@@ -2128,29 +2135,31 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             # Hermes's skills sync + config bootstrap (start_period: 60s in
             # compose.yaml) plus a few decode tokens, short enough that a
             # broken Hermes doesn't stall the script forever.
-            log "Pre-warming Hermes system prompt (caches 14K-token prefill)..."
-            _hermes_ready=false
-            for _i in $(seq 1 30); do
-                if $DOCKER_CMD exec ods-hermes curl -sf --max-time 3 http://127.0.0.1:9119/api/status >/dev/null 2>&1; then
-                    _hermes_ready=true
-                    break
-                fi
-                sleep 2
-            done
-            if $_hermes_ready; then
-                # Git Bash rewrites leading-slash arguments passed to native
-                # Windows executables unless path conversion is disabled. Keep
-                # the container's Hermes path intact just as the live-config
-                # patch above keeps /opt/data/config.yaml intact.
-                if MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90 \
-                    /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
-                    >/dev/null 2>&1; then
-                    log "Hermes system prompt cached — first user prompt will be fast."
+            if should_prewarm_hermes_prompt "$_hermes_switchboard_mode"; then
+                log "Pre-warming Hermes system prompt (caches 14K-token prefill)..."
+                _hermes_ready=false
+                for _i in $(seq 1 30); do
+                    if $DOCKER_CMD exec ods-hermes curl -sf --max-time 3 http://127.0.0.1:9119/api/status >/dev/null 2>&1; then
+                        _hermes_ready=true
+                        break
+                    fi
+                    sleep 2
+                done
+                if $_hermes_ready; then
+                    # Git Bash rewrites leading-slash arguments passed to native
+                    # Windows executables unless path conversion is disabled.
+                    if MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes timeout 90 \
+                        /opt/hermes/.venv/bin/hermes -z "ping" --yolo \
+                        >/dev/null 2>&1; then
+                        log "Hermes system prompt cached — first user prompt will be fast."
+                    else
+                        log "WARNING: Hermes warm-up timed out (>90s). First user prompt will incur the full 14K-token prefill."
+                    fi
                 else
-                    log "WARNING: Hermes warm-up timed out (>90s). First user prompt will incur the full 14K-token prefill."
+                    log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."
                 fi
             else
-                log "WARNING: Hermes did not respond on /api/status within 60s; skipping system-prompt warm-up."
+                log "Skipping routed Hermes prompt warm-up while model-router admission is closed; first Hermes prompt may prefill its system prompt."
             fi
         else
             if [[ -f "$_hermes_live" && "$_hermes_live_host_patched" != "true" ]]; then
