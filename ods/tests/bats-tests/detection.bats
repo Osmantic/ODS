@@ -208,12 +208,17 @@ MOCK
     chmod +x "$BATS_TEST_TMPDIR/bin/nvidia-smi"
     export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
 
-    # Battlemage (Arc B580) device ID 0xe20b; the xe driver (not i915) exposes
-    # VRAM under tile0/physical_vram_size_bytes rather than lmem_total_bytes.
-    mkdir -p "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/tile0"
+    # Battlemage (Arc B580) device ID 0xe20b; the xe driver (not i915) has no
+    # lmem_total_bytes file, so VRAM falls back to the largest PCI BAR in the
+    # device's sysfs "resource" listing — the 16GiB region below.
+    mkdir -p "$BATS_TEST_TMPDIR/sys/class/drm/card0/device"
     echo "0x8086" > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/vendor"
     echo "0xe20b" > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/device"
-    echo $(( 16 * 1073741824 )) > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/tile0/physical_vram_size_bytes"
+    cat > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/resource" << 'RESOURCE'
+0x0000000080000000 0x0000000080ffffff 0x0000000000040200
+0x000000e000000000 0x000000e3ffffffff 0x000000000014220c
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+RESOURCE
     export ODS_DRM_SYS="$BATS_TEST_TMPDIR/sys/class/drm"
 
     detect_gpu || true

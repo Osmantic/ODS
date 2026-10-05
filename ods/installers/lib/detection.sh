@@ -470,12 +470,24 @@ detect_gpu() {
                 GPU_MEMORY_TYPE="discrete"
                 GPU_DEVICE_ID="$device"
                 GPU_COUNT=1
-                # VRAM size from sysfs: lmem_total_bytes (i915, Alchemist/DG2) or
-                # tile0/physical_vram_size_bytes (xe driver, Battlemage)
+                # VRAM size from sysfs: lmem_total_bytes (i915, Alchemist/DG2).
+                # The xe driver (Battlemage) exposes no equivalent total-VRAM
+                # stat file, so fall back to the size of the largest PCI BAR
+                # in the device's sysfs "resource" listing — on discrete Arc
+                # cards that BAR maps the full VRAM aperture.
                 local vram_bytes
-                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) \
-                    || vram_bytes=$(cat "$card_dir/tile0/physical_vram_size_bytes" 2>/dev/null) \
-                    || vram_bytes=0
+                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null)
+                if [[ -z "$vram_bytes" ]]; then
+                    vram_bytes=0
+                    if [[ -f "$card_dir/resource" ]]; then
+                        local bar_start bar_end bar_flags bar_size
+                        while read -r bar_start bar_end bar_flags; do
+                            [[ "$bar_start" =~ ^0x[0-9a-fA-F]+$ && "$bar_end" =~ ^0x[0-9a-fA-F]+$ ]] || continue
+                            bar_size=$(( bar_end - bar_start + 1 ))
+                            (( bar_size > vram_bytes )) && vram_bytes=$bar_size
+                        done < "$card_dir/resource"
+                    fi
+                fi
                 GPU_VRAM=$(( vram_bytes / 1048576 ))  # in MB
                 # Try marketing name from sysfs or lspci
                 if [[ -f "$card_dir/product_name" ]]; then

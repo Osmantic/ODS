@@ -36,8 +36,9 @@ Intel Arc B-series (Battlemage) cards ≥ 12 GB automatically map to the
 Battlemage cards (e.g. B580, B570, B50/B60 Pro) report PCI device IDs
 0xE202, 0xE209, 0xE20B-0xE20D, 0xE210-0xE212, 0xE216 and 0xE220-0xE223,
 which `detect_gpu()` in `installers/lib/detection.sh` recognizes alongside
-the Alchemist/DG2 IDs. Battlemage uses the `xe` kernel driver, so VRAM is
-read from `tile0/physical_vram_size_bytes` rather than `lmem_total_bytes`.
+the Alchemist/DG2 IDs. Battlemage uses the `xe` kernel driver, which exposes
+no `lmem_total_bytes`-equivalent stat file, so VRAM is instead read from the
+size of the largest PCI BAR in the device's sysfs `resource` listing.
 
 ---
 
