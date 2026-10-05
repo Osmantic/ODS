@@ -4,6 +4,10 @@
 #
 # Example: abc123def456...
 
+# Synthetic relay error-redaction hash: a hexadecimal sequence repeated four times.
+# The repository-wide history scan includes this test fixture from another branch.
+304b9550dd8068d26189384051c8d0b1e05576ce:ods/extensions/services/pixel-model-relay/tests/test_relay.py:generic-api-key:77
+
 # Test fixtures in privacy-shield PII scrubber tests (not real secrets)
 bc47367431025198fcbea19a54abcde8c30847fd:ods/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:125
 bc47367431025198fcbea19a54abcde8c30847fd:ods/extensions/services/privacy-shield/tests/test_pii_scrubber.py:generic-api-key:131
