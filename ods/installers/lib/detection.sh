@@ -722,6 +722,13 @@ nvidia_kernel_module_flavor() {
 validate_nvidia_blackwell_open_modules() {
     nvidia_blackwell_hardware_detected || return 0
 
+    # WSL uses the NVIDIA driver from Windows. It has no Linux NVIDIA kernel
+    # module to classify, and installing one in the distro breaks passthrough.
+    if ods_is_wsl_host; then
+        log "WSL uses the Windows NVIDIA driver; skipping Linux Blackwell kernel module check"
+        return 0
+    fi
+
     local flavor
     flavor="$(nvidia_kernel_module_flavor)"
     case "$flavor" in
@@ -746,7 +753,13 @@ validate_nvidia_blackwell_open_modules() {
 }
 
 fix_nvidia_secure_boot() {
-    # Step 1: Is there even NVIDIA hardware on this machine?
+    # WSL gets its NVIDIA driver from Windows, and lspci may not expose the GPU.
+    if ods_is_wsl_host; then
+        ai_warn "ODS could not detect an NVIDIA GPU in WSL. If you expected one, check the Windows NVIDIA driver and WSL GPU access; do not install a Linux NVIDIA driver in the distro."
+        return 1
+    fi
+
+    # Native Linux can inspect PCI hardware before attempting driver repair.
     if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
         return 1  # No hardware — nothing to fix
     fi
