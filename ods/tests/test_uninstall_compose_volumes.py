@@ -32,6 +32,7 @@ class FakeDocker:
         self.foreign = {"ods-pixel-retired-research", "ods-unrelated"}
         self.foreign_consumers = {}
         self.removed = []
+        self.uninspectable = set()
 
     @staticmethod
     def _volume(name, key):
@@ -86,9 +87,19 @@ class FakeDocker:
                 )]
                 ids.extend(self.foreign_consumers.get(volume_filter, []))
                 return "\n".join(ids)
+            if "--format" in args:
+                return "\n".join(json.dumps({
+                    "Id": row["Id"],
+                    "workingDir": row["Config"]["Labels"].get(
+                        "com.docker.compose.project.working_dir", ""),
+                    "configFiles": row["Config"]["Labels"].get(
+                        "com.docker.compose.project.config_files", ""),
+                }) for row in visible)
             return "\n".join(row["Id"] for row in visible)
         if args[0] == "inspect":
             wanted = set(args[1:])
+            if wanted & self.uninspectable:
+                raise ValueError("Docker inspect inspection failed (exit 1)")
             return json.dumps([row for row in self.containers if row["Id"] in wanted])
         if args[:2] == ("volume", "ls"):
             if any(arg.startswith("label=com.docker.compose.project=") for arg in args):
@@ -248,6 +259,44 @@ class UninstallVolumeTests(unittest.TestCase):
         other["Config"]["Labels"]["com.docker.compose.project"] = "other"
         self.fake.containers = [other]
         MODULE.postflight_containers(self.root, self.snapshot)
+
+    def test_uninspectable_foreign_record_does_not_block_owned_cleanup(self):
+        other = self.fake._container(Path("/other/project"))
+        other["Id"] = "b" * 64
+        other["Config"]["Labels"]["com.docker.compose.project"] = "other"
+        other["Mounts"] = []
+        self.fake.containers.append(other)
+        self.fake.uninspectable.add(other["Id"])
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = [other]
+        MODULE.postflight_containers(self.root, self.snapshot)
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(set(self.fake.removed), {
+            "ods_perplexica-data", "ods_perplexica-uploads",
+        })
+
+    def test_uninspectable_owned_record_still_blocks_before_mutation(self):
+        self.fake.uninspectable.add(CONTAINER_ID)
+        with self.assertRaisesRegex(ValueError, "Docker inspect"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+        self.assertEqual(self.snapshot.stat().st_size, 0)
+
+    def test_renamed_uninspectable_project_with_only_config_path_still_blocks(self):
+        labels = self.fake.containers[0]["Config"]["Labels"]
+        labels["com.docker.compose.project"] = "ods-old"
+        labels["com.docker.compose.project.working_dir"] = "/other/project"
+        self.fake.uninspectable.add(CONTAINER_ID)
+        with self.assertRaisesRegex(ValueError, "another project still reference"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_invalid_path_listing_is_not_treated_as_empty(self):
+        for listing in ('{}', '{"Id": "bad", "workingDir":"", "configFiles":""}',
+                        json.dumps({"Id":CONTAINER_ID,"workingDir":[],"configFiles":""})):
+            with self.subTest(listing=listing), patch.object(MODULE, "docker", return_value=listing):
+                with self.assertRaisesRegex(ValueError, "invalid container path listing"):
+                    MODULE.install_root_containers(self.root)
 
     def test_volume_replacement_after_preflight_is_not_deleted(self):
         MODULE.preflight(self.root, self.snapshot, [])

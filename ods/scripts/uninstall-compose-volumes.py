@@ -223,30 +223,33 @@ def project_containers(
 
 def install_root_containers(root: Path) -> set[str]:
     """Find Compose containers still tied to this tree across project renames."""
-    ids = docker(root, "ps", "--all", "--quiet", "--no-trunc", "--filter",
-                 f"label={PROJECT_LABEL}").split()
-    if any(not CONTAINER_RE.fullmatch(value) for value in ids):
-        raise ValueError("Docker returned invalid container identity")
+    # This scan only blocks removal; project_containers separately inspects
+    # every resource whose ownership can authorize cleanup. Read path labels
+    # from the list response so an uninspectable, unrelated Desktop record
+    # cannot prevent retiring this installation. Never suppress inspect errors
+    # for the selected project or ignore a renamed project using this tree.
+    template = (
+        '{"Id":{{json .ID}},'
+        '"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}},'
+        '"configFiles":{{json (.Label "com.docker.compose.project.config_files")}}}'
+    )
+    listing = docker(root, "ps", "--all", "--no-trunc", "--filter",
+                     f"label={PROJECT_LABEL}", "--format", template)
     base_files = {str((root / name).resolve()) for name in
                   ("docker-compose.base.yml", "docker-compose.yml")}
     found = set()
-    for offset in range(0, len(ids), 100):
-        batch = ids[offset:offset + 100]
-        inspected = rows(docker(root, "inspect", *batch), "container")
-        if len(inspected) != len(batch) or {row.get("Id") for row in inspected} != set(batch):
-            raise ValueError("Docker container inspection changed during preflight")
-        for row in inspected:
-            labels = (row.get("Config") or {}).get("Labels") or {}
-            if not isinstance(labels, dict):
-                raise ValueError("Docker returned invalid container labels")
-            working_dir = labels.get("com.docker.compose.project.working_dir")
-            files = labels.get("com.docker.compose.project.config_files")
-            first_file = files.split(",")[0] if isinstance(files, str) else None
-            if ((isinstance(working_dir, str) and os.path.isabs(working_dir)
-                 and os.path.realpath(working_dir) == str(root)) or
-                (first_file is not None and os.path.isabs(first_file)
-                 and os.path.realpath(first_file) in base_files)):
-                found.add(row["Id"])
+    for line in listing.splitlines():
+        row = json.loads(line)
+        if (not isinstance(row, dict) or set(row) != {"Id", "workingDir", "configFiles"}
+                or not isinstance(row["Id"], str) or not CONTAINER_RE.fullmatch(row["Id"])
+                or not isinstance(row["workingDir"], str)
+                or not isinstance(row["configFiles"], str)):
+            raise ValueError("Docker returned invalid container path listing")
+        working_dir = row["workingDir"]
+        first_file = row["configFiles"].split(",")[0]
+        if ((os.path.isabs(working_dir) and os.path.realpath(working_dir) == str(root))
+                or (os.path.isabs(first_file) and os.path.realpath(first_file) in base_files)):
+            found.add(row["Id"])
     return found
 
 
