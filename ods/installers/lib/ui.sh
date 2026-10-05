@@ -596,22 +596,29 @@ check_service() {
   return 1
 }
 
-# Show hardware summary — CRT monospace box
+# Show hardware summary — memory arguments include their display units.
 show_hardware_summary() {
     local gpu_name="$1"
     local gpu_vram="$2"
     local cpu_info="$3"
     local ram_gb="$4"
     local disk_gb="$5"
+    local windows_ram="${6:-}"
+    local is_wsl="${7:-false}"
 
     echo ""
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     echo -e "${GRN}|${NC}  ${BGRN}HARDWARE SCAN RESULTS${NC}                                      ${GRN}|${NC}"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     printf "${GRN}|${NC}  GPU:    %-50s ${GRN}|${NC}\n" "${gpu_name:-Not detected}"
-    [[ -n "$gpu_vram" ]] && printf "${GRN}|${NC}  VRAM:   %-50s ${GRN}|${NC}\n" "${gpu_vram}GB"
+    [[ -n "$gpu_vram" ]] && printf "${GRN}|${NC}  VRAM:   %-50s ${GRN}|${NC}\n" "$gpu_vram"
     printf "${GRN}|${NC}  CPU:    %-50s ${GRN}|${NC}\n" "${cpu_info:-Unknown}"
-    printf "${GRN}|${NC}  RAM:    %-50s ${GRN}|${NC}\n" "${ram_gb}GB"
+    if [[ "$is_wsl" == true ]]; then
+        printf "${GRN}|${NC}  Windows RAM: %-45s ${GRN}|${NC}\n" "${windows_ram:-Unavailable (Windows interop)}"
+        printf "${GRN}|${NC}  WSL RAM:     %-45s ${GRN}|${NC}\n" "$ram_gb"
+    else
+        printf "${GRN}|${NC}  RAM:    %-50s ${GRN}|${NC}\n" "$ram_gb"
+    fi
     printf "${GRN}|${NC}  Disk:   %-50s ${GRN}|${NC}\n" "${disk_gb}GB available"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
 }

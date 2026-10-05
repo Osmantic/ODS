@@ -14,7 +14,8 @@
 #           chapter(), ai(), ai_ok(), log(), warn(), success()
 # Provides: GPU_BACKEND, GPU_NAME, GPU_VRAM, GPU_COUNT, GPU_MEMORY_TYPE,
 #           TIER, TIER_NAME, LLM_MODEL, GGUF_FILE, GGUF_URL, MAX_CONTEXT,
-#           COMPOSE_FILE, COMPOSE_FLAGS, RAM_GB, MODEL_TIER_RAM_GB,
+#           COMPOSE_FILE, COMPOSE_FLAGS, RAM_KB, RAM_GB, MODEL_TIER_RAM_GB,
+#           WINDOWS_HOST_RAM_KB, RAM_IS_WSL,
 #           DISK_AVAIL, BACKEND_ID,
 #           LLM_HEALTHCHECK_URL, LLM_PUBLIC_API_PORT,
 #           GPU_TOPOLOGY_JSON, GPU_HAS_NVLINK, GPU_TOTAL_VRAM,
@@ -47,6 +48,23 @@ TIER_FORCED=false
 # environment; otherwise the retained .env value, then the hardware decides.
 AMD_INFERENCE_BACKEND_REQUESTED="${AMD_INFERENCE_BACKEND:-}"
 
+# Keep runtime budgets separate from the Windows physical memory report. This
+# shared probe also applies to cloud installs before their early return.
+ods_detect_runtime_ram || error "Could not read the runtime RAM capacity."
+_ram_display="$(ods_format_memory_kib "$RAM_KB")"
+_host_ram_display=""
+if [[ "$RAM_IS_WSL" == true ]]; then
+    _wsl_headroom_gb=$((RAM_GB - MODEL_TIER_RAM_GB))
+    if [[ -n "$WINDOWS_HOST_RAM_KB" ]]; then
+        _host_ram_display="$(ods_format_memory_kib "$WINDOWS_HOST_RAM_KB")"
+        log "WSL2 detected — Windows host RAM: ${_host_ram_display}; WSL RAM: ${_ram_display}; tier budget: ${MODEL_TIER_RAM_GB} GiB (${_wsl_headroom_gb} GiB reserved for ODS services)"
+    else
+        log "WSL2 detected — could not query Windows host RAM; WSL RAM: ${_ram_display}; tier budget: ${MODEL_TIER_RAM_GB} GiB (${_wsl_headroom_gb} GiB reserved for ODS services)"
+    fi
+else
+    log "RAM: ${_ram_display}"
+fi
+
 # Cloud mode: skip GPU detection entirely
 if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
     ai "Cloud mode — skipping GPU detection"
@@ -56,18 +74,6 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
     GPU_COUNT=0
     GPU_MEMORY_TYPE="none"
     TIER="CLOUD"
-    if grep -qi microsoft /proc/version 2>/dev/null; then
-        _wsl_host_kb="$(ods_wsl_host_ram_kb)" || _wsl_host_kb=""
-        if [[ -n "$_wsl_host_kb" ]]; then
-            RAM_KB="$_wsl_host_kb"
-        else
-            RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-        fi
-    else
-        RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    fi
-    RAM_GB=$((RAM_KB / 1024 / 1024))
-    MODEL_TIER_RAM_GB="$RAM_GB"
     DISK_AVAIL=$(df -Pk "$HOME" 2>/dev/null | tail -1 | awk '{printf "%d", $4 / 1048576}')
     BACKEND_ID="cpu"
     LLM_HEALTHCHECK_URL="http://127.0.0.1:4000/health/readiness"
@@ -76,7 +82,7 @@ if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
     resolve_tier_config
     if [[ "$INTERACTIVE" == "true" ]]; then
         success "Cloud mode: LLM via LiteLLM gateway (no GPU required)"
-        log "  RAM: ${RAM_GB}GB, Disk: ${DISK_AVAIL}GB"
+        log "  Runtime RAM: ${_ram_display}, Disk: ${DISK_AVAIL}GB"
     fi
     # Skip rest of detection phase
     return 0 2>/dev/null || true
@@ -85,31 +91,6 @@ fi
 ai "Reading hardware telemetry..."
 
 load_capability_profile || true
-
-# RAM detection. Runtime-profile eligibility must use the memory the VM can
-# actually address, not the Windows host's physical total. Keep a smaller
-# reserved value only for coarse tier selection; system_ram_min_gb profiles and
-# the persisted SYSTEM_RAM_GB contract describe actual addressable VM memory.
-if grep -qi microsoft /proc/version 2>/dev/null; then
-    _wsl_ram_kb="$(ods_wsl_host_ram_kb)" || _wsl_ram_kb=""
-    _wsl_vm_kb=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    RAM_KB="$_wsl_vm_kb"
-    RAM_GB=$((RAM_KB / 1024 / 1024))
-    MODEL_TIER_RAM_GB="$(ods_wsl_model_ram_budget "$RAM_GB")"
-    _wsl_headroom_gb=$((RAM_GB - MODEL_TIER_RAM_GB))
-    if [[ -n "$_wsl_ram_kb" && "$_wsl_ram_kb" =~ ^[0-9]+$ ]]; then
-        _wsl_host_gb=$((_wsl_ram_kb / 1024 / 1024))
-        log "WSL2 detected — Windows host RAM: ${_wsl_host_gb}GB; VM RAM: ${RAM_GB}GB; tier budget: ${MODEL_TIER_RAM_GB}GB (${_wsl_headroom_gb}GB reserved for ODS services)"
-    else
-        log "WSL2 detected — could not query Windows host RAM; VM RAM: ${RAM_GB}GB; tier budget: ${MODEL_TIER_RAM_GB}GB (${_wsl_headroom_gb}GB reserved for ODS services)"
-        log "For correct tier selection: use --tier N or configure .wslconfig"
-    fi
-else
-    RAM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
-    RAM_GB=$((RAM_KB / 1024 / 1024))
-    MODEL_TIER_RAM_GB="$RAM_GB"
-    log "RAM: ${RAM_GB}GB"
-fi
 
 # Disk Detection
 # Check free space on the filesystem where ODS will actually be installed.
@@ -797,9 +778,12 @@ if [[ "$INTERACTIVE" == "true" ]]; then
     # A host-native llama-server (Windows under WSL) runs the model on a GPU
     # this Linux probe cannot see; show that GPU instead of "None".
     if ods_native_llm_requested && [[ -n "${NATIVE_LLM_GPU_NAME:-}" ]]; then
-        show_hardware_summary "${NATIVE_LLM_GPU_NAME} (llama-server on Windows)" "$(( (${NATIVE_LLM_GPU_VRAM_MB:-0} + 512) / 1024 ))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
+        show_hardware_summary "${NATIVE_LLM_GPU_NAME} (llama-server on Windows)" "$(ods_format_vram_mib "${NATIVE_LLM_GPU_VRAM_MB:-0}")" "$CPU_INFO" "$_ram_display" "$DISK_AVAIL" "$_host_ram_display" "$RAM_IS_WSL"
     else
-        show_hardware_summary "$GPU_NAME" "$((GPU_VRAM / 1024))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
+        show_hardware_summary "$GPU_NAME" "$(ods_format_vram_mib "$GPU_VRAM")" "$CPU_INFO" "$_ram_display" "$DISK_AVAIL" "$_host_ram_display" "$RAM_IS_WSL"
+    fi
+    if [[ "$RAM_IS_WSL" == true ]]; then
+        ai "WSL has its own RAM limit; model sizing uses the WSL budget. To change it, edit .wslconfig and restart WSL."
     fi
 
     if [[ "$TIER" == "CLOUD" ]]; then

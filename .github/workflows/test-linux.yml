@@ -542,6 +542,8 @@ jobs:
           python3 tests/test-configure-wsl-model-store.py
           python3 tests/test-retire-wsl-runtime.py
           bash tests/test-native-llm-flags.sh
+          bash tests/test-wsl-memory-reporting.sh
+          bash tests/test-recover-retired-pixel-sandbox.sh
 
       - name: Pixel Public Source and Local Bundle Contract
         run: |

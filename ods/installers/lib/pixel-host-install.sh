@@ -5573,7 +5573,7 @@ ods_pixel_install_default_agent() {
                 if _ods_pixel_shared_sandbox_conflict "$owner" "$home" "$apply_attempt"; then
                     ai_bad "Pixel found a shared Docker sandbox image that does not match this installation. Recreating Ubuntu does not clear Docker Desktop images; the Linux UID may have changed."
                     ai "No shared image tag was changed. Check the exact image and every installation using this Docker engine before recovery."
-                    ai "Recovery steps: $INSTALL_DIR/docs/WINDOWS-QUICKSTART.md (Retained Pixel sandbox after recreating Ubuntu). Apply evidence: $apply_attempt"
+                    ai "After retiring the old installation, run in Ubuntu: bash \"$INSTALL_DIR/scripts/recover-retired-pixel-sandbox.sh\". It preserves the old image and requires your confirmation. Apply evidence: $apply_attempt"
                     return 1
                 fi
                 if _ods_pixel_retire_inactive_conflicting_release \

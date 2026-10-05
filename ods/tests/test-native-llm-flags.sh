@@ -169,14 +169,16 @@ ok "ODS_MODE=lemonade reads as local with a notice"
 card_source="$(extract '/# A host-native llama-server (Windows under WSL) runs the model on a GPU/,/^    fi$/p' \
     "$ROOT/installers/phases/02-detection.sh")"
 card() (
+    source "$ROOT/installers/lib/wsl-memory.sh"
     show_hardware_summary() { printf '%s|%s' "$1" "$2"; }
     GPU_NAME=None GPU_VRAM=0 CPU_INFO=cpu RAM_GB=47 DISK_AVAIL=896
+    _ram_display='47.0 GiB' _host_ram_display='' RAM_IS_WSL=true
     eval "$card_source"
 )
 shown="$(NATIVE_LLM_BASE_URL=http://localhost:8080 NATIVE_LLM_GPU_NAME='AMD Radeon RX 9070 XT' NATIVE_LLM_GPU_VRAM_MB=16304 card)"
-[[ "$shown" == "AMD Radeon RX 9070 XT (llama-server on Windows)|16" ]] || fail "hardware scan must show the Windows GPU: $shown"
+[[ "$shown" == "AMD Radeon RX 9070 XT (llama-server on Windows)|15.9 GiB (16304 MiB)" ]] || fail "hardware scan must show the Windows GPU: $shown"
 shown="$(NATIVE_LLM_BASE_URL='' NATIVE_LLM_GPU_NAME='AMD Radeon RX 9070 XT' NATIVE_LLM_GPU_VRAM_MB=16304 card)"
-[[ "$shown" == "None|0" ]] || fail "without the native route the Linux probe is shown: $shown"
+[[ "$shown" == "None|0.0 GiB (0 MiB)" ]] || fail "without the native route the Linux probe is shown: $shown"
 ok "the hardware scan shows the Windows GPU only for the native route"
 
 fallback_source="$(extract '/# No GPU detected - fall back to CPU-only mode/,/^    return 1$/p' "$ROOT/installers/lib/detection.sh")"
