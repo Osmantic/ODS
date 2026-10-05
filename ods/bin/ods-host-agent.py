@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import platform
+import plistlib
 import re
 import secrets
 import shlex
@@ -16819,6 +16820,13 @@ def _opencode_route(env: dict) -> tuple[str, str]:
             raise RuntimeError("LITELLM_KEY is required to update the OpenCode switchboard route")
         return f"http://127.0.0.1:{port}/v1", api_key
 
+    if platform.system() == "Darwin" and str(env.get("ODS_MODE") or "").lower() == "cloud":
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode Mac cloud route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
     if _opencode_external_model(env):
         port = str(env.get("LITELLM_PORT") or "4000")
         api_key = str(env.get("LITELLM_KEY") or "")
@@ -16853,6 +16861,8 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     provider_id = "llama-server"
     if _normal_switchboard_mode(env) == "enabled":
         return provider_id, "ods/current", "ods/current"
+    if platform.system() == "Darwin" and str(env.get("ODS_MODE") or "").lower() == "cloud":
+        return provider_id, "default", "default"
     external_model = _opencode_external_model(env)
     if external_model:
         return provider_id, external_model, external_model
@@ -17199,7 +17209,7 @@ def _restart_managed_opencode(state: dict | None = None) -> bool:
 # selected OpenCode" from "the installed service stopped", so the dashboard
 # used to show a permanent "Offline" entry on installs that never had it.
 # These helpers report the managed lifecycle explicitly and let the dashboard
-# start an installed service or, on Linux, set up the reviewed release.
+# start an installed service or set up the reviewed release on Linux/macOS.
 # ---------------------------------------------------------------------------
 
 _OPENCODE_LINUX_UNIT = "opencode-web.service"
@@ -17218,13 +17228,167 @@ def _opencode_macos_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{_OPENCODE_MACOS_LABEL}.plist"
 
 
+_OPENCODE_MACOS_WRAPPER = (
+    'dir="$1"; shift; rm -rf "$dir" && mkdir -p -m 0700 "$dir" '
+    '&& export BUN_TMPDIR="$dir" && exec "$@"'
+)
+
+
+def _opencode_macos_target() -> str:
+    return f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
+
+
+def _opencode_macos_bun_tmpdir() -> Path:
+    return Path.home() / "Library" / "Caches" / "ODS" / "opencode-bun-tmp"
+
+
+def _opencode_macos_arguments(binary: Path) -> list[str]:
+    return [
+        "/bin/sh", "-c", _OPENCODE_MACOS_WRAPPER, "ods-opencode-web",
+        str(_opencode_macos_bun_tmpdir()), str(binary), "web", "--port",
+        str(_opencode_port()), "--hostname", "127.0.0.1",
+    ]
+
+
+def _opencode_macos_plist_binary() -> Path | None:
+    """Recognize only the ODS installer's owner-controlled LaunchAgent."""
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        raise RuntimeError("OpenCode LaunchAgent ownership requires a Mac user id")
+    path = _opencode_macos_plist_path()
+    try:
+        parent_meta = path.parent.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat_mod.S_ISDIR(parent_meta.st_mode) or parent_meta.st_uid != getuid()
+            or stat_mod.S_IMODE(parent_meta.st_mode) & 0o022):
+        raise RuntimeError(f"OpenCode LaunchAgents directory is not owner-safe: {path.parent}")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if (not stat_mod.S_ISREG(metadata.st_mode) or metadata.st_uid != getuid()
+                    or stat_mod.S_IMODE(metadata.st_mode) & 0o022):
+                raise RuntimeError(f"OpenCode LaunchAgent is not an owner-safe regular file: {path}")
+            content = handle.read(65537)
+        if len(content) > 65536:
+            raise RuntimeError(f"OpenCode LaunchAgent is unexpectedly large: {path}")
+        plist = plistlib.loads(content)
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise RuntimeError(f"OpenCode LaunchAgent is unreadable: {path}") from exc
+    args = plist.get("ProgramArguments") if isinstance(plist, dict) else None
+    if (not isinstance(plist, dict) or plist.get("Label") != _OPENCODE_MACOS_LABEL
+            or not isinstance(args, list) or len(args) != 11
+            or not isinstance(args[5], str)
+            or not Path(args[5]).is_absolute() or Path(args[5]).name != "opencode"
+            or args != _opencode_macos_arguments(Path(args[5]))):
+        raise RuntimeError(f"OpenCode LaunchAgent does not match the ODS service: {path}")
+    return Path(args[5])
+
+
+def _opencode_macos_loaded_output(binary: Path | None) -> str | None:
+    """Return the loaded ODS job, refusing a label claimed by another job."""
+    result = subprocess.run(
+        ["launchctl", "print", _opencode_macos_target()],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").lower()
+        if "could not find service" in detail or "not found" in detail:
+            return None
+        raise RuntimeError(f"Could not inspect OpenCode LaunchAgent: {detail.strip()[:300]}")
+    lines = [line.strip() for line in (result.stdout or "").splitlines()]
+    try:
+        path_index = lines.index(f"path = {_opencode_macos_plist_path()}")
+        start = lines.index("arguments = {", path_index + 1)
+        end = lines.index("}", start + 1)
+    except ValueError:
+        raise RuntimeError("Loaded OpenCode LaunchAgent arguments could not be verified") from None
+    if (binary is None or "program = /bin/sh" not in lines[path_index + 1:start]
+            or lines[start + 1:end] != _opencode_macos_arguments(binary)):
+        raise RuntimeError("Another loaded LaunchAgent uses the ODS OpenCode label")
+    return result.stdout
+
+
+def _opencode_macos_disabled() -> bool:
+    result = subprocess.run(
+        ["launchctl", "print-disabled", f"gui/{os.getuid()}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Could not inspect the OpenCode LaunchAgent disabled state")
+    pattern = re.compile(r'^\s*"' + re.escape(_OPENCODE_MACOS_LABEL)
+                         + r'"\s*=>\s*(enabled|disabled)\s*$')
+    for line in (result.stdout or "").splitlines():
+        match = pattern.match(line)
+        if match:
+            return match.group(1) == "disabled"
+        if _OPENCODE_MACOS_LABEL in line:
+            raise RuntimeError("Could not interpret the OpenCode LaunchAgent disabled state")
+    return False
+
+
+def _render_opencode_macos_plist(binary: Path) -> bytes:
+    """Mirror the initial installer's ODS LaunchAgent without sourcing it."""
+    home = Path.home()
+    path_entries = [str(binary.parent), *os.environ.get("PATH", "").split(":"),
+                    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+    launch_path = ":".join(dict.fromkeys(
+        entry for entry in path_entries if entry and Path(entry).is_absolute()
+    ))
+    log = home / "Library" / "Logs" / "ODS" / "opencode-web.log"
+    plist = {
+        "Label": _OPENCODE_MACOS_LABEL,
+        "ProgramArguments": _opencode_macos_arguments(binary),
+        "WorkingDirectory": str(INSTALL_DIR),
+        "EnvironmentVariables": {
+            "HOME": str(home), "PATH": launch_path, "OPENCODE_ENABLE_EXA": "1",
+        },
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+    }
+    return plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=False)
+
+
+def _create_opencode_macos_plist(path: Path, content: bytes) -> None:
+    """Atomically create a new LaunchAgent without replacing a raced file."""
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if _opencode_macos_plist_binary() is not None:
+        raise RuntimeError("OpenCode LaunchAgent appeared during setup; try again")
+    descriptor, raw_staging = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staging = Path(raw_staging)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        staging.chmod(0o644)
+        try:
+            os.link(staging, path)
+        except FileExistsError as exc:
+            raise RuntimeError("OpenCode LaunchAgent appeared during setup; try again") from exc
+    finally:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove OpenCode plist staging file %s: %s", staging, exc)
+
+
 def _opencode_service_registered(system: str | None = None) -> bool:
     """Return whether ODS registered its managed OpenCode web service."""
     system = system or platform.system()
     if system == "Linux":
         return _opencode_linux_unit_path().is_file()
     if system == "Darwin":
-        return _opencode_macos_plist_path().is_file()
+        try:
+            return _opencode_macos_plist_binary() is not None
+        except (RuntimeError, OSError):
+            return False
     if system == "Windows":
         # The Windows installer always registers ODSOpenCodeWeb together with
         # the managed binary; start falls back to the binary when the task is
@@ -17237,8 +17401,9 @@ def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
     """Probe OpenCode's own health route on host loopback.
 
     ``GET /global/health`` returns ``{"healthy": true, "version": ...}``.
-    Anything else answering on the port is reported as reachable but not
-    healthy, so an unrelated process is never presented as OpenCode.
+    Anything else answering or accepting connections on the port is reported
+    as reachable but not healthy, so an unrelated process is never presented
+    as OpenCode or replaced during setup.
     """
     opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
     started = time.monotonic()
@@ -17257,7 +17422,15 @@ def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
         result["reachable"] = True
         exc.close()
     except (OSError, ValueError):
-        pass
+        if not result["reachable"]:
+            # A listener can hold the port without answering HTTP. Confirm a
+            # failed health request with a short TCP connect before allowing
+            # setup or start to claim this port.
+            try:
+                with socket.create_connection(("127.0.0.1", int(port)), timeout=min(timeout, 0.25)):
+                    result["reachable"] = True
+            except (OSError, ValueError):
+                pass
     result["response_time_ms"] = round((time.monotonic() - started) * 1000, 1)
     return result
 
@@ -17268,12 +17441,9 @@ def _opencode_service_active() -> bool | None:
         if platform.system() == "Darwin":
             # A loaded LaunchAgent is not necessarily running; only a live
             # process means OpenCode is still starting rather than stopped.
-            result = subprocess.run(
-                ["launchctl", "print", f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"],
-                capture_output=True, text=True, timeout=15,
-            )
-            return result.returncode == 0 and re.search(
-                r"^\s*state = running\s*$", result.stdout or "", re.MULTILINE,
+            output = _opencode_macos_loaded_output(_opencode_macos_plist_binary())
+            return output is not None and re.search(
+                r"^\s*state = running\s*$", output, re.MULTILINE,
             ) is not None
         return bool(_capture_managed_opencode_state().get("active"))
     except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
@@ -17288,6 +17458,32 @@ def _opencode_setup_in_progress() -> bool:
 def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
     """Explain why dashboard setup is unavailable, or return None."""
     system = system or platform.system()
+    if system == "Darwin":
+        if shutil.which("launchctl") is None:
+            return "Dashboard setup needs launchctl in the logged-in Mac account."
+        for required in (
+            INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh",
+            INSTALL_DIR / "installers" / "lib" / "opencode-release.tsv",
+        ):
+            if not required.is_file():
+                return f"This ODS installation is missing {required.name}; update ODS first."
+        try:
+            binary = _opencode_macos_plist_binary()
+            _opencode_macos_loaded_output(binary)
+            if binary is not None:
+                return "OpenCode is already set up; use Start to run its LaunchAgent."
+            _opencode_macos_disabled()
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            return str(exc)
+        try:
+            _opencode_route(env)
+        except RuntimeError as exc:
+            return str(exc)
+        if _normal_switchboard_mode(env) != "enabled" and not (
+            _opencode_external_model(env) or str(env.get("LLM_MODEL") or "").strip()
+        ):
+            return "No active model is configured yet. Activate a model, then set OpenCode up."
+        return None
     if system != "Linux":
         return (
             "OpenCode is set up by the ODS installer on this platform. "
@@ -17344,7 +17540,7 @@ def _opencode_app_status(env: dict | None = None) -> dict:
         state = "starting" if active else "stopped"
     setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
     if port_in_use and setup_issue is None:
-        setup_issue = f"Port {port} is answering, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
+        setup_issue = f"Port {port} is occupied, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
     return {
         "state": state,
         "platform": system.lower(),
@@ -17357,7 +17553,7 @@ def _opencode_app_status(env: dict | None = None) -> dict:
         "portInUse": port_in_use,
         "version": probe["version"] if managed_healthy else None,
         "responseTimeMs": probe["response_time_ms"],
-        "startSupported": bool(registered),
+        "startSupported": bool(registered and (system != "Darwin" or active is not None)),
         "setupSupported": setup_issue is None and state != "running",
         "setupIssue": setup_issue,
     }
@@ -17379,16 +17575,61 @@ def _start_managed_opencode() -> None:
             capture_output=True, text=True, timeout=60, env=user_env,
         )
     elif system == "Darwin":
-        target = f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
-        loaded = subprocess.run(
-            ["launchctl", "print", target], capture_output=True, text=True, timeout=15,
-        ).returncode == 0
-        command = (
-            ["launchctl", "kickstart", target]
-            if loaded
-            else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
-        )
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        binary = _opencode_macos_plist_binary()
+        if binary is None:
+            raise RuntimeError("The ODS OpenCode LaunchAgent is missing")
+        target = _opencode_macos_target()
+        loaded = _opencode_macos_loaded_output(binary) is not None
+        prior_disabled = _opencode_macos_disabled()
+        enable_attempted = False
+        bootstrap_attempted = False
+        try:
+            if prior_disabled:
+                enable_attempted = True
+                step = subprocess.run(
+                    ["launchctl", "enable", target], capture_output=True, text=True, timeout=15,
+                )
+                if step.returncode != 0:
+                    raise RuntimeError(f"Could not enable OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+            command = (
+                ["launchctl", "kickstart", target]
+                if loaded
+                else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
+            )
+            bootstrap_attempted = not loaded
+            step = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            if step.returncode != 0:
+                raise RuntimeError(f"Could not start OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+            if _opencode_macos_loaded_output(binary) is None:
+                raise RuntimeError("OpenCode LaunchAgent did not remain loaded")
+            _wait_for_opencode_health()
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            rollback_errors = []
+            if bootstrap_attempted:
+                try:
+                    if _opencode_macos_loaded_output(binary) is not None:
+                        step = subprocess.run(
+                            ["launchctl", "bootout", target],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        if step.returncode != 0:
+                            rollback_errors.append(f"bootout: {(step.stderr or step.stdout or '').strip()[:300]}")
+                except (RuntimeError, OSError, subprocess.SubprocessError) as rollback_exc:
+                    rollback_errors.append(f"bootout: {rollback_exc}")
+            if enable_attempted:
+                try:
+                    step = subprocess.run(
+                        ["launchctl", "disable", target],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if step.returncode != 0:
+                        rollback_errors.append(f"disable: {(step.stderr or step.stdout or '').strip()[:300]}")
+                except (OSError, subprocess.SubprocessError) as rollback_exc:
+                    rollback_errors.append(f"disable: {rollback_exc}")
+            if rollback_errors:
+                raise RuntimeError(f"{exc}; OpenCode start rollback failed: {'; '.join(rollback_errors)}") from exc
+            raise
+        return
     elif system == "Windows":
         if not _run_windows_opencode_control("start"):
             raise RuntimeError("The ODS OpenCode task could not be started")
@@ -17637,9 +17878,164 @@ def _setup_managed_opencode(env: dict) -> None:
     _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
 
 
+def _setup_managed_opencode_macos(env: dict) -> None:
+    """Add OpenCode to a retained Mac install without rerunning Pixel setup."""
+    issue = _opencode_setup_issue(env, "Darwin")
+    if issue:
+        raise RuntimeError(issue)
+    try:
+        context_length = int(str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip())
+    except ValueError as exc:
+        raise RuntimeError("MAX_CONTEXT must be a number to configure OpenCode") from exc
+    if context_length < 1024:
+        raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
+    model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
+    _opencode_route(env)
+
+    runtime = INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh"
+    binary = Path.home() / ".opencode" / "bin" / "opencode"
+    plist_path = _opencode_macos_plist_path()
+    config_snapshot = _capture_opencode_config(assume_installed=True)
+    if config_snapshot is None:
+        raise RuntimeError("OpenCode configuration could not be prepared")
+    plist_snapshot = _snapshot_text_file(plist_path)
+    if plist_snapshot["exists"]:
+        raise RuntimeError("OpenCode LaunchAgent appeared during setup; try again")
+    binary_snapshot = _snapshot_managed_opencode_binary()
+    prior_disabled = _opencode_macos_disabled()
+    plist_written = False
+    config_changed = False
+    enabled = False
+    bootstrap_attempted = False
+    try:
+        _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
+        candidate = str(binary) if binary_snapshot["exists"] and os.access(binary, os.X_OK) else ""
+        result = subprocess.run(
+            ["bash", "-c", '. "$1" && ods_install_opencode "$2"',
+             "ods-opencode-setup", str(runtime), candidate],
+            capture_output=True, text=True, timeout=900, env=os.environ.copy(),
+        )
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0 or not lines:
+            detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
+        if Path(lines[-1]) != binary or not binary.is_file() or not os.access(binary, os.X_OK):
+            raise RuntimeError("OpenCode installer did not return the managed executable")
+
+        (Path.home() / "Library" / "Logs" / "ODS").mkdir(parents=True, exist_ok=True)
+        _opencode_macos_bun_tmpdir().parent.mkdir(parents=True, exist_ok=True)
+        _create_opencode_macos_plist(plist_path, _render_opencode_macos_plist(binary))
+        plist_written = True
+        if _opencode_macos_plist_binary() != binary:
+            raise RuntimeError("OpenCode LaunchAgent could not be verified after writing")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
+        config_changed = True  # A failed write may have changed one compatibility file.
+        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
+        # A prior ODS selection may have left a launchd disabled override.
+        if prior_disabled:
+            enabled = True
+            step = subprocess.run(
+                ["launchctl", "enable", _opencode_macos_target()],
+                capture_output=True, text=True, timeout=15,
+            )
+            if step.returncode != 0:
+                raise RuntimeError(f"Could not enable OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+        # Re-check the label at the mutation boundary. Never replace a job
+        # loaded from a different path or with different arguments.
+        if _opencode_macos_loaded_output(binary) is not None:
+            raise RuntimeError("OpenCode LaunchAgent was loaded during setup; try again")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+        bootstrap_attempted = True
+        step = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if step.returncode != 0:
+            raise RuntimeError(f"Could not bootstrap OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+        step = subprocess.run(
+            ["launchctl", "kickstart", "-p", _opencode_macos_target()],
+            capture_output=True, text=True, timeout=30,
+        )
+        if step.returncode != 0:
+            raise RuntimeError(f"Could not start OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+        if _opencode_macos_loaded_output(binary) is None:
+            raise RuntimeError("OpenCode LaunchAgent did not remain loaded")
+        _wait_for_opencode_health()
+    except Exception as exc:
+        rollback_errors = []
+        cleanup_safe = True
+        # A concurrent owner may have loaded the plist we just created before
+        # our bootstrap call. It still points to this exact ODS-owned file and
+        # must be unloaded before the transaction removes that file or binary.
+        if bootstrap_attempted or plist_written:
+            try:
+                if _opencode_macos_loaded_output(binary) is not None:
+                    step = subprocess.run(
+                        ["launchctl", "bootout", _opencode_macos_target()],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if step.returncode != 0:
+                        rollback_errors.append(
+                            f"bootout: {(step.stderr or step.stdout or '').strip()[:300]}"
+                        )
+                    if _opencode_macos_loaded_output(binary) is not None:
+                        cleanup_safe = False
+                        rollback_errors.append("bootout: OpenCode LaunchAgent remains loaded")
+            except (RuntimeError, OSError, subprocess.SubprocessError) as rollback_exc:
+                cleanup_safe = False
+                rollback_errors.append(f"bootout: {rollback_exc}")
+        if not cleanup_safe:
+            # Keep the running job's config, plist and executable in place.
+            # The old executable hard link remains available for a later repair.
+            raise RuntimeError(
+                f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}; "
+                "retained OpenCode files because launchd unload was not verified"
+            ) from exc
+        if enabled:
+            try:
+                step = subprocess.run(
+                    ["launchctl", "disable", _opencode_macos_target()],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if step.returncode != 0:
+                    rollback_errors.append(
+                        f"disable: {(step.stderr or step.stdout or '').strip()[:300]}"
+                    )
+            except (OSError, subprocess.SubprocessError) as rollback_exc:
+                rollback_errors.append(f"disable: {rollback_exc}")
+        if config_changed:
+            try:
+                _restore_opencode_config(config_snapshot)
+            except (OSError, RuntimeError) as rollback_exc:
+                rollback_errors.append(f"config: {rollback_exc}")
+        if plist_written:
+            try:
+                current_binary = _opencode_macos_plist_binary()
+                if current_binary is not None and current_binary != binary:
+                    raise RuntimeError("OpenCode LaunchAgent changed during setup; refusing to remove it")
+                _restore_text_file(plist_path, plist_snapshot)
+            except (OSError, RuntimeError) as rollback_exc:
+                rollback_errors.append(f"plist: {rollback_exc}")
+        try:
+            _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=True)
+        except (OSError, RuntimeError) as rollback_exc:
+            rollback_errors.append(f"binary: {rollback_exc}")
+        if rollback_errors:
+            raise RuntimeError(f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}") from exc
+        raise
+    try:
+        _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=False)
+    except OSError as exc:
+        logger.warning("OpenCode started, but its old binary backup could not be removed: %s", exc)
+    _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
+
+
 def _run_opencode_setup(env: dict) -> None:
     try:
-        _setup_managed_opencode(env)
+        if platform.system() == "Darwin":
+            _setup_managed_opencode_macos(env)
+        else:
+            _setup_managed_opencode(env)
     except Exception as exc:  # noqa: BLE001 - reported to the owner via progress
         logger.warning("OpenCode setup failed: %s", exc)
         try:
@@ -17670,7 +18066,7 @@ def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
             }
         if status["portInUse"]:
             return 409, {
-                "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+                "error": f"Port {status['port']} is occupied, but ODS cannot verify the managed OpenCode service",
                 "code": "opencode_port_in_use",
                 "status": status,
             }
@@ -17706,7 +18102,7 @@ def _begin_opencode_start(env: dict) -> tuple[int, dict]:
         }
     if status["portInUse"]:
         return 409, {
-            "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+            "error": f"Port {status['port']} is occupied, but ODS cannot verify the managed OpenCode service",
             "code": "opencode_port_in_use",
             "status": status,
         }
