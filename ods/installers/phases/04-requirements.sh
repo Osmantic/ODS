@@ -165,7 +165,7 @@ fi
 _port_check_warned=false
 
 _phase04_current_install_owns_docker_port() {
-    local port="${1:-}" container_id ownership working_dir project_name
+    local port="${1:-}" container_id="" ownership="" working_dir="" project_name=""
     [[ "$port" =~ ^[0-9]+$ ]] || return 1
     command -v docker >/dev/null 2>&1 || return 1
 
