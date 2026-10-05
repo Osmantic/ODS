@@ -102,9 +102,9 @@ assert "pixel-edge" not in ui.get("depends_on", {})
 PY
     PIXEL_OPENWEBUI_KEY="$(printf 'a%.0s' {1..64})" \
     PIXEL_INGRESS_GID=1234 \
-    PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress \
-    PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview \
-    PIXEL_RUNTIME_BIND_PROPAGATION=rshared \
+    PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress \
+    PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/preview \
+    PIXEL_RUNTIME_BIND_PROPAGATION=rprivate \
     DASHBOARD_API_KEY="$(printf 'c%.0s' {1..64})" \
     WEBUI_SECRET="$(printf 'b%.0s' {1..64})" \
         docker compose -f "$BASE" -f "$EDGE" config --format json > "$runtime/config-wsl.json"
@@ -112,9 +112,9 @@ PY
 import json, sys
 edge = json.load(open(sys.argv[1], encoding="utf-8"))["services"]["pixel-edge"]
 mounts = {item["target"]: item for item in edge["volumes"] if item["type"] == "bind"}
-assert mounts["/pixel-runtime"]["source"] == "/mnt/wsl/ods-portal-runtime/ingress"
-assert mounts["/pixel-preview-runtime"]["source"] == "/mnt/wsl/ods-portal-runtime/preview"
-assert all(item["read_only"] and item["bind"]["propagation"] == "rshared" for item in mounts.values())
+assert mounts["/pixel-runtime"]["source"] == "/mnt/wsl/ods-portal-sockets/ingress"
+assert mounts["/pixel-preview-runtime"]["source"] == "/mnt/wsl/ods-portal-sockets/preview"
+assert all(item["read_only"] and item["bind"]["propagation"] == "rprivate" for item in mounts.values())
 PY
     PIXEL_OPENWEBUI_KEY="$(printf 'a%.0s' {1..64})" \
     PIXEL_INGRESS_GID=1234 \

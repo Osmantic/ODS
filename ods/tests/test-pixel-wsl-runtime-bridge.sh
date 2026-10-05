@@ -3,49 +3,104 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bridge="$root/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.sh"
+# The Python contract below reads the unit directly from root.
+# shellcheck disable=SC2034
 unit="$root/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.service"
 bash -n "$bridge" "$root/installers/phases/06-directories.sh" \
     "$root/installers/lib/pixel-host-install.sh" "$root/lib/pixel-uninstall.sh"
-python3 - "$bridge" "$unit" "$root/installers/phases/06-directories.sh" \
-    "$root/installers/lib/pixel-host-install.sh" "$root/lib/pixel-uninstall.sh" <<'PY'
+python3 - "$root" <<'PY'
+import importlib.util
+import os
 from pathlib import Path
 import sys
 
-bridge, unit, phase, installer, uninstall = (Path(value).read_text(encoding='utf-8') for value in sys.argv[1:])
-assert 'bridge /run/ods-pixel "$base/ingress"' in bridge
-assert 'bridge /run/ods-pixel-preview "$base/preview"' in bridge
-assert 'mountpoint -q -- "$target"' in bridge
-assert '[[ "$target_inode" == "$source_inode" ]]' in bridge
-# Docker Desktop's WSL proxy binds each bind source onto itself; the bridge
-# stacks on that bind (same /mnt/wsl device) and reads only the top mount.
-assert '[[ "${target_inode%%:*}" == "$wsl_device" ]]' in bridge
-assert '[[ "$(findmnt -n -o PROPAGATION -T "$target" | tail -n 1)" == shared ]]' in bridge
-assert 'if ! mountpoint -q -- "$target"; then\n            install -d -o root -g root -m 0755 -- "$target"' in bridge
-ingress = (Path(sys.argv[1]).parent / 'pixel-ingress.service').read_text()
-assert 'RuntimeDirectoryPreserve=yes' in ingress
-assert 'ConditionVirtualization=wsl' in unit
-assert 'BindsTo=pixel-ingress.service pixel-workspace-preview.service' in unit
+root = Path(sys.argv[1])
+host = root / 'extensions/services/pixel-agent/host'
+bridge = (host / 'pixel-wsl-runtime-bridge.sh').read_text()
+unit = (host / 'pixel-wsl-runtime-bridge.service').read_text()
+ingress = (host / 'pixel-ingress.service').read_text()
+preview = (host / 'pixel-workspace-preview.service').read_text()
+preview_code = (host / 'workspace_preview.py').read_text()
+gateway_socket_dropin = (host / 'pixel-gateway-wsl-socket.conf').read_text()
+phase = (root / 'installers/phases/06-directories.sh').read_text()
+installer = (root / 'installers/lib/pixel-host-install.sh').read_text()
+uninstall = (root / 'lib/pixel-uninstall.sh').read_text()
+health = (root / 'installers/phases/12-health.sh').read_text()
+wsl_health = (root / 'installers/verify-wsl-portal.sh').read_text()
+
+# Docker's bind source must remain the same WSL tmpfs directory before and
+# after host service restarts. The bridge now prepares directories only.
+assert 'mount --bind' not in bridge and 'umount ' not in bridge
+assert 'stat -Lc' in bridge and 'wsl_device' in bridge
+assert 'old bind mount' in bridge and 'too many mount layers' in bridge
+assert 'prepare "$base/ingress" 710' in bridge
+assert 'prepare "$base/preview" 750' in bridge
+assert 'pixel-ingress.sock' in bridge and 'http.sock' in bridge
+assert 'openclaw.json' not in bridge
+
+# At boot the directory setup is required before either socket writer starts.
+assert 'Before=pixel-ingress.service pixel-workspace-preview.service' in unit
+assert 'RequiredBy=pixel-ingress.service pixel-workspace-preview.service' in unit
+assert 'EnvironmentFile=/etc/ods/pixel-agent.env' in unit
+assert 'BindsTo=' not in unit
 assert 'ExecStart=/usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure' in unit
-assert 'ExecStop=/usr/local/libexec/ods-pixel-wsl-runtime-bridge remove' in unit
-assert 'PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared' in phase
-assert 'PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress' in phase
-assert '"${docker_command[@]}" info --format' in phase
-assert '"${docker_command[@]}" context inspect' in phase
-assert 'systemctl enable ods-pixel-wsl-runtime-bridge.service' in installer
-assert 'systemctl start ods-pixel-wsl-runtime-bridge.service' in installer
+assert 'RuntimeDirectoryPreserve=yes' in ingress and 'RuntimeDirectoryPreserve=yes' in preview
+assert '-/mnt/wsl/ods-portal-sockets/ingress' in ingress
+assert '-/mnt/wsl/ods-portal-sockets/preview' in preview
+assert 'PIXEL_PREVIEW_HTTP_SOCKET' in preview_code
+assert 'Environment=PIXEL_PREVIEW_HTTP_SOCKET=__PIXEL_PREVIEW_HTTP_SOCKET__' in preview
+assert 'EnvironmentFile=/etc/ods/pixel-agent.env' not in preview
+assert gateway_socket_dropin == ('[Service]\n'
+    'Environment=PIXEL_INGRESS_SOCKET=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock\n')
+
+# No WSL mount propagation is needed to see a socket replaced within a
+# stable directory. The gateway token and preview control remain under /run.
+assert 'PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rprivate' in phase
+assert 'PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-sockets/ingress' in phase
+assert 'PIXEL_GATEWAY_TOKEN_FILE=$runtime_token_file' in installer
+assert 'PIXEL_STATUS_FILE=/run/ods-pixel/ods-status.json' in installer
+assert '.replace("__PIXEL_PREVIEW_HTTP_SOCKET__", http_socket)' in installer
+assert 'PIXEL_INGRESS_SOCKET=$ingress_socket' in installer
+assert 'PIXEL_SERVICE_USER=$owner' in installer
+assert '85-ods-ingress-socket.conf' in installer
+assert 'systemctl restart openclaw-gateway.service' in installer
+assert "stat -c '%U:%G:%a' -- \"$wsl_gateway_socket_dropin\"" in installer
+assert 'ods_sudo rm -f -- "$wsl_gateway_socket_dropin"' in installer
+assert 'systemctl reenable ods-pixel-wsl-runtime-bridge.service' in installer
+assert '_ods_pixel_prepare_wsl_runtime_bridge "$owner"' in installer
+assert installer.index('_ods_pixel_prepare_wsl_runtime_bridge "$owner"') < installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')
+assert '--unix-socket "$ingress_socket"' in installer
+assert '--unix-socket "$_pixel_ingress_socket"' in health
+assert '--unix-socket "$ingress_socket"' in wsl_health
+assert 'entries.get("PIXEL_INGRESS_SOCKET") not in' in uninstall
 assert 'systemctl disable --now ods-pixel-wsl-runtime-bridge.service' in uninstall
-# Docker Desktop translates bind sources from the calling distro; the daemon's
-# own /mnt/host/wsl name fails there as "is mounted on / but it is not a shared mount".
-for text in (phase, installer):
-    assert '/mnt/host/wsl' not in text
-# Pixel Edge starts with the prerequisites, before the bridge exists, so the
-# empty shared targets must be created before that Compose launch.
-precreate = installer.index('_ods_pixel_prepare_wsl_runtime_targets || return 1')
-prerequisites_up = installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')
-assert precreate < prerequisites_up, 'WSL runtime targets must exist before Pixel Edge starts'
-# A failed bridge must say why in the journal, and the installer must show it.
-assert '|| exit 1' not in bridge and '|| return 1' not in bridge
-assert 'fail "$target is mounted from another directory than $source' in bridge
-assert 'journalctl -u ods-pixel-wsl-runtime-bridge.service -n 20' in installer
+assert 'wsl_gateway_socket_dropin' in uninstall
+
+os.environ['PIXEL_PREVIEW_HTTP_SOCKET'] = '/mnt/wsl/ods-portal-sockets/preview/http.sock'
+spec = importlib.util.spec_from_file_location('wsl_workspace_preview', host / 'workspace_preview.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.SOCKET_PATH == Path('/run/ods-pixel-preview/control.sock')
+assert module.HTTP_SOCKET_PATH == Path('/mnt/wsl/ods-portal-sockets/preview/http.sock')
+module.configure_portal('test-profile')
+assert module.HTTP_SOCKET_PATH == Path('/run/ods-portal/preview/http.sock')
 PY
-echo "Pixel WSL shared runtime bridge checks passed"
+# ExecStop's remove action must be inert even when the WSL kernel or shared
+# propagation probe becomes unavailable after the unit started.
+scratch="$(mktemp -d)"
+trap 'rm -rf -- "$scratch"' EXIT
+cat > "$scratch/id" <<'SH'
+#!/bin/sh
+printf '0\n'
+SH
+for command_name in grep findmnt stat install mount umount; do
+    cat > "$scratch/$command_name" <<'SH'
+#!/bin/sh
+echo 'remove action reached a host probe or mutation command' >&2
+exit 91
+SH
+done
+chmod 0755 "$scratch"/*
+PATH="$scratch:$PATH" bash "$bridge" remove
+
+echo "Pixel WSL stable socket directory contracts passed"

@@ -40,7 +40,8 @@ peer_ids = _peer_module.peer_ids
 SCHEMA_VERSION = 1
 KIND = "ods-pixel-workspace-preview"
 SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/control.sock")
-HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")
+HTTP_SOCKET_PATH = pathlib.Path(os.environ.get(
+    "PIXEL_PREVIEW_HTTP_SOCKET", "/run/ods-pixel-preview/http.sock"))
 PROFILE_ID: str | None = None
 PATH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 ASSET_COMPONENT = re.compile(r"(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}\Z")
@@ -1332,6 +1333,11 @@ def serve(
 ) -> int:
     if (
         socket_path != SOCKET_PATH
+        or HTTP_SOCKET_PATH not in (
+            pathlib.Path("/run/ods-pixel-preview/http.sock"),
+            pathlib.Path("/mnt/wsl/ods-portal-sockets/preview/http.sock"),
+            pathlib.Path("/run/ods-portal/preview/http.sock"),
+        )
         or not workspace.is_absolute()
         or workspace == pathlib.Path("/")
         or not previews.is_absolute()
