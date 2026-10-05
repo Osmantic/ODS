@@ -576,6 +576,54 @@ def control_names(value):
     return {"count": count, "items": items}
 
 
+class RequiredResources:
+    """Bounded browser evidence for requested script/style dependencies only.
+
+    Images, fonts and incidental favicon requests are outside this contract.
+    Paths are diagnostics, never navigation instructions; no query or origin
+    (which could contain credentials) is copied into a receipt.
+    """
+    LIMIT = 16
+    SCRIPT_MIMES = frozenset({"text/javascript", "application/javascript",
+                              "application/ecmascript", "text/ecmascript",
+                              "application/x-javascript", "application/x-ecmascript",
+                              "text/x-javascript", "text/x-ecmascript", "text/jscript", "text/livescript",
+                              *{f"text/javascript1.{n}" for n in range(6)}})
+
+    def __init__(self):
+        self.errors = []
+
+    def record(self, request, reason, status=0):
+        kind = request.resource_type
+        if kind not in ("stylesheet", "script"):
+            return
+        path = urllib.parse.urlsplit(request.url).path[:256]
+        path = "".join(c for c in path if ord(c) >= 32 and ord(c) != 127)
+        item = {"type": kind, "path": path, "reason": reason, "status": status}
+        if item not in self.errors and len(self.errors) < self.LIMIT:
+            self.errors.append(item)
+
+    def response(self, response):
+        request = response.request
+        if request.resource_type not in ("stylesheet", "script"):
+            return
+        if not 200 <= response.status < 300:
+            # Redirect responses are followed by Chromium and judged at target.
+            if not 300 <= response.status < 400:
+                self.record(request, "http", response.status)
+            return
+        mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        allowed = {"text/css"} if request.resource_type == "stylesheet" else self.SCRIPT_MIMES
+        if mime not in allowed:
+            self.record(request, "mime", response.status)
+
+    def failed(self, request):
+        self.record(request, "request_failed")
+
+    def receipt(self):
+        return {"resourceErrors": list(self.errors)} if self.errors else {}
+
+
 class PageErrors:
     """Uncaught exceptions of the inspected page; never evidence of success."""
 
@@ -1036,6 +1084,7 @@ def run_browser(bundle, playwright_factory=None):
     prefix = "/" + request["siteId"] + "/"
     blocked = []
     page_errors = PageErrors()
+    resources = RequiredResources()
 
     class Handler(http.server.BaseHTTPRequestHandler):
         server_version = 'ODSPreview'
@@ -1122,6 +1171,8 @@ def run_browser(bundle, playwright_factory=None):
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
+            page.on("response", resources.response)
+            page.on("requestfailed", resources.failed)
             page.goto(
                 origin + "/__ods_inspection__.html", wait_until="load", timeout=8000
             )
@@ -1457,6 +1508,7 @@ def run_browser(bundle, playwright_factory=None):
                 if len(results) == len(request["steps"])
                 and all(v["status"] == "passed" for v in results)
                 and not blocked
+                and not resources.errors
                 else "failed",
                 "siteId": request["siteId"],
                 "sha256": request["sha256"],
@@ -1466,6 +1518,7 @@ def run_browser(bundle, playwright_factory=None):
                 "diagnostics": diagnostics,
                 "blockedRequests": blocked,
                 **page_errors.receipt(),
+                **resources.receipt(),
                 "scope": inspection_scope(request),
             }
             # After the step context is closed, so its receipt is final. The
