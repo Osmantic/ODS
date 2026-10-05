@@ -325,7 +325,10 @@ def main() -> int:
     assert '--ram-gb "${RAM_GB:-0}"' in detection
     assert "MODEL_TIER_RAM_GB" in detection
     assert "MODEL_SELECTION_RAM_GB" not in detection
-    assert 'ods_wsl_model_ram_budget "$RAM_GB"' in detection
+    assert 'ods_detect_runtime_ram || error' in detection
+    # The shared probe owns WSL headroom now. Exercise its host/VM split and
+    # the cloud branch so moving the policy cannot inflate the runtime budget.
+    subprocess.run(["bash", str(ROOT / "tests" / "test-wsl-memory-reporting.sh")], check=True)
     assert "SYSTEM_RAM_GB=${RAM_GB:-0}" in directories
     assert "strongest installable hardware-fit model" in detection
     assert '_selector_env="$(_run_catalog_selector 2>>' in detection
