@@ -72,7 +72,9 @@ services:
       - LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT
       # Host-RAM bounds for hybrid/sliding-window models: context checkpoints
       # kept per slot (b9014 default 32) and the prompt cache in MiB (default
-      # 8192). CPU runtime profiles cap both; unset keeps llama.cpp defaults.
+      # 8192). CPU runtime profiles cap both; the installers and model switches
+      # also size the prompt cache to the host (llama-memory-budget.sh). Unset
+      # keeps llama.cpp defaults.
       - LLAMA_ARG_CTX_CHECKPOINTS
       - LLAMA_ARG_CACHE_RAM
       # Per-model speculative decoding (e.g. draft-mtp from a runtime
