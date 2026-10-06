@@ -46,7 +46,7 @@ export function configureLayaPortal({installRoot, port = 8017,
       || realpathSync(installRoot) !== installRoot) {
     throw new Error('Laya setup requires the canonical ODS installation directory.');
   }
-  const compose = readOwnedLayaFile(composeFile, uid, 512 * 1024, false);
+  const compose = readOwnedLayaFile(composeFile, uid, 512 * 1024, false, join(installRoot, 'data'));
   // Validate options before creating any files. The placeholder is never saved.
   const base = validateLayaConnection({schemaVersion: 2, installRoot, port, composeFile,
     token: '0'.repeat(64), composeSha256: createHash('sha256').update(compose).digest('hex')});

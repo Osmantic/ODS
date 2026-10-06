@@ -93,6 +93,22 @@ test('legacy connection keeps its original marker until setup migrates it', posi
   assert.equal(readLayaConnection(options.connectionFile).token, saved.token);
 });
 
+test('installer shared data mode is supported only for the public marker ancestor', posixOwner, t => {
+  const options = fixture(t);
+  chmodSync(join(options.installRoot, 'data'), 0o775);
+  configureLayaPortal(options);
+  assert.ok(readLayaConnection(options.connectionFile));
+  chmodSync(join(options.installRoot, 'data', 'user-extensions'), 0o775);
+  assert.equal(readLayaConnection(options.connectionFile), undefined);
+  assert.throws(() => configureLayaPortal(options), /Unsafe Laya connection parent/);
+  chmodSync(join(options.installRoot, 'data', 'user-extensions'), 0o755);
+  chmodSync(join(options.installRoot, 'data'), 0o777);
+  assert.equal(readLayaConnection(options.connectionFile), undefined);
+  chmodSync(join(options.installRoot, 'data'), 0o775);
+  chmodSync(join(options.installRoot, 'config', 'laya'), 0o775);
+  assert.throws(() => configureLayaPortal(options), /Unsafe Laya connection parent/);
+});
+
 test('configuration refuses invalid ports before writing credentials', posixOwner, t => {
   const options = fixture(t);
   for (const port of [0, 65536, '8017', NaN]) {
