@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createLayaTool, LAYA_GUIDE, LAYA_TOOL_SCHEMA} from '../plugin/laya-tool.mjs';
+import {createLayaTool, LAYA_GUIDE, LAYA_TOOL_SCHEMA, LAYA_RESULT_CHARS} from '../plugin/laya-tool.mjs';
 import {LayaServiceError} from '../plugin/laya-client.mjs';
 import {LayaProtocolError} from '../plugin/laya-protocol.mjs';
 
@@ -37,6 +37,18 @@ test('known inference and protocol failures keep continuation possible', async (
     assert.equal(response.details.upstreamCancellationVerified, false);
     assert.match(response.content[0].text, /Continue the owner's task/);
   }
+});
+
+test('oversize batches never deliver incomplete JSON to the chat model', async () => {
+  const result = {items: [{id: 'ticket', answers: {score: {levels: ['x'.repeat(LAYA_RESULT_CHARS)]}}}]};
+  const tool = createLayaTool({enabled: () => true, client: {decide: async () => result}});
+  const response = await tool.execute('large', {});
+  assert.equal(response.isError, true);
+  assert.equal(response.details.status, 'result_too_large');
+  assert.equal(response.details.inferenceSubmitted, true);
+  assert.match(response.content[0].text, /Split the items or questions/);
+  assert.doesNotMatch(response.content[0].text, /ticket|levels/);
+  assert.ok(response.content[0].text.length < 1000);
 });
 
 test('programming failures are not silently converted into classifier unavailability', async () => {

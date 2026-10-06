@@ -1,6 +1,10 @@
 import {LayaProtocolError} from './laya-protocol.mjs';
 import {LayaServiceError} from './laya-client.mjs';
 
+// Stay below the normal 16k-character tool-result projection. Never deliver
+// half a JSON batch whose omitted decisions might look like completed work.
+export const LAYA_RESULT_CHARS = 12_000;
+
 export const LAYA_GUIDE = `Laya in Portal
 Use pixel_ods_laya for bounded choices, ordinal scores or yes/no probabilities when they help the owner's task. You still handle conversation, research, file edits and verification.
 Read the relevant source first. Send only necessary text, never passwords, API keys or unrelated history. Each item has a unique ID and text. Ask self-contained questions grounded in that text: choice has 2–20 option IDs and descriptions; score has ordered levels, lowest first; noul returns P(yes). Include unknown/other when alternatives are incomplete. Narrow larger option sets using evidence or meaningful groups, never arbitrary omissions. Batch independent items sharing questions.
@@ -56,7 +60,11 @@ export function createLayaTool({client, enabled = () => false, resolveClient} = 
       if (!activeClient) return unavailable('disabled', 'Laya is not enabled for Portal. Continue with existing tools.');
       try {
         const result = await activeClient.decide(args, signal);
-        return {content: [{type: 'text', text: JSON.stringify(result)}],
+        const text = JSON.stringify(result);
+        if (text.length > LAYA_RESULT_CHARS) {
+          return unavailable('result_too_large', 'Laya completed inference, but the complete result exceeds the Portal tool budget. Split the items or questions into smaller batches; no decisions from this batch were delivered.', true);
+        }
+        return {content: [{type: 'text', text}],
           details: {kind: 'laya-decisions', status: 'completed', itemCount: result.items.length,
             executionAuthorized: false}};
       } catch (error) {

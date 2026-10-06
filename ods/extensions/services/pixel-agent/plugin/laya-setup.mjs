@@ -1,7 +1,7 @@
 // Host-side extension lifecycle. Called as the ODS owner, never by a model.
 // The container reads its dedicated key file; no shared .env is rewritten.
 import {mkdirSync, openSync, closeSync, writeFileSync, fsyncSync, renameSync,
-  unlinkSync, rmdirSync, lstatSync, realpathSync, constants} from 'node:fs';
+  unlinkSync, rmdirSync, lstatSync, realpathSync, fchmodSync, constants} from 'node:fs';
 import {join, dirname, isAbsolute} from 'node:path';
 import {randomBytes, createHash} from 'node:crypto';
 import {LAYA_CONNECTION_FILE, trustedLayaParent, readOwnedLayaFile,
@@ -28,7 +28,7 @@ function atomicPrivate(path, content, uid, mode = 0o600) {
   const temporary = join(dirname(path), `.laya-${randomBytes(12).toString('hex')}.tmp`);
   const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
   try {
-    try { writeFileSync(fd, content); fsyncSync(fd); }
+    try { writeFileSync(fd, content); fchmodSync(fd, mode); fsyncSync(fd); }
     finally { closeSync(fd); }
     renameSync(temporary, path);
   }

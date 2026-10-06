@@ -28,7 +28,10 @@ test('setup refuses native Windows/root instead of creating unprotected credenti
 
 test('setup is idempotent and activation changes reach an already discovered tool', posixOwner, async t => {
   const options = fixture(t);
-  const first = configureLayaPortal(options);
+  const originalMask = process.umask(0o077);
+  let first;
+  try { first = configureLayaPortal(options); }
+  finally { process.umask(originalMask); }
   const saved = readLayaConnection(options.connectionFile);
   const key = readFileSync(first.tokenFile, 'utf8').trim();
   assert.match(key, /^[a-f0-9]{64}$/);
