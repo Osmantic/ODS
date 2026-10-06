@@ -47,7 +47,8 @@ export const LAYA_TOOL_SCHEMA = {
 };
 
 function unavailable(status, message, submitted = false) {
-  return {isError: true, content: [{type: 'text', text: message}],
+  const continuation = "No Laya decision was accepted. Continue the owner's task using other available capabilities where possible. If the owner requested Laya, explain that this consultation failed and distinguish your own conclusions from Laya results. Do not repeat an unchanged failed request.";
+  return {isError: true, content: [{type: 'text', text: `${message} ${continuation}`}],
     details: {kind: 'laya-decisions', status, inferenceSubmitted: submitted,
       upstreamCancellationVerified: false, executionAuthorized: false}};
 }
@@ -67,12 +68,12 @@ export function createLayaTool({client, enabled = () => false, resolveClient} = 
         if (text.length > LAYA_RESULT_CHARS) {
           return unavailable('result_too_large', 'Laya completed inference, but the complete result exceeds the Portal tool budget. Split the items or questions into smaller batches; no decisions from this batch were delivered.', true);
         }
-        return {content: [{type: 'text', text}],
+        return {content: [{type: 'text', text}, {type: 'text', text: 'These are estimates. Compare answers and alternatives with the supplied source before using them. Preserve ambiguity; correct an unsupported label instead of copying it as fact. Confidence is not guaranteed accuracy.'}],
           details: {kind: 'laya-decisions', status: 'completed', itemCount: result.items.length,
             executionAuthorized: false}};
       } catch (error) {
         if (!(error instanceof LayaProtocolError) && !(error instanceof LayaServiceError)) throw error;
-        return unavailable(error.code, `${error.message} No Laya decision was accepted. Continue the owner's task using other available capabilities where possible.`, error.submitted === true);
+        return unavailable(error.code, error.message, error.submitted === true);
       }
     },
   };
