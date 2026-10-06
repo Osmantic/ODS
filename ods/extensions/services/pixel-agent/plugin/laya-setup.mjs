@@ -36,6 +36,7 @@ function atomicPrivate(path, content, uid, mode = 0o600) {
 }
 
 export function configureLayaPortal({installRoot, port = 8017,
+  composeFile = join(installRoot ?? '', 'data', 'user-extensions', 'laya', 'compose.yaml'),
   connectionFile = LAYA_CONNECTION_FILE} = {}) {
   const uid = process.getuid?.();
   if (!Number.isSafeInteger(uid) || uid <= 0) {
@@ -45,10 +46,9 @@ export function configureLayaPortal({installRoot, port = 8017,
       || realpathSync(installRoot) !== installRoot) {
     throw new Error('Laya setup requires the canonical ODS installation directory.');
   }
-  const marker = join(installRoot, 'extensions', 'user', 'laya', 'compose.yaml');
-  const compose = readOwnedLayaFile(marker, uid, 512 * 1024, false);
+  const compose = readOwnedLayaFile(composeFile, uid, 512 * 1024, false);
   // Validate options before creating any files. The placeholder is never saved.
-  const base = validateLayaConnection({schemaVersion: 1, installRoot, port,
+  const base = validateLayaConnection({schemaVersion: 2, installRoot, port, composeFile,
     token: '0'.repeat(64), composeSha256: createHash('sha256').update(compose).digest('hex')});
   privateDirectory(join(installRoot, 'config'), uid);
   const configDirectory = join(installRoot, 'config', 'laya');

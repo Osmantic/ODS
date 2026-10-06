@@ -3,7 +3,7 @@
 import {constants, openSync, closeSync, fstatSync, readFileSync, lstatSync, realpathSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {homedir} from 'node:os';
-import {join, dirname, isAbsolute, parse} from 'node:path';
+import {join, dirname, basename, isAbsolute, parse} from 'node:path';
 import {createLayaClient} from './laya-client.mjs';
 import {createLayaTool} from './laya-tool.mjs';
 
@@ -41,13 +41,18 @@ export function readOwnedLayaFile(path, uid, maxBytes, privateFile) {
 
 export function validateLayaConnection(value) {
   const keys = ['schemaVersion', 'installRoot', 'port', 'token', 'composeSha256'];
+  if (value?.schemaVersion === 2) keys.push('composeFile');
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || Object.keys(value).length !== keys.length || !keys.every(key => Object.hasOwn(value, key))
-      || value.schemaVersion !== 1 || typeof value.installRoot !== 'string'
+      || ![1, 2].includes(value.schemaVersion) || typeof value.installRoot !== 'string'
       || !isAbsolute(value.installRoot) || /[\r\n\0]/.test(value.installRoot)
       || !Number.isInteger(value.port) || value.port < 1 || value.port > 65535
       || typeof value.token !== 'string' || !TOKEN.test(value.token)
-      || typeof value.composeSha256 !== 'string' || !HASH.test(value.composeSha256)) {
+      || typeof value.composeSha256 !== 'string' || !HASH.test(value.composeSha256)
+      || value.schemaVersion === 2 && (typeof value.composeFile !== 'string'
+        || !isAbsolute(value.composeFile) || /[\r\n\0]/.test(value.composeFile)
+        || basename(value.composeFile) !== 'compose.yaml'
+        || basename(dirname(value.composeFile)) !== 'laya')) {
     throw new Error('Invalid Laya connection record.');
   }
   return value;
@@ -60,7 +65,10 @@ export function readLayaConnection(path = LAYA_CONNECTION_FILE, {uid = process.g
   try {
     const value = validateLayaConnection(JSON.parse(readOwnedLayaFile(path, uid, 4096, true).toString('utf8')));
     if (realpathSync(value.installRoot) !== value.installRoot) return undefined;
-    const marker = join(value.installRoot, 'extensions', 'user', 'laya', 'compose.yaml');
+    // Version 1 records retain their original binding. New setup records the
+    // actual installed recipe, including owner-configured extension locations.
+    const marker = value.schemaVersion === 2 ? value.composeFile
+      : join(value.installRoot, 'extensions', 'user', 'laya', 'compose.yaml');
     const bytes = readOwnedLayaFile(marker, uid, 512 * 1024, false);
     if (createHash('sha256').update(bytes).digest('hex') !== value.composeSha256) return undefined;
     return value;

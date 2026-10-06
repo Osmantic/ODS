@@ -45,6 +45,13 @@ test('connection schema refuses destinations, relative roots and arbitrary paylo
     {token: 'short'}, {composeSha256: ''}, {schemaVersion: 2}]) {
     assert.throws(() => validateLayaConnection({...connection(), ...patch}), /Invalid Laya connection/);
   }
+  const modern = {...connection(), schemaVersion: 2,
+    composeFile: join(process.cwd(), 'data', 'user-extensions', 'laya', 'compose.yaml')};
+  assert.deepEqual(validateLayaConnection(modern), modern);
+  for (const composeFile of ['../laya/compose.yaml', join(process.cwd(), 'other', 'compose.yaml'),
+    join(process.cwd(), 'laya', 'compose.yaml.disabled'), null]) {
+    assert.throws(() => validateLayaConnection({...modern, composeFile}), /Invalid Laya connection/);
+  }
 });
 
 test('missing connection is inactive and native Windows does not fake POSIX permissions', () => {

@@ -29,10 +29,11 @@ The result carries no execution authority or external verification receipt.
 The extension setup hook calls, as the installation owner:
 
 ```sh
-node "$INSTALL_DIR/extensions/services/pixel-agent/plugin/laya-setup-cli.mjs" "$INSTALL_DIR" 8017
+node "$INSTALL_DIR/extensions/services/pixel-agent/plugin/laya-setup-cli.mjs" "$INSTALL_DIR" 8017 "$EXTENSION_DIR/compose.yaml"
 ```
 
-The catalog recipe must exist at `extensions/user/laya/compose.yaml` first.
+The catalog recipe must be installed first. The hook passes its actual location,
+normally `data/user-extensions/laya/compose.yaml`, including custom data paths.
 Setup creates a dedicated private `config/laya/api-key` and writes the owner
 connection at `~/.config/ods/laya-portal.json`. A repeated setup preserves the key.
 It never rewrites the shared ODS `.env`. The key lives under an owner-only
@@ -41,7 +42,7 @@ the container. This permits rootless Docker UID mappings without exposing the
 directory to other host users. The connection record remains mode 600. The
 container must not receive Dashboard or inference-provider credentials.
 
-The record binds the canonical installation root, local port and Compose file
+The record binds the canonical installation root, local port and actual Compose file path and
 digest. Removing or disabling that Compose definition makes the tool unavailable;
 changing its bytes requires setup again. Setup refuses unsafe file custody and
 does not repair unrelated permissions. Concurrent setup is refused with a lock;
