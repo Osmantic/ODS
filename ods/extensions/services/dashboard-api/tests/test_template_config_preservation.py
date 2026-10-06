@@ -67,8 +67,13 @@ def test_chat_playground_preserves_owner_config(tmp_path, monkeypatch, layout):
         SimpleNamespace(id=sid, status="healthy")
         for sid in shipped_template["services"] if sid != "sillytavern"
     ])
-    lifecycle = []
-    monkeypatch.setattr(extensions, "_call_agent", lambda action, sid: lifecycle.append((action, sid)) or True)
+    lifecycle: list[tuple[str, str]] = []
+
+    def call_agent(action: str, sid: str) -> bool:
+        lifecycle.append((action, sid))
+        return True
+
+    monkeypatch.setattr(extensions, "_call_agent", call_agent)
     monkeypatch.setattr(extensions, "_call_agent_hook", lambda sid, hook: True)
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", lambda: None)
     monkeypatch.setattr(extensions, "_select_extensions_on_host", lambda *_a, **_kw: None)
