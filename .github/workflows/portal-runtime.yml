@@ -69,6 +69,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs
+      - name: Verify Laya dataset reports through the scoped SDK
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          python3 ods/extensions/services/pixel-agent/tests/test_laya_files.py
+          node ods/extensions/services/pixel-agent/tests/runtime_laya_batch.integration.mjs "$RUNNER_TEMP/read-runtime/node_modules/openclaw"
       - name: Verify concurrent workspace creation and no-follow boundaries
         if: runner.os != 'Windows'
         env:

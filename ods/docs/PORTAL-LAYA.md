@@ -24,6 +24,45 @@ Known service failures return a bounded tool error so the main model can
 continue with other capabilities. Errors never substitute a canned final answer.
 The result carries no execution authority or external verification receipt.
 
+## Workspace datasets
+
+`pixel_ods_laya_batch` accepts an existing UTF-8 CSV, TSV, JSON array or JSONL
+file, its text column/key, optional unique ID column/key, shared questions and
+an output directory. It reads up to 128 rows/64 KiB, partitions inference into
+bounded batches and saves `report.csv` and `decisions.json` inside a new
+`laya-<id>` directory. The chat model does not need to copy rows into arguments
+or transcribe classifier output. Missing columns, malformed records, duplicate
+IDs and exceeded limits reject the dataset rather than silently dropping rows.
+
+The CSV preserves row order/IDs and includes decisions and available confidence
+statistics. Formula-like text cells are escaped for spreadsheet use; JSON
+retains the exact identifiers and all original probabilities. The JSON also
+records the source hash and complete question definitions. Verified readback
+proves saved bytes, not classification accuracy.
+
+The tool returns bounded examples of the least decisive choice predictions for
+the model to inspect against their original text. Ranking uses the probability
+gap between the leading options, not an invented universal acceptance threshold.
+The shortlist does not certify other rows; long excerpts and omitted examples
+are explicitly identified. Unsupported CSV labels should be corrected through
+ordinary file tools, clearing their original confidence fields and verifying
+the edit. `decisions.json` remains the original Laya evidence, not an assertion
+that later model corrections came from Laya.
+
+File operations run through the installed SDK's scoped exec tool and existing
+Sandbox/Full Access policy. A factory cannot invent a live run: admission binds
+the current session, arguments and single invocation. The fixed helper uses
+workspace-relative no-follow reads and create-only outputs. No arbitrary host
+path, shell code or destination enters the schema. Source bytes are rechecked
+before saving. A failed/cancelled attempt does not deliver partial decisions as
+complete; any possible output directory is reported for inspection. The batch
+tool is not replay-safe. Disable and configuration changes are rechecked during
+processing, and failure leaves the model's other capabilities available.
+
+This is most useful when an owner wants structured classification or scoring of
+a dataset, particularly when copying rows and producing reports would dominate
+the model's work. It is not a default preprocessor for every chat or coding task.
+
 ## Managed connection
 
 The extension setup hook calls, as the installation owner:
@@ -116,3 +155,18 @@ when tool execution succeeds. Compare representative tasks with and without
 Laya, including loading, tool selection and synthesis. This integration does
 not guarantee a speedup or accuracy improvement; do not infer either from the
 classifier's forward-pass time or introduce a universal confidence threshold.
+
+### Installed batch comparison
+
+`tests/laya_batch_portal.integration.py` exercises the actual authenticated Portal
+API with a fixed bilingual 32-row dataset. It supports `--mode baseline`,
+`--mode inline` (the existing tool), and `--mode batch`. Supply `--install-root`,
+`--workspace` and `--evidence` as absolute local paths. Authentication is read
+privately from the installation. Run modes in alternating order and retain every
+trial. Each creates its own workspace directory; none changes the selected model.
+The output records total duration, actual tool activity and CSV label accuracy,
+including incorrect or incomplete attempts. A 200 response alone is not success.
+
+`tests/runtime_laya_batch.integration.mjs <openclaw-package> [sandbox-image]`
+separately checks real scoped file execution in an isolated temporary workspace.
+It uses fixture decisions and is not an accuracy or performance benchmark.
