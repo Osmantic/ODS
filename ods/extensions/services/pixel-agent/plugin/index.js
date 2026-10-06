@@ -828,6 +828,11 @@ export default definePluginEntry({
       { names: ["pixel_ods_web_extract"] }
     );
 
+    // Discovery records the schema without depending on service availability.
+    // Cached Laya descriptors recheck owner activation at execution time.
+    api.registerTool(onlyPixel(() => api.registrationMode === 'discovery'
+      ? layaRuntime.tool : layaRuntime.offered()), {names: ['pixel_ods_laya']});
+
     // Offered only while the owner's Perplexica answers /api/config with chat
     // and embedding defaults (OpenClaw keeps listing it from its descriptor
     // cache once every manifest tool was offered; COMPLETION-RELIABILITY.md).
@@ -835,7 +840,6 @@ export default definePluginEntry({
     // server-side catalog, not the prompt bytes. Schema discovery always sees
     // it and never probes the host.
     const discovery = api.registrationMode === 'discovery';
-    api.registerTool(onlyPixel(() => discovery ? layaRuntime.tool : layaRuntime.offered()), {names: ['pixel_ods_laya']});
     if (!discovery) {
       perplexicaAvailability ??= createPerplexicaAvailability({ port: api.pluginConfig?.perplexicaPort });
       perplexicaAvailability.refreshIfStale();
