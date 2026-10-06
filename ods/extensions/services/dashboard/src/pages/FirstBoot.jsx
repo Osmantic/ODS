@@ -16,6 +16,8 @@
 // final "Finish" tap, via /api/setup/complete.
 
 import { useEffect, useMemo, useState } from 'react'
+import { useI18n } from '../i18n'
+import LanguageSelector from '../i18n/LanguageSelector'
 import {
   Sparkles, User, Layers, Check, ChevronRight, ChevronLeft,
   MessageSquare, Workflow, Boxes, Loader2, AlertCircle, Copy,
@@ -28,21 +30,27 @@ const STACK_OPTIONS = [
   {
     id: 'chat',
     title: 'Chat only',
+    titleKey: 'firstBoot.stack.chat.title',
     blurb: 'Just the chat surface. This is what runs out of the box.',
+    blurbKey: 'firstBoot.stack.chat.blurb',
     templateId: null,
     Icon: MessageSquare,
   },
   {
     id: 'chat-agents',
     title: 'Chat + Agents',
+    titleKey: 'firstBoot.stack.agents.title',
     blurb: 'Adds Hermes, web search, usage monitoring, and n8n workflows.',
+    blurbKey: 'firstBoot.stack.agents.blurb',
     templateId: 'onboarding-agents',
     Icon: Workflow,
   },
   {
     id: 'everything',
     title: 'Full ODS Stack',
+    titleKey: 'firstBoot.stack.everything.title',
     blurb: 'Adds agents, voice, RAG, research, privacy, and observability (~16GB). Image generation installs separately from Extensions.',
+    blurbKey: 'firstBoot.stack.everything.blurb',
     templateId: 'onboarding-full-stack',
     Icon: Boxes,
   },
@@ -76,6 +84,7 @@ function clearProgress() {
 }
 
 export default function FirstBoot({ onComplete }) {
+  const {t} = useI18n()
   const initial = useMemo(() => readProgress() || {}, [])
   const [step, setStep] = useState(initial.step || 1)
   const [deviceName, setDeviceName] = useState(initial.deviceName || 'ods')
@@ -259,6 +268,8 @@ export default function FirstBoot({ onComplete }) {
   return (
     <div className="pixel-app pixel-setup min-h-screen bg-theme-bg flex flex-col">
       <header className="px-6 pt-8 pb-4 flex items-center justify-between">
+        <LanguageSelector />
+
         <img src="/osmantic-isolated-os.png" alt="ODS" className="h-12 w-20 object-contain grayscale mix-blend-screen" />
         {!invite && <StepDots step={step} total={TOTAL_STEPS} />}
       </header>
@@ -342,19 +353,20 @@ function StepDots({ step, total }) {
 // ---------------------------------------------------------------------------
 
 function WelcomeStep({ deviceName, setDeviceName, onNext }) {
+  const {t} = useI18n()
   const valid = /^[a-z0-9-]{1,32}$/i.test(deviceName.trim())
   return (
     <div>
       <div className="w-16 h-16 rounded-2xl bg-theme-accent/15 text-theme-accent flex items-center justify-center mb-6">
         <Sparkles size={32} />
       </div>
-      <h1 className="text-3xl font-bold text-theme-text mb-3">Welcome to ODS.</h1>
+      <h1 className="text-3xl font-bold text-theme-text mb-3">{t('firstBoot.welcome.title')}</h1>
       <p className="text-theme-text-muted mb-8 leading-relaxed">
-        Let&apos;s get you set up in about a minute. First, give this setup a friendly label for the owner-card audit trail.
+        {t('firstBoot.welcome.body')}
       </p>
 
       <label className="block mb-6">
-        <span className="text-sm text-theme-text-muted">Setup label</span>
+        <span className="text-sm text-theme-text-muted">{t('firstBoot.setupLabel')}</span>
         <input
           type="text"
           value={deviceName}
@@ -367,10 +379,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
           spellCheck={false}
         />
         <span className="text-xs text-theme-text-muted mt-2 block">
-          This label is recorded on the first owner card only. It does not rename the host yet;
-          change <code className="text-theme-accent">ODS_DEVICE_NAME</code> in Settings before expecting
-          <code className="text-theme-accent"> {deviceName.trim() || 'ods'}.local</code> to resolve.
-          Letters, numbers, and dashes only.
+          {t('firstBoot.setupLabelHelp', {name: deviceName.trim() || 'ods'})}
         </span>
       </label>
 
@@ -379,7 +388,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
         disabled={!valid}
         className="w-full flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
       >
-        Continue
+        {t('common.continue')}
         <ChevronRight size={18} />
       </button>
     </div>
@@ -391,6 +400,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
 // ---------------------------------------------------------------------------
 
 function UserStep({ username, setUsername, onNext, onBack }) {
+  const {t} = useI18n()
   const trimmed = username.trim()
   const valid = /^[A-Za-z0-9._-]{1,64}$/.test(trimmed)
   return (
@@ -398,13 +408,13 @@ function UserStep({ username, setUsername, onNext, onBack }) {
       <div className="w-16 h-16 rounded-2xl bg-theme-accent/15 text-theme-accent flex items-center justify-center mb-6">
         <User size={32} />
       </div>
-      <h1 className="text-3xl font-bold text-theme-text mb-3">Who&apos;s the first user?</h1>
+      <h1 className="text-3xl font-bold text-theme-text mb-3">{t('firstBoot.user.title')}</h1>
       <p className="text-theme-text-muted mb-8 leading-relaxed">
-        We&apos;ll generate an owner card for them at the end. They scan it to reach ODS Talk on this ODS.
+        {t('firstBoot.user.body')}
       </p>
 
       <label className="block mb-6">
-        <span className="text-sm text-theme-text-muted">Username</span>
+        <span className="text-sm text-theme-text-muted">{t('firstBoot.username')}</span>
         <input
           type="text"
           value={username}
@@ -418,14 +428,14 @@ function UserStep({ username, setUsername, onNext, onBack }) {
           spellCheck={false}
         />
         <span className="text-xs text-theme-text-muted mt-2 block">
-          Recorded with the owner card audit trail. The card remains valid until it is revoked.
+          {t('firstBoot.usernameHelp')}
         </span>
       </label>
 
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t('common.back')}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl"
         >
           <ChevronLeft size={18} />
@@ -435,7 +445,7 @@ function UserStep({ username, setUsername, onNext, onBack }) {
           disabled={!valid}
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
-          Continue
+          {t('common.continue')}
           <ChevronRight size={18} />
         </button>
       </div>
@@ -448,14 +458,15 @@ function UserStep({ username, setUsername, onNext, onBack }) {
 // ---------------------------------------------------------------------------
 
 function StackStep({ stack, setStack, onNext, onBack }) {
+  const {t} = useI18n()
   return (
     <div>
       <div className="w-16 h-16 rounded-2xl bg-theme-accent/15 text-theme-accent flex items-center justify-center mb-6">
         <Layers size={32} />
       </div>
-      <h1 className="text-3xl font-bold text-theme-text mb-3">Pick your stack.</h1>
+      <h1 className="text-3xl font-bold text-theme-text mb-3">{t('firstBoot.stack.title')}</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        You can change this later. Start small if you want and add things as you go.
+        {t('firstBoot.stack.body')}
       </p>
 
       <div className="space-y-3 mb-8">
@@ -480,10 +491,10 @@ function StackStep({ stack, setStack, onNext, onBack }) {
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium text-theme-text">{opt.title}</span>
+                  <span className="font-medium text-theme-text">{t(opt.titleKey)}</span>
                   {selected && <Check size={18} className="text-theme-accent flex-shrink-0" />}
                 </div>
-                <p className="text-sm text-theme-text-muted mt-1">{opt.blurb}</p>
+                <p className="text-sm text-theme-text-muted mt-1">{t(opt.blurbKey)}</p>
               </div>
             </button>
           )
@@ -493,7 +504,7 @@ function StackStep({ stack, setStack, onNext, onBack }) {
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t('common.back')}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl"
         >
           <ChevronLeft size={18} />
@@ -502,7 +513,7 @@ function StackStep({ stack, setStack, onNext, onBack }) {
           onClick={onNext}
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 transition-opacity"
         >
-          Continue
+          {t('common.continue')}
           <ChevronRight size={18} />
         </button>
       </div>
@@ -525,25 +536,27 @@ function ConfirmStep({
   ownerCardStatus,
   ownerCardStatusLoading,
 }) {
-  const stackTitle = STACK_OPTIONS.find(s => s.id === stack)?.title || stack
+  const {t} = useI18n()
+  const selectedStack = STACK_OPTIONS.find(s => s.id === stack)
+  const stackTitle = selectedStack?.titleKey ? t(selectedStack.titleKey) : stack
   const ownerCardUnavailable = ownerCardStatus?.ready === false
   return (
     <div>
-      <h1 className="text-3xl font-bold text-theme-text mb-6">Ready?</h1>
+      <h1 className="text-3xl font-bold text-theme-text mb-6">{t('firstBoot.confirm.title')}</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        Tap Finish and we&apos;ll generate the owner QR for ODS Talk.
+        {t('firstBoot.confirm.body')}
       </p>
 
       <dl className="bg-theme-card border border-theme-border rounded-xl divide-y divide-theme-border mb-8">
-        <Row label="Setup label" value={deviceName.trim() || 'ods'} hint="owner-card audit note" />
-        <Row label="First user" value={username.trim()} />
-        <Row label="Stack" value={stackTitle} hint="services start in the background — verify on the dashboard after setup" />
+        <Row label={t('firstBoot.confirm.setupLabel')} value={deviceName.trim() || 'ods'} hint={t('firstBoot.confirm.setupHint')} />
+        <Row label={t('firstBoot.confirm.firstUser')} value={username.trim()} />
+        <Row label={t('firstBoot.confirm.stack')} value={stackTitle} hint={t('firstBoot.confirm.stackHint')} />
       </dl>
 
       {ownerCardStatusLoading && (
         <div className="mb-6 p-4 bg-theme-card border border-theme-border rounded-xl text-theme-text-muted text-sm flex items-start gap-2">
           <Loader2 size={18} className="animate-spin flex-shrink-0 mt-0.5" />
-          <span>Checking owner-card readiness...</span>
+          <span>{t('firstBoot.confirm.checking')}</span>
         </div>
       )}
 
@@ -551,8 +564,8 @@ function ConfirmStep({
         <div className="mb-6 p-4 bg-theme-text-secondary/10 border border-theme-border rounded-xl text-theme-text-secondary text-sm flex items-start gap-2">
           <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
           <span>
-            {ownerCardStatus.reason || 'Enable ODS proxy before generating owner cards.'}
-            {' '}Finish setup now, then print an owner card from Settings / Setup / Owner after LAN access is enabled.
+            {ownerCardStatus.reason || t('firstBoot.confirm.proxyRequired')}
+            {' '}{t('firstBoot.confirm.finishLater')}
           </span>
         </div>
       )}
@@ -567,7 +580,7 @@ function ConfirmStep({
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t('common.back')}
           disabled={finishing}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl disabled:opacity-50"
         >
@@ -579,7 +592,7 @@ function ConfirmStep({
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
           {finishing && <Loader2 size={18} className="animate-spin" />}
-          {finishing ? 'Configuring...' : 'Finish'}
+          {finishing ? t('firstBoot.confirm.configuring') : t('firstBoot.confirm.finish')}
         </button>
       </div>
     </div>
@@ -603,6 +616,7 @@ function Row({ label, value, hint }) {
 // ---------------------------------------------------------------------------
 
 function DoneScreen({ invite, onDone }) {
+  const {t} = useI18n()
   const [copied, setCopied] = useState(false)
   const [qrDataUrl, setQrDataUrl] = useState(null)
   const [qrError, setQrError] = useState(null)
@@ -659,10 +673,9 @@ function DoneScreen({ invite, onDone }) {
       <div className="w-16 h-16 rounded-2xl bg-green-500/15 text-green-400 flex items-center justify-center mb-6">
         <Check size={32} />
       </div>
-      <h1 className="text-3xl font-bold text-theme-text mb-3">You&apos;re set.</h1>
+      <h1 className="text-3xl font-bold text-theme-text mb-3">{t('firstBoot.done.title')}</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        Here&apos;s the owner card for <strong className="text-theme-text">{invite.target_username}</strong>.
-        They scan or tap it to open ODS Talk. Keep the printed QR safe; it remains valid until revoked.
+        {t('firstBoot.done.body', {username: invite.target_username})}
       </p>
 
       {qrDataUrl ? (
@@ -673,7 +686,7 @@ function DoneScreen({ invite, onDone }) {
         <div className="bg-theme-card border border-theme-border rounded-xl p-8 flex flex-col items-center justify-center mb-6 min-h-56">
           <QrCode size={48} className="text-theme-text-muted mb-2" />
           <p className="text-xs text-theme-text-muted text-center">
-            {qrError || 'Generating QR...'}
+            {qrError || t('firstBoot.done.generating')}
           </p>
         </div>
       )}
@@ -687,8 +700,8 @@ function DoneScreen({ invite, onDone }) {
         />
         <button
           onClick={copy}
-          title="Copy link"
-          aria-label="Copy owner link"
+          title={t('firstBoot.done.copy')}
+          aria-label={t('firstBoot.done.copyAria')}
           className="flex items-center gap-1 px-3 py-2 bg-theme-card border border-theme-border rounded-lg text-theme-text hover:bg-theme-surface-hover text-sm"
         >
           {copied ? <Check size={16} className="text-green-400" /> : <Copy size={16} />}
@@ -702,19 +715,19 @@ function DoneScreen({ invite, onDone }) {
             className="flex-1 flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 rounded-xl"
           >
             <Share2 size={18} />
-            Share
+            {t('firstBoot.done.share')}
           </button>
         )}
         <button
           onClick={onDone}
           className="flex-1 bg-theme-accent text-white py-4 rounded-xl font-medium hover:opacity-90 transition-opacity"
         >
-          Open dashboard
+          {t('firstBoot.done.dashboard')}
         </button>
       </div>
 
       <p className="text-xs text-theme-text-muted mt-6 text-center">
-        Need more cards or guest invites later? They live under <strong>Settings</strong> / <strong>Setup / Owner</strong>.
+        {t('firstBoot.done.footer')}
       </p>
     </div>
   )
