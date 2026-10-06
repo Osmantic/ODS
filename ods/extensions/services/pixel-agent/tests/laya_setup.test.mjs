@@ -14,8 +14,8 @@ function fixture(t) {
   const root = mkdtempSync(join(realpathSync(homedir()), '.ods-laya-test-'));
   t.after(() => rmSync(root, {recursive: true, force: true}));
   const installRoot = join(root, 'ods');
-  mkdirSync(join(installRoot, 'extensions', 'user', 'laya'), {recursive: true, mode: 0o700});
-  const marker = join(installRoot, 'extensions', 'user', 'laya', 'compose.yaml');
+  mkdirSync(join(installRoot, 'data', 'user-extensions', 'laya'), {recursive: true, mode: 0o700});
+  const marker = join(installRoot, 'data', 'user-extensions', 'laya', 'compose.yaml');
   writeFileSync(marker, 'services:\n  laya: {}\n', {mode: 0o600});
   const connectionFile = join(root, '.config', 'ods', 'laya-portal.json');
   return {installRoot, connectionFile, marker};
@@ -33,6 +33,8 @@ test('setup is idempotent and activation changes reach an already discovered too
   try { first = configureLayaPortal(options); }
   finally { process.umask(originalMask); }
   const saved = readLayaConnection(options.connectionFile);
+  assert.equal(saved.schemaVersion, 2);
+  assert.equal(saved.composeFile, options.marker);
   const key = readFileSync(first.tokenFile, 'utf8').trim();
   assert.match(key, /^[a-f0-9]{64}$/);
   assert.equal(saved.token, key);
@@ -57,6 +59,54 @@ test('setup is idempotent and activation changes reach an already discovered too
   writeFileSync(options.marker, 'services:\n  laya: {changed: true}\n');
   assert.equal(runtime.offered(), null, 'changed definitions need a new setup binding');
   assert.equal(calls, 2);
+});
+
+test('owner-configured extension directory controls activation without a legacy marker', posixOwner, t => {
+  const options = fixture(t);
+  const directory = join(options.installRoot, '..', 'custom-data', 'laya');
+  mkdirSync(directory, {recursive: true, mode: 0o700});
+  const composeFile = join(realpathSync(directory), 'compose.yaml');
+  renameSync(options.marker, composeFile);
+  configureLayaPortal({...options, composeFile});
+  const saved = readLayaConnection(options.connectionFile);
+  assert.equal(saved.composeFile, composeFile);
+  renameSync(composeFile, `${composeFile}.disabled`);
+  assert.equal(readLayaConnection(options.connectionFile), undefined);
+  renameSync(`${composeFile}.disabled`, composeFile);
+  assert.equal(readLayaConnection(options.connectionFile).token, saved.token);
+});
+
+test('legacy connection keeps its original marker until setup migrates it', posixOwner, t => {
+  const options = fixture(t);
+  configureLayaPortal(options);
+  const saved = readLayaConnection(options.connectionFile);
+  const legacy = join(options.installRoot, 'extensions', 'user', 'laya', 'compose.yaml');
+  mkdirSync(join(legacy, '..'), {recursive: true, mode: 0o700});
+  writeFileSync(legacy, readFileSync(options.marker), {mode: 0o600});
+  const {composeFile, ...record} = saved;
+  writeFileSync(options.connectionFile, JSON.stringify({...record, schemaVersion: 1}));
+  assert.equal(readLayaConnection(options.connectionFile).token, saved.token);
+  renameSync(legacy, `${legacy}.disabled`);
+  assert.equal(readLayaConnection(options.connectionFile), undefined);
+  configureLayaPortal(options);
+  assert.equal(readLayaConnection(options.connectionFile).composeFile, options.marker);
+  assert.equal(readLayaConnection(options.connectionFile).token, saved.token);
+});
+
+test('installer shared data mode is supported only for the public marker ancestor', posixOwner, t => {
+  const options = fixture(t);
+  chmodSync(join(options.installRoot, 'data'), 0o775);
+  configureLayaPortal(options);
+  assert.ok(readLayaConnection(options.connectionFile));
+  chmodSync(join(options.installRoot, 'data', 'user-extensions'), 0o775);
+  assert.equal(readLayaConnection(options.connectionFile), undefined);
+  assert.throws(() => configureLayaPortal(options), /Unsafe Laya connection parent/);
+  chmodSync(join(options.installRoot, 'data', 'user-extensions'), 0o755);
+  chmodSync(join(options.installRoot, 'data'), 0o777);
+  assert.equal(readLayaConnection(options.connectionFile), undefined);
+  chmodSync(join(options.installRoot, 'data'), 0o775);
+  chmodSync(join(options.installRoot, 'config', 'laya'), 0o775);
+  assert.throws(() => configureLayaPortal(options), /Unsafe Laya connection parent/);
 });
 
 test('configuration refuses invalid ports before writing credentials', posixOwner, t => {
