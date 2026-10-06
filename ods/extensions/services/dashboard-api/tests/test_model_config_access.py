@@ -1,6 +1,7 @@
 """Model controls use a fresh, public host snapshot only for denied file access."""
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -42,7 +43,7 @@ def model_config_api(monkeypatch, tmp_path):
     monkeypatch.setattr(router, "pixel_stream_active", lambda: False)
     monkeypatch.setattr(router, "_bootstrap_upgrade_download_conflict", lambda: None)
 
-    state = {
+    state: dict[str, Any] = {
         "projection": {"configuredMode": "local"},
         "host_error": None,
         "read_error": None,
