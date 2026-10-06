@@ -2,7 +2,8 @@
 
 Enable Laya from ODS Extensions. The selected Portal model gains an optional
 `pixel_ods_laya` tool for text classification, ordinal scores and yes/no
-probabilities. It uses decisions to continue your task and answer normally.
+probabilities, plus `pixel_ods_laya_batch` for workspace datasets. It uses
+decisions to continue your task and answer normally.
 There is no separate chat UI, provider key or model-selection step.
 
 Requires the ODS core Portal Laya integration, Docker Compose and the ODS owner's
@@ -37,11 +38,25 @@ volumes is a separate destructive operation.
 
 ## Behavior
 
-The model sends relevant text explicitly; Laya cannot read paths, browse, inspect
-images or create projects. It does not run on every message. Long sources must
-be divided into meaningful sections; truncated responses are rejected. A
-service failure returns a tool error and leaves the Portal model able to
-continue with its other capabilities. Decisions never authorize actions.
+Ask Portal, for example: "Classify tickets.csv by topic, preserve the IDs and
+save a CSV report." The batch tool reads an existing CSV/TSV/JSON/JSONL file
+through Portal's normal workspace permissions, processes up to 128 rows/64 KiB,
+and saves an editable `report.csv` plus original probabilities and source hash
+in `decisions.json`. The model can review ambiguous predictions without copying
+every row into tool arguments. New reports never overwrite existing files.
+
+Texts already in the conversation use the inline tool. Laya itself cannot read
+paths, browse, inspect images or create projects. It does not run on every
+message. Long sources must be divided into meaningful sections; truncated
+responses are rejected. A service failure returns a tool error and leaves the
+Portal model able to continue with its other capabilities. Decisions never
+authorize actions.
+
+This fits repeated text classification and scoring, not general chat acceleration.
+Compare total task time and label quality for your own workload: loading,
+inference and model review can be slower than the chat model alone. Confidence
+is an estimate, and saved file hashes do not establish label accuracy. Original
+Laya probabilities remain in JSON when the model corrects a CSV label.
 
 Development checks are in `tests/`. `portal_adapter.integration.mjs` requires a
 running service and a private `LAYA_TEST_KEY_FILE`; it tests actual inference,
