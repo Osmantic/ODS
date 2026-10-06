@@ -47,6 +47,16 @@ test('typed results retain statistical uncertainty and strip execution suggestio
   assert.doesNotMatch(JSON.stringify(decoded), /rm -rf|Ignore|act_probability/);
 });
 
+test('long context can use a bounded budget without altering the supplied evidence', () => {
+  const request = {...input(), contextTokens: 2048};
+  const prepared = prepareLayaRequest(request);
+  assert.equal(prepared.body.max_len, 2048);
+  assert.equal(prepared.body.states[0].text, request.items[0].text);
+  for (const contextTokens of [0, -1, 8193, 1000000, '2048', null, 1024.5]) {
+    rejects(() => prepareLayaRequest({...request, contextTokens}), 'invalid_request');
+  }
+});
+
 test('batch items keep their original IDs in order', () => {
   const request = input(); request.items.push({id: 'ticket2', text: 'Login failed.'});
   const response = result(); response.results.push(structuredClone(response.results[0]));

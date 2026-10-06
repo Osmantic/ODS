@@ -57,7 +57,7 @@ test('programming failures are not silently converted into classifier unavailabi
 });
 
 test('schema has no destination, credential, code execution or high repetition fields', () => {
-  assert.deepEqual(Object.keys(LAYA_TOOL_SCHEMA.properties), ['items', 'questions', 'language', 'checkpoint']);
+  assert.deepEqual(Object.keys(LAYA_TOOL_SCHEMA.properties), ['items', 'questions', 'language', 'checkpoint', 'contextTokens']);
   assert.doesNotMatch(JSON.stringify(LAYA_TOOL_SCHEMA), /"maxLength"|"token"|"url"|"command"/);
   assert.match(LAYA_GUIDE, /Do not end with a raw classifier response/);
   assert.match(LAYA_GUIDE, /does not prove inference stopped/);

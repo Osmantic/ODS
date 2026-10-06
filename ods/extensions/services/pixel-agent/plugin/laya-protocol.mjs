@@ -71,7 +71,7 @@ function questionWire(question) {
 // Each item gets an independent state and shares the question definitions.
 // No chat history, files, paths, URLs or credentials are fetched implicitly.
 export function prepareLayaRequest(input) {
-  fields(input, ['items', 'questions', 'language', 'checkpoint'], ['items', 'questions']);
+  fields(input, ['items', 'questions', 'language', 'checkpoint', 'contextTokens'], ['items', 'questions']);
   const items = list(input.items, 1, LAYA_LIMITS.items, 'items').map(item => {
     fields(item, ['id', 'text'], ['id', 'text']);
     return {id: identifier(item.id), text: text(item.text, LAYA_LIMITS.textChars, 'item text')};
@@ -88,8 +88,12 @@ export function prepareLayaRequest(input) {
     reject('invalid_request', 'language must be a language code such as pt, en or pt-BR.');
   }
   const questions = Object.fromEntries(entries);
+  if (input.contextTokens !== undefined && ![512, 1024, 2048, 4096, 8192].includes(input.contextTokens)) {
+    reject('invalid_request', 'contextTokens must be 512, 1024, 2048, 4096 or 8192.');
+  }
   const body = {states: items.map(item => ({text: item.text})), questions, model: checkpoint,
-    ...(input.language ? {lang: input.language} : {})};
+    ...(input.language ? {lang: input.language} : {}),
+    ...(input.contextTokens === undefined ? {} : {max_len: input.contextTokens})};
   if (Buffer.byteLength(JSON.stringify(body), 'utf8') > LAYA_LIMITS.requestBytes) {
     reject('request_too_large', 'Split this decision batch into smaller batches; nothing was sent.');
   }
