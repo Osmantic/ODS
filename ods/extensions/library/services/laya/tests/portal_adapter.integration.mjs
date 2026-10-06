@@ -41,4 +41,10 @@ await assert.rejects(createLayaClient({token: 'invalid'.repeat(8), port})
   .decide({items: [{id: 'a', text: 'Hello'}], questions}), error => error.code === 'authentication_failed');
 await assert.rejects(client.decide({items: [{id: 'long', text: 'Background text. '.repeat(1100)}],
   questions, checkpoint: 'english'}), error => error.code === 'truncated_context');
+const longer = {items: [{id: 'context', text:
+  'This background sentence describes a resolved software issue. '.repeat(70) + ' Please refund the duplicate charge.'}],
+  questions: [{id: 'refund', type: 'noul', instructions: 'Does the customer ask for a refund?'}], checkpoint: 'english'};
+await assert.rejects(client.decide(longer), error => error.code === 'truncated_context');
+const complete = await client.decide({...longer, contextTokens: 2048});
+assert.equal(complete.completeContext, true, 'larger relevant evidence is accepted only when consumed in full');
 console.log(JSON.stringify({qualified: true, device: health.device, measurements}));
