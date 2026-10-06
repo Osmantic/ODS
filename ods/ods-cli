@@ -1488,8 +1488,10 @@ cmd_status() {
 
     echo ""
 
-    # GPU status if available
-    if command -v nvidia-smi &> /dev/null; then
+    # Select GPU tooling by backend, not by installed vendor utilities.
+    if [[ "${GPU_BACKEND:-}" == "amd" || "${GPU_BACKEND:-}" == "apple" ]]; then
+        ( _gpu_status )
+    elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &> /dev/null; then
         echo -e "${BLUE}━━━ GPU Status ━━━${NC}"
         nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits | \
             awk -F', ' '{printf "  %s: %s%% GPU | %sMB/%sMB VRAM | %s°C\n", $1, $2, $3, $4, $5}' \
@@ -1609,7 +1611,7 @@ cmd_status_json() {
             --argjson unified_memory_gb "$_total_mem_gb" \
             --argjson gpu_cores "$([[ "$_gpu_cores" =~ ^[0-9]+$ ]] && printf '%s' "$_gpu_cores" || printf 'null')" \
             '{backend: $backend, chip: $chip, unified_memory_gb: $unified_memory_gb, gpu_cores: $gpu_cores}')
-    elif command -v nvidia-smi >/dev/null 2>&1; then
+    elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi >/dev/null 2>&1; then
         # Represent each GPU line as raw strings in an array
         gpu_summary_json=$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
             --format=csv,noheader,nounits 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))')
@@ -5465,8 +5467,18 @@ _gpu_status() {
         echo -e "${BLUE}━━━ GPU Status (1 integrated GPU) ━━━${NC}"
         echo ""
     else
-        local gpu_count
-        gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        local gpu_count=0
+        if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+            local card_dir vendor
+            for card_dir in /sys/class/drm/card*/device; do
+                [[ -r "$card_dir/vendor" ]] || continue
+                # A device may disappear during enumeration; skip unreadable vendors.
+                vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+                [[ "$vendor" == "0x1002" ]] && gpu_count=$((gpu_count + 1))
+            done
+        elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+            gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        fi
         echo -e "${BLUE}━━━ GPU Status (${gpu_count} GPU$([ "$gpu_count" -ne 1 ] && echo s)) ━━━${NC}"
         echo ""
     fi

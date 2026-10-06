@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple
+  GPU reporters instead of choosing NVIDIA tooling merely because it is
+  installed. AMD device counting in `ods gpu status` uses DRM sysfs, and
+  `ods status --json` no longer queries `nvidia-smi` for non-NVIDIA backends.
+  AMD JSON GPU summaries remain `null`.
+
 ### Security
 - Open WebUI no longer starts for other devices while its built-in
   administrator, `admin@localhost`, still has the password `admin`. Open WebUI

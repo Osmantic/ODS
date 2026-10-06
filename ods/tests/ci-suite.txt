@@ -41,6 +41,7 @@ tests/test-cli-macos-native-llama.sh
 tests/test-cli-preset-restore-user-extensions.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
+tests/test-cli-status-gpu-backend.sh
 tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
