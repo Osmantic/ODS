@@ -1,0 +1,55 @@
+services:
+  laya:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ods-laya
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    ports:
+      - "127.0.0.1:${LAYA_PORT:-8017}:8000"
+    volumes:
+      - laya-cache:/cache:rw
+      - ./config/laya/api-key:/run/ods-laya/api-key:ro
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      HF_HOME: /cache/huggingface-${ODS_UID:-1000}
+      LAYA_DEVICE: cpu
+      LAYA_REVISION: reviewed
+      LAYA_MODELS: english,multilingual,typed-decisions
+      LAYA_PRELOAD: '1'
+      LAYA_MAX_LOADED: '3'
+      LAYA_MAX_CONCURRENT: '1'
+      LAYA_MAX_BATCH_TOKENS: '16384'
+      LAYA_MAX_TOKEN_BUDGET: '8192'
+      LAYA_THREADS: '2'
+      LAYA_IDLE_UNLOAD_SECONDS: '300'
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    healthcheck:
+      test: [CMD, python, /opt/ods-laya/health.py]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10m
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 8G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks: [ods-network]
+networks:
+  ods-network:
+    external: true
+volumes:
+  laya-cache: {}

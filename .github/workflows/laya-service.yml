@@ -1,0 +1,39 @@
+name: Laya service qualification
+
+on:
+  pull_request:
+    paths:
+      - 'ods/extensions/library/services/laya/**'
+      - 'ods/extensions/services/pixel-agent/plugin/laya*.mjs'
+      - '.github/workflows/laya-service.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: laya-service-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  container:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - name: Install recipe validation dependencies
+        run: python -m pip install fastapi==0.142.2 PyYAML==6.0.3 jsonschema==4.25.1
+      - name: Validate manifest, actual extension policy and owner settings
+        run: python -m unittest discover -s ods/extensions/library/services/laya/tests -p test_recipe.py -v
+      - name: Build and verify actual inference, managed activation and restart
+        run: bash ods/extensions/library/services/laya/tests/container-qualification.sh

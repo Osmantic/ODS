@@ -1,0 +1,6 @@
+*
+!Dockerfile
+!requirements.lock
+!requirements-torch.lock
+!server.py
+!health.py
