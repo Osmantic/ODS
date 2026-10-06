@@ -320,7 +320,7 @@ def test_external_llm_local_activation_rejects_before_mutation(
 def test_host_model_status_marks_uncertain_native_transaction_pending(
     monkeypatch, recovery,
 ):
-    monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda: None)
+    monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda **_: None)
     monkeypatch.setattr(_mod, "_switchboard_state", None)
 
     def status():

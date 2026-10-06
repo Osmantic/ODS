@@ -1333,6 +1333,9 @@ if ext_dir.exists():
             if manifest.get("schema_version") != "ods.services.v1":
                 continue
             service = manifest.get("service", {})
+            if not isinstance(service, dict):
+                print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                continue
             # Check GPU backend compatibility
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
@@ -1449,6 +1452,12 @@ if user_ext_dir.exists():
                     service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
                 else:
                     service = {}
+                # A manifest whose `service:` is a scalar or list must not crash
+                # the resolver: it runs on every `ods` invocation, and the
+                # AttributeError escapes the --skip-broken handler.
+                if not isinstance(service, dict):
+                    print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                    continue
                 # Imported recipes without GPU metadata are unrestricted, as
                 # in the catalog. Explicit backend restrictions still apply.
                 # Gated on isinstance(manifest, dict) so the manifest-less compat
@@ -1763,7 +1772,9 @@ for fragment in resolved:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    projected.append(str(overlay.relative_to(script_dir)))
+    # Keep the fragment's own spelling: `path` is resolved, so it may sit
+    # outside script_dir when the install or data/ is reached via a symlink.
+    projected.append(str(pathlib.Path(fragment).with_name(overlay.name)))
 resolved = projected
 
 def to_flags(files):

@@ -294,6 +294,14 @@ Write-Host "Standalone ComfyUI is healthy at http://127.0.0.1:$Port/"
     # session. Do not leave this isolated project's Compose selection or data
     # root in that session after success, a dry run, or a failed build.
     foreach ($name in @('ODS_COMFYUI_DATA_ROOT', 'ODS_COMFYUI_PORT', 'COMPOSE_FILE')) {
-        [Environment]::SetEnvironmentVariable($name, $temporaryEnvironment[$name], 'Process')
+        # PowerShell passes $null to a .NET string argument as "", and on
+        # PowerShell 7 (.NET) an empty value is kept as a defined, empty
+        # variable instead of removing it; an empty COMPOSE_FILE breaks later
+        # compose calls. [NullString]::Value is a real null.
+        if ($null -eq $temporaryEnvironment[$name]) {
+            [Environment]::SetEnvironmentVariable($name, [NullString]::Value, 'Process')
+        } else {
+            [Environment]::SetEnvironmentVariable($name, $temporaryEnvironment[$name], 'Process')
+        }
     }
 }

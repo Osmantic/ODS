@@ -996,7 +996,12 @@ async def check_service_health(
             raise ValueError("HTTP health port must be positive")
     except (ValueError, TypeError):
         return _service_status_from_config(service_id, config, "down")
-    url = f"http://{host}:{health_port}{health_path}"
+    # A model API (API mode) is not a local service: probe it with its own
+    # scheme and Host header. The probe carries no key (only LiteLLM holds
+    # it), so an API that answers 401/403 is up; this checks reachability.
+    external_api = config.get("external_api") is True
+    scheme = config.get("scheme") if external_api and config.get("scheme") in ("http", "https") else "http"
+    url = f"{scheme}://{host}:{health_port}{health_path}"
     status = "unknown"
     response_time = None
 
@@ -1004,8 +1009,9 @@ async def check_service_health(
         session = await _get_aio_session()
         start = asyncio.get_event_loop().time()
         # Send Host header so reverse-proxy services (e.g. Caddy in Baserow)
-        # route the request correctly instead of returning 404.
-        headers = {"Host": "localhost"}
+        # route the request correctly instead of returning 404. Some API
+        # front ends refuse a library User-Agent (Cloudflare error 1010).
+        headers = {"User-Agent": "ODS-Dashboard"} if external_api else {"Host": "localhost"}
         get_kwargs: dict = {"headers": headers}
         health_auth_env = config.get("health_auth_env")
         if health_auth_env is not None:
@@ -1025,7 +1031,10 @@ async def check_service_health(
             get_kwargs["timeout"] = timeout
         async with session.get(url, **get_kwargs) as resp:
             response_time = (asyncio.get_event_loop().time() - start) * 1000
-            status = "healthy" if resp.status < (300 if health_auth_env is not None else 400) else "unhealthy"
+            if external_api:
+                status = "healthy" if resp.status < 400 or resp.status in (401, 403) else "unhealthy"
+            else:
+                status = "healthy" if resp.status < (300 if health_auth_env is not None else 400) else "unhealthy"
     except asyncio.TimeoutError:
         # Service is reachable but slow — report degraded rather than down
         # to avoid false "offline" flashes during startup or heavy load.
@@ -1047,6 +1056,23 @@ async def check_service_health(
         external_port=config.get("external_port", config["port"]),
         status=status, response_time_ms=round(response_time, 1) if response_time else None
     )
+
+
+def _switched_off_status(service_id: str, config: dict):
+    """An awaitable not-deployed status for a service the install switched off, else None.
+
+    The Compose resolver leaves Open WebUI out when ENABLE_OPEN_WEBUI is not
+    "true" (docker-compose.gateway-only.yml). Probing it then failed on name
+    resolution, and only two exact DNS error texts count as not deployed;
+    Docker in WSL words it differently, so Windows counted a core service
+    offline (fleet, Strixy: "6/7 core services online").
+    """
+    if service_id != "open-webui" or (read_live_env_value("ENABLE_OPEN_WEBUI") or "true").strip().lower() == "true":
+        return None
+
+    async def not_deployed():
+        return _service_status_from_config(service_id, config, "not_deployed")
+    return not_deployed()
 
 
 async def get_all_services() -> list[ServiceStatus]:
@@ -1073,7 +1099,8 @@ async def get_all_services() -> list[ServiceStatus]:
                 service_configs.setdefault(service_id, current_optional[service_id])
             else:
                 service_configs.pop(service_id, None)
-    tasks = [check_service_health(sid, cfg) for sid, cfg in service_configs.items()]
+    tasks = [_switched_off_status(sid, cfg) or check_service_health(sid, cfg)
+             for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     statuses: list[ServiceStatus] = []

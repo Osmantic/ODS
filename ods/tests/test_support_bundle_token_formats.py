@@ -59,6 +59,11 @@ OWN_SECRETS = {
     "N8N_PASS": filler("n8n", 24),
     "SEARXNG_SECRET": filler("searxng", 48, HEX),
 }
+# A LiteLLM proxy's refusal echoes the end of the key it refused and the
+# key's hash (fleet, DSV4.1 drill proxy).
+LITELLM_HASH = filler("litellm-hash", 64, HEX)
+LITELLM_ECHO = ("Authentication Error, Invalid proxy server token passed. Received API Key = sk"
+                + "-...wxyz, Key Hash (Token) = " + LITELLM_HASH + ". Unable to find token in cache")
 ORDINARY = [
     "ghcr.io/osmantic/ods@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "source 9f3b6ecd25db3ab51bef4091473d88ee5824bc3b",
@@ -89,7 +94,7 @@ def bundle(tmp_path_factory):
     (scripts.parent / ".env").write_text("\n".join(env_lines) + "\n")
     log_lines = [context.format(value) for value in TOKENS.values() for context in CONTEXTS]
     log_lines += [f"connected with {value}" for value in OWN_SECRETS.values()]
-    log_lines += ORDINARY
+    log_lines += ORDINARY + [LITELLM_ECHO]
     log = tmp_path / "log"
     log.write_text("\n".join(log_lines) + "\n")
     docker = tmp_path / "docker-fixture"
@@ -137,10 +142,18 @@ def test_ordinary_diagnostics_survive(bundle):
         assert line in log
 
 
+def test_litellm_key_echo_is_redacted(bundle):
+    _receipt, files = bundle
+    log = next(text for path, text in files.items() if path.endswith("/logs/ods-fixture.log"))
+    assert "Received API Key = [REDACTED], Key Hash (Token) = [REDACTED]. Unable to find token" in log
+    for path, text in files.items():
+        assert "wxyz" not in text and not leaked(LITELLM_HASH, text), path
+
+
 def test_bundle_and_archive_are_owner_only(bundle):
     receipt, files = bundle
     manifest = next(text for path, text in files.items() if path.endswith("/manifest.json"))
-    assert json.loads(manifest)["redaction_version"] == "2"
+    assert json.loads(manifest)["redaction_version"] == "3"
     directory = Path(receipt["bundle_dir"])
     for path in [Path(receipt["archive"]), directory, *directory.rglob("*")]:
         assert stat.S_IMODE(path.stat().st_mode) & 0o077 == 0, path

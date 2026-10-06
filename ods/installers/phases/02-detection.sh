@@ -50,6 +50,8 @@ AMD_INFERENCE_BACKEND_REQUESTED="${AMD_INFERENCE_BACKEND:-}"
 
 # Keep runtime budgets separate from the Windows physical memory report. This
 # shared probe also applies to cloud installs before their early return.
+# Profile eligibility and persisted RAM remain the VM's addressable memory;
+# the summary reports the host total separately without enlarging that budget.
 ods_detect_runtime_ram || error "Could not read the runtime RAM capacity."
 _ram_display="$(ods_format_memory_kib "$RAM_KB")"
 _host_ram_display=""
@@ -604,7 +606,10 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "${TIER:-}" !=
             if [[ -n "$_selector_env" ]]; then
                 if command -v load_model_selector_env_from_output >/dev/null 2>&1; then
                     load_model_selector_env_from_output <<< "$_selector_env"
-                    log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
+                    # With an API selected, the API serves the model; the local
+                    # pick only guides matching a name in phase 02b.
+                    [[ -n "${EXTERNAL_LLM_URL:-}" ]] \
+                        || log "Catalog model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
                 else
                     log "Catalog model selector output ignored; safe env loader unavailable"
                 fi
@@ -680,7 +685,11 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
     # install to a model in this Linux environment. (The helper fails only
     # without .env, which the condition above rules out.)
     _retained_native="$(external_llm_env_value "$INSTALL_DIR/.env" NATIVE_LLM_BASE_URL || true)"
-    if ! ods_native_llm_requested && [[ "${ODS_MODE_EXPLICIT:-false}" != "true" && -n "$_retained_native" ]]; then
+    # An API selected for this run (--external-llm-url, Windows
+    # -ExternalLlmUrl) is the owner's explicit switch away from the Windows
+    # llama-server; phase 06 then writes the route without it.
+    if ! ods_native_llm_requested && [[ "${ODS_MODE_EXPLICIT:-false}" != "true" && -n "$_retained_native" \
+            && -z "${EXTERNAL_LLM_URL:-}" ]]; then
         error "This installation uses a llama-server that Windows setup manages. Rerun Windows setup, pass --native-llm-url, or use --reselect-model to choose a model in this Linux environment."
         exit 1
     fi
@@ -786,16 +795,27 @@ if [[ "$INTERACTIVE" == "true" ]]; then
         ai "WSL has its own RAM limit; model sizing uses the WSL budget. To change it, edit .wslconfig and restart WSL."
     fi
 
-    if [[ "$TIER" == "CLOUD" ]]; then
+    _shown_model="$LLM_MODEL"
+    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+        # The API serves the model; the local pick is not downloaded.
+        _shown_model="${EXTERNAL_LLM_MODEL:-the API's model} (API)"
+        SPEED_EST="depends on the API"
+        USERS_EST="depends on the API"
+    elif [[ "$TIER" == "CLOUD" ]]; then
         SPEED_EST="cloud API"
         USERS_EST="depends on API tier"
     else
         SPEED_EST="benchmark after first launch"
         USERS_EST="measured after local benchmark"
     fi
-    show_tier_recommendation "$TIER" "$LLM_MODEL" "$SPEED_EST" "$USERS_EST"
+    show_tier_recommendation "$TIER" "$_shown_model" "$SPEED_EST" "$USERS_EST"
+    unset _shown_model
 else
     success "Configuration: Tier $TIER ($TIER_NAME)"
-    log "  Model: $LLM_MODEL"
-    log "  Context: ${MAX_CONTEXT} tokens"
+    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+        log "  Model: ${EXTERNAL_LLM_MODEL:-the API's model}, served by ${EXTERNAL_LLM_URL}"
+    else
+        log "  Model: $LLM_MODEL"
+        log "  Context: ${MAX_CONTEXT} tokens"
+    fi
 fi

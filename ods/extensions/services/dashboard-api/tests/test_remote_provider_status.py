@@ -132,6 +132,15 @@ def test_overall_status_requires_a_proven_consumer_activation():
         },
     ) == "degraded"
 
+    # A route is used only in cloud mode: drift on a local or hybrid install
+    # is an installer (or `ods mode`) pause, not a fault (fleet, laptop).
+    drift = {"valid": False, "proven": False, "reason": "consumer_drift"}
+    assert rps._overall_status(route, egress, drift, "local") == "paused"
+    assert rps._overall_status(route, {"reachable": False}, drift, "hybrid") == "paused"
+    assert rps._overall_status(route, egress, drift, "cloud") == "degraded"
+    assert rps._overall_status(route, egress, drift) == "degraded"
+    assert rps._overall_status({**route, "enabled": False}, egress, drift, "local") == "disabled"
+
 
 def test_activation_status_rejects_incomplete_ready_claim(monkeypatch, tmp_path):
     from routers import remote_provider_status as rps
@@ -1130,6 +1139,32 @@ def test_remote_provider_status_invalid_state_is_diagnostic(
     assert body["status"] == "invalid"
     assert body["routeState"]["valid"] is False
     assert body["routeState"]["errors"]
+
+
+def test_remote_provider_status_reports_a_route_paused_by_a_local_install(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    state_path = tmp_path / "routing-state.json"
+    state_path.write_text(json.dumps(_route_state()), encoding="utf-8")
+    rps = _patch_state_path(monkeypatch, state_path)
+
+    async def fake_fetch():
+        return {"reachable": True, "valid": True, "ready": True, "status": "ok",
+                "secret": {"configured": True, "bytes": 26}, "resolution": None}
+
+    async def drifted(_activation):
+        return {"valid": False, "proven": False, "reason": "consumer_drift", "pixel": "drifted"}
+
+    monkeypatch.setattr(rps, "_fetch_egress_health", fake_fetch)
+    monkeypatch.setattr(rps, "_reconcile_activation_with_host", drifted)
+    monkeypatch.setattr(rps, "read_live_env_value", lambda key, default="": "local" if key == "ODS_MODE" else default)
+
+    resp = test_client.get("/api/remote-provider/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "paused"
 
 
 def test_remote_provider_status_reports_unreachable_egress(

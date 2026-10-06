@@ -145,6 +145,16 @@ function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro,
 # the Extensions Library.
 $script:ODSPortalNewInstallationArguments = @('--no-hermes')
 
+function Read-ODSPortalExternalLlmKey([string]$Path) {
+    # One printable line, as the Linux installer requires of a key file.
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "-ExternalLlmKeyFile was not found: $Path" }
+    $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop | Where-Object { $_.Trim() })
+    if ($lines.Count -ne 1 -or $lines[0].Trim() -notmatch '^[\x21-\x7e]{1,4096}$') {
+        throw '-ExternalLlmKeyFile must contain exactly one API key on one line.'
+    }
+    return $lines[0].Trim()
+}
+
 function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
     if ($Options['Hermes']) {
         throw 'Portal setup requires Pixel. -Hermes is not supported by this entry point.'
@@ -175,6 +185,28 @@ function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
         }
     }
     if ($Options['SummaryJsonPath']) { $linuxArgs += @('--summary-json', [string]$Options['SummaryJsonPath']) }
+    if ($Options['ExternalLlmUrl'] -and $Options['NoExternalLlm']) {
+        throw '-ExternalLlmUrl and -NoExternalLlm are opposite choices; choose one.'
+    }
+    if ($Options['NoExternalLlm']) {
+        # Back from API mode: the Linux installer drops the API route and its
+        # stored key, and this setup prepares the model on this computer.
+        $linuxArgs += @('--no-external-llm')
+    }
+    if ($Options['ExternalLlmUrl']) {
+        if ($Options['Cloud']) { throw '-ExternalLlmUrl and -Cloud are different model routes; choose one.' }
+        $url = [string]$Options['ExternalLlmUrl']
+        if ($url -notmatch '^https?://[^\s/?#]+(/[^\s]*)?$') { throw '-ExternalLlmUrl must be an http:// or https:// address, for example https://api.example.com.' }
+        $provider = if ($Options['ExternalLlmProvider']) { [string]$Options['ExternalLlmProvider'] } else { 'openai-compatible' }
+        if ($provider -cnotin @('openai-compatible', 'ollama', 'lmstudio')) { throw '-ExternalLlmProvider must be openai-compatible, ollama or lmstudio.' }
+        $model = [string]$Options['ExternalLlmModel']
+        if ($model -notmatch '^[^\s\x00-\x1f]{1,256}$') { throw '-ExternalLlmModel must name the model the server serves (its id in /v1/models).' }
+        $linuxArgs += @('--external-llm-url', $url, '--external-llm-provider', $provider, '--external-llm-model', $model)
+        # The key itself travels in this variable (see Invoke-ODSPortalSetup).
+        if ($Options['ExternalLlmKeyFile']) { $linuxArgs += @('--external-llm-key-env', 'ODS_EXTERNAL_LLM_API_KEY') }
+    } elseif ($Options['ExternalLlmModel'] -or $Options['ExternalLlmProvider'] -or $Options['ExternalLlmKeyFile']) {
+        throw '-ExternalLlmModel, -ExternalLlmProvider and -ExternalLlmKeyFile require -ExternalLlmUrl.'
+    }
     # Every WSL installation needs a durable Windows executable location for
     # owner-scoped sign-in/uninstall control, including NVIDIA and CPU hosts.
     $linuxArgs += @('--windows-system-directory', [Environment]::SystemDirectory)
@@ -454,19 +486,25 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     $stop = Initialize-ODSPortalDocker $distro $Options $InstallerRoot $nonInteractive
     if ($null -ne $stop) { return $stop }
     $forwardEnvironment = @{}
-    if (-not $Options['Cloud']) {
+    $windowsModelRoute = $false
+    if ($Options['ExternalLlmUrl'] -and $Options['ExternalLlmKeyFile']) {
+        $forwardEnvironment['ODS_EXTERNAL_LLM_API_KEY'] = Read-ODSPortalExternalLlmKey ([string]$Options['ExternalLlmKeyFile'])
+    }
+    # An API-mode or cloud install runs no model on this computer.
+    if (-not $Options['Cloud'] -and -not $Options['ExternalLlmUrl']) {
         $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
         Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
         if ($null -eq $nvidiaDriver) {
             $route = Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro
             $linuxArgs = @($route.Arguments)
             $forwardEnvironment = $route.Environment
+            $windowsModelRoute = $forwardEnvironment.Count -gt 0
         }
     }
     Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
     Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
     $exitCode = Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive) (Get-ODSPortalDockerDesktop).Exe ([string]$Options['StateRoot']) $script:ODSPortalNewInstallationArguments $forwardEnvironment
-    if ($exitCode -ne 0 -and $forwardEnvironment.Count) {
+    if ($exitCode -ne 0 -and $windowsModelRoute) {
         # The Windows model server already moved to llama.cpp; the WSL side
         # reaches it only after its installer finishes.
         Write-Host '         The GPU model server on Windows is ready, but the Linux installer did not finish, so chat stays unavailable until it does. Rerun the same install.ps1 command.'

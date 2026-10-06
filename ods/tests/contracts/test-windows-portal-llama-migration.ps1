@@ -118,6 +118,12 @@ try {
         return (Get-ODSPortalModelsDir)
     }
     function Wait-ODSPortalRuntimeReady($Registration, [int]$Seconds = 1020) {
+        if (-not $Registration.PSObject.Properties['Action']) {
+            # The previous runtime a rollback restarted.
+            $script:events.Add('ready-restored')
+            if ($script:restoredReadyFailure) { throw $script:restoredReadyFailure }
+            return [string]$Registration.Plan.GgufFile
+        }
         $script:events.Add('ready')
         if ($script:readyFailure) { throw $script:readyFailure }
         return [string]$Registration.Plan.GgufFile
@@ -134,6 +140,7 @@ try {
         $script:events.Clear(); $script:output.Clear(); $script:queried.Clear()
         $script:prompts = [Collections.Generic.List[string]]::new()
         $script:consent = $true; $script:installFailure = ''; $script:qualifyFailure = ''; $script:readyFailure = ''; $script:startFailure = ''
+        $script:restoredReadyFailure = ''
         $script:policyHint = ''; $script:owners = @{}; $script:reserved = @()
         $script:device = [pscustomobject]@{ Name = 'Vulkan0'; Description = 'AMD Radeon RX 9070 XT'; TotalMiB = 16304; FreeMiB = 16000 }
     }
@@ -216,14 +223,26 @@ try {
     $script:readyFailure = 'llama-server exited during startup with code 1.'
     $message = ''
     try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
-    Check ($message -match 'did not start: llama-server exited during startup' -and $message -match 'previous ODS runtime was restored') 'a failed repin reports the cause and the restored runtime'
+    Check ($message -match 'did not start: llama-server exited during startup' -and $message -match 'previous ODS runtime was restored and is running again') 'a failed repin reports the cause and the restored runtime once it proves ready'
     $restored = Get-Content -LiteralPath (Join-Path $runtimeDir 'runtime.json') -Raw | ConvertFrom-Json
     Check ($restored.ExecutablePath -match 'b9014-win-vulkan-x64' -and $restored.GgufFile -ceq 'Dashboard-Pick.gguf') 'rollback restores the previous llama-server and selection'
     foreach ($name in $before.Keys) {
         Check ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir $name))) -ceq [Convert]::ToBase64String($before[$name])) "rollback restores $name byte for byte"
     }
-    Check ($script:tasks.ContainsKey($llamaTask) -and $script:events[$script:events.Count - 2] -ceq "enable:$llamaTask" -and
-        $script:events[$script:events.Count - 1] -ceq "start:$llamaTask" -and (Test-ODSNativeLlamaWanted (Join-Path $runtimeDir 'intent.json'))) 'rollback re-enables and restarts the same task with a running intent'
+    Check ($script:tasks.ContainsKey($llamaTask) -and $script:events[$script:events.Count - 3] -ceq "enable:$llamaTask" -and
+        $script:events[$script:events.Count - 2] -ceq "start:$llamaTask" -and $script:events[$script:events.Count - 1] -ceq 'ready-restored' -and
+        (Test-ODSNativeLlamaWanted (Join-Path $runtimeDir 'intent.json'))) 'rollback re-enables and restarts the same task with a running intent, then checks it is ready'
+    Check (@(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*backup-*' }).Count -eq 0) 'a completed rollback removes its redundant backup'
+
+    # --- A restored runtime that cannot start again is not reported running ----
+    Reset-Scenario
+    $script:readyFailure = 'llama-server exited during startup with code 1.'
+    $script:restoredReadyFailure = 'Port 28080 is used by ''other-app''.'
+    $message = ''
+    try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'did not start: llama-server exited during startup' -and
+        $message -match 'previous ODS runtime was restored but did not start again: Port 28080 is used by ''other-app''\. Fix that, then rerun setup\.' -and
+        $message -notmatch 'is running again') 'a restored runtime that cannot start again says so and why, instead of claiming it restarted'
     Check (@(Get-ChildItem -LiteralPath (Get-ODSPortalStateDir) -Directory | Where-Object { $_.Name -like 'portal-runtime.*backup-*' }).Count -eq 0) 'a completed rollback removes its redundant backup'
     $script:pin = $script:pin.PSObject.Copy(); $script:pin.ReleaseTag = 'b9014'; $script:pin.Build = 9014
 
@@ -296,7 +315,7 @@ try {
     $script:readyFailure = 'llama-server did not finish loading the model.'
     $message = ''
     try { $null = Initialize-ODSPortalAmdRuntime $plan $fixture $true 'Ubuntu-24.04' '/home/user/ods' } catch { $message = $_.Exception.Message }
-    Check ($message -match 'did not start: llama-server did not finish loading' -and $message -match 'previous ODS runtime was restored and restarted') 'a failed migration names the cause and the restored runtime'
+    Check ($message -match 'did not start: llama-server did not finish loading' -and $message -match 'previous ODS runtime was restored and its task was started again') 'a failed migration names the cause and the restored runtime'
     foreach ($name in $oldBytes.Keys) {
         Check ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $runtimeDir $name))) -ceq [Convert]::ToBase64String($oldBytes[$name])) "rollback restores the former $name byte for byte"
     }

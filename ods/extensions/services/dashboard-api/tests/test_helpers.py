@@ -548,6 +548,34 @@ class TestCheckServiceHealth:
         assert kwargs.get("headers", {}).get("Host") == "localhost"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("code", "expected"), [
+        (200, "healthy"), (401, "healthy"), (403, "healthy"), (404, "unhealthy"), (502, "unhealthy"),
+    ])
+    async def test_model_api_is_probed_with_its_scheme_and_a_keyless_refusal_means_up(
+            self, mock_aiohttp_session, monkeypatch, code, expected):
+        # Fleet, API mode: an HTTPS API was probed at http://host:443 with
+        # Host: localhost and no key, so it never read healthy, up or down.
+        session = mock_aiohttp_session(status=code)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        config = {**self._CONFIG, "host": "api.example.test", "port": 443, "external_port": 443,
+                  "health": "/v1/models", "scheme": "https", "external_api": True}
+        result = await check_service_health("llama-server", config)
+        assert result.status == expected
+        args, kwargs = session.get.call_args
+        assert args[0] == "https://api.example.test:443/v1/models"
+        assert kwargs["headers"] == {"User-Agent": "ODS-Dashboard"}
+
+    @pytest.mark.asyncio
+    async def test_local_service_keeps_its_http_probe_and_host_header(self, mock_aiohttp_session, monkeypatch):
+        session = mock_aiohttp_session(status=401)
+        monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
+        result = await check_service_health("test-svc", {**self._CONFIG, "scheme": "https"})
+        assert result.status == "unhealthy"
+        args, kwargs = session.get.call_args
+        assert args[0] == "http://localhost:8080/health"
+        assert kwargs["headers"] == {"Host": "localhost"}
+
+    @pytest.mark.asyncio
     async def test_unhealthy_on_500(self, mock_aiohttp_session, monkeypatch):
         session = mock_aiohttp_session(status=500)
         monkeypatch.setattr("helpers._get_aio_session", AsyncMock(return_value=session))
@@ -717,6 +745,32 @@ class TestGetAllServices:
         assert bad.status == "down"
         ok = next(s for s in result if s.id == "ok-svc")
         assert ok.status == "healthy"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("flag", "expected"), [
+        ("false", "not_deployed"), ("FALSE", "not_deployed"), ("true", "down"), ("", "down"),
+    ])
+    async def test_open_webui_switched_off_by_its_flag_reads_not_deployed(self, monkeypatch, flag, expected):
+        # Fleet, Strixy: with ENABLE_OPEN_WEBUI=false there is no Open WebUI
+        # container; its probe failed on name resolution worded the WSL way and
+        # counted as a core service offline ("6/7" with everything up).
+        monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
+        monkeypatch.setattr("helpers.read_live_env_value",
+                            lambda key, default="": flag if key == "ENABLE_OPEN_WEBUI" else default)
+        monkeypatch.setattr("helpers.SERVICES", {"open-webui": {
+            "name": "Open WebUI (Chat)", "port": 8080, "external_port": 3000, "health": "/health", "host": "open-webui"}})
+        probed: list[str] = []
+
+        async def fake_health(sid, cfg):
+            probed.append(sid)
+            return ServiceStatus(id=sid, name=cfg["name"], port=cfg["port"],
+                                 external_port=cfg["external_port"], status="down")
+
+        monkeypatch.setattr("helpers.check_service_health", fake_health)
+        monkeypatch.setattr("helpers.request_agent_json", AsyncMock(side_effect=ValueError("no agent")))
+        result = await get_all_services()
+        assert [item.status for item in result] == [expected]
+        assert probed == ([] if expected == "not_deployed" else ["open-webui"])
 
     @pytest.mark.asyncio
     async def test_empty_services_returns_empty(self, monkeypatch):

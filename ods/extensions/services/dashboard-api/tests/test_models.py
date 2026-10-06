@@ -1908,7 +1908,7 @@ def test_download_model_rejects_while_bootstrap_upgrade_active(test_client, monk
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == {
-        "error": "Cannot start model download while bootstrap full-model upgrade is in progress",
+        "error": "ODS is still downloading Qwen3.6-35B-A3B-UD-Q4_K_M.gguf, its first full model. Other model downloads can start when it finishes.",
         "code": "model_lifecycle_busy",
         "activeOperation": "bootstrap_upgrade",
         "activeTarget": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
@@ -1958,7 +1958,7 @@ def test_load_model_rejects_while_bootstrap_upgrade_active(test_client, monkeypa
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == {
-        "error": "Cannot start model download while bootstrap full-model upgrade is in progress",
+        "error": "ODS is still downloading Qwen3.5-9B-Q4_K_M.gguf, its first full model. Other model downloads can start when it finishes.",
         "code": "model_lifecycle_busy",
         "activeOperation": "bootstrap_upgrade",
         "activeTarget": "Qwen3.5-9B-Q4_K_M.gguf",
@@ -2012,7 +2012,7 @@ def test_download_model_rejects_while_bootstrap_upgrade_retry_pending(test_clien
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == {
-        "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+        "error": "ODS's first download of Qwen3.6-35B-A3B-UD-Q4_K_M.gguf stopped before it finished, and it goes before other model downloads. Restart ODS to retry it (ods restart). The reason is in logs/model-upgrade.log in your ODS folder.",
         "code": "model_lifecycle_busy",
         "activeOperation": "bootstrap_upgrade_retry_pending",
         "activeTarget": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
@@ -2067,7 +2067,7 @@ def test_download_model_rejects_stale_active_bootstrap_upgrade_as_retry_pending(
 
     assert resp.status_code == 409
     assert resp.json()["detail"] == {
-        "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+        "error": "ODS's first download of Qwen3.6-35B-A3B-UD-Q4_K_M.gguf stopped before it finished, and it goes before other model downloads. Restart ODS to retry it (ods restart). The reason is in logs/model-upgrade.log in your ODS folder.",
         "code": "model_lifecycle_busy",
         "activeOperation": "bootstrap_upgrade_retry_pending",
         "activeTarget": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
@@ -3184,3 +3184,41 @@ def test_listed_talk_verdict_reflects_the_served_context(test_client, monkeypatc
     candidate = models["qwen3.6-27b-ud-q4-k-xl"]
     assert candidate["contextLength"] == 65536
     assert candidate["appCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"
+
+
+def test_api_models_names_the_external_api_model_and_host(test_client, monkeypatch, tmp_path):
+    # Fleet, Tower3: in API mode the Models page could not say what serves
+    # chat. The response names the model and the API's host, never the key.
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {"LLM_BACKEND": "external"})
+    env = {"EXTERNAL_LLM_MODEL": "deepseek-v4.1-flash", "EXTERNAL_LLM_URL": "https://api.example.test/v1"}
+    monkeypatch.setattr(models_router, "read_env_value", lambda key, *_args, **_kwargs: env.get(key, ""))
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4", "name": "Qwen 3.5 9B", "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5600, "vram_required_gb": 8, "context_length": 65536, "quantization": "Q4_K_M",
+        "specialty": "General", "description": "Local catalog entry.", "llm_model_name": "qwen3.5-9b",
+    }])
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+
+    payload = test_client.get("/api/models", headers=test_client.auth_headers).json()
+
+    assert payload["externalModel"] == "deepseek-v4.1-flash"
+    assert payload["externalHost"] == "api.example.test"
+
+
+@pytest.mark.parametrize(("url", "host"), [
+    ("https://api.example.test/v1", "api.example.test"),
+    ("http://10.0.0.5:8080", "10.0.0.5:8080"),
+    ("https://user:secret@api.example.test", "api.example.test"),
+    ("ftp://api.example.test", None),
+    ("", None),
+    ("not a url", None),
+])
+def test_external_api_host_keeps_only_host_and_port(url, host):
+    from routers import models as models_router
+    assert models_router._external_api_host(url) == host

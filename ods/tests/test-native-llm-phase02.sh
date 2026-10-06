@@ -181,6 +181,19 @@ else
     fail "a rerun without the native flags must stop"
 fi
 
+# 8. Selecting an API for this run is an explicit switch away from the
+#    Windows llama-server (fleet, Strixy: install.ps1 -ExternalLlmUrl on a
+#    native install was refused with advice to pass native flags).
+mkdir -p "$TMP_DIR/api-switch"
+cp "$TMP_DIR/kept.env" "$TMP_DIR/api-switch/.env"
+run_block api-switch 'NATIVE_LLM_BASE_URL=' 'NATIVE_LLM_MODEL=' 'NATIVE_LLM_CONTEXT_SIZE=' \
+    'EXTERNAL_LLM_URL=https://api.example.test'
+if ! grep -q 'uses a llama-server that Windows setup manages' "$TMP_DIR/api-switch.err"; then
+    pass "an API selected for this run switches away from the Windows llama-server"
+else
+    fail "an API selected for this run must not be refused as a native rerun: $(cat "$TMP_DIR/api-switch.err")"
+fi
+
 if [[ "$FAILURES" -gt 0 ]]; then
     echo "$FAILURES check(s) failed" >&2
     exit 1

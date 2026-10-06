@@ -279,17 +279,22 @@ bash tests/test-bootstrap-upgrade-resume-status.sh
 echo "[contract] bootstrap failed upgrades are start/restart-resumable"
 grep -q 'bootstrap-upgrade.args' installers/phases/11-services.sh \
   || { echo "[FAIL] Phase 11 must persist bootstrap-upgrade retry metadata"; exit 1; }
-awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' \
+# Read each function whole before matching. Under pipefail, `awk | grep -q`
+# fails when grep exits at its match and awk's next buffered write gets
+# SIGPIPE: mawk writes 4 KiB at a time, so cmd_start passing 4 KiB tripped it.
+cmd_restart_body="$(awk '/cmd_restart\(\)/,/^}/' ods-cli)"
+cmd_start_body="$(awk '/cmd_start\(\)/,/^}/' ods-cli)"
+grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' <<< "$cmd_restart_body" \
   || { echo "[FAIL] ods restart must retry failed bootstrap upgrades"; exit 1; }
-awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' \
+grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' <<< "$cmd_start_body" \
   || { echo "[FAIL] ods start must retry failed bootstrap upgrades"; exit 1; }
-awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
+grep -q '_ods_cli_wait_for_bootstrap_compose_safe' <<< "$cmd_restart_body" \
   || { echo "[FAIL] ods restart must wait for active bootstrap hot-swaps before compose"; exit 1; }
-awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+grep -q '_ods_cli_reload_model_env' <<< "$cmd_restart_body" \
   || { echo "[FAIL] ods restart must reload model env after bootstrap hot-swap wait"; exit 1; }
-awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
+grep -q '_ods_cli_wait_for_bootstrap_compose_safe' <<< "$cmd_start_body" \
   || { echo "[FAIL] ods start must wait for active bootstrap hot-swaps before compose"; exit 1; }
-awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+grep -q '_ods_cli_reload_model_env' <<< "$cmd_start_body" \
   || { echo "[FAIL] ods start must reload model env after bootstrap hot-swap wait"; exit 1; }
 grep -q '_macos_persist_bootstrap_upgrade_args' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must persist bootstrap-upgrade retry metadata"; exit 1; }

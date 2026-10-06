@@ -244,6 +244,10 @@ def _apply_external_llm_service_override(
     }
     service["host"] = parsed.hostname
     service["port"] = port
+    # The health probe reaches the API with its own scheme and Host header;
+    # an HTTPS API answered the old http://host:443 probe with an error.
+    service["scheme"] = parsed.scheme
+    service["external_api"] = True
     service["health"] = health_paths.get(provider, "/v1/models")
     service["name"] = {
         "ollama": "Ollama (External LLM)",

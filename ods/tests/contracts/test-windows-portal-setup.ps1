@@ -601,5 +601,44 @@ try {
         if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolved -Leaf) -notlike 'ods-portal-entry-*') { throw 'Unsafe test cleanup path' }
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
+
+    # API mode: an external OpenAI-compatible server serves the model. The key
+    # file stays on Windows and only its variable name reaches the Linux flags.
+    $api = @(Get-ODSPortalLinuxArguments @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'deepseek-v4.1-flash'; ExternalLlmKeyFile = 'C:\keys\api.key' })
+    $joined = $api -join ' '
+    Check ($joined.Contains('--external-llm-url https://api.example.test --external-llm-provider openai-compatible --external-llm-model deepseek-v4.1-flash') -and
+        $joined.Contains('--external-llm-key-env ODS_EXTERNAL_LLM_API_KEY') -and -not $joined.Contains('api.key')) 'API mode passes the server, model and key variable name, never the key file or key'
+    $ollama = (@(Get-ODSPortalLinuxArguments @{ ExternalLlmUrl = 'http://192.168.1.20:11434'; ExternalLlmModel = 'qwen3:8b'; ExternalLlmProvider = 'ollama' }) -join ' ')
+    Check ($ollama.Contains('--external-llm-provider ollama') -and -not $ollama.Contains('--external-llm-key-env')) 'API mode accepts Ollama and needs no key'
+    # Back from API mode: -NoExternalLlm drops the API route (fleet row 24:
+    # Windows had no way back short of uninstalling).
+    $local = (@(Get-ODSPortalLinuxArguments @{ NoExternalLlm = $true }) -join ' ')
+    Check ($local.Contains('--no-external-llm') -and -not $local.Contains('--external-llm-url')) '-NoExternalLlm asks the Linux installer to leave API mode'
+    Check (-not ((@(Get-ODSPortalLinuxArguments @{}) -join ' ').Contains('--no-external-llm'))) 'a plain rerun does not leave API mode'
+    foreach ($bad in @(
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm'; NoExternalLlm = $true },
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm'; Cloud = $true },
+        @{ ExternalLlmModel = 'm' },
+        @{ ExternalLlmUrl = 'ftp://api.example.test'; ExternalLlmModel = 'm' },
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = '' },
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm'; ExternalLlmProvider = 'other' })) {
+        $refused = $false
+        try { $null = Get-ODSPortalLinuxArguments $bad } catch { $refused = $true }
+        Check $refused ("API mode refuses " + (($bad.Keys | Sort-Object) -join '+'))
+    }
+    $keyDir = Join-Path ([IO.Path]::GetTempPath()) ('ods-api-key-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $keyDir
+    try {
+        $keyFile = Join-Path $keyDir 'api.key'
+        Set-Content -LiteralPath $keyFile -Value "  sk-fixture-123  `r`n" -NoNewline
+        Check ((Read-ODSPortalExternalLlmKey $keyFile) -ceq 'sk-fixture-123') 'the API key file is read as one trimmed line'
+        Set-Content -LiteralPath $keyFile -Value "sk-one`r`nsk-two`r`n" -NoNewline
+        $refused = $false
+        try { $null = Read-ODSPortalExternalLlmKey $keyFile } catch { $refused = $_.Exception.Message -match 'exactly one API key' }
+        Check $refused 'a key file with two keys is refused'
+        $refused = $false
+        try { $null = Read-ODSPortalExternalLlmKey (Join-Path $keyDir 'missing.key') } catch { $refused = $_.Exception.Message -match 'was not found' }
+        Check $refused 'a missing key file is named'
+    } finally { Remove-Item -LiteralPath $keyDir -Recurse -Force }
     Write-Host "Passed $script:checks Windows Portal setup contracts."
 } finally { $env:OS=$originalOS }

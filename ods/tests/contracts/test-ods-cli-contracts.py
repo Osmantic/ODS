@@ -26,7 +26,7 @@ COMMANDS = {
     "purge": ("cmd_purge", "purge <service>"),
     "preset": ("cmd_preset", "preset <action>"),
     "mode": ("cmd_mode", "mode [local|cloud|hybrid]"),
-    "model": ("cmd_model", "model [current|list|swap]"),
+    "model": ("cmd_model", "model [current|list|swap|recover]"),
     "remote-provider": (
         "cmd_remote_provider",
         "remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]",

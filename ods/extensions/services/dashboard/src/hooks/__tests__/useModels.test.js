@@ -167,7 +167,7 @@ describe('useModels', () => {
     const activationPosts = fetch.mock.calls.filter(([, options]) => options?.method === 'POST')
     expect(activationPosts).toHaveLength(0)
     expect(result.current.actionLoading).toBeNull()
-    expect(result.current.error).toBe('ODS is running in cloud mode. A local-mode installation is required to run downloaded models.')
+    expect(result.current.error).toBe('ODS is in cloud mode, so chat uses a model API. Downloaded models run only in local mode; if you connected that API in Settings > Remote model, switch back to the local model there.')
   })
 
   test('keeps browsing available but blocks local activation for an external backend', async () => {
@@ -189,7 +189,8 @@ describe('useModels', () => {
 
     const activationPosts = fetch.mock.calls.filter(([, options]) => options?.method === 'POST')
     expect(activationPosts).toHaveLength(0)
-    expect(result.current.error).toContain('model service outside ODS')
+    expect(result.current.error).toContain('ODS uses a model API')
+    expect(result.current.error).toContain('not used while API mode is on')
   })
 
   test.each([

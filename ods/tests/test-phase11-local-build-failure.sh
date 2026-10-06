@@ -66,6 +66,10 @@ JSON
         : > "$MOCK_COMPOSE_UP_MARKER"
         exit 0
         ;;
+    *" info "*)
+        [[ "${MOCK_DOCKER_DOWN:-false}" != "true" ]] || exit 1
+        exit 0
+        ;;
 esac
 exit 0
 MOCK
@@ -151,3 +155,29 @@ set -e
 grep -q 'WARN: comfyui build failed; retrying' "$LOG_FILE" \
     || fail "retry warning was not recorded"
 pass "phase 11 retries transient local image build failures"
+
+: > "$CALL_LOG"
+: > "$LOG_FILE"
+rm -f "$MOCK_COMFYUI_BUILD_COUNT"
+unset MOCK_COMFYUI_FAIL_BEFORE_SUCCESS
+export MOCK_COMFYUI_ALWAYS_FAIL=true
+export MOCK_DOCKER_DOWN=true
+export ODS_DOCKER_BUILD_MAX_ATTEMPTS=3
+
+set +e
+_phase11_build_local_images comfyui
+phase_rc=$?
+set -e
+unset MOCK_COMFYUI_ALWAYS_FAIL MOCK_DOCKER_DOWN
+
+[[ "$phase_rc" -ne 0 ]] \
+    || fail "a build with Docker stopped returned success"
+[[ "$(cat "$MOCK_COMFYUI_BUILD_COUNT")" -eq 1 ]] \
+    || fail "the build was retried while Docker was stopped"
+grep -q 'ERROR: Docker stopped responding while comfyui was building.' "$LOG_FILE" \
+    || fail "the stopped Docker was not named as the cause"
+grep -q 'sudo systemctl start docker' "$LOG_FILE" \
+    || fail "no way to start Docker again was given"
+! grep -q 'Required local image build(s) failed' "$LOG_FILE" \
+    || fail "a stopped Docker was reported as a failed build"
+pass "phase 11 names a stopped Docker instead of a failed build"

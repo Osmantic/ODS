@@ -129,14 +129,49 @@ test('compact Models highlights the running model and keeps configuration behind
   expect(state.loadModel).not.toHaveBeenCalled()
 })
 
+test.each([true, false])('API mode names the API model and host, without local leftovers (compact=%s)', (compact) => {
+  // Fleet, Tower3: API mode showed "Runtime: Local", "No model running" and
+  // the installer's stale local pick, and never named the API in use.
+  useModelsMock.mockReturnValue(baseState({
+    models: [model()], llmBackend: 'external', canActivateModels: false,
+    activationModeError: 'ODS uses a model API at api.example.test.',
+    externalApi: { model: 'deepseek-v4.1-flash', host: 'api.example.test' },
+    configuredModel: 'qwen3.5-27b-q4',
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+
+  expect(screen.getByText('Using a model API')).toBeVisible()
+  expect(screen.getByText(/deepseek-v4\.1-flash/)).toBeVisible()
+  expect(screen.getByText('Served by the API at api.example.test')).toBeVisible()
+  expect(screen.getByText('Runtime: API (api.example.test)')).toBeVisible()
+  expect(screen.queryByText('No model running')).toBeNull()
+  expect(screen.queryByText(/Selected during install/)).toBeNull()
+})
+
+test.each([true, false])('a downloaded model in API mode says API mode instead of offering Run (compact=%s)', (compact) => {
+  // Fleet, Strixy: in API mode a greyed "Run" on installed models read as available.
+  useModelsMock.mockReturnValue(baseState({
+    models: [model({ status: 'downloaded' })], llmBackend: 'external', canActivateModels: false,
+    activationModeError: 'ODS uses a model API at api.example.test.',
+    externalApi: { model: 'deepseek-v4.1-flash', host: 'api.example.test' },
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+
+  const button = screen.getByRole('button', { name: 'API mode' })
+  expect(button).toBeDisabled()
+  expect(button).toHaveAttribute('title', 'ODS uses a model API at api.example.test.')
+  expect(screen.queryByRole('button', { name: 'Run' })).toBeNull()
+})
+
 test('compact external mode keeps the catalog visible without promising local activation', () => {
   useModelsMock.mockReturnValue(baseState({
     models: [model()], llmBackend: 'external', canActivateModels: false,
-    activationModeError: 'This install routes to a model service outside ODS.',
+    activationModeError: 'ODS uses a model API.',
+    externalApi: { model: null, host: null },
   }))
   render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
 
-  expect(screen.getByText('Model changes managed externally')).toBeVisible()
+  expect(screen.getByText('Using a model API')).toBeVisible()
   expect(screen.getByRole('button',{name:'Browse 1 model ↓'})).toBeVisible()
   expect(screen.getByRole('tab',{name:/ODS Recommended/})).toHaveAttribute('aria-selected','true')
   expect(screen.getByRole('button',{name:'Download'})).toBeVisible()
@@ -1025,6 +1060,9 @@ test('shows terminal download failures with a retry action', async () => {
 
   expect(screen.getByText('Download Failed')).toBeInTheDocument()
   expect(screen.getByText('The download checksum did not match.')).toBeInTheDocument()
+  // A failed download names where to get help, like the page's other errors.
+  expect(screen.getByRole('link', { name: /get help on discord/i }))
+    .toHaveAttribute('href', expect.stringContaining('discord.gg/'))
   fireEvent.click(screen.getByRole('button', { name: /retry/i }))
 
   expect(clearTerminal).toHaveBeenCalled()

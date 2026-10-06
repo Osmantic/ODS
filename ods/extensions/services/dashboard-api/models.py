@@ -236,6 +236,10 @@ class ModelLibraryResponse(BaseModel):
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"
+    # API mode (llmBackend "external"): the model the API serves and the API's
+    # host, so the Models page can say what answers chat. Never the key.
+    externalModel: Optional[str] = None
+    externalHost: Optional[str] = None
     # The model runs on the Windows host (the WSL Portal); modelManagement
     # carries the host agent's proof of what this installation may control.
     hostRuntime: bool = False

@@ -164,6 +164,15 @@ while [[ $# -gt 0 ]]; do
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
+        # API mode is not in this installer yet; say so and name the way
+        # to connect an API after installing, not "Unknown option".
+        --external-llm-url|--external-llm-provider|--external-llm-model|--external-llm-key-file|--external-llm-key-env|--no-external-llm|--reuse-external-llm)
+            echo "API mode ($1) is not in the macOS installer yet. Nothing was changed." >&2
+            echo "Install without it, then connect your API in the dashboard (Settings > Remote model), or run:" >&2
+            echo "  ods remote-provider configure --base-url URL --model MODEL --api-key-file FILE" >&2
+            echo "  ods remote-provider test" >&2
+            echo "Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+            exit 1 ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -201,6 +210,20 @@ SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ── Source libraries ──
 LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
+
+# Any failed install, including a set -e stop, ends with where to get help.
+# The libraries trap EXIT only inside subshells, so this stays in place.
+_macos_help_on_failure() {
+    local status=$?
+    if (( status != 0 )); then
+        echo "" >&2
+        echo "  Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL}" >&2
+        echo "  Share the messages above and the end of ${ODS_LOG_FILE}." >&2
+    fi
+    return "$status"
+}
+trap _macos_help_on_failure EXIT
+
 source "${LIB_DIR}/opencode-selection.sh"
 source "${LIB_DIR}/ui.sh"
 macos_apply_presentation_mode
@@ -367,6 +390,19 @@ _macos_apply_fresh_feature_defaults() {
         $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED=false
         $HERMES_EXPLICIT || ENABLE_HERMES=false
     fi
+}
+
+_macos_ask_hermes() {
+    # Portal and Hermes are alternative agents, and native Portal always
+    # replaces Hermes. Asking would offer a choice the installer then ignores.
+    if $ENABLE_PIXEL; then
+        ENABLE_HERMES=false
+        ai "Hermes Agent is not offered while Portal is the agent. To use Hermes instead, do a fresh install with --no-pixel."
+        return 0
+    fi
+    local yn
+    read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
+    [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
 }
 
 _macos_resolve_webui_selection() {
@@ -1742,8 +1778,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
             read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
-            read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
-            [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
+            _macos_ask_hermes
             if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
                 read -r -p "  Enable OpenCode browser IDE? [y/N] " yn < /dev/tty
                 if [[ "$yn" =~ ^[yY] ]]; then
@@ -1885,7 +1920,7 @@ info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
 info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
 info_box "  Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
 info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
-info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
+info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; elif $ENABLE_PIXEL; then echo 'disabled (Portal is the agent)'; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
 info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
@@ -3746,5 +3781,11 @@ fi
         printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
     fi
 } | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
+
+# get-ods.sh --force exports this when the reinstall removed a saved one.
+if [[ "${ODS_REINSTALL_REMOTE_ROUTE_REMOVED:-false}" == "true" ]]; then
+    ai_warn "This reinstall removed your model API connection; ODS uses the model on this computer."
+    ai "To use the API again, connect it in Settings > Remote model."
+fi
 
 show_success_card

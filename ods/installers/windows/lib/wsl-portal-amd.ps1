@@ -584,6 +584,29 @@ function Undo-ODSPortalRuntimeCutover($Existing, [string]$Backup, [bool]$Registe
     }
 }
 
+function Get-ODSPortalRestoredRuntimeNote($Existing) {
+    # What the rollback left running. A restored llama-server counts as
+    # running again only once it proves its model, as a fresh start must; a
+    # cause that persists (a port another program took) stops it too.
+    if ($Existing.Kind -eq 'none') { return 'Nothing was left running.' }
+    if ($Existing.Kind -eq 'lemonade') {
+        if (@($Existing.Launches | Where-Object { $_.Launch.WasEnabled }).Count) {
+            return 'The previous ODS runtime was restored and its task was started again.'
+        }
+        return 'The previous ODS runtime was restored; it was not running before, so it was left stopped.'
+    }
+    if (-not $Existing.WasEnabled) {
+        return 'The previous ODS runtime was restored; it was not running before, so it was left stopped.'
+    }
+    try {
+        $null = Wait-ODSPortalRuntimeReady ([pscustomobject]@{
+            ReadyPath = (Join-Path (Get-ODSPortalRuntimeDir) 'ready.json'); Plan = $Existing.Launch.Plan })
+        return 'The previous ODS runtime was restored and is running again.'
+    } catch {
+        return "The previous ODS runtime was restored but did not start again: $($_.Exception.Message) Fix that, then rerun setup."
+    }
+}
+
 function Invoke-ODSPortalRuntimeCutover {
     <#
     .SYNOPSIS
@@ -613,8 +636,7 @@ function Invoke-ODSPortalRuntimeCutover {
         }
         # The previous files are back in place; the backup is now redundant.
         if ($backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-        $restored = if ($Existing.Kind -eq 'none') { 'Nothing was left running.' } else { 'The previous ODS runtime was restored and restarted.' }
-        throw "The llama.cpp runtime did not start: $failure $restored"
+        throw "The llama.cpp runtime did not start: $failure $(Get-ODSPortalRestoredRuntimeNote $Existing)"
     }
     if (@($Existing.Launches).Count) { Complete-ODSPortalLemonadeRetirement $Existing.Launches }
     if ($backup -and $Existing.Kind -eq 'llama-server') { Remove-Item -LiteralPath $backup -Recurse -Force }

@@ -24,17 +24,36 @@ export INSTALL_PHASE="init"
 cleanup_on_error() {
     local exit_code=$?
     echo ""
-    echo -e "${RED:-}[ERROR] Installation failed during phase: ${INSTALL_PHASE}${NC:-}"
-    echo -e "${AMB:-}        Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
+    case "${INSTALL_PHASE}" in
+        init|01-preflight|02-detection|02b-external-services)
+            # These phases check the host and choose a route; they change no
+            # ODS files or services, so an existing install is as it was. Say
+            # that first, not "Installation failed" (fleet row 30).
+            echo -e "${AMB:-}[!] Nothing was changed: the install stopped during its checks (${INSTALL_PHASE}).${NC:-}"
+            echo "An existing ODS installation keeps working as it was."
+            echo "Fix the problem above, then run the same command again."
+            ;;
+        *)
+            echo -e "${RED:-}[ERROR] Installation failed during phase: ${INSTALL_PHASE}${NC:-}"
+            echo "The install did not complete. Partial state may exist at:"
+            echo "  ${INSTALL_DIR:-~/ods}"
+            echo ""
+            echo "Keep this directory and its recovery receipts intact."
+            echo "Review the failed phase and log before retrying; some phases require recovery."
+            echo "For a fresh install, use the installed ods-uninstall.sh and resolve any"
+            echo "cleanup refusal before reinstalling. Do not delete the directory manually:"
+            echo "ODS services and protected Pixel state may exist outside it."
+            ;;
+    esac
     echo ""
-    echo "The install did not complete. Partial state may exist at:"
-    echo "  ${INSTALL_DIR:-~/ods}"
-    echo ""
-    echo "Keep this directory and its recovery receipts intact."
-    echo "Review the failed phase and log before retrying; some phases require recovery."
-    echo "For a fresh install, use the installed ods-uninstall.sh and resolve any"
-    echo "cleanup refusal before reinstalling. Do not delete the directory manually:"
-    echo "ODS services and protected Pixel state may exist outside it."
+    printf '        Log file: %s\n' "${LOG_FILE:-/tmp/ods-install.log}"
+    if [[ -n "${WSL_DISTRO_NAME:-}" && "${LOG_FILE:-}" == /* ]]; then
+        # Windows setup runs this installer in WSL; its /tmp path means
+        # nothing in Windows (fleet row 30). printf keeps the backslashes.
+        printf '        From Windows: \\\\wsl$\\%s%s\n' "$WSL_DISTRO_NAME" "${LOG_FILE//\//\\}"
+    fi
+    echo -e "${AMB:-}Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}${NC:-}"
+    echo -e "${AMB:-}Share the phase above and the end of the log file.${NC:-}"
     exit "$exit_code"
 }
 trap cleanup_on_error ERR
@@ -203,6 +222,7 @@ EXTERNAL_LLM_URL="${EXTERNAL_LLM_URL:-}"
 EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
 EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
 EXTERNAL_LLM_API_KEY_FILE="${EXTERNAL_LLM_API_KEY_FILE:-}"
+EXTERNAL_LLM_API_KEY_ENV=""
 EXTERNAL_LLM_API_KEY_DISABLE=false
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
@@ -256,6 +276,9 @@ Options:
     --no-gateway-only Return a gateway install to the ordinary UI selection
     --external-llm-key-file PATH
                       Owner-only API key file for an authenticated external model
+    --external-llm-key-env VAR
+                      Read that key from environment variable VAR instead of a file
+                      (Windows setup passes it this way, never on a command line)
     --no-external-llm-key
                       Stop sending the saved key to the selected external model
     --reuse-external-llm
@@ -371,6 +394,9 @@ while [[ $# -gt 0 ]]; do
         --no-webui) ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; shift ;;
         --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --external-llm-key-file) EXTERNAL_LLM_API_KEY_FILE="$2"; EXTERNAL_LLM_API_KEY_DISABLE=false; shift 2 ;;
+        --external-llm-key-env)
+            [[ "${2:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "--external-llm-key-env requires an environment variable name" >&2; exit 1; }
+            EXTERNAL_LLM_API_KEY_ENV="$2"; EXTERNAL_LLM_API_KEY_DISABLE=false; shift 2 ;;
         --no-external-llm-key) EXTERNAL_LLM_API_KEY_FILE=""; EXTERNAL_LLM_API_KEY_DISABLE=true; shift ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
@@ -566,6 +592,19 @@ elif [[ -n "$NATIVE_LLM_MODEL$NATIVE_LLM_CONTEXT_SIZE$NATIVE_LLM_API_KEY_ENV" ]]
     exit 1
 fi
 unset NATIVE_LLM_API_KEY_ENV
+if [[ -n "$EXTERNAL_LLM_API_KEY_ENV" ]]; then
+    # The key travels through the environment (WSLENV on Windows), never argv.
+    # It stays in this unexported variable until phase 06 stores it as the
+    # owner-only key file, so no copy is written anywhere else.
+    EXTERNAL_LLM_API_KEY_VALUE="${!EXTERNAL_LLM_API_KEY_ENV:-}"
+    [[ -n "$EXTERNAL_LLM_API_KEY_VALUE" && ${#EXTERNAL_LLM_API_KEY_VALUE} -le 4096 && "$EXTERNAL_LLM_API_KEY_VALUE" =~ ^[[:graph:]]+$ ]] || {
+        echo "--external-llm-key-env $EXTERNAL_LLM_API_KEY_ENV must name a variable holding one API key (printable, no spaces)" >&2
+        exit 1
+    }
+    EXTERNAL_LLM_API_KEY_FILE=""
+    unset "$EXTERNAL_LLM_API_KEY_ENV"
+fi
+unset EXTERNAL_LLM_API_KEY_ENV
 
 # Validate the native GPU VRAM from the flags before any phase can evaluate it
 # as Bash arithmetic. Empty retains auto-detection.
@@ -621,6 +660,19 @@ if [[ "$ODS_MODE_EXPLICIT" != "true" && "$ODS_MODE" != "$_requested_ods_mode" ]]
     log "Existing ODS mode detected; preserving ODS_MODE=$ODS_MODE for this installer rerun"
 fi
 unset _requested_ods_mode
+# A model API connected in Settings was active. This run keeps the install's
+# own mode, which leaves that API route paused until the owner reconnects it.
+# Pausing it also restores the LLM_API_URL the API replaced, as the agent's
+# own disable does; phase 06 otherwise kept http://litellm:4000, and Portal
+# chat reached LiteLLM without a key (fleet, laptop). An explicit local or
+# hybrid mode pauses it too.
+ODS_REMOTE_ROUTE_PAUSED=false
+ODS_REMOTE_ROUTE_PREVIOUS_API_URL=""
+if [[ "$ODS_MODE" != "cloud" ]] \
+    && ODS_REMOTE_ROUTE_PREVIOUS_API_URL="$(ods_remote_route_previous_api_url "$INSTALL_DIR" "$ODS_MODE")"; then
+    ODS_REMOTE_ROUTE_PAUSED=true
+    log "A model API connected in Settings (Remote model) is active. This run keeps ODS in ${ODS_MODE} mode and pauses the API; select Reconnect in Settings > Remote model afterwards."
+fi
 
 # Exported (an empty value included) so the Compose resolver uses this run's
 # selection instead of a value left in the installation's .env.

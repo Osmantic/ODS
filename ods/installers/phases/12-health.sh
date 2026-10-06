@@ -279,6 +279,7 @@ _phase12_verify_external_llm_completion() {
         fi | "${docker_cmd_arr[@]}" exec -i "$dashboard_container" python -c '
 import json
 import sys
+import urllib.error
 import urllib.request
 
 base = sys.argv[1].rstrip("/")
@@ -291,7 +292,9 @@ payload = json.dumps({
     "temperature": 0,
     "stream": False,
 }).encode()
-headers = {"Content-Type": "application/json"}
+# Some API front ends refuse the default Python User-Agent (Cloudflare
+# error 1010), so the probe names ODS.
+headers = {"Content-Type": "application/json", "User-Agent": sys.argv[3]}
 if key:
     headers["Authorization"] = "Bearer " + key
 request = urllib.request.Request(
@@ -299,8 +302,13 @@ request = urllib.request.Request(
     data=payload,
     headers=headers,
 )
-with urllib.request.urlopen(request, timeout=90) as result:
-    body = json.load(result)
+try:
+    with urllib.request.urlopen(request, timeout=90) as result:
+        body = json.load(result)
+except urllib.error.HTTPError as exc:
+    # The status picks the installer hint; the start of the reply goes to the log.
+    detail = " ".join(exc.read(300).decode("utf-8", "replace").split())[:200]
+    raise SystemExit("API answered HTTP %d: %s" % (exc.code, detail))
 choices = body.get("choices") if isinstance(body, dict) and not body.get("error") else None
 if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
     raise SystemExit("completion response did not contain a valid choice")
@@ -321,11 +329,23 @@ elif content in (None, "") and reasoning and choice.get("finish_reason") == "len
     print("reasoning token received; one-token probe exhausted")
 else:
     raise SystemExit("completion response contained no usable inference token")
-' "$container_url" "$model" 2>&1
+' "$container_url" "$model" "ODS/${VERSION:-unknown}" 2>&1
     )" || {
         ai_bad "External ${provider} probe did not return a usable inference token."
-        ai "Check the saved probe error for provider response or connectivity problems before changing network settings."
-        printf '%s\n' "$response" >> "$LOG_FILE"
+        if [[ "$response" =~ API\ answered\ HTTP\ ([0-9]{3}) ]]; then
+            case "${BASH_REMATCH[1]}" in
+                401|403) ai "The API refused this request from the ODS Docker network (HTTP ${BASH_REMATCH[1]}), although the same key worked from this computer. A firewall or bot filter in front of the API may be blocking it." ;;
+                429) ai "The API is rate-limiting this key (HTTP 429). Wait a minute, then rerun the installer." ;;
+                *) ai "The API answered HTTP ${BASH_REMATCH[1]}. Its reply is saved in ${LOG_FILE}." ;;
+            esac
+        else
+            ai "Check the saved probe error for provider response or connectivity problems before changing network settings."
+        fi
+        # A LiteLLM proxy in front of the API echoes the end of a refused key
+        # and the key's hash; neither belongs in a log people share for help.
+        printf '%s\n' "$response" | sed -E \
+            -e 's/(Received API Key[[:space:]]*=[[:space:]]*)[^,[:space:]"]+/\1[redacted]/g' \
+            -e 's/(Key Hash \(Token\)[[:space:]]*=[[:space:]]*)[0-9A-Fa-f]+/\1[redacted]/g' >> "$LOG_FILE"
         return 1
     }
 

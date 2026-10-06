@@ -59,5 +59,10 @@ ods_copy_install_source() {
         # preservation. A rerun cannot safely use an unfiltered recursive cp.
         cp -r "$source_dir"/* "$install_dir/" 2>>"$log_file" || return 1
         cp "$source_dir/.gitignore" "$install_dir/" 2>>"$log_file" || return 1
+        # Root-context image builds read it (see .dockerignore). Sources from
+        # before it existed copy as they did.
+        if [[ -f "$source_dir/.dockerignore" ]]; then
+            cp "$source_dir/.dockerignore" "$install_dir/" 2>>"$log_file" || return 1
+        fi
     fi
 }

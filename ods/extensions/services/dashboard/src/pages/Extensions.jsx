@@ -1,3 +1,4 @@
+import HelpLink from '../components/HelpLink'
 import {
   Database, Cpu, Workflow, Plug, Image, MessageSquare, Code,
   FileText, Shield, Globe, Music, Video, Search, Puzzle,
@@ -629,7 +630,7 @@ export default function Extensions({ compact = false }) {
       {/* Error state */}
       {error && (
         <div className="mb-6 rounded-xl border border-red-500/20 bg-red-500/10 p-4 text-sm text-red-200">
-          {error} — <button className="underline" onClick={fetchCatalog}>Retry</button>
+          {error} — <button className="underline" onClick={fetchCatalog}>Retry</button> · <HelpLink />
         </div>
       )}
 
@@ -994,7 +995,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         if (!needsExpand) {
           return (
             <div className="px-4 py-2 border-t border-red-500/15 text-[10px] text-red-300/80 leading-relaxed">
-              {errorText}
+              {errorText} <HelpLink className="ml-1" />
             </div>
           )
         }
@@ -1002,13 +1003,18 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
           ? firstLine.slice(0, 120) + '...'
           : firstLine + (isMultiline ? '...' : '')
         return (
-          <details className="group px-4 py-2 border-t border-red-500/15 text-[10px] text-red-300/80 leading-relaxed">
-            <summary className="cursor-pointer flex items-start gap-1 list-none [&::-webkit-details-marker]:hidden hover:text-red-300">
-              <ChevronDown size={10} className="mt-0.5 shrink-0 transition-transform group-open:rotate-180" />
-              <span className="flex-1 break-words">{summaryText}</span>
-            </summary>
-            <pre className="whitespace-pre-wrap text-[10px] text-red-300/80 mt-2 font-mono break-words">{errorText}</pre>
-          </details>
+          <>
+            <details className="group px-4 py-2 border-t border-red-500/15 text-[10px] text-red-300/80 leading-relaxed">
+              <summary className="cursor-pointer flex items-start gap-1 list-none [&::-webkit-details-marker]:hidden hover:text-red-300">
+                <ChevronDown size={10} className="mt-0.5 shrink-0 transition-transform group-open:rotate-180" />
+                <span className="flex-1 break-words">{summaryText}</span>
+              </summary>
+              <pre className="whitespace-pre-wrap text-[10px] text-red-300/80 mt-2 font-mono break-words">{errorText}</pre>
+            </details>
+            <div className="px-4 pb-2 text-[10px] text-red-300/80">
+              <HelpLink />
+            </div>
+          </>
         )
       })()}
 

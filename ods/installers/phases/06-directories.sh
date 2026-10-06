@@ -390,14 +390,22 @@ else
             error "Could not resolve the ODS owner home for a Pixel source transition."
             return 1
         }
+        # A failed source-update step prints its own reason (fixed text, never
+        # paths) above; name the step too, so the install never stops without
+        # a cause (fleet: a laptop stopped in phase 06 with none).
+        _phase06_source_failed() {
+            error "The Pixel source update stopped at its '$1' step; the reason is printed above."
+            return 1
+        }
         _ods_pixel_source_transition_required \
             "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" "$SCRIPT_DIR" \
             || _phase06_pixel_source_transition=$?
         if [[ "$_phase06_pixel_source_transition" == 0 || "$_phase06_pixel_source_transition" == 1 ]] \
             && ods_sudo test -d /var/lib/ods-pixel-access/source-upgrade; then
-            _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+            _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" \
+                || _phase06_source_failed status || return 1
             if jq -e '.pending == true and .phase == "complete"' <<<"$_phase06_source_status" >/dev/null; then
-                _ods_pixel_source_upgrade finish "$_phase06_pixel_owner" || return 1
+                _ods_pixel_source_upgrade finish "$_phase06_pixel_owner" || _phase06_source_failed finish || return 1
             elif jq -e '.pending == true' <<<"$_phase06_source_status" >/dev/null; then
                 _phase06_pixel_source_transition=0
                 # The pending plan is bound to the tree it recorded. Keep the
@@ -426,14 +434,16 @@ else
                     error "Could not stage the exact Pixel source upgrade; the active source and access state were left intact."
                     return 1
                 fi
-                _phase06_pixel_binary="$(_ods_pixel_openclaw_bin "$_phase06_pixel_owner" "$_phase06_pixel_home")" || return 1
+                _phase06_pixel_binary="$(_ods_pixel_openclaw_bin "$_phase06_pixel_owner" "$_phase06_pixel_home")" \
+                    || _phase06_source_failed locate-pixel || return 1
                 # Install the source-release guard in the protected controller
                 # before taking its hold. The helper journals every mirror
                 # replacement first and keeps the actual installation binding.
-                _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+                _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" \
+                    || _phase06_source_failed status || return 1
                 if jq -e '.transaction == null and .phase == "staged"' <<<"$_phase06_source_status" >/dev/null; then
                     _ods_pixel_install_access_service "$_phase06_pixel_owner" \
-                        "$_phase06_pixel_binary" false true "$SCRIPT_DIR" || return 1
+                        "$_phase06_pixel_binary" false true "$SCRIPT_DIR" || _phase06_source_failed access-service || return 1
                 fi
                 # Past the downstream boundary the update can only go forward,
                 # possibly under this corrected installer, which took over a
@@ -445,17 +455,18 @@ else
                     ai "Resuming the interrupted Pixel source upgrade under its existing admission hold..."
                 fi
                 unset _phase06_source_status
-                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" || return 1
-                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || return 1
+                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" \
+                    || _phase06_source_failed hold || return 1
+                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || _phase06_source_failed hold || return 1
                 export ODS_PIXEL_SOURCE_TRANSACTION
-                _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || return 1
+                _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || _phase06_source_failed copy || return 1
                 # Everything after this boundary can update Compose/env/data
                 # and native services. Recovery must resume this same candidate;
                 # a source-only rollback would no longer restore the installer.
-                _ods_pixel_source_upgrade downstream "$_phase06_pixel_owner" || return 1
+                _ods_pixel_source_upgrade downstream "$_phase06_pixel_owner" || _phase06_source_failed downstream || return 1
                 if [[ "$_phase06_source_downstream" == true ]]; then
                     _ods_pixel_install_access_service "$_phase06_pixel_owner" \
-                        "$_phase06_pixel_binary" false true || return 1
+                        "$_phase06_pixel_binary" false true || _phase06_source_failed access-service || return 1
                 fi
                 unset _phase06_pixel_binary _phase06_source_downstream
                 ;;
@@ -467,6 +478,7 @@ else
                 return 1
                 ;;
         esac
+        unset -f _phase06_source_failed
         unset _phase06_pixel_owner _phase06_pixel_home
     elif [[ "${ENABLE_PIXEL_RUNTIME:-false}" != "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
@@ -1095,7 +1107,8 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
                 mv -f -- "$_external_key_tmp" "$_external_key_target"
             fi
         elif [[ -n "${EXTERNAL_LLM_API_KEY_VALUE:-}" ]]; then
-            # A key given with the retired --lemonade-api-key flag.
+            # A key from --external-llm-key-env (Windows setup) or the
+            # retired --lemonade-api-key flag.
             _external_key_tmp="$(mktemp "${_external_key_target}.XXXXXX")" || return 1
             chmod 600 "$_external_key_tmp"
             printf '%s\n' "$EXTERNAL_LLM_API_KEY_VALUE" >"$_external_key_tmp"
@@ -1111,6 +1124,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             EXTERNAL_LLM_API_KEY_FILE="$_external_key_target"
         fi
         unset _external_key_tmp _external_key_target
+    elif [[ "${EXTERNAL_LLM_RESET:-false}" == "true" ]]; then
+        # --no-external-llm turns API mode off and forgets its key (fleet row
+        # 25). The overlay that mounted the key leaves the stack with it, and
+        # a later API setup stores a key again.
+        _external_key_target="$INSTALL_DIR/config/litellm/external-upstream.key"
+        if [[ -f "$_external_key_target" || -L "$_external_key_target" ]]; then
+            rm -f -- "$_external_key_target"
+            log "Removed the stored external LLM key (API mode is off)"
+        fi
+        unset _external_key_target
     fi
     # The AMD overlays pin their own llama.cpp images. A model profile's image
     # for another backend (the gemma4 profile names the CUDA build) must not
@@ -1177,6 +1200,11 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         OPEN_WEBUI_LLM_API_KEY_VALUE=""
     else
         LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+        # A paused model API (Settings > Remote model) had pointed this at
+        # LiteLLM; restore the URL it replaced (install-core read it).
+        if [[ "${ODS_REMOTE_ROUTE_PAUSED:-false}" == "true" ]]; then
+            LLM_API_URL_VALUE="${ODS_REMOTE_ROUTE_PREVIOUS_API_URL:-$_default_llm_api_url}"
+        fi
         # The in-stack llama-server is off for a host-native route. Preserve
         # other existing values as operator-selected endpoints.
         if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then

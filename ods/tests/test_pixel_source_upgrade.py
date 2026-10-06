@@ -1043,6 +1043,7 @@ FAILURE="$2"
 _phase06_step() { :; }
 ai() { :; }
 error() { :; }
+_phase06_source_failed() { return 1; }
 _ods_pixel_restore_transition_source() { printf 'restore\n' >&2; }
 _ods_pixel_openclaw_bin() { printf /fixture/openclaw; }
 _ods_pixel_install_access_service() { printf 'bootstrap\n' >&2; }

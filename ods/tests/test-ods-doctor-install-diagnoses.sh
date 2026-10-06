@@ -265,6 +265,30 @@ else
     fail "generic external inference was misclassified as an unexpected local LiteLLM route"
 fi
 
+# API mode on an AMD host: no AMD runtime runs here, so the doctor neither
+# probes one nor tells the owner to start it (fleet, Strixy row 21).
+cat > "$ENV_PATH" <<'ENV'
+ODS_MODE=local
+GPU_BACKEND=amd
+LLM_BACKEND=external
+LLM_API_URL=http://litellm:4000
+EXTERNAL_LLM_URL=https://api.example.test
+EXTERNAL_LLM_PROVIDER=openai-compatible
+EXTERNAL_LLM_MODEL=fixture-model
+AMD_INFERENCE_RUNTIME=llama-server
+AMD_INFERENCE_PORT=8080
+ENV
+(cd "$ROOT_DIR" && PATH="$FAKE_BIN:$PATH" bash scripts/ods-doctor.sh "$REPORT" >/dev/null 2>&1) || true
+if jq -e '
+    .runtime.amd_runtime.reason == "api_mode" and
+    .runtime.amd_runtime.health == "not_checked" and
+    ([.autofix_hints[]? | select(test("AMD"))] | length == 0)
+' "$REPORT" >/dev/null; then
+    pass "API mode on an AMD host does not probe or ask for an AMD runtime"
+else
+    fail "API mode on an AMD host still checked an AMD runtime: $(jq -c '.runtime.amd_runtime' "$REPORT")"
+fi
+
 # The Windows Portal's llama-server (host-native): LiteLLM is the gateway,
 # ODS owns the runtime, and LiteLLM needs the server's key.
 cat > "$ENV_PATH" <<'ENV'

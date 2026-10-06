@@ -1072,6 +1072,23 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+_CONTROLLER_REASON = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+
+
+def _controller_reason(raw: bytes) -> str | None:
+    """The controller's own refusal code, when it is a plain token.
+
+    A code such as model-runtime-mismatch tells the owner what to fix; free
+    text (which could carry a path or credential) is never relayed.
+    """
+    try:
+        value = strict_json(raw)
+    except (ValueError, RecursionError):
+        return None
+    code = value.get('error') if isinstance(value, dict) else None
+    return code if isinstance(code, str) and _CONTROLLER_REASON.fullmatch(code) else None
+
+
 async def handle_model_control(request: web.Request):
     """Private model lifecycle control; ordinary chat callers cannot mutate it."""
     fail = _check_preview_auth(request)
@@ -1098,7 +1115,8 @@ async def handle_model_control(request: web.Request):
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:
                     status = response.status if response.status in (400, 403, 409, 503) else 503
-                    return web.json_response({'error': 'model-change-unconfirmed'}, status=status)
+                    return web.json_response({'error': _controller_reason(raw) or 'model-change-unconfirmed'},
+                                             status=status)
                 value = public_model_control(strict_json(raw))
         return web.json_response(value, headers={'Cache-Control': 'no-store'})
     except Exception:

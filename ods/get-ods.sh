@@ -69,7 +69,7 @@ ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
-error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
+error()   { echo -e "${RED}[error]${NC} $1"; echo "        Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC"; exit 1; }
 
 # This bootstrap-only option is consumed before the platform installer sees it.
 if [[ "$BOOTSTRAP_HELP" == true ]]; then
@@ -101,14 +101,29 @@ validate_bootstrap_model_preservation() {
         warn "Python 3 is required for safe same-filesystem model preservation."
         return 1
     }
-    validate_force_reinstall_target "$INSTALL_DIR" \
-        || validate_force_reinstall_target "$INSTALL_DIR" stranded \
-        || return 1
-    [[ -n "${HOME:-}" && "$HOME" == /* ]] || return 1
-    [[ ! -e "$HOME/.ods-models-backup" && ! -L "$HOME/.ods-models-backup" ]] || return 1
-    [[ ! -e "${INSTALL_DIR%/}.models-backup" && ! -L "${INSTALL_DIR%/}.models-backup" ]] || return 1
-    [[ ! -L "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data/models" ]] || return 1
-    [[ ! -e "$INSTALL_DIR/data/models" || -d "$INSTALL_DIR/data/models" ]]
+    # Each refusal names what is in the way and the choices (fleet row 29:
+    # one sentence covered every case and named no path).
+    if ! validate_force_reinstall_target "$INSTALL_DIR" \
+        && ! validate_force_reinstall_target "$INSTALL_DIR" stranded; then
+        warn "$INSTALL_DIR is not a recognized ODS installation, so it has no models to keep. Rerun without --keep-models."
+        return 1
+    fi
+    [[ -n "${HOME:-}" && "$HOME" == /* ]] || { warn "HOME must be an absolute path to keep models."; return 1; }
+    local backup
+    for backup in "$HOME/.ods-models-backup" "${INSTALL_DIR%/}.models-backup"; do
+        if [[ -e "$backup" || -L "$backup" ]]; then
+            warn "A model backup already exists at $backup. An earlier reinstall may have left it, and it can hold your models: check it, then move it aside (or delete it if you no longer need it) and rerun. Or rerun without --keep-models, and models download again."
+            return 1
+        fi
+    done
+    if [[ -L "$INSTALL_DIR/data" || -L "$INSTALL_DIR/data/models" ]]; then
+        warn "$INSTALL_DIR/data or data/models is a symbolic link, and --keep-models keeps only a real folder. Rerun without --keep-models."
+        return 1
+    fi
+    if [[ -e "$INSTALL_DIR/data/models" && ! -d "$INSTALL_DIR/data/models" ]]; then
+        warn "$INSTALL_DIR/data/models is not a folder. Rerun without --keep-models."
+        return 1
+    fi
 }
 
 restore_bootstrap_models() {
@@ -407,7 +422,7 @@ OS=$(detect_os)
 log "Detected OS: $OS"
 
 if ! validate_bootstrap_model_preservation; then
-    error "Cannot preserve models: --keep-models requires a recognized existing install, a real data/models directory, and no existing adjacent or legacy model backup. Resolve any backup or symlink conflict before retrying."
+    error "Cannot preserve models for this reinstall; the reason is above. Nothing was changed."
 fi
 
 case "$OS" in
@@ -641,6 +656,15 @@ git sparse-checkout set ods 2>/dev/null || {
 # environment preflight). Running those checks only after the uninstaller left
 # hosts that could never take the new install with no working ODS and no .env.
 if [[ "$BOOTSTRAP_REINSTALL" == "true" || "$BOOTSTRAP_RECOVER_STRANDED" == "true" ]]; then
+    # The uninstaller removes data/, so a model API connected in Settings >
+    # Remote model does not survive a reinstall. Say so now, and have the
+    # installer's summary say it again (fleet row 26: it vanished silently).
+    if [[ "$BOOTSTRAP_REINSTALL" == "true" ]] \
+        && [[ -f "$INSTALL_DIR/data/remote-provider/provider-profile.json" \
+            || -f "$INSTALL_DIR/data/remote-provider/routing-state.json" ]]; then
+        warn "This reinstall removes your model API connection (Settings > Remote model). Connect it again there after the install."
+        export ODS_REINSTALL_REMOTE_ROUTE_REMOVED=true
+    fi
     candidate_uninstaller="$TEMP_DIR/repo/ods/ods-uninstall.sh"
     [[ -f "$candidate_uninstaller" && ! -L "$candidate_uninstaller" ]] \
         || error "Requested ODS source does not contain a safe candidate uninstaller. Existing installation was not replaced."

@@ -5725,7 +5725,7 @@ class TestModelActivationOwnership:
         monkeypatch.setattr(
             _mod,
             "_active_remote_provider_pixel_runtime",
-            lambda: runtime,
+            lambda **_: runtime,
         )
 
         handler = _FakeHandler(b"")
@@ -5875,7 +5875,7 @@ class TestModelActivationOwnership:
             proof_identity="same-model.gguf",
         )
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
-        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda: None)
+        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda **_: None)
         payload = {"status": "idle"}
         _mod._project_switchboard_agent_viability(payload)
         assert payload["activeRuntime"] == {
@@ -5921,7 +5921,7 @@ class TestModelActivationOwnership:
         doc["active"]["proof"]["identity"] = "extra.same-model.gguf"
         state_path.write_text(json.dumps(doc), encoding="utf-8")
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
-        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda: None)
+        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda **_: None)
 
         assert _mod._switchboard_state_needs_current_env_verification(state_path) is True
         payload = {"status": "idle"}

@@ -158,6 +158,15 @@ except Exception:
                 break
             fi
 
+            # A build also fails when Docker itself has stopped. That needs
+            # Docker started again, not a retry or a build fix.
+            if ! $DOCKER_CMD info --format '{{.ServerVersion}}' >/dev/null 2>&1; then
+                ui_status_line warn "Docker is not responding"
+                ai_bad "Docker stopped responding while ${svc} was building."
+                ai "Start Docker again (Linux: sudo systemctl start docker; Docker Desktop: open it and wait until it shows Running), then rerun the same install command. Finished downloads are reused."
+                return 1
+            fi
+
             ui_status_line warn "$svc build failed (attempt $attempt/$max_attempts)"
             if (( attempt < max_attempts )); then
                 ai_warn "$svc build failed; retrying in ${retry_delay}s (attempt $((attempt + 1))/$max_attempts)..."

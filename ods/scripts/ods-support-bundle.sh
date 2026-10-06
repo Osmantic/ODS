@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_VERSION="1"
-REDACTION_VERSION="2"
+REDACTION_VERSION="3"
 DEFAULT_LOG_TAIL=200
 MAX_LOG_CONTAINERS=25
 COMMAND_TIMEOUT="${ODS_SUPPORT_COMMAND_TIMEOUT:-60}"
@@ -196,6 +196,9 @@ for value in sorted(known_secrets, key=len, reverse=True):
     text = text.replace(value, "[REDACTED]")
 
 patterns = [
+    # A LiteLLM proxy's refusal echoes the end of the key and the key's hash.
+    (re.compile(r"(?i)(Received API Key\s*=\s*)[^,\s\"]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(Key Hash \(Token\)\s*=\s*)[0-9a-f]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)((?:authorization|x-api-key|api-key|apikey)\s*[:=]\s*)([\"']?)[^\"'\s,}]+"), r"\1\2[REDACTED]"),
     # Database and broker connection strings carry credentials too (including

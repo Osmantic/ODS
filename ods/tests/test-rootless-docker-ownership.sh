@@ -236,6 +236,29 @@ pass "rootful APE state that already matches is left alone without Docker"
 : > "$CALLS"
 (
     source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    stat() { printf '1000:1000:700\n'; }
+    _ods_rootless_ensure_helper_image() { :; }
+    _ods_rootless_ensure_directory() { :; }
+    _ods_rootless_resolve_target() { printf '%s/%s\n' "$1" "$2"; }
+    _ods_rootless_stat_metadata() { printf '1000:1000:700\n'; }
+    _ods_rootless_container_state() { printf 'running\n'; }
+    if ods_prepare_service_state_ownership "$INSTALL_DIR" ape 2>> "$CALLS"; then
+        exit 1
+    fi
+) || fail "rootful APE state was repaired while ods-ape was running"
+grep -q 'Refusing recursive ownership repair while ods-ape is running' "$CALLS" \
+    || fail "the rootful refusal did not say why: $(cat "$CALLS")"
+grep -qF "Stop it with 'ods stop ape', then choose Retry on its card in Extensions." "$CALLS" \
+    || fail "the rootful refusal did not name a remedy that works on rootful Docker: $(cat "$CALLS")"
+! grep -q 'ods repair rootless-ownership' "$CALLS" \
+    || fail "the rootful refusal named the rootless-only repair, which does nothing there"
+pass "a rootful APE refusal names the stop-and-retry remedy"
+
+: > "$CALLS"
+(
+    source "$LIB"
     ods_docker_rootless_state() { return 0; }
     uname() { printf 'Linux\n'; }
     ods_fix_rootless_ownership() { printf '%s|%s\n' "$1" "$2" >> "$CALLS"; }

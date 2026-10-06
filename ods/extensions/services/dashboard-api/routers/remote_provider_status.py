@@ -1097,11 +1097,17 @@ def _overall_status(
     route_state: Mapping[str, Any],
     egress: Mapping[str, Any],
     activation: Mapping[str, Any],
+    install_mode: str | None = None,
 ) -> str:
     if not route_state.get("valid"):
         return "invalid"
     if route_state.get("enabled") is not True:
         return "disabled"
+    # A route is in use only in cloud mode. An installer rerun (or `ods
+    # mode`) that kept ODS local or hybrid paused it; that is not a fault
+    # (fleet, laptop: it read "degraded" after the update paused it).
+    if activation.get("reason") == "consumer_drift" and install_mode in {"local", "hybrid"}:
+        return "paused"
     if not egress.get("reachable") or not egress.get("ready"):
         return "degraded"
     if not activation.get("valid") or not activation.get("proven"):
@@ -1121,7 +1127,8 @@ async def remote_provider_status() -> dict[str, Any]:
         _fetch_ssh_supervisor_status(),
     )
     peer = _peer_status(route_state, ssh_supervisor)
-    overall = _overall_status(route_state, egress, activation)
+    install_mode = str(read_live_env_value("ODS_MODE") or "").strip().lower()
+    overall = _overall_status(route_state, egress, activation, install_mode)
     return {
         "status": overall,
         "routeState": route_state,

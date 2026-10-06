@@ -252,7 +252,7 @@ if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
 . (Join-Path $PhasesDir "06-directories.ps1")
 . (Join-Path $PhasesDir "07-devtools.ps1")
 } catch {
-    if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { exit 1 }
+    if ($_.FullyQualifiedErrorId -eq "ODS_INSTALL_ABORTED") { Exit-ODSInstallFailure }
     throw
 }
 
@@ -376,7 +376,7 @@ if ($dryRun) {
                     -WaitSeconds $handoffWait
                 if ($handoff.TimedOut) {
                     Write-AIError "Refusing to race the active bootstrap downloader. Re-run the installer after it finishes."
-                    exit 1
+                    Exit-ODSInstallFailure
                 }
                 $needsDownload = -not (Test-Path -LiteralPath $modelPath -PathType Leaf)
             }
@@ -386,7 +386,7 @@ if ($dryRun) {
                     -Destination $modelPath -Label "Downloading $($tierConfig.GgufFile)" -MaxRetries 4
                 if (-not $dlOk) {
                     Write-AIError "Model download failed. Re-run the installer to resume."
-                    exit 1
+                    Exit-ODSInstallFailure
                 }
                 if ($tierConfig.GgufSha256) {
                     Write-AI "Verifying download integrity (SHA256)..."
@@ -399,7 +399,7 @@ if ($dryRun) {
                         Write-AI "  Got:      $($integrity.ActualHash)"
                         Remove-Item $modelPath -Force
                         Write-AIError "Re-run the installer to download again."
-                        exit 1
+                        Exit-ODSInstallFailure
                     }
                 }
             }
@@ -426,7 +426,7 @@ if ($dryRun) {
                 $hermesModel = $(if ($tierConfig.GgufFile) { $tierConfig.GgufFile } else { $tierConfig.LlmModel })
                 if (-not (Set-ODSWindowsHermesRuntimeModel -ModelId $hermesModel)) {
                     Write-AIError "Failed to patch Hermes config for Windows runtime (model=$hermesModel)"
-                    exit 1
+                    Exit-ODSInstallFailure
                 }
                 Write-AISuccess "Patched Hermes config for bootstrap model (model=$hermesModel, context=$($tierConfig.MaxContext))"
             }
@@ -443,7 +443,7 @@ if ($dryRun) {
                 Write-AIError "The native llama-server could not start: $($_.Exception.Message)"
                 Write-AI "  llama-server log: $(Join-Path (Get-ODSNativeRuntimeDir) 'llama-server.log')"
                 Write-AI "  Fix the cause above, then rerun the installer."
-                exit 1
+                Exit-ODSInstallFailure
             }
             Write-AISuccess "Native llama-server ready on 127.0.0.1:$($script:NATIVE_LLM_PORT) (PID $($nativeLlamaReady.ProcessId)): $($nativeLlamaReady.ModelId), $($nativeLlamaReady.ContextLength) tokens of context"
         } elseif (Remove-ODSNativeLlamaLegacyRuntime -InstallDir $installDir -PidFile $script:INFERENCE_PID_FILE -Port ([int]$script:NATIVE_LLM_PORT)) {
@@ -622,7 +622,7 @@ if ($dryRun) {
                     Write-AIError "Compose file not found: $cf"
                     Write-AI "  Expected path: $cfPath"
                     Write-AI "  Re-run with --Force or check that $installDir is intact."
-                    exit 1
+                    Exit-ODSInstallFailure
                 }
             }
         }
@@ -645,7 +645,7 @@ if ($dryRun) {
                 Write-AI "  PowerShell location: $locationPath"
                 Write-AI "  .NET current directory: $dotnetPath"
                 Write-AI "  This prevents Compose from accidentally reading .env or compose files from the source checkout."
-                exit 1
+                Exit-ODSInstallFailure
             }
         }
 
@@ -818,7 +818,7 @@ if ($dryRun) {
         if (-not (Test-Path $_envCheck)) {
             Write-AIError ".env file not found at $_envCheck -- cannot start services."
             Write-AI "  Re-run the installer to regenerate the .env file."
-            exit 1
+            Exit-ODSInstallFailure
         }
 
         Initialize-ODSWindowsDockerClientConfig -InstallDir $installDir
@@ -1231,7 +1231,7 @@ if ($dryRun) {
                     -FallbackImage $envFallbackImage `
                     -ImageEnvName "LLAMA_SERVER_IMAGE" `
                     -FallbackEnvName "LLAMA_SERVER_IMAGE_FALLBACK"
-                if ([string]::IsNullOrWhiteSpace($validatedImage)) { exit 1 }
+                if ([string]::IsNullOrWhiteSpace($validatedImage)) { Exit-ODSInstallFailure }
 
                 if ($validatedImage -ne $envLlamaImage) {
                     $envLines = Get-Content $_envCheck
@@ -1258,7 +1258,7 @@ if ($dryRun) {
                 -FallbackImage $envHermesFallbackImage `
                 -ImageEnvName "HERMES_AGENT_IMAGE" `
                 -FallbackEnvName "HERMES_AGENT_IMAGE_FALLBACK"
-            if ([string]::IsNullOrWhiteSpace($validatedHermesImage)) { exit 1 }
+            if ([string]::IsNullOrWhiteSpace($validatedHermesImage)) { Exit-ODSInstallFailure }
 
             if ($validatedHermesImage -ne $envHermesImage) {
                 $envLines = Get-Content $_envCheck
@@ -1323,7 +1323,7 @@ if ($dryRun) {
             if ($LASTEXITCODE -ne 0) {
                 Write-AIError "Could not resolve Windows compose services before local image rebuilds."
                 Write-AI "Inspect compose config with: cd '$installDir'; docker compose $($composeFlags -join ' ') config --services"
-                exit 1
+                Exit-ODSInstallFailure
             }
             $_enabledComposeServices = @(
                 $_enabledComposeServices |
@@ -1404,7 +1404,7 @@ if ($dryRun) {
                     -Phase "install-windows.ps1 local image build" `
                     -NextStep "Fix the local Dockerfile/build error shown above, then re-run .\install-windows.ps1." `
                     -SaveReport
-                exit 1
+                Exit-ODSInstallFailure
             }
             Write-AISuccess "Local images rebuilt"
 
@@ -1432,7 +1432,7 @@ if ($dryRun) {
                     -Phase "install-windows.ps1 compose image preflight" `
                     -NextStep "A required Compose image did not download during the retry-protected preflight. Fix Docker registry/network/disk access, then re-run .\install-windows.ps1." `
                     -SaveReport
-                exit 1
+                Exit-ODSInstallFailure
             }
 
             Write-AI "Starting services... this may take several minutes."
@@ -1463,7 +1463,7 @@ if ($dryRun) {
                 -ComposeLogPath $_composeLog `
                 -Phase "install-windows.ps1 docker compose up -d" `
                 -SaveReport
-            exit 1
+            Exit-ODSInstallFailure
         }
         Write-AISuccess "Docker services started"
         if (-not (Assert-ODSWindowsManagedContainers -InstallDir $installDir -ComposeFlags $composeFlags `
@@ -1474,7 +1474,7 @@ if ($dryRun) {
                 -Phase "install-windows.ps1 managed container assertion" `
                 -NextStep "Fix the missing Windows container stack shown above, then re-run .\install-windows.ps1." `
                 -SaveReport
-            exit 1
+            Exit-ODSInstallFailure
         }
 
         if ($enableHermes -and (Get-Command Invoke-HermesSoulRefresh -ErrorAction SilentlyContinue)) {

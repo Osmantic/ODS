@@ -341,6 +341,8 @@ class TestExternalLlmResolution:
         assert services["llama-server"] == {
             "host": "host.docker.internal" if "host.docker.internal" in url else "llm.example.test",
             "port": expected_port,
+            "scheme": url.split("://")[0],
+            "external_api": True,
             "health": expected_health,
             "name": expected_name,
         }

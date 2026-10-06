@@ -254,11 +254,32 @@ if [[ "$FORCE" != "true" ]]; then
     echo ""
 fi
 
+# An install that stopped before phase 06 has no .env. Its Compose stack needs
+# secrets that only .env provides, so it was never started and cannot be
+# rendered now. When Docker also holds nothing in the ods Compose project there
+# is nothing to stop or purge: skip the Docker steps instead of refusing every
+# uninstall. Any resource in that project keeps the full ownership checks, and
+# a Docker query failure keeps them too.
+DOCKER_CLEANUP=false
+if command -v docker >/dev/null 2>&1; then
+    DOCKER_CLEANUP=true
+    if [[ ! -f "$INSTALL_DIR/.env" ]]; then
+        if _ods_project_resources="$(docker ps -aq --filter label=com.docker.compose.project=ods \
+                && docker volume ls -q --filter label=com.docker.compose.project=ods \
+                && docker network ls -q --filter label=com.docker.compose.project=ods)" \
+            && [[ -z "$_ods_project_resources" ]]; then
+            DOCKER_CLEANUP=false
+            log_info "No .env and no Docker resources in the ods Compose project; skipping Docker cleanup"
+        fi
+        unset _ods_project_resources
+    fi
+fi
+
 # Compose down can execute extension lifecycle hooks. Refuse unsafe saved
 # recipes before retiring Pixel, privileged services, or any installation data.
 compose_flags=""
 compose_args=()
-if command -v docker >/dev/null 2>&1; then
+if $DOCKER_CLEANUP; then
     compose_flags="$(resolve_compose_flags)"
     if [[ -n "$compose_flags" ]]; then
         read -ra compose_args <<< "$compose_flags"
@@ -276,7 +297,7 @@ fi
 # exact ownership before retiring Pixel or system services. Keep the snapshot
 # outside the install tree so a failed purge can retain that tree for recovery.
 volume_snapshot=""
-if command -v docker >/dev/null 2>&1; then
+if $DOCKER_CLEANUP; then
     volume_snapshot="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-volumes.XXXXXXXX")"
     trap '[[ -z "$volume_snapshot" ]] || rm -f -- "$volume_snapshot"' EXIT
     # macOS ships Bash 3.2, where expanding an empty array under nounset is
@@ -457,7 +478,7 @@ fi
 # 1. Stop and remove Docker containers
 log_info "Stopping Docker containers..."
 cd "$INSTALL_DIR" 2>/dev/null || true
-if command -v docker &>/dev/null; then
+if $DOCKER_CLEANUP; then
     # Use ODS's resolved compose stack. The repo does not ship a
     # top-level docker-compose.yml, so bare `docker compose down` can fail with
     # "no configuration file provided" even from the correct install dir.
@@ -516,6 +537,8 @@ if command -v docker &>/dev/null; then
 
     log_ok "Verified Docker cleanup complete"
     log_info "Docker images and shared build cache retained"
+elif command -v docker &>/dev/null; then
+    log_info "Docker holds nothing for this unconfigured installation; no container cleanup needed"
 else
     log_warn "Docker not found — skipping container cleanup"
 fi

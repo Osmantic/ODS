@@ -187,9 +187,10 @@ function normalizeModelManagement(value) {
   }
 }
 
-function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management) {
+function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hostRuntime, management, externalApi = null) {
   if (llmBackend === 'external') {
-    return 'This install routes to a model service outside ODS. Downloading a model here does not switch the active model; reconnect ODS to its supported runtime integration to manage model changes.'
+    const via = externalApi?.host ? ` at ${externalApi.host}` : ''
+    return `ODS uses a model API${via}. Models downloaded here stay on this computer but are not used while API mode is on; to run them, rerun the ODS installer and leave API mode.`
   }
   // A model on the Windows host changes only through the host agent, and
   // only when it proved the server is the one ODS runs for this install.
@@ -205,7 +206,7 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hos
     return `ODS is running in ${effectiveMode} mode but configured for ${configuredMode} mode. Restart or repair ODS before running a local model.`
   }
   if (!LOCAL_MODEL_MODES.has(effectiveMode)) {
-    return 'ODS is running in cloud mode. A local-mode installation is required to run downloaded models.'
+    return 'ODS is in cloud mode, so chat uses a model API. Downloaded models run only in local mode; if you connected that API in Settings > Remote model, switch back to the local model there.'
   }
   return null
 }
@@ -238,6 +239,7 @@ export function useModels({observe=true} = {}) {
   const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
   const [hostRuntime, setHostRuntime] = useState(false)
+  const [externalApi, setExternalApi] = useState(null)
   const [modelManagement, setModelManagement] = useState(() => normalizeModelManagement(null))
   const [runtimeActionLoading, setRuntimeActionLoading] = useState(null)
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
@@ -336,6 +338,13 @@ export function useModels({observe=true} = {}) {
       setOdsMode(effectiveMode)
       setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
       setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
+      // API mode: the model and host serving chat (never the key).
+      setExternalApi(String(data.llmBackend || '').trim().toLowerCase() === 'external'
+        ? {
+            model: typeof data.externalModel === 'string' && data.externalModel ? data.externalModel : null,
+            host: typeof data.externalHost === 'string' && data.externalHost ? data.externalHost : null,
+          }
+        : null)
       setHostRuntime(data.hostRuntime === true)
       setModelManagement(normalizeModelManagement(data.modelManagement))
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
@@ -416,7 +425,7 @@ export function useModels({observe=true} = {}) {
   }
 
   const loadModel = async (modelId, options = {}) => {
-    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement)
+    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi)
     if (modeError) {
       setMutationError(modeError)
       return
@@ -474,6 +483,12 @@ export function useModels({observe=true} = {}) {
     // committed. Confirm right away instead of waiting out the poll interval;
     // a joined in-flight activation or a dropped connection keeps polling.
     let activationAnswered = false
+    // Set when no answer to this page's request will come: a 409 joined the
+    // activation another request is running, or the connection dropped.
+    // Status reads decide then, and a failed activation ends its lifecycle
+    // without the model.
+    let statusOnly = false
+    let idleReads = 0
     let wakeActivationPoll = () => {}
     let activationWake = new Promise(resolve => { wakeActivationPoll = resolve })
     const activationRequest = fetch(`/api/models/${encodeURIComponent(modelId)}/load`, activationRequestOptions)
@@ -493,7 +508,10 @@ export function useModels({observe=true} = {}) {
             return
           }
           const activeModelId = conflictActiveModelId(body)
-          if (activeModelId === modelId && !requestedContextLength) return
+          if (activeModelId === modelId && !requestedContextLength) {
+            statusOnly = true
+            return
+          }
 
           const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
           activationError = activeModelId
@@ -505,8 +523,9 @@ export function useModels({observe=true} = {}) {
         activationError = errorMessageFromPayload(body, 'Failed to load model')
       })
       // A dropped request does not prove activation failed. Continue polling
-      // until the requested model appears or the explicit UI deadline expires.
-      .catch(() => {})
+      // until the requested model appears, the activation visibly ends, or
+      // the explicit UI deadline expires.
+      .catch(() => { statusOnly = true })
       .then(() => {
         if (activationAnswered || activationError) {
           activationAnswered = true
@@ -528,6 +547,18 @@ export function useModels({observe=true} = {}) {
         if (activationMatches(data)) {
           targetLoaded = true
           break
+        }
+        // Two reads in a row with no model operation running and the model
+        // not running mean the activation ended without it. Waiting out the
+        // deadline cannot change that.
+        if (statusOnly && data && !normalizeModelLifecycle(data.modelLifecycle) && data.currentModel !== modelId) {
+          idleReads += 1
+          if (idleReads >= 2) {
+            activationError = `The activation of ${modelId} ended without loading it. Refresh the model list, then try again.`
+            break
+          }
+        } else {
+          idleReads = 0
         }
       }
 
@@ -637,7 +668,7 @@ export function useModels({observe=true} = {}) {
     ].filter(Boolean)),
   ]
   const error = mutationError || fetchError
-  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement)
+  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, hostRuntime, modelManagement, externalApi)
 
   return {
     models,
@@ -651,6 +682,7 @@ export function useModels({observe=true} = {}) {
     configuredMode,
     llmBackend,
     hostRuntime,
+    externalApi,
     modelManagement,
     runtimeActionLoading,
     stopRuntime: () => changeRuntime('stop'),

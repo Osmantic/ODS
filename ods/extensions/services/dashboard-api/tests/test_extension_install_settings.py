@@ -183,11 +183,41 @@ def test_auto_enabled_dependency_is_checked_before_anything_is_activated(test_cl
     assert host.starts == []
 
 
-def test_builtin_enable_keeps_existing_behavior(test_client, host):
-    _definition(host.builtin, "builtin-svc", GOTIFY_COMPOSE.replace("GOTIFY_ADMIN", "BUILTIN_SVC_ADMIN"),
-                [{**ADMIN_PASSWORD, "key": "BUILTIN_SVC_ADMIN_PASSWORD"}], enabled=False)
+BRAVE_LIKE_COMPOSE = (
+    "services:\n  brave:\n    image: ods/brave:1\n    environment:\n"
+    "      - BRAVE_KEY=${BRAVE_KEY:-}\n")
 
-    assert _post(test_client, "/api/extensions/builtin-svc/enable").status_code == 200
+
+@pytest.mark.parametrize("compose", [
+    BRAVE_LIKE_COMPOSE,  # would start with the key empty and fail every request
+    GOTIFY_COMPOSE.replace("GOTIFY_ADMIN_PASSWORD", "BRAVE_KEY"),  # would fail Compose for the stack
+])
+def test_builtin_enable_asks_for_a_required_setting_compose_cannot_supply(test_client, host, compose):
+    builtin = _definition(host.builtin, "brave", compose,
+                          [{"key": "BRAVE_KEY", "required": True, "secret": True}],
+                          enabled=False, name="Brave Search")
+
+    response = _post(test_client, "/api/extensions/brave/enable")
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "missing_configuration"
+    assert detail["message"].startswith("Brave Search needs required settings before it can be started: BRAVE_KEY.")
+    assert (builtin / "compose.yaml.disabled").is_file() and not (builtin / "compose.yaml").exists()
+    assert host.starts == []
+
+    host.configured.add("BRAVE_KEY")
+    assert _post(test_client, "/api/extensions/brave/enable").status_code == 200
+    assert host.starts == [("start", "brave")]
+
+
+def test_builtin_enable_keeps_a_compose_default(test_client, host):
+    # Like a library definition, a non-empty Compose default may already
+    # have initialized data, so it is never replaced by a demand.
+    field = {"key": "PHOTOS_DB_PASSWORD", "required": True, "secret": True}
+    _definition(host.builtin, "photos", DEFAULTED_COMPOSE, [field], enabled=False)
+
+    assert _post(test_client, "/api/extensions/photos/enable").status_code == 200
 
 
 def test_unreadable_declarations_do_not_become_a_new_refusal(test_client, host):

@@ -203,6 +203,8 @@ teardown() {
     # At least one error-keyword line should be surfaced (indented two spaces).
     assert_output --partial "Error response from daemon"
     assert_output --partial "Full compose output:"
+    # A failed start/restart/update points at help (round G).
+    assert_output --partial "https://discord.gg/4ntNp9MAwC"
 }
 
 @test "wrapper: failure propagates the compose exit code (1)" {

@@ -79,6 +79,11 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
     emit_filtered "$@"
     exit 0
 fi
+if [[ "${1:-}" == "compose" && -n "${DOCKER_REQUIRE_ENV:-}" && ! -f "$INSTALL_DIR/.env" ]]; then
+    # Real Compose cannot render the base stack without the secrets in .env.
+    printf 'required variable WEBUI_SECRET is missing a value\n' >&2
+    exit 1
+fi
 if [[ "${1:-}" == "compose" && -n "${DOCKER_GID_EXPECTED:-}" ]]; then
     [[ "${PIXEL_INGRESS_GID:-}" == "$DOCKER_GID_EXPECTED" ]] || {
         printf 'Compose interpolation GID mismatch\n' >&2
@@ -194,6 +199,7 @@ run_uninstall() {
     DOCKER_PROFILE_STATE_FILE="${DOCKER_PROFILE_STATE_FILE:-}" \
     DOCKER_GID_EXPECTED="${DOCKER_GID_EXPECTED:-}" \
     DOCKER_GID_ENV_COPY="${DOCKER_GID_ENV_COPY:-}" \
+    DOCKER_REQUIRE_ENV="${DOCKER_REQUIRE_ENV:-}" \
     PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID-}" \
     ID_PRIMARY_GROUP="${ID_PRIMARY_GROUP-1000}" \
     ID_PRIMARY_EXIT="${ID_PRIMARY_EXIT-0}" \
@@ -280,6 +286,41 @@ EOF
     grep -qF 'No Compose files resolved; installation untouched' "$TMP_DIR/missing-error" \
         || fail "missing Compose flags must explain the refusal"
     pass "missing Compose flags are refused before uninstall mutation"
+
+    # An install that stopped before phase 06 has no .env, so its Compose stack
+    # cannot render. With nothing in the ods Compose project there is nothing
+    # to stop or purge, and the uninstall must still complete.
+    local unconfigured_install="$TMP_DIR/unconfigured-install" unconfigured_home="$TMP_DIR/unconfigured-home"
+    local unconfigured_docker="$TMP_DIR/unconfigured-docker.log"
+    make_install "$unconfigured_install"
+    mkdir -p "$unconfigured_home"
+    rm "$unconfigured_install/.env"
+    DOCKER_LOG="$unconfigured_docker" SUDO_LOG="$TMP_DIR/unconfigured-sudo.log" DOCKER_REQUIRE_ENV=1 \
+        run_uninstall "$unconfigured_install" "$unconfigured_home" "$stub_dir" 2>"$TMP_DIR/unconfigured-error" \
+        || fail "an install without .env and without ODS Docker resources must uninstall: $(cat "$TMP_DIR/unconfigured-error")"
+    [[ ! -e "$unconfigured_install" ]] || fail "unconfigured install directory must be removed"
+    if grep -q '^compose ' "$unconfigured_docker"; then
+        fail "an unconfigured install must not render or run its Compose stack"
+    fi
+    assert_no_name_cleanup "$unconfigured_docker"
+    pass "an install that stopped before .env uninstalls when Docker holds nothing for it"
+
+    # The same install with a container in the ods project keeps the full
+    # ownership checks, which refuse because the stack cannot render.
+    local residual_install="$TMP_DIR/unconfigured-residual" residual_home="$TMP_DIR/unconfigured-residual-home"
+    make_install "$residual_install"
+    mkdir -p "$residual_home"
+    rm "$residual_install/.env"
+    printf 'retain owner data\n' > "$residual_install/data/owner.txt"
+    if DOCKER_LOG="$TMP_DIR/unconfigured-residual-docker.log" SUDO_LOG="$TMP_DIR/unconfigured-sudo.log" \
+        DOCKER_REQUIRE_ENV=1 DOCKER_RESIDUAL_CONTAINER_ID="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" \
+        run_uninstall "$residual_install" "$residual_home" "$stub_dir" 2>"$TMP_DIR/unconfigured-residual-error"; then
+        fail "an unconfigured install with ODS Docker resources must not skip ownership checks"
+    fi
+    [[ -f "$residual_install/data/owner.txt" ]] || fail "refused unconfigured install must keep its data"
+    grep -qF 'Docker ownership could not be proven' "$TMP_DIR/unconfigured-residual-error" \
+        || fail "unconfigured install with ODS resources must report the ownership refusal"
+    pass "an install without .env keeps ownership checks while ODS Docker resources exist"
 
     if [[ "$(uname -s)" == "Linux" ]]; then
         local changed_install="$TMP_DIR/changed-install" changed_home="$TMP_DIR/changed-home"

@@ -91,6 +91,7 @@ from routers import (
     pixel_scopes,
     pixel_advice_runtime,
     pixel_sharing,
+    pixel_model_failure,
     opencode_app,
 )
 from settings import (
@@ -1263,6 +1264,7 @@ app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
 
 
@@ -1570,6 +1572,22 @@ async def _get_dashboard_remote_runtime() -> dict[str, object] | None:
         return None
 
 
+_THIS_COMPUTER_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+
+
+def _external_api_off_this_computer() -> bool:
+    """Installer API mode with a model API elsewhere, not a host Ollama or LM Studio.
+
+    Status called it local inference (inferenceMode "local"), so the dashboard
+    showed local GPU telemetry and "Chat with your local AI model" (fleet row 33).
+    """
+    if str(read_live_env_value("LLM_BACKEND") or "").strip().lower() != "external":
+        return False
+    provider = str(read_live_env_value("EXTERNAL_LLM_PROVIDER") or "").strip().lower()
+    host = (urlparse(str(read_live_env_value("EXTERNAL_LLM_URL") or "").strip()).hostname or "").lower()
+    return bool(host) and provider not in {"ollama", "lmstudio"} and host not in _THIS_COMPUTER_HOSTS
+
+
 async def _build_api_status() -> dict:
     """Build the full status payload.
 
@@ -1613,12 +1631,14 @@ async def _build_api_status() -> dict:
     # Remote/cloud inference does not use the local GPU for primary inference.
     # Suppress local GPU/tier reporting so the UI cannot present local hardware
     # as the inference device. Local mode is unchanged.
-    remote_inference = bool(remote_runtime) or cloud_mode
+    external_api = not remote_runtime and not cloud_mode and _external_api_off_this_computer()
+    remote_inference = bool(remote_runtime) or cloud_mode or external_api
     if remote_inference:
         gpu_data = None
         tier = "Cloud"
-        inference_mode_value = "remote" if remote_runtime else "cloud"
-        inference_source_value = "remote-provider" if remote_runtime else "cloud-mode"
+        inference_mode_value = "remote" if remote_runtime or external_api else "cloud"
+        inference_source_value = ("remote-provider" if remote_runtime
+                                  else "external-api" if external_api else "cloud-mode")
     else:
         gpu_data = _serialize_gpu(gpu_info)
         tier = _infer_tier(gpu_info)

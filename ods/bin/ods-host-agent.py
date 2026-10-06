@@ -4090,6 +4090,10 @@ class _PixelModelTransactionUncertain(RuntimeError):
 class _PixelModelTransactionRejected(RuntimeError):
     """The controller definitively refused admission without performing it."""
 
+    def __init__(self, message: str, *, code: str = ''):
+        super().__init__(message)
+        self.code = code
+
 
 def _pixel_model_journal_path() -> Path:
     return INSTALL_DIR / 'data' / 'pixel-model-transaction.json'
@@ -4188,11 +4192,40 @@ def _read_pixel_model_journal() -> dict | None:
     return value
 
 
+# How long a status read waits while another controller operation holds the
+# controller's state lock, and how often it asks again.
+_MODEL_CONTROLLER_BUSY_WAIT_SECONDS = 120
+_MODEL_CONTROLLER_BUSY_POLL_SECONDS = 3
+
+
 def _runtime_model_control(operation: str, request: dict | None = None, *, config: dict) -> dict:
     from pixel_access_relay import request_runtime_model_control, public_model_control
-    status, value = request_runtime_model_control(operation, request, config=config)
+    deadline = time.monotonic() + _MODEL_CONTROLLER_BUSY_WAIT_SECONDS
+    while True:
+        status, value = request_runtime_model_control(operation, request, config=config)
+        code = value.get('error') or value.get('reason') if isinstance(value, dict) else None
+        code = code if isinstance(code, str) and re.fullmatch(r'[A-Za-z0-9._-]{1,64}', code) else ''
+        # transition-busy: another operation holds the controller's state
+        # lock, which every operation takes before doing anything. A status
+        # read waits for it (the Mac controller stays busy for over a minute
+        # after a committed change); a mutation is never sent again.
+        if operation != 'model-status' or status != 409 or code != 'transition-busy':
+            break
+        if time.monotonic() >= deadline:
+            logger.warning('Managed model controller stayed busy for %ss', _MODEL_CONTROLLER_BUSY_WAIT_SECONDS)
+            raise _PixelModelTransactionRejected(
+                'ODS is still finishing the last model change. Wait a minute, then try again.',
+                code=code)
+        time.sleep(_MODEL_CONTROLLER_BUSY_POLL_SECONDS)
     if status in {400, 403, 409}:
-        raise _PixelModelTransactionRejected('Managed model controller refused the transition; its current state must be verified')
+        # Name the operation, status and the controller's own reason code: a
+        # refused status read (403) and a busy controller (409) need different
+        # next steps, and the generic sentence alone hid which one happened.
+        detail = f'{operation}: HTTP {status}' + (f' {code}' if code else '')
+        logger.warning('Managed model controller refused %s', detail)
+        raise _PixelModelTransactionRejected(
+            f'Managed model controller refused the transition; its current state must be verified ({detail})',
+            code=code)
     if status != 200:
         raise RuntimeError('Managed model controller is unavailable or refused the transition')
     return public_model_control(value)
@@ -4292,7 +4325,15 @@ def _pixel_local_identity_matches(config: dict, identity: str, expected: str) ->
     if identity == expected:
         return True
     gguf = str(config.get('GGUF_FILE') or '')
-    if not gguf or expected != gguf or Path(gguf).name != gguf:
+    if not gguf or Path(gguf).name != gguf:
+        return False
+    served = identity in (gguf, str(_active_model_directory(config) / gguf))
+    # The installer's Portal contract names the model by its configured
+    # logical id (LLM_MODEL), while llama-server serves it under the GGUF
+    # file name. That configured pair is one model; any other name is not.
+    if expected == str(config.get('LLM_MODEL') or '') and expected:
+        return served
+    if expected != gguf:
         return False
     return identity == str(_active_model_directory(config) / gguf)
 
@@ -4307,11 +4348,13 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
         expected.pop('imageInput', None)
         observed.pop('imageInput', None)
         if not _valid_managed_pixel_runtime_contract(contract) or expected != observed:
+            logger.warning("Portal model contract proof failed: the contract does not match the saved remote route")
             return False
         _verify_litellm_route(config, model='ods/current')
         return True
     gguf = str(config.get('GGUF_FILE') or '')
     if not gguf:
+        logger.warning("Portal model contract proof failed: GGUF_FILE is not set")
         return False
     # A Windows-owned runtime is proven twice: its durable plan must name the
     # contract, and the live server must serve it (through the router).
@@ -4320,26 +4363,59 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
             managed.get('running') is not True
             or managed['plan']['GgufFile'] != gguf
             or managed['plan']['ContextSize'] != contract['contextLength']):
+        logger.warning("Portal model contract proof failed: the Windows runtime is not running %s at %s tokens",
+                       gguf, contract['contextLength'])
         return False
     proof = _wait_for_model_readiness(config,model_id=str(config.get('LLM_MODEL') or gguf),
         gguf_file=gguf,llm_model_name=str(config.get('LLM_MODEL') or gguf),
         attempts=1,initial_delay=0,interval=0,return_proof=True,require_exact_context=True)
-    return (isinstance(proof,dict) and _pixel_local_identity_matches(config, proof.get('identity'), contract['model'])
-            and proof.get('contextVerified') is True and proof.get('contextLength')==contract['contextLength'])
+    if not isinstance(proof, dict) or not proof:
+        logger.warning("Portal model contract proof failed: %s did not pass the readiness check", gguf)
+        return False
+    if not _pixel_local_identity_matches(config, proof.get('identity'), contract['model']):
+        logger.warning("Portal model contract proof failed: the runtime serves %s, the contract names %s",
+                       proof.get('identity'), contract['model'])
+        return False
+    if proof.get('contextVerified') is not True or proof.get('contextLength') != contract['contextLength']:
+        logger.warning("Portal model contract proof failed: the runtime context is %s, the contract needs %s",
+                       proof.get('contextLength'), contract['contextLength'])
+        return False
+    return True
 
 
-def _recover_pixel_model_transaction(config: dict) -> dict:
+def _pixel_model_release_unverified_allowed(journal: dict, status: dict | None, current: dict) -> bool:
+    """Whether an owner may release a switch without the live proof.
+
+    Only a switch that never applied a target and changed nothing qualifies:
+    the controller holds this same transaction on the previous contract, and
+    every captured host file is as it was before. Releasing it restores
+    nothing. The proof can be impossible there: a cloud-mode default with no
+    local model can never be proven, which held a laptop indefinitely (fleet
+    row 27).
+    """
+    return (journal['target'] is None and journal['phase'] in {'held', 'rolling-back'}
+            and status is not None and status['transactionId'] == journal['transactionId']
+            and status['contract'] == journal['previous']
+            and (status['status'] == 'held'
+                 or (status['status'] == 'completed' and status['outcome'] == 'rollback'))
+            and 'unavailable' not in journal['before'].values() and current == journal['before'])
+
+
+def _recover_pixel_model_transaction(config: dict, *, release_unverified: bool = False) -> dict:
     """Release only a provably committed or unchanged/fully restored state.
 
     Recovery never loads a model or rewrites inference settings. The native
     coordinator may restore/requalify its gateway contract while completing
     the same transaction. An intermediate crash requires explicit repair.
+    With release_unverified (an explicit owner request), a switch that
+    changed nothing is released even when its previous model cannot be
+    proven live; nothing else is waived.
     """
     journal = _read_pixel_model_journal()
     if journal is None or journal['phase']=='completed':
         return {'pending':False,'phase':'idle','transactionId':None}
     pending = {'pending':True,'phase':journal['phase'],'transactionId':journal['transactionId'],
-               'reason':'model-recovery-proof-required'}
+               'reason':'model-recovery-proof-required','releasable':False}
     try:
         try:
             status = _runtime_model_control('model-status',config=config)
@@ -4425,8 +4501,15 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
         # unrelated values. Prove the current file instead of the caller's
         # earlier snapshot before allowing the env-only drift exception.
         proof_config=load_env(INSTALL_DIR / '.env') if env_only_drift else config
-        if not _prove_pixel_model_contract(proof_config,expected):
-            return pending
+        unverified = (release_unverified and outcome == 'rollback'
+                      and _pixel_model_release_unverified_allowed(journal, status, current))
+        if unverified:
+            logger.warning('Releasing managed model transaction %s without proving the previous model, at the owner\'s request',
+                           journal['transactionId'][:12])
+        elif not _prove_pixel_model_contract(proof_config,expected):
+            # Offer the owner a release only where one would go through.
+            return {**pending,'releasable':outcome == 'rollback'
+                    and _pixel_model_release_unverified_allowed(journal, status, current)}
         if _pixel_model_config_digests()!=current:
             return pending
         transaction=_PixelModelTransaction(proof_config)
@@ -4499,13 +4582,17 @@ def _read_remote_provider_activation_state() -> dict | None:
     return value
 
 
-def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
+def _active_remote_provider_pixel_runtime(*, fresh: bool = False) -> dict[str, object] | None:
     """Return the active remote runtime only when every custody join matches.
 
     The local switchboard remains a rollback route, but it is not the model
     serving Pixel while a proven remote-provider transaction is active. This
     projection does no network I/O because Dashboard polls model status often;
     activation already proved LiteLLM and reconciled Pixel before commit.
+    An action passes fresh=True to read Pixel's runtime now: the poll cache
+    is empty after configure rewrites the route state, so the first enable
+    after configure missed its no-op and started a model transaction the Mac
+    controller refused (fleet row 6).
     """
     try:
         route = _read_remote_provider_route_state_for_update()
@@ -4541,7 +4628,8 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
             != "http://litellm:4000"
         ):
             return None
-        observed = _cached_managed_pixel_runtime_contract() if env.get('PIXEL_OPENWEBUI_KEY') else _managed_pixel_runtime_contract()
+        observed = (_cached_managed_pixel_runtime_contract()
+                    if env.get('PIXEL_OPENWEBUI_KEY') and not fresh else _managed_pixel_runtime_contract())
         if (isinstance(observed, dict) and "imageInput" not in runtime
                 and observed.get("imageInput") == "unknown"):
             # An installer can explicitly migrate the previous implicit unknown
@@ -4990,6 +5078,11 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         detail = f"Remote provider deactivation failed: {exc}"
         if rollback_errors:
             detail += "; rollback failed: " + "; ".join(rollback_errors)
+        else:
+            # The rollback above put the remote route back: say where that
+            # leaves the owner, not only what failed.
+            detail += (". ODS still uses the remote provider, and the local model was not changed."
+                       " Try again with 'ods remote-provider disable'; 'ods doctor' checks the local model.")
         raise RuntimeError(detail) from exc
 
 
@@ -5202,7 +5295,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
             route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
             route_status = saved_state.get("status")
             runtime = _remote_provider_runtime_contract(route)
-            active_runtime = _active_remote_provider_pixel_runtime()
+            active_runtime = _active_remote_provider_pixel_runtime(fresh=True)
             if (
                 isinstance(route_status, dict)
                 and route_status.get("proven") is True
@@ -6141,12 +6234,12 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError(
-            f"Rootless ownership repair could not run for {service_id}: {exc}"
+            f"Could not prepare the {service_id} data folder: {exc}"
         ) from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "unknown error").strip()
         raise RuntimeError(
-            f"Rootless ownership repair failed for {service_id}: {detail[-500:]}"
+            f"Could not prepare the {service_id} data folder: {detail[-500:]}"
         )
 
 
@@ -13143,15 +13236,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         body=read_json_body(self)
         if body is None:return
-        if body!={}:
-            json_response(self,400,{'error':'Recovery accepts an empty request only'})
+        # {"releaseUnverified": true} is the owner's explicit request to
+        # release a switch that changed nothing without the live proof.
+        if body not in ({}, {'releaseUnverified':True}):
+            json_response(self,400,{'error':'Recovery accepts {} or {"releaseUnverified": true} only'})
             return
         acquired,_active=_begin_model_lifecycle('model_recovery')
         if not acquired:
             json_response(self,409,{'error':'Model lifecycle is busy'})
             return
         try:
-            result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'))
+            result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'),
+                                                     release_unverified=body.get('releaseUnverified') is True)
             json_response(self,409 if result['pending'] else 200,result,no_store=True)
         except Exception:
             json_response(self,503,{'pending':True,'phase':'unavailable','reason':'model-recovery-unavailable'},no_store=True)

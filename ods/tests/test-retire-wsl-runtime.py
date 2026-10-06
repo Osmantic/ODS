@@ -138,12 +138,42 @@ class RetirementTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.assertEqual(self.disable_startup.call_count, 2)
 
-    def test_registered_runtime_cannot_be_hidden_by_a_changed_transport(self):
+    def test_registered_runtime_is_verified_after_routing_changes(self):
+        # An API or cloud route leaves the owned Windows task registered.
+        # Custody is proven from the task with a control-only environment;
+        # startup checks still get the installation's own values.
         (self.root / 'data').mkdir()
         (self.root / 'data/wsl-lemonade-runtime.json').write_text('{}')
         self.candidate.return_value = False
-        with self.assertRaises(ValueError):
-            helper.retire(self.root, validate_only=True)
+        for key in ('ODS_HOST_LLM_TRANSPORT', 'LEMONADE_HOST_TRANSPORT'):
+            for transport in ('direct', 'cloud', ''):
+                content = (key + '=' + transport + '\n'
+                           'ODS_WINDOWS_SYSTEM_DIRECTORY="C:\\Windows\\System32"\n'
+                           'NATIVE_LLM_BASE_URL=\nNATIVE_LLM_CONTAINER_BASE_URL=https://example.com/api\n'
+                           'AMD_INFERENCE_PORT=\n')
+                (self.root / '.env').write_text(content)
+                with self.subTest(key=key, transport=transport):
+                    self.assertEqual(helper.retire(self.root, validate_only=True)['state'], 'validated')
+                    self.status.assert_called_with(self.root, ENV)
+                    self.stop.assert_not_called()
+                    self.assertEqual(helper.retire(self.root)['state'], 'retired')
+                    self.stop.assert_called_once_with(self.root, ENV, 'a' * 64)
+                    self.assertEqual(self.disable_startup.call_args.args[1][key], transport)
+                    self.assertEqual((self.root / '.env').read_text(), content)
+                    self.stop.reset_mock()
+
+    def test_changed_routing_does_not_allow_unowned_registered_runtime(self):
+        (self.root / 'data').mkdir()
+        (self.root / 'data/wsl-lemonade-runtime.json').write_text('{}')
+        (self.root / '.env').write_text('ODS_HOST_LLM_TRANSPORT=direct\n')
+        self.candidate.return_value = False
+        for result in ({'managed': False}, OSError('foreign Windows task')):
+            self.status.side_effect = result if isinstance(result, Exception) else None
+            self.status.return_value = result
+            with self.subTest(result=result), self.assertRaises((ValueError, OSError)):
+                helper.retire(self.root)
+        self.status.assert_called_with(self.root, {'ODS_HOST_LLM_TRANSPORT': 'model-router',
+                                                   'LEMONADE_HOST_TRANSPORT': 'model-router'})
         self.disable_startup.assert_not_called()
         self.stop.assert_not_called()
 

@@ -295,7 +295,7 @@ If you've verified the checklist and still have issues:
 
 1. After install, run diagnostics: `cd $env:USERPROFILE\ods; .\ods.ps1 report`
 2. Check WSL2 GPU issues: https://github.com/microsoft/WSL/issues?q=label%3Agpu
-3. ODS Discord: https://discord.gg/clawd
+3. ODS Discord: https://discord.gg/4ntNp9MAwC
 
 **When reporting issues, include:**
 - Output of `wsl nvidia-smi`

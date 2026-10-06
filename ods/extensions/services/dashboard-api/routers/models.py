@@ -1491,6 +1491,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["odsMode"] = ODS_MODE_EFFECTIVE
     payload["configuredMode"] = _configured_ods_mode()
     payload["llmBackend"] = LLM_BACKEND or "unknown"
+    if LLM_BACKEND == "external":
+        # API mode: name the model and the API's host so the page can say
+        # what serves chat. The installer refuses URLs with credentials.
+        payload["externalModel"] = read_env_value("EXTERNAL_LLM_MODEL", INSTALL_DIR).strip() or None
+        payload["externalHost"] = _external_api_host(read_env_value("EXTERNAL_LLM_URL", INSTALL_DIR))
     payload["hostRuntime"] = _windows_hosted_runtime()
     if payload["hostRuntime"]:
         payload["modelManagement"] = await asyncio.to_thread(_model_management)
@@ -1635,21 +1640,36 @@ def _stale_bootstrap_download_status(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bootstrap_retry_pending_error(model_name: Any) -> str:
+    """Say why downloads wait on the first full model and how to retry it.
+
+    The retry starts with the next ODS start or restart, and nothing else
+    told the owner that (a user hit this on three computers with no way on).
+    """
+    model = str(model_name or "").strip() or "the full model"
+    return (f"ODS's first download of {model} stopped before it finished, and it goes before other "
+            "model downloads. Restart ODS to retry it (ods restart). The reason is in "
+            "logs/model-upgrade.log in your ODS folder.")
+
+
 def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
     """Return a lifecycle-busy payload when bootstrap upgrade owns download priority."""
     bootstrap_status = _read_bootstrap_status_file()
     if _is_stale_active_bootstrap_status(bootstrap_status):
+        target = bootstrap_status.get("model") if bootstrap_status else None
         return {
-            "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+            "error": _bootstrap_retry_pending_error(target),
             "code": "model_lifecycle_busy",
             "activeOperation": "bootstrap_upgrade_retry_pending",
-            "activeTarget": bootstrap_status.get("model") if bootstrap_status else None,
+            "activeTarget": target,
         }
 
     bootstrap_info = get_bootstrap_status()
     if bootstrap_info.active:
+        model = str(bootstrap_info.model_name or "").strip() or "the full model"
         return {
-            "error": "Cannot start model download while bootstrap full-model upgrade is in progress",
+            "error": (f"ODS is still downloading {model}, its first full model. "
+                      "Other model downloads can start when it finishes."),
             "code": "model_lifecycle_busy",
             "activeOperation": "bootstrap_upgrade",
             "activeTarget": bootstrap_info.model_name,
@@ -1677,7 +1697,7 @@ def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
         return None
 
     return {
-        "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+        "error": _bootstrap_retry_pending_error(model_name),
         "code": "model_lifecycle_busy",
         "activeOperation": "bootstrap_upgrade_retry_pending",
         "activeTarget": model_name,
@@ -1905,6 +1925,19 @@ def _find_normalized_model(model_id: str) -> Optional[dict]:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
 
 
+def _external_api_host(url: str) -> str | None:
+    """The host (and port) of the API URL, without anything else."""
+    try:
+        parsed = urlsplit(url.strip())
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if not host or parsed.scheme not in {"http", "https"}:
+        return None
+    return f"{host}:{port}" if port else host
+
+
 async def _fetch_llama_loaded_model(host: str, port: int) -> str | None:
     base_url = _configured_llm_base_url(host, port)
     # A generic OpenAI-compatible server lists every model it can serve with no
@@ -2126,13 +2159,20 @@ def _model_recovery_projection(value):
         result['outcome'] = value['outcome']
     if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable'):
         result['reason'] = value['reason']
+    # The agent offers the owner a release without the live proof only for a
+    # switch that changed nothing (fleet row 27).
+    if value['pending'] and type(value.get('releasable')) is bool:
+        result['releasable'] = value['releasable']
     return result
 
 
-def _model_recovery_request(method):
+_RECOVERY_REQUESTS: tuple[dict[str, bool], ...] = ({}, {'releaseUnverified': True})
+
+
+def _model_recovery_request(method, body=None):
     try:
         value = request_agent_json(method, '/v1/model/recovery' if method == 'GET' else '/v1/model/recover',
-                                   payload=None if method == 'GET' else {}, timeout=5 if method == 'GET' else 400)
+                                   payload=None if method == 'GET' else body, timeout=5 if method == 'GET' else 400)
         return _model_recovery_projection(value)
     except AgentHTTPError as exc:
         if exc.status_code in (409, 503):
@@ -2154,9 +2194,10 @@ def model_recovery_status(api_key: str = Depends(verify_api_key)):
 
 @router.post('/api/models/recovery')
 def recover_model_switch(body: dict | None = Body(default=None), api_key: str = Depends(verify_api_key)):
-    if body != {}:
-        raise HTTPException(status_code=400, detail='Recovery accepts an empty request only.')
-    value = _model_recovery_request('POST')
+    if body is None or not any(body == allowed and all(type(body[key]) is type(value) for key, value in allowed.items())
+                               for allowed in _RECOVERY_REQUESTS):
+        raise HTTPException(status_code=400, detail='Recovery accepts {} or {"releaseUnverified": true} only.')
+    value = _model_recovery_request('POST', dict(body))
     return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
 

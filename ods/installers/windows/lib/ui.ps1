@@ -117,6 +117,18 @@ function Write-AIWarn {
     Write-Host "  [!!] $Message" -ForegroundColor Yellow
 }
 
+# The ODS community Discord. Keep in sync with ODS_HELP_DISCORD_URL in
+# installers/lib/constants.sh (tests/test-help-links.sh checks every surface).
+$script:ODSHelpDiscordUrl = "https://discord.gg/4ntNp9MAwC"
+
+function Exit-ODSInstallFailure {
+    # Every installer stop names a place to get help before it exits.
+    Write-Host ""
+    Write-Host "  Need help? Ask on the ODS Discord: $script:ODSHelpDiscordUrl" -ForegroundColor Yellow
+    Write-Host "  Share the messages above; they explain where setup stopped." -ForegroundColor Yellow
+    exit 1
+}
+
 function Write-AIError {
     param([string]$Message)
     Write-Host "  [XX] $Message" -ForegroundColor Red

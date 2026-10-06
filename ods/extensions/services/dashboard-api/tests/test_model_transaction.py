@@ -1,5 +1,6 @@
 """The model transaction never retries inference mutations or invents recovery."""
 import copy
+from types import SimpleNamespace
 import json
 import subprocess
 import pytest
@@ -19,6 +20,108 @@ def test_local_contract_identity_accepts_only_exact_active_store_path(monkeypatc
     assert not host._pixel_local_identity_matches(config, '/other/model.gguf', 'model.gguf')
     assert not host._pixel_local_identity_matches(config, str(tmp_path / 'model.gguf'), 'other.gguf')
     assert not host._pixel_local_identity_matches({}, str(tmp_path / 'model.gguf'), 'model.gguf')
+
+
+def test_local_contract_identity_accepts_the_configured_logical_name(monkeypatch, tmp_path):
+    # The installer's Portal contract names the model by LLM_MODEL, while
+    # llama-server serves it under the GGUF file name (--alias GGUF_FILE).
+    monkeypatch.setattr(host, '_active_model_directory', lambda _: tmp_path)
+    config = {'GGUF_FILE': 'Qwen3.5-9B-Q4_K_M.gguf', 'LLM_MODEL': 'qwen3.5-9b'}
+    assert host._pixel_local_identity_matches(config, 'Qwen3.5-9B-Q4_K_M.gguf', 'qwen3.5-9b')
+    assert host._pixel_local_identity_matches(config, str(tmp_path / 'Qwen3.5-9B-Q4_K_M.gguf'), 'qwen3.5-9b')
+    assert not host._pixel_local_identity_matches(config, 'Other-9B-Q4_K_M.gguf', 'qwen3.5-9b')
+    assert not host._pixel_local_identity_matches(config, '/other/Qwen3.5-9B-Q4_K_M.gguf', 'qwen3.5-9b')
+    assert not host._pixel_local_identity_matches(config, 'Qwen3.5-9B-Q4_K_M.gguf', 'qwen3.5-27b')
+    assert not host._pixel_local_identity_matches(
+        {'GGUF_FILE': 'Qwen3.5-9B-Q4_K_M.gguf'}, 'Qwen3.5-9B-Q4_K_M.gguf', 'qwen3.5-9b')
+
+
+@pytest.mark.parametrize('status,body,detail', [
+    (403, {'error': 'forbidden'}, '(model-status: HTTP 403 forbidden)'),
+    (409, {'reason': 'busy'}, '(model-status: HTTP 409 busy)'),
+    (400, {'error': 'bad value with spaces'}, '(model-status: HTTP 400)'),
+])
+def test_model_controller_refusal_names_operation_status_and_reason(monkeypatch, status, body, detail):
+    # Fleet, Mac 2026-10-05: one generic sentence hid whether the controller
+    # refused the agent's key or was busy.
+    import pixel_access_relay
+    monkeypatch.setattr(pixel_access_relay, 'request_runtime_model_control',
+                        lambda operation, request=None, *, config: (status, body))
+    with pytest.raises(host._PixelModelTransactionRejected) as refused:
+        host._runtime_model_control('model-status', config={})
+    assert str(refused.value) == ('Managed model controller refused the transition; '
+                                  'its current state must be verified ' + detail)
+
+
+READY = dict(schemaVersion=1, status='ready', revision='c'*64, contract=OLD, pending=False,
+             transactionId=None, outcome=None)
+BUSY = (409, {'error': 'transition-busy'})
+
+
+def busy_relay(monkeypatch, replies):
+    import pixel_access_relay
+    calls: list[str] = []
+    def relay(operation, request=None, *, config):
+        calls.append(operation)
+        return replies.pop(0) if len(replies) > 1 else replies[0]
+    monkeypatch.setattr(pixel_access_relay, 'request_runtime_model_control', relay)
+    return calls
+
+
+def test_status_read_waits_while_another_operation_holds_the_controller(monkeypatch):
+    # Fleet, Mac 2026-10-05: right after a committed change the controller
+    # answered model-status with 409 transition-busy for over a minute, and
+    # the next enable failed within a second.
+    calls = busy_relay(monkeypatch, [BUSY, BUSY, (200, copy.deepcopy(READY))])
+    sleeps: list[float] = []
+    monkeypatch.setattr(host, 'time', SimpleNamespace(monotonic=lambda: 0, sleep=sleeps.append))
+    assert host._runtime_model_control('model-status', config={}) == READY
+    assert calls == ['model-status'] * 3 and sleeps == [3, 3]
+
+
+def test_status_read_stops_waiting_with_a_clear_message(monkeypatch):
+    calls = busy_relay(monkeypatch, [BUSY])
+    clock = iter(range(0, 6000, 60))
+    monkeypatch.setattr(host, 'time', SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda _: None))
+    with pytest.raises(host._PixelModelTransactionRejected) as refused:
+        host._runtime_model_control('model-status', config={})
+    assert str(refused.value) == ('ODS is still finishing the last model change. '
+                                  'Wait a minute, then try again.')
+    # The clock reads 60 s per call: asked at 0 s and 60 s, then 120 s is up.
+    assert refused.value.code == 'transition-busy' and calls == ['model-status'] * 2
+
+
+def test_busy_mutation_is_refused_at_once_and_never_sent_again(monkeypatch):
+    calls = busy_relay(monkeypatch, [BUSY])
+    monkeypatch.setattr(host, 'time', SimpleNamespace(
+        monotonic=lambda: 0, sleep=lambda _: pytest.fail('a mutation must not wait and resend')))
+    with pytest.raises(host._PixelModelTransactionRejected) as refused:
+        host._runtime_model_control('model-finish', {'transactionId': 'a'*64, 'outcome': 'rollback'}, config={})
+    assert '(model-finish: HTTP 409 transition-busy)' in str(refused.value)
+    assert refused.value.code == 'transition-busy' and calls == ['model-finish']
+
+
+def test_installer_contract_with_logical_name_is_proven_and_mismatches_are_logged(monkeypatch, caplog):
+    # Fleet, 2026-10-05: leaving a remote route on a fresh install failed every
+    # time, because the saved Portal contract named qwen3.5-9b and the server
+    # serves Qwen3.5-9B-Q4_K_M.gguf.
+    config = {'GGUF_FILE': 'Qwen3.5-9B-Q4_K_M.gguf', 'LLM_MODEL': 'qwen3.5-9b', 'CTX_SIZE': '65536'}
+    contract = {'model': 'qwen3.5-9b', 'contextLength': 65536, 'maxTokens': 8192, 'reasoning': False}
+    monkeypatch.setattr(host, '_managed_wsl_runtime', lambda _config: {'managed': False})
+    proof = {'identity': 'Qwen3.5-9B-Q4_K_M.gguf', 'contextLength': 65536, 'contextVerified': True}
+    monkeypatch.setattr(host, '_wait_for_model_readiness', lambda *_args, **_kwargs: dict(proof))
+    assert _real_prove_pixel_model_contract(config, contract) is True
+
+    proof['contextLength'] = 32768
+    with caplog.at_level('WARNING'):
+        assert _real_prove_pixel_model_contract(config, contract) is False
+    assert 'the runtime context is 32768, the contract needs 65536' in caplog.text
+
+    proof.update(identity='Other-9B-Q4_K_M.gguf', contextLength=65536)
+    caplog.clear()
+    with caplog.at_level('WARNING'):
+        assert _real_prove_pixel_model_contract(config, contract) is False
+    assert 'the runtime serves Other-9B-Q4_K_M.gguf, the contract names qwen3.5-9b' in caplog.text
 
 
 @pytest.fixture
@@ -146,7 +249,10 @@ def test_partial_host_mutation_cannot_be_recovered_by_a_generic_reset(controller
     tx=host._begin_pixel_model_transaction(env)
     config.write_text('half-written')
     result=host._recover_pixel_model_transaction(env)
-    assert result=={'pending':True,'phase':'held','transactionId':tx.id,'reason':'model-recovery-proof-required'}
+    assert result=={'pending':True,'phase':'held','transactionId':tx.id,'reason':'model-recovery-proof-required',
+                    'releasable':False}
+    # A host changed mid-switch is never released without the proof either.
+    assert host._recover_pixel_model_transaction(env,release_unverified=True)['pending'] is True
     assert state['pending'] and 'model-finish' not in calls
     with pytest.raises(host._PixelModelTransactionUncertain):host._begin_pixel_model_transaction(env)
     assert calls.count('model-begin')==1
@@ -352,7 +458,9 @@ def test_recovery_routes_require_owner_authentication(monkeypatch,method):
     getattr(host.AgentHandler,method)(fixtures._ResponseHandler())
 
 
-@pytest.mark.parametrize('body,pending,status',[({},False,200),({},True,409),({'transactionId':'a'*64},True,400)])
+@pytest.mark.parametrize('body,pending,status',[
+    ({},False,200),({},True,409),({'releaseUnverified':True},False,200),
+    ({'transactionId':'a'*64},True,400),({'releaseUnverified':False},True,400),({'releaseUnverified':'yes'},True,400)])
 def test_recovery_endpoint_uses_only_owned_journal_and_releases_lifecycle_lock(monkeypatch,body,pending,status):
     actions=[]
     monkeypatch.setattr(host,'check_auth',lambda _:True)
@@ -360,15 +468,75 @@ def test_recovery_endpoint_uses_only_owned_journal_and_releases_lifecycle_lock(m
     monkeypatch.setattr(host,'_begin_model_lifecycle',lambda kind:(actions.append(('begin',kind)) or True,None))
     monkeypatch.setattr(host,'_end_model_lifecycle',lambda kind:actions.append(('end',kind)))
     monkeypatch.setattr(host,'load_env',lambda _: {'fixture':'env'})
-    def recover(env):
+    def recover(env,*,release_unverified=False):
         assert env=={'fixture':'env'}
-        actions.append(('recover',None))
+        actions.append(('recover',release_unverified))
         return {'pending':pending,'phase':'held' if pending else 'completed','transactionId':'a'*64}
     monkeypatch.setattr(host,'_recover_pixel_model_transaction',recover)
     handler=fixtures._ResponseHandler()
     host.AgentHandler._handle_model_recover(handler)
     assert handler.response_code==status
-    assert actions==([('begin','model_recovery'),('recover',None),('end','model_recovery')] if body=={} else [])
+    accepted=body in ({},{'releaseUnverified':True})
+    assert actions==([('begin','model_recovery'),('recover',body=={'releaseUnverified':True}),
+                      ('end','model_recovery')] if accepted else [])
+
+
+def held_unproven_switch(controller,monkeypatch):
+    """A switch that applied nothing and whose previous model cannot be proven."""
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    tx=host._begin_pixel_model_transaction(env)
+    monkeypatch.setattr(host,'_prove_pixel_model_contract',lambda *_:False)
+    return env,tx
+
+
+def test_owner_can_release_a_switch_that_changed_nothing_without_the_live_proof(controller,monkeypatch):
+    # Fleet row 27 (laptop): the previous contract was a cloud default with no
+    # local model, so recovery waited forever for a proof that cannot pass.
+    _,state,calls,_=controller
+    env,tx=held_unproven_switch(controller,monkeypatch)
+    result=host._recover_pixel_model_transaction(env)
+    assert result['pending'] is True and result['releasable'] is True
+    before=list(calls)
+    result=host._recover_pixel_model_transaction(env,release_unverified=True)
+    assert result=={'pending':False,'phase':'completed','transactionId':tx.id,'outcome':'rollback'}
+    assert calls[len(before):]==['model-status','model-status','model-finish']
+    assert state['status']=='completed' and state['contract']==OLD and not host._pixel_model_recovery_status()['pending']
+
+
+def test_release_without_proof_refuses_a_controller_on_another_contract(controller,monkeypatch):
+    _,state,calls,_=controller
+    env,_=held_unproven_switch(controller,monkeypatch)
+    state['contract']=copy.deepcopy(NEW)
+    assert host._recover_pixel_model_transaction(env)['releasable'] is False
+    assert host._recover_pixel_model_transaction(env,release_unverified=True)['pending'] is True
+    assert 'model-finish' not in calls
+
+
+def test_release_without_proof_refuses_an_applied_target(controller,monkeypatch):
+    config,_,calls,_=controller
+    env={'PIXEL_OPENWEBUI_KEY':'configured'}
+    tx=host._begin_pixel_model_transaction(env)
+    config.write_text('new')
+    tx.apply(NEW)
+    monkeypatch.setattr(host,'_prove_pixel_model_contract',lambda *_:False)
+    assert host._recover_pixel_model_transaction(env,release_unverified=True)['pending'] is True
+    assert 'model-finish' not in calls
+
+
+def test_interrupted_release_without_proof_completes_on_rerun(controller,monkeypatch):
+    _,state,calls,call=controller
+    env,_=held_unproven_switch(controller,monkeypatch)
+    def lose_finish(operation,request=None,*,config):
+        if operation=='model-finish':
+            calls.append(operation)
+            raise TimeoutError()
+        return call(operation,request,config=config)
+    monkeypatch.setattr(host,'_runtime_model_control',lose_finish)
+    assert host._recover_pixel_model_transaction(env,release_unverified=True)['pending'] is True
+    assert host._pixel_model_recovery_status()['phase']=='rolling-back'
+    monkeypatch.setattr(host,'_runtime_model_control',call)
+    result=host._recover_pixel_model_transaction(env,release_unverified=True)
+    assert result['pending'] is False and result['outcome']=='rollback' and state['status']=='completed'
 
 
 @pytest.fixture

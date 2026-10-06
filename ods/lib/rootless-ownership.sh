@@ -264,6 +264,9 @@ _ods_rootless_stat_metadata() {
 
 _ods_rootless_fix_directory() {
     local install_dir="$1" relative="$2" owner="$3" container="${4:-}" mode="${5:-}"
+    # On rootful Docker, `ods repair rootless-ownership` does nothing, so the
+    # rootful callers name their own remedy.
+    local remedy="${6:-Stop the affected service or ODS, then run: ods repair rootless-ownership}"
     local target metadata current_owner current_mode container_state
 
     [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || {
@@ -295,7 +298,7 @@ _ods_rootless_fix_directory() {
         fi
         echo "[error] Refusing recursive ownership repair while $container is running." >&2
         echo "        Current metadata: $current_owner mode $current_mode; expected: $owner${mode:+ mode $mode}." >&2
-        echo "        Stop the affected service or ODS, then run: ods repair rootless-ownership" >&2
+        echo "        $remedy" >&2
         return 1
     fi
 
@@ -415,7 +418,8 @@ ods_prepare_whisper_cache_ownership() {
         return 1
     }
     _ods_rootless_ensure_helper_image || return 1
-    _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775
+    _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775 \
+        "Stop it with 'ods stop whisper', then choose Retry on its card in Extensions."
 }
 
 # APE and Token Spy run as fixed container UIDs (APE 100:65534 with a private
@@ -448,7 +452,8 @@ ods_prepare_service_state_ownership() {
         return 0
     fi
     _ods_rootless_ensure_helper_image || return 1
-    _ods_rootless_fix_directory "$install_dir" "data/$service" "$owner" "ods-$service" "$mode"
+    _ods_rootless_fix_directory "$install_dir" "data/$service" "$owner" "ods-$service" "$mode" \
+        "Stop it with 'ods stop $service', then choose Retry on its card in Extensions."
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

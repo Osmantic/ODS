@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import HelpLink from '../components/HelpLink'
 import {
   AlertCircle,
   CheckCircle2,
@@ -34,11 +35,64 @@ const INITIAL_FORM = {
 }
 
 const STATUS_META = {
-  ready: { label: 'Ready', dot: 'bg-emerald-400', text: 'text-emerald-300' },
-  disabled: { label: 'Disabled', dot: 'bg-zinc-500', text: 'text-zinc-400' },
-  degraded: { label: 'Degraded', dot: 'bg-theme-text-secondary', text: 'text-theme-text-secondary' },
-  invalid: { label: 'Invalid', dot: 'bg-red-400', text: 'text-red-300' },
+  ready: { label: 'Connected', dot: 'bg-emerald-400', text: 'text-emerald-300' },
+  disabled: { label: 'Off', dot: 'bg-zinc-500', text: 'text-zinc-400' },
+  // An update (or a mode change) kept ODS on the model on this computer.
+  paused: { label: 'Paused', dot: 'bg-zinc-500', text: 'text-zinc-400' },
+  degraded: { label: 'Needs attention', dot: 'bg-theme-text-secondary', text: 'text-theme-text-secondary' },
+  invalid: { label: 'Not set up', dot: 'bg-red-400', text: 'text-red-300' },
   unknown: { label: 'Unknown', dot: 'bg-zinc-500', text: 'text-zinc-400' },
+}
+// Right after a change, ODS and Portal take a few seconds to switch over.
+const SETTLE_POLL_MS = 3000
+const SETTLE_POLLS = 5
+
+// The raw reason stays visible under "Details"; this says what to do.
+function friendlyProviderError(message) {
+  const text = String(message || '')
+  if (/HTTP 40[13]\b/.test(text)) return 'The API refused the key. Check the key, then connect again.'
+  if (/HTTP 404\b/.test(text)) return 'Nothing answered with a model list at that address. The API address usually ends in /v1.'
+  if (/HTTP 429\b/.test(text)) return 'The API is rate-limiting this key. Wait a minute, then try again.'
+  if (/did not serve a completion/i.test(text)) {
+    return 'The API answered, but a test chat with this model failed. Check the model name.'
+  }
+  if (/unreachable|probe failed|not known|nodename|timed out|refused to connect|connection refused/i.test(text)) {
+    return "Could not reach the API address. Check the address and this computer's internet connection."
+  }
+  if (/already in progress|host_agent_http_409/i.test(text)) {
+    return 'ODS is busy with another model change. Try again in a minute.'
+  }
+  return ''
+}
+
+function ErrorBanner({ message, note = '' }) {
+  const friendly = friendlyProviderError(message)
+  return (
+    <div className="mb-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200" role="alert">
+      <div className="flex items-start gap-2">
+        <AlertCircle className="mt-0.5 shrink-0" size={16} />
+        <div className="space-y-1">
+          <p>{friendly || message}</p>
+          {note && <p className="text-red-200/80">{note}</p>}
+          {friendly && (
+            <details className="text-xs text-red-200/70">
+              <summary className="cursor-pointer">Details</summary>
+              <p className="mt-1 break-words">{message}</p>
+            </details>
+          )}
+          <HelpLink className="text-xs" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function hostOf(url) {
+  try {
+    return new URL(url).host
+  } catch {
+    return url || ''
+  }
 }
 
 function titleize(value) {
@@ -156,7 +210,7 @@ async function responsePayload(response) {
     // body is lost: the server may already have applied the operation.
     if (response.ok) {
       if (error?.name === 'AbortError') throw error
-      throw new Error('Remote GPU response could not be read. Refresh status before trying again.')
+      throw new Error('The response could not be read. Refresh the status before trying again.')
     }
     return {}
   }
@@ -233,19 +287,23 @@ function ActionButton({ icon: Icon, children, onClick, disabled = false, primary
   )
 }
 
-function TextInput({ label, value, onChange, type = 'text', autoComplete = 'off', placeholder = '' }) {
+function TextInput({ label, value, onChange, type = 'text', autoComplete = 'off', placeholder = '', hint = '' }) {
+  const id = useId()
   return (
-    <label className="block text-sm">
-      <span className="mb-1 block text-xs font-semibold uppercase text-theme-text-muted">{label}</span>
+    <div className="block text-sm">
+      <label htmlFor={id} className="mb-1 block text-xs font-semibold uppercase text-theme-text-muted">{label}</label>
       <input
+        id={id}
         type={type}
         value={value}
         onChange={event => onChange(event.target.value)}
         autoComplete={autoComplete}
         placeholder={placeholder}
+        aria-describedby={hint ? `${id}-hint` : undefined}
         className="h-10 w-full rounded-lg border border-theme-border bg-theme-bg px-3 text-sm text-theme-text outline-none transition-colors placeholder:text-theme-text-muted/50 focus:border-theme-accent"
       />
-    </label>
+      {hint && <span id={`${id}-hint`} className="mt-1 block text-xs text-theme-text-muted">{hint}</span>}
+    </div>
   )
 }
 
@@ -312,7 +370,7 @@ function LoadingState() {
   return (
     <div className="flex min-h-[360px] items-center justify-center p-8 text-theme-text-muted">
       <Loader2 className="mr-2 animate-spin" size={18} />
-      Loading remote GPU status
+      Loading remote model status
     </div>
   )
 }
@@ -337,6 +395,11 @@ export default function RemoteProvider({ compact = false }) {
   const [peerModelsLoading, setPeerModelsLoading] = useState(false)
   const [peerModelsError, setPeerModelsError] = useState(null)
   const [peerAction, setPeerAction] = useState(null)
+  const [settling, setSettling] = useState(false)
+  const [connecting, setConnecting] = useState(false)
+  const [connectStep, setConnectStep] = useState('')
+  const [connectNotice, setConnectNotice] = useState(null)
+  const [lifecycleNote, setLifecycleNote] = useState('')
 
   const loadStatus = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoading(true)
@@ -357,7 +420,7 @@ export default function RemoteProvider({ compact = false }) {
       setError(null)
       return payload
     } catch (err) {
-      setError(err?.message || 'Failed to load remote GPU status')
+      setError(err?.message || 'Could not load the remote model status')
       return null
     } finally {
       if (!quiet) setLoading(false)
@@ -405,29 +468,88 @@ export default function RemoteProvider({ compact = false }) {
     setForm(current => ({ ...current, [key]: value }))
   }
 
+  // After a change, ODS and Portal switch over for a few seconds; re-check
+  // before calling that gap a problem.
+  const settleAfterAction = useCallback(async () => {
+    for (let poll = 0; poll < SETTLE_POLLS; poll += 1) {
+      const payload = await loadStatus({ quiet: true })
+      if (payload?.activation?.reason !== 'consumer_drift') break
+      setSettling(true)
+      await new Promise(resolve => setTimeout(resolve, SETTLE_POLL_MS))
+    }
+    setSettling(false)
+  }, [loadStatus])
+
   const runProbe = async () => {
     setTesting(true)
     setTestError(null)
+    setConnectNotice(null)
     try {
       const payload = await fetchJson('/api/remote-provider/probe', { method: 'POST' }, PROBE_TIMEOUT_MS)
       setTestResult(payload)
-      await loadStatus({ quiet: true })
+      await settleAfterAction()
     } catch (err) {
-      setTestError(err?.message || 'Remote GPU test failed')
+      setTestError(err?.message || 'The connection check failed')
     } finally {
       setTesting(false)
+    }
+  }
+
+  // One step for the common case: save the API settings, then check the API
+  // and switch ODS and Portal to it (what `ods remote-provider configure`
+  // and `test` do).
+  const connect = async () => {
+    const model = form.model.trim()
+    const host = hostOf(form.baseUrl.trim())
+    setConnecting(true)
+    setLifecycleError(null)
+    setLifecycleNote('')
+    setLifecycleResult(null)
+    setPlanResult(null)
+    setTestResult(null)
+    setTestError(null)
+    setConnectNotice(null)
+    let saved = false
+    try {
+      const submittedRevision = formEdit.current.revision
+      setConnectStep('Saving the API settings…')
+      await fetchJson('/api/remote-provider/apply', jsonOptions(configurePayload(form)), LIFECYCLE_TIMEOUT_MS)
+      saved = true
+      if (formEdit.current.revision === submittedRevision) {
+        setForm(current => ({ ...current, apiKey: '' }))
+        formEdit.current.dirty = false
+      }
+      setConnectStep('Checking the API and switching ODS and Portal to it. This can take a minute…')
+      const proof = await fetchJson('/api/remote-provider/probe', { method: 'POST' }, PROBE_TIMEOUT_MS)
+      setTestResult(proof)
+      if (proof?.routeProof?.recorded) {
+        setConnectNotice(`Connected. ODS and Portal now use ${model} from ${host}.`)
+      } else {
+        setLifecycleError(proof?.routeProof?.reason || 'ODS could not switch to the API.')
+        setLifecycleNote('The API answered, but ODS still uses its current model. Try Check connection again in a minute.')
+      }
+    } catch (err) {
+      setLifecycleError(err?.message || 'Connecting failed')
+      setLifecycleNote(saved
+        ? 'ODS still uses its current model. The API settings were saved; fix the problem, then connect again.'
+        : 'Nothing was changed. ODS still uses its current model.')
+    } finally {
+      setConnectStep('')
+      setConnecting(false)
+      await settleAfterAction()
     }
   }
 
   const planConfigure = async () => {
     setPlanning(true)
     setLifecycleError(null)
+    setLifecycleNote('')
     setLifecycleResult(null)
     try {
       const payload = await fetchJson('/api/remote-provider/plan', jsonOptions(configurePayload(form)), LIFECYCLE_TIMEOUT_MS)
       setPlanResult(payload)
     } catch (err) {
-      setLifecycleError(err?.message || 'Remote GPU plan failed')
+      setLifecycleError(err?.message || 'The preview failed')
     } finally {
       setPlanning(false)
     }
@@ -435,13 +557,15 @@ export default function RemoteProvider({ compact = false }) {
 
   const applyLifecycle = async action => {
     if (action === 'remove' && typeof window !== 'undefined' && typeof window.confirm === 'function') {
-      if (!window.confirm('Remove remote GPU route and stored secrets?')) return
+      if (!window.confirm('Remove the saved API and its key? ODS switches back to the model on this computer.')) return
     }
     setApplyingAction(action)
     setLifecycleError(null)
+    setLifecycleNote('')
     setPlanResult(null)
     setTestResult(null)
     setTestError(null)
+    setConnectNotice(null)
     try {
       const submittedRevision = formEdit.current.revision
       const payload = action === 'configure' ? configurePayload(form) : { action }
@@ -451,9 +575,9 @@ export default function RemoteProvider({ compact = false }) {
         setForm(current => ({ ...current, apiKey: '' }))
         formEdit.current.dirty = false
       }
-      await loadStatus({ quiet: true })
+      await settleAfterAction()
     } catch (err) {
-      setLifecycleError(err?.message || `Remote GPU ${action} failed`)
+      setLifecycleError(err?.message || `The ${action} step failed`)
     } finally {
       setApplyingAction(null)
     }
@@ -506,7 +630,7 @@ export default function RemoteProvider({ compact = false }) {
   const testEnabled = Boolean(statusData?.availableActions?.test)
   const enableAvailable = Boolean(statusData?.availableActions?.enable)
   const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
-  const lifecycleBusy = planning || Boolean(applyingAction)
+  const lifecycleBusy = planning || Boolean(applyingAction) || connecting
   const contextLength = Number(form.contextLength)
   const maxTokens = Number(form.maxTokens)
   const configureReady = Boolean(
@@ -521,20 +645,33 @@ export default function RemoteProvider({ compact = false }) {
   ) && !lifecycleBusy
   const proofReceipt = testResult?.probe || routeStatus.lastProbe
   const proofRecorded = testResult?.routeProof?.recorded
-  const consumerDrift = activation.reason === 'consumer_drift'
-  let enableActionLabel = routeState.enabled ? 'Reconcile route' : 'Enable route'
+  const paused = statusData?.status === 'paused' && !settling
+  const consumerDrift = activation.reason === 'consumer_drift' && !settling && !paused
+  let enableActionLabel = routeState.enabled ? 'Reconnect' : 'Turn on'
   if (applyingAction === 'enable') {
-    enableActionLabel = routeState.enabled ? 'Reconciling' : 'Enabling'
+    enableActionLabel = routeState.enabled ? 'Reconnecting' : 'Turning on'
+  }
+  const activeHost = hostOf(provider.baseUrl)
+  let headline = 'Use a model from an API, or from ODS on another computer, instead of the model on this computer.'
+  if (routeState.enabled && provider.model && statusData?.status === 'ready') {
+    headline = `ODS and Portal use ${provider.model} from ${activeHost}.`
+  } else if (paused && provider.model) {
+    headline = `Paused. ODS uses the model on this computer; ${provider.model} from ${activeHost} is saved.`
+  } else if (routeState.enabled && provider.model) {
+    headline = `Saved: ${provider.model} from ${activeHost}.`
+  } else if (provider.model) {
+    headline = `Off. ODS uses the model on this computer; ${provider.model} from ${activeHost} is saved.`
   }
   const peerReady = Boolean(statusData?.capabilities?.odsPeerLifecycle)
   const peerModels = Array.isArray(peerModelsData?.models) ? peerModelsData.models : []
   const peerBusy = peerModelsLoading || Boolean(peerAction)
   const peerDownloadBusy = peerDownloadActive(peerDownloadStatus)
   const proofSummary = useMemo(() => {
-    if (!testResult?.routeProof) return null
-    if (proofRecorded) return 'Route proof recorded'
-    return `Route proof not recorded: ${titleize(testResult.routeProof.reason)}`
-  }, [proofRecorded, testResult])
+    if (!testResult?.routeProof || connectNotice) return null
+    if (proofRecorded) return 'Connection checked: the API answered, and ODS and Portal use it.'
+    const reason = testResult.routeProof.reason
+    return `The API answered, but ODS could not switch to it: ${friendlyProviderError(reason) || titleize(reason)}`
+  }, [connectNotice, proofRecorded, testResult])
 
   if (loading) return <LoadingState />
 
@@ -542,10 +679,8 @@ export default function RemoteProvider({ compact = false }) {
     <div className={`${compact ? 'remote-settings-content' : ''} p-3 sm:p-6 lg:p-8`}>
       <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          {!compact && <h1 className="text-2xl font-bold text-theme-text">Remote GPU</h1>}
-          <p className="mt-1 text-sm text-theme-text-muted">
-            {provider.model ? `Current model: ${provider.model}` : 'Remote inference connection'}
-          </p>
+          {!compact && <h1 className="text-2xl font-bold text-theme-text">Remote model</h1>}
+          <p className="mt-1 text-sm text-theme-text-muted">{headline}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {statusData && <StatusPill status={statusData.status} />}
@@ -569,24 +704,26 @@ export default function RemoteProvider({ compact = false }) {
             className="inline-flex items-center gap-2 rounded-lg bg-theme-accent px-3 py-2 text-sm font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-50"
           >
             {testing ? <Loader2 className="animate-spin" size={16} /> : <Play size={16} />}
-            Test route
+            Check connection
           </button>
         </div>
       </header>
-      {compact && <nav className="settings-view-tabs" aria-label="Remote GPU views">
+      {compact && <nav className="settings-view-tabs" aria-label="Remote model views">
         {[['connection', 'Connection'], ['models', 'Peer models'], ['diagnostics', 'Diagnostics']].map(([id, label]) => <button key={id} type="button" aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>)}
       </nav>}
 
-      {error && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-          <AlertCircle size={16} />
-          {error}
+      {error && <ErrorBanner message={error} />}
+      {testError && <ErrorBanner message={testError} note="Nothing was changed. ODS still uses its current model." />}
+      {connectStep && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary" role="status">
+          <Loader2 className="animate-spin" size={16} />
+          {connectStep}
         </div>
       )}
-      {testError && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-          <AlertCircle size={16} />
-          {testError}
+      {connectNotice && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100" role="status">
+          <CheckCircle2 size={16} />
+          {connectNotice}
         </div>
       )}
       {proofSummary && (
@@ -599,18 +736,28 @@ export default function RemoteProvider({ compact = false }) {
           {proofSummary}
         </div>
       )}
-      {lifecycleError && (
-        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-          <AlertCircle size={16} />
-          {lifecycleError}
+      {lifecycleError && <ErrorBanner message={lifecycleError} note={lifecycleNote} />}
+      {settling && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary" role="status">
+          <Loader2 className="animate-spin" size={16} />
+          Switching ODS and Portal over…
         </div>
       )}
       {consumerDrift && (
         <div className="mb-4 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary" role="status">
           <AlertCircle className="mt-0.5 shrink-0" size={16} />
           <span>
-            The provider route is reachable, but ODS and Portal are not using its exact model contract.
-            Reconcile the route to restore the configured remote model without re-entering its stored secret.
+            The API answers, but ODS and Portal are not using it right now. Select Reconnect to switch them
+            back to it; the saved key is reused.
+          </span>
+        </div>
+      )}
+      {paused && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary" role="status">
+          <AlertCircle className="mt-0.5 shrink-0" size={16} />
+          <span>
+            An update or a mode change paused this API, and ODS uses the model on this computer. Select
+            Reconnect to use the API again; the saved key is reused.
           </span>
         </div>
       )}
@@ -785,19 +932,25 @@ export default function RemoteProvider({ compact = false }) {
           )}
         </Panel>
 
-        <Panel hidden={compact && view !== 'connection'} icon={KeyRound} title="Configure" className="lg:col-span-2">
+        <Panel hidden={compact && view !== 'connection'} icon={KeyRound} title="Connect an API" className="lg:col-span-2">
+          <p className="text-sm text-theme-text-muted">
+            Point ODS at an OpenAI-compatible API, such as your own server or a hosted provider. Chat, Portal and
+            agents then use it instead of the model on this computer, which stays installed.
+          </p>
           <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr]">
             <TextInput
-              label="Base URL"
+              label="API address"
               value={form.baseUrl}
               onChange={value => updateForm('baseUrl', value)}
-              placeholder="https://gpu.example/v1"
+              placeholder="https://api.example.com/v1"
+              hint="The base address, usually ending in /v1."
             />
             <TextInput
               label="Model"
               value={form.model}
               onChange={value => updateForm('model', value)}
-              placeholder="qwen/remote:latest"
+              placeholder="deepseek-v4.1-flash"
+              hint="Its exact name, as the API lists it."
             />
             <TextInput
               label="API key"
@@ -805,44 +958,61 @@ export default function RemoteProvider({ compact = false }) {
               onChange={value => updateForm('apiKey', value)}
               type="password"
               autoComplete="new-password"
+              hint={provider.model ? 'Enter it again to change the saved settings.' : 'Kept on this computer and never shown again.'}
             />
           </div>
-          <div className="grid gap-3 md:grid-cols-[1fr_1fr_1fr]">
-            <TextInput
-              label="Context window"
-              value={form.contextLength}
-              onChange={value => updateForm('contextLength', value)}
-              type="number"
-            />
-            <TextInput
-              label="Max output tokens"
-              value={form.maxTokens}
-              onChange={value => updateForm('maxTokens', value)}
-              type="number"
-            />
-            <label className="flex h-10 items-center gap-2 self-end rounded-lg border border-theme-border bg-theme-bg px-3 text-sm text-theme-text">
-              <input
-                type="checkbox"
-                checked={form.reasoning}
-                onChange={event => updateForm('reasoning', event.target.checked)}
+          <details className="rounded-lg border border-theme-border/70 px-3 py-2 text-sm">
+            <summary className="cursor-pointer text-theme-text-muted">Advanced: context, output limit, reasoning</summary>
+            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1fr_1fr]">
+              <TextInput
+                label="Context window"
+                value={form.contextLength}
+                onChange={value => updateForm('contextLength', value)}
+                type="number"
+                hint="Tokens the model reads at once; see the API's documentation. At least 16384."
               />
-              Reasoning route
-            </label>
-          </div>
+              <TextInput
+                label="Max output tokens"
+                value={form.maxTokens}
+                onChange={value => updateForm('maxTokens', value)}
+                type="number"
+                hint="Longest single answer."
+              />
+              <label className="flex h-10 items-center gap-2 self-start rounded-lg border border-theme-border bg-theme-bg px-3 text-sm text-theme-text md:mt-5">
+                <input
+                  type="checkbox"
+                  checked={form.reasoning}
+                  onChange={event => updateForm('reasoning', event.target.checked)}
+                />
+                Reasoning model
+              </label>
+            </div>
+          </details>
           <div className="flex flex-wrap items-center gap-2">
-            <ActionButton icon={ClipboardCheck} onClick={planConfigure} disabled={!configureReady}>
-              {planning ? 'Planning' : 'Plan'}
-            </ActionButton>
-            <ActionButton icon={Save} onClick={() => applyLifecycle('configure')} disabled={!configureReady} primary>
-              {applyingAction === 'configure' ? 'Configuring' : 'Configure'}
+            <ActionButton icon={Play} onClick={connect} disabled={!configureReady} primary>
+              {connecting ? 'Connecting' : 'Connect'}
             </ActionButton>
             <ActionButton icon={Power} onClick={() => applyLifecycle('disable')} disabled={!statusData?.availableActions?.disable || lifecycleBusy}>
-              {applyingAction === 'disable' ? 'Disabling' : 'Disable'}
+              {applyingAction === 'disable' ? 'Switching back' : 'Switch back to the local model'}
             </ActionButton>
             <ActionButton icon={Trash2} onClick={() => applyLifecycle('remove')} disabled={!statusData?.availableActions?.remove || lifecycleBusy} danger>
-              {applyingAction === 'remove' ? 'Removing' : 'Remove'}
+              {applyingAction === 'remove' ? 'Removing' : 'Remove saved API'}
             </ActionButton>
           </div>
+          <details className="text-sm">
+            <summary className="cursor-pointer text-theme-text-muted">Step by step</summary>
+            <p className="mt-2 text-xs text-theme-text-muted">
+              Preview what Connect would change, or save the settings without switching ODS to them yet.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <ActionButton icon={ClipboardCheck} onClick={planConfigure} disabled={!configureReady}>
+                {planning ? 'Previewing' : 'Preview changes'}
+              </ActionButton>
+              <ActionButton icon={Save} onClick={() => applyLifecycle('configure')} disabled={!configureReady}>
+                {applyingAction === 'configure' ? 'Saving' : 'Save without switching'}
+              </ActionButton>
+            </div>
+          </details>
           <LifecycleSummary result={planResult} />
           <LifecycleSummary result={lifecycleResult} />
         </Panel>

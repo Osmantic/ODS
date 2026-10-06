@@ -161,8 +161,13 @@ def test_other_cli_failures_preserve_hold_guidance_without_leaking_exception(mon
     message = cli(monkeypatch, capsys, ['copy', '/fixture', 'fixture'])
     assert 'Preserve any existing admission hold and protected source snapshots' in message
     assert '/private/' not in message
-    assert str(error) not in message
     assert 'clean install' not in message
+    if isinstance(error, upgrade.UpgradeError):
+        # A fixed code is source text, not private data; naming it says what
+        # blocks the update (fleet row 27 hid model-recovery-required).
+        assert f'(reason: {error})' in message
+    else:
+        assert str(error) not in message and '(reason:' not in message
 
 
 def test_cli_mismatched_hold_preserves_actual_journal_and_snapshots(private_root, monkeypatch, capsys):
@@ -193,3 +198,22 @@ def test_cli_mismatched_hold_preserves_actual_journal_and_snapshots(private_root
     assert 'Preserve any existing admission hold and protected source snapshots' in message
     assert snapshot(root) == before
     assert manager.journal()['hold'] == 'd' * 64
+
+
+@pytest.mark.parametrize('error,shown', [
+    (upgrade.UpgradeError('source-completion-required'), '(reason: source-completion-required)'),
+    (RuntimeError('model-hold-unconfirmed'), '(reason: model-hold-unconfirmed)'),
+    (RuntimeError('text with spaces and /a/private/path'), None),
+    (OSError(2, 'No such file or directory', '/a/private/path'), None),
+    (ValueError('invalid model transition request'), None),
+])
+def test_incomplete_update_names_only_fixed_reason_codes(error, shown):
+    # Fleet, laptop 2026-10-05: every refusal read only "Pixel source upgrade
+    # is incomplete", which hid the coordinator's own reason.
+    message = upgrade._failure_message(error)
+    assert 'Preserve any existing admission hold' in message
+    assert '/a/private/path' not in message
+    if shown:
+        assert shown in message
+    else:
+        assert '(reason:' not in message

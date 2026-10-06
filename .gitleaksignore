@@ -153,3 +153,5 @@ ee6593ce2d9fd4acbf92000adc3edff2a9ccdf04:ods/tests/pixel_settings/test_host_body
 # Historical localStorage namespaces in Portal persistence tests, not credentials; exact fingerprints only.
 a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/pages/Pixel.persistence-ownership.test.jsx:generic-api-key:7
 a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/lib/pixelConversationPersistence.test.js:generic-api-key:12
+# Synthetic key digest in the model relay's key-echo redaction test; not a credential.
+304b9550dd8068d26189384051c8d0b1e05576ce:ods/extensions/services/pixel-model-relay/tests/test_relay.py:generic-api-key:77

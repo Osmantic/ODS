@@ -1573,7 +1573,12 @@ def _failure_message(error):
         return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
                 "installation state, or use an owner-authorized clean install. "
                 "Do not recreate protected state or discard any existing admission hold.")
-    return ("Pixel source upgrade is incomplete. Preserve any existing admission hold and protected "
+    # The helper's and the coordinator's refusal codes are fixed tokens (for
+    # example model-hold-unconfirmed); naming one tells the owner what blocks
+    # the update. Any other text, which could carry a path, stays out.
+    code = str(error) if isinstance(error, (UpgradeError, RuntimeError)) else ""
+    detail = f" (reason: {code})" if re.fullmatch(r"[a-z][a-z0-9-]{0,95}", code) else ""
+    return (f"Pixel source upgrade is incomplete{detail}. Preserve any existing admission hold and protected "
             "source snapshots; recover the verified installation state before retrying.")
 
 

@@ -156,3 +156,31 @@ def test_enabled_target_keeps_the_hosts_own_terminal_receipt(test_client, instal
 
     assert response.status_code == 200
     assert json.loads((root / "extension-progress/hermes-proxy.json").read_text()) == receipt
+
+
+@pytest.mark.parametrize("refusal", [
+    "",
+    "Could not prepare the searxng data folder: [error] Refusing recursive ownership repair"
+    " while ods-searxng is running. Stop it with 'ods stop searxng', then choose Retry"
+    " on its card in Extensions.",
+])
+def test_enable_message_names_the_start_refusal(test_client, installation, refusal):
+    _, start, _ = installation
+
+    def refuse(action, service):
+        if refusal:
+            extensions._agent_refusals[service] = refusal
+        return False
+
+    start.side_effect = refuse
+    response = test_client.post("/api/extensions/searxng/enable",
+                                headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["failed_services"] == ["searxng"]
+    if refusal:
+        # The agent's own remedy; a restart would not fix a refused start.
+        assert body["message"] == f"Extension enabled, but searxng did not start: {refusal}"
+    else:
+        assert body["message"] == "Extension enabled. Run 'ods restart' to start."

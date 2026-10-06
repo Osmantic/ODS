@@ -8,13 +8,16 @@
 # Expects: (nothing — first file sourced)
 # Provides: VERSION, SCRIPT_DIR, INSTALL_DIR, LOG_FILE, color codes,
 #           SYSTEM_TZ, CAPABILITY_PROFILE_FILE, PREFLIGHT_REPORT_FILE,
-#           INSTALL_START_EPOCH, _sed_i()
+#           INSTALL_START_EPOCH, ODS_HELP_DISCORD_URL, _sed_i()
 #
 # Modder notes:
 #   Change VERSION for custom builds. Add new color codes here.
 # ============================================================================
 
 VERSION="3.0.0"
+# The ODS community Discord, shown wherever setup or a command fails.
+# tests/test-help-links.sh checks every surface uses this one invite.
+ODS_HELP_DISCORD_URL="https://discord.gg/4ntNp9MAwC"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 # Source path utilities for cross-platform path resolution

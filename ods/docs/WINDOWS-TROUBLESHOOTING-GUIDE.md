@@ -567,7 +567,7 @@ docker info
 
 ### Where to Get Help
 
-1. **ODS Discord:** https://discord.gg/clawd
+1. **ODS Discord:** https://discord.gg/4ntNp9MAwC
 2. **GitHub Issues:** https://github.com/Osmantic/ODS/issues
 
 ### What to Include When Asking for Help
