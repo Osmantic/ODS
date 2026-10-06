@@ -9461,6 +9461,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_service_stats()
         elif path == "/v1/model/list":
             self._handle_model_list()
+        elif path == "/v1/model/config" and not parsed.query:
+            self._handle_model_config()
         elif path == "/v1/model/status":
             self._handle_model_status()
         elif path == "/v1/model/management":
@@ -12624,6 +12626,16 @@ class AgentHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             json_response(self, 500, {"error": f"Failed to list models: {exc}"})
+
+    def _handle_model_config(self):
+        """Expose only the fresh persisted mode, never private .env values."""
+        if not check_auth(self):
+            return
+        try:
+            mode = _normalize_ods_mode(load_env(INSTALL_DIR / ".env").get("ODS_MODE"))
+        except (OSError, UnicodeError):
+            mode = "unknown"
+        json_response(self, 200, {"configuredMode": mode}, no_store=True)
 
     def _handle_model_status(self):
         """Return current model download progress."""

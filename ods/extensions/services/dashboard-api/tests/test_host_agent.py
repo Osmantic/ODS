@@ -9567,6 +9567,91 @@ class TestDockerServiceHealthSnapshot:
         assert len(calls) == 2
 
 
+class TestModelConfig:
+
+    @pytest.mark.parametrize(("contents", "expected"), [
+        (None, "unknown"), ("", "unknown"), ("ODS_MODE=\n", "unknown"),
+        ("ODS_MODE=invalid\n", "unknown"),
+        ("ODS_MODE=local\n", "local"), ("ODS_MODE=hybrid\n", "hybrid"),
+        ('ODS_MODE="cloud"\n', "cloud"), ("ODS_MODE=lemonade\n", "local"),
+    ])
+    def test_uses_only_persisted_mode(self, tmp_path, monkeypatch, contents, expected):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "hybrid")
+        monkeypatch.setenv("ODS_MODE", "cloud")
+        if contents is not None:
+            text = contents + "HF_TOKEN=private-fixture\n" if contents else contents
+            (tmp_path / ".env").write_text(text, encoding="utf-8")
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"configuredMode": expected}
+        assert ("Cache-Control", "no-store") in handler.response_headers
+
+    @pytest.mark.parametrize("failure", [PermissionError, UnicodeError])
+    def test_unreadable_config_is_unknown(self, tmp_path, monkeypatch, failure):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "local")
+        monkeypatch.setenv("ODS_MODE", "local")
+
+        def denied(path):
+            assert path == tmp_path / ".env"
+            raise failure("private-fixture")
+
+        monkeypatch.setattr(_mod, "load_env", denied)
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.parse_response() == {"configuredMode": "unknown"}
+
+    def test_authenticated_fixed_route_reads_atomic_replacement(self, tmp_path, monkeypatch):
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "model-config-secret")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "hybrid")
+        monkeypatch.setenv("ODS_MODE", "hybrid")
+        (tmp_path / ".env").write_text("ODS_MODE=local\nHF_TOKEN=private-fixture\n", encoding="utf-8")
+        reads = []
+        load_env = _mod.load_env
+
+        def read(path):
+            reads.append(path)
+            return load_env(path)
+
+        monkeypatch.setattr(_mod, "load_env", read)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_port}/v1/model/config"
+        try:
+            for token, code in ((None, 401), ("wrong", 403)):
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                with pytest.raises(urllib.error.HTTPError) as denied:
+                    urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2)
+                assert denied.value.code == code
+                assert reads == []
+            headers = {"Authorization": "Bearer model-config-secret"}
+            for mode in ("local", "cloud"):
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
+                    assert json.load(response) == {"configuredMode": mode}
+                    assert response.headers["Cache-Control"] == "no-store"
+                if mode == "local":
+                    replacement = tmp_path / ".env-new"
+                    replacement.write_text("ODS_MODE=cloud\nHF_TOKEN=other-private-fixture\n", encoding="utf-8")
+                    os.replace(replacement, tmp_path / ".env")
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(urllib.request.Request(url + "?path=/other&keys=HF_TOKEN", headers=headers), timeout=2)
+            assert rejected.value.code == 404
+            assert reads == [tmp_path / ".env", tmp_path / ".env"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
 class TestObservabilityWire:
 
     def test_read_only_endpoints_require_auth_and_return_versioned_contracts(
