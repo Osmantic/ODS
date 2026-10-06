@@ -51,6 +51,7 @@ export function displayForActivity(event, context, previous=null) {
   const labels={read:'Reading a file',ls:'Listing files',glob:'Finding files',grep:'Searching files',write:'Writing a file',edit:'Editing a file',apply_patch:'Applying changes',exec:'Running a command',shell:'Running a command',bash:'Running a command',process:'Checking a process',tool_search:'Finding available tools',tool_describe:'Checking tool parameters',session_status:'Checking the session',pixel_ods_status:'Checking ODS',pixel_ods_workspace_preview:'Publishing a preview',pixel_ods_ask_user:'Asking for your input',sessions_spawn:'Starting an agent',sessions_send:'Coordinating an agent'};
   if(labels[name])display.label=labels[name];
   if(name==='pixel_ods_laya') { display.label='Consulting Laya'; display.detail=null; }
+  if(name==='pixel_ods_laya_batch') { display.label='Classifying dataset'; display.detail=null; }
   if(name==='pixel_ods_project_build') {
     display.label=({capabilities:'Checking project runtime compatibility',diagnose:'Checking managed runtime tools',submit:'Starting project tests and build',observe:'Checking project build',cancel:'Requesting build cancellation'})[args.action] || 'Managing project build';
     // Describe the action, not an inferred successful result. Full command
@@ -67,6 +68,10 @@ export function displayForActivity(event, context, previous=null) {
   // cancellation wrapper). Keep the original, already filtered public command;
   // replacing it could expose encoded sensitive text and hide useful progress.
   if(['exec','shell','bash'].includes(name) && !previous && typeof args.command==='string')display.detail=text(excerpt(args.command).text,400)||null;
+  if(name==='exec' && /^ods-laya-.+-(read|write)$/.test(context?.toolCallId ?? event?.toolCallId ?? '')) {
+    display.label=(context?.toolCallId ?? event?.toolCallId).endsWith('-read') ? 'Reading dataset' : 'Saving classification report';
+    display.detail=null;
+  }
   // The UI exposes changes only after the associated tool reports completion.
   if(['write','edit','apply_patch'].includes(name)) {
     const patch=args.patch ?? args.input;
