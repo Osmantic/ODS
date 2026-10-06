@@ -31,7 +31,10 @@ def main():
     node = shutil.which('node')
     if node is None:
         raise SystemExit('The Portal Node.js runtime is missing from the ODS owner PATH.')
-    subprocess.run([node, str(entry), str(root), configured_port(root)], check=True)
+    # The host agent installs library recipes under its configured data root,
+    # not extensions/user. Bind the directory actually running this hook.
+    marker = Path(__file__).resolve().parent / 'compose.yaml'
+    subprocess.run([node, str(entry), str(root), configured_port(root), str(marker)], check=True)
 
 
 if __name__ == '__main__':

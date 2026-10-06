@@ -8,7 +8,7 @@ import {createLayaRuntime, readLayaConnection, LAYA_CONNECTION_FILE} from '../..
 const root = process.env.LAYA_TEST_INSTALL_ROOT;
 assert.ok(root, 'A dedicated test installation is required');
 const port = Number(process.env.LAYA_TEST_PORT ?? 8017);
-const marker = join(root, 'extensions/user/laya/compose.yaml');
+const marker = join(root, 'data/user-extensions/laya/compose.yaml');
 const disabled = `${marker}.disabled`;
 const original = readFileSync(LAYA_CONNECTION_FILE);
 configureLayaPortal({installRoot: root, port});

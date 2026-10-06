@@ -9,15 +9,16 @@ export ODS_UID ODS_GID LAYA_PORT
 ODS_UID="$(id -u)"
 ODS_GID="$(id -g)"
 LAYA_PORT=18017
-mkdir -p "$fixture/extensions/user" "$fixture/extensions/services/pixel-agent" "$fixture/extensions/services/dashboard-api"
-cp -R "$recipe" "$fixture/extensions/user/laya"
+mkdir -p "$fixture/data/user-extensions" "$fixture/extensions/services/pixel-agent" "$fixture/extensions/services/dashboard-api"
+chmod 0775 "$fixture/data"
+cp -R "$recipe" "$fixture/data/user-extensions/laya"
 cp -R "$ods/extensions/services/pixel-agent/plugin" "$fixture/extensions/services/pixel-agent/plugin"
 cp "$ods/extensions/services/dashboard-api/env_values.py" "$fixture/extensions/services/dashboard-api/"
 printf 'LAYA_PORT=18017\n' > "$fixture/.env"
-bash "$fixture/extensions/user/laya/setup.sh" "$fixture"
+bash "$fixture/data/user-extensions/laya/setup.sh" "$fixture"
 printf 'services:\n  laya:\n    image: ods-laya:qualification\n' > "$fixture/qualification.yaml"
 compose=(docker compose --project-name ods-laya-qualification --project-directory "$fixture"
-  -f "$fixture/extensions/user/laya/compose.yaml" -f "$fixture/qualification.yaml")
+  -f "$fixture/data/user-extensions/laya/compose.yaml" -f "$fixture/qualification.yaml")
 "${compose[@]}" config --quiet
 docker build --tag ods-laya:qualification "$recipe"
 docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \

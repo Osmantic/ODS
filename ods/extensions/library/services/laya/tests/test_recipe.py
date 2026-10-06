@@ -7,6 +7,7 @@ import re
 import tempfile
 from typing import Optional
 import unittest
+from unittest.mock import patch
 
 from fastapi import HTTPException
 import jsonschema
@@ -20,6 +21,24 @@ spec.loader.exec_module(setup)
 
 
 class RecipeTest(unittest.TestCase):
+    def test_setup_binds_the_actual_installed_recipe(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'ods'
+            entry = root / 'extensions/services/pixel-agent/plugin/laya-setup-cli.mjs'
+            entry.parent.mkdir(parents=True)
+            entry.write_text('')
+            recipe = Path(directory) / 'custom-data/user-extensions/laya/setup.py'
+            recipe.parent.mkdir(parents=True)
+            recipe.write_text('')
+            with patch.object(setup, '__file__', str(recipe)), \
+                    patch.object(setup.sys, 'argv', ['setup.py', str(root)]), \
+                    patch.object(setup.shutil, 'which', return_value='/usr/bin/node'), \
+                    patch.object(setup, 'configured_port', return_value='18017'), \
+                    patch.object(setup.subprocess, 'run') as run:
+                setup.main()
+            run.assert_called_once_with(['/usr/bin/node', str(entry.resolve()),
+                str(root.resolve()), '18017', str(recipe.resolve().parent / 'compose.yaml')], check=True)
+
     def test_manifest_and_actual_extension_scanner(self):
         manifest = yaml.safe_load((SERVICE / 'manifest.yaml').read_text())
         schema = json.loads((ODS / 'extensions/schema/service-manifest.v1.json').read_text())
