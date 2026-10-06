@@ -1,5 +1,6 @@
 import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {createLayaRuntime} from './laya-runtime.mjs';
 import {registerProjectBuild} from './project-registration.mjs';
 import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
@@ -112,6 +113,7 @@ let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
+const layaRuntime = createLayaRuntime();
 const bundleAdmission = createWorkspaceBundleAdmission();
 const artifactAdmission = createWorkspaceArtifactAdmission();
 
@@ -428,7 +430,8 @@ export default definePluginEntry({
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
       const deliveryContext = delegationDelivery.promptContext(context);
-      const prependContext = [contract?.prependContext,cancelContext,deliveryContext].filter(Boolean).join('\n\n');
+      const layaContext = contract ? layaRuntime.promptHint() : '';
+      const prependContext = [contract?.prependContext,cancelContext,deliveryContext,layaContext].filter(Boolean).join('\n\n');
       return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
@@ -832,6 +835,7 @@ export default definePluginEntry({
     // server-side catalog, not the prompt bytes. Schema discovery always sees
     // it and never probes the host.
     const discovery = api.registrationMode === 'discovery';
+    api.registerTool(onlyPixel(() => discovery ? layaRuntime.tool : layaRuntime.offered()), {names: ['pixel_ods_laya']});
     if (!discovery) {
       perplexicaAvailability ??= createPerplexicaAvailability({ port: api.pluginConfig?.perplexicaPort });
       perplexicaAvailability.refreshIfStale();

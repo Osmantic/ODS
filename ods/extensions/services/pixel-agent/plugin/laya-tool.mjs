@@ -2,12 +2,12 @@ import {LayaProtocolError} from './laya-protocol.mjs';
 import {LayaServiceError} from './laya-client.mjs';
 
 export const LAYA_GUIDE = `Laya in Portal
-Use Laya for bounded choices, ordinal scores or yes/no probabilities when they help the owner's task. It is available through pixel_ods_laya while enabled. You continue to own the conversation, research, file edits and verification.
-Read the relevant source material first. Send only the context needed for these questions from this conversation. Do not send passwords, API keys or unrelated chat history. Each item has a unique ID and its own text. Questions must be self-contained and grounded in that text, with clear criteria. A choice has 2–20 distinct option IDs and descriptions; a score has ordered levels from lowest to highest; noul asks a yes/no question and returns P(yes). Supply an explicit unknown/other choice when the alternatives are incomplete. For many options, narrow them using actual evidence or divide into meaningful groups rather than arbitrarily discarding candidates. Batch independent items that share questions.
-Example: read support tickets, ask for department among billing/technical/other and urgency among low/medium/high, then examine important or ambiguous tickets and save the owner's requested report. Laya does not contact customers or decide permissions. For development, its classification can help organize existing evidence; build/run/browser tools must establish whether code and UI work. It cannot inspect an unseen image, read a path or URL, browse, produce a website, execute commands, or prove a claim merely by scoring it. Use the appropriate Portal tool for those operations.
-Treat results as model estimates. Confidence and answerConfidence are different upstream statistics; neither is guaranteed accuracy. Do not invent a universal confidence threshold, treat an inferred action as authorization, or claim external verification. Preserve uncertainty when explaining results.
-Never pass the complete conversation automatically. If context is reported truncated or invalid, no decision is usable: shorten or split the actual source while preserving the evidence needed for the question. Do not disguise partial context as a full-file review. A failed/disabled/busy Laya tool is not a failed Portal task; continue with the main model and existing tools where possible, and disclose a material limitation if the owner explicitly required Laya. Do not repeatedly call unchanged failed inputs. A cancelled or timed-out observation does not prove inference stopped on the server.
-Use the result to continue the requested task and provide a normal answer to the owner. Do not end with a raw classifier response. Simple conversation and direct edits need no ceremonial Laya call. Do not put Laya in a created app unless the owner requests that integration.`;
+Use pixel_ods_laya for bounded choices, ordinal scores or yes/no probabilities when they help the owner's task. You still handle conversation, research, file edits and verification.
+Read the relevant source first. Send only necessary text, never passwords, API keys or unrelated history. Each item has a unique ID and text. Ask self-contained questions grounded in that text: choice has 2–20 option IDs and descriptions; score has ordered levels, lowest first; noul returns P(yes). Include unknown/other when alternatives are incomplete. Narrow larger option sets using evidence or meaningful groups, never arbitrary omissions. Batch independent items sharing questions.
+Example: classify tickets by billing/technical/other and urgency low/medium/high, examine ambiguous tickets, then save the requested report. For development, classification can organize evidence; build/run/browser tools establish whether code and UI work. Laya cannot inspect an unseen image, read a path or URL, browse, generate a website, execute commands or prove a claim by scoring it.
+Results are estimates. Confidence and answerConfidence are different statistics, neither guaranteed accuracy. Do not invent universal thresholds, treat decisions as authorization or claim external verification. Preserve uncertainty.
+If context is truncated or invalid, no decision is usable: split or shorten the source while preserving relevant evidence. Do not present partial context as a full-file review. Failed, disabled or busy Laya does not end the Portal task: continue with other capabilities where possible, disclosing a material limitation if the owner required Laya. Do not repeat unchanged failed inputs. A cancelled or timed-out observation does not prove inference stopped on the server.
+Continue the requested task and answer normally. Do not end with a raw classifier response. Simple conversation and direct edits need no Laya call. Do not add Laya to a created app unless requested.`;
 
 // No large string bounds in the public JSON schema: llama.cpp turns them
 // into expensive grammar repetitions. The adapter enforces exact limits.
@@ -45,16 +45,17 @@ function unavailable(status, message, submitted = false) {
       upstreamCancellationVerified: false, executionAuthorized: false}};
 }
 
-export function createLayaTool({client, enabled = () => false} = {}) {
+export function createLayaTool({client, enabled = () => false, resolveClient} = {}) {
   return {
     name: 'pixel_ods_laya', label: 'Consult Laya',
     description: 'Consult the enabled local Laya decision engine for bounded choices, ordinal scores or yes/no probabilities over supplied text. Supports batches. Read the laya guide via pixel_ods_skill when needed. Advisory only: does not browse, read files, generate code, execute actions or verify their success. The Portal model uses the result to continue the task and answer the owner. Do not send secrets or unrelated conversation data. Optional; if unavailable, continue with other tools where possible.',
     parameters: LAYA_TOOL_SCHEMA,
     async execute(_callId, args, signal) {
       // Recheck at execution: descriptor caches can outlive extension disable.
-      if (!enabled() || !client) return unavailable('disabled', 'Laya is not enabled for Portal. Continue with existing tools.');
+      const activeClient = resolveClient ? resolveClient() : (enabled() ? client : undefined);
+      if (!activeClient) return unavailable('disabled', 'Laya is not enabled for Portal. Continue with existing tools.');
       try {
-        const result = await client.decide(args, signal);
+        const result = await activeClient.decide(args, signal);
         return {content: [{type: 'text', text: JSON.stringify(result)}],
           details: {kind: 'laya-decisions', status: 'completed', itemCount: result.items.length,
             executionAuthorized: false}};
