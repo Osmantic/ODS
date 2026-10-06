@@ -10,7 +10,7 @@ Use pixel_ods_laya for bounded choices, ordinal scores or yes/no probabilities w
 Read the relevant source first. Send only necessary text, never passwords, API keys or unrelated history. Each item has a unique ID and text. Ask self-contained questions grounded in that text: choice has 2–20 option IDs and descriptions; score has ordered levels, lowest first; noul returns P(yes). Include unknown/other when alternatives are incomplete. Narrow larger option sets using evidence or meaningful groups, never arbitrary omissions. Batch independent items sharing questions.
 Example: classify tickets by billing/technical/other and urgency low/medium/high, examine ambiguous tickets, then save the requested report. For development, classification can organize evidence; build/run/browser tools establish whether code and UI work. Laya cannot inspect an unseen image, read a path or URL, browse, generate a website, execute commands or prove a claim by scoring it.
 Results are estimates. Confidence and answerConfidence are different statistics, neither guaranteed accuracy. Do not invent universal thresholds, treat decisions as authorization or claim external verification. Preserve uncertainty.
-If context is truncated or invalid, no decision is usable: split or shorten the source while preserving relevant evidence. Do not present partial context as a full-file review. Failed, disabled or busy Laya does not end the Portal task: continue with other capabilities where possible, disclosing a material limitation if the owner required Laya. Do not repeat unchanged failed inputs. A cancelled or timed-out observation does not prove inference stopped on the server.
+If context is truncated or invalid, no decision is usable: increase contextTokens up to 8192 or split the source while preserving relevant evidence. Larger budgets cost more time and memory. Do not present partial context as a full-file review. Failed, disabled or busy Laya does not end the Portal task: continue with other capabilities where possible, disclosing a material limitation if the owner required Laya. Do not repeat unchanged failed inputs. A cancelled or timed-out observation does not prove inference stopped on the server.
 Continue the requested task and answer normally. Do not end with a raw classifier response. Simple conversation and direct edits need no Laya call. Do not add Laya to a created app unless requested.`;
 
 // No large string bounds in the public JSON schema: llama.cpp turns them
@@ -40,6 +40,8 @@ export const LAYA_TOOL_SCHEMA = {
     language: {type: 'string', description: 'Optional source language code, for example pt or en.'},
     checkpoint: {type: 'string', enum: ['auto', 'english', 'multilingual', 'typed-decisions'],
       description: 'Default auto chooses a checkpoint. This is not the Portal chat model.'},
+    contextTokens: {type: 'integer', enum: [512, 1024, 2048, 4096, 8192],
+      description: 'Optional per-question input budget. Omit for checkpoint default; raise only for relevant longer context. Truncated decisions are rejected.'},
   },
 };
 
