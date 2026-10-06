@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Thread
 from types import SimpleNamespace
+from typing import TypedDict
 
 import httpx
 import pytest
@@ -17,6 +18,12 @@ import config
 import host_agent_client
 from main import _cache, app
 from routers import resources
+
+
+class RestartFixtureState(TypedDict):
+    status: int
+    docker_calls: list[list[str]]
+    observed: list[str]
 
 
 @pytest.fixture
@@ -38,7 +45,7 @@ def library_runtime(tmp_path, monkeypatch, shipped_agent):
     monkeypatch.setattr(resources, "EXTENSIONS_DIR", root, raising=False)
     monkeypatch.setattr(resources, "DATA_DIR", str(tmp_path / "data"))
     calls = []
-    failure = {"status": 200, "docker_calls": [], "observed": ["foreign"]}
+    failure: RestartFixtureState = {"status": 200, "docker_calls": [], "observed": ["foreign"]}
     monkeypatch.setattr(shipped_agent, "EXTENSIONS_DIR", root)
     monkeypatch.setattr(shipped_agent, "USER_EXTENSIONS_DIR", tmp_path / "user")
     monkeypatch.setattr(shipped_agent, "AGENT_API_KEY", "resource-agent-fixture")
