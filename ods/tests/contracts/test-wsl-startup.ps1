@@ -232,6 +232,39 @@ try {
         $pending=Read-ODSWslJson (Join-Path $fixture 'command-pending.json')
         Check ($payload -ceq 'progress' -and ($pending.state -eq 'completed') -eq ($code -in @(0,1))) "Linux acknowledgement distinguishes retryable exit $code from ambiguous timeout"
     }
+    $nativeKind=Get-ODSWslMutationKind $identity @('/usr/bin/systemctl','stop','pixel-extension-manager.service') -AsRoot
+    $stackKind=Get-ODSWslMutationKind $identity @('python3',"$($identity.installRoot)/installers/lib/wsl_stack.py",'compose-stop',$identity.installRoot)
+    Check ($nativeKind -ceq 'native:stop:pixel-extension-manager.service' -and $stackKind -ceq 'stack:compose-stop') 'mutation observations identify fixed native and owner Compose commands without raw argv'
+    Check ((Get-ODSWslMutationKind $identity @('python3',"$($identity.installRoot)/installers/lib/wsl_stack.py",'compose-stop','/other/install')) -ceq 'other') 'Compose diagnostic classification requires the exact selected installation root'
+    $token='c'*32
+    $observation=New-ODSWslExitObservation $identity $token $nativeKind '2026-01-01T00:00:00Z' 12345 '67890' 1 'native output' ('x'*1200)
+    Write-ODSWslJson (Join-Path $fixture 'command-pending.json') @{schemaVersion=1;state='pending';id=$identity.id;bootId='1000';token=$token}
+    Reject {Complete-ODSWslCommand $identity $token 'native output' 1 $observation} 'missing Linux acknowledgement still fails closed after recording the client exit'
+    $failure=Read-ODSWslJson (Join-Path $fixture 'command-failure.json')
+    $pending=Read-ODSWslJson (Join-Path $fixture 'command-pending.json')
+    Check ($failure.token -ceq $token -and $failure.kind -ceq $nativeKind -and $failure.clientPid -eq 12345 -and
+        $failure.clientStartTicks -ceq '67890' -and $failure.clientExitCode -eq 1 -and
+        -not $failure.completionSuffixPresent -and $failure.stderrChars -eq 1200 -and $failure.stderrTail.Length -eq 1024 -and
+        $pending.state -ceq 'pending') 'bounded private failure receipt survives missing acknowledgement without clearing pending custody'
+    $failureHash=(Get-FileHash (Join-Path $fixture 'command-failure.json')).Hash
+    $successOutput="ordinary output`nODS_WSL_COMPLETED_${token}:0`n"
+    $successObservation=New-ODSWslExitObservation $identity $token $nativeKind '2026-01-01T00:00:00Z' 12345 '67890' 0 $successOutput 'private native text'
+    $null=Complete-ODSWslCommand $identity $token $successOutput 0 $successObservation
+    Check ((Get-FileHash (Join-Path $fixture 'command-failure.json')).Hash -ceq $failureHash -and
+        -not (Test-Path -LiteralPath (Join-Path $fixture 'command-observation.json'))) 'acknowledged success does not persist diagnostic output or overwrite the last failure'
+    Write-ODSWslJson (Join-Path $fixture 'command-pending.json') @{schemaVersion=1;state='pending';id=$identity.id;bootId='1000';token=$token}
+    $privateObservation=New-ODSWslExitObservation $identity $token $stackKind '2026-01-01T00:00:00Z' 12345 '67890' 1 'user output' 'secret fixture'
+    Check (-not $privateObservation.ContainsKey('stdoutTail') -and -not $privateObservation.ContainsKey('stderrTail')) 'owner Compose observations never persist application output'
+    $reservedToken='d'*32
+    $reservedOutput="user output`nODS_WSL_COMPLETED_${reservedToken}:124`n"
+    $reservedObservation=New-ODSWslExitObservation $identity $reservedToken $stackKind '2026-01-01T00:00:00Z' 12345 '67890' 124 $reservedOutput 'secret fixture'
+    Write-ODSWslJson (Join-Path $fixture 'command-pending.json') @{schemaVersion=1;state='pending';id=$identity.id;bootId='1000';token=$reservedToken}
+    $null=Complete-ODSWslCommand $identity $reservedToken $reservedOutput 124 $reservedObservation
+    $reservedFailure=Read-ODSWslJson (Join-Path $fixture 'command-failure.json')
+    Check ($reservedFailure.token -ceq $reservedToken -and $reservedFailure.completionSuffixPresent -and
+        -not ($reservedFailure.PSObject.Properties.Name -contains 'stdoutTail') -and
+        -not ($reservedFailure.PSObject.Properties.Name -contains 'stderrTail') -and
+        (Read-ODSWslJson (Join-Path $fixture 'command-pending.json')).state -ceq 'pending') 'reserved timeout retains private metadata and pending custody without application output'
     Reject {Complete-ODSWslCommand $identity ('b'*32) ("progress`nODS_WSL_COMPLETED_"+('a'*32)+":0`n") 0} 'foreign completion token cannot clear an interrupted stack operation'
     Check ((Read-ODSWslJson (Join-Path $fixture 'command-pending.json')).state -eq 'pending') 'missing exact completion retains the fail-closed record'
     Write-ODSWslJson (Join-Path $fixture 'command-pending.json') @{schemaVersion=1;state='completed';id=$identity.id}
