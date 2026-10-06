@@ -106,7 +106,7 @@ def test_native_engine_paths_pass_installer_and_runtime(tmp_path, monkeypatch, d
         runtime.load_config()
 
 
-def patch_wsl_desktop_cli(monkeypatch, fault):
+def patch_wsl_desktop_cli(monkeypatch, fault, group_write_parents=()):
     """Model Desktop's immutable ISO and the directories controlling its path."""
     binary = Path("/mnt/wsl/docker-desktop/cli-tools/usr/bin/docker")
     info = SimpleNamespace(st_mode=stat.S_IFREG | 0o775, st_uid=0, st_gid=0, st_nlink=1)
@@ -124,7 +124,10 @@ def patch_wsl_desktop_cli(monkeypatch, fault):
     def mount_info(path):
         if fault == "stat-error":
             raise OSError("unavailable mount")
-        return SimpleNamespace(f_flag=0 if fault == "writable-mount" else os.ST_RDONLY)
+        writable = fault == "writable-mount" or (
+            fault == "parent-writable-mount" and path == binary.parent
+        )
+        return SimpleNamespace(f_flag=0 if writable else os.ST_RDONLY)
 
     monkeypatch.setattr(protocol.os, "statvfs", mount_info)
     monkeypatch.setattr(
@@ -152,8 +155,18 @@ def patch_wsl_desktop_cli(monkeypatch, fault):
 
     def parent_info(path):
         mode = stat.S_IFDIR | (0o1777 if path == Path("/mnt/wsl") else 0o755)
+        if str(path) in group_write_parents or (
+            fault == "parent-writable-mount" and path == binary.parent
+        ):
+            mode = stat.S_IFDIR | 0o775
         if path == binary.parent and fault == "parent-write":
             mode |= 0o002
+        if path == binary.parent and fault == "parent-mode":
+            mode = stat.S_IFDIR | 0o770
+        if path == binary.parent and fault == "parent-setgid":
+            mode = stat.S_IFDIR | 0o2775
+        if path == binary.parent and fault == "parent-sticky":
+            mode = stat.S_IFDIR | 0o1775
         if path == binary.parent and fault == "parent-link":
             mode = stat.S_IFLNK | 0o777
         if path == Path("/mnt/wsl") and fault == "unsticky":
@@ -198,10 +211,40 @@ def test_read_only_wsl_desktop_cli_is_exact(monkeypatch, fault):
     assert protocol.read_only_wsl_docker(binary, info) is (fault is None)
 
 
-@pytest.mark.parametrize(
-    "fault", [None, "writable-mount", "nested-mount", "parent-owner", "parent-group"]
+WSL_ISO_PARENTS = (
+    "/mnt/wsl/docker-desktop/cli-tools/usr/bin",
+    "/mnt/wsl/docker-desktop/cli-tools/usr",
+    "/mnt/wsl/docker-desktop/cli-tools",
 )
-def test_wsl_desktop_symlink_has_same_installer_and_runtime_custody(monkeypatch, fault):
+
+
+@pytest.mark.parametrize("parents", [(parent,) for parent in WSL_ISO_PARENTS] + [WSL_ISO_PARENTS])
+def test_read_only_wsl_desktop_accepts_exact_775_iso_parents(monkeypatch, parents):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, None, parents)
+    assert protocol.read_only_wsl_docker(binary, info)
+
+
+@pytest.mark.parametrize("parent", ["/mnt/wsl/docker-desktop", "/mnt/wsl", "/mnt", "/"])
+def test_read_only_wsl_desktop_rejects_775_outside_iso(monkeypatch, parent):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, None, (parent,))
+    assert not protocol.read_only_wsl_docker(binary, info)
+
+
+@pytest.mark.parametrize("fault", [
+    "parent-write", "parent-owner", "parent-group", "parent-link",
+    "parent-mode", "parent-setgid", "parent-sticky", "parent-writable-mount",
+    "writable-mount", "nested-mount", "mount-options", "super-options",
+])
+def test_read_only_wsl_desktop_775_parents_preserve_custody(monkeypatch, fault):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, fault, WSL_ISO_PARENTS)
+    assert not protocol.read_only_wsl_docker(binary, info)
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "writable-mount", "nested-mount", "parent-owner", "parent-group", "parent-writable-mount"]
+)
+@pytest.mark.parametrize("group_write_parents", [(), WSL_ISO_PARENTS[:1]])
+def test_wsl_desktop_symlink_has_same_installer_and_runtime_custody(monkeypatch, fault, group_write_parents):
     host = ROOT / "extensions/services/pixel-agent/host"
     monkeypatch.syspath_prepend(str(host))
     spec = importlib.util.spec_from_file_location(
@@ -209,7 +252,7 @@ def test_wsl_desktop_symlink_has_same_installer_and_runtime_custody(monkeypatch,
     )
     runtime = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(runtime)
-    binary, info = patch_wsl_desktop_cli(monkeypatch, fault)
+    binary, info = patch_wsl_desktop_cli(monkeypatch, fault, group_write_parents)
     original_resolve, original_stat = Path.resolve, Path.stat
     alias = Path("/usr/bin/docker")
     monkeypatch.setattr(
