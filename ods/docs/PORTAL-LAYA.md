@@ -57,17 +57,61 @@ cannot substitute POSIX permission checks for Windows ACL validation. Linux and
 macOS use the same owner mechanism. Platform tests exercise private file custody
 on Linux/macOS, transport on all three runners, and reject native Windows setup.
 
-## Qualification still required before release
+## Qualification
 
-The adapter and lifecycle helper are not a complete extension installation.
-The catalog recipe must supply the pinned service build, key mount, startup and
-inference readiness checks, resource limits and enable/reconfigure lifecycle.
-Qualify real inference, local/API model tool use, restart/disable/re-enable and
-failure continuation on supported hosts. A successful `/health` response alone
-does not establish inference readiness. Container GPU support and performance
-must be measured separately from the CPU path.
+The dependent catalog recipe supplies the pinned CPU service, key mount,
+startup inference checks, resource limits and enable/reconfigure lifecycle.
+Its container qualification runs real English, multilingual and typed decisions
+on Linux AMD64 and ARM64, including disable/re-enable and inference after restart.
+The core runtime matrix checks transport on Windows, Linux and macOS and private
+connection custody on POSIX hosts. These checks complement an installed Portal
+journey; they do not establish that every chat model selects tools correctly.
+A successful `/health` response alone does not establish inference readiness.
 
-Compare representative Portuguese/English Portal tasks with and without Laya.
-Record completion, classification quality and whole-task latency, including
-loading, tool selection and model synthesis. Do not infer a universal speedup
-from the classifier's forward-pass time or use a universal confidence threshold.
+### Real chat-model qualification
+
+`extensions/services/pixel-agent/tests/laya_model_journey.integration.mjs` runs
+an explicit, isolated test with the pinned OpenClaw runtime and an already
+running local Ollama model. It uses the real Laya tool, runtime prompt hint and
+on-demand operating guide. Activation is injected; two fixture file tools can
+only save/read a fixed report in a new test workspace. This does not exercise
+the installed Portal UI, its complete tool inventory or owner setup.
+
+Use Node 24 and set these environment variables in your shell:
+
+| Variable | Value |
+| --- | --- |
+| `OPENCLAW_PACKAGE_DIR` | Directory of the OpenClaw package matching `runtime-source/source-lock.json` |
+| `LAYA_OLLAMA_URL` | Local Ollama origin, for example `http://127.0.0.1:11434` |
+| `LAYA_CHAT_MODEL` | An already downloaded tool-capable Ollama model |
+| `LAYA_TEST_PORT` | Port of the running Laya service |
+| `LAYA_TEST_KEY_FILE` | Path to its dedicated key file; never paste the key into a prompt |
+| `LAYA_QUALIFICATION_OUTPUT` | Directory for retained synthetic-task evidence |
+
+From `ods/`, run each scenario separately:
+
+```sh
+node extensions/services/pixel-agent/tests/laya_model_journey.integration.mjs success
+node extensions/services/pixel-agent/tests/laya_model_journey.integration.mjs unavailable
+node extensions/services/pixel-agent/tests/laya_model_journey.integration.mjs baseline
+node extensions/services/pixel-agent/tests/laya_model_journey.integration.mjs ordinary
+```
+
+The runner does not download a chat model, restart a service or modify the
+installation. It launches a temporary gateway on a free loopback port and stops
+that gateway when finished. The unavailable scenario uses its own failing local
+endpoint; it never stops the real Laya service. Evidence includes tool calls,
+the saved CSV, final response, gateway log and complete request latency.
+
+Success requires correct classification, saving and reading back the final
+report. Unavailable additionally requires one failed consultation followed by
+completion and an honest explanation. Baseline performs the same task without
+Laya; ordinary answers a simple question without tools. A failed assertion is a
+failed model qualification, not a transport success to be relabeled as a pass.
+Preserve failures and inspect the actual calls before accepting a model/route.
+
+Small chat models can omit limitations or copy an uncertain classification even
+when tool execution succeeds. Compare representative tasks with and without
+Laya, including loading, tool selection and synthesis. This integration does
+not guarantee a speedup or accuracy improvement; do not infer either from the
+classifier's forward-pass time or introduce a universal confidence threshold.
