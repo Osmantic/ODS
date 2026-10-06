@@ -45,7 +45,7 @@ def test_status_preserves_worker_completion_after_initial_read(tmp_path, monkeyp
             assert response.status == 202
         assert entered.wait(5)
         worker = _mod._update_thread
-        snapshots = []
+        snapshots: list[dict] = []
 
         def read_then_finish_worker():
             data = read_status()
