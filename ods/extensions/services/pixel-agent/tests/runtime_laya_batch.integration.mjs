@@ -63,7 +63,7 @@ try {
   assert.notEqual(result.isError,true,JSON.stringify(result));
   const summary=JSON.parse(result.content[0].text);
   const csv=fs.readFileSync(path.join(workspace,summary.outputs[0].path),'utf8');
-  assert.equal(csv,'id,category,category_confidence,category_answer_confidence\nA,billing,0.7,0.8\nB,billing,0.7,0.8\n');
+  assert.equal(csv,'id,category\nA,billing\nB,billing\n');
   assert.equal(summary.rows,2);assert.equal(summary.readbackVerified,true);assert.equal(summary.accuracyVerified,false);
   assert.equal(JSON.parse(fs.readFileSync(path.join(workspace,summary.outputs[1].path))).items.length,2);
   assert.deepEqual(completedHelpers.map(event=>[event.toolName,event.result?.details?.status]),[['exec','completed'],['exec','completed']]);

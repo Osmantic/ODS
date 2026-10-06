@@ -90,7 +90,7 @@ test('invalid paths, fields and colliding CSV columns fail before execution',()=
     {...request(),source:{...request().source,path:'input.exe'}},
     {...request(),source:{...request().source,textColumn:''}},
     {...request(),questions:[{...request().questions[0],id:'id'}]},
-    {...request(),questions:[request().questions[0],{...request().questions[0],id:'category_confidence'}]},
+    {...request(),questions:[request().questions[0],request().questions[0]]},
     {...request(),command:'execute'},
   ]) assert.throws(()=>normalizeLayaBatch(value));
 });

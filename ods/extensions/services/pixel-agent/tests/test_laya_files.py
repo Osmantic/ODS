@@ -103,7 +103,7 @@ class LayaDatasetTests(unittest.TestCase):
         self.assertIn("'=1+1", (self.root / result['outputs'][0]['path']).read_text())
         self.assertEqual(json.loads((self.root / result['outputs'][1]['path']).read_text())['items'][0]['sourceId'], '=1+1')
 
-    def test_score_and_yes_probability_remain_numeric_without_invented_confidence(self):
+    def test_score_and_yes_probability_keep_original_confidence_separate(self):
         request = self.write_request()
         request['report']['questions'] = [{'id': 'priority', 'type': 'score'}, {'id': 'urgent', 'type': 'noul'}]
         for item in request['report']['items']:
@@ -111,8 +111,8 @@ class LayaDatasetTests(unittest.TestCase):
                                'urgent': {'type': 'noul', 'probability': 0.25}}
         result = files.run(request, str(self.root))
         self.assertEqual((self.root / result['outputs'][0]['path']).read_text(),
-                         'id,priority,priority_confidence,priority_answer_confidence,urgent,urgent_confidence,urgent_answer_confidence\n'
-                         'A,0,0.6,,0.25,,\nB,0,0.6,,0.25,,\n')
+                         'id,priority,urgent\nA,0,0.25\nB,0,0.25\n')
+        self.assertEqual(json.loads((self.root / result['outputs'][1]['path']).read_text())['items'][0]['answers']['priority']['confidence'],0.6)
 
 
 if __name__ == '__main__':

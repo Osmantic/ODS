@@ -10,6 +10,7 @@ import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs'
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
+import {createLayaBatchAdmission} from '../plugin/laya-batch.mjs';
 
 const source = fs.readFileSync(process.env.PIXEL_PLUGIN_ENTRY ?? new URL('../plugin/index.js',import.meta.url),'utf8');
 const start=source.indexOf('    api.on("before_tool_call",');
@@ -29,7 +30,7 @@ function fixture(t) {
   const runtime={isProbe:()=>false,beforeTool:()=>{admitted++;}};
   vm.runInNewContext(source.slice(start,end),{
     api:{config,on:(name,callback)=>{callbacks[name]=callback;}},
-    AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
+    AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,layaBatchAdmission:createLayaBatchAdmission(),
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
     projectRunControl:createProjectRunControl(),artifactAdmission:{before(){}},
     delegationDelivery:{blocked(){},before(){}},

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {createWorkspaceArtifactAdmission,normalizeWorkspaceArtifact} from '../plugin/workspace-artifact.mjs';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
+import {createLayaBatchAdmission} from '../plugin/laya-batch.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
@@ -43,7 +44,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     conversationImageLifecycle,
-    bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
+    bundleAdmission, artifactAdmission, layaBatchAdmission:createLayaBatchAdmission(), projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, withCronCommandPayloadBlock,
     delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,

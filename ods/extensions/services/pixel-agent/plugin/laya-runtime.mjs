@@ -114,7 +114,7 @@ export function createLayaRuntime({readConnection = readLayaConnection, clientFa
     client: currentClient,
     offered() { return currentClient() ? tool : null; },
     promptHint() {
-      return currentClient() ? 'Laya is enabled for optional text decisions. Before the first Laya call, read pixel_ods_skill with {"topic":"laya"} for exact examples or discover its complete tool schema. Do not guess argument names. Existing CSV/TSV/JSON/JSONL datasets use pixel_ods_laya_batch with source:{path,textColumn,idColumn}, questions and outputDirectory (workspace-relative paths). Portal handles batching and verified reports; no row copying or report transcription. A few texts already in context use pixel_ods_laya with items and questions instead. Ordinary conversation, direct edits and website creation need no Laya call.' : '';
+      return currentClient() ? 'Laya is enabled for optional text decisions. Before the first Laya call, read pixel_ods_skill with {"topic":"laya"} for exact examples or discover its complete tool schema. Do not guess argument names. When deferred, call tool_call with id pixel_ods_laya_batch or pixel_ods_laya and normal input as args; do not substitute an unrelated visible tool. Existing CSV/TSV/JSON/JSONL datasets use pixel_ods_laya_batch with source:{path,textColumn,idColumn}, questions and outputDirectory (workspace-relative paths). Portal handles batching and verified reports; no row copying or report transcription. A few texts already in context use pixel_ods_laya with items and questions instead. Ordinary conversation, direct edits and website creation need no Laya call.' : '';
     },
   };
 }

@@ -137,15 +137,16 @@ def report_csv(report):
     questions = report['questions']
     stream = io.StringIO(newline='')
     writer = csv.writer(stream, lineterminator='\n')
-    writer.writerow(['id'] + [name for question in questions for name in
-                    [question['id'], question['id'] + '_confidence', question['id'] + '_answer_confidence']])
+    # Keep editable decisions separate from original engine confidence. Model
+    # corrections must not inherit statistics belonging to a different label.
+    writer.writerow(['id'] + [question['id'] for question in questions])
     for item in report['items']:
         cells = [spreadsheet_cell(item['sourceId'])]
         for question in questions:
             answer = item['answers'][question['id']]
             value = answer['choice'] if question['type'] == 'choice' else (
                 answer['score'] if question['type'] == 'score' else answer['probability'])
-            cells.extend([spreadsheet_cell(value), answer.get('confidence', ''), answer.get('answerConfidence', '')])
+            cells.append(spreadsheet_cell(value))
         writer.writerow(cells)
     return stream.getvalue().encode('utf-8')
 

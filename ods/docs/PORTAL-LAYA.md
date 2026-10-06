@@ -34,9 +34,11 @@ bounded batches and saves `report.csv` and `decisions.json` inside a new
 or transcribe classifier output. Missing columns, malformed records, duplicate
 IDs and exceeded limits reject the dataset rather than silently dropping rows.
 
-The CSV preserves row order/IDs and includes decisions and available confidence
-statistics. Formula-like text cells are escaped for spreadsheet use; JSON
-retains the exact identifiers and all original probabilities. The JSON also
+The CSV preserves row order/IDs and contains editable decisions. Original
+confidence statistics stay separately in JSON, so corrected labels cannot
+silently inherit a different prediction's confidence. Formula-like text cells
+are escaped for spreadsheet use; JSON retains the exact identifiers and all
+original probabilities. The JSON also
 records the source hash and complete question definitions. Verified readback
 proves saved bytes, not classification accuracy.
 
@@ -45,8 +47,7 @@ the model to inspect against their original text. Ranking uses the probability
 gap between the leading options, not an invented universal acceptance threshold.
 The shortlist does not certify other rows; long excerpts and omitted examples
 are explicitly identified. Unsupported CSV labels should be corrected through
-ordinary file tools, clearing their original confidence fields and verifying
-the edit. `decisions.json` remains the original Laya evidence, not an assertion
+ordinary file tools and verifying the edit. `decisions.json` remains the original Laya evidence, not an assertion
 that later model corrections came from Laya.
 
 File operations run through the installed SDK's scoped exec tool and existing

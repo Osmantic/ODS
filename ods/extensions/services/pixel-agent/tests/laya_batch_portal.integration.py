@@ -18,7 +18,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--install-root', type=Path, required=True)
 parser.add_argument('--workspace', type=Path, required=True)
 parser.add_argument('--evidence', type=Path, required=True)
-parser.add_argument('--mode', choices=['baseline', 'inline', 'batch'], required=True)
+parser.add_argument('--mode', choices=['baseline', 'inline', 'batch', 'unavailable'], required=True)
 args = parser.parse_args()
 os.umask(0o077)
 spec = importlib.util.spec_from_file_location('portal_verify', args.install_root / 'installers/verify-portal-api.py')
@@ -42,6 +42,7 @@ method = {
     'baseline': 'Classifique com seu próprio raciocínio, sem usar Laya.',
     'inline': 'Use Laya pela ferramenta pixel_ods_laya para classificar os textos. Não use pixel_ods_laya_batch.',
     'batch': 'Use a extensão Laya para processar o arquivo e salvar o relatório.',
+    'unavailable': 'Use a extensão Laya para processar o arquivo e salvar o relatório.',
 }[args.mode]
 prompt = f'''{method}
 O arquivo {relative}/tickets.csv tem 32 chamados em inglês e português; colunas id e text.
@@ -117,11 +118,19 @@ for report in reports:
         quality[-1]['originalCorrect'] = sum(item['answers']['category']['choice'] == case['expected']
                                             for item, case in zip(receipt['items'], cases))
 activities = (task or {}).get('events', [])
-label = 'Classifying dataset' if args.mode == 'batch' else 'Consulting Laya'
-laya_calls = [event for event in activities if event.get('display', {}).get('label') == label]
-if args.mode != 'baseline' and (len(laya_calls) != 1 or laya_calls[0]['state'] != 'completed'):
-    issues.append('Expected exactly one successful ' + label + ' call.')
-if args.mode == 'baseline' and any(event.get('display', {}).get('label') in
+label = 'Classifying dataset' if args.mode in ('batch', 'unavailable') else 'Consulting Laya'
+laya_calls = [event for event in activities if (event.get('display') or {}).get('label') == label]
+expected_state = 'failed' if args.mode == 'unavailable' else 'completed'
+if args.mode != 'baseline' and (len(laya_calls) != 1 or laya_calls[0]['state'] != expected_state):
+    issues.append('Expected exactly one ' + expected_state + ' ' + label + ' call.')
+if args.mode == 'unavailable':
+    if list((work / 'results').rglob('decisions.json')):
+        issues.append('Unavailable service unexpectedly produced decision evidence.')
+    final_answer = ''.join(answer).lower()
+    if 'laya' not in final_answer or not any(term in final_answer for term in
+                                          ('falh', 'indispon', 'não foi possível', 'não consegui')):
+        issues.append('Final response did not disclose the failed Laya consultation.')
+if args.mode == 'baseline' and any((event.get('display') or {}).get('label') in
                                   ('Classifying dataset', 'Consulting Laya') for event in activities):
     issues.append('Baseline unexpectedly used Laya.')
 result = {'id': run_id, 'mode': args.mode, 'seconds': seconds, 'completed': completed, 'errors': errors,

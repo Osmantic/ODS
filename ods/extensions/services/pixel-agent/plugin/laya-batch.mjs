@@ -26,7 +26,7 @@ export function normalizeLayaBatch(value) {
       !Array.isArray(value.questions) || value.questions.length > 4) fail('invalid-batch-request');
   const {source, outputDirectory, ...decisions} = value;
   prepareLayaRequest({...decisions, items:[{id:'check',text:'schema validation'}]});
-  const columns = ['id', ...value.questions.flatMap(q => [q.id, q.id+'_confidence', q.id+'_answer_confidence'])];
+  const columns = ['id', ...value.questions.map(q => q.id)];
   if (new Set(columns).size !== columns.length) fail('duplicate-report-column');
   return structuredClone(value);
 }
@@ -196,11 +196,11 @@ export function createLayaBatchTool(factory, {resolveClient, admission, executio
         const outputs = reportReceipt(await execution.runHelper(scope,{operation:'write',source:request.source,
           outputDirectory,generation,report},signal),prefix);
         return {content:[{type:'text',text:summaryText({status:'predictions-saved',decisionReview:'pending',
-          nextAction:'Before delivering the classification, compare the candidate labels below with their original text and your criteria. Fix unsupported labels in the CSV and clear their confidence fields, then verify the edit. Merely reading the CSV or checking its hash is not label review. The file is a draft prediction until you perform that review.',
+          nextAction:'Before delivering the classification, compare the candidate labels below with their original text and your criteria. Fix unsupported labels in the CSV, then verify the edit. Merely reading the CSV or checking its hash is not label review. The file is a draft prediction until you perform that review. This is your review, not another owner approval step.',
           reviewCandidates:reviewCandidates(items,source),rows:items.length,source:report.source,
           outputs,readbackVerified:true,accuracyVerified:false,counts:choiceCounts(items,request.questions),
           inferenceBatches,inferenceMs:Math.round(inferenceMs),totalMs:Math.round(now()-started),
-          note:'CSV contains estimates. Review the least decisive candidates against their text and the requested criteria before answering. This shortlist does not certify other rows; inspect more source when the task requires it. Full original Laya alternatives are in decisions.json. Correct unsupported CSV labels using ordinary edits and clear that row/question confidence fields, since they describe the original Laya choice. Verify any edits. Readback verifies bytes, not accuracy; never claim every label is verified from this receipt.'})}],
+          note:'CSV contains editable estimates. This shortlist does not certify other rows; inspect more source when the task requires it. Original Laya probabilities and confidence are preserved separately in decisions.json and do not apply to model corrections. Readback verifies bytes, not accuracy; never claim every label is verified from this receipt.'})}],
           details:{kind:'laya-batch-report',status:'completed',itemCount:items.length,outputs,readbackVerified:true,accuracyVerified:false}};
       } catch (error) {
         if (!(error instanceof LayaBatchError || error instanceof LayaProtocolError || error instanceof LayaServiceError)) throw error;
