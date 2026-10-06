@@ -21,6 +21,7 @@ compose=(docker compose --project-name ods-laya-qualification --project-director
 "${compose[@]}" config --quiet
 docker build --tag ods-laya:qualification "$recipe"
 docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  --tmpfs /tmp:size=256m,mode=1777 \
   --mount "type=bind,source=$recipe,target=/recipe,readonly" \
   --entrypoint python ods-laya:qualification -m unittest discover -s /recipe/tests -p test_service.py -v
 docker network create ods-network
