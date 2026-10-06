@@ -107,7 +107,10 @@ _phase06_pixel_runtime_layout() {
     docker_endpoint="$(timeout 10s "${docker_command[@]}" context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" || return 1
     [[ "$docker_endpoint" == unix:///* ]] || return 1
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
-    [[ "$docker_os" == "Docker Desktop" ]] || return 0
+    case "$docker_os" in
+        'Docker Desktop'|'Docker Desktop (containerized)') ;;
+        *) return 0 ;;
+    esac
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
     # Use this distro's path. Docker Desktop's WSL proxy translates bind
     # sources from the calling distro; the daemon's own name for this tmpfs
