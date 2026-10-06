@@ -36,6 +36,7 @@ esac
 STUB
 cat > "$FIXTURE/bin/system_profiler" <<'STUB'
 #!/usr/bin/env bash
+[[ "${FAIL_APPLE_PROBE:-0}" == 0 ]] || exit 1
 echo '{"SPDisplaysDataType":[{"sppci_cores":"16"}]}'
 STUB
 chmod +x "$FIXTURE/bin/"*
@@ -65,6 +66,53 @@ for backend in amd apple cpu intel arc; do
     fi
     [[ ! -s "$NVIDIA_CALLS" ]] || fail "$backend invoked nvidia-smi: $(cat "$NVIDIA_CALLS")"
     echo "[PASS] $backend status avoids NVIDIA tooling"
+done
+
+printf 'GPU_BACKEND=apple\n' > "$FIXTURE/install/.env"
+: > "$NVIDIA_CALLS"
+output=$(FAIL_APPLE_PROBE=1 run_cli status)
+[[ "$output" == *'Apple Test Chip'* && "$output" == *'GPU cores:        ?'* ]] \
+    || fail 'Apple status did not degrade gracefully when its GPU probe failed'
+[[ ! -s "$NVIDIA_CALLS" ]] || fail 'Apple probe failure invoked NVIDIA tooling'
+echo '[PASS] Apple status survives an unavailable GPU probe'
+
+# Exercise the production AMD reporter with a private DRM tree. Intercept
+# reads after the existence checks to model a disappearing device or sensor.
+mkdir -p "$FIXTURE/drm/card0/device/hwmon/hwmon0" "$FIXTURE/drm/card1/device"
+printf '0x1002\n' > "$FIXTURE/drm/card0/device/vendor"
+printf '0x8086\n' > "$FIXTURE/drm/card1/device/vendor"
+printf 'Test AMD GPU\n' > "$FIXTURE/drm/card0/device/product_name"
+printf '8589934592\n' > "$FIXTURE/drm/card0/device/mem_info_vram_total"
+printf '1073741824\n' > "$FIXTURE/drm/card0/device/mem_info_vram_used"
+printf '25\n' > "$FIXTURE/drm/card0/device/gpu_busy_percent"
+printf 'junction\n' > "$FIXTURE/drm/card0/device/hwmon/hwmon0/temp1_label"
+printf '45000\n' > "$FIXTURE/drm/card0/device/hwmon/hwmon0/temp1_input"
+sed -n '/^_gpu_status() {/,/^}/p' "$CLI" \
+    | sed "s|/sys/class/drm|$FIXTURE/drm|g" > "$FIXTURE/amd-reporter.sh"
+for probe in normal vendor sensor; do
+    rm -f "$FIXTURE/vendor-read"
+    (
+        set -euo pipefail
+        BLUE='' NC='' GPU_BACKEND=amd
+        check_install() { :; }
+        load_env() { :; }
+        cat() {
+            if [[ "$probe" == vendor && "$1" == "$FIXTURE/drm/card0/device/vendor" ]]; then
+                [[ ! -e "$FIXTURE/vendor-read" ]] || return 1
+                : > "$FIXTURE/vendor-read"
+            elif [[ "$probe" == sensor && "$1" == */temp1_label ]]; then
+                return 1
+            fi
+            command cat "$@"
+        }
+        source "$FIXTURE/amd-reporter.sh"
+        _gpu_status
+    ) > "$FIXTURE/amd-output"
+    grep -q 'GPU Status (1 GPU)' "$FIXTURE/amd-output" || fail 'AMD count included a non-AMD device'
+    if [[ "$probe" != vendor ]]; then
+        grep -q 'Test AMD GPU.*1.0 / 8.0 GB' "$FIXTURE/amd-output" || fail 'AMD metrics were lost'
+    fi
+    echo "[PASS] AMD reporting tolerates $probe probe state"
 done
 
 printf 'GPU_BACKEND=nvidia\n' > "$FIXTURE/install/.env"

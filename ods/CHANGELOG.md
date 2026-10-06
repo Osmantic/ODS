@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   installed. AMD device counting in `ods gpu status` uses DRM sysfs, and
   `ods status --json` no longer queries `nvidia-smi` for non-NVIDIA backends.
   AMD JSON GPU summaries remain `null`.
+  Unavailable Apple GPU details and disappearing AMD device/sensor probes no
+  longer abort text status reporting.
 
 ### Security
 - Open WebUI no longer starts for other devices while its built-in
