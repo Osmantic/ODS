@@ -46,6 +46,8 @@ def test_shared_contract_and_private_output(contract):
     assert "pixel_ods_workspace_bundle" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_workspace_artifact" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_image_read" in value["gatewayExtensions"][0]["tools"]
+    manifest = json.loads((LIB.parents[1] / "extensions/services/pixel-agent/plugin/openclaw.plugin.json").read_text())
+    assert set(value["gatewayExtensions"][0]["tools"]) == set(manifest["contracts"]["tools"])
     assert {'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status',
             'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'}.issubset(value['gatewayExtensions'][0]['tools'])
     assert value["operationsLimbEnabled"] is True

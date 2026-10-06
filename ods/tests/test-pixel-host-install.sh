@@ -2964,7 +2964,7 @@ import json,sys
 p=json.load(open(sys.argv[1])); m=json.load(open(sys.argv[2]))
 assert p["type"] == "module" and p["openclaw"]["extensions"] == ["./index.js"]
 assert "dependencies" not in p
-assert sorted(m["contracts"]["tools"]) == sorted(["pixel_ods_apps_list","pixel_ods_download_promote","pixel_ods_evidence_readback","pixel_ods_evidence_report","pixel_ods_extensions", "pixel_ods_host_command_propose","pixel_ods_host_observe","pixel_ods_research","pixel_ods_status","pixel_ods_web_extract","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"])
+assert sorted(m["contracts"]["tools"]) == sorted(["pixel_ods_apps_list","pixel_ods_download_promote","pixel_ods_evidence_readback","pixel_ods_evidence_report","pixel_ods_extensions", "pixel_ods_host_command_propose","pixel_ods_host_observe","pixel_ods_research","pixel_ods_laya","pixel_ods_status","pixel_ods_web_extract","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"])
 import re
 reserved = re.compile(r"^pixel_(?:gmail|calendar|social|web|ops|frontier)_")
 assert all(name != "pixel_limb_status" and not reserved.match(name) for name in m["contracts"]["tools"])
@@ -2983,6 +2983,7 @@ assert m["toolMetadata"] == {
     "pixel_ods_apps_list": {"replaySafe": True},
     "pixel_ods_extensions": {"replaySafe": True},
     "pixel_ods_host_observe": {"replaySafe": True},
+    "pixel_ods_laya": {"replaySafe": True},
 }
 ' "$plugin/package.json" "$plugin/openclaw.plugin.json"
 check python3 -c '
