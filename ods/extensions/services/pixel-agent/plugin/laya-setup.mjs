@@ -22,11 +22,11 @@ function existingPrivate(path, uid, limit) {
   catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
 }
 
-function atomicPrivate(path, content, uid) {
+function atomicPrivate(path, content, uid, mode = 0o600) {
   // Refuse unsafe existing files instead of silently repairing their custody.
-  existingPrivate(path, uid, 4096);
+  if (mode === 0o600) existingPrivate(path, uid, 4096);
   const temporary = join(dirname(path), `.laya-${randomBytes(12).toString('hex')}.tmp`);
-  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, mode);
   try {
     try { writeFileSync(fd, content); fsyncSync(fd); }
     finally { closeSync(fd); }
@@ -53,6 +53,9 @@ export function configureLayaPortal({installRoot, port = 8017,
   privateDirectory(join(installRoot, 'config'), uid);
   const configDirectory = join(installRoot, 'config', 'laya');
   privateDirectory(configDirectory, uid);
+  if (lstatSync(configDirectory).mode & 0o077) {
+    throw new Error('Laya key directory must be private to the ODS owner (mode 700).');
+  }
   // ~/.config may be absent on a first macOS installation.
   privateDirectory(dirname(dirname(connectionFile)), uid);
   privateDirectory(dirname(connectionFile), uid);
@@ -61,13 +64,25 @@ export function configureLayaPortal({installRoot, port = 8017,
   mkdirSync(lock, {mode: 0o700});
   try {
     const tokenFile = join(configDirectory, 'api-key');
-    let token = existingPrivate(tokenFile, uid, 256)?.toString('utf8').trim();
+    let stored;
+    try {
+      stored = readOwnedLayaFile(tokenFile, uid, 257, false);
+      if (![0o444, 0o600].includes(lstatSync(tokenFile).mode & 0o777)) {
+        throw new Error('Unsafe Laya connection file.');
+      }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    let token = stored?.toString('utf8').trim();
     if (token !== undefined && !/^[A-Za-z0-9_-]{32,256}$/.test(token)) {
       throw new Error('Invalid existing Laya key; configuration was preserved.');
     }
     if (token === undefined) {
       token = randomBytes(32).toString('hex');
-      atomicPrivate(tokenFile, `${token}\n`, uid);
+    }
+    // The mode-700 parent protects this file on the host. A single-file,
+    // read-only container mount must work across rootless UID mappings too.
+    // No other part of config/laya or the owner's home is mounted.
+    if (!stored || (lstatSync(tokenFile).mode & 0o777) !== 0o444) {
+      atomicPrivate(tokenFile, `${token}\n`, uid, 0o444);
     }
     atomicPrivate(connectionFile, `${JSON.stringify({...base, token})}\n`, uid);
     return {state: 'configured', port, tokenFile, connectionFile};

@@ -33,7 +33,9 @@ test('setup is idempotent and activation changes reach an already discovered too
   const key = readFileSync(first.tokenFile, 'utf8').trim();
   assert.match(key, /^[a-f0-9]{64}$/);
   assert.equal(saved.token, key);
-  for (const path of [options.connectionFile, first.tokenFile]) assert.equal(statSync(path).mode & 0o777, 0o600);
+  assert.equal(statSync(options.connectionFile).mode & 0o777, 0o600);
+  assert.equal(statSync(first.tokenFile).mode & 0o777, 0o444);
+  assert.equal(statSync(join(first.tokenFile, '..')).mode & 0o777, 0o700);
   const record = readFileSync(options.connectionFile, 'utf8');
   configureLayaPortal(options);
   assert.equal(readFileSync(options.connectionFile, 'utf8'), record);

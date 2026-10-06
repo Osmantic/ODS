@@ -35,8 +35,11 @@ node "$INSTALL_DIR/extensions/services/pixel-agent/plugin/laya-setup-cli.mjs" "$
 The catalog recipe must exist at `extensions/user/laya/compose.yaml` first.
 Setup creates a dedicated private `config/laya/api-key` and writes the owner
 connection at `~/.config/ods/laya-portal.json`. A repeated setup preserves the key.
-It never rewrites the shared ODS `.env`. The container must read the key as the
-same owner UID; it must not receive Dashboard or inference-provider credentials.
+It never rewrites the shared ODS `.env`. The key lives under an owner-only
+mode-700 directory; only that individual mode-444 file is mounted read-only in
+the container. This permits rootless Docker UID mappings without exposing the
+directory to other host users. The connection record remains mode 600. The
+container must not receive Dashboard or inference-provider credentials.
 
 The record binds the canonical installation root, local port and Compose file
 digest. Removing or disabling that Compose definition makes the tool unavailable;
