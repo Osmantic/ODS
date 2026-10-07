@@ -151,6 +151,8 @@ tier_rank_map = {
     "T2": 2,
     "T3": 3,
     "T4": 4,
+    "ARC": 2,
+    "ARC_LITE": 1,
     "SH_COMPACT": 3,
     "SH_LARGE": 4,
 }
@@ -168,6 +170,8 @@ min_ram_map = {
     "T3": 48,
     "4": 64,
     "T4": 64,
+    "ARC": 16,
+    "ARC_LITE": 8,
     "SH_COMPACT": 64,
     "SH_LARGE": 96,
 }
@@ -186,6 +190,10 @@ min_disk_map = {
     "T3": 80,
     "4": 150,
     "T4": 150,
+    # ARC tiers install a ~3-6GB SYCL model on top of the core images; the
+    # generic tier-2 minimum (50GB) oversizes them.
+    "ARC": 30,
+    "ARC_LITE": 20,
     "SH_COMPACT": 80,
     "SH_LARGE": 120,
 }
@@ -373,6 +381,13 @@ elif gpu_backend == "nvidia":
             f"NVIDIA backend selected ({gpu_name}, {gpu_vram_mb}MB VRAM).",
             "",
         )
+elif gpu_backend in {"intel", "sycl"}:
+    add_check(
+        "gpu-backend",
+        "pass",
+        f"Intel Arc backend selected ({gpu_name}, {gpu_vram_mb}MB VRAM).",
+        "",
+    )
 elif gpu_backend == "apple":
     add_check(
         "gpu-backend",

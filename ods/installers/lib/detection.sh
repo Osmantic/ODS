@@ -343,7 +343,12 @@ intel_card_vram_bytes() {
             (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
         done < "$card_dir/resource"
     fi
-    echo "$_bar_max"
+    # The BAR aperture is sized to the next power of two above real VRAM
+    # (32 GiB BAR on a 24 GB Arc Pro B60, 16 GiB on a 12 GB B580). Scaling by
+    # 3/4 lands on the exact VRAM for every shipping BMG part and stays
+    # conservative — over-reporting VRAM makes model selection promise more
+    # than the card can hold.
+    echo $(( _bar_max * 3 / 4 ))
 }
 
 # Discrete Intel Arc device-ID check. Alchemist/DG2: 0x56xx/0x569x;

@@ -78,8 +78,8 @@ printf '0x0000001800000000 0x0000001fffffffff 0x000000000014220c\n' >> "$dev/res
 printf '0x00000000fc200000 0x00000000fc3fffff 0x0000000000046200\n' >> "$dev/resource"
 
 got="$(detect "$bmg_xe")"
-[[ "$got" == "intel|1|Intel Arc (0xe223)|32768|discrete|0xe223" ]] \
-    || fail "xe card without lmem must read VRAM from the largest BAR, got: $got"
+[[ "$got" == "intel|1|Intel Arc (0xe223)|24576|discrete|0xe223" ]] \
+    || fail "xe card without lmem must read VRAM from the largest BAR (scaled), got: $got"
 pass "xe fallback reads VRAM from the PCI BAR aperture"
 
 # Battlemage with no VRAM evidence at all: still detects.

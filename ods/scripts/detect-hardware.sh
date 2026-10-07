@@ -312,6 +312,10 @@ detect_intel_sysfs() {
         if [[ ! "$vram" =~ ^[0-9]+$ ]] || (( vram == 0 )); then
             # xe (Battlemage's driver) does not expose lmem_total_bytes; the
             # largest PCI BAR aperture is the local-memory window instead.
+            # The BAR is sized to the next power of two above real VRAM
+            # (32 GiB on a 24 GB Arc Pro B60, 16 GiB on a 12 GB B580), so
+            # scale by 3/4 — over-reporting VRAM makes model selection
+            # promise more than the card can hold.
             local _bar_start _bar_end _bar_max=0
             if [[ -f "$card_dir/resource" ]]; then
                 while read -r _bar_start _bar_end _; do
@@ -320,7 +324,7 @@ detect_intel_sysfs() {
                     (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
                 done < "$card_dir/resource"
             fi
-            vram=$_bar_max
+            vram=$(( _bar_max * 3 / 4 ))
         fi
         total_vram=$(( total_vram + vram ))
         if [[ -z "$gpu_name" && -f "$card_dir/product_name" ]]; then
