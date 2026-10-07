@@ -324,6 +324,68 @@ select_cpu_fallback_tier() {
     fi
 }
 
+# Per-card local-memory size in bytes for a discrete Intel GPU.
+# i915 exposes lmem_total_bytes; the newer xe driver (Battlemage's default)
+# does not — use the largest PCI BAR aperture, the local-memory window.
+# Echoes 0 when neither source exists.
+intel_card_vram_bytes() {
+    local card_dir="$1" bytes
+    bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || bytes=0
+    if [[ "$bytes" =~ ^[0-9]+$ ]] && (( bytes > 0 )); then
+        echo "$bytes"
+        return 0
+    fi
+    local _bar_start _bar_end _bar_max=0
+    if [[ -f "$card_dir/resource" ]]; then
+        while read -r _bar_start _bar_end _; do
+            [[ "$_bar_start" == 0x* && "$_bar_end" == 0x* && "$_bar_end" != "0x0000000000000000" ]] || continue
+            (( _bar_end > _bar_start )) || continue
+            (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
+        done < "$card_dir/resource"
+    fi
+    echo "$_bar_max"
+}
+
+# Discrete Intel Arc device-ID check. Alchemist/DG2: 0x56xx/0x569x;
+# Battlemage (BMG, B570/B580/Arc Pro B-series): 0xe2xx.
+intel_is_arc_device() {
+    [[ "$1" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2[0-9a-f]{2})$ ]]
+}
+
+# Emit a minimal topology JSON for multi-GPU Intel Arc systems so phase 03's
+# assign_gpus.py can place services. SYCL has no P2P fabric ranking — links
+# are empty; llama.cpp picks devices by ONEAPI_DEVICE_SELECTOR index anyway.
+detect_intel_topo() {
+    local _drm_sys="${ODS_DRM_SYS:-/sys/class/drm}"
+    local gpus_tsv="" idx=0
+    local card_dir
+    for card_dir in "$_drm_sys"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device=$(cat "$card_dir/device" 2>/dev/null) || continue
+        [[ "$vendor" == "0x8086" ]] && intel_is_arc_device "$device" || continue
+        local name vram_bytes vram_gb uuid
+        vram_bytes=$(intel_card_vram_bytes "$card_dir")
+        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
+        uuid=$(readlink -f "$card_dir" 2>/dev/null | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || uuid=""
+        [[ -z "$uuid" ]] && uuid="card${idx}"
+        name=$(cat "$card_dir/product_name" 2>/dev/null) || name=""
+        [[ -z "$name" ]] && name="Intel Arc ($device)"
+        gpus_tsv+="${idx}	${name}	${vram_gb}	${uuid}"$'\n'
+        idx=$((idx + 1))
+    done
+    (( idx > 0 )) || { echo "{}"; return 1; }
+    jq -n --argjson gpus "$(printf '%s' "$gpus_tsv" | jq -Rn '[inputs | split("\t") | {
+        index: (.[0] | tonumber),
+        name: .[1],
+        memory_gb: (.[2] | tonumber),
+        uuid: .[3],
+        memory_type: "discrete"
+    }]')" \
+        '{gpu_count: ($gpus | length), vendor: "intel", gpus: $gpus, links: []}'
+}
+
 detect_gpu() {
     GPU_BACKEND="cpu"  # default to CPU-only fallback
     GPU_MEMORY_TYPE="none"
@@ -457,10 +519,10 @@ detect_gpu() {
         local vendor device
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
         device=$(cat "$card_dir/device" 2>/dev/null) || continue
-        # Intel vendor ID: 0x8086. Discrete Arc device families:
-        #   Alchemist / DG2: 0x56a0-0x56bf, 0x5690-0x569f
-        #   Battlemage (BMG, B570/B580/Arc Pro B-series): 0xe2xx
-        if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2[0-9a-f]{2})$ ]]; then
+        # Intel vendor ID: 0x8086; discrete Arc families only — see
+        # intel_is_arc_device(). Integrated Xe iGPUs share system RAM and are
+        # not inference targets.
+        if [[ "$vendor" == "0x8086" ]] && intel_is_arc_device "$device"; then
             _intel_dirs+=("$card_dir")
         fi
     done
@@ -474,22 +536,8 @@ detect_gpu() {
         for card_dir in "${_intel_dirs[@]}"; do
             device=$(cat "$card_dir/device" 2>/dev/null) || device=""
             [[ -z "${GPU_DEVICE_ID:-}" ]] && GPU_DEVICE_ID="$device"
-            # Per-GPU local memory size. i915 exposes lmem_total_bytes; the
-            # newer xe driver (Battlemage's default) does not — use the
-            # largest PCI BAR aperture, which is the local-memory window.
             local vram_bytes
-            vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
-            if [[ ! "$vram_bytes" =~ ^[0-9]+$ ]] || (( vram_bytes == 0 )); then
-                local _bar_start _bar_end _bar_max=0
-                if [[ -f "$card_dir/resource" ]]; then
-                    while read -r _bar_start _bar_end _; do
-                        [[ "$_bar_start" == 0x* && "$_bar_end" == 0x* && "$_bar_end" != "0x0000000000000000" ]] || continue
-                        (( _bar_end > _bar_start )) || continue
-                        (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
-                    done < "$card_dir/resource"
-                fi
-                vram_bytes=$_bar_max
-            fi
+            vram_bytes=$(intel_card_vram_bytes "$card_dir")
             GPU_VRAM=$(( GPU_VRAM + vram_bytes / 1048576 ))  # in MB
             # Marketing name from sysfs; only the first card names the set.
             if [[ -z "$GPU_NAME" && -f "$card_dir/product_name" ]]; then

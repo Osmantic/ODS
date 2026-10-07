@@ -101,4 +101,16 @@ got="$(detect "$igpu")"
     || fail "integrated Xe iGPUs must not be detected as Arc, got: $got"
 pass "integrated iGPUs ignored"
 
+# Multi-GPU topology JSON for phase 03's assign_gpus.py (mock sysfs).
+topo="$(export ODS_DRM_SYS="$bmg_duo"
+    log() { :; }; warn() { :; }; ai() { :; }; ai_ok() { :; }; ai_warn() { :; }; ai_bad() { :; }
+    SCRIPT_DIR="$ROOT"
+    . "$ROOT/installers/lib/detection.sh"
+    detect_intel_topo)"
+got="$(jq -r '[.vendor, .gpu_count, (.links | length)] | join("|")' <<<"$topo")"
+[[ "$got" == "intel|2|0" ]] || fail "intel topology must list both GPUs, got: $got"
+got="$(jq -r '[.gpus[].memory_gb] | join(",")' <<<"$topo")"
+[[ "$got" == "24,24" ]] || fail "topology VRAM per card, got: $got"
+pass "intel multi-GPU topology feeds assign_gpus.py"
+
 echo "All Intel Arc detection tests passed."
