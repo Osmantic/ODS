@@ -16,7 +16,8 @@ cp -R "$ods/extensions/services/pixel-agent/plugin" "$fixture/extensions/service
 cp "$ods/extensions/services/dashboard-api/env_values.py" "$fixture/extensions/services/dashboard-api/"
 printf 'LAYA_PORT=18017\n' > "$fixture/.env"
 bash "$fixture/data/user-extensions/laya/setup.sh" "$fixture"
-printf 'services:\n  laya:\n    image: ods-laya:qualification\n' > "$fixture/qualification.yaml"
+printf 'services:\n  laya:\n    image: ods-laya:qualification\n    build:\n      context: "%s"\n' \
+  "$fixture/data/user-extensions/laya" > "$fixture/qualification.yaml"
 compose=(docker compose --project-name ods-laya-qualification --project-directory "$fixture"
   -f "$fixture/data/user-extensions/laya/compose.yaml" -f "$fixture/qualification.yaml")
 "${compose[@]}" config --quiet
@@ -50,7 +51,8 @@ if [[ "${LAYA_TEST_CUDA_IMAGE:-0}" == 1 ]]; then
   # Keep the existing CPU image tag and use the normal update/start command.
   # The recipe must rebuild for the selected target instead of silently
   # recreating the old CPU image with new environment/device settings.
-  printf 'services:\n  laya:\n    image: ods-laya:qualification\n    build:\n      target: nvidia\n' > "$fixture/qualification.yaml"
+  printf 'services:\n  laya:\n    image: ods-laya:qualification\n    build:\n      context: "%s"\n      target: nvidia\n' \
+    "$fixture/data/user-extensions/laya" > "$fixture/qualification.yaml"
   "${compose[@]}" up --detach --wait --wait-timeout 300
   "${compose[@]}" exec -T laya python -c 'import torch; assert torch.version.cuda, torch.__version__'
   export LAYA_TEST_EXPECT_DEVICE=cpu
