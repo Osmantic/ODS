@@ -215,12 +215,15 @@ elif gpu_backend == "amd":
         resolved = ["docker-compose.base.yml", "docker-compose.amd.yml"]
         primary = "docker-compose.amd.yml"
 elif gpu_backend in ("intel", "sycl") or tier in ("ARC", "ARC_LITE"):
-    if existing(["docker-compose.base.yml", "docker-compose.arc.yml"]):
-        resolved = ["docker-compose.base.yml", "docker-compose.arc.yml"]
-        primary = "docker-compose.arc.yml"
-    elif existing(["docker-compose.base.yml", "docker-compose.intel.yml"]):
+    # Prefer the pre-built pinned image overlay (matches the image pulled in
+    # phase 08). docker-compose.arc.yml is the opt-in oneAPI source build —
+    # ~10-20 min build and its 2025.0 toolchain predates Battlemage support.
+    if existing(["docker-compose.base.yml", "docker-compose.intel.yml"]):
         resolved = ["docker-compose.base.yml", "docker-compose.intel.yml"]
         primary = "docker-compose.intel.yml"
+    elif existing(["docker-compose.base.yml", "docker-compose.arc.yml"]):
+        resolved = ["docker-compose.base.yml", "docker-compose.arc.yml"]
+        primary = "docker-compose.arc.yml"
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"

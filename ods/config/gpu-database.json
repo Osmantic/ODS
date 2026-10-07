@@ -287,6 +287,166 @@
         "backend": "nvidia",
         "tier": "NV_ULTRA"
       }
+    },
+    {
+      "id": "arc_pro_b60",
+      "match": {
+        "device_ids": ["0xe223"],
+        "name_patterns": ["Arc Pro B60", "Battlemage G31", "BMG-G31"]
+      },
+      "specs": {
+        "label": "Intel Arc Pro B60 (Battlemage G31)",
+        "vendor": "intel",
+        "architecture": "xe2",
+        "memory_type": "discrete",
+        "memory_mb": 24576,
+        "memory_source": "vram",
+        "bandwidth_gbps": 456
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC"
+      }
+    },
+    {
+      "id": "arc_b580",
+      "match": {
+        "device_ids": ["0xe20b"],
+        "name_patterns": ["Arc B580", "B580"]
+      },
+      "specs": {
+        "label": "Intel Arc B580 (Battlemage)",
+        "vendor": "intel",
+        "architecture": "xe2",
+        "memory_type": "discrete",
+        "memory_mb": 12288,
+        "memory_source": "vram",
+        "bandwidth_gbps": 456
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC"
+      }
+    },
+    {
+      "id": "arc_b570",
+      "match": {
+        "device_ids": ["0xe20c"],
+        "name_patterns": ["Arc B570", "B570"]
+      },
+      "specs": {
+        "label": "Intel Arc B570 (Battlemage)",
+        "vendor": "intel",
+        "architecture": "xe2",
+        "memory_type": "discrete",
+        "memory_mb": 10240,
+        "memory_source": "vram",
+        "bandwidth_gbps": 380
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC"
+      }
+    },
+    {
+      "id": "battlemage_g31_generic",
+      "match": {
+        "device_ids": ["0xe220", "0xe221", "0xe222", "0xe224"],
+        "name_patterns": ["Battlemage"]
+      },
+      "specs": {
+        "label": "Intel Battlemage G31",
+        "vendor": "intel",
+        "architecture": "xe2",
+        "memory_type": "discrete",
+        "memory_mb": 24576,
+        "memory_source": "vram",
+        "bandwidth_gbps": 456
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC"
+      }
+    },
+    {
+      "id": "arc_a770",
+      "match": {
+        "device_ids": ["0x56a0"],
+        "name_patterns": ["Arc A770", "A770"]
+      },
+      "specs": {
+        "label": "Intel Arc A770 (Alchemist)",
+        "vendor": "intel",
+        "architecture": "xe",
+        "memory_type": "discrete",
+        "memory_mb": 16384,
+        "memory_source": "vram",
+        "bandwidth_gbps": 560
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC"
+      }
+    },
+    {
+      "id": "arc_a750",
+      "match": {
+        "device_ids": ["0x56a1"],
+        "name_patterns": ["Arc A750", "A750"]
+      },
+      "specs": {
+        "label": "Intel Arc A750 (Alchemist)",
+        "vendor": "intel",
+        "architecture": "xe",
+        "memory_type": "discrete",
+        "memory_mb": 8192,
+        "memory_source": "vram",
+        "bandwidth_gbps": 512
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC_LITE"
+      }
+    },
+    {
+      "id": "arc_a580",
+      "match": {
+        "device_ids": ["0x56a2"],
+        "name_patterns": ["Arc A580", "A580"]
+      },
+      "specs": {
+        "label": "Intel Arc A580 (Alchemist)",
+        "vendor": "intel",
+        "architecture": "xe",
+        "memory_type": "discrete",
+        "memory_mb": 8192,
+        "memory_source": "vram",
+        "bandwidth_gbps": 512
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC_LITE"
+      }
+    },
+    {
+      "id": "arc_a380",
+      "match": {
+        "device_ids": ["0x56a5"],
+        "name_patterns": ["Arc A380", "A380"]
+      },
+      "specs": {
+        "label": "Intel Arc A380 (Alchemist)",
+        "vendor": "intel",
+        "architecture": "xe",
+        "memory_type": "discrete",
+        "memory_mb": 6144,
+        "memory_source": "vram",
+        "bandwidth_gbps": 186
+      },
+      "recommended": {
+        "backend": "intel",
+        "tier": "ARC_LITE"
+      }
     }
   ],
   "known_gpu_bandwidth": {
@@ -384,6 +544,15 @@
       "M1 Max": 400,
       "M1 Pro": 200,
       "M1": 68
+    },
+    "intel": {
+      "Arc Pro B60": 456,
+      "B580": 456,
+      "B570": 380,
+      "A770": 560,
+      "A750": 512,
+      "A580": 512,
+      "A380": 186
     }
   },
   "heuristic_classes": [
@@ -488,6 +657,16 @@
       "recommended": { "backend": "apple", "tier": "T1" }
     },
     {
+      "id": "intel_arc",
+      "match": { "vendor": "intel", "memory_type": "discrete", "min_vram_mb": 10240 },
+      "recommended": { "backend": "intel", "tier": "ARC" }
+    },
+    {
+      "id": "intel_arc_lite",
+      "match": { "vendor": "intel", "memory_type": "discrete", "min_vram_mb": 4096 },
+      "recommended": { "backend": "intel", "tier": "ARC_LITE" }
+    },
+    {
       "id": "cpu_only",
       "match": { "vendor": "none", "memory_type": "none", "min_ram_mb": 0 },
       "recommended": { "backend": "cpu", "tier": "T1" }
@@ -497,6 +676,7 @@
     "bandwidth_gbps": {
       "cuda": 220,
       "rocm": 180,
+      "sycl": 300,
       "metal": 160,
       "cpu_x86": 70,
       "cpu_arm": 50
