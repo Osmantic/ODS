@@ -118,6 +118,25 @@ test('guessed tool fields return specific schema guidance without reading any fi
   assert.equal(f.calls.length,0);assert.equal(f.writes.length,0);
 });
 
+test('misnested checkpoint and language explain repair while preserving strict admission',async()=>{
+  const f=fixture({count:2});
+  const malformed=request();
+  Object.assign(malformed.questions[0],{checkpoint:'english',language:'en'});
+  f.admission.before({toolName:LAYA_BATCH_TOOL,params:malformed},context);
+  const refused=await f.tool.execute('call',malformed);
+  assert.equal(refused.details.status,'invalid_request');
+  assert.match(refused.content[0].text,/checkpoint, language and contextTokens belong at the top level/);
+  assert.match(refused.content[0].text,/Preserve requested values/);
+  assert.equal(f.calls.length,0);assert.equal(f.writes.length,0);
+  const repaired={...request(),checkpoint:'english',language:'en'};
+  // Repair alone cannot reuse rejected admission or invoke the provider.
+  assert.equal((await f.tool.execute('call',repaired)).details.status,'batch-call-unbound');
+  f.admission.before({toolName:LAYA_BATCH_TOOL,params:repaired},context);
+  const completed=await f.tool.execute('call',repaired);
+  assert.equal(completed.isError,undefined);
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].checkpoint,'english');assert.equal(f.calls[0].language,'en');
+});
+
 test('SDK dataset execution binds workspace, model and unchanged policy',async()=>{
   let config={agents:{list:[{id:'pixel',workspace:resolve('workspace'),tools:{exec:{host:'gateway'}}}]}},options;
   const factory={...context,workspaceDir:config.agents.list[0].workspace,activeModel:{provider:'local',modelId:'fixture'}};

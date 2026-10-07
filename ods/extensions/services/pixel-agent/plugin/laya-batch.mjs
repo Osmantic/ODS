@@ -204,8 +204,8 @@ export function createLayaBatchTool(factory, {resolveClient, admission, executio
           details:{kind:'laya-batch-report',status:'completed',itemCount:items.length,outputs,readbackVerified:true,accuracyVerified:false}};
       } catch (error) {
         if (!(error instanceof LayaBatchError || error instanceof LayaProtocolError || error instanceof LayaServiceError)) throw error;
-        const guidance = error.code === 'invalid-batch-request'
-          ? 'Expected source:{path,textColumn,idColumn?}, questions:[{id,type:"choice",instructions,choices:[{id,description},...]}], outputDirectory. Both paths must be workspace-relative, not absolute. Do not supply items, columns, options or outputPath. Read pixel_ods_skill with {"topic":"laya"} for a complete dataset example before correcting the call. '
+        const guidance = ['invalid-batch-request','invalid_request'].includes(error.code)
+          ? 'Expected source:{path,textColumn,idColumn?}, questions:[{id,type:"choice",instructions,choices:[{id,description},...]}], outputDirectory. Optional checkpoint, language and contextTokens belong at the top level beside source and questions, never inside questions or an items wrapper. Preserve requested values: correct their location instead of dropping them. Both paths must be workspace-relative, not absolute. Do not supply items, columns, options or outputPath. Read pixel_ods_skill with {"topic":"laya"} for a complete dataset example before correcting the call. '
           : '';
         return {isError:true,details:{kind:'laya-batch-report',status:error.code,inferenceBatches,outputPrefix:prefix ?? null},
           content:[{type:'text',text:`Laya dataset processing did not produce a confirmed complete report (${error.code}). ${prefix ? `Inspect ${prefix} before another attempt; partial files may remain. ` : 'No report was written. '}${guidance}Continue the task with other available tools when possible. If the owner requested Laya, explain that this consultation failed and distinguish your own conclusions from Laya results. Do not replay an unchanged failed request or treat partial decisions as complete.`}]};

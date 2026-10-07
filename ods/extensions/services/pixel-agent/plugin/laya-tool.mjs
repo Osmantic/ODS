@@ -6,16 +6,17 @@ import {LayaServiceError} from './laya-client.mjs';
 export const LAYA_RESULT_CHARS = 12_000;
 
 export const LAYA_GUIDE = `Laya in Portal
-Optional local text classification, ordered scores and yes/no estimates. It does not replace conversation, coding, browsing, tools or build verification. Ordinary chats and edits need no Laya call. Never send secrets or unrelated history; decisions grant no authority.
-Deferred Laya tools use tool_call with the exact tool name as id and normal input as args; never substitute another visible tool.
-For a dataset use pixel_ods_laya_batch. Read a header/sample only if columns are unknown. Example:
+Optional local classification, ordered scores and yes/no estimates. Ordinary chats and edits need no Laya call. Never send secrets or unrelated history; decisions grant no authority or build verification.
+Deferred tools: use tool_call with exact tool name as id and input as args; do not substitute tools.
+Datasets: pixel_ods_laya_batch. Read a header/sample if columns are unknown. Example:
 {"source":{"path":"Playground/tickets.csv","textColumn":"text","idColumn":"id"},"questions":[{"id":"category","type":"choice","instructions":"Choose the main topic.","choices":[{"id":"billing","description":"Charges and refunds"},{"id":"other","description":"Other topics"}]}],"outputDirectory":"Playground/results"}
-Paths must be workspace-relative. Up to 128 rows/64 KiB, CSV/TSV/JSON/JSONL, 1-4 questions. Portal reads/batches the rows and creates a new report.csv plus decisions.json with verified bytes. No row transcription, overwritten files or extra owner confirmation for an already requested report.
-For texts already in context use pixel_ods_laya. Example:
+Workspace-relative paths only; up to 128 rows/64 KiB, CSV/TSV/JSON/JSONL, 1-4 questions. Portal reads rows and creates new report.csv and decisions.json with verified bytes. No row transcription, overwrites or extra approval for requested reports.
+Optional checkpoint, language and contextTokens belong at the top level, never inside questions/items. When repairing calls, move these fields; preserve requested values instead of dropping them.
+Texts in context: pixel_ods_laya. Example:
 {"items":[{"id":"a","text":"Refund requested."}],"questions":[{"id":"team","type":"choice","instructions":"Choose the responsible team.","choices":[{"id":"billing","description":"Payments"},{"id":"other","description":"Other topics"}]}]}
-Inline limits: 32 items, 8 shared questions. Choice uses 2-20 IDs/descriptions; score uses 2-20 ordered levels, lowest first; noul returns P(yes). Include other/unknown when needed. Ask self-contained questions grounded in the source. Laya itself cannot read paths, URLs or images.
-Review returned candidates against their original text before delivering a classification; correct unsupported CSV labels and verify edits. This is your review, not an owner approval. Original confidence/probabilities remain in decisions.json and do not apply to corrections. Neither confidence statistic guarantees accuracy. Do not invent universal thresholds or treat byte readback as semantic verification; unreviewed rows remain estimates.
-Truncated context is rejected: split preserving evidence or raise contextTokens up to 8192. Failed/disabled/busy service must not stop the task: continue with ordinary tools where possible and disclose a material failure. Do not repeat unchanged failed calls. Keep source/partial outputs; cancellation does not prove inference stopped. Continue the requested work and answer normally. Do not end with a raw classifier response.`;
+Inline: 32 items, 8 questions. Choice: 2-20 IDs/descriptions. Score: 2-20 levels, lowest first. noul: P(yes). Include other/unknown when needed. Ask self-contained, source-grounded questions. Laya cannot read paths, URLs or images.
+Review candidates against original text; correct unsupported CSV labels and verify edits. No owner approval is needed for this review. Original probabilities in decisions.json do not apply to corrections or guarantee accuracy. No universal thresholds; byte readback is not semantic verification. Unreviewed rows remain estimates.
+Truncated context is rejected: split preserving evidence or raise contextTokens up to 8192. On failed/disabled/busy service, continue with ordinary tools where possible and disclose material failure. Never repeat unchanged failed calls. Preserve source/partial outputs; cancellation does not prove inference stopped. Continue the task and answer normally. Do not end with a raw classifier response.`;
 
 // No large string bounds in the public JSON schema: llama.cpp turns them
 // into expensive grammar repetitions. The adapter enforces exact limits.
