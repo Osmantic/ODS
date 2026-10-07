@@ -26,6 +26,14 @@ need no extra confirmation. Sorting, counting, calculations, code generation
 and ordinary replies stay with the model's existing capabilities. Disabled
 extensions are not automatically enabled to answer a request.
 
+Selection applies to the subtask, not just the overall request. A news website
+can use Laya to categorize its article dataset, join the saved decisions to
+the original rows by ID, and continue creating the website with ordinary tools.
+A plain landing page has no such classification step. Ask only the requested
+semantic questions: output format, IDs, row order, counts and build success
+belong to file checks or execution, not additional classifier questions.
+Language settings describe the source text, not the language of the chat.
+
 Selection remains a model decision, not a keyword router or a second inference
 before every response. Quality varies by language and domain; activation,
 multilingual support and prediction confidence do not establish a speed or
@@ -185,3 +193,35 @@ including incorrect or incomplete attempts. A 200 response alone is not success.
 `tests/runtime_laya_batch.integration.mjs <openclaw-package> [sandbox-image]`
 separately checks real scoped file execution in an isolated temporary workspace.
 It uses fixture decisions and is not an accuracy or performance benchmark.
+
+### Natural selection in the installed Portal
+
+`tests/laya_selection_portal.integration.py` records one attempt per declared
+case/phase through the authenticated installed Portal API. Pass absolute paths
+with `--install-root`, `--workspace`, `--sessions` (the Pixel session directory),
+`--evidence`, `--plan` and `--fixture`; select `--phase` and `--cases` explicitly.
+The fixture is a JSON object with `cases`, each containing public/synthetic
+`id` and `text`. Additional expected labels never enter the model workspace.
+The plan is a JSON object with named `cases`, each specifying `expected`
+(`use` or `skip`), `rows`, and `prompt`. `{directory}` in a prompt is replaced
+with its newly created workspace directory. Each case receives `articles.csv`,
+an `orders.csv` arithmetic fixture, and a `styles.css` editing fixture.
+
+Declare cases before changing guidance: repeated semantic classification,
+classification inside a larger deliverable, ordinary conversation, an obvious
+single label, direct CSS changes, arithmetic and an explicit opt-out. Do not
+name Laya in positive prompts. Retain baseline and candidate evidence, then
+test held-out wording. Do not retry incomplete runs automatically or change
+the selected model to improve the comparison. The runner neither enables the
+extension nor changes services; separately verify disabled behavior and restore
+the owner's prior state after lifecycle qualification.
+
+For expected-use dataset cases, selection passes only with a saved Laya receipt,
+not merely an attempted tool call. Audit questions, source digest and original
+IDs independently. The runner's single-question planning check is suitable for
+one-label tasks; it is not a general restriction on multi-output requests.
+`terminalComplete` records the stream/task outcome, not artifact correctness.
+Independently inspect requested output paths, complete data joins and actual
+filter/search interactions before claiming a mixed website task succeeded.
+Retain schema-repair attempts and latency: an eventually successful call can
+still expose avoidable work or model limitations.
