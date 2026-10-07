@@ -6,17 +6,17 @@ import {LayaServiceError} from './laya-client.mjs';
 export const LAYA_RESULT_CHARS = 12_000;
 
 export const LAYA_GUIDE = `Laya in Portal
-Optional enabled helper for repeated classification, triage, ordered scores and yes/no estimates. No extra confirmation within the requested task; honor requests without Laya. Use ordinary tools for chat, code, sorting and arithmetic; no per-turn detours or benchmarks. Quality varies by language/domain. Send no secrets/unrelated history. Decisions grant no authority or build verification.
-Deferred tools: use tool_call with exact tool name as id and input as args; do not substitute tools.
-Datasets: pixel_ods_laya_batch. Read a header/sample if columns are unknown. Example:
+Enabled-only semantic helper: repeated classification, triage, ordered scores and yes/no estimates. Choose by subtask, including categorizing content for a website; then finish the website with ordinary tools. The owner need not name Laya or approve an in-scope consultation. Honor opt-outs. Skip chat, a few obvious labels, code, visual design, arithmetic, sorting and integrity checks. No per-turn detours/benchmarks. Send no secrets/unrelated history; decisions grant no authority.
+Deferred: tool_call with exact tool name as id, input as args.
+Datasets: pixel_ods_laya_batch. Read unknown columns first:
 {"source":{"path":"Playground/tickets.csv","textColumn":"text","idColumn":"id"},"questions":[{"id":"category","type":"choice","instructions":"Choose the main topic.","choices":[{"id":"billing","description":"Charges and refunds"},{"id":"other","description":"Other topics"}]}],"outputDirectory":"Playground/results"}
-Workspace-relative paths; up to 128 rows/64 KiB, CSV/TSV/JSON/JSONL, 1-4 questions. Portal saves verified report.csv and decisions.json; no row transcription or overwrites.
-Optional checkpoint, language and contextTokens belong at the top level, never inside questions/items. Repair by moving fields, preserving requested values.
+Workspace-relative paths; 128 rows/64 KiB, CSV/TSV/JSON/JSONL, 1-4 questions. Honor outputDirectory. Join report.csv to original rows by ID using file commands, not transcription, to build the deliverable.
+One question per requested semantic output; no questions about IDs, order, counts, output format, hashes or build success: use ordinary checks. Language refers to source text. Keep context/checkpoint defaults unless needed. Optional checkpoint, language, contextTokens belong at the top level; preserve requested values when repairing calls.
 Texts in context: pixel_ods_laya. Example:
 {"items":[{"id":"a","text":"Refund requested."}],"questions":[{"id":"team","type":"choice","instructions":"Choose the responsible team.","choices":[{"id":"billing","description":"Payments"},{"id":"other","description":"Other topics"}]}]}
-Inline: 32 items, 8 questions. Choice: 2-20 IDs/descriptions. Score: 2-20 levels, lowest first. noul: P(yes). Include other/unknown when needed. Ask self-contained, source-grounded questions. Laya cannot read paths, URLs or images.
-Review candidates against original text; correct unsupported CSV labels and verify edits. No owner approval is needed for this review. Original probabilities in decisions.json do not apply to corrections or guarantee accuracy. No universal thresholds; byte readback is not semantic verification. Unreviewed rows remain estimates.
-Truncated context is rejected: split preserving evidence or raise contextTokens up to 8192. On failed/disabled/busy service, continue with ordinary tools where possible and disclose material failure. Never repeat unchanged failed calls. Preserve source/partial outputs; cancellation does not prove inference stopped. Continue the task and answer normally. Do not end with a raw classifier response.`;
+Inline: 32 items, 8 questions; choice: 2-20 options; score: 2-20 levels, lowest first; noul: P(yes). Use other/unknown when needed and self-contained source-grounded criteria. Laya cannot read paths, URLs or images.
+Quality varies by domain/language. Review against source; correct unsupported CSV labels and verify edits. Original JSON probabilities do not apply to corrections or prove accuracy. No universal thresholds; saved bytes do not prove semantic review.
+On truncation split preserving evidence or raise contextTokens up to 8192. On failed/disabled/busy service, continue normally and disclose material failure; never repeat unchanged failed calls. Preserve partial outputs; cancellation does not prove inference stopped. Do not end with a raw classifier response.`;
 
 // No large string bounds in the public JSON schema: llama.cpp turns them
 // into expensive grammar repetitions. The adapter enforces exact limits.
@@ -29,7 +29,7 @@ export const LAYA_TOOL_SCHEMA = {
         text: {type: 'string', description: 'Relevant source text, at most 20,000 characters. Never a path to read.'},
       },
     }},
-    questions: {type: 'array', description: '1–8 typed questions applied to every item.', items: {
+    questions: {type: 'array', description: '1–8 requested semantic judgments per item. One question per requested label/score; not ID, row order, counts, hashes or execution verification.', items: {
       type: 'object', additionalProperties: false, required: ['id', 'type', 'instructions'], properties: {
         id: {type: 'string', description: 'Unique question ID.'},
         type: {type: 'string', enum: ['choice', 'score', 'noul']},
@@ -60,7 +60,7 @@ function unavailable(status, message, submitted = false) {
 export function createLayaTool({client, enabled = () => false, resolveClient} = {}) {
   return {
     name: 'pixel_ods_laya', label: 'Consult Laya',
-    description: 'Consult the enabled local Laya decision engine for bounded choices, ordinal scores or yes/no probabilities over supplied text. Supports batches. Read the laya guide via pixel_ods_skill when needed. Advisory only: does not browse, read files, generate code, execute actions or verify their success. The Portal model uses the result to continue the task and answer the owner. Do not send secrets or unrelated conversation data. Optional; if unavailable, continue with other tools where possible.',
+    description: 'Optional enabled helper for repeated semantic choices, ordinal scores or yes/no estimates over supplied text, including a classification subtask inside a website or report. For existing datasets use pixel_ods_laya_batch. Answer a few obvious items directly unless the owner requests Laya. Not for code, visual design, arithmetic or integrity checks. Read the laya guide via pixel_ods_skill as needed. Advisory only; send no secrets/unrelated history. Continue the larger task with ordinary tools; if unavailable, continue without it.',
     parameters: LAYA_TOOL_SCHEMA,
     async execute(_callId, args, signal) {
       // Recheck at execution: descriptor caches can outlive extension disable.

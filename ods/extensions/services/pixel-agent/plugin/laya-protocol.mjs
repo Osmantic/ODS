@@ -55,12 +55,12 @@ function questionWire(question) {
   if (type !== 'score' && Object.hasOwn(question, 'levels')) reject('invalid_request', 'Only score accepts levels.');
   if (type === 'noul') return [id, {type, instructions}];
   if (type === 'score') {
-    const levels = list(question.levels, 2, LAYA_LIMITS.levels, 'levels')
+    const levels = list(question.levels, 2, LAYA_LIMITS.levels, `questions.${id}.levels`)
       .map(label => text(label, LAYA_LIMITS.labelChars, 'level'));
     unique(levels, 'levels');
     return [id, {type, instructions, criteria: levels}];
   }
-  const choices = list(question.choices, 2, LAYA_LIMITS.choices, 'choices').map(choice => {
+  const choices = list(question.choices, 2, LAYA_LIMITS.choices, `questions.${id}.choices`).map(choice => {
     fields(choice, ['id', 'description'], ['id', 'description']);
     return [identifier(choice.id), text(choice.description, LAYA_LIMITS.labelChars, 'description')];
   });

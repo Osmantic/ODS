@@ -39,7 +39,7 @@ export const LAYA_BATCH_SCHEMA = {
       textColumn:{type:'string',description:'Exact column/key containing each text to classify.'},
       idColumn:{type:'string',description:'Optional unique string/integer row ID column; otherwise uses 1-based row numbers.'},
     }},
-    questions:{...LAYA_TOOL_SCHEMA.properties.questions,description:'1–4 shared decision questions. The Portal applies them to every source row.'},
+    questions:{...LAYA_TOOL_SCHEMA.properties.questions,description:'1–4 requested semantic judgments per row. One per requested label/score. IDs, order, counts and saved bytes are checked by file tools, not classification questions.'},
     outputDirectory:{type:'string',description:'Workspace-relative parent for a new laya-<id>/report.csv and decisions.json. Existing files are never replaced.'},
     language:LAYA_TOOL_SCHEMA.properties.language,
     checkpoint:LAYA_TOOL_SCHEMA.properties.checkpoint,
@@ -159,7 +159,7 @@ function summaryText(value) {
 
 export function createLayaBatchTool(factory, {resolveClient, admission, execution, invalidatePreview, now = () => performance.now()} = {}) {
   return {name:LAYA_BATCH_TOOL, label:'Classify dataset with Laya', parameters:LAYA_BATCH_SCHEMA,
-    description:'Classify or score an existing workspace CSV/TSV/JSON/JSONL dataset with local Laya, in one call. Supply source path, textColumn, optional idColumn, shared questions and outputDirectory. Portal reads rows, batches inference and saves a new CSV and full JSON evidence with verified bytes. Prefer this to copying file rows into pixel_ods_laya and manually rewriting results. At most 128 rows/64 KiB and four questions; no overwritten files. Confidence is an estimate, not accuracy. No URLs, arbitrary host paths or commands. If unavailable, continue the task using ordinary tools.',
+    description:'Classify, tag or score repeated text in an existing workspace CSV/TSV/JSON/JSONL, including content to organize for a website or catalog. One call reads every row, batches inference and saves a new CSV plus original JSON decisions. Supply source path, textColumn, optional idColumn, requested semantic questions and outputDirectory. Use file commands to join results to the original data and continue building the deliverable; do not transcribe rows or invent keyword classifiers. At most 128 rows/64 KiB and four questions. Not for arithmetic, sorting, IDs/order or build verification. Confidence is not accuracy. Optional and enabled-only; on failure continue with ordinary tools.',
     async execute(id, supplied, signal) {
       let prefix, inferenceBatches = 0;
       const started = now();
@@ -204,11 +204,13 @@ export function createLayaBatchTool(factory, {resolveClient, admission, executio
           details:{kind:'laya-batch-report',status:'completed',itemCount:items.length,outputs,readbackVerified:true,accuracyVerified:false}};
       } catch (error) {
         if (!(error instanceof LayaBatchError || error instanceof LayaProtocolError || error instanceof LayaServiceError)) throw error;
+        const problem = error instanceof LayaProtocolError && error.code === 'invalid_request'
+          ? `${error.message} Repair that field; preserve unrelated source and output paths. ` : '';
         const guidance = ['invalid-batch-request','invalid_request'].includes(error.code)
           ? 'Expected source:{path,textColumn,idColumn?}, questions:[{id,type:"choice",instructions,choices:[{id,description},...]}], outputDirectory. Optional checkpoint, language and contextTokens belong at the top level beside source and questions, never inside questions or an items wrapper. Preserve requested values: correct their location instead of dropping them. Both paths must be workspace-relative, not absolute. Do not supply items, columns, options or outputPath. Read pixel_ods_skill with {"topic":"laya"} for a complete dataset example before correcting the call. '
           : '';
         return {isError:true,details:{kind:'laya-batch-report',status:error.code,inferenceBatches,outputPrefix:prefix ?? null},
-          content:[{type:'text',text:`Laya dataset processing did not produce a confirmed complete report (${error.code}). ${prefix ? `Inspect ${prefix} before another attempt; partial files may remain. ` : 'No report was written. '}${guidance}Continue the task with other available tools when possible. If the owner requested Laya, explain that this consultation failed and distinguish your own conclusions from Laya results. Do not replay an unchanged failed request or treat partial decisions as complete.`}]};
+          content:[{type:'text',text:`Laya dataset processing did not produce a confirmed complete report (${error.code}). ${prefix ? `Inspect ${prefix} before another attempt; partial files may remain. ` : 'No report was written. '}${problem}${guidance}Continue the task with other available tools when possible. If the owner requested Laya, explain that this consultation failed and distinguish your own conclusions from Laya results. Do not replay an unchanged failed request or treat partial decisions as complete.`}]};
       }
     },
   };
