@@ -171,10 +171,17 @@ jobs:
           install_apt_checkout_prerequisites() {
             # Refresh indexes again after a mirror changes during package download.
             # Avoid stale proxy responses while retaining repository signatures.
+            # Let APT retry stalled transfers before the outer 180s deadline,
+            # and retain download output so failures identify the affected URL.
+            export DEBIAN_FRONTEND=noninteractive
             bounded 180 apt-get -o Acquire::http::No-Cache=true \
-              -o Acquire::https::No-Cache=true -o APT::Update::Error-Mode=any update -qq &&
+              -o Acquire::https::No-Cache=true \
+              -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+              -o Acquire::Retries=2 -o APT::Update::Error-Mode=any update &&
               bounded 180 apt-get -o Acquire::http::No-Cache=true \
-                -o Acquire::https::No-Cache=true install -y -qq ca-certificates git curl
+                -o Acquire::https::No-Cache=true \
+                -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+                -o Acquire::Retries=2 install -y ca-certificates git curl
           }
 
           if command -v apt-get &>/dev/null; then
