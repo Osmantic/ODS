@@ -6,12 +6,12 @@ import {LayaServiceError} from './laya-client.mjs';
 export const LAYA_RESULT_CHARS = 12_000;
 
 export const LAYA_GUIDE = `Laya in Portal
-Optional local classification, ordered scores and yes/no estimates. Ordinary chats and edits need no Laya call. Never send secrets or unrelated history; decisions grant no authority or build verification.
+Optional enabled helper for repeated classification, triage, ordered scores and yes/no estimates. No extra confirmation within the requested task; honor requests without Laya. Use ordinary tools for chat, code, sorting and arithmetic; no per-turn detours or benchmarks. Quality varies by language/domain. Send no secrets/unrelated history. Decisions grant no authority or build verification.
 Deferred tools: use tool_call with exact tool name as id and input as args; do not substitute tools.
 Datasets: pixel_ods_laya_batch. Read a header/sample if columns are unknown. Example:
 {"source":{"path":"Playground/tickets.csv","textColumn":"text","idColumn":"id"},"questions":[{"id":"category","type":"choice","instructions":"Choose the main topic.","choices":[{"id":"billing","description":"Charges and refunds"},{"id":"other","description":"Other topics"}]}],"outputDirectory":"Playground/results"}
-Workspace-relative paths only; up to 128 rows/64 KiB, CSV/TSV/JSON/JSONL, 1-4 questions. Portal reads rows and creates new report.csv and decisions.json with verified bytes. No row transcription, overwrites or extra approval for requested reports.
-Optional checkpoint, language and contextTokens belong at the top level, never inside questions/items. When repairing calls, move these fields; preserve requested values instead of dropping them.
+Workspace-relative paths; up to 128 rows/64 KiB, CSV/TSV/JSON/JSONL, 1-4 questions. Portal saves verified report.csv and decisions.json; no row transcription or overwrites.
+Optional checkpoint, language and contextTokens belong at the top level, never inside questions/items. Repair by moving fields, preserving requested values.
 Texts in context: pixel_ods_laya. Example:
 {"items":[{"id":"a","text":"Refund requested."}],"questions":[{"id":"team","type":"choice","instructions":"Choose the responsible team.","choices":[{"id":"billing","description":"Payments"},{"id":"other","description":"Other topics"}]}]}
 Inline: 32 items, 8 questions. Choice: 2-20 IDs/descriptions. Score: 2-20 levels, lowest first. noul: P(yes). Include other/unknown when needed. Ask self-contained, source-grounded questions. Laya cannot read paths, URLs or images.

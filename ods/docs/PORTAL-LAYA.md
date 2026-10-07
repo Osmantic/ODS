@@ -18,6 +18,20 @@ The `laya` operating guide explains meaningful use, question construction,
 uncertainty and continuation. No inference runs automatically during prompt
 construction. Simple conversation and direct edits need no classification.
 
+Enabling the extension makes this helper available; it does not require a Laya
+call on every turn. The model considers it for repeated classification, triage
+or scoring that advances the requested task, and respects an owner's request to
+work without Laya. Relevant consultations of an already enabled local helper
+need no extra confirmation. Sorting, counting, calculations, code generation
+and ordinary replies stay with the model's existing capabilities. Disabled
+extensions are not automatically enabled to answer a request.
+
+Selection remains a model decision, not a keyword router or a second inference
+before every response. Quality varies by language and domain; activation,
+multilingual support and prediction confidence do not establish a speed or
+accuracy advantage. Evaluate representative tasks separately rather than adding
+benchmarks or duplicate classification to the owner's ordinary work.
+
 Discovery registers the tool schema without loading a checkpoint. Execution
 checks activation again, including a tool descriptor cached before disable.
 Known service failures return a bounded tool error so the main model can
