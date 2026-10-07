@@ -318,6 +318,25 @@ class Candidate:
     def id(self) -> str:
         return str(self.model.get("id") or "")
 
+    def inference_configurations(self, capabilities=None):
+        """Discover inference configurations for this selected candidate.
+
+        Model selection remains responsible for choosing the model and
+        compatible runtime profile. ICD is a second-stage discovery step:
+        it proposes configurations to benchmark without treating them as
+        measurements.
+        """
+        from inference_configuration import discover_configurations
+
+        if self.runtime_profile is None:
+            return []
+
+        return discover_configurations(
+            model=self.model,
+            runtime_profiles=[self.runtime_profile],
+            capabilities=capabilities,
+        )
+
     def as_model(self) -> dict[str, Any]:
         """The legacy ranker shape: the model at its chosen context."""
         planned = {**self.model, "context_length": self.context_length}
