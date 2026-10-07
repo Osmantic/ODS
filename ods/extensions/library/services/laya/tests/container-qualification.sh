@@ -16,16 +16,17 @@ cp -R "$ods/extensions/services/pixel-agent/plugin" "$fixture/extensions/service
 cp "$ods/extensions/services/dashboard-api/env_values.py" "$fixture/extensions/services/dashboard-api/"
 printf 'LAYA_PORT=18017\n' > "$fixture/.env"
 bash "$fixture/data/user-extensions/laya/setup.sh" "$fixture"
-printf 'services:\n  laya:\n    image: ods-laya:qualification\n    build:\n      context: "%s"\n' \
+printf 'services:\n  laya:\n    build:\n      context: "%s"\n' \
   "$fixture/data/user-extensions/laya" > "$fixture/qualification.yaml"
 compose=(docker compose --project-name ods-laya-qualification --project-directory "$fixture"
   -f "$fixture/data/user-extensions/laya/compose.yaml" -f "$fixture/qualification.yaml")
 "${compose[@]}" config --quiet
-docker build --tag ods-laya:qualification "$recipe"
+cpu_image="$("${compose[@]}" config --images)"
+docker build --tag "$cpu_image" "$recipe"
 docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   --tmpfs /tmp:size=256m,mode=1777 \
   --mount "type=bind,source=$recipe,target=/recipe,readonly" \
-  --entrypoint python ods-laya:qualification -m unittest discover -s /recipe/tests -p test_service.py -v
+  --entrypoint python "$cpu_image" -m unittest discover -s /recipe/tests -p test_service.py -v
 docker network create ods-network
 cleanup() {
   status=$?
@@ -47,12 +48,18 @@ node "$recipe/tests/portal_adapter.integration.mjs"
 if [[ "${LAYA_TEST_CUDA_IMAGE:-0}" == 1 ]]; then
   # Hosted runners have no NVIDIA GPU. Verify the actual CUDA dependency lock
   # on each architecture, then run real inference through the CPU fallback.
-  docker build --target nvidia --tag ods-laya:qualification-cuda "$recipe"
-  # Keep the existing CPU image tag and use the normal update/start command.
-  # The recipe must rebuild for the selected target instead of silently
-  # recreating the old CPU image with new environment/device settings.
-  printf 'services:\n  laya:\n    image: ods-laya:qualification\n    build:\n      context: "%s"\n      target: nvidia\n' \
+  # Use the shipped overlay and its distinct backend image identity. Remove
+  # only the device reservation: these runners have no NVIDIA device.
+  printf 'services:\n  laya:\n    build:\n      context: "%s"\n    deploy:\n      resources:\n        reservations:\n          devices: !reset []\n' \
     "$fixture/data/user-extensions/laya" > "$fixture/qualification.yaml"
+  compose=(docker compose --project-name ods-laya-qualification --project-directory "$fixture"
+    -f "$fixture/data/user-extensions/laya/compose.yaml"
+    -f "$fixture/data/user-extensions/laya/compose.nvidia.yaml" -f "$fixture/qualification.yaml")
+  cuda_image="$("${compose[@]}" config --images)"
+  [[ "$cuda_image" != "$cpu_image" ]]
+  # Cache the selected tag with the old CPU bytes. A normal start/update must
+  # build the CUDA target and replace the CPU container, without force flags.
+  docker tag "$cpu_image" "$cuda_image"
   "${compose[@]}" up --detach --wait --wait-timeout 300
   "${compose[@]}" exec -T laya python -c 'import torch; assert torch.version.cuda, torch.__version__'
   export LAYA_TEST_EXPECT_DEVICE=cpu

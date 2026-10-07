@@ -1,5 +1,6 @@
 services:
   laya:
+    image: ods/laya:0.3.28-cuda130-v1
     build:
       context: .
       dockerfile: Dockerfile

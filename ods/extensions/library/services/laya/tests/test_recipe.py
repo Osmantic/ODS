@@ -23,6 +23,13 @@ spec.loader.exec_module(setup)
 
 
 class RecipeTest(unittest.TestCase):
+    def test_backend_transition_has_a_distinct_compose_image_identity(self):
+        cpu = yaml.safe_load((SERVICE / 'compose.yaml').read_text())['services']['laya']
+        gpu = yaml.safe_load((SERVICE / 'compose.nvidia.yaml').read_text())['services']['laya']
+        self.assertNotEqual(cpu['image'], gpu['image'])
+        self.assertEqual(cpu['pull_policy'], 'build')
+        self.assertEqual(gpu['build']['target'], 'nvidia')
+
     @unittest.skipIf(os.name == 'nt', 'Actual ODS resolver runs in WSL on Windows')
     def test_actual_resolver_honors_cpu_opt_out_and_nvidia_overlay(self):
         with tempfile.TemporaryDirectory() as directory:

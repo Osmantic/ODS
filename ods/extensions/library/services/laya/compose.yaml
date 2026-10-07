@@ -1,5 +1,8 @@
 services:
   laya:
+    # Separate tags make backend changes visible to Compose even when an
+    # older engine does not recreate a container after rebuilding one tag.
+    image: ods/laya:0.3.28-cpu-v1
     # Rebuild changed sources/targets on update; an existing CPU image must
     # not be reused when the selected overlay switches to CUDA.
     pull_policy: build
