@@ -103,6 +103,9 @@ jobs:
                 return "$status"
               fi
               echo "Command failed (attempt ${attempt}/${max}): $*"
+              if [ "$1" = install_apt_checkout_prerequisites ]; then
+                configure_apt_ci_mirror
+              fi
               # A CachyOS CDN edge can serve a database/signature pair from
               # different syncs. Retry the next bundled mirror, retaining all
               # pacman signature checks and the original three-attempt bound.
@@ -166,6 +169,19 @@ jobs:
               printf '%s\n' 'download.max_silent_tries = 3'
               printf '%s\n' 'download.max_concurrent_connections = 2'
             } >/etc/zypp/zypp.conf.d/99-ods-ci-network.conf
+          }
+
+          configure_apt_ci_mirror() {
+            # The primary Ubuntu archive can be unreachable from CI over IPv4.
+            # Retry the same signed suites through Ubuntu's Azure mirror; leave
+            # third-party repositories, ports, keys and verification untouched.
+            for repository in "${1:-/etc/apt}/sources.list" \
+                "${1:-/etc/apt}"/sources.list.d/*.list \
+                "${1:-/etc/apt}"/sources.list.d/*.sources; do
+              [ -f "$repository" ] || continue
+              sed -i -E '/^[[:space:]]*(deb(-src)?[[:space:]]|URIs:)/ s#(^|[[:space:]])(https?://)(archive|security)\.ubuntu\.com/ubuntu(/?)([[:space:]]|$)#\1\2azure.archive.ubuntu.com/ubuntu\4\5#g' "$repository"
+            done
+            echo "Retrying official Ubuntu archives through azure.archive.ubuntu.com; signatures remain required."
           }
 
           install_apt_checkout_prerequisites() {

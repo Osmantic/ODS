@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import textwrap
 import unittest
 
@@ -22,6 +23,7 @@ class CheckoutRetryTests(unittest.TestCase):
 updates=0
 installs=0
 sleep() { :; }
+configure_apt_ci_mirror() { printf 'MIRROR-FALLBACK\n'; }
 timeout() { test "$1" = 180 || return 99; shift; "$@"; }
 apt-get() {
   test "$DEBIAN_FRONTEND" = noninteractive || return 98
@@ -54,6 +56,8 @@ retry install_apt_checkout_prerequisites
             env={**os.environ, "MODE": mode}, capture_output=True, text=True, timeout=10,
         )
         calls = [line for line in completed.stdout.splitlines() if line.startswith("APT ")]
+        updates = sum("update" in call.split() for call in calls)
+        self.assertEqual(completed.stdout.count("MIRROR-FALLBACK"), updates - 1)
         for call in calls:
             self.assertIn("Acquire::http::No-Cache=true", call)
             self.assertIn("Acquire::https::No-Cache=true", call)
@@ -92,6 +96,53 @@ retry install_apt_checkout_prerequisites
 
     def test_persistent_install_timeout_fails_after_three_attempts(self):
         self.assertEqual(self.run_case("install_timeout"), (124, ["update", "install"] * 3))
+
+    def test_mirror_fallback_preserves_suites_keys_and_unrelated_repositories(self):
+        source = WORKFLOW.read_text(encoding="utf-8")
+        start = source.index("          configure_apt_ci_mirror() {")
+        end = source.index("          install_apt_checkout_prerequisites() {", start)
+        function = textwrap.dedent(source[start:end])
+        entries = {
+            "sources.list": (
+                "deb [signed-by=/keys/ubuntu.gpg] http://archive.ubuntu.com/ubuntu jammy main\n"
+                "deb-src https://security.ubuntu.com/ubuntu/ jammy-security main\n"
+                "# deb http://archive.ubuntu.com/ubuntu jammy main\n"
+                "deb http://archive.ubuntu.com.evil.example/ubuntu jammy main\n"
+                "deb http://user@archive.ubuntu.com/ubuntu jammy main\n"
+                "deb http://archive.ubuntu.com:8080/ubuntu jammy main\n"
+                "deb http://archive.ubuntu.com/ubuntu/other jammy main\n"
+            ),
+            "sources.list.d/ubuntu.sources": (
+                "Types: deb deb-src\n"
+                "URIs: https://archive.ubuntu.com/ubuntu/\n"
+                "Suites: noble noble-updates\nComponents: main universe\n"
+                "Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg\n"
+            ),
+            "sources.list.d/custom.list": (
+                "deb http://deb.debian.org/debian bookworm main\n"
+                "deb http://ports.ubuntu.com/ubuntu-ports noble main\n"
+                "deb https://custom.example/ubuntu jammy main\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "sources.list.d").mkdir()
+            for name, value in entries.items():
+                (root / name).write_text(value)
+            command = [SHELL, "-e", "-c", function + '\nconfigure_apt_ci_mirror "$1"', "fixture", tmp]
+            subprocess.run(command, check=True, capture_output=True, timeout=10)
+            expected = dict(entries)
+            expected["sources.list"] = entries["sources.list"].replace(
+                "http://archive.ubuntu.com/ubuntu jammy main", "http://azure.archive.ubuntu.com/ubuntu jammy main", 1
+            ).replace("https://security.ubuntu.com/ubuntu/", "https://azure.archive.ubuntu.com/ubuntu/")
+            expected["sources.list.d/ubuntu.sources"] = entries["sources.list.d/ubuntu.sources"].replace(
+                "https://archive.ubuntu.com/ubuntu/", "https://azure.archive.ubuntu.com/ubuntu/"
+            )
+            for name, value in expected.items():
+                self.assertEqual((root / name).read_text(), value)
+            subprocess.run(command, check=True, capture_output=True, timeout=10)
+            for name, value in expected.items():
+                self.assertEqual((root / name).read_text(), value)
 
 
 if __name__ == "__main__":
