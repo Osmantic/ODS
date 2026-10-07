@@ -47,8 +47,12 @@ if [[ "${LAYA_TEST_CUDA_IMAGE:-0}" == 1 ]]; then
   # Hosted runners have no NVIDIA GPU. Verify the actual CUDA dependency lock
   # on each architecture, then run real inference through the CPU fallback.
   docker build --target nvidia --tag ods-laya:qualification-cuda "$recipe"
-  printf 'services:\n  laya:\n    image: ods-laya:qualification-cuda\n' > "$fixture/qualification.yaml"
-  "${compose[@]}" up --detach --no-build --wait --wait-timeout 300
+  # Keep the existing CPU image tag and use the normal update/start command.
+  # The recipe must rebuild for the selected target instead of silently
+  # recreating the old CPU image with new environment/device settings.
+  printf 'services:\n  laya:\n    image: ods-laya:qualification\n    build:\n      target: nvidia\n' > "$fixture/qualification.yaml"
+  "${compose[@]}" up --detach --wait --wait-timeout 300
+  "${compose[@]}" exec -T laya python -c 'import torch; assert torch.version.cuda, torch.__version__'
   export LAYA_TEST_EXPECT_DEVICE=cpu
   node "$recipe/tests/portal_adapter.integration.mjs"
 fi

@@ -1,5 +1,8 @@
 services:
   laya:
+    # Rebuild changed sources/targets on update; an existing CPU image must
+    # not be reused when the selected overlay switches to CUDA.
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
