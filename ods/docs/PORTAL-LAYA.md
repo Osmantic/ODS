@@ -216,8 +216,9 @@ the selected model to improve the comparison. The runner neither enables the
 extension nor changes services; separately verify disabled behavior and restore
 the owner's prior state after lifecycle qualification.
 
-For expected-use dataset cases, selection passes only with a saved Laya receipt,
-not merely an attempted tool call. Audit questions, source digest and original
+For expected-use dataset cases, selection passes only with a successful native
+batch result and a saved receipt matching its verified digest, not merely an
+attempted call or a file the model wrote itself. Audit questions, source digest and original
 IDs independently. The runner's single-question planning check is suitable for
 one-label tasks; it is not a general restriction on multi-output requests.
 `terminalComplete` records the stream/task outcome, not artifact correctness.

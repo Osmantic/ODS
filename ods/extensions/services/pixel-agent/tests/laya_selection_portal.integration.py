@@ -113,14 +113,16 @@ for name in args.cases:
         text = path.read_text(errors='replace')
         if run in text:
             sessions.append((path, text))
-    calls = []
+    calls, native_results = [], []
     for path, text in sessions:
         for line in text.splitlines():
             message = json.loads(line).get('message', {})
             if message.get('role') == 'assistant':
                 for content in message.get('content', []):
                     if isinstance(content, dict) and content.get('type') == 'toolCall':
-                        calls.append(dict(tool=content.get('name'), arguments=content.get('arguments', {})))
+                        calls.append(dict(id=content.get('id'), tool=content.get('name'), arguments=content.get('arguments', {})))
+            elif message.get('role') == 'toolResult':
+                native_results.append(message)
     (evidence/'calls.json').write_text(json.dumps(calls, indent=2))
     laya = []
     for call in calls:
@@ -128,12 +130,24 @@ for name in args.cases:
         if tool == 'tool_call':
             tool, supplied = supplied.get('id','').split(':')[-1], supplied.get('args', {})
         if tool in ('pixel_ods_laya', 'pixel_ods_laya_batch'):
-            laya.append(dict(tool=tool, arguments=supplied))
+            laya.append(dict(id=call['id'], tool=tool, arguments=supplied))
+    batch_ids = {call['id'] for call in laya if call['tool'] == 'pixel_ods_laya_batch' and call['id']}
+    verified_outputs = {}
+    for message in native_results:
+        if message.get('toolCallId') not in batch_ids or message.get('isError'):
+            continue
+        result = (message.get('details') or {}).get('result', message)
+        details = result.get('details') or {}
+        if result.get('isError') or details.get('kind') != 'laya-batch-report' or details.get('status') != 'completed' or not details.get('readbackVerified'):
+            continue
+        for output in details.get('outputs', []):
+            verified_outputs[output['path']] = output['sha256']
     receipts = []
     for path in folder.rglob('decisions.json'):
         data = json.loads(path.read_text())
         if data.get('kind') == 'laya-dataset-decisions':
             receipts.append(dict(path=str(path.relative_to(workspace)), rows=len(data['items']),
+                nativeReadbackVerified=verified_outputs.get(str(path.relative_to(workspace))) == hashlib.sha256(path.read_bytes()).hexdigest(),
                 questions=data['questions'],
                 idsPreserved=[item['sourceId'] for item in data['items']] == [item['id'] for item in items],
                 sourceMatches=data['source']['sha256'] == meta['sourceSha256']))
@@ -145,7 +159,7 @@ for name in args.cases:
         sessions=[str(p) for p,_ in sessions], receipts=receipts,
         files=[str(p.relative_to(folder)) for p in folder.rglob('*') if p.is_file()],
         artifactCompletion='requires independent saved-artifact and interaction audit')
-    result['selectionPass'] = bool(receipts) if case['expected'] == 'use' else not laya
+    result['selectionPass'] = any(v['nativeReadbackVerified'] for v in receipts) if case['expected'] == 'use' else not laya
     result['planningPass'] = all(len(v['arguments'].get('questions', [])) == 1 for v in laya)
     result['terminalComplete'] = completed and not errors and (task or {}).get('state') == 'completed'
     (evidence/'result.json').write_text(json.dumps(result, indent=2))
