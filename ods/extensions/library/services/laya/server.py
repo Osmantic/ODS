@@ -59,11 +59,17 @@ def read_key(path):
 def create_portal_app(*, router=None, key_file='/run/ods-laya/api-key'):
     from laya.serve import build_router, create_app
     os.environ['LAYA_API_KEY'] = read_key(key_file)
+
+    def qualify(candidate):
+        for checkpoint, language, text in STARTUP_CASES:
+            result = candidate.predict(text, QUESTIONS, model=checkpoint, lang=language)
+            validate_startup_result(result, checkpoint)
+
     if router is None:
-        router = build_router()
-    for checkpoint, language, text in STARTUP_CASES:
-        result = router.predict(text, QUESTIONS, model=checkpoint, lang=language)
-        validate_startup_result(result, checkpoint)
+        from runtime import build_qualified_router
+        router = build_qualified_router(build_router, qualify)
+    else:
+        qualify(router)
     app = create_app(router)
 
     @app.get('/ready')

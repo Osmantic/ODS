@@ -11,6 +11,10 @@ const client = createLayaClient({token, port});
 const health = await client.status();
 assert.equal(health.status, 'loaded');
 assert.equal(health.inferenceVerified, false, 'upstream health alone never proves inference');
+if (process.env.LAYA_TEST_EXPECT_DEVICE) {
+  assert.ok(health.device.startsWith(process.env.LAYA_TEST_EXPECT_DEVICE),
+    `Expected ${process.env.LAYA_TEST_EXPECT_DEVICE}, actual resident device is ${health.device}`);
+}
 const readiness = await fetch(`http://127.0.0.1:${port}/ready`, {signal: AbortSignal.timeout(5000)});
 assert.deepEqual(await readiness.json(), {status: 'ok', startupInferenceVerified: true});
 

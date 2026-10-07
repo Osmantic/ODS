@@ -8,8 +8,11 @@ There is no separate chat UI, provider key or model-selection step.
 
 Requires the ODS core Portal Laya integration, Docker Compose and the ODS owner's
 Node.js runtime. Windows runs the extension through WSL; Linux and macOS use the
-same Docker recipe. The service uses CPU on all platforms, including machines
-with GPUs. GPU acceleration is not part of this recipe.
+same Docker recipe. CPU works on all supported platforms. On NVIDIA hosts,
+ODS selects the CUDA overlay; `LAYA_ACCELERATION=auto` uses the GPU only when
+enough memory is available. Set it to `cpu` to keep the extension off the GPU,
+or `cuda` to require GPU startup instead of allowing CPU fallback. AMD and
+Apple hosts currently use CPU.
 
 ## Installation and storage
 
@@ -23,6 +26,18 @@ reuse the Docker cache volume. Ordinary decisions run locally.
 The container is limited to two CPUs and 8 GiB RAM. It verifies inference with
 all three checkpoints before becoming ready. Readiness is evidence that the
 models loaded and answered valid test questions, not an accuracy guarantee.
+
+The NVIDIA image uses hash-locked Torch 2.14.0 with CUDA 13.0 wheels and requires
+a compatible host NVIDIA driver and Docker GPU integration. Before loading
+models, automatic mode keeps 2 GiB of free GPU memory as headroom and limits
+Torch's allocator to at most 4 GiB and 25% of the device's total memory. If a
+2 GiB allocation budget cannot fit, it uses CPU. This allocator limit does not
+cover driver/context memory or reserve memory against other processes.
+Only one GPU checkpoint stays resident; it unloads after 60 idle seconds.
+Automatic mode retries startup allocation exhaustion once on CPU. Pinned Laya
+also supports scoped CPU fallback during inference. Authenticated `/health`
+reports actual resident devices and inference fallback counts; a GPU request
+alone is not evidence that inference ran there. No main-model settings change.
 
 The dedicated key is under `config/laya/`; Portal's private connection is at
 `~/.config/ods/laya-portal.json`. Neither contains a Dashboard or provider key.

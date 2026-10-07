@@ -22,6 +22,12 @@ service:
     pre_start: setup.sh
   description: Local classification and scoring used by the selected Portal model during a task.
   env_vars:
+    - key: LAYA_ACCELERATION
+      description: Acceleration (auto uses NVIDIA when memory is available; cpu keeps it on CPU)
+      default: auto
+      pattern: '^(auto|cpu|cuda)$'
+      format_description: auto, cpu or cuda
+      required: false
     - key: LAYA_PORT
       description: Local connection port
       default: '8017'

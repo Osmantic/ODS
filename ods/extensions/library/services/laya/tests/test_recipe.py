@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 from typing import Optional
 import unittest
@@ -21,6 +23,26 @@ spec.loader.exec_module(setup)
 
 
 class RecipeTest(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'Actual ODS resolver runs in WSL on Windows')
+    def test_actual_resolver_honors_cpu_opt_out_and_nvidia_overlay(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recipe = root / 'data/user-extensions/laya'
+            recipe.parent.mkdir(parents=True)
+            shutil.copytree(SERVICE, recipe, ignore=shutil.ignore_patterns('__pycache__'))
+            (root / 'docker-compose.base.yml').write_text('services: {}\n')
+            (root / 'docker-compose.nvidia.yml').write_text('services: {}\n')
+            for mode, gpu in [('auto', True), ('cpu', False), ('cuda', True)]:
+                (root / '.env').write_text('LAYA_ACCELERATION=' + mode + '\n')
+                environment = {key: value for key, value in os.environ.items()
+                               if key not in {'LAYA_ACCELERATION', 'ODS_SKIP_GPU_OVERLAYS',
+                                              'ODS_SKIP_GPU_OVERLAYS_FOR', 'ODS_MODE'}}
+                run = subprocess.run(['bash', str(ODS / 'scripts/resolve-compose-stack.sh'),
+                                      '--script-dir', str(root), '--gpu-backend', 'nvidia'],
+                                     env=environment, capture_output=True, text=True, check=True)
+                self.assertIn('compose.yaml', run.stdout)
+                self.assertEqual('compose.nvidia.yaml' in run.stdout, gpu, run.stdout + run.stderr)
+
     def test_setup_binds_the_actual_installed_recipe(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / 'ods'
@@ -51,6 +73,8 @@ class RecipeTest(unittest.TestCase):
                      'CORE_SERVICE_IDS': {'dashboard', 'dashboard-api', 'llama-server', 'open-webui'}}
         exec(compile(source[start:end], 'ODS extension compose scanner', 'exec'), namespace)
         namespace['_scan_compose_content'](SERVICE / 'compose.yaml', trusted=True, extension_id='laya')
+        namespace['_scan_compose_content'](SERVICE / 'compose.nvidia.yaml', trusted=True,
+                                          extension_id='laya', accelerator='nvidia')
 
     def test_port_uses_the_same_literal_grammar_as_ods(self):
         # Import the existing ODS parser; the fixture contains only owner config.

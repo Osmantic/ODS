@@ -1,0 +1,15 @@
+services:
+  laya:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: nvidia
+    # One visible GPU; the process enforces its own bounded allocator and
+    # checks free memory before choosing CUDA. CPU remains an owner option.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

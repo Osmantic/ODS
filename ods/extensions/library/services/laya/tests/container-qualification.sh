@@ -43,3 +43,12 @@ node "$recipe/tests/lifecycle.integration.mjs"
 "${compose[@]}" restart laya
 "${compose[@]}" up --detach --no-build --wait --wait-timeout 300
 node "$recipe/tests/portal_adapter.integration.mjs"
+if [[ "${LAYA_TEST_CUDA_IMAGE:-0}" == 1 ]]; then
+  # Hosted runners have no NVIDIA GPU. Verify the actual CUDA dependency lock
+  # on each architecture, then run real inference through the CPU fallback.
+  docker build --target nvidia --tag ods-laya:qualification-cuda "$recipe"
+  printf 'services:\n  laya:\n    image: ods-laya:qualification-cuda\n' > "$fixture/qualification.yaml"
+  "${compose[@]}" up --detach --no-build --wait --wait-timeout 300
+  export LAYA_TEST_EXPECT_DEVICE=cpu
+  node "$recipe/tests/portal_adapter.integration.mjs"
+fi

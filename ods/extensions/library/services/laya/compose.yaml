@@ -19,7 +19,7 @@ services:
       - /tmp:size=256m,mode=1777
     environment:
       HF_HOME: /cache/huggingface-${ODS_UID:-1000}
-      LAYA_DEVICE: cpu
+      LAYA_ACCELERATION: ${LAYA_ACCELERATION:-auto}
       LAYA_REVISION: reviewed
       LAYA_MODELS: english,multilingual,typed-decisions
       LAYA_PRELOAD: '1'

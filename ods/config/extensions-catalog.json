@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-06T19:20:40Z",
+  "generated_at": "2026-10-07T18:06:30Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -5167,6 +5167,14 @@
       "external_port_default": 8017,
       "health_endpoint": "/ready",
       "env_vars": [
+        {
+          "key": "LAYA_ACCELERATION",
+          "description": "Acceleration (auto uses NVIDIA when memory is available; cpu keeps it on CPU)",
+          "default": "auto",
+          "pattern": "^(auto|cpu|cuda)$",
+          "format_description": "auto, cpu or cuda",
+          "required": false
+        },
         {
           "key": "LAYA_PORT",
           "description": "Local connection port",
