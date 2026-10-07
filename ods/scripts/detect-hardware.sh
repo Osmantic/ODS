@@ -328,8 +328,9 @@ detect_intel_sysfs() {
         fi
     done
     (( count > 0 )) || return 1
-    # xe drives Battlemage+; i915 drives Alchemist/DG2
-    if lsmod 2>/dev/null | grep -qE '^(xe|i915) '; then
+    # xe drives Battlemage+; i915 drives Alchemist/DG2. /proc/modules is
+    # PATH-independent (lsmod lives in sbin, often missing from user PATHs).
+    if grep -qE '^(xe|i915) ' /proc/modules 2>/dev/null; then
         driver_loaded="true"
     fi
     [[ -z "$gpu_name" ]] && gpu_name="Intel Arc ($first_dev)"
