@@ -382,14 +382,6 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "intel" ]]; then
     _arc_vram_gb=$((GPU_VRAM / 1024))
     ai_ok "Intel Arc detected: $GPU_NAME (${_arc_vram_gb} GB VRAM, device ${GPU_DEVICE_ID:-unknown})"
     log "Intel Arc backend: GPU_BACKEND=intel, VRAM=${GPU_VRAM}MB, Level Zero=${_level_zero_ok}"
-
-    # Multi-GPU: emit a minimal topology so phase 03's assignment step has a
-    # GPU list to work with. SYCL has no P2P fabric ranking — links stay empty.
-    if [[ $GPU_COUNT -gt 1 ]] && declare -F detect_intel_topo >/dev/null 2>&1; then
-        GPU_TOPOLOGY_JSON=$(detect_intel_topo 2>>"$LOG_FILE") || GPU_TOPOLOGY_JSON="{}"
-        GPU_TOTAL_VRAM=$GPU_VRAM
-        log "Intel topology: $(echo "$GPU_TOPOLOGY_JSON" | jq -r '.gpu_count // 0') GPU(s)"
-    fi
 fi
 
 # -----------------------------------------------------------------------------
@@ -398,6 +390,16 @@ fi
 GPU_TOPOLOGY_JSON="{}"
 GPU_HAS_NVLINK="false"
 GPU_TOTAL_VRAM=0
+
+# Intel Arc multi-GPU: emit a minimal topology so phase 03's assignment step
+# has a GPU list to work with. SYCL has no P2P fabric ranking — links stay
+# empty; llama.cpp picks devices by ONEAPI_DEVICE_SELECTOR index anyway.
+if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "intel" ]] && declare -F detect_intel_topo >/dev/null 2>&1; then
+    GPU_TOPOLOGY_JSON=$(detect_intel_topo 2>>"$LOG_FILE") || GPU_TOPOLOGY_JSON="{}"
+    GPU_TOTAL_VRAM=$GPU_VRAM
+    log "Intel topology: $(echo "$GPU_TOPOLOGY_JSON" | jq -r '.gpu_count // 0') GPU(s)"
+fi
+
 if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "nvidia" ]]; then
     ai "Detecting multi-GPU topology..."
     if [[ -f "$SCRIPT_DIR/installers/lib/nvidia-topo.sh" ]]; then
