@@ -299,11 +299,14 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "intel" ]]; then
     #    detect_gpu() already confirmed it via sysfs; this adds a human-readable log line.
     _arc_pci_name=""
     if command -v lspci &>/dev/null; then
+        # Battlemage's lspci name is "Battlemage G31 [Intel Graphics]" — no
+        # "Arc" string — and a no-match grep would otherwise abort the phase
+        # under set -e via the command substitution.
         _arc_pci_name=$(lspci 2>/dev/null \
             | grep -i 'VGA\|Display\|3D' \
-            | grep -i 'Intel.*Arc\|Arc.*Intel\|Intel.*A[0-9][0-9][0-9]\|Intel.*B[0-9][0-9][0-9]' \
+            | grep -iE 'Intel.*Arc|Arc.*Intel|Intel.*A[0-9][0-9][0-9]|Intel.*B[0-9][0-9][0-9]|Battlemage' \
             | head -1 \
-            | sed 's/.*: //')
+            | sed 's/.*: //') || true
         if [[ -n "$_arc_pci_name" ]]; then
             ai_ok "lspci: $_arc_pci_name"
         else
@@ -312,7 +315,7 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "intel" ]]; then
                 | grep -i 'VGA\|Display\|3D' \
                 | grep -i 'Intel' \
                 | head -1 \
-                | sed 's/.*: //')
+                | sed 's/.*: //') || true
             [[ -n "$_arc_pci_name" ]] && ai_ok "lspci: $_arc_pci_name (Intel GPU)" \
                 || ai_warn "lspci: Intel Arc sysfs entry found but lspci VGA entry not visible — IOMMU or PCIe bridge may obscure it"
         fi
