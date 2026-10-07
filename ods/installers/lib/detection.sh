@@ -474,9 +474,22 @@ detect_gpu() {
         for card_dir in "${_intel_dirs[@]}"; do
             device=$(cat "$card_dir/device" 2>/dev/null) || device=""
             [[ -z "${GPU_DEVICE_ID:-}" ]] && GPU_DEVICE_ID="$device"
-            # Per-GPU local memory size (lmem_total_bytes on discrete Arc)
+            # Per-GPU local memory size. i915 exposes lmem_total_bytes; the
+            # newer xe driver (Battlemage's default) does not — use the
+            # largest PCI BAR aperture, which is the local-memory window.
             local vram_bytes
             vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
+            if [[ ! "$vram_bytes" =~ ^[0-9]+$ ]] || (( vram_bytes == 0 )); then
+                local _bar_start _bar_end _bar_max=0
+                if [[ -f "$card_dir/resource" ]]; then
+                    while read -r _bar_start _bar_end _; do
+                        [[ "$_bar_start" == 0x* && "$_bar_end" == 0x* && "$_bar_end" != "0x0000000000000000" ]] || continue
+                        (( _bar_end > _bar_start )) || continue
+                        (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
+                    done < "$card_dir/resource"
+                fi
+                vram_bytes=$_bar_max
+            fi
             GPU_VRAM=$(( GPU_VRAM + vram_bytes / 1048576 ))  # in MB
             # Marketing name from sysfs; only the first card names the set.
             if [[ -z "$GPU_NAME" && -f "$card_dir/product_name" ]]; then

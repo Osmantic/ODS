@@ -309,6 +309,19 @@ detect_intel_sysfs() {
         [[ -z "$first_dev" ]] && first_dev="$device"
         local vram
         vram=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram=0
+        if [[ ! "$vram" =~ ^[0-9]+$ ]] || (( vram == 0 )); then
+            # xe (Battlemage's driver) does not expose lmem_total_bytes; the
+            # largest PCI BAR aperture is the local-memory window instead.
+            local _bar_start _bar_end _bar_max=0
+            if [[ -f "$card_dir/resource" ]]; then
+                while read -r _bar_start _bar_end _; do
+                    [[ "$_bar_start" == 0x* && "$_bar_end" == 0x* && "$_bar_end" != "0x0000000000000000" ]] || continue
+                    (( _bar_end > _bar_start )) || continue
+                    (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
+                done < "$card_dir/resource"
+            fi
+            vram=$_bar_max
+        fi
         total_vram=$(( total_vram + vram ))
         if [[ -z "$gpu_name" && -f "$card_dir/product_name" ]]; then
             gpu_name=$(cat "$card_dir/product_name" 2>/dev/null) || gpu_name=""

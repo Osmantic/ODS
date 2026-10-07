@@ -68,7 +68,21 @@ got="$(detect "$bmg_noname")"
     || fail "unnamed Battlemage must fall back to a device-ID name, got: $got"
 pass "no lspci / no product_name still detects"
 
-# Battlemage on a kernel that does not expose lmem_total_bytes: still detects.
+# Battlemage on the xe driver: no lmem_total_bytes, VRAM comes from the
+# largest PCI BAR aperture (32 GiB aperture on the real BMG-G31 below).
+bmg_xe="$tmp/bmg-xe/drm"
+make_intel_card "$bmg_xe" card0 0xe223 0
+dev="$bmg_xe/card0/device"
+printf '0x0000002800000000 0x0000002800ffffff 0x000000000014220c\n' > "$dev/resource"
+printf '0x0000001800000000 0x0000001fffffffff 0x000000000014220c\n' >> "$dev/resource"
+printf '0x00000000fc200000 0x00000000fc3fffff 0x0000000000046200\n' >> "$dev/resource"
+
+got="$(detect "$bmg_xe")"
+[[ "$got" == "intel|1|Intel Arc (0xe223)|32768|discrete|0xe223" ]] \
+    || fail "xe card without lmem must read VRAM from the largest BAR, got: $got"
+pass "xe fallback reads VRAM from the PCI BAR aperture"
+
+# Battlemage with no VRAM evidence at all: still detects.
 bmg_novram="$tmp/bmg-novram/drm"
 make_intel_card "$bmg_novram" card0 0xe20b 0
 
