@@ -26,7 +26,7 @@ Intent classes:
 
 Default policy (policy.yaml):
   - ExecuteCommand: allowlist of safe commands; deny everything else
-  - WriteFile: deny writes outside /home/node/.openclaw/workspace
+  - WriteFile: deny writes outside the Hermes data folders under /opt/data
   - Rate limit: 60 requests/minute per session
   - Windowed limits: per-intent sliding-window caps (5m/1h/1d) that can
     hard-deny or escalate to human approval
@@ -102,7 +102,7 @@ logger = logging.getLogger("ape")
 API_KEY = _API_KEY or secrets.token_hex(32)
 
 if not _API_KEY:
-    logger.warning(f"APE_API_KEY not set - auto-generated key: {API_KEY[:16]}... (set APE_API_KEY env var to use a fixed key)")
+    logger.warning("APE_API_KEY not set - generated a random key for this run (set APE_API_KEY to use a fixed key)")
 
 if not STRICT_MODE:
     logger.warning("WARNING: APE is running in advisory mode. Tool calls are logged but NOT blocked. Set APE_STRICT_MODE=true to enforce policies.")
@@ -134,8 +134,15 @@ DEFAULT_POLICY = {
         },
         "WriteFile": {
             "mode": "path_guard",
+            # The Hermes paths from config/ape/policy.yaml (HERMES_HOME=/opt/data)
+            # plus /tmp, as before; used only when that file is missing.
             "allowed_paths": [
-                "/home/node/.openclaw/workspace",
+                "/opt/data/workspace",
+                "/opt/data/skills",
+                "/opt/data/memories",
+                "/opt/data/sessions",
+                "/opt/data/cron",
+                "/opt/data/plans",
                 "/tmp",
             ],
         },
@@ -1065,8 +1072,9 @@ async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
                         entries.pop(0)
                     entries.append(json.loads(line))
         return {"entries": entries, "total": total_lines}
-    except Exception as e:
-        return {"entries": [], "error": str(e)}
+    except (OSError, ValueError) as e:
+        logger.warning("audit log read failed: %s", e)
+        return {"entries": [], "error": "audit log unreadable"}
 
 
 @app.get("/policy")

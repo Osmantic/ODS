@@ -195,9 +195,10 @@ def test_gpu_recipe_inventory_is_complete(backend, recipes):
 def test_installed_library_recipe_passes_the_compose_resolver(recipe, tmp_path, monkeypatch):
     """dashboard-api accepting a recipe is not enough: every `ods` command and the
     host agent's install build resolve the stack through resolve-compose-stack.sh,
-    which drops a user extension whose compose its own scan rejects (gaia's
-    extra_hosts made the install fail with "Invalid installation Compose
-    dependency graph"; GPU overlays were dropped, so services ran without the GPU).
+    which drops a user extension whose compose its own scan rejects (the former
+    gaia recipe's extra_hosts made the install fail with "Invalid installation
+    Compose dependency graph"; GPU overlays were dropped, so services ran without
+    the GPU).
     No file of any curated recipe may be rejected."""
     root = _install_root(tmp_path, monkeypatch)
     extensions._install_from_library(recipe.name)
@@ -234,7 +235,6 @@ def test_resolver_keeps_every_installed_library_recipe(backend, tmp_path, monkey
             expected.append(f"data/user-extensions/{recipe.name}/compose.yaml")
             if (recipe / f"compose.{backend}.yaml").is_file():
                 expected.append(f"data/user-extensions/{recipe.name}/compose.{backend}.yaml")
-    assert "data/user-extensions/gaia/compose.yaml" in expected
     gpu_recipes = {"nvidia": NVIDIA_GPU_RECIPES, "amd": AMD_GPU_RECIPES}.get(backend, [])
     for name in gpu_recipes:
         assert f"data/user-extensions/{name}/compose.{backend}.yaml" in expected

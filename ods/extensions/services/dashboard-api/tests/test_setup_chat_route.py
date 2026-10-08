@@ -72,24 +72,31 @@ def test_chat_uses_live_url_path_and_model(test_client, monkeypatch, tmp_path, b
      "http://litellm.example:4000/v1", "configured-model", ""),
     ({"LLM_API_URL":"http://remote:4000/v1", "OPEN_WEBUI_LLM_BASE_URL":"http://remote:4000/other/v1",
       "OPEN_WEBUI_LLM_API_KEY":"path-bound-key"}, "http://remote:4000/v1", "configured-model", ""),
+    # A retired Lemonade key or id is never sent, whatever the .env still says.
     ({"LLM_API_URL":"http://lemonade:13305/api/v1", "LEMONADE_BASE_URL":"http://lemonade:13305",
-      "LEMONADE_API_KEY":"lemonade-key", "LEMONADE_MODEL":"actual-loaded-id"},
-     "http://lemonade:13305/api/v1", "actual-loaded-id", "lemonade-key"),
+      "LEMONADE_API_KEY":"must-not-send", "LEMONADE_MODEL":"must-not-assume"},
+     "http://lemonade:13305/api/v1", "configured-model", ""),
     ({"LLM_API_URL":"http://other:13305/api/v1", "LEMONADE_BASE_URL":"http://lemonade:13305",
       "LEMONADE_API_KEY":"must-not-send"}, "http://other:13305/api/v1", "configured-model", ""),
     ({"LLM_API_URL":"http://llama-server:8080", "GGUF_FILE":"actual-model.gguf"},
      "http://llama-server:8080/v1", "actual-model.gguf", ""),
-    ({"LLM_API_URL":"http://host.docker.internal:13305", "LLM_BACKEND":"lemonade",
-      "AMD_INFERENCE_PORT":"13305", "LEMONADE_BASE_URL":"", "LEMONADE_CONTAINER_BASE_URL":"",
-      "LEMONADE_MODEL":"extra.imported-model.gguf", "GGUF_FILE":"imported-model.gguf", "LEMONADE_API_KEY":"native-key"},
-     "http://host.docker.internal:13305/api/v1", "extra.imported-model.gguf", "native-key"),
-    ({"LLM_API_URL":"http://llama-server:8080", "AMD_INFERENCE_RUNTIME":"lemonade", "GGUF_FILE":"imported.gguf"},
-     "http://llama-server:8080/api/v1", "extra.imported.gguf", ""),
-    ({"LLM_API_URL":"http://other-host:13305", "LLM_BACKEND":"lemonade", "AMD_INFERENCE_PORT":"13305",
+    # An unmigrated AMD .env: llama-server serves the GGUF alias under /v1.
+    ({"LLM_API_URL":"http://llama-server:8080", "LLM_BACKEND":"lemonade", "AMD_INFERENCE_RUNTIME":"lemonade",
+      "LEMONADE_MODEL":"extra.imported.gguf", "GGUF_FILE":"imported.gguf", "LEMONADE_API_KEY":"must-not-send"},
+     "http://llama-server:8080/v1", "imported.gguf", ""),
+    ({"LLM_API_URL":"http://other-host:13305", "LLM_BACKEND":"lemonade",
       "LEMONADE_API_KEY":"must-not-send", "LEMONADE_MODEL":"must-not-assume"},
-     "http://other-host:13305/api/v1", "configured-model", ""),
-    ({"LLM_API_URL":"http://host.docker.internal:9999", "LLM_BACKEND":"lemonade", "AMD_INFERENCE_PORT":"13305",
-      "LEMONADE_API_KEY":"must-not-send"}, "http://host.docker.internal:9999/api/v1", "configured-model", ""),
+     "http://other-host:13305/v1", "configured-model", ""),
+    # A Windows-hosted llama-server needs its key, which only LiteLLM holds.
+    ({"LLM_API_URL":"http://host.docker.internal:18080", "AMD_INFERENCE_LOCATION":"host",
+      "LLM_BACKEND":"llama-server", "GGUF_FILE":"native.gguf", "LITELLM_KEY":"gateway-key"},
+     "http://litellm:4000/v1", "default", "gateway-key"),
+    ({"LLM_API_URL":"http://host.docker.internal:13305", "AMD_INFERENCE_LOCATION":"host",
+      "ODS_MODEL_SWITCHBOARD":"enabled", "LITELLM_KEY":"gateway-key"},
+     "http://litellm:4000/v1", "ods/current", "gateway-key"),
+    # The owner's own server is reached as configured.
+    ({"LLM_API_URL":"http://host.docker.internal:9999", "AMD_INFERENCE_LOCATION":"host",
+      "LLM_BACKEND":"external"}, "http://host.docker.internal:9999/v1", "configured-model", ""),
 ])
 def test_credentials_and_model_are_bound_to_the_selected_backend(monkeypatch, tmp_path, values, url, model, key):
     monkeypatch.setattr(config, "INSTALL_DIR", str(tmp_path))

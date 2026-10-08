@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Regression: Docker full-model hot-swap failures must restore the last
-# known-good model config and recreate llama-server from that config.
+# known-good model config and recreate llama-server from that config. AMD runs
+# the same llama.cpp container as NVIDIA: /health, crash-loop detection and
+# the rollback recreate apply to both.
 
 set -euo pipefail
 
@@ -98,9 +100,6 @@ case "${1:-}" in
         if [[ " $* " == *" up -d --force-recreate --no-deps llama-server "* ]]; then
             active_gguf="$(env_value GGUF_FILE)"
             printf 'compose-up:%s\n' "$active_gguf" >> "${ODS_FAKE_DOCKER_LOG:?}"
-            if [[ "$active_gguf" == "Full.gguf" ]]; then
-                printf 'model_list:\n  - model_name: promoted\n' > config/litellm/lemonade.yaml
-            fi
             exit 0
         fi
         exit 0
@@ -128,74 +127,77 @@ exit 0
 EOF
 chmod +x "$fakebin/docker"
 
-cat > "$install_dir/.env" <<'EOF'
+run_rollback_case() {
+    local backend="$1"
+    rm -rf "$install_dir" "$docker_calls" "$tmp/curl-calls.log" "$tmp/bootstrap.log"
+    mkdir -p "$install_dir/data/models" "$install_dir/config/llama-server" "$install_dir/scripts"
+    cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
+    cat > "$install_dir/.env" <<EOF
 GGUF_FILE=Bootstrap.gguf
 LLM_MODEL=bootstrap-model
 MAX_CONTEXT=8192
 CTX_SIZE=8192
-GPU_BACKEND=nvidia
+GPU_BACKEND=${backend}
 OLLAMA_PORT=11434
 EOF
 
-cat > "$install_dir/config/llama-server/models.ini" <<'EOF'
+    cat > "$install_dir/config/llama-server/models.ini" <<'EOF'
 [bootstrap-model]
 filename = Bootstrap.gguf
 load-on-startup = true
 n-ctx = 8192
 EOF
 
-cat > "$install_dir/config/litellm/lemonade.yaml" <<'EOF'
-model_list:
-  - model_name: bootstrap
-EOF
+    printf -- '-f docker-compose.base.yml -f docker-compose.%s.yml\n' "$backend" > "$install_dir/.compose-flags"
 
-cat > "$install_dir/.compose-flags" <<'EOF'
--f docker-compose.base.yml -f docker-compose.nvidia.yml
-EOF
+    printf 'bootstrap\n' > "$install_dir/data/models/Bootstrap.gguf"
+    printf 'full-model\n' > "$install_dir/data/models/Full.gguf"
 
-printf 'bootstrap\n' > "$install_dir/data/models/Bootstrap.gguf"
-printf 'full-model\n' > "$install_dir/data/models/Full.gguf"
+    curl_calls="$tmp/curl-calls.log"
 
-curl_calls="$tmp/curl-calls.log"
+    set +e
+    PATH="$fakebin:$PATH" ODS_FIXTURE_OWNER_HOME="$tmp/owner-home" ODS_FAKE_DOCKER_LOG="$docker_calls" ODS_FAKE_CURL_LOG="$curl_calls" bash "$TARGET" \
+        "$install_dir" \
+        "Full.gguf" \
+        "https://example.invalid/Full.gguf" \
+        "" \
+        "full-model" \
+        "32768" \
+        "Bootstrap.gguf" \
+        > "$tmp/bootstrap.log" 2>&1
+    rc=$?
+    set -e
 
-set +e
-PATH="$fakebin:$PATH" ODS_FIXTURE_OWNER_HOME="$tmp/owner-home" ODS_FAKE_DOCKER_LOG="$docker_calls" ODS_FAKE_CURL_LOG="$curl_calls" bash "$TARGET" \
-    "$install_dir" \
-    "Full.gguf" \
-    "https://example.invalid/Full.gguf" \
-    "" \
-    "full-model" \
-    "32768" \
-    "Bootstrap.gguf" \
-    > "$tmp/bootstrap.log" 2>&1
-rc=$?
-set -e
+    [[ $rc -ne 0 ]] || fail "bootstrap-upgrade must fail when Docker llama-server never becomes healthy"
+    grep -q '^GGUF_FILE=Bootstrap.gguf$' "$install_dir/.env" \
+        || fail "Docker hot-swap failure must restore previous GGUF_FILE"
+    grep -q '^LLM_MODEL=bootstrap-model$' "$install_dir/.env" \
+        || fail "Docker hot-swap failure must restore previous LLM_MODEL"
+    grep -q '^CTX_SIZE=8192$' "$install_dir/.env" \
+        || fail "Docker hot-swap failure must restore previous CTX_SIZE"
+    grep -q 'filename = Bootstrap.gguf' "$install_dir/config/llama-server/models.ini" \
+        || fail "Docker hot-swap failure must restore previous models.ini"
+    if grep -q '/api/v1/' "$curl_calls"; then
+        fail "the $backend hot-swap must probe llama.cpp /health, not a Lemonade /api/v1 route"
+    fi
+    grep -q 'compose-up:Full.gguf' "$docker_calls" \
+        || fail "test did not exercise the full-model compose recreate"
+    grep -q 'compose-up:Bootstrap.gguf' "$docker_calls" \
+        || fail "rollback must recreate llama-server from the restored bootstrap config"
+    grep -q 'Restoring previous active model config after Docker llama-server swap failure' "$tmp/bootstrap.log" \
+        || fail "bootstrap-upgrade should log the Docker rollback"
+    grep -q 'llama-server container exited or is restarting while loading the full model' "$tmp/bootstrap.log" \
+        || fail "bootstrap-upgrade should detect a failed llama-server container before waiting for the full health timeout"
+    grep -q 'continuing within restart grace' "$tmp/bootstrap.log" \
+        || fail "bootstrap-upgrade should tolerate transient llama-server restarts before rollback"
+    health_attempts=$(grep -c '^health:' "$curl_calls" 2>/dev/null || true)
+    [[ "$health_attempts" -lt 60 ]] \
+        || fail "failed Docker hot-swap should not wait for all health attempts after the container is restarting"
+    grep -q '"status": "failed"' "$install_dir/data/bootstrap-status.json" \
+        || fail "failed Docker hot-swap must mark bootstrap-status failed"
 
-[[ $rc -ne 0 ]] || fail "bootstrap-upgrade must fail when Docker llama-server never becomes healthy"
-grep -q '^GGUF_FILE=Bootstrap.gguf$' "$install_dir/.env" \
-    || fail "Docker hot-swap failure must restore previous GGUF_FILE"
-grep -q '^LLM_MODEL=bootstrap-model$' "$install_dir/.env" \
-    || fail "Docker hot-swap failure must restore previous LLM_MODEL"
-grep -q '^CTX_SIZE=8192$' "$install_dir/.env" \
-    || fail "Docker hot-swap failure must restore previous CTX_SIZE"
-grep -q 'filename = Bootstrap.gguf' "$install_dir/config/llama-server/models.ini" \
-    || fail "Docker hot-swap failure must restore previous models.ini"
-grep -q 'model_name: bootstrap' "$install_dir/config/litellm/lemonade.yaml" \
-    || fail "Docker hot-swap failure must restore the previous Lemonade route"
-grep -q 'compose-up:Full.gguf' "$docker_calls" \
-    || fail "test did not exercise the full-model compose recreate"
-grep -q 'compose-up:Bootstrap.gguf' "$docker_calls" \
-    || fail "rollback must recreate llama-server from the restored bootstrap config"
-grep -q 'Restoring previous active model config after Docker llama-server swap failure' "$tmp/bootstrap.log" \
-    || fail "bootstrap-upgrade should log the Docker rollback"
-grep -q 'llama-server container exited or is restarting while loading the full model' "$tmp/bootstrap.log" \
-    || fail "bootstrap-upgrade should detect a failed llama-server container before waiting for the full health timeout"
-grep -q 'continuing within restart grace' "$tmp/bootstrap.log" \
-    || fail "bootstrap-upgrade should tolerate transient llama-server restarts before rollback"
-health_attempts=$(grep -c '^health:' "$curl_calls" 2>/dev/null || true)
-[[ "$health_attempts" -lt 60 ]] \
-    || fail "failed Docker hot-swap should not wait for all health attempts after the container is restarting"
-grep -q '"status": "failed"' "$install_dir/data/bootstrap-status.json" \
-    || fail "failed Docker hot-swap must mark bootstrap-status failed"
+    pass "$backend Docker hot-swap failure restores previous active model config"
+}
 
-pass "Docker hot-swap failure restores previous active model config"
+run_rollback_case nvidia
+run_rollback_case amd

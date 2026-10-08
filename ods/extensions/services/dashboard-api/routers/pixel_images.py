@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from pixel_chat_results import owner_namespace
 from pixel_image_input import ImageInputError, MAX_IMAGE_BYTES
-from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted
+from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted, custody_failure_reason
 from pixel_image_transport import ImageResolutionError, resolve_image_parts
 from pixel_image_admission import ImageWorkBudget
 from security import verify_api_key
@@ -52,6 +52,12 @@ def _reserve():
     return lease
 
 
+def _storage_failure_description(error):
+    reason = custody_failure_reason(error)
+    name = type(error).__name__
+    return name if reason is None else f"{name}; custody={reason}"
+
+
 async def _call(method, *args, reservation=None):
     lease = reservation if reservation is not None else _reserve()
     try:
@@ -66,7 +72,7 @@ async def _call(method, *args, reservation=None):
         raise HTTPException(status_code=410, detail=str(exc)) from exc
     except Exception as exc:
         # Do not expose paths, image data, credentials, or decoder diagnostics.
-        logger.warning("Portal image storage operation failed (%s)", type(exc).__name__)
+        logger.warning("Portal image storage operation failed (%s)", _storage_failure_description(exc))
         raise HTTPException(status_code=503, detail="Portal image storage is unavailable") from exc
     finally:
         if reservation is None:
@@ -88,7 +94,7 @@ async def conversation_storage(method, owner, chat_id):
     except ImageStoreCapacity as exc:
         raise HTTPException(507, str(exc)) from None
     except Exception as exc:
-        logger.warning("Portal conversation lifecycle unavailable (%s)", type(exc).__name__)
+        logger.warning("Portal conversation lifecycle unavailable (%s)", _storage_failure_description(exc))
         raise HTTPException(503, "Conversation image deletion could not be confirmed. Retry before deleting local history.") from None
 
 

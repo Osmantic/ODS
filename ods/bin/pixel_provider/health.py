@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 import platform
 import socket
-import ssl
 import sys
 import threading
 from urllib.parse import urlsplit
@@ -26,7 +25,7 @@ def normalize_health(value):
 
 
 def probe_provider(provider, credential):
-    from pixel_provider.connection_transport import _target
+    from pixel_provider.connection_transport import _target, tls_context
     from pixel_provider.store import MAX_BYTES, StoreError, decode_document
     parts = urlsplit(provider["baseUrl"])
     client = sock = None
@@ -34,7 +33,7 @@ def probe_provider(provider, credential):
         address, port = _target(parts)
         sock = socket.create_connection((address, port), timeout=3)
         if parts.scheme == "https":
-            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=parts.hostname)
+            sock = tls_context().wrap_socket(sock, server_hostname=parts.hostname)
         sock.settimeout(3)
         client = http.client.HTTPConnection(parts.hostname, port, timeout=3)
         client.sock = sock

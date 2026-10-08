@@ -3,7 +3,7 @@ import { useModels } from '../useModels'
 
 const response = (body, status = 200) => ({ ok: status < 400, status, json: async () => body })
 const management = { managed: true, canActivate: true, canUnload: true, running: true }
-const payload = extra => ({ models: [], odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade', externalLemonade: true, ...extra })
+const payload = extra => ({ models: [], odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true, ...extra })
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
 test.each([

@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fixture="$(mktemp -d)"
-trap 'rm -f -- "$fixture/output" "$fixture/log"; rmdir -- "$fixture"' EXIT
+trap 'rm -rf -- "$fixture/existing"; rm -f -- "$fixture/output" "$fixture/log"; rmdir -- "$fixture"' EXIT
 
 if env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
     INSTALL_DIR="$fixture/install" LOG_FILE="$fixture/log" \
@@ -30,6 +30,39 @@ for optional in --voice --rag; do
         echo "FAIL: $optional dependency error was unclear" >&2; exit 1
     }
 done
+
+# An installation whose Extensions Library added voice and RAG without Open
+# WebUI keeps that selection on a rerun. The log directory is missing on
+# purpose: install-core stops at the log check right after the selection
+# checks, so nothing is installed or changed.
+existing="$fixture/existing"
+mkdir -p "$existing/extensions/services/whisper" "$existing/extensions/services/qdrant"
+printf 'ENABLE_OPEN_WEBUI=false\n' > "$existing/.env"
+: > "$existing/extensions/services/whisper/compose.yaml"
+: > "$existing/extensions/services/qdrant/compose.yaml"
+env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
+    INSTALL_DIR="$existing" LOG_FILE="$fixture/missing/log" \
+    "$ROOT/install-core.sh" --pixel --non-interactive --skip-docker \
+    >"$fixture/output" 2>&1 || true
+if grep -q 'currently require Open WebUI' "$fixture/output" \
+    || ! grep -q 'Keeping the installed voice and RAG services without Open WebUI' "$fixture/output" \
+    || ! grep -q 'Installer log directory is missing or unsafe' "$fixture/output"; then
+    echo 'FAIL: a rerun refused the voice and RAG selection the Library installed' >&2
+    cat "$fixture/output" >&2
+    exit 1
+fi
+[[ "$(cat "$existing/.env")" == 'ENABLE_OPEN_WEBUI=false' && ! -e "$fixture/missing" ]] || {
+    echo 'FAIL: the rerun selection check changed installation state' >&2; exit 1;
+}
+mkdir -p "$existing/extensions/services/ods-proxy"
+: > "$existing/extensions/services/ods-proxy/compose.yaml"
+if env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
+    INSTALL_DIR="$existing" LOG_FILE="$fixture/missing/log" \
+    "$ROOT/install-core.sh" --pixel --non-interactive --skip-docker \
+    >"$fixture/output" 2>&1 \
+    || ! grep -q 'currently require Open WebUI' "$fixture/output"; then
+    echo 'FAIL: a rerun accepted the ODS proxy without Open WebUI' >&2; exit 1
+fi
 
 resolve() {
     ODS_GATEWAY_ONLY=false ENABLE_OPEN_WEBUI="$1" \

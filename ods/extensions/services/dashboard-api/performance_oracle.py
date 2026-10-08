@@ -47,6 +47,8 @@ _EVIDENCE_PATH = Path(__file__).with_name("performance_evidence.json")
 _DEFAULT_RECOMMENDATION_POLICY = "catalog-fit-pre-download"
 _VRAM_FIT_TOLERANCE_GB = 0.25
 _MODEL_SELECTOR_POLICY = _SHARED_SELECTOR_POLICY
+# Retired Lemonade id forms, still matched for one release so persisted
+# receipts and performance rows keep naming their GGUF.
 _RUNTIME_MODEL_PREFIXES = ("extra.", "user.")
 _AGENT_MIN_LOCAL_TOKENS_PER_SEC = 2.0
 _MODEL_PUBLISHERS = (
@@ -151,14 +153,15 @@ def read_env_value(key: str, install_dir: str | Path) -> str:
     return read_env_file_value(key, install_dir)
 
 
-def read_env_file_value(key: str, install_dir: str | Path) -> str:
+def read_env_file_value(key: str, install_dir: str | Path, *, raise_on_error: bool = False) -> str:
     env_path = Path(install_dir) / ".env"
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 return parse_env_value(line.split("=", 1)[1])
     except OSError:
-        pass
+        if raise_on_error:
+            raise
     return ""
 
 
@@ -325,11 +328,21 @@ def model_compatibility_runtime_context(
         return os.environ.get(key, "")
 
     llm_backend = runtime or runtime_value("LLM_BACKEND")
+    ods_mode = runtime_value("ODS_MODE")
+    # Round F serves every managed model through llama-server: an unmigrated
+    # Lemonade .env reads as it, and evidence scoped to Lemonade never applies.
+    if normalize_key(llm_backend) == "lemonade":
+        llm_backend = "llama-server"
+    if normalize_key(ods_mode) == "lemonade":
+        ods_mode = "local"
     gpu_backend = (
         getattr(gpu_info, "gpu_backend", None)
         or runtime_value("GPU_BACKEND")
     )
-    explicit_host_values = {
+    # Host-scoped catalog evidence was recorded on named fleet machines. Match it
+    # only against an explicit identity, never the machine's own hostname, so a
+    # user's computer that happens to share a fleet name gets no fleet verdicts.
+    host_values = {
         normalize_key(value)
         for value in (
             runtime_value("ODS_FLEET_HOST_ID"),
@@ -337,21 +350,11 @@ def model_compatibility_runtime_context(
         )
         if normalize_key(value)
     }
-    host_values = explicit_host_values or {
-        normalize_key(value)
-        for value in (
-            runtime_value("ODS_DEVICE_NAME"),
-            runtime_value("COMPUTERNAME"),
-            runtime_value("HOSTNAME"),
-            platform.node(),
-        )
-        if normalize_key(value)
-    }
     return {
         "llmBackend": normalize_key(llm_backend),
         "runtime": normalize_key(llm_backend),
         "gpuBackend": normalize_key(gpu_backend),
-        "odsMode": normalize_key(runtime_value("ODS_MODE")),
+        "odsMode": normalize_key(ods_mode),
         "host": sorted(host_values)[0] if host_values else "",
         "hosts": sorted(host_values),
     }
@@ -454,7 +457,6 @@ _COMPATIBILITY_USER_COPY = {
 _COMPATIBILITY_APP_NAMES = {
     "litellm": "LiteLLM",
     "openWebui": "Open WebUI",
-    "openclaw": "OpenClaw",
     "opencode": "OpenCode",
     "perplexica": "Perplexica",
 }
@@ -1088,6 +1090,7 @@ def _context_options(
     model: dict[str, Any],
     runtime_profile: dict[str, Any] | None,
     gpu_info: Optional[GPUInfo],
+    system_ram_gb: int | None = None,
 ) -> list[dict[str, Any]]:
     context_limit_known = model.get("context_limit_known") is not False
     try:
@@ -1108,7 +1111,7 @@ def _context_options(
         if value <= maximum
     }
     values.update({recommended, maximum})
-    capacity = _usable_model_memory_gb(gpu_info) if gpu_info else 0.0
+    capacity = _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 0.0
     return [
         {
             "contextLength": value,
@@ -1373,7 +1376,7 @@ def _recommendation_from_env(install_dir: str | Path) -> dict[str, Any]:
 def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) -> Optional[GPUInfo]:
     """Build a conservative GPU surrogate for Windows AMD native runtimes.
 
-    On Windows AMD installs, dashboard-api runs inside Docker while Lemonade or
+    On Windows AMD installs, dashboard-api runs inside Docker while
     llama-server runs on the host. The container often cannot inspect the host
     APU/GPU directly, so get_gpu_info() can be None even though the host runtime
     can load a downloaded model. Use the installer-written runtime contract
@@ -1388,13 +1391,12 @@ def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) 
 
     location = normalize_key(runtime_value("AMD_INFERENCE_LOCATION"))
     runtime = normalize_key(runtime_value("AMD_INFERENCE_RUNTIME"))
-    llm_backend = normalize_key(runtime_value("LLM_BACKEND"))
     managed = normalize_key(runtime_value("AMD_INFERENCE_MANAGED"))
     if location not in {"host", "local", ""}:
         return None
-    if runtime not in {"lemonade", "llama-server", ""} and llm_backend != "lemonade":
+    if runtime not in {"llama-server", ""}:
         return None
-    if managed in {"false", "no", "off"} and not runtime and llm_backend != "lemonade":
+    if managed in {"false", "no", "off"} and not runtime:
         return None
     profile_text = normalize_key(" ".join([
         runtime_value("MODEL_RUNTIME_PROFILE"),
@@ -1418,7 +1420,8 @@ def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) 
     )
 
 
-def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool) -> str:
+def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool,
+                        system_ram_gb: int | None = None) -> str:
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
     context_k = int(_effective_context_length(model, runtime_profile) / 1024) if _effective_context_length(model, runtime_profile) else 0
     required = _effective_required_memory_gb(model, runtime_profile)
@@ -1432,7 +1435,7 @@ def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], conf
         )
     if gpu_info:
         detected = round(gpu_info.memory_total_mb / 1024, 1)
-        usable = round(_usable_model_memory_gb(gpu_info), 1)
+        usable = round(_usable_model_memory_gb(gpu_info, system_ram_gb), 1)
         if usable < detected:
             basis = f"{usable}GB usable {gpu_info.gpu_backend.upper()} memory ({detected}GB detected)"
         else:
@@ -1514,8 +1517,9 @@ def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: Optional[
     return ranked[0] if ranked else None
 
 
-def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> dict[str, Any]:
-    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info)
+def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                                system_ram_gb: int | None = None) -> dict[str, Any]:
+    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info, system_ram_gb)
     context = _effective_context_length(model, runtime_profile)
     vram_required = float(model.get("vram_required_gb") or 0)
     selector_required = _effective_required_memory_gb(model, runtime_profile)
@@ -1529,8 +1533,8 @@ def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInf
         "contextLength": context,
         "specialty": model.get("specialty"),
         "runtimeProfile": runtime_profile.get("id") if runtime_profile else None,
-        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info) if gpu_info else 4.0),
-        "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False),
+        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 4.0),
+        "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False, system_ram_gb=system_ram_gb),
     }
 
 
@@ -1560,10 +1564,13 @@ def _measured_native_activation(model, path, data_root, install_dir, gpu_info, s
     value = lambda key: read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
     if (value("AMD_INFERENCE_LOCATION") != "host"
             or not value("AMD_INFERENCE_RUNTIME_MODE").startswith("windows-")
-            or value("LLM_BACKEND") != "lemonade"
-            or value("AMD_INFERENCE_MANAGED").lower() == "false"
-            or value("LEMONADE_EXTERNAL").lower() == "true"):
+            or value("LLM_BACKEND") != "llama-server"
+            or value("AMD_INFERENCE_MANAGED").lower() == "false"):
         return None
+    # The fit must describe the launch ODS performs: native llama-server with
+    # the configured GPU offload. Fits measured through Lemonade's launch
+    # (runtimeMode=lemonade) never qualify.
+    launch_gpu_layers = value("N_GPU_LAYERS").strip() or "auto"
     from model_stores import registered_stores, safe_artifact
     for store in registered_stores(data_root, container=Path("/.dockerenv").exists()):
         if store["path"].resolve() != path.parent.resolve():
@@ -1573,7 +1580,7 @@ def _measured_native_activation(model, path, data_root, install_dir, gpu_info, s
         fit = row.get("memoryQualification") if isinstance(row, dict) else None
         if not isinstance(fit, dict) or fit.get("source") != "measured-native" or fit.get("schemaVersion") != 1:
             continue
-        if (fit.get("runtimeMode") != "lemonade" or fit.get("gpuLayers") != "99"
+        if (fit.get("runtimeMode") != "native" or fit.get("gpuLayers") != launch_gpu_layers
                 or fit.get("runtimeBackend") != row.get("backend")
                 or fit.get("qualificationSignature") != row.get("qualificationSignature")
                 or any(not re.fullmatch(r"[0-9a-f]{64}", str(fit.get(key, ""))) for key in ("modelSha256", "runtimeSha256", "executionSignature", "visionProjectorSha256"))
@@ -1654,6 +1661,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         free_gb = max(vram_total - vram_used, 0.0)
         gpu_data = {
             "vramTotal": vram_total,
+            "modelMemoryBudgetGb": round(_usable_model_memory_gb(gpu_info, install_ram_gb or None), 2),
             "vramUsed": vram_used,
             "vramFree": round(free_gb, 1),
             "name": gpu_info.name,
@@ -1737,7 +1745,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             {**memory_model, "context_length": actual_context}, runtime_profile
         )
         if gpu_info:
-            capacity_gb = _usable_model_memory_gb(gpu_info)
+            capacity_gb = _usable_model_memory_gb(gpu_info, install_ram_gb or None)
             fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
             fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
         else:
@@ -1764,7 +1772,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 **recommendation,
                 "source": recommendation["source"] if is_configured else "catalog_fit_pre_download",
                 "confidence": recommendation["confidence"] if is_configured else "medium",
-                "reason": reason or _catalog_fit_reason({**model, "_runtime_profile": runtime_profile}, gpu_info, is_configured),
+                "reason": reason or _catalog_fit_reason({**model, "_runtime_profile": runtime_profile}, gpu_info, is_configured, install_ram_gb or None),
                 "model": model.get("llm_model_name") or model["id"],
                 "gguf": model.get("gguf"),
                 "contextLength": actual_context,
@@ -1783,7 +1791,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "estimatedRequired": selector_required,
             "contextLength": actual_context,
             "maxContextLength": max_context_length or None,
-            "contextOptions": _context_options(context_model, runtime_profile, gpu_info),
+            "contextOptions": _context_options(context_model, runtime_profile, gpu_info, install_ram_gb or None),
             "specialty": model["specialty"],
             "description": model["description"],
             "tokensPerSecEstimate": model.get("tokens_per_sec_estimate"),
@@ -1895,7 +1903,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         "pixelMinimumContext": PIXEL_MIN_CONTEXT,
         "recommendationPolicy": recommendation.get("selectionPolicy") or _DEFAULT_RECOMMENDATION_POLICY,
         "recommendationAlternatives": [
-            _recommendation_alternative(model, gpu_info)
+            _recommendation_alternative(model, gpu_info, install_ram_gb or None)
             for model in ranked_recommendations
         ],
     }

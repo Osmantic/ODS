@@ -51,7 +51,7 @@ grep -qF 'consecutive_idle >= 2' <<<"$gate_acquire_block" \
     || fail "model swap admission must prove a stable drained boundary"
 grep -qF 'model_router_swap_gate_call end "$token" 30' <<<"$gate_release_block" \
     || fail "model swap admission must explicitly reopen after the transaction"
-grep -qF "trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" <<<"$active_code" \
+grep -qF "trap 'stop_download_monitor; cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" <<<"$active_code" \
     || fail "model swap admission must reopen on every normal or failed exit"
 top_level_swap="$(awk '
     /acquire_model_lifecycle_lock \|\| fail "Could not serialize background full-model activation/ { in_block=1 }
@@ -186,7 +186,6 @@ cat >"$compose_mock" <<'MOCK_COMPOSE'
     printf 'arg=%s\n' "$@"
     printf 'GGUF_FILE=%s\n' "${GGUF_FILE-unset}"
     printf 'LLM_MODEL=%s\n' "${LLM_MODEL-unset}"
-    printf 'LEMONADE_MODEL=%s\n' "${LEMONADE_MODEL-unset}"
     printf 'MAX_CONTEXT=%s\n' "${MAX_CONTEXT-unset}"
     printf 'CTX_SIZE=%s\n' "${CTX_SIZE-unset}"
 } >>"$ODS_COMPOSE_CAPTURE"
@@ -194,8 +193,7 @@ MOCK_COMPOSE
 chmod +x "$compose_mock"
 export ODS_COMPOSE_CAPTURE="$compose_capture"
 DOCKER_COMPOSE_CMD="$compose_mock"
-export GGUF_FILE=leaked-gguf LLM_MODEL=leaked-llm LEMONADE_MODEL=leaked-lemonade \
-    MAX_CONTEXT=123 CTX_SIZE=456
+export GGUF_FILE=leaked-gguf LLM_MODEL=leaked-llm MAX_CONTEXT=123 CTX_SIZE=456
 
 COMPOSE_ARGS=(-f "$INSTALL_DIR/base.yml" -f "$INSTALL_DIR/overlay.yml")
 WINDOWS_LEMONADE_COMPOSE_ARGS=(-f "$INSTALL_DIR/wrong-windows.yml")
@@ -213,7 +211,7 @@ mapfile -t compose_call_args < <(sed -n 's/^arg=//p' "$compose_capture")
     && "${compose_call_args[7]:-}" == --no-deps \
     && "${compose_call_args[8]:-}" == hermes ]] \
     || fail "Hermes recreate did not preserve the exact active Compose argv"
-for compose_env in GGUF_FILE LLM_MODEL LEMONADE_MODEL MAX_CONTEXT CTX_SIZE; do
+for compose_env in GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE; do
     grep -Fxq "${compose_env}=unset" "$compose_capture" \
         || fail "Hermes recreate leaked ${compose_env} into Compose interpolation"
 done
@@ -271,7 +269,7 @@ fi
 
 rm -rf -- "$compose_hermes_tmp"
 unset -f compose_recreate_hermes load_windows_lemonade_compose_args is_windows_bash log
-unset ODS_COMPOSE_CAPTURE DOCKER_COMPOSE_CMD GGUF_FILE LLM_MODEL LEMONADE_MODEL MAX_CONTEXT CTX_SIZE
+unset ODS_COMPOSE_CAPTURE DOCKER_COMPOSE_CMD GGUF_FILE LLM_MODEL MAX_CONTEXT CTX_SIZE
 pass "Hermes recreation preserves the active stack and strips model overrides"
 
 grep -qF 'up -d --force-recreate --no-deps llama-server' <<<"$active_code" \
@@ -354,26 +352,34 @@ if grep -qE '\b(stop|rm)[[:space:]]+ods-llama-server\b' <<<"$missing_flags_block
 fi
 pass "missing .compose-flags fallback is non-destructive"
 
-cleanup_refresh_block="$(function_block refresh_lemonade_after_bootstrap_cleanup | grep -v '^[[:space:]]*#')"
-grep -qF 'declare -p COMPOSE_ARGS' <<<"$cleanup_refresh_block" \
-    || fail "Lemonade cleanup refresh must reuse the live compose args before requiring .compose-flags"
-grep -qF 'compose_args=("${COMPOSE_ARGS[@]}")' <<<"$cleanup_refresh_block" \
-    || fail "Lemonade cleanup refresh must copy the active compose stack"
-assert_in_order "$cleanup_refresh_block" "Lemonade cleanup refresh compose args" \
-    'declare -p COMPOSE_ARGS' \
-    '[[ -f "$INSTALL_DIR/.compose-flags" ]]' \
-    'up -d --force-recreate --no-deps llama-server'
-pass "Lemonade cleanup refresh reuses active compose args before .compose-flags fallback"
-
-openclaw_recreate_block="$(awk '
-    /Recreating OpenClaw to pick up model change/ { in_block=1 }
+# AMD runs the llama.cpp server image like every GPU: the Linux Docker swap
+# has no Lemonade health route, model-id bookkeeping, LiteLLM re-render or
+# post-cleanup refresh, and AMD is not exempt from crash-loop detection or
+# the --model inspection.
+docker_swap_block="$(awk '
+    /Restarting llama-server container \(backend:/ { in_block=1 }
     in_block { print }
-    in_block && /up -d --force-recreate openclaw/ { exit }
+    /Phase 5b: Remove bootstrap model only after verified full-model serving/ { exit }
 ' "$TARGET" | grep -v '^[[:space:]]*#')"
+[[ -n "$docker_swap_block" ]] || fail "Docker hot-swap block not found"
+for retired in '/api/v1' 'model_loaded' 'LEMONADE_MODEL' 'litellm-lemonade' 'extra.' '"$_gpu_backend" != "amd"' '"$_gpu_backend" == "amd"'; do
+    if grep -qF -- "$retired" <<<"$docker_swap_block"; then
+        fail "Linux Docker hot-swap still carries the retired Lemonade branch: $retired"
+    fi
+done
+grep -qF '_health_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/health"' <<<"$docker_swap_block" \
+    || fail "Linux Docker hot-swap must wait on llama.cpp /health for every GPU"
+if grep -qF 'refresh_lemonade_after_bootstrap_cleanup' <<<"$active_code"; then
+    fail "bootstrap cleanup must not refresh a Lemonade runtime on Linux"
+fi
+pass "Linux Docker hot-swap treats AMD as llama.cpp (no Lemonade health, ids or re-render)"
 
-grep -qF 'env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE' <<<"$openclaw_recreate_block" \
-    || fail "OpenClaw recreate must strip model vars so .env wins compose interpolation"
-pass "OpenClaw recreate strips model env before compose"
+# The legacy OpenClaw extension was removed; nothing may recreate or inspect
+# its container. Pixel's host OpenClaw runtime is reconciled separately.
+if grep -Eq 'ods-openclaw|_lemonade_openclaw|LEMONADE_OPENCLAW|force-recreate( --no-deps)? openclaw' <<<"$active_code"; then
+    fail "bootstrap upgrade must not recreate or inspect the removed legacy OpenClaw container"
+fi
+pass "bootstrap upgrade no longer touches the removed legacy OpenClaw container"
 
 grep -qF 'inspect ods-llama-server --format' <<<"$active_code" \
     || fail "hot-swap must inspect the recreated container command"
@@ -381,47 +387,24 @@ grep -qF '"/models/${FULL_GGUF_FILE}"' <<<"$active_code" \
     || fail "hot-swap must assert the running command points at the full GGUF"
 pass "hot-swap asserts the running command uses the full GGUF"
 
-grep -qF 'restart_windows_lemonade_with_full_model' <<<"$active_code" \
-    || fail "Windows Lemonade hot-swap must restart the native Lemonade process"
-grep -qF 'Resolve-ODSLemonadeModelId' <<<"$active_code" \
-    || fail "Windows Lemonade hot-swap must resolve the runtime's exact full-model ID"
-grep -qF 'write_env_value LEMONADE_MODEL "$model_id"' <<<"$active_code" \
-    || fail "Windows Lemonade hot-swap must persist the verified full-model ID"
-pass "Windows Lemonade hot-swap restarts native inference and persists the verified model ID"
-
-restart_windows_lemonade_block="$(function_block restart_windows_lemonade_with_full_model | grep -v '^[[:space:]]*#')"
-grep -qF 'ODS_LEMONADE_RESTART_PS_TIMEOUT' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade restart helper must be bounded by a timeout"
-grep -qF 'lemonade-bootstrap-restart.$(date +%Y%m%d-%H%M%S).$$.log' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade restart helper output must go to a file, not a command-substitution pipe"
-grep -qF '>"$ps_output_file" 2>&1' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade restart helper must not capture PowerShell through an inherited stdout pipe"
-grep -qF 'tail -c 12000 "$ps_output_file"' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade restart diagnostics must be read back from the bounded log file"
-grep -qF 'resolve_live_windows_lemonade_model_id "$lemonade_port" "$target_gguf"' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade timeout/no-output fallback must resolve the live full-model ID"
-grep -qF 'PowerShell restart helper did not finish cleanly, but Lemonade live state matches' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade timeout fallback must only continue after live-state proof"
-grep -qF 'Resolved native Windows Lemonade model ID from live state' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade no-output fallback must require live-state proof"
-grep -qF 'curl -sf --max-time 240 -X POST' <<<"$restart_windows_lemonade_block" \
-    || fail "Windows Lemonade live-state fallback must still prove chat completion"
-pass "Windows Lemonade restart cannot leave a half-promoted route after helper timeout"
-
-assert_in_order "$restart_windows_lemonade_block" "Windows Lemonade context propagation" \
-    'target_context="$(read_env_value CTX_SIZE)"' \
-    'ODS_WIN_CONTEXT_SIZE=$target_context' \
-    '$null = [int]::TryParse([string]$env:ODS_WIN_CONTEXT_SIZE, [ref]$contextSize)' \
-    'ContextSize = $contextSize' \
-    'verify_windows_lemonade_loaded_context "$lemonade_port" "$model_id" "$target_gguf" "$target_context"' \
-    'write_env_value LEMONADE_MODEL "$model_id"'
-pass "Windows Lemonade restart propagates and verifies the promoted context before commit"
+# The Windows package retired ODS's Lemonade on Windows: no Lemonade model
+# transaction, rollback or dependent-config snapshot is left here.
+for retired in activate_windows_lemonade_full_model windows_lemonade_swap_failed \
+        rollback_windows_lemonade_swap refresh_windows_lemonade_litellm_after_swap \
+        verify_windows_lemonade_downstream_route capture_windows_lemonade_dependent_state \
+        restart_windows_lemonade_dependents_after_rollback move_bootstrap_model_aside_for_windows_swap \
+        '"$_windows_lemonade_swap_applies" == "true"' 'windows-lemonade.included'; do
+    if grep -qF -- "$retired" <<<"$active_code"; then
+        fail "the retired Windows Lemonade transaction is still present: $retired"
+    fi
+done
+pass "the retired Windows Lemonade transaction is gone"
 
 host_agent_notify_block="$(function_block notify_host_agent_model_status | grep -v '^[[:space:]]*#')"
 grep -qF '/v1/model/status' <<<"$host_agent_notify_block" \
     || fail "bootstrap upgrade must notify host-agent model status after full-model completion"
-grep -qF 'Authorization: Bearer $key' <<<"$host_agent_notify_block" \
-    || fail "host-agent model status notification must authenticate with ODS_AGENT_KEY"
+grep -qF -- "-H @<(printf 'Authorization: Bearer %s\\n' \"\$key\")" <<<"$host_agent_notify_block" \
+    || fail "host-agent model status notification must authenticate with ODS_AGENT_KEY through a header file, never argv"
 grep -qF 'ss -ltnH' <<<"$host_agent_notify_block" \
     || fail "host-agent model status notification must discover the actual listening bind"
 grep -qF 'ip -o -4 addr show' <<<"$host_agent_notify_block" \
@@ -436,233 +419,37 @@ assert_in_order "$final_status_block" "full-model route reconciliation" \
     'notify_host_agent_model_status || true'
 pass "bootstrap upgrade reconciles host-agent route after full-model completion"
 
-verify_context_block="$(function_block verify_windows_lemonade_loaded_context | grep -v '^[[:space:]]*#')"
-grep -qF 'all_models_loaded' <<<"$verify_context_block" \
-    || fail "Windows Lemonade loaded-context verifier must inspect health all_models_loaded"
-grep -qF 'recipe_options' <<<"$verify_context_block" \
-    || fail "Windows Lemonade loaded-context verifier must inspect recipe_options"
-grep -qF 'ctx_size' <<<"$verify_context_block" \
-    || fail "Windows Lemonade loaded-context verifier must inspect ctx_size"
-grep -qF '$actualContext -lt $expectedContext' <<<"$verify_context_block" \
-    || fail "Windows Lemonade loaded-context verifier must reject undersized contexts"
-pass "Windows Lemonade loaded-context verifier rejects stale bootstrap contexts"
-
 grep -qF 'patch_hermes_model_after_swap' <<<"$active_code" \
-    || fail "Windows Lemonade hot-swap must patch Hermes off the bootstrap model"
+    || fail "the Windows native hot-swap must patch Hermes off the bootstrap model"
 grep -qF 'compose_recreate_hermes' "$TARGET" \
     || fail "Hermes model reconciliation must use the active Compose stack"
 if grep -qF '$DOCKER_CMD restart ods-hermes' "$TARGET"; then
     fail "Hermes model reconciliation must not reuse stale Docker Desktop bind mounts"
 fi
-windows_activation_block="$(function_block activate_windows_lemonade_full_model | grep -v '^[[:space:]]*#')"
-assert_in_order "$windows_activation_block" "Windows Lemonade activation" \
-    'restart_windows_lemonade_with_full_model' \
-    'model_id="$(read_env_value LEMONADE_MODEL)"' \
-    'refresh_windows_lemonade_litellm_after_swap "$model_id"' \
-    'patch_hermes_model_after_swap' \
-    'recreate_windows_lemonade_openclaw' \
-    'verify_windows_lemonade_openclaw_model_env "$model_id"' \
-    'request_windows_switchboard_route_reconciliation' \
-    'reconcile_ods_managed_pixel_model' \
-    'release_model_router_swap_gate' \
-    'verify_windows_lemonade_downstream_route "$model_id" "full model route"'
-
-switchboard_reconcile_block="$(function_block request_windows_switchboard_route_reconciliation | grep -v '^[[:space:]]*#')"
-grep -qF 'ODS_MODEL_SWITCHBOARD' <<<"$switchboard_reconcile_block" \
-    || fail "Windows Lemonade bootstrap reconciliation must be gated by enabled switchboard mode"
-grep -qF '/v1/model/status' <<<"$switchboard_reconcile_block" \
-    || fail "Windows Lemonade bootstrap reconciliation must schedule host-agent route proof"
-grep -qF 'Authorization: Bearer $key' <<<"$switchboard_reconcile_block" \
-    || fail "Windows Lemonade bootstrap reconciliation must authenticate with ODS_AGENT_KEY"
-
-windows_lemonade_block="$(awk '
-    /^if \[\[ "\$_windows_lemonade_swap_applies" == "true" \]\]; then/ { in_block=1 }
-    in_block { print }
-    in_block && /^elif \[\[ "\$_windows_native_llama_swap_applies"/ { exit }
-' "$TARGET" | grep -v '^[[:space:]]*#')"
-assert_in_order "$windows_lemonade_block" "Windows Lemonade main path" \
-    'activate_windows_lemonade_full_model' \
-    'HOT_SWAP_VERIFIED=true' \
-    'discard_active_model_config_snapshot' \
-    'discard_bootstrap_model_backup_after_windows_swap'
-grep -qF 'windows_lemonade_swap_failed "the managed Pixel route could not be reconciled" true' <<<"$windows_activation_block" \
-    || fail "Windows Lemonade must restore and verify both inference and Pixel after Pixel promotion failure"
-pass "Windows Lemonade verifies the exact downstream route before commit"
+hermes_patch_block="$(function_block patch_hermes_model_after_swap | grep -v '^[[:space:]]*#')"
+if grep -qE 'extra\.|LEMONADE_MODEL' <<<"$hermes_patch_block"; then
+    fail "the Hermes patch must use the GGUF llama-server serves, not a Lemonade id"
+fi
+pass "the Windows native hot-swap patches Hermes to the GGUF llama-server serves"
 
 snapshot_block="$(function_block snapshot_active_model_config | grep -v '^[[:space:]]*#')"
-grep -qF '"$ACTIVE_CONFIG_SNAPSHOT_DIR/litellm-lemonade"' <<<"$snapshot_block" \
-    || fail "every model transaction must snapshot the canonical Lemonade route"
-grep -qF 'extensions/services/hermes/cli-config.yaml.template' <<<"$snapshot_block" \
-    || fail "Windows Lemonade transaction must snapshot the Hermes template"
-grep -qF 'data/hermes/config.yaml' <<<"$snapshot_block" \
-    || fail "Windows Lemonade transaction must snapshot the Hermes live config"
-grep -qF 'config/litellm/lemonade.yaml' <<<"$snapshot_block" \
-    || fail "Windows Lemonade transaction must snapshot the active LiteLLM config"
-grep -qF 'windows-lemonade.included' <<<"$snapshot_block" \
-    || fail "dependent snapshots must be explicitly scoped to Windows Lemonade"
-
 restore_block="$(function_block restore_active_model_config | grep -v '^[[:space:]]*#')"
-grep -qF '"$ACTIVE_CONFIG_SNAPSHOT_DIR/litellm-lemonade"' <<<"$restore_block" \
-    || fail "every model rollback must restore the canonical Lemonade route"
-grep -qF 'windows-lemonade/hermes-template' <<<"$restore_block" \
-    || fail "Windows Lemonade rollback must restore the Hermes template"
-grep -qF 'windows-lemonade/hermes-live' <<<"$restore_block" \
-    || fail "Windows Lemonade rollback must restore the Hermes live config"
-grep -qF 'windows-lemonade/litellm-lemonade' <<<"$restore_block" \
-    || fail "Windows Lemonade rollback must restore the LiteLLM config"
-pass "Windows Lemonade transaction snapshots and restores dependent configs"
-
-litellm_refresh_block="$(function_block refresh_windows_lemonade_litellm_after_swap | grep -v '^[[:space:]]*#')"
-grep -qF -- '--lemonade-model-id "$model_id"' <<<"$litellm_refresh_block" \
-    || fail "Windows Lemonade LiteLLM renderer must receive the exact resolved model ID"
-grep -qF 'model: openai/${model_id}' <<<"$litellm_refresh_block" \
-    || fail "Windows Lemonade rendered config must verify the exact resolved model ID"
-grep -qF '$DOCKER_CMD restart ods-litellm' <<<"$litellm_refresh_block" \
-    || fail "Windows Lemonade must reload LiteLLM after regenerating its config"
-
-openclaw_refresh_block="$(function_block recreate_windows_lemonade_openclaw | grep -v '^[[:space:]]*#')"
-dependent_state_block="$(function_block windows_lemonade_container_present | grep -v '^[[:space:]]*#')"
-grep -qF '$DOCKER_CMD ps -a' <<<"$dependent_state_block" \
-    || fail "Windows Lemonade must detect stopped or running dependent containers before the transaction"
-grep -qF 'env -u GGUF_FILE -u LLM_MODEL -u LEMONADE_MODEL -u MAX_CONTEXT -u CTX_SIZE' <<<"$openclaw_refresh_block" \
-    || fail "Windows Lemonade OpenClaw recreate must let the restored/current .env win interpolation"
-grep -qF 'up -d --force-recreate --no-deps openclaw' <<<"$openclaw_refresh_block" \
-    || fail "Windows Lemonade must force-recreate an existing OpenClaw without dependencies"
-openclaw_verify_block="$(function_block verify_windows_lemonade_openclaw_model_env | grep -v '^[[:space:]]*#')"
-grep -qF '$DOCKER_CMD inspect --type container' <<<"$openclaw_verify_block" \
-    || fail "Windows Lemonade must inspect the recreated OpenClaw environment"
-grep -qF 'LEMONADE_MODEL' <<<"$openclaw_verify_block" \
-    || fail "Windows Lemonade OpenClaw proof must prefer the exact Lemonade model ID"
-grep -qF 'actual_model="extra.${gguf_file}"' <<<"$openclaw_verify_block" \
-    || fail "Windows Lemonade OpenClaw proof must mirror OpenClaw's GGUF fallback"
-grep -qF 'actual_model" == "$expected_model' <<<"$openclaw_verify_block" \
-    || fail "Windows Lemonade OpenClaw proof must fail on stale model identity"
-
-downstream_block="$(function_block verify_windows_lemonade_downstream_route | grep -v '^[[:space:]]*#')"
-grep -qF 'read_env_value HERMES_LLM_BASE_URL' <<<"$downstream_block" \
-    || fail "Windows Lemonade route proof must use the configured Hermes downstream route"
-grep -qF 'read_env_value LITELLM_KEY' <<<"$downstream_block" \
-    || fail "Windows Lemonade route proof must fall back to LITELLM_KEY for older installs"
-grep -qF '$DOCKER_CMD exec "$route_container" curl' <<<"$downstream_block" \
-    || fail "Windows Lemonade route proof must execute from the downstream Hermes container when present"
-grep -qF 'request_body="{\"model\":\"${escaped_model}\"' <<<"$downstream_block" \
-    || fail "Windows Lemonade route proof must request the exact resolved model ID"
-pass "Windows Lemonade refreshes LiteLLM/OpenClaw and proves the consumer route"
-
-rollback_block="$(function_block rollback_windows_lemonade_swap | grep -v '^[[:space:]]*#')"
-rollback_dependents_block="$(function_block restart_windows_lemonade_dependents_after_rollback | grep -v '^[[:space:]]*#')"
-grep -qF '$DOCKER_CMD restart ods-litellm' <<<"$rollback_dependents_block" \
-    || fail "Windows Lemonade rollback must restart LiteLLM with its restored config"
-grep -qF 'compose_recreate_hermes' <<<"$rollback_dependents_block" \
-    || fail "Windows Lemonade rollback must recreate Hermes with its restored config"
-grep -qF 'recreate_windows_lemonade_openclaw' <<<"$rollback_dependents_block" \
-    || fail "Windows Lemonade rollback must recreate a previously present OpenClaw"
-assert_in_order "$rollback_block" "Windows Lemonade rollback" \
-    'previous_gguf="$(snapshot_env_value GGUF_FILE)"' \
-    'restore_bootstrap_model_after_windows_swap_failure' \
-    'restore_active_model_config' \
-    'restart_windows_lemonade_with_previous_model "$previous_gguf"' \
-    'restart_windows_lemonade_dependents_after_rollback' \
-    'verify_windows_lemonade_openclaw_model_env "$previous_model_id"' \
-    'reconcile_ods_managed_pixel_model "$previous_llm_model"' \
-    'release_model_router_swap_gate' \
-    'verify_windows_lemonade_downstream_route "$previous_model_id" "previous model route"' \
-    'Rollback verified: the previous model completed through the restored downstream route.'
-pass "Windows Lemonade rollback restarts and proves the previous routed model and managed Pixel route"
-
-for injected_failure in native model-id litellm hermes openclaw openclaw-env reconcile pixel route; do
-    if ! (
-        eval "$windows_activation_block"
-        failure_stage="$injected_failure"
-        calls=()
-        rollback_reason=""
-
-        restart_windows_lemonade_with_full_model() {
-            calls+=(native)
-            [[ "$failure_stage" != "native" ]]
-        }
-        read_env_value() {
-            [[ "$failure_stage" == "model-id" ]] && return 0
-            printf '%s\n' 'user.Qwen3.5-9B-Q4_K_M.gguf'
-        }
-        refresh_windows_lemonade_litellm_after_swap() {
-            calls+=(litellm)
-            [[ "$failure_stage" != "litellm" ]]
-        }
-        patch_hermes_model_after_swap() {
-            calls+=(hermes)
-            [[ "$failure_stage" != "hermes" ]]
-        }
-        recreate_windows_lemonade_openclaw() {
-            calls+=(openclaw)
-            [[ "$failure_stage" != "openclaw" ]]
-        }
-        verify_windows_lemonade_openclaw_model_env() {
-            calls+=(openclaw-env)
-            [[ "$failure_stage" != "openclaw-env" ]]
-        }
-        request_windows_switchboard_route_reconciliation() {
-            calls+=(reconcile)
-            [[ "$failure_stage" != "reconcile" ]]
-        }
-        reconcile_ods_managed_pixel_model() {
-            calls+=(pixel)
-            [[ "$failure_stage" != "pixel" ]]
-        }
-        release_model_router_swap_gate() {
-            calls+=(gate-open)
-        }
-        acquire_model_router_swap_gate() {
-            calls+=(gate-close)
-            return 0
-        }
-        verify_windows_lemonade_downstream_route() {
-            calls+=(route)
-            [[ "$failure_stage" != "route" ]]
-        }
-        windows_lemonade_swap_failed() {
-            rollback_reason="$1"
-            calls+=(rollback)
-            return 1
-        }
-
-        if activate_windows_lemonade_full_model; then
-            exit 1
-        fi
-        [[ -n "$rollback_reason" ]] || exit 1
-        last_call="${calls[$(( ${#calls[@]} - 1 ))]}"
-        [[ "$last_call" == "rollback" ]] || exit 1
-
-        expected=(native)
-        case "$failure_stage" in
-            native|model-id) ;;
-            litellm) expected+=(litellm) ;;
-            hermes) expected+=(litellm hermes) ;;
-            openclaw) expected+=(litellm hermes openclaw) ;;
-            openclaw-env) expected+=(litellm hermes openclaw openclaw-env) ;;
-            reconcile) expected+=(litellm hermes openclaw openclaw-env reconcile) ;;
-            pixel) expected+=(litellm hermes openclaw openclaw-env reconcile pixel) ;;
-            route) expected+=(litellm hermes openclaw openclaw-env reconcile pixel gate-open route gate-close) ;;
-        esac
-        expected+=(rollback)
-        [[ "${calls[*]}" == "${expected[*]}" ]]
-    ); then
-        fail "injected Windows Lemonade ${injected_failure} failure did not stop and enter rollback"
-    fi
-done
-pass "Windows Lemonade activation rolls back every injected post-swap failure"
+if grep -qi 'lemonade' <<<"$snapshot_block$restore_block"; then
+    fail "model transactions must not snapshot or restore Lemonade configs"
+fi
+pass "model transactions snapshot and restore no Lemonade configs"
 
 docker_swap_block="$(awk '
     /^elif \[\[ -n "\$DOCKER_CMD" \]\] && \$DOCKER_CMD ps/ { in_block=1 }
     in_block { print }
     in_block && /^elif \[\[ -f "\$INSTALL_DIR\/data\/\.llama-server\.pid" \]\]/ { exit }
 ' "$TARGET" | grep -v '^[[:space:]]*#')"
-grep -qF 'if [[ "$_gpu_backend" == "amd" ]]' <<<"$docker_swap_block" \
-    || fail "Docker Lemonade route rendering must be gated to the AMD backend"
+# Every GPU's container serves the GGUF it was started with; LiteLLM's local
+# route needs no re-render after the swap.
+if grep -qF -- '--surface litellm-lemonade' <<<"$docker_swap_block"; then
+    fail "the Docker model transaction must not render the retired Lemonade route"
+fi
 assert_in_order "$docker_swap_block" "Docker model transaction commit" \
-    '--surface litellm-lemonade' \
-    '$DOCKER_CMD restart ods-litellm' \
-    'verify_model_completion_route' \
     'HOT_SWAP_VERIFIED=true' \
     'reconcile_ods_managed_pixel_model' \
     'discard_active_model_config_snapshot'
@@ -670,29 +457,20 @@ grep -qF 'Full model served, but ODS could not reconcile the managed Pixel route
     || fail "Docker model promotion must fail honestly when Pixel reconciliation fails"
 grep -qF 'restore_docker_llama_server_after_swap_failure "$_health_url" true' <<<"$docker_swap_block" \
     || fail "Docker Pixel promotion failure must request managed Pixel rollback verification"
-pass "Docker model transaction commits only after renderer, reload, completion proof, and Pixel reconciliation"
+pass "Docker model transaction commits only after health and Pixel reconciliation"
 
 docker_rollback_block="$(function_block restore_docker_llama_server_after_swap_failure | grep -v '^[[:space:]]*#')"
 assert_in_order "$docker_rollback_block" "Docker model transaction rollback" \
     'previous_llm_model="$(snapshot_env_value LLM_MODEL)"' \
-    'previous_model_id="$(snapshot_env_value LEMONADE_MODEL)"' \
     'restore_active_model_config' \
     'compose_recreate_llama_server_with_retry' \
-    '$DOCKER_CMD restart ods-litellm' \
-    'verify_model_completion_route' \
     'reconcile_ods_managed_pixel_model "$previous_llm_model"'
-pass "Docker rollback restores and proves the previous routed model and managed Pixel route"
-
-completion_route_block="$(function_block verify_model_completion_route | grep -v '^[[:space:]]*#')"
-grep -qF '"choices"[[:space:]]*:' <<<"$completion_route_block" \
-    || fail "model route proof must require a completion choices payload"
-grep -qF '"error"[[:space:]]*:' <<<"$completion_route_block" \
-    || fail "model route proof must reject an error payload"
-grep -qF 'ODS_MODEL_ROUTE_ATTEMPTS' <<<"$completion_route_block" \
-    || fail "model route proof must expose a bounded attempt count"
-grep -qF 'ODS_MODEL_ROUTE_TIMEOUT' <<<"$completion_route_block" \
-    || fail "model route proof must expose a bounded request timeout"
-pass "Docker model route proof is bounded and rejects error responses"
+for retired in LEMONADE_MODEL 'restart ods-litellm'; do
+    if grep -qF -- "$retired" <<<"$docker_rollback_block"; then
+        fail "Docker rollback still restores the retired Lemonade route: $retired"
+    fi
+done
+pass "Docker rollback restores the previous model and managed Pixel route"
 
 grep -qF 'switchboard_mode="$(read_env_value ODS_MODEL_SWITCHBOARD' <<<"$active_code" \
     || fail "Hermes post-swap patch helper must read switchboard mode"
@@ -715,10 +493,13 @@ perplexica_update_block="$(awk '
 ' "$TARGET" | grep -v '^[[:space:]]*#')"
 grep -qF 'ods_detect_python_cmd' <<<"$perplexica_update_block" \
     || fail "Perplexica post-swap update must reject Windows Store Python aliases"
-grep -qF 'read_env_value HERMES_LLM_BASE_URL' <<<"$perplexica_update_block" \
-    || fail "Lemonade Perplexica updates must use the working LiteLLM route"
-grep -qF 'read_env_value LEMONADE_MODEL' <<<"$perplexica_update_block" \
-    || fail "Perplexica post-swap update must use the exact Lemonade model ID"
+# llama-server serves the GGUF file name on every runtime; there is no
+# separate Lemonade model id to look up.
+grep -qF '_px_model="$FULL_GGUF_FILE"' <<<"$perplexica_update_block" \
+    || fail "Perplexica post-swap update must name the GGUF llama-server serves"
+if grep -qF 'LEMONADE_MODEL' <<<"$perplexica_update_block"; then
+    fail "Perplexica post-swap update must not read the retired Lemonade model id"
+fi
 grep -qF 'read_env_value ODS_MODEL_SWITCHBOARD' <<<"$perplexica_update_block" \
     || fail "Perplexica post-swap update must branch on switchboard mode"
 grep -qF '_px_model="ods/current"' <<<"$perplexica_update_block" \
@@ -743,20 +524,13 @@ else
     fail "bootstrap cleanup must be gated by HOT_SWAP_VERIFIED"
 fi
 
-grep -qF 'refresh_lemonade_after_bootstrap_cleanup' <<<"$active_code" \
-    || fail "AMD/Lemonade cleanup must refresh llama-server after removing bootstrap GGUF"
-lemonade_cleanup_block="$(awk '
-    /refresh_lemonade_after_bootstrap_cleanup/ { in_block=1 }
-    in_block { print }
-    in_block && /Lemonade refresh after bootstrap cleanup failed/ { exit }
-' "$TARGET" | grep -v '^[[:space:]]*#')"
-grep -qF 'up -d --force-recreate --no-deps llama-server' <<<"$lemonade_cleanup_block" \
-    || fail "AMD/Lemonade cleanup refresh must force-recreate llama-server after bootstrap removal"
-grep -qF 'old_model_id="extra.${BOOTSTRAP_GGUF' <<<"$lemonade_cleanup_block" \
-    || fail "AMD/Lemonade cleanup refresh must verify the removed bootstrap model is no longer advertised"
-grep -qF 'write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES"' <<<"$lemonade_cleanup_block" \
-    || fail "AMD/Lemonade cleanup refresh failure must report real downloaded bytes"
-pass "AMD/Lemonade cleanup refresh drops stale bootstrap metadata"
+# llama.cpp serves only the --model it started with, so removing the
+# bootstrap GGUF needs no runtime refresh on any GPU (Lemonade advertised
+# every file in its models directory).
+if grep -qF 'refresh_lemonade_after_bootstrap_cleanup' <<<"$active_code"; then
+    fail "bootstrap cleanup must not refresh the retired Lemonade runtime"
+fi
+pass "bootstrap cleanup needs no runtime refresh"
 
 stale_block="$(awk '
     /llama-server container started with stale --model arg/ { in_block=1 }
@@ -769,14 +543,6 @@ grep -qF 'write_status "failed"' <<<"$stale_block" \
 grep -qF 'fail "llama-server container started with stale --model arg after force-recreate."' <<<"$stale_block" \
     || fail "stale --model assertion must exit non-zero"
 pass "stale --model assertion fails loudly"
-
-grep -qF 'write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES"' <<<"$windows_lemonade_block" \
-    || fail "Windows Lemonade hot-swap failure must mark bootstrap status failed"
-grep -qF 'WINDOWS_LEMONADE_ROLLBACK_VERIFIED' <<<"$windows_lemonade_block" \
-    || fail "Windows Lemonade status must distinguish proven rollback from an attempted rollback"
-grep -qF 'exit 1' <<<"$windows_lemonade_block" \
-    || fail "Windows Lemonade hot-swap failure must exit non-zero"
-pass "Windows Lemonade hot-swap failure is honest"
 
 docker_timeout_block="$(awk '
     /llama-server health check timed out/ { in_block=1 }

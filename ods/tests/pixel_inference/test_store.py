@@ -82,6 +82,34 @@ def test_authenticate_valid_token(store, valid_settings):
     assert 'tokenHash' not in device
 
 
+def test_rebind_model_moves_only_grants_pinned_to_the_retired_identity(store, valid_settings):
+    # A retired Lemonade id for the same GGUF becomes its llama-server alias;
+    # grants for that exact identity move, every other grant stays.
+    now = int(time.time())
+    moved = store.issue({**valid_settings, 'runtimeModelId': 'extra.Model.gguf'}, expected_revision=0, now=now)
+    store.issue({**valid_settings, 'label': 'Other model', 'runtimeModelId': 'Other.gguf'},
+                expected_revision=1, now=now)
+    store.issue({**valid_settings, 'label': 'Other catalog', 'catalogId': 'cat-2',
+                 'runtimeModelId': 'extra.Model.gguf'}, expected_revision=2, now=now)
+    store.set_enabled(True, expected_revision=3)
+
+    assert store.rebind_model('cat-1', 'extra.Model.gguf', 'cat-1', 'Model.gguf') == 1
+
+    document = store.load()
+    assert document['revision'] == 5
+    devices = {item['label']: item for item in document['devices']}
+    assert devices['Test Device']['runtimeModelId'] == 'Model.gguf'
+    assert devices['Other model']['runtimeModelId'] == 'Other.gguf'
+    assert devices['Other catalog']['runtimeModelId'] == 'extra.Model.gguf'
+    # The moved credential still works and names the served id.
+    assert store.authenticate(moved['credential']['key'], now=now + 1)['runtimeModelId'] == 'Model.gguf'
+    # Nothing left to move changes nothing.
+    assert store.rebind_model('cat-1', 'extra.Model.gguf', 'cat-1', 'Model.gguf') == 0
+    assert store.load()['revision'] == 5
+    with pytest.raises(StoreError, match='invalid-request'):
+        store.rebind_model('cat-1', '', 'cat-1', 'Model.gguf')
+
+
 def test_authenticate_expired_token(store, valid_settings):
     now = int(time.time())
     result = store.issue(valid_settings, expected_revision=0, now=now)

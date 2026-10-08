@@ -174,20 +174,20 @@ def scanner(tmp_path):
     end = source.index('def _extension_base_path(', start)
     namespace = {'script_dir': tmp_path, 'pathlib': pathlib, 're': re, 'os': os, 'json': json, 'yaml': yaml}
     exec(compile(ast.parse(source[start:end]), str(SCRIPT), 'exec'), namespace)
-    extension = tmp_path / 'data/user-extensions/gaia'
+    extension = tmp_path / 'data/user-extensions/curated-recipe'
     extension.mkdir(parents=True)
     compose = extension / 'compose.yaml'
     return namespace['_scan_user_compose_content'], namespace['_library_recipe_trusted'], extension, compose
 
 
 def write_extra_hosts(compose, extra_hosts):
-    compose.write_text(yaml.safe_dump({'services': {'gaia': {'image': 'example:fixture',
-                                                             'extra_hosts': extra_hosts}}}))
+    compose.write_text(yaml.safe_dump({'services': {'curated-recipe': {'image': 'example:fixture',
+                                                                       'extra_hosts': extra_hosts}}}))
 
 
 @pytest.mark.parametrize('upstream, trusted', [
-    (None, True),  # curated recipe without provenance file (gaia)
-    ({'repository': 'https://github.com/amd/gaia', 'license': 'MIT'}, True),
+    (None, True),  # curated recipe without a provenance file
+    ({'repository': 'https://github.com/example/project', 'license': 'MIT'}, True),
     ({'origin': 'github-proposal', 'repository': 'https://github.com/owner/project'}, False),
     ('{not json', False),
 ])

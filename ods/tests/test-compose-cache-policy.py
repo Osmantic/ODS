@@ -100,8 +100,8 @@ update_env_value() { printf changed > "$1"; }
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX bootstrap integration')
-@pytest.mark.parametrize('action', ['llama', 'llama-retry', 'hermes', 'windows-openclaw',
-                                   'windows-cached', 'windows-recovered', 'lemonade', 'openclaw'])
+@pytest.mark.parametrize('action', ['llama', 'llama-retry', 'hermes', 'windows-flags',
+                                   'windows-cached', 'windows-recovered'])
 @pytest.mark.parametrize('confined', [False, True])
 def test_bootstrap_revalidates_every_compose_entry(installed, action, confined):
     source_recipe(installed, confined=confined)
@@ -127,8 +127,7 @@ def test_bootstrap_revalidates_every_compose_entry(installed, action, confined):
     compose.chmod(0o700)
     source = (ODS / 'scripts/bootstrap-upgrade.sh').read_text()
     names = ['validate_bootstrap_compose_args', 'compose_recreate_llama_server_with_retry',
-             'compose_recreate_hermes', 'load_windows_lemonade_compose_args',
-             'recreate_windows_lemonade_openclaw', 'refresh_lemonade_after_bootstrap_cleanup']
+             'compose_recreate_hermes', 'load_windows_lemonade_compose_args']
     functions = '\n'.join(re.search(r'^' + name + r'\(\) \{.*?^}', source,
                                      re.MULTILINE | re.DOTALL).group() for name in names)
     prelude = '''
@@ -139,7 +138,6 @@ DOCKER_CMD=true
 ODS_BOOTSTRAP_COMPOSE_RETRY_DELAY=0
 COMPOSE_ARGS=(-f base.yml -f data/user-extensions/example/compose.yaml)
 WINDOWS_LEMONADE_COMPOSE_ARGS=()
-WINDOWS_LEMONADE_OPENCLAW_PRESENT=true
 FULL_GGUF_FILE=full.gguf
 BOOTSTRAP_GGUF=small.gguf
 is_windows_bash() { return 1; }
@@ -151,14 +149,16 @@ cd "$INSTALL_DIR" || exit 1
         'llama': 'compose_recreate_llama_server_with_retry "${COMPOSE_ARGS[@]}"',
         'llama-retry': 'compose_recreate_llama_server_with_retry "${COMPOSE_ARGS[@]}"',
         'hermes': 'compose_recreate_hermes',
-        'windows-openclaw': 'recreate_windows_lemonade_openclaw',
-        'windows-cached': 'WINDOWS_LEMONADE_COMPOSE_ARGS=("${COMPOSE_ARGS[@]}"); recreate_windows_lemonade_openclaw',
-        'windows-recovered': 'rm .compose-flags; recreate_windows_lemonade_openclaw',
-        'lemonade': 'refresh_lemonade_after_bootstrap_cleanup',
+        # Windows Lemonade stacks reach Compose through the cached, saved or
+        # recovered argument loader; Hermes is its remaining dependent.
+        'windows-flags': ('is_windows_bash() { return 0; }; COMPOSE_ARGS=(); '
+                          'load_windows_lemonade_compose_args; compose_recreate_hermes'),
+        'windows-cached': ('is_windows_bash() { return 0; }; '
+                           'WINDOWS_LEMONADE_COMPOSE_ARGS=("${COMPOSE_ARGS[@]}"); COMPOSE_ARGS=(); '
+                           'load_windows_lemonade_compose_args; compose_recreate_hermes'),
+        'windows-recovered': ('is_windows_bash() { return 0; }; COMPOSE_ARGS=(); '
+                              'rm .compose-flags; compose_recreate_hermes'),
     }
-    if action == 'openclaw':
-        block = source.split('log "Recreating OpenClaw to pick up model change..."', 1)[1]
-        calls[action] = block.split('\n            fi', 1)[0] + '\n            fi\n'
     env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
     result = subprocess.run(['bash', '-s', '--', str(installed), sys.executable],
                             input=prelude + functions + '\n' + calls[action],
@@ -327,7 +327,10 @@ def test_source_receipt_is_bound_to_recipe_bytes(installed):
 @pytest.mark.parametrize('document', [
     {'services': {'example': {'read_only': False}}},
     {'networks': {'example-sandbox': {'internal': False}}},
-    {'services': {'another-service': {'image': 'example/app:1', 'networks': ['example-sandbox']}}},
+    # Declaring the sandbox's name in the joining file passes the general
+    # network check, so the sandbox rule itself must refuse the join.
+    {'services': {'another-service': {'image': 'example/app:1', 'networks': ['example-sandbox']}},
+     'networks': {'example-sandbox': {}}},
 ])
 def test_compose_merge_cannot_weaken_or_join_source_sandbox(installed, document):
     source_recipe(installed)
@@ -342,9 +345,26 @@ def test_another_extension_cannot_attach_to_a_source_sandbox(installed):
     other = installed / 'data/user-extensions/other/compose.yaml'
     other.parent.mkdir()
     other.write_text(json.dumps({'services': {'other': {'image': 'example/app:1',
-                                                      'networks': ['example-sandbox']}}}))
+                                                      'networks': ['example-sandbox']}},
+                                 'networks': {'example-sandbox': {}}}))
     with pytest.raises(ValueError, match='sandbox.*joined'):
         POLICY.validate_flags(installed, flags() + ['-f', str(other)])
+
+
+@pytest.mark.parametrize('overlay', [False, True])
+def test_joining_a_network_the_file_does_not_declare_is_refused(installed, overlay):
+    # GHSA-4rpc: an extension file may join only the default network or one it
+    # declares, so it cannot reach another recipe's sandbox by name alone.
+    source_recipe(installed)
+    if overlay:
+        path = fragment(installed).with_name('compose.cpu.yaml')
+    else:
+        path = installed / 'data/user-extensions/other/compose.yaml'
+        path.parent.mkdir()
+    path.write_text(json.dumps({'services': {'other': {'image': 'example/app:1',
+                                                     'networks': ['example-sandbox']}}}))
+    with pytest.raises(ValueError, match="joins network 'example-sandbox' that its file does not declare"):
+        POLICY.validate_flags(installed, flags() + ['-f', str(path)])
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX dynamic resolver integration')

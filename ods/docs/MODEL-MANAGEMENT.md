@@ -2,7 +2,7 @@
 
 ODS runs local language models as GGUF files from `data/models/` or an
 installer-registered model store. Windows AMD with Portal in WSL uses the
-Windows Lemonade store described below.
+Windows model store described below.
 The recommended path is the Dashboard Models page. Manual model swaps are also
 available for headless maintenance and advanced operator workflows.
 
@@ -39,18 +39,20 @@ cannot look ready while an enabled app is known to be incompatible.
 
 ### Windows AMD with Portal in WSL
 
-The Windows installer can bind its `ODSLemonadeRuntime` task to one WSL
-distribution and ODS runtime directory. With verified task ownership and model
-store registration, **Models** supports catalog and Hugging Face downloads,
-activation and context changes using the existing ODS transaction. Downloads
-go to `%LOCALAPPDATA%\ODS\lemonade\models`, which WSL accesses as a registered
+The Windows installer binds its `ODSLlamaServerRuntime-<Windows SID>` task,
+which runs llama.cpp's `llama-server.exe`, to one WSL distribution and ODS
+runtime directory. With verified task ownership and model store registration,
+**Models** supports catalog and Hugging Face downloads, activation and context
+changes using the existing ODS transaction. Downloads go to
+`%LOCALAPPDATA%\ODS\lemonade\models`, which WSL accesses as a registered
 Windows store. The import registry and download progress remain in the ODS
 runtime's `data/` directory.
 
 Wait for verification after download, choose **Run**, then choose the context.
 Activation updates the owned Windows launcher selection as well as Portal and
-ODS routes. **Configure context** uses the same transaction. The current
-Windows controller accepts 4,096–262,144 tokens; the model, available memory
+ODS routes, and restarts llama-server with the new model. **Configure context**
+uses the same transaction. The current Windows controller accepts
+4,096–262,144 tokens; the model, available memory
 and enabled apps must still support the requested value. A Hub listing or a
 verified download alone does not prove runtime or agent compatibility.
 
@@ -59,17 +61,20 @@ context. Portal admission stays paused while inference is stopped. **Resume
 model** starts and verifies the saved selection before releasing that pause;
 resume before attempting another model or context change.
 
-Older tasks without a WSL installation binding do not gain control from an
-update alone. Rerun the current Windows installer with the same distribution
-and runtime directory to register them. If ownership cannot be verified, the
-controls remain unavailable. Do not manually edit the binding or startup plan.
+A task without a WSL installation binding does not gain control from an update
+alone. Rerun the current Windows installer with the same distribution and
+runtime directory to register it; a task that ran Lemonade Server moves to
+llama.cpp in the same run (see
+[AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md)). If
+ownership cannot be verified, the controls remain unavailable. Do not manually
+edit the binding or startup plan.
 
-An independently managed Lemonade server remains external. Change its loaded
-model in Lemonade, then use **Adopt loaded model** to update Portal and ODS
-routes. Adoption does not grant runtime control or change Lemonade's startup
-model. `LEMONADE_EXTERNAL=true` describes the Windows network placement; it is
-not permission to manage a process. Linux, NVIDIA and macOS retain their
-existing model-management paths.
+When the host agent cannot prove that this installation manages the Windows
+model server, **Models** shows "Model changes managed externally" or "Runtime
+management unavailable" and does not change the model; downloads and deletion
+remain available. `ODS_HOST_LLM_TRANSPORT=model-router` describes how WSL
+reaches the Windows server; it is not permission to manage a process. Linux,
+NVIDIA and macOS retain their existing model-management paths.
 
 ### Hugging Face imports
 
@@ -139,12 +144,13 @@ curl http://localhost:11434/v1/models
 On macOS native Metal and native Windows installs, use the configured local
 API port (normally `8080`). For Windows AMD with Portal in WSL, verify the
 loaded model and send a message through Portal: WSL's localhost may differ
-from Windows localhost, and the installer may select another Lemonade port.
+from Windows localhost, and setup may select another llama-server port (18080
+or 28080).
 
 Dashboard activation, Unix `ods model swap <tier>`, and Windows
 `.\ods.ps1 model swap <tier>` use the same authenticated host-agent transaction.
 The transaction updates `.env`, `models.ini`, the
-native or container inference runtime, LiteLLM, Hermes, OpenClaw, OpenCode, and
+native or container inference runtime, LiteLLM, Hermes, OpenCode, and
 Perplexica when those consumers are installed. On a qualified ODS-managed
 Pixel installation it also updates Pixel's model ID, context, output limit,
 reasoning and model-family compatibility policy, then restarts and verifies the
@@ -161,10 +167,7 @@ the exact previous model contract, including a remote route's fingerprint.
 A private `data/pixel-model-transaction.json` journal records the transaction
 ID, phase and configuration hashes before admission; it contains no API keys
 or configuration contents. Standalone native installs without an Edge relay
-retain their existing direct model reconciliation. The Windows
-`/v1/runtime/lemonade/ensure` endpoint is a bootstrap step controlled by launcher
-startup order, outside this model transaction. It must not be used for model
-switching from the chat; use the normal model activation endpoint.
+retain their existing direct model reconciliation.
 
 The Portal model menu offers **Recover model switch** when this journal is
 pending. Its authenticated `GET /api/models/recovery` reads journal metadata;
@@ -200,13 +203,13 @@ A custom value above the declared model context is allowed with a warning.
 This does not claim that the model, runtime, available VRAM, or enabled apps can
 serve that value. ODS writes the requested context through the same activation
 transaction, starts the platform-specific runtime, and requires runtime
-identity and context proof before committing the swap. If NVIDIA Compose,
-macOS Metal, Windows native llama-server, or Lemonade cannot establish the
+identity and context proof before committing the swap. If the Compose
+llama-server, macOS Metal or Windows `llama-server.exe` cannot establish the
 requested context, activation fails and the previous model configuration is
 restored.
 
-The committed value is propagated to `CTX_SIZE`, `MAX_CONTEXT`, llama-server
-or Lemonade runtime configuration, stable model routes, and installed
+The committed value is propagated to `CTX_SIZE`, `MAX_CONTEXT`, the
+llama-server runtime configuration, stable model routes, and installed
 context-aware consumers such as Hermes. Optional stopped services remain
 stopped while their persisted configuration is updated. Use the Models page to
 change this value; the corresponding Environment Editor fields remain
@@ -220,9 +223,9 @@ usable value, the Dashboard reports the declared limit as unknown instead of
 inventing one; the operator may still choose an explicit context and let the
 runtime verification decide whether it can be served.
 
-This selector applies to local inference in `local`, `hybrid`, and `lemonade`
-modes. In `cloud` mode, the remote provider owns its context policy, so ODS
-does not rewrite local runtime or application context from the Models page.
+This selector applies to local inference in `local` and `hybrid` modes. In
+`cloud` mode, the remote provider owns its context policy, so ODS does not
+rewrite local runtime or application context from the Models page.
 
 ### Activating a remote provider for agents
 
@@ -287,8 +290,8 @@ ods remote-provider remove        # delete route profile and secret custody
 
 ### Multi-GPU assignment replanning
 
-On Linux NVIDIA and managed Linux AMD/ROCm installations with more than one
-GPU, the same transaction also checks the target model's declared or
+On Linux NVIDIA and managed Linux AMD installations with more than one GPU,
+the same transaction also checks the target model's declared or
 size-derived VRAM envelope against the persisted llama-server assignment. If
 the existing subset is too small, ODS reruns the topology planner, expands
 llama-server to a sufficient GPU subset, and updates
@@ -300,16 +303,17 @@ free memory of heterogeneous cards. If activation fails, the previous model
 and GPU assignment are both restored and health-proven before rollback is
 reported as successful.
 
-For AMD, ODS also updates `ROCR_VISIBLE_DEVICES`. The runtime accepts the
-expanded assignment only when every selected GPU has a detected `gfx`
-architecture. A homogeneous `gfx1151` set receives the ODS-managed HSA override
-and custom llama.cpp binary; ODS refuses to combine `gfx1151` with another
-architecture in one llama-server process because that override is not
-device-scoped. Custom operator-provided HSA or llama.cpp override values are
-preserved; only the exact values managed by ODS are removed when they no longer
-match the selected GPU architecture.
-Single-GPU, Apple, Windows-native AMD/Lemonade, externally managed inference,
-and unpersisted all-GPU fallback configurations keep their existing behavior.
+For AMD, ODS also updates `ROCR_VISIBLE_DEVICES`. The AMD multi-GPU overlay
+passes the assigned GPUs to llama.cpp as `GGML_VK_VISIBLE_DEVICES` (Vulkan)
+and `ROCR_VISIBLE_DEVICES` (ROCm). The runtime accepts the expanded assignment
+only when every selected GPU has a detected `gfx` architecture, and ODS refuses
+to combine `gfx1151` with another architecture in one llama-server process.
+Custom operator-provided HSA values are preserved; only the exact values
+managed by ODS are removed when they no longer match the selected GPU
+architecture.
+Single-GPU, Apple, Windows AMD (`llama-server.exe`), externally managed
+inference, and unpersisted all-GPU fallback configurations keep their existing
+behavior.
 
 To inspect or intentionally override a multi-GPU plan, use the supported CLI
 instead of editing the encoded assignment in `.env`:
@@ -344,10 +348,9 @@ from that environment the next time ODS starts it.
 
 Direct edits to `.env`, `models.ini`, or app-owned settings bypass this
 transaction. The Dashboard Settings editor therefore treats active model,
-tier, artifact integrity, Lemonade identity, and runtime-profile fields as
-read-only; use Model Manager instead. Use the manual procedure below only for
-recovery or unsupported custom models, and verify every affected consumer
-afterward.
+tier, artifact integrity, and runtime-profile fields as read-only; use Model
+Manager instead. Use the manual procedure below only for recovery or
+unsupported custom models, and verify every affected consumer afterward.
 
 New or updated LLM apps should avoid direct model coupling. The swap-safe
 extension contract is documented in
@@ -369,7 +372,7 @@ On native Windows installs:
 $env:USERPROFILE\ods\data\models\
 ```
 
-On Windows AMD with Portal in WSL, the registered Lemonade store is
+On Windows AMD with Portal in WSL, the registered Windows model store is
 `%LOCALAPPDATA%\ODS\lemonade\models`. Catalog and Hugging Face downloads use
 that store automatically; the Ubuntu `~/ods/data/models/` directory is not
 the Windows runtime's model directory.
@@ -427,13 +430,9 @@ For a single local `.gguf`, the normal flow is:
 The Dashboard updates `.env`, `config/llama-server/models.ini`, and the active
 runtime routing before restarting the inference service.
 
-On Lemonade installs, loading a model directly inside the Lemonade app only
-changes Lemonade's current runtime state. It does not update ODS's
-`.env` or routing. For an ODS-managed runtime, use Dashboard -> Models -> Run
-to keep the saved model, startup configuration and ODS clients in sync. For
-an independent external Lemonade service, change the model in Lemonade and
-use **Adopt loaded model** in ODS; that updates the route without changing
-the external service's startup selection.
+With an external OpenAI-compatible server, ODS does not load models: make the
+model available in that server, then rerun the installer with
+`--external-llm-model <id>`.
 
 Use the manual procedure below only if you cannot access the Dashboard or need
 to repair an install by hand. It does not update the bound Windows/WSL startup
@@ -479,30 +478,11 @@ model:
   context_length: 65536
 ```
 
-For Lemonade/AMD backends, use:
-
-```yaml
-model:
-  default: "extra.MyModel-Q4_K_M.gguf"
-  context_length: 65536
-```
-
 Also keep `auxiliary.compression.context_length` at the same value and use
 `compression.threshold: 0.50`; older absolute-token thresholds can leave Hermes
 waiting too long to compact.
 
-5. For AMD/Lemonade installs, verify `config/litellm/lemonade.yaml`.
-
-Each local model alias should use the `extra.<GGUF_FILE>` form and should keep
-Qwen3 thinking disabled for clients that do not pass that flag themselves:
-
-```yaml
-extra_body:
-  chat_template_kwargs:
-    enable_thinking: false
-```
-
-6. If Perplexica is enabled, reseed or verify its model setting.
+5. If Perplexica is enabled, reseed or verify its model setting.
 
 ```bash
 LLM_MODEL="$(grep -E '^LLM_MODEL=' .env | tail -n1 | cut -d= -f2 | tr -d '"')"
@@ -514,7 +494,7 @@ Dashboard activation and `ods model swap` handle this automatically. Raw GGUF
 or `.env` edits still require verification because Perplexica stores its own app
 settings in its volume.
 
-7. Restart the affected services.
+6. Restart the affected services.
 
 ```bash
 ods restart llama-server
@@ -588,8 +568,6 @@ Common causes:
 - The model needs more VRAM or unified memory than the machine has.
 - Context length is too high; lower `CTX_SIZE` / `MAX_CONTEXT`.
 - The GGUF is not compatible with the active backend.
-- On AMD/Lemonade, a service is still asking for the raw filename instead of
-  `extra.<GGUF_FILE>`.
 
 ### Open WebUI or another app still shows the old model
 
@@ -610,8 +588,6 @@ Hermes has its own config:
 grep -n "default:\|context_length:" data/hermes/config.yaml
 docker restart ods-hermes
 ```
-
-For AMD/Lemonade, use `extra.<GGUF_FILE>`.
 
 ## Current Limitations
 

@@ -10,7 +10,7 @@ The TTS service provides high-quality neural text-to-speech synthesis using [Kok
 
 - **OpenAI-compatible API**: Drop-in replacement for `POST /v1/audio/speech`
 - **Multiple voices**: Multiple voice presets available; default is `af_heart`
-- **Concurrent requests**: 2 Uvicorn workers for parallel synthesis
+- **Concurrent requests**: one Uvicorn worker by default, with an explicit worker override
 - **Low latency**: CPU-based inference with fast Kokoro neural TTS model
 - **OpenAI format**: Compatible with any client that uses `openai.audio.speech.create()`
 
@@ -22,7 +22,8 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `TTS_PORT` | `8880` | External port (maps to internal 8880) |
 | `DEFAULT_VOICE` | `af_heart` | Default voice preset |
-| `TTS_WORKERS` | `2` (`1` on native macOS or Docker guests below 12 GiB) | Number of Kokoro worker processes. Increase only when the Docker VM has memory headroom. |
+| `TTS_WORKERS` | `1` | Number of Kokoro worker processes. Increase only when the Docker VM has memory headroom and you need more parallel speech requests. |
+| `TTS_THREADS` | Up to `4`, capped to `TTS_CPU_LIMIT / TTS_WORKERS` | CPU threads per worker. Both `OMP_NUM_THREADS` and `MKL_NUM_THREADS` use this value. Smaller explicit `.env` values survive reinstall; values above the current CPU budget are capped. |
 
 ## API Endpoints
 

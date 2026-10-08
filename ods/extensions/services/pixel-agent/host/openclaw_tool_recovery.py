@@ -28,6 +28,7 @@ COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
 READ_RANGE_MODULE = "openclaw-tools-iHHy99PD.js"
 SANDBOX_MKDIR_MODULES = {"bridge": "browser-bridges-D-At-KLc.js", "secure": "secure-temp-dir-XAWcZnE2.js"}
 TOOL_RESULT_PROJECTION_MODULE = "tool-result-truncation-CbxVHy2D.js"
+SUBAGENT_ADMISSION_MODULE = "subagent-announce-origin-XoBlouka.js"
 HOOK_PROVENANCE_MODULE = "hook-agent-context-ugCMMoT5.js"
 RUN_ID_REDACTION_MODULE = "redact-cvFSPoXf.js"
 CONTEXT_USAGE_MODULE = "attempt-execution-DnVHak5f.js"
@@ -133,7 +134,7 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
                            TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
-                           COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
+                           COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, SUBAGENT_ADMISSION_MODULE, HOOK_PROVENANCE_MODULE, RUN_ID_REDACTION_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -339,6 +340,7 @@ def main():
     selection.add_argument("--compaction-idle", action="store_true")
     selection.add_argument("--compaction-resume", action="store_true")
     selection.add_argument("--compaction-budget", action="store_true")
+    selection.add_argument("--subagent-admission", action="store_true")
     selection.add_argument("--hook-provenance", action="store_true")
     selection.add_argument("--run-id-redaction", action="store_true")
     selection.add_argument("--context-usage", action="store_true")
@@ -378,6 +380,9 @@ def main():
     elif args.run_id_redaction:
         options = {"module_name": RUN_ID_REDACTION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-run-id-redaction.json")}
+    elif args.subagent_admission:
+        options = {"module_name": SUBAGENT_ADMISSION_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-subagent-admission.json")}
     elif args.hook_provenance:
         options = {"module_name": HOOK_PROVENANCE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-hook-provenance.json")}

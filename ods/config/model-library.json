@@ -523,22 +523,7 @@
           "productSha": "faaf5af99c89e38cc43f18239ea94747f62bf16b",
           "harnessSha": "b838abf5a87b32c3f7ab8eaef43ea97133fb43d9",
           "globalScope": true,
-          "expiresAt": "2026-08-24T00:00:00Z",
-          "scopedOverrides": [
-            {
-              "status": "verified",
-              "label": "Perplexica verified on Strixy",
-              "reason": "A targeted exact-head Strixy WSL native-Lemonade switch to SmolLM3 passed challenge-bound Perplexica and every other required deployed LLM consumer, signed model-route checks, Pixel retained and non-retained SSE, ODS Talk, and exact baseline restoration with an identical final inventory. The original coordinator false-red on the intentionally null external currentModel; corrected harness c959bc6 accepted the unchanged artifact. This is one host/backend app-compatibility proof, not full release-cycle coverage.",
-              "evidence": "ods-public-beta-fleet-green-20260911/model-ui-strixy-smollm3-revalidate-dd15084f-h9b98068-r391/cycle-001/strixy-wsl-beta",
-              "recordedAt": "2026-09-20T20:01:05Z",
-              "productSha": "dd15084fb0cc10d03b8b322fd34cdaa474fc513f",
-              "harnessSha": "9b98068fad8ae732b87d0273ab28809843996c7d",
-              "validationHarnessSha": "c959bc6f0d499321305249b55415e4556cf32123",
-              "hostScope": ["strixy"],
-              "llmBackendScope": ["lemonade"],
-              "expiresAt": "2026-10-20T00:00:00Z"
-            }
-          ]
+          "expiresAt": "2026-08-24T00:00:00Z"
         }
       },
       "install_recommendation": false
@@ -2191,7 +2176,7 @@
           "vram_max_gb": 8.5,
           "context_length": 65536,
           "fit_label": "64K 8GB Q8 KV profile",
-          "notes": "Lemonade passes these llama.cpp cache settings to every model it serves, not only this one.",
+          "notes": "These llama.cpp cache settings apply while this model is active; switching to a model without a profile restores the defaults.",
           "env": {
             "LLAMA_PARALLEL": "1",
             "LLAMA_ARG_FLASH_ATTN": "on",

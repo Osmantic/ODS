@@ -18,6 +18,7 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
 from starlette.requests import Request
 
 _APP_DIR = Path(__file__).resolve().parents[1]
@@ -57,6 +58,8 @@ def router(tmp_path, monkeypatch):
             "auth": request.headers.get("authorization"),
             "stream": bool(body.get("stream")),
         })
+        # The route header a pre-round-F Lemonade upstream sent; the router
+        # surfaces it nowhere.
         if body.get("stream"):
             sse = (
                 b'data: {"id":"c1","model":"Concrete.gguf","choices":[{"delta":{"content":"hi"}}]}\n\n'
@@ -192,7 +195,7 @@ class TestForwarding:
         assert resp.headers["X-ODS-Requested-Model"] == "ods/current"
         assert resp.headers["X-ODS-Routed-Model"] == "Concrete.gguf"
         assert resp.headers["X-ODS-Route-Seq"] == "7"
-        assert resp.headers["X-Lemonade-Route"] == "route-a"
+        assert "X-Lemonade-Route" not in resp.headers
 
     def test_chat_template_artifacts_stripped_from_json_content(self, router):
         mod, client, write_state, calls = router
@@ -241,8 +244,7 @@ class TestForwarding:
 
     def test_local_tool_stream_uses_completed_backend_decision(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         sent = []
 
         def handler(request):
@@ -279,8 +281,12 @@ class TestForwarding:
 
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("text/event-stream")
-        assert sent[0]["stream"] is False
-        assert "stream_options" not in sent[0]
+        assert len(sent) == 2
+        assert sent[0]["stream"] is True
+        assert sent[0]["stream_options"]["include_usage"] is True
+        assert sent[1]["stream"] is False
+        assert "stream_options" not in sent[1]
+        assert response.headers["x-ods-tool-stream-fallback"] == "true"
         assert sent[0]["tools"][0]["function"]["name"] == "lookup"
         frames = [item for item in response.text.split("\n\n") if item]
         assert frames[-1] == "data: [DONE]"
@@ -294,18 +300,370 @@ class TestForwarding:
         assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
         assert chunks[-1]["usage"]["total_tokens"] == 28
 
-    def test_local_tool_stream_reports_lemonade_context_error_not_invalid_completion(self, router):
+    def test_local_tool_stream_buffers_valid_tool_decision_and_usage(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
+        sent = []
+
+        def frame(delta, finish=None, created=1, usage=None):
+            item = {"id": "stream-call", "object": "chat.completion.chunk",
+                    "created": created, "model": "Concrete.gguf",
+                    "choices": [{"index": 0, "delta": delta,
+                                 "finish_reason": finish}]}
+            if usage is not None:
+                item["choices"] = []
+                item["usage"] = usage
+            return b"data: " + json.dumps(item).encode() + b"\n\n"
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            sse = b"".join([
+                frame({"role": "assistant", "content": None}),
+                frame({"tool_calls": [{"index": 0, "id": "call-1",
+                       "type": "function", "function": {
+                           "name": "lookup", "arguments": '{"key":'}}]}),
+                frame({"tool_calls": [{"index": 0, "function": {
+                    "arguments": '"ok"}'}}]}, created=2),
+                frame({}, finish="tool_calls", created=2),
+                frame({}, created=2, usage={"prompt_tokens": 20,
+                    "completion_tokens": 8, "total_tokens": 28}),
+                b"data: [DONE]\n\n",
+            ])
+            return httpx.Response(200, content=sse,
+                                  headers={"content-type": "text/event-stream"})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 200
+        assert len(sent) == 1
+        assert sent[0]["stream"] is True
+        assert sent[0]["stream_options"]["include_usage"] is True
+        assert "x-ods-tool-stream-fallback" not in response.headers
+        frames = [item for item in response.text.split("\n\n") if item]
+        assert len(frames) == 3 and frames[-1] == "data: [DONE]"
+        chunks = [json.loads(item.removeprefix("data: ")) for item in frames[:-1]]
+        assert chunks[0]["model"] == "ods/current"
+        assert chunks[0]["choices"][0]["delta"]["tool_calls"][0][
+            "function"]["arguments"] == '{"key":"ok"}'
+        assert chunks[1]["usage"] == {"prompt_tokens": 20,
+                                      "completion_tokens": 8, "total_tokens": 28}
+
+    @pytest.mark.parametrize("wrong_wire_model", [False, True])
+    def test_strixy_gguf_stream_respects_pinned_selected_route(
+            self, router, wrong_wire_model):
+        mod, client, write_state, _calls = router
+        # llama-server serves the GGUF under its --alias, the runtime model id.
+        selected = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+        write_state(runtime=selected)
+        raw = (Path(__file__).parent / "fixtures" /
+               "strixy_gguf_tool_stream.sse").read_bytes()
+        if wrong_wire_model:
+            raw = raw.replace(selected.encode(), b"OtherModel.gguf")
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            # Captured through Lemonade, which added its route header.
+            return httpx.Response(
+                200, content=raw,
+                headers={"content-type": "text/event-stream",
+                         "x-lemonade-route": "llamacpp"})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", headers={
+            "X-ODS-Expected-Catalog": "concrete",
+            "X-ODS-Expected-Model": selected,
+            "X-ODS-Expected-Route": "7",
+        }, json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "add 17 and 19"}],
+            "tools": [{"type": "function", "function": {
+                "name": "add_numbers", "parameters": {"type": "object"}}}],
+        })
+        assert len(sent) == 1 and sent[0]["model"] == selected
+        assert sent[0]["stream"] is True
+        assert "X-Lemonade-Route" not in response.headers
+        if wrong_wire_model:
+            assert response.status_code == 502
+            assert response.json()["error"]["type"] == "response_identity_mismatch"
+            assert "add_numbers" not in response.text
+            return
+        assert response.status_code == 200
+        chunks = [json.loads(frame.removeprefix("data: "))
+                  for frame in response.text.split("\n\n")
+                  if frame and frame != "data: [DONE]"]
+        assert chunks[0]["model"] == "ods/current"
+        call = chunks[0]["choices"][0]["delta"]["tool_calls"][0]
+        assert json.loads(call["function"]["arguments"]) == {"a": 17, "b": 19}
+        assert chunks[1]["usage"]["total_tokens"] == 336
+
+    def test_incomplete_tool_stream_fails_without_nonstream_retry(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            partial = {"model": "Concrete.gguf", "choices": [{"index": 0,
+                "delta": {"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": "call-1", "type": "function",
+                    "function": {"name": "lookup", "arguments": '{"key":"ok"}'},
+                }]}, "finish_reason": None}]}
+            return httpx.Response(200,
+                content=b"data: " + json.dumps(partial).encode() + b"\n\n",
+                headers={"content-type": "text/event-stream"})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "upstream_invalid_response"
+        assert len(sent) == 1 and sent[0]["stream"] is True
+        assert "x-ods-tool-stream-fallback" not in response.headers
+        assert "call-1" not in response.text
+
+    def test_thinking_tool_stream_preserves_reasoning_on_valid_decision(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+
+        def frame(delta, finish=None):
+            item = {"model": "Concrete.gguf", "choices": [{"index": 0,
+                "delta": delta, "finish_reason": finish}]}
+            return b"data: " + json.dumps(item).encode() + b"\n\n"
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            sse = b"".join([
+                frame({"role": "assistant", "reasoning_content": "Think "}),
+                frame({"reasoning_content": "done."}),
+                frame({"tool_calls": [{"index": 0, "id": "call-1",
+                    "type": "function", "function": {"name": "lookup",
+                    "arguments": '{"key":"ok"}'}}]}),
+                frame({}, finish="tool_calls"), b"data: [DONE]\n\n",
+            ])
+            return httpx.Response(200, content=sse,
+                                  headers={"content-type": "text/event-stream"})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 200
+        assert len(sent) == 1 and sent[0]["stream"] is True
+        frames = [json.loads(item.removeprefix("data: "))
+                  for item in response.text.split("\n\n")
+                  if item and item != "data: [DONE]"]
+        delta = frames[0]["choices"][0]["delta"]
+        assert delta["reasoning_content"] == "Think done."
+        assert delta["tool_calls"][0]["function"]["name"] == "lookup"
+
+    def test_thinking_length_does_not_retry_or_emit_partial_decision(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            frames = [
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {"role": "assistant", "reasoning_content": "unfinished"},
+                    "finish_reason": None}]},
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {}, "finish_reason": "length"}]},
+            ]
+            sse = b"".join(b"data: " + json.dumps(item).encode() + b"\n\n"
+                           for item in frames) + b"data: [DONE]\n\n"
+            return httpx.Response(200, content=sse,
+                                  headers={"content-type": "text/event-stream"})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "tool_protocol_invalid"
+        assert len(sent) == 1 and sent[0]["stream"] is True
+        assert "unfinished" not in response.text
+
+    def test_explicit_thinking_uses_one_nonstream_compatibility_request(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(200, json={"model": "Concrete.gguf",
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                    "content": None, "tool_calls": [{"id": "call-1",
+                        "type": "function", "function": {"name": "lookup",
+                        "arguments": '{"key":"ok"}'}}]},
+                    "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 5,
+                          "total_tokens": 25}})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "stream_options": {"include_usage": True},
+            "chat_template_kwargs": {"enable_thinking": True},
+            "messages": [{"role": "user", "content": "look up ok"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object",
+                    "properties": {"key": {"type": "string"}}}}}],
+        })
+
+        assert response.status_code == 200
+        assert len(sent) == 1 and sent[0]["stream"] is False
+        assert "stream_options" not in sent[0]
+        assert sent[0]["chat_template_kwargs"] == {"enable_thinking": True}
+        assert response.headers["x-ods-tool-stream-compatibility"] == "thinking-nonstream"
+        assert "x-ods-tool-stream-fallback" not in response.headers
+        assert response.headers["content-type"].startswith("text/event-stream")
+        frames = [json.loads(item.removeprefix("data: "))
+                  for item in response.text.split("\n\n")
+                  if item and item != "data: [DONE]"]
+        assert all(frame["model"] == "ods/current" for frame in frames)
+        assert frames[0]["choices"][0]["delta"]["tool_calls"][0][
+            "function"]["name"] == "lookup"
+        assert frames[-1]["usage"] == {"prompt_tokens": 20,
+                                        "completion_tokens": 5,
+                                        "total_tokens": 25}
+
+    def test_unexpected_thinking_json_text_stays_inert(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        described = '{"name":"lookup","arguments":{"key":"ok"}}'
+
+        def handler(request):
+            sent.append(json.loads(request.content))
+            frames = [
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {"role": "assistant", "reasoning_content": "thinking"},
+                    "finish_reason": None}]},
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {"content": described}, "finish_reason": "stop"}]},
+            ]
+            return httpx.Response(200,
+                content=b"".join(b"data: " + json.dumps(item).encode() + b"\n\n"
+                                 for item in frames) + b"data: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"})
+
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(
+            transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": True,
+            "messages": [{"role": "user", "content": "explain this JSON"}],
+            "tools": [{"type": "function", "function": {
+                "name": "lookup", "parameters": {"type": "object"}}}],
+        })
+
+        assert response.status_code == 200
+        assert len(sent) == 1 and sent[0]["stream"] is True
+        assert "x-ods-tool-stream-fallback" not in response.headers
+        frames = [json.loads(item.removeprefix("data: "))
+                  for item in response.text.split("\n\n")
+                  if item and item != "data: [DONE]"]
+        assert frames[0]["choices"][0]["delta"]["content"] == described
+        assert "tool_calls" not in frames[0]["choices"][0]["delta"]
+
+    def test_tool_stream_disconnect_closes_upstream_before_decision(self, router):
+        mod, _client, write_state, _calls = router
+        write_state()
+
+        async def run():
+            started = asyncio.Event()
+            closed = asyncio.Event()
+            disconnected = asyncio.Event()
+
+            class SlowStream(httpx.AsyncByteStream):
+                async def __aiter__(self):
+                    try:
+                        started.set()
+                        yield b'data: {"model":"Concrete.gguf","choices":[]}' b"\n\n"
+                        await asyncio.Event().wait()
+                    finally:
+                        closed.set()
+
+                async def aclose(self):
+                    closed.set()
+
+            class RequestWithDisconnect:
+                headers = Headers({})
+
+                async def is_disconnected(self):
+                    return disconnected.is_set()
+
+            def handler(_request):
+                return httpx.Response(200, stream=SlowStream(),
+                                      headers={"content-type": "text/event-stream"})
+
+            await mod.app.state.http.aclose()
+            mod.app.state.http = httpx.AsyncClient(
+                transport=httpx.MockTransport(handler))
+            request = RequestWithDisconnect()
+            body = {"model": "ods/current", "stream": True,
+                    "messages": [{"role": "user", "content": "look up ok"}],
+                    "tools": [{"type": "function", "function": {
+                        "name": "lookup", "parameters": {"type": "object"}}}]}
+            raw_body = json.dumps(body).encode()
+            task = asyncio.create_task(mod._while_connected(
+                request, mod._forward_admitted(
+                    request, "/v1/chat/completions", body,
+                    "ods/current", raw_body)))
+            await asyncio.wait_for(started.wait(), 3)
+            disconnected.set()
+            response = await asyncio.wait_for(task, 3)
+            assert response.status_code == 499
+            assert closed.is_set()
+            assert mod._inflight == 0
+
+        asyncio.run(run())
+
+    def test_local_tool_stream_passes_llama_server_context_error_through(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        # llama-server answers an oversized prompt with its own HTTP 400.
+        error = {"error": {
+            "code": 400, "type": "exceed_context_size_error",
+            "message": "the request exceeds the available context size, try increasing it",
+            "n_prompt_tokens": 9000, "n_ctx": 8192}}
 
         def handler(_request):
-            return httpx.Response(200, json={"error": {
-                "message": "llama-server request failed", "details": {
-                    "status_code": 400, "response": {"error": {
-                        "type": "exceed_context_size_error", "n_ctx": 8192,
-                        "n_prompt_tokens": 9000,
-                        "message": "untrusted backend detail"}}}}})
+            return httpx.Response(400, json=error)
 
         asyncio.run(mod.app.state.http.aclose())
         mod.app.state.http = httpx.AsyncClient(
@@ -318,18 +676,12 @@ class TestForwarding:
         })
 
         assert response.status_code == 400
-        assert response.json()["error"] == {
-            "message": "Request (9000 tokens) exceeds the available context size (8192 tokens)",
-            "type": "exceed_context_size_error", "code": "400",
-            "n_ctx": 8192, "n_prompt_tokens": 9000,
-        }
-        assert "untrusted backend detail" not in response.text
+        assert response.json() == error
         assert "[DONE]" not in response.text
 
     def test_complete_native_markup_uses_only_advertised_valid_tool(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         native = (
             "<tool_call>\n<function=pixel_ods_python_library_proposal>\n"
             "<parameter=repository>\nhttps://github.com/pypa/packaging\n</parameter>\n"
@@ -447,12 +799,26 @@ class TestForwarding:
 
     def test_invalid_complete_native_name_gets_one_completion_repair(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         sent = []
         def handler(request):
             body = json.loads(request.content)
             sent.append(body)
+            if body["stream"]:
+                native = ("<tool_call>\n<function=pixel_ods_web_fetch>\n"
+                          "<parameter=url>\nhttps://example.org\n</parameter>\n"
+                          "</function>\n</tool_call>")
+                frames = [
+                    {"model": "Concrete.gguf", "choices": [{"index": 0,
+                        "delta": {"role": "assistant", "content": native},
+                        "finish_reason": None}]},
+                    {"model": "Concrete.gguf", "choices": [{"index": 0,
+                        "delta": {}, "finish_reason": "stop"}]},
+                ]
+                sse = b"".join(b"data: " + json.dumps(frame).encode() + b"\n\n"
+                               for frame in frames) + b"data: [DONE]\n\n"
+                return httpx.Response(200, content=sse,
+                                      headers={"content-type": "text/event-stream"})
             if len(sent) == 1:
                 message = {"role": "assistant", "content": (
                     "<tool_call>\n<function=pixel_ods_web_fetch>\n"
@@ -478,7 +844,9 @@ class TestForwarding:
                     "properties": {"url": {"type": "string"}}}}}],
         })
         assert response.status_code == 200
-        assert len(sent) == 2 and all(body["stream"] is False for body in sent)
+        assert len(sent) == 2
+        assert sent[0]["stream"] is True
+        assert sent[1]["stream"] is False
         assert sent[1]["messages"][:-1] == sent[0]["messages"]
         feedback = sent[1]["messages"][-1]["content"]
         assert sent[1]["messages"][-1]["role"] == "user"
@@ -488,6 +856,34 @@ class TestForwarding:
                   for frame in response.text.split("\n\n")
                   if frame and frame != "data: [DONE]"]
         assert chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "web_fetch"
+
+    def test_repair_transport_error_hides_the_error_text(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        def handler(request):
+            body = json.loads(request.content)
+            sent.append(body)
+            if len(sent) > 1:
+                raise httpx.ConnectError("private backend detail", request=request)
+            native = ("<tool_call>\n<function=pixel_ods_web_fetch>\n"
+                      "<parameter=url>\nhttps://example.org\n</parameter>\n"
+                      "</function>\n</tool_call>")
+            return httpx.Response(200, json={"model": "Concrete.gguf", "choices": [{"index": 0,
+                "message": {"role": "assistant", "content": native}, "finish_reason": "stop"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": False,
+            "messages": [{"role": "user", "content": "fetch the URL"}],
+            "tools": [{"type": "function", "function": {"name": "web_fetch",
+                "parameters": {"type": "object", "required": ["url"],
+                    "properties": {"url": {"type": "string"}}}}}],
+        })
+        assert len(sent) == 2
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "upstream_unavailable"
+        assert "private backend detail" not in response.text
 
     def test_second_invalid_native_decision_returns_typed_error(self, router):
         mod, client, write_state, _calls = router
@@ -512,6 +908,8 @@ class TestForwarding:
         assert response.status_code == 502
         assert response.json()["error"]["type"] == "tool_protocol_invalid"
         assert len(sent) == 2
+        assert sent[0]["stream"] is True
+        assert sent[1]["stream"] is False
 
     @pytest.mark.parametrize("tool_choice", [
         "required", {"type": "function", "function": {"name": "lookup"}},
@@ -600,11 +998,14 @@ class TestForwarding:
         response = client.post("/v1/chat/completions", json=body)
         assert response.status_code == 200
         assert len(sent) == 1
+        if tools:
+            assert sent[0]["stream"] is True
 
     def test_repaired_structured_calls_obey_forced_name_and_parallel_limit(self, router):
         mod, _client, _write_state, _calls = router
-        call = lambda name: {"id": "id-" + name, "type": "function",
-            "function": {"name": name, "arguments": '{}'}}
+        def call(name):
+            return {"id": "id-" + name, "type": "function",
+                "function": {"name": name, "arguments": '{}'}}
         tools = [{"type": "function", "function": {"name": name,
             "parameters": {"type": "object", "properties": {}}}}
                  for name in ("lookup", "other")]
@@ -666,6 +1067,7 @@ class TestForwarding:
         })
         assert response.status_code == 200
         assert len(sent) == 1
+        assert sent[0]["stream"] is True
 
     def test_local_tool_stream_preserves_backend_error_status(self, router):
         mod, client, write_state, _calls = router
@@ -1051,6 +1453,7 @@ class TestModelsAndEvidence:
         assert record["routeSeq"] == 7
         assert record["responseModel"] == "Concrete.gguf"
         assert "messages" not in record and "content" not in record
+        assert "lemonadeRoute" not in record
 
     def test_completed_verified_stream_records_evidence(self, router):
         mod, client, write_state, calls = router

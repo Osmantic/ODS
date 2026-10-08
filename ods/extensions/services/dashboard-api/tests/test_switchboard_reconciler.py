@@ -14,6 +14,11 @@ if str(_BIN_DIR) not in sys.path:
 
 from model_switchboard import adapters as ad  # noqa: E402
 from model_switchboard import reconciler as rc  # noqa: E402
+import test_model_activate as _tma  # noqa: E402
+
+# Captured before any test pins them, for tests that drive the real chain.
+_REAL_RUNTIME_HEALTH = _tma._mod._runtime_health
+_REAL_RUNTIME_PROPS = _tma._mod._llama_runtime_props
 
 
 def _proof_result(identity="M.gguf", **overrides):
@@ -181,8 +186,8 @@ class TestContainerLlamaAdapter:
         def restart(env):
             seen["restart_env"] = env
 
-        def wait_ready(env, gguf, ctx, lemonade_model_id=""):
-            seen["wait"] = (gguf, ctx, lemonade_model_id)
+        def wait_ready(env, gguf, ctx):
+            seen["wait"] = (gguf, ctx)
             return _readiness_proof("runtime/Model.gguf", 4096)
 
         adapter = ad.ContainerLlamaAdapter(
@@ -204,7 +209,7 @@ class TestContainerLlamaAdapter:
         }
         assert run["verifiedAt"]
         assert seen["restart_env"] is env
-        assert seen["wait"] == ("Model.gguf", 4096, "")
+        assert seen["wait"] == ("Model.gguf", 4096)
 
     def test_restart_exception_becomes_stage_failure(self):
         adapter = ad.ContainerLlamaAdapter(
@@ -281,57 +286,12 @@ class TestNativeLlamaAdapter:
         assert required.issubset(set(dir(ad.FakeAdapter)))
 
 
-class TestLemonadeAdapter:
-    def test_verify_uses_resolved_lemonade_id(self):
-        seen = {}
-
-        def wait_ready(env, gguf, ctx, lemonade_model_id=""):
-            seen["args"] = (gguf, ctx, lemonade_model_id)
-            return _readiness_proof("extra.Q.gguf", 65536)
-
-        adapter = ad.LemonadeAdapter(
-            wait_ready=wait_ready,
-            expected_gguf="Q.gguf",
-            context_length=65536,
-            lemonade_model_id="extra.Q.gguf",
-        )
-        run = rc.run_runtime_activation(adapter, {})
-        assert run["ok"] is True
-        assert run["identity"] == "extra.Q.gguf"
-        assert run["contextLength"] == 65536
-        assert adapter.kind == "lemonade"
-        assert seen["args"] == ("Q.gguf", 65536, "extra.Q.gguf")
-
-    def test_missing_id_is_stage_failure(self):
-        adapter = ad.LemonadeAdapter(
-            wait_ready=lambda *a, **k: True,
-            expected_gguf="Q.gguf",
-            context_length=1024,
-            lemonade_model_id="",
-        )
-        run = rc.run_runtime_activation(adapter, {})
-        assert run["ok"] is False and run["phase"] == "stage"
-
-    def test_not_ready_is_identity_failure(self):
-        adapter = ad.LemonadeAdapter(
-            wait_ready=lambda *a, **k: {},
-            expected_gguf="Q.gguf",
-            context_length=1024,
-            lemonade_model_id="extra.Q.gguf",
-        )
-        run = rc.run_runtime_activation(adapter, {})
-        assert run["ok"] is False and run["phase"] == "verify_identity"
-
-    def test_boolean_readiness_cannot_echo_configured_lemonade_id(self):
-        adapter = ad.LemonadeAdapter(
-            wait_ready=lambda *a, **k: True,
-            expected_gguf="Q.gguf",
-            context_length=1024,
-            lemonade_model_id="extra.Q.gguf",
-        )
-        run = rc.run_runtime_activation(adapter, {})
-        assert run["ok"] is False
-        assert run["identity"] is None
+class TestSingleRuntimeFamily:
+    def test_every_managed_runtime_uses_the_llama_server_adapters(self):
+        # Round F: no Lemonade adapter; the WSL bridge, Windows, macOS and
+        # container paths all prove the same llama-server contract.
+        assert not hasattr(ad, "LemonadeAdapter")
+        assert ad.ContainerLlamaAdapter.kind == ad.NativeLlamaAdapter.kind == "llama-server"
 
 
 class TestHostAgentWiring:
@@ -339,6 +299,8 @@ class TestHostAgentWiring:
         import subprocess
         import test_model_activate as tma
 
+        real_health = _REAL_RUNTIME_HEALTH
+        real_props = _REAL_RUNTIME_PROPS
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]
         monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
         monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
@@ -357,19 +319,28 @@ class TestHostAgentWiring:
 
         monkeypatch.setattr(tma._mod, "_wait_for_model_readiness", spying_wait)
 
+        probed: list[str] = []
+
         def fake_run(cmd, **_kwargs):
             url = next((str(part) for part in cmd if str(part).startswith("http")), "")
-            if url.endswith("/v1/models"):
+            probed.append(url.rsplit(":8080", 1)[-1])
+            if url.endswith("/health"):
+                stdout = json.dumps({"status": "ok"})
+            elif url.endswith("/v1/models"):
                 stdout = tma._llama_identity_response("new-model.gguf")
             elif url.endswith("/props"):
                 stdout = json.dumps({
-                    "default_generation_settings": {"n_ctx": 65536}
+                    "model_path": "/models/new-model.gguf",
+                    "default_generation_settings": {"n_ctx": 65536},
                 })
             else:
                 stdout = ""
             return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(tma._mod.subprocess, "run", fake_run)
+        # Exercise the real proof chain, not the class-level pins.
+        monkeypatch.setattr(tma._mod, "_runtime_health", real_health)
+        monkeypatch.setattr(tma._mod, "_llama_runtime_props", real_props)
         assert tma._mod._switchboard_adapters is not None
 
         handler = tma._ResponseHandler()
@@ -381,6 +352,8 @@ class TestHostAgentWiring:
         )
         assert state["active"]["runtimeModelId"] == "new-model.gguf"
         assert state["active"]["proof"]["identity"] == "new-model.gguf"
+        # One proof contract: health, identity, then the served file's n_ctx.
+        assert probed[:3] == ["/health", "/v1/models", "/props"]
 
     def test_reconciler_failure_uses_existing_rollback(self, tmp_path, monkeypatch):
         import subprocess
@@ -473,8 +446,8 @@ class TestHostAgentWiring:
         # The class isolation pins /props to 65536; this runtime is capped.
         monkeypatch.setattr(
             tma._mod,
-            "_llama_runtime_context_length",
-            lambda *_args: 1024 if staged()[-1:] == ["new-model.gguf"] else 2048,
+            "_llama_runtime_props",
+            lambda *_args: (1024 if staged()[-1:] == ["new-model.gguf"] else 2048, ""),
         )
         handler = tma._ResponseHandler()
         tma._mod.AgentHandler._do_model_activate(handler, "target-model")
@@ -594,9 +567,8 @@ def _isolation(monkeypatch, tmp_path, request):
         lambda: (config_dir / "opencode.json", config_dir / "config.json"),
     )
     monkeypatch.setattr(tma._mod, "_chat_completion_ready", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        tma._mod, "_llama_runtime_context_length", lambda *_args: 65536
-    )
+    monkeypatch.setattr(tma._mod, "_runtime_health", lambda _env: "ok")
+    monkeypatch.setattr(tma._mod, "_llama_runtime_props", lambda _env: (65536, ""))
     monkeypatch.setattr(tma._mod, "_container_exists", lambda _c: False)
     monkeypatch.setattr(tma._mod, "_container_running", lambda _c: False)
     monkeypatch.setattr(

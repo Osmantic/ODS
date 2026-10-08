@@ -2,7 +2,7 @@
 """Account for Compose-owned volumes before removing an ODS installation.
 
 Compose only knows the currently selected files. This helper accounts for
-selected and disabled-extension volumes before removing any of them.
+selected and unselected-extension volumes before removing any of them.
 """
 
 from __future__ import annotations
@@ -20,6 +20,13 @@ VOLUME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 CONTAINER_RE = re.compile(r"[a-f0-9]{64}\Z")
 PROJECT_LABEL = "com.docker.compose.project"
 VOLUME_LABEL = "com.docker.compose.volume"
+# Volumes the AMD overlay declared for the retired Lemonade runtime. No current
+# recipe declares them, so after the llama.cpp upgrade no container mounts
+# them. The Lemonade migration records them in this installation's data
+# directory; that record, the project label and the project-prefixed name
+# stand in for the container mount that proves the other volumes.
+RETIRED_VOLUME_KEYS = frozenset({"lemonade-cache", "lemonade-llama", "lemonade-recipe"})
+RETIRED_VOLUME_RECORD = "data/lemonade-retired-volumes.json"
 
 
 def docker(root: Path, *args: str) -> str:
@@ -118,15 +125,28 @@ def trusted_plain_volume_keys(root: Path, disabled_only: bool = False,
     return {key for key, values in states.items() if values == {"owned"}}
 
 
-def disabled_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+def unselected_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+    """Bind leftover mounts to installed recipes even when selection failed.
+
+    A failed native activation can leave an enabled extension running while
+    uninstall falls back to base Compose files. Its recipe path and service
+    must still match the mounted container, just as for disabled extensions.
+    """
     found: dict[str, set[tuple[str, str]]] = {}
+    enabled_keys = trusted_plain_volume_keys(root)
+    trusted_enabled_keys = trusted_plain_volume_keys(trusted_root)
     for directory in ("extensions/services", "extensions/library/services"):
-        for suffix in ("*.yaml.disabled", "*.yml.disabled"):
+        for suffix in ("*.yaml.disabled", "*.yml.disabled", "*.yaml", "*.yml"):
             for path in (root / directory).glob(f"*/compose{suffix}"):
                 enabled_name = path.name.removesuffix(".disabled")
                 enabled_path = path.with_name(enabled_name)
                 candidate_path = trusted_root / path.relative_to(root).with_name(enabled_name)
                 for key in trusted_plain_volume_keys(root, only_file=path):
+                    if (not path.name.endswith(".disabled") and
+                            (key not in enabled_keys or key not in trusted_enabled_keys)):
+                        # An enabled override declaring this key external or
+                        # custom-named must not be bypassed by the base recipe.
+                        continue
                     if (trusted_root != root and
                             key not in trusted_plain_volume_keys(
                                 trusted_root, only_file=candidate_path)):
@@ -134,11 +154,76 @@ def disabled_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[
                     found.setdefault(key, set()).add(
                         (path.parent.name, str(enabled_path.resolve()))
                     )
+    for key, owners in native_stack_volume_provenance(root, trusted_root).items():
+        found.setdefault(key, set()).update(owners)
     return found
 
 
-def disabled_volume_keys(root: Path, trusted_root: Path) -> set[str]:
-    return set(disabled_volume_provenance(root, trusted_root))
+# install-macos.sh runs the native-Pixel stack with these ODS-shipped recipes
+# in their .disabled form, including the shared edge transition-state volume.
+# A native install that stops after starting the stack never adds these files
+# to .compose-flags, so ownership must also use the containers' recipe paths.
+NATIVE_STACK_RECIPES = (
+    "installers/macos/pixel-native.compose.yaml.disabled",
+    "extensions/services/pixel-edge/compose.yaml.disabled",
+)
+SERVICE_DECLARATION_RE = re.compile(r"^  ([a-z0-9][a-z0-9_-]*):\s*$")
+
+
+def compose_service_names(path: Path) -> set[str]:
+    """Top-level service names declared in a plain Compose recipe."""
+    names: set[str] = set()
+    in_services = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line == "services:":
+            in_services = True
+            continue
+        if in_services and line and not line[0].isspace():
+            break
+        match = SERVICE_DECLARATION_RE.fullmatch(line) if in_services else None
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def native_stack_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+    found: dict[str, set[tuple[str, str]]] = {}
+    for relative in NATIVE_STACK_RECIPES:
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            continue
+        services = compose_service_names(path)
+        for key in trusted_plain_volume_keys(root, only_file=path):
+            if (trusted_root != root and
+                    key not in trusted_plain_volume_keys(trusted_root, only_file=trusted_root / relative)):
+                continue
+            found.setdefault(key, set()).update(
+                (service, str(path.resolve())) for service in services
+            )
+    return found
+
+
+def unselected_volume_keys(root: Path, trusted_root: Path) -> set[str]:
+    return set(unselected_volume_provenance(root, trusted_root))
+
+
+def retired_volume_keys(root: Path) -> set[str]:
+    """Retired Lemonade volume keys this installation's migration recorded."""
+    path = root / RETIRED_VOLUME_RECORD
+    if not os.path.lexists(path):
+        return set()
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{RETIRED_VOLUME_RECORD} is not a regular file")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    keys = record.get("volumeKeys") if isinstance(record, dict) else None
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
+            record.get("installDir") != str(root) or not isinstance(keys, list) or
+            any(not isinstance(key, str) or key not in RETIRED_VOLUME_KEYS for key in keys)):
+        raise ValueError(
+            f"{RETIRED_VOLUME_RECORD} does not belong to this installation; remove the "
+            "retired Lemonade volumes yourself with 'docker volume rm', or rerun with --keep-data"
+        )
+    return set(keys)
 
 
 def project_containers(
@@ -195,6 +280,38 @@ def project_containers(
     return set(ids), mounted, provenance
 
 
+def install_root_containers(root: Path) -> set[str]:
+    """Find Compose containers still tied to this tree across project renames."""
+    # This scan only blocks removal; project_containers separately inspects
+    # every resource whose ownership can authorize cleanup. Read path labels
+    # from the list response so an uninspectable, unrelated Desktop record
+    # cannot prevent retiring this installation. Never suppress inspect errors
+    # for the selected project or ignore a renamed project using this tree.
+    template = (
+        '{"Id":{{json .ID}},'
+        '"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}},'
+        '"configFiles":{{json (.Label "com.docker.compose.project.config_files")}}}'
+    )
+    listing = docker(root, "ps", "--all", "--no-trunc", "--filter",
+                     f"label={PROJECT_LABEL}", "--format", template)
+    base_files = {str((root / name).resolve()) for name in
+                  ("docker-compose.base.yml", "docker-compose.yml")}
+    found = set()
+    for line in listing.splitlines():
+        row = json.loads(line)
+        if (not isinstance(row, dict) or set(row) != {"Id", "workingDir", "configFiles"}
+                or not isinstance(row["Id"], str) or not CONTAINER_RE.fullmatch(row["Id"])
+                or not isinstance(row["workingDir"], str)
+                or not isinstance(row["configFiles"], str)):
+            raise ValueError("Docker returned invalid container path listing")
+        working_dir = row["workingDir"]
+        first_file = row["configFiles"].split(",")[0]
+        if ((os.path.isabs(working_dir) and os.path.realpath(working_dir) == str(root))
+                or (os.path.isabs(first_file) and os.path.realpath(first_file) in base_files)):
+            found.add(row["Id"])
+    return found
+
+
 def check_volume_consumers(root: Path, names: set[str], owned_ids: set[str]) -> None:
     for name in sorted(names):
         ids = docker(root, "ps", "--all", "--quiet", "--no-trunc", "--filter",
@@ -243,19 +360,64 @@ def fingerprint(row: dict) -> dict:
     return {key: row.get(key) for key in ("Name", "Labels", "CreatedAt", "Driver")}
 
 
+# A purge preflight proves volume ownership through the containers that mount
+# them, and Compose down then removes those containers. Keep the verified
+# record in the retained installation tree so an uninstall interrupted after
+# that point can finish: only volumes whose exact identity is unchanged since
+# the proof are accepted, and foreign consumers are still refused.
+RESUME_RECORD = ".ods-uninstall-custody.json"
+
+
+def resume_record(root: Path, project: str) -> tuple[dict[str, dict], dict[str, dict]]:
+    path = root / RESUME_RECORD
+    if not os.path.lexists(path):
+        return {}, {}
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Uninstall resume record is invalid")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
+            record.get("installDir") != str(root) or
+            record.get("project") != project):
+        raise ValueError("Uninstall resume record does not belong to this installation")
+    volumes, anonymous = record.get("volumes"), record.get("anonymous", {})
+    if (not isinstance(volumes, dict) or not isinstance(anonymous, dict) or
+            any(not isinstance(name, str) or not VOLUME_RE.fullmatch(name) or
+                not isinstance(value, dict) for name, value in volumes.items()) or
+            any(not CONTAINER_RE.fullmatch(name) or not isinstance(value, dict)
+                for name, value in anonymous.items())):
+        raise ValueError("Uninstall resume record is invalid")
+    return volumes, anonymous
+
+
+def write_resume_record(root: Path, record: dict) -> None:
+    temporary = root / (RESUME_RECORD + ".tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(json.dumps(record, sort_keys=True))
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, root / RESUME_RECORD)
+
+
 def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = False,
               trusted_root: Path | None = None) -> None:
     trusted_root = trusted_root or root
     project, selected, external = project_config(root, flags)
     container_ids, mounted, mount_provenance = project_containers(root, project)
+    other_project = install_root_containers(root) - container_ids
+    if other_project:
+        raise ValueError("Compose containers from another project still reference this installation: "
+                         + ", ".join(sorted(other_project)[:3]))
     if keep_data:
         snapshot.write_text(json.dumps({
             "schemaVersion": 1, "installDir": str(root), "project": project,
+            "trustedSource": str(trusted_root), "flags": flags,
             "volumes": {}, "external": {},
         }), encoding="utf-8")
         return
     volumes = project_volumes(root, project)
-    disabled = disabled_volume_provenance(root, trusted_root)
+    resumed, resumed_anonymous = resume_record(root, project)
+    unselected = unselected_volume_provenance(root, trusted_root)
     expected_names = set(selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
     } | {
@@ -266,15 +428,25 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     if unlabelled_expected:
         name = sorted(unlabelled_expected)[0]
         raise ValueError(f"Volume {name} matches an ODS recipe but lacks Compose ownership labels")
-    if volumes and not container_ids:
+    def proven_earlier(name: str, row: dict) -> bool:
+        # Unmounted now, but identical to what an interrupted uninstall proved.
+        return name not in mounted and resumed.get(name) == fingerprint(row)
+
+    if volumes and not container_ids and not all(
+            name in external or proven_earlier(name, row) for name, row in volumes.items()):
         raise ValueError(
             "ODS project volumes remain but no container proves the installation path; "
-            "an older 'ods stop' may have removed that proof. Use --keep-data or "
-            "review these volumes manually before removal"
+            "an older 'ods stop' or an interrupted uninstall may have removed that proof. "
+            "Rerun with --keep-data to remove the installation and keep these volumes, then "
+            "review them with 'docker volume ls' before removing them yourself"
         )
     owned = {}
     anonymous = {}
     trusted_used = set()
+    # Read only when a retired volume exists: without one the record is moot.
+    retired = retired_volume_keys(root) if any(
+        row["Labels"][VOLUME_LABEL] in RETIRED_VOLUME_KEYS for row in volumes.values()
+    ) else set()
     for name, row in volumes.items():
         key = row["Labels"][VOLUME_LABEL]
         if name in external:
@@ -283,17 +455,31 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
             continue
         if name in selected and key != selected[name]:
             raise ValueError(f"Selected volume {name} has a conflicting Compose label")
-        if name in selected and name not in mounted:
-            raise ValueError(f"Selected volume {name} has no verified ODS container mount")
-        disabled_owned = (
-            name in mounted and key in disabled and
-            name == f"{project}_{key}" and
-            bool(mount_provenance.get(name, set()) & disabled[key])
-        )
-        if name in selected or disabled_owned:
+        if proven_earlier(name, row):
             owned[name] = fingerprint(row)
-            if name not in selected:
+            continue
+        if name in selected and name not in mounted:
+            raise ValueError(
+                f"Selected volume {name} has no verified ODS container mount; an interrupted "
+                "uninstall may have removed that proof. Rerun with --keep-data to keep the "
+                "volumes and remove the rest of the installation"
+            )
+        unselected_owned = (
+            name in mounted and key in unselected and
+            name == f"{project}_{key}" and
+            bool(mount_provenance.get(name, set()) & unselected[key])
+        )
+        retired_owned = key in retired and name == f"{project}_{key}"
+        if name in selected or unselected_owned or retired_owned:
+            owned[name] = fingerprint(row)
+            if name not in selected and unselected_owned:
                 trusted_used.add(key)
+        elif key in RETIRED_VOLUME_KEYS and name == f"{project}_{key}":
+            raise ValueError(
+                f"Volume {name} is a retired Lemonade volume this installation did not record; "
+                "purge refused. Remove it yourself with 'docker volume rm' if it is yours, "
+                "or rerun with --keep-data"
+            )
         else:
             raise ValueError(f"Volume {name} is not linked to this installation; purge refused")
     other_mounts = mounted - set(volumes) - set(external)
@@ -303,6 +489,13 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
                 labels != {"com.docker.volume.anonymous": ""} or
                 row.get("Driver") != "local"):
             raise ValueError(f"Mounted volume {name} has unproven ownership; purge refused")
+        anonymous[name] = fingerprint(row)
+    # Anonymous volumes from the interrupted attempt lost their mount with the
+    # removed containers; accept only an unchanged identity.
+    leftover = (set(resumed_anonymous) & all_names) - set(anonymous)
+    for name, row in inspect_volumes(root, leftover).items():
+        if fingerprint(row) != resumed_anonymous[name]:
+            raise ValueError(f"Anonymous volume {name} changed since the interrupted uninstall; purge refused")
         anonymous[name] = fingerprint(row)
     check_volume_consumers(root, set(owned) | set(anonymous), container_ids)
     record = {
@@ -319,6 +512,29 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         "flags": flags,
     }
     snapshot.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+    write_resume_record(root, record)
+
+
+def postflight_containers(root: Path, snapshot: Path,
+                          trusted_root: Path | None = None) -> None:
+    """Require every container from this exact installation to be gone."""
+    trusted_root = trusted_root or root
+    record = json.loads(snapshot.read_text(encoding="utf-8"))
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
+            record.get("installDir") != str(root) or
+            record.get("trustedSource") != str(trusted_root) or
+            not isinstance(record.get("project"), str) or
+            not isinstance(record.get("flags"), list) or
+            any(not isinstance(flag, str) for flag in record["flags"])):
+        raise ValueError("Uninstall container snapshot is invalid")
+    project, _, _ = project_config(root, record["flags"])
+    if project != record["project"]:
+        raise ValueError("Compose project changed during uninstall; installation retained")
+    remaining, _, _ = project_containers(root, project)
+    remaining |= install_root_containers(root)
+    if remaining:
+        ids = ", ".join(sorted(remaining)[:3])
+        raise ValueError(f"ODS containers remain after Compose cleanup: {ids}")
 
 
 def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> None:
@@ -350,7 +566,7 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
             current_selected != record.get("selected") or
             current_external != record.get("external") or
             not set(record.get("trustedUsed", [])).issubset(
-                disabled_volume_keys(root, trusted_root))):
+                unselected_volume_keys(root, trusted_root))):
         raise ValueError("Compose ownership changed during uninstall; installation retained")
     current_expected = set(current_selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
@@ -404,8 +620,8 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
 
 
 def main() -> int:
-    if len(sys.argv) < 5 or sys.argv[1] not in ("preflight", "complete"):
-        print("Usage: uninstall-compose-volumes.py preflight|complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
+    if len(sys.argv) < 5 or sys.argv[1] not in ("preflight", "postflight-containers", "complete"):
+        print("Usage: uninstall-compose-volumes.py preflight|postflight-containers|complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
         return 2
     mode, root_arg, snapshot_arg, trusted_arg, *flags = sys.argv[1:]
     try:
@@ -421,6 +637,8 @@ def main() -> int:
                       keep_data, trusted_root)
         elif flags:
             raise ValueError("Unexpected Compose arguments for completion")
+        elif mode == "postflight-containers":
+            postflight_containers(root, snapshot, trusted_root)
         else:
             complete(root, snapshot, trusted_root)
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:

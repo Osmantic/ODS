@@ -1,5 +1,9 @@
 """Tests for the ODS Talk mobile portal API."""
 
+import json
+from unittest.mock import AsyncMock
+
+import httpx
 import pytest
 
 
@@ -1340,10 +1344,14 @@ def test_talk_attachment_unknown_filetype_returns_415(talk_client):
     assert resp.status_code == 415
 
 
+_VISION_ROUTE = ("http://llama-server:8080/v1/chat/completions", "Vision.gguf",
+                 {"Content-Type": "application/json", "Accept": "text/event-stream"})
+
+
 def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_client, monkeypatch):
-    """Images go to litellm directly (not through Hermes) because Hermes's
+    """Images go to the model directly (not through Hermes) because Hermes's
     prompt.submit accepts only text — multimodal content arrays are a
-    litellm/llama-server-level concept. Regression guard that we don't
+    llama-server-level concept. Regression guard that we don't
     accidentally re-route images through the text-only Hermes path."""
     hermes_stream_called = False
 
@@ -1353,8 +1361,9 @@ def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_c
         yield {"type": "session", "session_id": "sid"}
         yield {"type": "complete", "session_id": "sid", "text": "wrong-path", "status": "ok", "warning": None}
 
-    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+    async def fake_vision_stream(image_bytes, content_type, prompt_text, route):
         from routers.talk import _sse_event
+        assert route == _VISION_ROUTE
         yield _sse_event("session", {"session_id": "vision"})
         yield _sse_event("delta", {"text": "Red."})
         yield _sse_event("complete", {"session_id": "vision", "text": "Red.", "status": "ok", "warning": None})
@@ -1362,6 +1371,7 @@ def test_talk_attachment_image_routes_to_vision_endpoint_bypassing_hermes(talk_c
 
     monkeypatch.setattr("hermes_bridge.stream_prompt", fake_hermes_stream)
     monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+    monkeypatch.setattr("routers.talk._vision_route", AsyncMock(return_value=_VISION_ROUTE))
 
     # Minimal valid PNG bytes (PNG signature + IHDR).
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
@@ -1384,7 +1394,7 @@ def test_talk_attachment_image_uses_filename_when_mobile_uploads_octet_stream(ta
     vision model a real image MIME in the data URL."""
     captured_content_type = None
 
-    async def fake_vision_stream(image_bytes, content_type, prompt_text):
+    async def fake_vision_stream(image_bytes, content_type, prompt_text, route):
         nonlocal captured_content_type
         from routers.talk import _sse_event
         captured_content_type = content_type
@@ -1393,6 +1403,7 @@ def test_talk_attachment_image_uses_filename_when_mobile_uploads_octet_stream(ta
         yield _sse_event("done", {})
 
     monkeypatch.setattr("routers.talk._stream_vision_chat", fake_vision_stream)
+    monkeypatch.setattr("routers.talk._vision_route", AsyncMock(return_value=_VISION_ROUTE))
 
     png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
     resp = talk_client.post(
@@ -1436,15 +1447,105 @@ def test_talk_vision_url_does_not_duplicate_v1(monkeypatch):
 
     assert _vision_chat_completions_url() == "http://vision.local:8080/v1/chat/completions"
 
-
-def test_talk_vision_url_preserves_lemonade_api_v1(monkeypatch):
-    """Lemonade deployments can use /api/v1 as their OpenAI-compatible base."""
-    from routers.talk import _vision_chat_completions_url
-
+    # A separately configured server may also serve OpenAI under /api/v1.
     monkeypatch.setenv("ODS_TALK_VISION_URL", "http://host.docker.internal:8080/api/v1")
-    monkeypatch.setenv("LLM_API_BASE_PATH", "/v1")
-
     assert _vision_chat_completions_url() == "http://host.docker.internal:8080/api/v1/chat/completions"
+
+
+@pytest.mark.parametrize(("vision", "message"), [
+    (False, "The active model can't read images"),
+    (None, "can't confirm that the active model reads images"),
+])
+def test_talk_image_needs_an_active_model_with_a_vision_projector(talk_client, monkeypatch, vision, message):
+    """llama-server serves one model, so there is no vision model to switch
+    to: an image goes to the active model only when it loaded a projector."""
+    monkeypatch.delenv("ODS_TALK_VISION_MODEL", raising=False)
+    probe = AsyncMock(return_value=vision)
+    monkeypatch.setattr("routers.talk.get_llama_vision_support", probe)
+
+    async def no_stream(*_args):
+        raise AssertionError("no image may be sent")
+        yield b""  # pragma: no cover
+
+    monkeypatch.setattr("routers.talk._stream_vision_chat", no_stream)
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("photo.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "image/png")},
+        data={"text": "what color?"},
+    )
+
+    assert resp.status_code == 409
+    assert message in resp.json()["detail"]
+    probe.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_talk_image_goes_to_the_active_model_over_its_chat_route(monkeypatch):
+    from routers import talk
+
+    monkeypatch.delenv("ODS_TALK_VISION_MODEL", raising=False)
+    monkeypatch.setattr(talk, "get_llama_vision_support", AsyncMock(return_value=True))
+    routed: list = []
+
+    def chat_route(default_url):
+        routed.append(default_url)
+        return ("http://litellm:4000/v1/chat/completions", "default",
+                {"Content-Type": "application/json", "Authorization": "Bearer gateway-key"})
+
+    monkeypatch.setattr(talk, "resolve_chat_route", chat_route)
+
+    url, model, headers = await talk._vision_route()
+
+    # The model the user is talking to, over the same route as setup chat:
+    # a keyed Windows server is reached through LiteLLM.
+    assert (url, model) == ("http://litellm:4000/v1/chat/completions", "default")
+    assert headers["Authorization"] == "Bearer gateway-key"
+    assert headers["Accept"] == "text/event-stream"
+    assert routed == ["http://llama-server:8080"]
+
+
+@pytest.mark.asyncio
+async def test_talk_vision_override_uses_its_own_server_without_probing(monkeypatch):
+    from routers import talk
+
+    monkeypatch.setenv("ODS_TALK_VISION_MODEL", "my-vision-model")
+    monkeypatch.setenv("ODS_TALK_VISION_URL", "http://vision.local:9000")
+    monkeypatch.setenv("ODS_TALK_VISION_KEY", "vision-key")
+    monkeypatch.setenv("LLM_API_BASE_PATH", "/v1")
+    monkeypatch.setattr(talk, "get_llama_vision_support", AsyncMock(side_effect=AssertionError("probe")))
+    monkeypatch.setattr(talk, "resolve_chat_route", lambda _url: pytest.fail("active-model route"))
+
+    url, model, headers = await talk._vision_route()
+
+    assert (url, model) == ("http://vision.local:9000/v1/chat/completions", "my-vision-model")
+    assert headers["Authorization"] == "Bearer vision-key"
+
+
+@pytest.mark.asyncio
+async def test_talk_vision_stream_sends_the_image_to_the_given_route(monkeypatch):
+    from routers import talk
+    sent: list = []
+
+    def handler(request):
+        sent.append((str(request.url), request.headers.get("authorization"), json.loads(request.content)))
+        body = (b'data: {"choices":[{"delta":{"content":"Red."},"finish_reason":null}]}\n\n'
+                b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+                b"data: [DONE]\n\n")
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(talk.httpx, "AsyncClient",
+                        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
+    route = ("http://litellm:4000/v1/chat/completions", "default",
+             {"Content-Type": "application/json", "Authorization": "Bearer gateway-key"})
+
+    frames = [frame async for frame in talk._stream_vision_chat(b"img", "image/png", "what color?", route)]
+
+    assert len(sent) == 1
+    url, auth, payload = sent[0]
+    assert (url, auth, payload["model"]) == (route[0], "Bearer gateway-key", "default")
+    assert payload["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert any(b'"Red."' in frame for frame in frames)
 
 
 def test_talk_attachment_requires_session(test_client):
@@ -1475,9 +1576,10 @@ def test_talk_message_stream_sets_unbuffered_headers(talk_client, monkeypatch):
 
 
 def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
-    """Lemonade-backed full models can take longer than the generic Talk
-    default before producing the first useful event. The compose overlays
-    set this env var for those modes; the bridge must honor it."""
+    """Full local models, such as one served by llama-server on the Windows
+    host, can take longer than the generic Talk default before producing the
+    first useful event. The compose files set this env var; the bridge must
+    honor it."""
     import hermes_bridge
 
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "900")

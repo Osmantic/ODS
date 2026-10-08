@@ -111,3 +111,20 @@ it('recovers document receipts only from the completed retained result of the in
   expect(await screen.findByText('Recovered report.')).toBeVisible()
   expect(screen.queryByRole('complementary',{name:'Preview panel'})).toBeNull()
 })
+
+it('shows the verified download without a matching generated embed tag and retains the original history',async()=>{
+  const content=`[embed ref="artifact_${artifact.file.sha256}" title="report.md" height="320" /]`
+  reply=stream([{choices:[{delta:{content}}]},marker,'[DONE]'])
+  const view=render(<Pixel/>)
+  await send()
+  const download=await screen.findByRole('button',{name:'Download report.md'})
+  expect(screen.queryByText(content)).toBeNull()
+  expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe(content)
+  fireEvent.click(download)
+  await screen.findByText('Verified download started')
+  expect(HTMLAnchorElement.prototype.click).toHaveBeenCalledOnce()
+  view.unmount()
+  render(<Pixel/>)
+  expect(await screen.findByRole('button',{name:'Download report.md'})).toBeEnabled()
+  expect(screen.queryByText(content)).toBeNull()
+})

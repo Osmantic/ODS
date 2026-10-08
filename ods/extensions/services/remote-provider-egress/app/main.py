@@ -3,10 +3,17 @@
 The service is internal-only. It accepts the OpenAI-compatible paths LiteLLM
 uses, validates generated route state against the shared policy contract, and
 injects provider credentials from a private file at the final egress boundary.
+
+Only LiteLLM and dashboard-api share its network, and every request except the
+status reads must carry the LiteLLM gateway key, so a container that can reach
+the service still cannot spend the provider key without it.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hmac
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,12 +56,16 @@ POLICY_PATH = Path(
 SECRET_PATH = Path(
     os.environ.get("ODS_REMOTE_PROVIDER_API_KEY_FILE", str(DEFAULT_SECRET_PATH))
 )
+logger = logging.getLogger("ods-remote-provider-egress")
+
 MAX_BODY_BYTES = int(
     os.environ.get("ODS_REMOTE_PROVIDER_MAX_BODY_BYTES", str(DEFAULT_MAX_BODY_BYTES))
 )
 UPSTREAM_TIMEOUT_SECONDS = float(
     os.environ.get("ODS_REMOTE_PROVIDER_UPSTREAM_TIMEOUT", "600")
 )
+# Direct-provider HTTP clients kept open, one per provider endpoint.
+MAX_DIRECT_HTTP_CLIENTS = 4
 SSH_TUNNEL_HEALTH_URL = os.environ.get(
     "ODS_REMOTE_PROVIDER_SSH_TUNNEL_HEALTH_URL",
     "http://remote-provider-ssh-tunnel:18090/health",
@@ -68,6 +79,12 @@ PROBE_TIMEOUT_SECONDS = float(
         str(DEFAULT_PROBE_TIMEOUT_SECONDS),
     )
 )
+# The LiteLLM gateway key. Anyone holding it can already reach the provider
+# through LiteLLM, so requiring it here admits no new caller.
+CALLER_KEY = os.environ.get("ODS_REMOTE_PROVIDER_CALLER_KEY", "")
+# Status reads stay open for the container healthcheck and dashboard-api's
+# service poller; they carry no provider credential and spend nothing.
+_OPEN_ROUTES = frozenset({("GET", "/health"), ("HEAD", "/health"), ("GET", "/telemetry")})
 app = FastAPI(title="ODS Remote Provider Egress", docs_url=None, redoc_url=None, openapi_url=None)
 
 _HOP_BY_HOP_RESPONSE_HEADERS = {
@@ -102,16 +119,32 @@ def _load_route() -> dict[str, Any]:
     return route
 
 
+# Clients closing in the background, referenced until they finish.
+_closing_clients: set[asyncio.Task] = set()
+
+
+def _close_later(client: httpx.AsyncClient) -> None:
+    task = asyncio.get_running_loop().create_task(client.aclose())
+    _closing_clients.add(task)
+    task.add_done_callback(_closing_clients.discard)
+
+
 def _http_client(connection_key: str = "") -> httpx.AsyncClient:
     if connection_key:
         clients = getattr(app.state, "direct_http_clients", None)
         if clients is None:
             clients = {}
             app.state.direct_http_clients = clients
-        client = clients.get(connection_key)
+        # Least recently used first: a reused endpoint moves to the end.
+        client = clients.pop(connection_key, None)
         if client is None or client.is_closed:
             client = httpx.AsyncClient(follow_redirects=False, trust_env=False)
-            clients[connection_key] = client
+        clients[connection_key] = client
+        # Endpoints change only when the operator reconfigures the remote
+        # provider. Keep the most recent ones and close the rest, rather than
+        # holding every past endpoint's connection pool forever (#2701).
+        while len(clients) > MAX_DIRECT_HTTP_CLIENTS:
+            _close_later(clients.pop(next(iter(clients))))
         return client
     client = getattr(app.state, "http", None)
     if client is None or client.is_closed:
@@ -144,6 +177,35 @@ def _probe_error_response(exc: ProbeError) -> JSONResponse:
         },
         status_code=exc.status,
     )
+
+
+def _caller_rejection(method: str, path: str, authorization: str) -> JSONResponse | None:
+    """Refuse a caller that does not present the gateway key."""
+    if (method.upper(), path) in _OPEN_ROUTES:
+        return None
+    if not CALLER_KEY:
+        return _error_response(EgressError(
+            503, "missing_caller_key",
+            "remote provider egress has no caller key; rerun the ODS installer",
+        ))
+    scheme, _, presented = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not hmac.compare_digest(
+            presented.strip().encode("utf-8"), CALLER_KEY.encode("utf-8")):
+        response = _error_response(EgressError(
+            401, "caller_unauthorized", "remote provider egress requires the gateway key",
+        ))
+        response.headers["WWW-Authenticate"] = "Bearer"
+        return response
+    return None
+
+
+@app.middleware("http")
+async def _require_caller_key(request: Request, call_next):
+    rejection = _caller_rejection(
+        request.method, request.url.path, request.headers.get("authorization", ""))
+    if rejection is not None:
+        return rejection
+    return await call_next(request)
 
 
 def _response_headers(headers: Mapping[str, str]) -> dict[str, str]:
@@ -267,6 +329,15 @@ async def health() -> dict[str, Any]:
             "resolution": resolution,
             "secret": secret,
         }
+    if not CALLER_KEY:
+        return {
+            "status": "degraded",
+            "ready": False,
+            "reason": "missing_caller_key",
+            "route": _safe_route_summary(route),
+            "resolution": resolution,
+            "secret": secret,
+        }
     tunnel = None
     if route.get("transport") == "ssh":
         tunnel = await _ssh_tunnel_status()
@@ -318,7 +389,11 @@ async def probe() -> Response:
         if route.get("transport") == "ssh":
             tunnel = await _ssh_tunnel_status()
         secret = read_provider_secret(SECRET_PATH)
-        payload = probe_route_response(
+        # The probe makes blocking HTTP calls (urllib) for up to its timeout.
+        # Run it on a worker thread so inference requests and streams keep
+        # being served meanwhile.
+        payload = await asyncio.to_thread(
+            probe_route_response,
             route,
             provider_secret=secret,
             verified_at=_iso_now(),
@@ -433,12 +508,9 @@ async def forward(full_path: str, request: Request) -> Response:
             EgressError(504, "upstream_timeout", "remote provider timed out")
         )
     except httpx.HTTPError as exc:
+        logger.warning("remote provider unavailable: %s", exc)
         return _error_response(
-            EgressError(
-                502,
-                "upstream_unavailable",
-                f"remote provider unavailable: {exc}",
-            )
+            EgressError(502, "upstream_unavailable", "remote provider unavailable")
         )
     response_headers = _response_headers(upstream.headers)
     if 200 <= upstream.status_code < 300 and len(upstream.content) <= 16 * 1024 * 1024:

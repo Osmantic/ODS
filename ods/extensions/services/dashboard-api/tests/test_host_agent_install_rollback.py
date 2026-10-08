@@ -76,7 +76,24 @@ def host(tmp_path, monkeypatch):
         def start(self):
             self.target()
 
+        def join(self, timeout=None):
+            return None
+
     monkeypatch.setattr(_mod.threading, "Thread", Worker)
+
+    class Pull:  # `docker compose pull`: images already here, nothing to report.
+        def __init__(self, command, **kwargs):
+            calls.append(list(command))
+            self.stdout = iter(())
+            self.returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(_mod.subprocess, "Popen", Pull)
     for service_id in ("gotify", "bookstack", "hooked", "builtin-svc"):
         _mod._service_locks.pop(service_id, None)
 
@@ -223,6 +240,20 @@ def test_start_failure_after_preparation_keeps_the_definition_enabled(host):
     assert host.progress("gotify")["error"] == "port is already allocated"
     assert (extension / "compose.yaml").is_file()
     assert not (extension / "compose.yaml.disabled").exists()
+
+
+def test_start_failure_on_a_taken_host_port_names_the_setting_that_moves_it(host):
+    host.extension("gotify", manifest={"schema_version": "ods.services.v1", "service": {
+        "id": "gotify", "port": 80, "external_port_env": "GOTIFY_PORT", "external_port_default": 8081}})
+    docker_error = ("Error response from daemon: driver failed programming external connectivity on "
+                    "endpoint ods-gotify (0123abcd): Bind for 127.0.0.1:8081 failed: port is already allocated")
+    host.docker(up_error=" Container ods-gotify  Creating\n" + docker_error + "\n")
+
+    host.install("gotify")
+
+    assert host.progress("gotify")["error"] == (
+        "Host port 8081 is already in use, so gotify could not start. Set GOTIFY_PORT in .env to a "
+        "free port (ods config edit), or stop the program using port 8081, then retry.\n" + docker_error)
 
 
 def test_existing_disabled_copy_is_never_overwritten(host):

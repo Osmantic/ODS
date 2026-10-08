@@ -163,8 +163,8 @@ def local_llm_required(root: Path) -> tuple[bool, str]:
         return False, "model storage belongs to the external backend"
     if mode == "cloud" or backend in {"cloud", "litellm", "remote"}:
         return False, "cloud/remote backend"
-    if mode == "lemonade" or backend == "lemonade":
-        return False, "model storage is managed by Lemonade"
+    if env_value(root, "NATIVE_LLM_BASE_URL", ""):
+        return False, "the host-native llama-server (Windows) keeps the model on Windows"
     return True, ""
 
 

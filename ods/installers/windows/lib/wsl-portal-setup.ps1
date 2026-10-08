@@ -82,7 +82,7 @@ function Assert-ODSPortalStateRoot([string]$StateRoot) {
     }
 }
 
-function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal, [string]$DockerDesktopPath = '', [string]$StateRoot = '') {
+function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal, [string]$DockerDesktopPath = '', [string]$StateRoot = '', [string[]]$NewInstallationArguments = @(), [System.Collections.IDictionary]$ForwardEnvironment = @{}) {
     # windows.ps1 runs in a child PowerShell that shares this console. Calling
     # it here would route wsl.exe output through this function's pipeline, so
     # the Linux installer would see no terminal: no progress during image
@@ -92,11 +92,46 @@ function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro,
     $passthrough = @($LinuxArguments | ForEach-Object { ConvertTo-ODSPortalLiteral $_ }) -join ', '
     $desktopArgument = if ($DockerDesktopPath) { ' -DockerDesktopPath ' + (ConvertTo-ODSPortalLiteral $DockerDesktopPath) } else { '' }
     $stateArgument = if ($StateRoot) { ' -StateRoot ' + (ConvertTo-ODSPortalLiteral $StateRoot) } else { '' }
-    $command = "`$global:LASTEXITCODE = 0; & $(ConvertTo-ODSPortalLiteral $delegate) -Distro $(ConvertTo-ODSPortalLiteral $Distro) -InstallRoot $(ConvertTo-ODSPortalLiteral $InstallRoot) -OpenPortal:$openFlag$desktopArgument$stateArgument -PassthroughArgs @($passthrough); " +
+    # windows.ps1 adds these only when the root holds no installation yet.
+    $newArgument = if ($NewInstallationArguments) { ' -NewInstallationArgs @(' + (@($NewInstallationArguments | ForEach-Object { ConvertTo-ODSPortalLiteral $_ }) -join ', ') + ')' } else { '' }
+    $command = "`$global:LASTEXITCODE = 0; & $(ConvertTo-ODSPortalLiteral $delegate) -Distro $(ConvertTo-ODSPortalLiteral $Distro) -InstallRoot $(ConvertTo-ODSPortalLiteral $InstallRoot) -OpenPortal:$openFlag$desktopArgument$stateArgument$newArgument -PassthroughArgs @($passthrough); " +
         "`$ok = `$?; if (`$global:LASTEXITCODE -ne 0) { exit `$global:LASTEXITCODE }; if (-not `$ok) { exit 1 }; exit 0"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $shell = (Get-Process -Id $PID).Path
-    $process = Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', $encoded) -NoNewWindow -PassThru
+    # Secrets for the Linux installer (the llama.cpp API key) travel as
+    # environment variables that WSLENV forwards Win32 -> WSL only (/u). They
+    # are set just for this child and never appear on any command line.
+    $saved = @{}
+    foreach ($name in @($ForwardEnvironment.Keys) + @('WSLENV')) {
+        $saved[$name] = [Environment]::GetEnvironmentVariable([string]$name, 'Process')
+    }
+    try {
+        if ($ForwardEnvironment.Count) {
+            $forwarded = [Collections.Generic.List[string]]::new()
+            foreach ($entry in @(([string]$saved['WSLENV']) -split ':')) {
+                $entryName = ($entry -split '/', 2)[0]
+                if ($entry -and @($ForwardEnvironment.Keys | Where-Object { [string]$_ -ieq $entryName }).Count -eq 0) { $forwarded.Add($entry) }
+            }
+            foreach ($name in $ForwardEnvironment.Keys) {
+                if ([string]$name -notmatch '^[A-Z][A-Z0-9_]{0,63}$') { throw 'Invalid forwarded environment variable name.' }
+                [Environment]::SetEnvironmentVariable([string]$name, [string]$ForwardEnvironment[$name], 'Process')
+                $forwarded.Add([string]$name + '/u')
+            }
+            [Environment]::SetEnvironmentVariable('WSLENV', ($forwarded -join ':'), 'Process')
+        }
+        $process = Start-Process -FilePath $shell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-OutputFormat', 'Text', '-EncodedCommand', $encoded) -NoNewWindow -PassThru
+    } finally {
+        foreach ($name in $saved.Keys) {
+            # PowerShell passes $null to a .NET string argument as "", and on
+            # PowerShell 7 (.NET) an empty value is kept as a defined, empty
+            # variable instead of removing it. [NullString]::Value is a real null.
+            if ($null -eq $saved[$name]) {
+                [Environment]::SetEnvironmentVariable([string]$name, [NullString]::Value, 'Process')
+            } else {
+                [Environment]::SetEnvironmentVariable([string]$name, $saved[$name], 'Process')
+            }
+        }
+    }
     # Reading Handle keeps ExitCode available; WaitForExit waits for this
     # process only (Start-Process -Wait also waits for a browser it opened).
     $null = $process.Handle
@@ -104,9 +139,29 @@ function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro,
     return $process.ExitCode
 }
 
+# Hermes stays off on a new installation (a root without .env, detected by
+# windows.ps1 before install-core runs). A rerun omits this flag, so
+# install-core keeps the owner's current selection, such as Hermes added from
+# the Extensions Library.
+$script:ODSPortalNewInstallationArguments = @('--no-hermes')
+
+function Read-ODSPortalExternalLlmKey([string]$Path) {
+    # One printable line, as the Linux installer requires of a key file.
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "-ExternalLlmKeyFile was not found: $Path" }
+    $lines = @(Get-Content -LiteralPath $Path -ErrorAction Stop | Where-Object { $_.Trim() })
+    if ($lines.Count -ne 1 -or $lines[0].Trim() -notmatch '^[\x21-\x7e]{1,4096}$') {
+        throw '-ExternalLlmKeyFile must contain exactly one API key on one line.'
+    }
+    return $lines[0].Trim()
+}
+
 function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
-    if ($Options['Hermes'] -or $Options['OpenClaw']) {
-        throw 'Portal setup requires Pixel. -Hermes and the deprecated -OpenClaw are not supported by this entry point.'
+    if ($Options['Hermes']) {
+        throw 'Portal setup requires Pixel. -Hermes is not supported by this entry point.'
+    }
+    if ($Options['OpenClaw']) {
+        # Kept accepted so existing install commands keep working.
+        Write-Host '[WARN] The legacy OpenClaw extension was removed; -OpenClaw is ignored. Portal (Pixel) and Hermes are the supported agents.' -ForegroundColor Yellow
     }
     $linuxArgs = @()
     # --all must precede explicit disable overrides.
@@ -115,7 +170,8 @@ function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
         Voice='--voice'; Workflows='--workflows'; Rag='--rag';
         Recommended='--recommended'; NoRecommended='--no-recommended'; Cloud='--cloud';
         Comfyui='--comfyui'; NoComfyui='--no-comfyui';
-        Langfuse='--langfuse'; NoLangfuse='--no-langfuse'; NoBootstrap='--no-bootstrap'; Lan='--lan'
+        Langfuse='--langfuse'; NoLangfuse='--no-langfuse'; NoBootstrap='--no-bootstrap'; Lan='--lan';
+        NoHermes='--no-hermes'
     }
     foreach ($key in $flags.Keys) { if ($Options[$key]) { $linuxArgs += $flags[$key] } }
     if ($Options['Tier']) {
@@ -129,10 +185,34 @@ function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
         }
     }
     if ($Options['SummaryJsonPath']) { $linuxArgs += @('--summary-json', [string]$Options['SummaryJsonPath']) }
+    if ($Options['ExternalLlmUrl'] -and $Options['NoExternalLlm']) {
+        throw '-ExternalLlmUrl and -NoExternalLlm are opposite choices; choose one.'
+    }
+    if ($Options['NoExternalLlm']) {
+        # Back from API mode: the Linux installer drops the API route and its
+        # stored key, and this setup prepares the model on this computer.
+        $linuxArgs += @('--no-external-llm')
+    }
+    if ($Options['ExternalLlmUrl']) {
+        if ($Options['Cloud']) { throw '-ExternalLlmUrl and -Cloud are different model routes; choose one.' }
+        $url = [string]$Options['ExternalLlmUrl']
+        if ($url -notmatch '^https?://[^\s/?#]+(/[^\s]*)?$') { throw '-ExternalLlmUrl must be an http:// or https:// address, for example https://api.example.com.' }
+        $provider = if ($Options['ExternalLlmProvider']) { [string]$Options['ExternalLlmProvider'] } else { 'openai-compatible' }
+        if ($provider -cnotin @('openai-compatible', 'ollama', 'lmstudio')) { throw '-ExternalLlmProvider must be openai-compatible, ollama or lmstudio.' }
+        $model = [string]$Options['ExternalLlmModel']
+        if ($model -notmatch '^[^\s\x00-\x1f]{1,256}$') { throw '-ExternalLlmModel must name the model the server serves (its id in /v1/models).' }
+        $linuxArgs += @('--external-llm-url', $url, '--external-llm-provider', $provider, '--external-llm-model', $model)
+        # The key itself travels in this variable (see Invoke-ODSPortalSetup).
+        if ($Options['ExternalLlmKeyFile']) { $linuxArgs += @('--external-llm-key-env', 'ODS_EXTERNAL_LLM_API_KEY') }
+    } elseif ($Options['ExternalLlmModel'] -or $Options['ExternalLlmProvider'] -or $Options['ExternalLlmKeyFile']) {
+        throw '-ExternalLlmModel, -ExternalLlmProvider and -ExternalLlmKeyFile require -ExternalLlmUrl.'
+    }
     # Every WSL installation needs a durable Windows executable location for
     # owner-scoped sign-in/uninstall control, including NVIDIA and CPU hosts.
     $linuxArgs += @('--windows-system-directory', [Environment]::SystemDirectory)
-    $linuxArgs += @('--pixel', '--no-hermes', '--no-openclaw')
+    $linuxArgs += '--pixel'
+    # --all turns Hermes on; -All must not, on a new installation or a rerun.
+    if ($Options['All']) { $linuxArgs += $script:ODSPortalNewInstallationArguments }
     return $linuxArgs
 }
 
@@ -221,7 +301,7 @@ function Install-ODSPortalDockerBeforeRestart([bool]$NonInteractive) {
     # Docker Desktop also needs a restart after installing, so share the one
     # restart WSL already requires.
     if ((Get-ODSPortalDockerDesktop).Installed) { return }
-    if (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive) { Install-ODSPortalDockerDesktop }
+    if (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive) { $null = Install-ODSPortalDockerDesktop }
 }
 
 function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
@@ -278,8 +358,13 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
     $desktop = Get-ODSPortalDockerDesktop
     if (-not $desktop.Installed) {
         if (-not (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive)) { return 1 }
-        Install-ODSPortalDockerDesktop
-        return (Request-ODSPortalRestart $InstallerRoot $Options 'Docker Desktop was installed and needs a Windows restart before its first start.')
+        $installation = Install-ODSPortalDockerDesktop
+        if (-not $installation.AlreadyInstalled) {
+            return (Request-ODSPortalRestart $InstallerRoot $Options 'Docker Desktop was installed and needs a Windows restart before its first start.')
+        }
+        # A verified current installation still needs the normal engine and
+        # distro integration checks, not another install or mandatory restart.
+        $desktop = $installation.Desktop
     }
     if (-not (Test-ODSPortalDockerEngine $desktop)) { Start-ODSPortalDockerDesktop $desktop }
     # Setup never edits Docker's settings or restarts Docker: its own
@@ -303,10 +388,12 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
 }
 
 function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '') {
-    # An AMD GPU runs the model through Lemonade Server on Windows; everything
-    # else keeps the in-WSL route. An explicit -Tier stays the user's choice.
+    # An AMD GPU runs the model through llama.cpp (llama-server.exe, Vulkan)
+    # on Windows; everything else keeps the in-WSL route. An explicit -Tier
+    # stays the user's choice. Returns the Linux arguments and the environment
+    # (the API key) forwarded to the Linux installer.
     $plan = Get-ODSPortalAmdPlan $SourceRoot
-    if ($null -eq $plan) { return $LinuxArgs }
+    if ($null -eq $plan) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
     $wslInstallDir = [string]$Options['InstallDir']
     if ($WslDistro) {
         if (-not $wslInstallDir) {
@@ -320,10 +407,12 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
         # Pin the same directory into windows.ps1 and the Linux installer.
         $Options['InstallDir'] = $wslInstallDir
     }
-    Write-ODSPortalStage 3 'AMD GPU' "$($plan.GpuName) ($([math]::Round($plan.VramMB / 1024)) GB): model $($plan.Model) runs through Lemonade Server on Windows."
-    $amdArgs = @(Initialize-ODSPortalAmdLemonade $plan $SourceRoot $NonInteractive $WslDistro $wslInstallDir)
-    if ($amdArgs.Count -gt 0 -and -not $Options['Tier']) { $amdArgs += @('--tier', $plan.LinuxTier) }
-    return @($LinuxArgs + $amdArgs)
+    Write-ODSPortalStage 3 'AMD GPU' "$($plan.GpuName) ($([math]::Round($plan.VramMB / 1024)) GB): model $($plan.Model) runs through llama.cpp (Vulkan) on Windows."
+    $route = Initialize-ODSPortalAmdRuntime $plan $SourceRoot $NonInteractive $WslDistro $wslInstallDir
+    if ($null -eq $route) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
+    $amdArgs = @($route.Arguments)
+    if (-not $Options['Tier']) { $amdArgs += @('--tier', $plan.LinuxTier) }
+    return [pscustomobject]@{ Arguments = @($LinuxArgs + $amdArgs); Environment = $route.Environment }
 }
 
 function Get-ODSPortalInitProcess([string]$Distro) {
@@ -352,8 +441,9 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
-        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, install Lemonade Server on Windows and load the model on the GPU; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
+        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, download the pinned llama.cpp Vulkan server to Windows and load the model on the GPU; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
+        Write-Host ('A new installation also gets: ' + ($script:ODSPortalNewInstallationArguments -join ' ') + '. A rerun keeps the installed Hermes selection.')
         return 0
     }
     if ($env:OS -ne 'Windows_NT') { throw 'Run install.ps1 in Windows PowerShell. Inside Ubuntu use bash install.sh --pixel --no-hermes.' }
@@ -400,12 +490,29 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker Desktop and Compose inside $distro."
     $stop = Initialize-ODSPortalDocker $distro $Options $InstallerRoot $nonInteractive
     if ($null -ne $stop) { return $stop }
-    if (-not $Options['Cloud']) {
+    $forwardEnvironment = @{}
+    $windowsModelRoute = $false
+    if ($Options['ExternalLlmUrl'] -and $Options['ExternalLlmKeyFile']) {
+        $forwardEnvironment['ODS_EXTERNAL_LLM_API_KEY'] = Read-ODSPortalExternalLlmKey ([string]$Options['ExternalLlmKeyFile'])
+    }
+    # An API-mode or cloud install runs no model on this computer.
+    if (-not $Options['Cloud'] -and -not $Options['ExternalLlmUrl']) {
         $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
         Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
-        if ($null -eq $nvidiaDriver) { $linuxArgs = @(Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro) }
+        if ($null -eq $nvidiaDriver) {
+            $route = Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro
+            $linuxArgs = @($route.Arguments)
+            $forwardEnvironment = $route.Environment
+            $windowsModelRoute = $forwardEnvironment.Count -gt 0
+        }
     }
     Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
     Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
-    return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive) (Get-ODSPortalDockerDesktop).Exe ([string]$Options['StateRoot'])
+    $exitCode = Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive) (Get-ODSPortalDockerDesktop).Exe ([string]$Options['StateRoot']) $script:ODSPortalNewInstallationArguments $forwardEnvironment
+    if ($exitCode -ne 0 -and $windowsModelRoute) {
+        # The Windows model server already moved to llama.cpp; the WSL side
+        # reaches it only after its installer finishes.
+        Write-Host '         The GPU model server on Windows is ready, but the Linux installer did not finish, so chat stays unavailable until it does. Rerun the same install.ps1 command.'
+    }
+    return $exitCode
 }

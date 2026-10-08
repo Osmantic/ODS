@@ -58,6 +58,7 @@ class ModelInfo(BaseModel):
 
 class BootstrapStatus(BaseModel):
     active: bool
+    phase: Optional[str] = None
     model_name: Optional[str] = None
     percent: Optional[float] = None
     downloaded_gb: Optional[float] = None
@@ -214,6 +215,7 @@ class ModelLibraryEntry(BaseModel):
 
 class ModelLibraryGpu(BaseModel):
     vramTotal: float
+    modelMemoryBudgetGb: Optional[float] = None
     vramUsed: float
     vramFree: float
 
@@ -234,5 +236,11 @@ class ModelLibraryResponse(BaseModel):
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"
-    externalLemonade: bool = False
+    # API mode (llmBackend "external"): the model the API serves and the API's
+    # host, so the Models page can say what answers chat. Never the key.
+    externalModel: Optional[str] = None
+    externalHost: Optional[str] = None
+    # The model runs on the Windows host (the WSL Portal); modelManagement
+    # carries the host agent's proof of what this installation may control.
+    hostRuntime: bool = False
     modelManagement: Optional[dict[str, Any]] = None

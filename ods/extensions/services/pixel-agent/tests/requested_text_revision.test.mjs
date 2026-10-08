@@ -27,10 +27,11 @@ const REVISION = '[ODS Pixel next step] Requested text is still missing from the
   'Add the exact text as requested (for example, as the card heading if the owner described it as a card title, ' +
   'or as the page title or h1 if the owner named them), republish with pixel_ods_workspace_preview, and keep everything else unchanged.';
 const NOTE = '[ODS Pixel next step] Requested text not found: "Midnight sold-out concert". Use the owner\'s exact wording, republish and re-inspect.';
-// What the owner received in round 067, byte for byte.
+// Historical requested-text failure with the current preview storage disclosure.
 const FAILURE = 'The published page does not contain text the owner requested: "Midnight sold-out concert". ' +
   'The preview is available, but that requirement is not met.\n\n' +
   'Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n' +
+  'Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.\n\n' +
   'Your preview is ready.\n\n[Open preview](http://site-877a095eea047108badd1b3b.localhost:9437/site-877a095eea047108badd1b3b/)\n\n' +
   'Published from your workspace.';
 // The closing provenance line depends on whether Tool Search's inner hook
@@ -49,7 +50,8 @@ function snapshot(html) {
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-literal-revise-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
+  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true,
+    abortRunAndDrain: async () => ({aborted: true, drained: true})});
   guard.observeRun(context, 'pixel', {prompt: TOWER1.prompt}, {workspaceRoot: root});
   const results = [];
   // Hook order as in the gateway: before_tool_call, after_tool_call, then

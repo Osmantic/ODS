@@ -3,10 +3,6 @@
 const configUrl = process.env.PERPLEXICA_CONFIG_URL || "http://127.0.0.1:3000/api/config";
 const mode = String(process.env.ODS_MODE || "").toLowerCase();
 const switchboardMode = String(process.env.ODS_MODEL_SWITCHBOARD || "").toLowerCase();
-const runtime = String(
-  process.env.AMD_INFERENCE_RUNTIME || process.env.LLM_BACKEND || mode,
-).toLowerCase();
-const lemonade = runtime === "lemonade" || mode === "lemonade";
 const ggufFile = String(process.env.GGUF_FILE || "").trim();
 const externalUrl = String(process.env.EXTERNAL_LLM_URL || "").trim();
 const externalModel = externalUrl
@@ -19,9 +15,8 @@ const model = String(
       ? externalModel
       : mode === "cloud"
         ? "default"
-        : lemonade
-          ? process.env.LEMONADE_MODEL || (ggufFile ? `extra.${ggufFile}` : "")
-          : ggufFile || process.env.LLM_MODEL || "",
+        // Every managed llama-server serves its model as --alias <GGUF_FILE>.
+        : ggufFile || process.env.LLM_MODEL || "",
 ).trim();
 function normalizeOpenAIBaseURL(value) {
   const trimmed = String(value || "").trim().replace(/\/+$/, "");
@@ -57,13 +52,13 @@ async function update() {
   if (!values || !Array.isArray(values.modelProviders)) {
     throw new Error("config response is missing modelProviders");
   }
-  const provider = values.modelProviders.find((entry) => entry && entry.type === "openai");
+  const providerIndex = values.modelProviders.findIndex((entry) => entry && entry.type === "openai");
+  const provider = values.modelProviders[providerIndex];
   if (!provider || !provider.id) {
     return;
   }
-  const providerBefore = JSON.stringify(provider);
-  provider.chatModels = [{ key: model, name: model }];
-  provider.config = { ...(provider.config || {}), baseURL, apiKey };
+  const chatModels = [{ key: model, name: model }];
+  const providerConfig = provider.config || {};
   const preferences = {
     ...(values.preferences || {}),
     defaultChatModel: model,
@@ -90,11 +85,18 @@ async function update() {
     process.stderr.write("[ods-perplexica] incomplete embedding selection; leaving embedding preferences unchanged\n");
   }
 
-  // The API includes built-in model entries in its read response. Persisting
-  // that hydrated catalog on every start can accumulate duplicate entries.
-  // Initializing embedding preferences does not require rewriting providers.
-  if (JSON.stringify(provider) !== providerBefore) {
-    await request(configUrl, { key: "modelProviders", value: values.modelProviders });
+  // Vane's GET hydrates each provider with built-in models. Its POST replaces
+  // the named config key, so saving the whole GET array accumulates those
+  // built-ins in config.json. Update only the selected provider fields.
+  const providerKey = `modelProviders.${providerIndex}`;
+  if (JSON.stringify(provider.chatModels) !== JSON.stringify(chatModels)) {
+    await request(configUrl, { key: `${providerKey}.chatModels`, value: chatModels });
+  }
+  if (providerConfig.baseURL !== baseURL) {
+    await request(configUrl, { key: `${providerKey}.config.baseURL`, value: baseURL });
+  }
+  if (providerConfig.apiKey !== apiKey) {
+    await request(configUrl, { key: `${providerKey}.config.apiKey`, value: apiKey });
   }
   if (JSON.stringify(preferences) !== JSON.stringify(values.preferences || {})) {
     await request(configUrl, { key: "preferences", value: preferences });

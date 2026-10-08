@@ -70,10 +70,6 @@ _OPS_STATUSES = frozenset(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
-_MODEL_IDENTITY_DETAIL = (
-    "Portal cannot verify its recorded model against the loaded Lemonade model. "
-    "Re-select the model in Models before using Portal."
-)
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
     "may be unreliable; chat and experiments remain available."
@@ -314,6 +310,12 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
     row = _result_state(store, key)
     if row is None:
         return {"state": "unknown", "events": ""}
+    if (key[:2] in _result_stops and store.is_latest(key)
+            and row["state"] in {"active", "unresolved", "interrupted"}):
+        # The producer can finish before native Stop acknowledges its outcome.
+        # Do not let a subscriber finalize that provisional failure and forget
+        # the request identity while its exact cancellation is still pending.
+        return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
         activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
         if activity["state"] == "terminal":
@@ -391,7 +393,9 @@ async def _local_inference_issue(host_status: object) -> str | None:
     runtime = _active_runtime_projection(host_status)
     if runtime and runtime.get("source") == "remote-provider":
         return None
-    if (read_live_env_value("LLM_BACKEND").lower() != "lemonade"
+    # Only a llama-server on the Windows host has a separate process the
+    # agent must find alive; containers are probed by the service health loop.
+    if (read_live_env_value("LLM_BACKEND").lower() == "external"
             or read_live_env_value("AMD_INFERENCE_LOCATION").lower() != "host"):
         return None
     try:
@@ -439,11 +443,12 @@ def _model_support_from_status(status: object) -> dict[str, str] | None:
 
 
 async def _model_readiness_issue() -> tuple[str, str] | None:
-    """Return a host-proven transition or an unverified Lemonade route.
+    """Return a host-proven model transition, if one is under way.
 
     A failed host lifecycle probe alone does not take down the Pixel edge.
-    A recorded Lemonade route does require live identity proof before chat.
-    Model quality metadata remains advisory, not an access restriction.
+    llama-server serves the one model it was started with, and the router
+    proves each response's model, so a recorded route needs no live
+    identity probe. Model quality metadata remains advisory.
     """
     return await _model_readiness_issue_for_status(await _host_model_status())
 
@@ -485,38 +490,8 @@ async def _verified_external_host_runtime(host_status: object) -> dict[str, obje
     return _active_runtime_projection({"activeRuntime": runtime})
 
 
-def _model_identity_tokens(value: str | None) -> set[str]:
-    """Compare a Lemonade ID with the equivalent GGUF basename, not a path."""
-    if not isinstance(value, str) or not value.strip():
-        return set()
-    name = Path(value.strip()).name.casefold()
-    tokens = {name}
-    if name.startswith("extra."):
-        tokens.add(name[6:])
-    for token in tuple(tokens):
-        if token.endswith(".gguf"):
-            tokens.add(token[:-5])
-    return tokens
-
-
 async def _model_readiness_issue_for_status(status: object) -> tuple[str, str] | None:
-    issue = _model_readiness_issue_from_status(status)
-    if issue is not None:
-        return issue
-    runtime = _active_runtime_projection(status)
-    if (runtime is None or runtime.get("source") != "local-switchboard"
-            or read_live_env_value("LLM_BACKEND").strip().casefold() != "lemonade"):
-        return None
-    try:
-        loaded = await asyncio.wait_for(get_loaded_model(), timeout=3.0)
-    except Exception as exc:
-        # Probe failures cannot validate a recorded external route. Do not log
-        # exception text; it may contain the private backend origin or key.
-        logger.warning("Pixel Lemonade identity probe failed (%s)", type(exc).__name__)
-        return "model_unavailable", _MODEL_IDENTITY_DETAIL
-    if not (_model_identity_tokens(runtime["model"]) & _model_identity_tokens(loaded)):
-        return "model_unavailable", _MODEL_IDENTITY_DETAIL
-    return None
+    return _model_readiness_issue_from_status(status)
 
 
 async def _model_activation_in_progress() -> bool:
@@ -782,7 +757,10 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
                 entry = store.get(identity)
                 if entry is None or entry["state"] == "complete":
                     return {"aborted": False}
-                if recovering_interrupted:
+                # Native cancellation may end the producer with an upstream
+                # error before its acknowledgement returns. Use the fresh row:
+                # finish() deliberately cannot rewrite an interrupted receipt.
+                if entry["state"] == "interrupted":
                     return {"aborted": store.confirm_interrupted_cancel(identity)}
                 store.finish(identity, "cancelled")
             return {"aborted": aborted}

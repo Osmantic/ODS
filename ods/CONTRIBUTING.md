@@ -107,7 +107,7 @@ Or if you just want a quick check:
 
 ```bash
 make lint    # shell syntax + Python compile
-make test    # unit + installer + AMD/Lemonade + overlay/secret contract tests
+make test    # unit + installer + AMD llama.cpp + overlay/secret contract tests
 make smoke   # platform smoke tests
 ```
 

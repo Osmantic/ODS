@@ -43,7 +43,7 @@ expected_mode() {
     printf '%s\n' "$mode"
 }
 
-flags=(ENABLE_RECOMMENDED ENABLE_PIXEL_RUNTIME ENABLE_PERPLEXICA ENABLE_HERMES ENABLE_OPENCLAW)
+flags=(ENABLE_RECOMMENDED ENABLE_PIXEL_RUNTIME ENABLE_PERPLEXICA ENABLE_HERMES)
 checked=0
 for switchboard_case in "${switchboard_cases[@]}"; do
     install_dir="$tmp_dir/install-${checked}"
@@ -59,13 +59,13 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             ;;
     esac
     mode="$(expected_mode "$switchboard_case")"
-    for ((mask=0; mask<64; mask++)); do
+    for ((mask=0; mask<32; mask++)); do
         (
             INSTALL_DIR="$install_dir"
             unset ODS_MODEL_SWITCHBOARD
             [[ -z "$caller_value" ]] || ODS_MODEL_SWITCHBOARD="$caller_value"
             EXTERNAL_LLM_URL=""
-            if ((mask & 32)); then EXTERNAL_LLM_URL=http://10.0.2.2:18080; fi
+            if ((mask & 16)); then EXTERNAL_LLM_URL=http://10.0.2.2:18080; fi
             for index in "${!flags[@]}"; do
                 value=false
                 if ((mask & (1 << index))); then value=true; fi
@@ -81,8 +81,9 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             # services, and every consumer the enabled switchboard routes.
             expected_gateway=false
             expected_search=false
-            if ((mask & 35)) || [[ "$mode" == enabled ]]; then expected_gateway=true; fi
-            if ((mask & 29)); then expected_search=true; fi
+            # Bits: 1 recommended, 2 Pixel runtime, 4 Perplexica, 8 Hermes, 16 external LLM.
+            if ((mask & 19)) || [[ "$mode" == enabled ]]; then expected_gateway=true; fi
+            if ((mask & 13)); then expected_search=true; fi
             [[ "${selected[litellm]:-missing}" == "$expected_gateway" ]] || {
                 echo "FAIL: LiteLLM selection for mask $mask with switchboard $switchboard_case ($mode)"; exit 1;
             }
@@ -106,7 +107,7 @@ done
     ODS_MODEL_SWITCHBOARD=legacy
     EXTERNAL_LLM_URL=""
     ENABLE_RECOMMENDED=false ENABLE_PIXEL_RUNTIME=true ENABLE_PERPLEXICA=false
-    ENABLE_HERMES=false ENABLE_OPENCLAW=false
+    ENABLE_HERMES=false
     declare -A selected=()
     _sync_extension_compose() { selected["$2"]="$1"; }
     ods_pixel_resolve_search_provider() { printf '%s\n' searxng; }
@@ -135,4 +136,4 @@ for literal in "'legacy # literal'" '"observe # literal"' "' legacy '" '"ob serv
     )
 done
 
-echo "PASS: all 64 Pixel/external/shared-service consumer combinations under ${checked} switchboard configurations and quoted literal regressions"
+echo "PASS: all 32 Pixel/external/shared-service consumer combinations under ${checked} switchboard configurations and quoted literal regressions"

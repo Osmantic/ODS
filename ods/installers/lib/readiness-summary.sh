@@ -77,13 +77,14 @@ _ods_readiness_model_route_available() {
     local url="$1" agent_key="${ODS_AGENT_KEY:-${DASHBOARD_API_KEY:-}}"
     [[ -n "${LITELLM_KEY:-}" ]] || return 1
     command -v python3 >/dev/null 2>&1 || return 1
+    # Keys go through header files, never argv, which any local user can read.
     if [[ -n "$agent_key" ]]; then
-        curl -fsS --max-time 10 -H "Authorization: Bearer $agent_key" \
+        curl -fsS --max-time 10 -H @<(printf 'Authorization: Bearer %s\n' "$agent_key") \
             "http://127.0.0.1:${ODS_AGENT_PORT:-7710}/v1/model/status" >/dev/null 2>&1 || true
     fi
     local response
     response="$(curl -fsS --max-time 30 "$url" \
-        -H "Authorization: Bearer $LITELLM_KEY" -H 'Content-Type: application/json' \
+        -H @<(printf 'Authorization: Bearer %s\n' "$LITELLM_KEY") -H 'Content-Type: application/json' \
         -d '{"model":"ods/current","messages":[{"role":"user","content":"Say OK"}],"max_tokens":64,"temperature":0,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}' 2>/dev/null)" || return 1
     printf '%s' "$response" | python3 -c '
 import json, sys

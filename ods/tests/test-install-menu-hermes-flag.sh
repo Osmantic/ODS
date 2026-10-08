@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The install menu must not override explicit Hermes or OpenClaw flags.
+# The install menu must not override an explicit Hermes flag.
 # The Windows Pixel path passes --no-hermes; picking "Full Stack" used to turn
 # Hermes back on and download it next to Pixel.
 set -euo pipefail
@@ -51,12 +51,14 @@ expect 'Existing Enter keeps enabled Hermes' '' false true true HERMES true
 expect 'Existing Keep current keeps disabled Hermes' 4 false false false HERMES true
 expect 'Fresh Keep current resolves to Core Only' 4 false true false HERMES false
 
-for choice in 1 2 3 x ''; do
-    expect "Menu '$choice' keeps explicit --no-openclaw" "$choice" true false false OPENCLAW
-    expect "Menu '$choice' keeps explicit --openclaw" "$choice" true true true OPENCLAW
-done
-expect 'Full Stack still disables OpenClaw without a flag' 1 false true false OPENCLAW
-expect 'Core Only still disables OpenClaw without a flag' 2 false true false OPENCLAW
+# The legacy OpenClaw extension was removed; no preset may select it.
+if grep -q 'OPENCLAW' <<<"$menu_source"; then
+    echo "FAIL: install menu still selects the removed legacy OpenClaw extension"
+    fail=$((fail + 1))
+else
+    echo "PASS: install menu no longer selects the removed legacy OpenClaw extension"
+    pass=$((pass + 1))
+fi
 
 echo "Results: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]

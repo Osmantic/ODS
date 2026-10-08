@@ -43,7 +43,7 @@ Do not execute old workaround or launch instructions as a current runbook.
 - Why: This repo uses `docker-compose.base.yml` + GPU overlays, but some tests/scripts had stale fallbacks.
 - Evidence:
   - [`tests/integration-test.sh:92`](../tests/integration-test.sh)
-  - [`tests/test-bootstrap-mode.sh:27`](../tests/test-bootstrap-mode.sh)
+  - `tests/test-bootstrap-mode.sh:27` (retired 2026-10-04; compose validation runs in `.github/workflows/validate-compose.yml`)
   - [`scripts/upgrade-model.sh:202`](../scripts/upgrade-model.sh)
 - Owner: Core Maintainer
 - Effort: M (0.5-1.5 days)
@@ -99,7 +99,7 @@ Do not execute old workaround or launch instructions as a current runbook.
 - Why: tests are currently tuned for legacy `docker-compose.yml` layouts.
 - Evidence:
   - [`tests/integration-test.sh`](../tests/integration-test.sh)
-  - [`tests/test-bootstrap-mode.sh`](../tests/test-bootstrap-mode.sh)
+  - `tests/test-bootstrap-mode.sh` (retired 2026-10-04)
 - Owner: QA/Infra
 - Effort: M-L (1-2 days)
 

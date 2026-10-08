@@ -219,7 +219,6 @@ def main(argv: list[str]) -> int:
             "litellm-local-native",
             "litellm-cloud",
             "litellm-hybrid",
-            "litellm-lemonade",
             "litellm-switchboard",
             "model-router-endpoints",
             "remote-routing-state",

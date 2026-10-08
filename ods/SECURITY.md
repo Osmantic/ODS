@@ -16,35 +16,60 @@ Security best practices for running ODS.
 
 ### Generated Secrets
 
-The installer auto-generates these in `.env`:
+The installer generates every credential it writes to `.env` with a
+cryptographically secure generator (`openssl rand`, falling back to
+`/dev/urandom`). It writes `.env` with mode `600`, and reruns keep existing
+values. The core credentials are:
 
 | Secret | Purpose |
 |--------|---------|
+| `DASHBOARD_API_KEY` | Admin key for dashboard-api. nginx adds it server-side; browsers never receive it |
+| `ODS_AGENT_KEY` | Bearer key for the host agent API |
+| `ODS_SESSION_SECRET` | Signs ODS session cookies (for example the Hermes gate) |
 | `WEBUI_SECRET` | Session signing for Open WebUI |
-| `N8N_PASS` | Admin password for n8n |
-| `LITELLM_KEY` | API key for LiteLLM gateway |
+| `LITELLM_KEY` | LiteLLM gateway key |
+| `LLAMA_SERVER_API_KEY` | Key of the Windows AMD `llama-server.exe` (Windows setup generates it) |
+| `QDRANT_API_KEY`, `SHIELD_API_KEY`, `TOKEN_SPY_API_KEY` | Service API keys |
+| `HERMES_DASHBOARD_SESSION_TOKEN`, `OPENCODE_SERVER_PASSWORD` | Agent and coding-tool credentials |
+| `N8N_PASS`, `SEARXNG_SECRET`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DIFY_SECRET_KEY` | Optional-service credentials |
 
-**Verify no defaults remain:**
+Each of these is marked `"secret": true` in `.env.schema.json`. Library
+extensions generate their own credentials when you install them.
+
+**Verify no placeholder values remain:**
 ```bash
-grep -E "(PASSWORD|SECRET|KEY)" .env | grep -i changeme
+grep -E "(PASSWORD|SECRET|KEY)=" .env | grep -i changeme
 ```
+
+Dashboard settings saves keep a copy of the previous `.env` under
+`data/config-backups/` (owner-only, newest 20 kept). Those copies contain the
+same secrets as `.env`, so treat `data/` as sensitive (see
+[What's Stored](#whats-stored)). After rotating a secret, delete the older
+copies that still hold the old value.
 
 ### Manual Secret Rotation
 
+Rotate a value by writing a new hex secret into `.env`, then restart the stack
+so every service that reads it picks it up:
+
 ```bash
-# Generate new secrets
-NEW_WEBUI=$(openssl rand -hex 32)
-NEW_N8N=$(openssl rand -base64 16)
-NEW_LITELLM="sk-ods-$(openssl rand -hex 16)"
-
-# Update .env
-sed -i "s/WEBUI_SECRET=.*/WEBUI_SECRET=$NEW_WEBUI/" .env
-sed -i "s/N8N_PASS=.*/N8N_PASS=$NEW_N8N/" .env
-sed -i "s/LITELLM_KEY=.*/LITELLM_KEY=$NEW_LITELLM/" .env
-
-# Restart services
-docker compose down && docker compose up -d
+cd ~/ods
+rotate() {  # usage: rotate VAR [prefix]
+  local value="${2:-}$(openssl rand -hex 32)"
+  sed -i.bak "s|^$1=.*|$1=$value|" .env && rm -f .env.bak
+}
+rotate WEBUI_SECRET
+rotate LITELLM_KEY sk-ods-
+ods restart
 ```
+
+Hex values avoid characters that would break the `sed` expression. Rotating
+`WEBUI_SECRET` or `ODS_SESSION_SECRET` signs everyone out, and rotating
+`DASHBOARD_API_KEY` also invalidates dashboard sessions. n8n's owner account
+comes from `N8N_USER` and `N8N_PASS` wherever no owner had been created yet,
+and n8n resets it to them at every start, so rotate `N8N_PASS` and restart
+n8n. An owner created earlier on n8n's first-run screen keeps its own
+password, which is changed inside n8n.
 
 ---
 
@@ -62,27 +87,36 @@ For headless servers accessible from other machines on the same network:
 ./install.sh --lan
 ```
 
-Or change `BIND_ADDRESS` to `0.0.0.0` in the Dashboard Settings tab, then restart:
+`--lan` sets `BIND_ADDRESS=0.0.0.0` and turns on Open WebUI sign-in
+(`WEBUI_AUTH=true`). If you change `BIND_ADDRESS` in the Dashboard Settings
+tab instead, saving a non-loopback address turns sign-in on as well, and
+`ods restart` applies it. If you edit `BIND_ADDRESS` in `.env` directly,
+`ods start`, `ods restart` and `ods update` (`.\ods.ps1` on native Windows)
+turn sign-in on before they recreate Open WebUI.
 
-```bash
-ods restart
-```
+This publishes the Dashboard (sign-in required from the network) and Open WebUI
+on the selected interface. Backend APIs, native inference and extension ports
+remain bound to `127.0.0.1`; `--lan` does not authorize publishing them.
 
-This publishes the authenticated Dashboard and Open WebUI on the selected
-interface. Backend APIs, native inference and extension ports remain bound to
-`127.0.0.1`; `--lan` does not authorize publishing them. Use firewall rules to
-restrict the UI ports to your local subnet:
+**Before exposing an install that started localhost-only:** Open WebUI runs
+without sign-in on localhost-only installs. In that mode it creates a built-in
+administrator, `admin@localhost`, with the password `admin`, and that account
+keeps working after sign-in is turned on. Sign in as `admin@localhost` and
+change its password (or create your own administrator and delete it) before
+other devices can reach port 3000. ODS refuses to start Open WebUI for other
+devices, through `BIND_ADDRESS` or the ODS proxy, while that account still has
+the password `admin`. In that case Open WebUI stays stopped, and its log
+(`docker logs ods-webui`) explains these steps.
 
-```bash
-sudo ufw allow from 192.168.0.0/24 to any port 3000  # WebUI
-sudo ufw allow from 192.168.0.0/24 to any port 3001  # Dashboard
-```
+Docker publishes container ports through its own firewall rules, so host
+firewalls such as `ufw` do not reliably restrict them. Restrict exposure with
+`BIND_ADDRESS` (bind to one interface rather than `0.0.0.0`), your router, or a
+private tunnel such as Tailscale. In LAN mode the Dashboard's network port is
+`3011`; port `3001` stays on this machine's loopback.
 
 For other services, use an explicitly configured authenticated reverse proxy
 or private tunnel. The optional ODS proxy enforces the Dashboard owner session
-before forwarding LAN requests to Hermes. A local Open WebUI install that was
-created with sign-in disabled must enable `WEBUI_AUTH=true` before exposure;
-the supported installer and restart commands enforce this transition.
+before forwarding LAN requests to Hermes.
 
 **Upgrade note:** older user-extension recipes with interpolated host bindings
 (such as `${BIND_ADDRESS:-127.0.0.1}`) no longer pass validation. A safe default
@@ -130,13 +164,49 @@ links. No email service or separately saved recovery key is required. Rotating
 `DASHBOARD_API_KEY` also signs every browser out. Magic-link guest invites for chat
 never grant dashboard, ODS Talk or Hermes access.
 
+### Trust Boundary
+
+ODS treats the machine it runs on, and the containers on its `ods-network`
+Docker network, as one trust zone:
+
+- **Local browsers.** A browser on the ODS machine reaches the dashboard admin
+  API at `http://localhost:3001` without signing in. Pages from other sites are
+  blocked: cross-site state-changing requests are rejected by `Origin` and
+  `Sec-Fetch-Site` checks, and requests whose `Host` is not a loopback name
+  need a dashboard session, which also defeats DNS rebinding.
+- **Containers on `ods-network`.** Bundled services and curated library
+  extensions join `ods-network`; GitHub source recipes run in their own
+  sandbox network instead. A container on `ods-network` can make the same
+  request a local browser can, so it can use the dashboard admin API. Install
+  library extensions only from sources you trust, because installing one gives
+  it this level of access.
+- **The remote-provider boundary.** The remote-provider egress (which holds a
+  remote LLM provider's API key) and its SSH tunnel are not on `ods-network`.
+  They share an internal network with LiteLLM and dashboard-api only, and the
+  egress serves only callers that present the LiteLLM gateway key
+  (`LITELLM_KEY`). Extensions cannot join that network. A container that holds
+  `LITELLM_KEY` can still use the remote provider through LiteLLM, as it can
+  any other model.
+- **The host agent.** The host agent performs host-side actions for
+  dashboard-api and requires `ODS_AGENT_KEY`. It runs as the installing user
+  with Docker group access, so anything that controls dashboard-api can manage
+  containers on the host.
+- **Agents.** Pixel's default sandbox runs commands in a container with no
+  network and a read-only root. **Full Access** mode runs commands directly on
+  the host as the installing user, with no per-command approval. That user
+  normally has Docker access, which makes Full Access equivalent to root on the
+  host; enable it only where that is acceptable. The optional OpenCode web UI
+  listens on `127.0.0.1:3003` without a password; enable it only on a
+  single-user machine.
+
 ### Host Agent Network Binding
 
 The host agent (`bin/ods-host-agent.py`) has its own bind address, separate from the Docker services above. It is controlled by `ODS_AGENT_BIND` in `.env`:
 
 | Platform | Default | Behavior |
 |----------|---------|----------|
-| macOS / Windows | `127.0.0.1` | Docker Desktop routes container traffic via loopback — loopback is sufficient |
+| macOS | `127.0.0.1` | Docker Desktop routes container traffic via loopback — loopback is sufficient |
+| Windows (native installer) | `0.0.0.0` | The installer writes it on a new install and keeps a value already set in `.env`, so the dashboard-api container can reach the agent through Docker Desktop's host gateway (`host.docker.internal`). Every `/v1/*` request still needs the bearer key (`ODS_AGENT_KEY`). |
 | Linux | auto-detected | Detects the `ods-network` gateway IP (e.g. `172.18.0.1`) so containers can reach the agent; LAN devices cannot. Falls back to the default Docker bridge gateway (e.g. `172.17.0.1`) for partial/older installs, then `127.0.0.1` if detection fails. |
 
 To override the default, set `ODS_AGENT_BIND` in `.env`:
@@ -339,10 +409,12 @@ llama-server has no authentication by default. Use LiteLLM as your authenticated
 
 | Service | Auth | Notes |
 |---------|------|-------|
-| Open WebUI | Built-in | Change admin password, disable signups |
-| n8n | Basic auth | Use strong password, enable 2FA |
+| Dashboard | Session off-machine; none for local browsers | See [Dashboard Sign-in](#dashboard-sign-in) and [Trust Boundary](#trust-boundary) |
+| Open WebUI | Off on localhost-only installs; on with `--lan` | Change the `admin@localhost` password before exposing (see [Quick LAN Access](#quick-lan-access)); signup is closed, so administrators add accounts in Admin Panel > Users |
+| n8n | Owner account | Set from `N8N_USER`/`N8N_PASS` where no owner existed; an owner created earlier in n8n keeps its own password |
 | llama-server | None | Keep localhost-only, use LiteLLM for remote |
 | LiteLLM | API key | Set `LITELLM_KEY` in .env |
+| OpenCode web (optional) | None | Listens on `127.0.0.1:3003`; single-user machines only |
 
 ---
 
@@ -365,15 +437,27 @@ Set up alerts for:
 
 ## Updates
 
-```bash
-# Pull latest images
-docker compose pull
+### Updating an existing installation
 
-# Recreate containers
-docker compose up -d
+`ods update` refreshes the container images pinned by the ODS version you
+installed and recreates the containers. It does not install newer ODS code, and
+installs made with the one-line bootstrap have no Git checkout for
+`ods-update.sh` to pull. To pick up code changes, including security fixes, run
+the newer installer over your existing installation. It updates `~/ods` in
+place and keeps `.env` (your secrets) and `data/`:
+
+```bash
+ods backup                                    # snapshot first
+git clone --depth 1 https://github.com/Osmantic/ODS.git ~/ods-update
+cd ~/ods-update/ods && ./install.sh           # updates ~/ods in place
+cd ~ && rm -rf ~/ods-update
 ```
 
-Watch for security updates to: llama-server, Open WebUI, n8n, base images.
+Do not use `--force` or uninstall/reinstall to update. Those paths remove
+`data/` (chat history, workflows, accounts). In-place upgrades between versions
+are not yet release-qualified; see [Source updates](docs/SOURCE-UPDATES.md).
+Watch the [security advisories](https://github.com/Osmantic/ODS/security/advisories)
+and [CHANGELOG](CHANGELOG.md) for fixes that need this step.
 
 ---
 
@@ -394,7 +478,9 @@ Watch for security updates to: llama-server, Open WebUI, n8n, base images.
 Found a vulnerability?
 
 1. **Do NOT open a public issue**
-2. Email: security@osmantic.com with subject `Security report`
+2. Report it privately through GitHub:
+   [Security → Report a vulnerability](https://github.com/Osmantic/ODS/security/advisories/new),
+   or email security@osmantic.com with subject `Security report`
 3. Include: description, reproduction steps, potential impact
 
 `security@osmantic.com` is an inbound alias monitored through the shared

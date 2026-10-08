@@ -124,6 +124,10 @@ external_llm_curl() {
     if [[ -n "$key_file" ]]; then
         key="$(external_llm_read_api_key "$key_file")" || return 1
         curl -H @<(printf 'Authorization: Bearer %s\n' "$key") "$@"
+    elif [[ -n "${EXTERNAL_LLM_API_KEY_VALUE:-}" ]]; then
+        # A key from --external-llm-key-env or a retired flag; phase 06
+        # stores it as the key file.
+        curl -H @<(printf 'Authorization: Bearer %s\n' "$EXTERNAL_LLM_API_KEY_VALUE") "$@"
     else
         curl "$@"
     fi
@@ -186,6 +190,32 @@ external_llm_resolve_model() {
         return 2
     fi
     external_llm_find_matching_model "$target" <<<"$models"
+}
+
+# Why the model list could not be read, for an installer message. Prints
+# unreachable, key-required, key-refused, http-<status>, or reachable (the
+# list answered, so the model itself is the problem). Called only after
+# discovery has failed.
+external_llm_diagnose() {
+    local provider="${1:-}" url="${2:-}" path="/v1/models" status
+    url="$(external_llm_host_url "$url")"
+    [[ "$provider" != ollama ]] || path="/api/tags"
+    status="$(external_llm_curl -sS -o /dev/null --max-time 5 -w '%{http_code}' "${url}${path}" 2>/dev/null)" || {
+        printf 'unreachable\n'
+        return 0
+    }
+    case "$status" in
+        2[0-9][0-9]) printf 'reachable\n' ;;
+        401|403)
+            if [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}${EXTERNAL_LLM_API_KEY_VALUE:-}" ]]; then
+                printf 'key-refused\n'
+            else
+                printf 'key-required\n'
+            fi
+            ;;
+        [0-9][0-9][0-9]) printf 'http-%s\n' "$status" ;;
+        *) printf 'unreachable\n' ;;
+    esac
 }
 
 external_llm_probe_completion() {

@@ -42,9 +42,18 @@ if ods_n8n_secure_cookie_policy sometimes http 127.0.0.1 >/dev/null 2>&1; then
 fi
 
 compose_file="$ROOT_DIR/extensions/services/n8n/compose.yaml"
-expected_entrypoint='entrypoint: ["tini", "--", "/bin/sh", "/opt/ods/n8n-entrypoint.sh"]'
+expected_entrypoint='entrypoint: ["/bin/sh", "/opt/ods/n8n-entrypoint.sh"]'
 if ! grep -Fq "$expected_entrypoint" "$compose_file"; then
     printf 'FAIL n8n entrypoint must run through /bin/sh for Windows bind mounts\n' >&2
+    failures=$((failures + 1))
+fi
+# tini must become PID 1 only after the plaintext owner password is unset.
+# A missing line leaves its number empty, which the check below reports.
+entrypoint_script="$ROOT_DIR/extensions/services/n8n/n8n-entrypoint.sh"
+unset_line="$(grep -n '^unset ODS_N8N_OWNER_PASSWORD ODS_N8N_OWNER_EMAIL$' "$entrypoint_script" | cut -d: -f1 || true)"
+exec_line="$(grep -n '^exec tini -- /docker-entrypoint.sh "\$@"$' "$entrypoint_script" | cut -d: -f1 || true)"
+if [[ -z "$unset_line" || -z "$exec_line" || "$unset_line" -ge "$exec_line" ]]; then
+    printf 'FAIL n8n must exec tini only after unsetting the plaintext owner password\n' >&2
     failures=$((failures + 1))
 fi
 for required_setting in 'HOME=/tmp' 'N8N_USER_FOLDER=/tmp'; do

@@ -60,6 +60,101 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.answers.write_text(json.dumps(value))
         self.answers.chmod(0o600)
 
+    def test_fresh_local_qwen_bootstrap_defaults_reasoning_on(self):
+        for identity in ("qwen3.5-2b", "Qwen3.5-2B-Q4_K_M.gguf"):
+            with self.subTest(identity=identity):
+                self.answers.unlink()
+                env = {k: v for k, v in self.env.items()
+                       if k not in ("LLAMA_REASONING", "EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+                env["GGUF_FILE"] = identity
+                self.write(env=env)
+                value = json.loads(self.answers.read_text())
+                self.assertIs(value["modelReasoning"], True)
+                self.assertEqual(value["modelName"], f"ODS Current ({identity})")
+
+    def test_explicit_off_including_empty_wins_over_bootstrap(self):
+        for setting in ("off", "none", "false", "0", ""):
+            with self.subTest(setting=setting):
+                self.answers.unlink()
+                env = {k: v for k, v in self.env.items()
+                       if k not in ("EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+                env["GGUF_FILE"] = "qwen3.5-2b"
+                env["LLAMA_REASONING"] = setting
+                self.write(env=env)
+                self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], False)
+
+    def test_remote_exact_qwen_name_does_not_bootstrap(self):
+        self.answers.unlink()
+        env = {k: v for k, v in self.env.items() if k != "LLAMA_REASONING"}
+        env["EXTERNAL_LLM_MODEL"] = "qwen3.5-2b"
+        self.write(env=env)
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], False)
+
+    def test_unspecified_regular_route_preserves_previous_reasoning(self):
+        self.save(dict(self.original, modelReasoning=True))
+        env = {k: v for k, v in self.env.items() if k != "LLAMA_REASONING"}
+        self.write(env=env)
+        value = json.loads(self.answers.read_text())
+        self.assertIs(value["modelReasoning"], True)
+        self.assertEqual(value["modelMaxTokens"], 16384)
+
+    def test_explicit_off_overrides_saved_bootstrap_reasoning(self):
+        self.answers.unlink()
+        env = {k: v for k, v in self.env.items()
+               if k not in ("LLAMA_REASONING", "EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+        env["GGUF_FILE"] = "qwen3.5-2b"
+        self.write(env=env)
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], True)
+        self.write(env=dict(env, LLAMA_REASONING="off"))
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], False)
+
+    def test_local_non_bootstrap_model_defaults_reasoning_off(self):
+        self.answers.unlink()
+        env = {k: v for k, v in self.env.items()
+               if k not in ("LLAMA_REASONING", "EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+        env["GGUF_FILE"] = "qwen3.5-9b-q4_k_m.gguf"
+        self.write(env=env)
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], False)
+
+    def test_same_route_reinstall_preserves_reasoning_and_budget(self):
+        for prior, expected in ((True, True), (False, False)):
+            with self.subTest(prior=prior):
+                self.answers.unlink()
+                env = {k: v for k, v in self.env.items()
+                       if k not in ("LLAMA_REASONING", "EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+                env["GGUF_FILE"] = "qwen3.5-2b"
+                self.write(env=env)
+                value = json.loads(self.answers.read_text())
+                value["modelReasoning"] = prior
+                value["modelMaxTokens"] = 2048
+                self.save(value)
+                self.write(env=env)
+                value = json.loads(self.answers.read_text())
+                self.assertIs(value["modelReasoning"], expected)
+                self.assertEqual(value["modelMaxTokens"], 2048)
+
+    def test_changed_route_does_not_inherit_prior_reasoning(self):
+        self.answers.unlink()
+        env = {k: v for k, v in self.env.items()
+               if k not in ("LLAMA_REASONING", "EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+        env["GGUF_FILE"] = "qwen3.5-2b"
+        self.write(env=env)
+        value = json.loads(self.answers.read_text())
+        self.assertIs(value["modelReasoning"], True)
+        self.write(env=dict(env, GGUF_FILE="qwen3.5-9b-q4_k_m.gguf"))
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], False)
+
+    def test_explicit_on_preserved_across_route_change(self):
+        self.answers.unlink()
+        env = {k: v for k, v in self.env.items()
+               if k not in ("EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL")}
+        env["GGUF_FILE"] = "qwen3.5-2b"
+        env["LLAMA_REASONING"] = "on"
+        self.write(env=env)
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], True)
+        self.write(env=dict(env, GGUF_FILE="qwen3.5-9b-q4_k_m.gguf"))
+        self.assertIs(json.loads(self.answers.read_text())["modelReasoning"], True)
+
     def test_upgrade_preserves_budget_across_credential_rotation(self):
         self.write(env=dict(self.env, PIXEL_MODEL_RELAY_KEY="rotated-test-key"))
         value = json.loads(self.answers.read_text())

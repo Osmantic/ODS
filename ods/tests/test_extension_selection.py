@@ -38,6 +38,66 @@ def restore(root, preset, *, compose_flags="-f docker-compose.base.yml"):
     return selection.restore_preset(root, preset, compose_flags=compose_flags)
 
 
+def test_preset_accepts_native_windows_compose_flags_before_library_enable(tmp_path):
+    """The installed Windows stack must let the Library enable a dependency pair."""
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+    (tmp_path / "docker-compose.base.yml").write_text(
+        "services:\n  dashboard: {}\n", encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.nvidia.yml").write_text(
+        "services:\n  llama-server: {}\n", encoding="utf-8",
+    )
+    extension(tmp_path, "litellm")
+    search = extension(tmp_path, "searxng", enabled=False)
+    research = extension(tmp_path, "perplexica", depends=("searxng",), enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:searxng\nenabled:perplexica\n", encoding="utf-8")
+    flags = ("--env-file .env -f docker-compose.base.yml "
+             "-f docker-compose.nvidia.yml -f extensions/services/litellm/compose.yaml")
+
+    assert restore(tmp_path, preset, compose_flags=flags) == (2, 0, [])
+    assert (search / "compose.yaml").is_file()
+    assert (research / "compose.yaml").is_file()
+
+
+@pytest.mark.parametrize("prefix", [
+    "--env-file", "--env-file ../.env", "--env-file /tmp/.env",
+    "--env-file .env.local", r"--env-file .\env", '--env-file ".env"',
+    "--env-file .env --env-file .env",
+    "--project-name other", "-f", "-f docker-compose.base.yml --env-file .env",
+])
+def test_preset_rejects_untrusted_native_compose_flags_without_marker_moves(tmp_path, prefix):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+    target = extension(tmp_path, "searxng", enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:searxng\n", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="Invalid current Compose flags"):
+        restore(tmp_path, preset, compose_flags=f"{prefix} -f docker-compose.base.yml")
+    assert (target / "compose.yaml.disabled").is_file()
+    assert not (target / "compose.yaml").exists()
+
+
+def test_preset_rejects_symlinked_native_env_file_without_marker_moves(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    external = tmp_path / "other.env"
+    external.write_text("ODS_MODE=local\n", encoding="utf-8")
+    try:
+        (tmp_path / ".env").symlink_to(external)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    target = extension(tmp_path, "searxng", enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:searxng\n", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="Invalid current Compose environment file"):
+        restore(tmp_path, preset, compose_flags="--env-file .env -f docker-compose.base.yml")
+    assert (target / "compose.yaml.disabled").is_file()
+    assert not (target / "compose.yaml").exists()
+
+
 def test_selected_compose_and_user_shadowing(tmp_path):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     extension(tmp_path, "search")

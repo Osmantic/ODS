@@ -59,7 +59,10 @@ echo ""
 check '(Join-Path $_dataDir "persona")' "$PHASE_06" "Windows installer creates data/persona"
 check 'function Invoke-HermesSoulRefresh' "$PHASE_06" "Windows phase 06 defines Hermes SOUL refresh"
 check 'build-installation-context.py' "$PHASE_06" "Windows phase 06 calls installation-context builder"
-check '--profile", "local-lemonade"' "$PHASE_06" "Windows Lemonade renders compact Hermes SOUL profile"
+check '--profile", "local-lemonade"' "$PHASE_06" "Windows AMD renders the compact Hermes SOUL profile"
+check 'AMD_INFERENCE_RUNTIME_MODE=windows-native-llama-server' "$PHASE_06" "Windows phase 06 keys the compact SOUL profile on the native llama-server mode"
+check 'AMD_INFERENCE_RUNTIME_MODE"] -eq "windows-native-llama-server"' "$WINDOWS_CLI" "Windows CLI keys the compact SOUL profile on the native llama-server mode"
+reject 'AMD_INFERENCE_RUNTIME=lemonade' "$PHASE_06" "Windows phase 06 no longer selects the profile from a Lemonade runtime"
 check 'SOUL.md.template' "$PHASE_06" "Windows phase 06 has template fallback"
 check 'INSTALLATION_CONTEXT' "$PHASE_06" "fallback removes dynamic marker"
 check 'Invoke-HermesSoulRefresh -InstallRoot $installDir' "$PHASE_06" "Windows phase 06 renders SOUL before compose"
@@ -69,13 +72,14 @@ if [[ "$(grep -Fc 'Invoke-HermesSoulRefresh -InstallRoot $installDir -SyncContai
 else
     fail "Windows installer must refresh SOUL after optional services settle"
 fi
-check '-LemonadeCompact:($gpuInfo.Backend -eq "amd")' "$PHASE_06" "Windows AMD applies compact Hermes toolset profile"
+check '-CompactToolset:($gpuInfo.Backend -eq "amd")' "$PHASE_06" "Windows AMD applies compact Hermes toolset profile"
+check '-CompactToolset:($gpuInfo.Backend -eq "amd")' "$INSTALLER" "Windows runtime Hermes patch keeps the compact toolset on AMD"
 check 'http://model-router:9099/v1' "$ROOT_DIR/installers/windows/lib/env-generator.ps1" "Windows AMD Hermes routes through model-router"
 
 check 'function Invoke-HermesSoulRefresh' "$WINDOWS_CLI" "Windows CLI can refresh Hermes SOUL"
 check 'Invoke-HermesSoulRefresh -SyncContainer' "$WINDOWS_CLI" "Windows CLI syncs SOUL into running Hermes"
 check 'Test-ODSComposeServiceAvailable -ComposeFlags $flags -Service "hermes"' "$WINDOWS_CLI" "Windows CLI gates SOUL refresh on Hermes compose presence"
-check 'ODSLemonadeRuntime' "$WINDOWS_CLI" "Windows CLI manages Lemonade through Task Scheduler"
+check '"native-llm-start"   { exit ([int]@(Invoke-NativeLlmCommand)[-1]) }' "$WINDOWS_CLI" "Windows CLI exposes the native llama-server logon-task entry point"
 check 'if ((Get-NativeInferenceBackend) -ne "none") {' "$WINDOWS_CLI" "Windows CLI manages native inference without relying on stale pid files"
 
 check 'hermes,persona' "$LINUX_PHASE_06" "Linux installer creates data/persona"

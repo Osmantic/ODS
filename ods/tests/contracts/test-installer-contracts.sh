@@ -40,10 +40,10 @@ echo "[contract] cross-platform installed footprint"
 python3 tests/test-install-footprint-contract.py
 bash tests/contracts/test-install-footprint-macos.sh
 
-echo "[contract] AMD phase-06 env keys exist in schema"
+echo "[contract] retired Lemonade-era AMD keys still validate, as deprecated, for one release"
 for key in HSA_XNACK AMDGPU_TARGET LLAMA_CPP_REF; do
-  jq -e --arg key "$key" '.properties[$key]' .env.schema.json >/dev/null \
-    || { echo "[FAIL] .env.schema.json missing AMD installer key: $key"; exit 1; }
+  jq -e --arg key "$key" '.properties[$key].deprecated == true' .env.schema.json >/dev/null \
+    || { echo "[FAIL] .env.schema.json must keep the retired AMD key $key as deprecated"; exit 1; }
 done
 
 echo "[contract] canonical port contract parity"
@@ -56,8 +56,9 @@ bash tests/contracts/test-windows-amd-local-compose.sh
 echo "[contract] Windows restart recreates env-backed containers"
 bash tests/test-windows-restart-recreate-env.sh
 
-echo "[contract] external Lemonade compose overlay readiness"
-bash tests/contracts/test-external-lemonade-contracts.sh
+echo "[contract] host-native llama-server compose overlay readiness"
+bash tests/contracts/test-host-native-llm-contracts.sh
+bash tests/contracts/test-host-native-llm-cpu-fallback.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
@@ -278,17 +279,22 @@ bash tests/test-bootstrap-upgrade-resume-status.sh
 echo "[contract] bootstrap failed upgrades are start/restart-resumable"
 grep -q 'bootstrap-upgrade.args' installers/phases/11-services.sh \
   || { echo "[FAIL] Phase 11 must persist bootstrap-upgrade retry metadata"; exit 1; }
-awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' \
+# Read each function whole before matching. Under pipefail, `awk | grep -q`
+# fails when grep exits at its match and awk's next buffered write gets
+# SIGPIPE: mawk writes 4 KiB at a time, so cmd_start passing 4 KiB tripped it.
+cmd_restart_body="$(awk '/cmd_restart\(\)/,/^}/' ods-cli)"
+cmd_start_body="$(awk '/cmd_start\(\)/,/^}/' ods-cli)"
+grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' <<< "$cmd_restart_body" \
   || { echo "[FAIL] ods restart must retry failed bootstrap upgrades"; exit 1; }
-awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' \
+grep -q '_ods_cli_maybe_resume_bootstrap_upgrade' <<< "$cmd_start_body" \
   || { echo "[FAIL] ods start must retry failed bootstrap upgrades"; exit 1; }
-awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
+grep -q '_ods_cli_wait_for_bootstrap_compose_safe' <<< "$cmd_restart_body" \
   || { echo "[FAIL] ods restart must wait for active bootstrap hot-swaps before compose"; exit 1; }
-awk '/cmd_restart\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+grep -q '_ods_cli_reload_model_env' <<< "$cmd_restart_body" \
   || { echo "[FAIL] ods restart must reload model env after bootstrap hot-swap wait"; exit 1; }
-awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_wait_for_bootstrap_compose_safe' \
+grep -q '_ods_cli_wait_for_bootstrap_compose_safe' <<< "$cmd_start_body" \
   || { echo "[FAIL] ods start must wait for active bootstrap hot-swaps before compose"; exit 1; }
-awk '/cmd_start\(\)/,/^}/' ods-cli | grep -q '_ods_cli_reload_model_env' \
+grep -q '_ods_cli_reload_model_env' <<< "$cmd_start_body" \
   || { echo "[FAIL] ods start must reload model env after bootstrap hot-swap wait"; exit 1; }
 grep -q '_macos_persist_bootstrap_upgrade_args' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer must persist bootstrap-upgrade retry metadata"; exit 1; }
@@ -317,6 +323,7 @@ bash tests/test-macos-cli-compose-failure.sh
 
 echo "[contract] macOS Core omits optional Open WebUI"
 bash tests/test-macos-webui-optional.sh
+python3 tests/test_macos_webui_optional_contract.py
 
 echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
 bash tests/test-macos-env-upsert.sh
@@ -346,17 +353,25 @@ bash tests/test-macos-colima-profile.sh
 echo "[contract] macOS port conflicts include root-hidden listeners"
 bash tests/test-macos-port-detection.sh
 
-echo "[contract] AMD reassign keeps HSA override Strix-only"
-grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"' ods-cli \
-  || { echo "[FAIL] ods-cli must set HSA override to 11.5.1 for gfx1151"; exit 1; }
+echo "[contract] AMD reassign sets an HSA override only for ROCm on a target the image lacks"
+grep -qF 'ods_amd_hsa_override_for_target "${AMD_INFERENCE_BACKEND:-vulkan}" "$gfx_ver"' ods-cli \
+  || { echo "[FAIL] ods-cli must derive the HSA override from installers/lib/amd-runtime.sh"; exit 1; }
 grep -q '_env_unset "HSA_OVERRIDE_GFX_VERSION"' ods-cli \
-  || { echo "[FAIL] ods-cli must remove HSA override for non-Strix AMD GPUs"; exit 1; }
-grep -q '_env_unset "LEMONADE_LLAMACPP_ROCM_BIN"' ods-cli \
-  || { echo "[FAIL] ods-cli must remove gfx1151-only custom binary for non-Strix AMD GPUs"; exit 1; }
+  || { echo "[FAIL] ods-cli must remove the HSA override when none applies"; exit 1; }
 if grep -q '_env_set "HSA_OVERRIDE_GFX_VERSION" "\$gfx_ver"' ods-cli; then
   echo "[FAIL] ods-cli must not write raw gfx ids such as gfx942 to HSA_OVERRIDE_GFX_VERSION"
   exit 1
 fi
+hsa_cases="$(
+  source installers/lib/amd-runtime.sh
+  printf '%s|' "$(ods_amd_hsa_override_for_target vulkan gfx1031)" \
+    "$(ods_amd_hsa_override_for_target rocm gfx1151)" \
+    "$(ods_amd_hsa_override_for_target rocm gfx1100)" \
+    "$(ods_amd_hsa_override_for_target rocm gfx1031)" \
+    "$(ods_amd_hsa_override_for_target rocm gfx1103)"
+)"
+[[ "$hsa_cases" == "|||10.3.0|11.0.0|" ]] \
+  || { echo "[FAIL] HSA override must be ROCm-only and only for targets the image lacks, got: $hsa_cases"; exit 1; }
 
 echo "[contract] AMD ComfyUI uses native gfx architecture"
 bash tests/contracts/test-amd-comfyui-architecture.sh
@@ -402,10 +417,16 @@ grep -A16 -F 'location ~ ^/api/models/.+/load$ {' "$dashboard_nginx" | grep -qF 
 echo "[contract] bundled service CPU limits are env-driven"
 grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \
   || { echo "[FAIL] Kokoro TTS CPU limit must be env-driven with safe fallback"; exit 1; }
-grep -qF 'UVICORN_WORKERS=${TTS_WORKERS:-2}' extensions/services/tts/compose.yaml \
-  || { echo "[FAIL] Kokoro TTS must preserve its non-macOS worker default and allow an override"; exit 1; }
+grep -qF 'UVICORN_WORKERS=${TTS_WORKERS:-1}' extensions/services/tts/compose.yaml \
+  || { echo "[FAIL] Kokoro TTS must default to one worker and allow an override"; exit 1; }
+for runtime_key in OMP_NUM_THREADS MKL_NUM_THREADS; do
+  grep -qF "${runtime_key}=\${TTS_THREADS:-1}" extensions/services/tts/compose.yaml \
+    || { echo "[FAIL] Kokoro TTS must bound ${runtime_key} through TTS_THREADS"; exit 1; }
+done
 jq -e '.properties.TTS_WORKERS.type == "integer" and .properties.TTS_WORKERS.minimum == 1' .env.schema.json >/dev/null \
   || { echo "[FAIL] TTS_WORKERS must be a positive integer in the env schema"; exit 1; }
+jq -e '.properties.TTS_THREADS.type == "integer" and .properties.TTS_THREADS.minimum == 1' .env.schema.json >/dev/null \
+  || { echo "[FAIL] TTS_THREADS must be a positive integer in the env schema"; exit 1; }
 grep -qF 'TTS_WORKERS=1' installers/macos/lib/env-generator.sh \
   || { echo "[FAIL] macOS installs must conserve VM memory with one TTS worker"; exit 1; }
 grep -qF 'upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"' installers/macos/lib/env-generator.sh \
@@ -483,7 +504,6 @@ run_phase03_rag_guard() {
     ENABLE_PIXEL=false
     ENABLE_RAG=true
     ENABLE_HERMES=false
-    ENABLE_OPENCLAW=false
     ENABLE_COMFYUI=false
     ENABLE_WORKFLOWS=false
     ENABLE_VOICE=false
@@ -507,6 +527,10 @@ run_phase03_rag_guard() {
     show_phase() { :; }
     show_install_menu() { :; }
 
+    # Phase 03 asks this library whether Portal replaces Open WebUI as chat;
+    # install-core sources it before the phase.
+    # shellcheck source=/dev/null
+    source "${features_phase%/phases/03-features.sh}/lib/installed-feature-state.sh"
     # shellcheck source=/dev/null
     source "$features_phase" >/dev/null
 
@@ -608,7 +632,6 @@ for spec in \
   'ENABLE_RECOMMENDED:token-spy' \
   'ENABLE_HERMES:hermes' \
   'ENABLE_HERMES:hermes-proxy' \
-  'ENABLE_OPENCLAW:openclaw' \
   'ENABLE_APE:ape' \
   'ENABLE_PERPLEXICA:perplexica' \
   'ENABLE_PRIVACY_SHIELD:privacy-shield' \
@@ -646,8 +669,10 @@ grep -qE 'ENABLE_PERPLEXICA:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PERPLEXICA"; exit 1; }
 grep -qE 'ENABLE_HERMES:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_HERMES"; exit 1; }
-grep -qE 'ENABLE_OPENCLAW:-false' "$features_phase" \
-  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_OPENCLAW"; exit 1; }
+if grep -q 'ENABLE_OPENCLAW' "$features_phase"; then
+  echo "[FAIL] feature selection must not consult the removed legacy OpenClaw flag"
+  exit 1
+fi
 grep -Fq 'ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"' "$features_phase" \
   || { echo "[FAIL] ENABLE_WEB_SEARCH must track ENABLE_SEARXNG"; exit 1; }
 grep -Fq 'ENABLE_WEB_SEARCH: "${ENABLE_WEB_SEARCH:-false}"' docker-compose.base.yml \
@@ -665,7 +690,7 @@ grep -Fq 'ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}' installers/macos/lib/env
 
 windows_plan="installers/windows/lib/service-plan.ps1"
 test -f "$windows_plan" || { echo "[FAIL] missing $windows_plan"; exit 1; }
-for svc in litellm searxng token-spy hermes hermes-proxy openclaw ape pixel-edge perplexica privacy-shield ods-proxy tailscale brave-search; do
+for svc in litellm searxng token-spy hermes hermes-proxy ape pixel-edge perplexica privacy-shield ods-proxy tailscale brave-search; do
   grep -q "\"$svc\"" "$windows_plan" \
     || { echo "[FAIL] Windows service plan missing '$svc'"; exit 1; }
 done
@@ -694,18 +719,15 @@ echo "[contract] failed requested local builds cannot reuse stale images"
 bash tests/test-phase11-local-build-failure.sh
 bash tests/test-phase11-litellm-reload.sh
 
-echo "[contract] OpenClaw deprecation preserves actual installs only"
+echo "[contract] legacy OpenClaw removal: flags are no-ops and upgrades prune its service files"
+bash tests/test-legacy-openclaw-removal.sh
 for installer in install-core.sh installers/macos/install-macos.sh; do
-  grep -Fq 'name=^/ods-openclaw$' "$installer" \
-    || { echo "[FAIL] $installer must preserve OpenClaw when a prior container exists"; exit 1; }
-  grep -Fq 'data/openclaw' "$installer" \
-    || { echo "[FAIL] $installer must preserve OpenClaw when persisted data exists"; exit 1; }
-  installer_code="$(sed '/^[[:space:]]*#/d' "$installer")"
-  if grep -Fq 'extensions/services/openclaw/compose.yaml' <<<"$installer_code"; then
-    echo "[FAIL] $installer must not auto-enable OpenClaw just because the bundled compose file exists"
+  # Upgrades must not re-enable the removed extension from an old container
+  # or from retained data/openclaw.
+  if grep -Eq 'ENABLE_OPENCLAW=|ods-openclaw\$' "$installer"; then
+    echo "[FAIL] $installer must not select the removed legacy OpenClaw extension"
     exit 1
   fi
-  unset installer_code
 done
 
 echo "[contract] Token Spy dashboard ships offline chart assets"
@@ -860,17 +882,17 @@ grep -q 'export ODS_PYTHON_CMD' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer does not export the selected Python for resolver scripts"; exit 1; }
 
 echo "[contract] macOS OpenCode uses discoverable binary path"
-grep -q 'type -P opencode' installers/macos/install-macos.sh \
+grep -q 'type -P opencode' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must resolve an executable OpenCode file, not a shell function/alias"; exit 1; }
-grep -q 'brew --prefix' installers/macos/install-macos.sh \
+grep -q 'brew --prefix' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must check the Homebrew prefix for OpenCode"; exit 1; }
-grep -q '_opencode_candidate_is_file' installers/macos/install-macos.sh \
+grep -q '_opencode_candidate_is_file' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must validate resolved OpenCode as an absolute executable file"; exit 1; }
-grep -q 'ods_install_opencode' installers/macos/install-macos.sh \
+grep -q 'ods_install_opencode' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must install the reviewed OpenCode release"; exit 1; }
-grep -q '<string>${OPENCODE_BIN}</string>' installers/macos/install-macos.sh \
+grep -q '<string>${OPENCODE_BIN}</string>' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS OpenCode LaunchAgent must use resolved OPENCODE_BIN"; exit 1; }
-grep -q '_compute_launchd_path "$(dirname "$OPENCODE_BIN")"' installers/macos/install-macos.sh \
+grep -q '_compute_launchd_path "$(dirname "$OPENCODE_BIN")"' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS OpenCode LaunchAgent PATH must include resolved binary directory"; exit 1; }
 
 echo "[contract] macOS local rebuilds respect selected compose services"

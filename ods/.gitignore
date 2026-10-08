@@ -29,7 +29,8 @@ presets/
 **/__pycache__/
 *.pyc
 
-# OpenClaw workspace (runtime state)
+# Runtime state of the removed legacy OpenClaw extension, which installs keep
+# on disk; stays ignored so in-place checkouts do not report it.
 config/openclaw/workspace/
 
 # Dashboard build artifacts

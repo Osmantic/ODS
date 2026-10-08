@@ -66,6 +66,7 @@ pathlib.Path(os.environ['RESULT']).write_text(json.dumps({
     'oldRuntime': (root / 'old-runtime').exists(),
     'leftover': (root / 'stranded-leftover').exists(),
     'env': (root / '.env').exists(),
+    'remoteRouteRemoved': os.environ.get('ODS_REINSTALL_REMOTE_ROUTE_REMOVED'),
 }))
 PY
 '''
@@ -230,17 +231,23 @@ esac
         write(self.install / 'stranded-leftover', 'from the interrupted run\n')
         return inode
 
-    def bootstrap(self, *args, platform='macos', keep_models=True):
+    def bootstrap(self, *args, platform='macos', keep_models=True, interactive=False):
         env = dict(self.env, ODS_PLATFORM_OVERRIDE=platform)
         path = [str(self.common_bin), env['PATH']]
         if platform == 'macos':
             path.insert(0, str(self.macos_bin))
         env['PATH'] = os.pathsep.join(path)
-        flags = ['--non-interactive', '--force'] + (['--keep-models'] if keep_models else [])
+        if interactive:
+            flags = []
+        else:
+            flags = ['--non-interactive', '--force'] + (['--keep-models'] if keep_models else [])
         if platform == 'macos':
             flags += ['--recommended', '--pixel', '--no-bootstrap']
+        # A new session has no controlling terminal, as under CI or `curl | bash`
+        # in a non-interactive shell, so /dev/tty cannot be opened.
         result = subprocess.run(['bash', str(BOOTSTRAP), *flags, *args], env=env,
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120)
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120,
+            start_new_session=interactive)
         return result, result.stdout + result.stderr
 
     def assert_untouched(self, output, env=True):
@@ -271,6 +278,42 @@ esac
         self.assertEqual(value['model'], MODEL.hex())
         self.assertEqual(value['modelInode'], inode)
         self.assertFalse(value['oldRuntime'])
+
+    def test_keep_models_names_an_existing_backup_and_the_choices(self):
+        # Fleet row 29 (Tower3): the refusal named no path and no choices.
+        self.make_installed()
+        backup = Path(str(self.install) + '.models-backup')
+        backup.mkdir()
+        result, output = self.bootstrap()
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn(f'A model backup already exists at {backup}', output)
+        self.assertIn('rerun without --keep-models', output)
+        self.assertIn('Cannot preserve models', output)
+        self.assertIn('https://discord.gg/4ntNp9MAwC', output)
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertTrue(backup.is_dir(), output)
+        self.assertTrue((self.install / 'old-runtime').exists(), output)
+
+    def test_reinstall_says_it_removes_a_saved_model_api_connection(self):
+        # Fleet row 26 (Mac): the reinstall dropped the Settings > Remote model
+        # connection without a word.
+        self.make_installed()
+        write(self.install / 'data/remote-provider/provider-profile.json', '{}\n')
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn('This reinstall removes your model API connection (Settings > Remote model)', output)
+        self.assertEqual(json.loads(self.result.read_text())['remoteRouteRemoved'], 'true')
+        for summary in ('installers/phases/13-summary.sh', 'installers/macos/install-macos.sh'):
+            text = (ROOT / summary).read_text()
+            self.assertIn('ODS_REINSTALL_REMOTE_ROUTE_REMOVED', text, summary)
+            self.assertIn('This reinstall removed your model API connection', text, summary)
+
+    def test_reinstall_without_a_model_api_connection_says_nothing_about_it(self):
+        self.make_installed()
+        result, output = self.bootstrap()
+        self.assertEqual(result.returncode, 0, output)
+        self.assertNotIn('model API connection', output)
+        self.assertIsNone(json.loads(self.result.read_text())['remoteRouteRemoved'])
 
     def test_disk_credit_counts_reclaimed_space_but_not_retained_models(self):
         self.make_installed()
@@ -380,6 +423,41 @@ esac
         self.assertIn('Removing incomplete install because --force was provided', output)
         self.assertNotIn('Resuming that reinstall', output)
         self.assertIsNone(json.loads(self.result.read_text())['model'])
+
+    def test_force_refuses_directory_without_ods_source(self):
+        # What `ods-uninstall.sh --keep-data` leaves behind: data only.
+        write(self.install / 'data/n8n/database.sqlite', 'kept workflows\n')
+        result, output = self.bootstrap(keep_models=False)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn('Refusing to remove', output)
+        self.assertEqual((self.install / 'data/n8n/database.sqlite').read_text(), 'kept workflows\n')
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertFalse(self.result.exists(), output)
+        self.assertFalse(self.sudo_calls.exists(), output)
+
+    def test_force_replaces_empty_install_directory(self):
+        self.install.mkdir()
+        result, output = self.bootstrap(keep_models=False)
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn('Removing incomplete install because --force was provided', output)
+        self.assertTrue(self.result.exists(), output)
+
+    def test_prompt_without_terminal_leaves_incomplete_install(self):
+        self.make_stranded()
+        result, output = self.bootstrap(interactive=True)
+        self.assertEqual(result.returncode, 1, output)
+        self.assertIn('No terminal is available to answer', output)
+        self.assertTrue((self.install / 'stranded-leftover').exists(), output)
+        self.assertFalse(self.uninstall_args.exists(), output)
+        self.assertFalse(self.result.exists(), output)
+
+    def test_prompt_refuses_directory_without_ods_source(self):
+        write(self.install / 'data/open-webui/webui.db', 'kept chats\n')
+        result, output = self.bootstrap(interactive=True)
+        self.assertNotEqual(result.returncode, 0, output)
+        self.assertIn('Refusing to remove', output)
+        self.assertNotIn('Remove and reinstall?', output)
+        self.assertEqual((self.install / 'data/open-webui/webui.db').read_text(), 'kept chats\n')
 
     def test_candidate_without_reinstall_preflight_is_refused_before_uninstall(self):
         self.make_installed()

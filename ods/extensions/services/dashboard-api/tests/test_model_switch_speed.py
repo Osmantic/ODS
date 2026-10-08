@@ -253,7 +253,6 @@ def test_activation_recreates_litellm_only_when_its_inputs_change(
         _mod.load_env(env_path),
         model="old-model",
         gguf_file="old-model.gguf",
-        lemonade_model_id="",
         context_length=2048,
     )
     switchboard = install / "config" / "litellm" / "switchboard.yaml"
@@ -313,7 +312,6 @@ def test_rollback_still_restores_a_kept_litellm(tmp_path, monkeypatch):
         _mod.load_env(env_path),
         model="old-model",
         gguf_file="old-model.gguf",
-        lemonade_model_id="",
         context_length=2048,
     )
     switchboard = install / "config" / "litellm" / "switchboard.yaml"
@@ -363,7 +361,8 @@ class TestReadinessFastWindow:
             return subprocess.CompletedProcess(cmd, 0, _llama_identity_response(identity), "")
 
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
-        monkeypatch.setattr(_mod, "_llama_runtime_context_length", lambda *_args: 4096)
+        monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (4096, ""))
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod.time, "sleep", sleeps.append)
         return probes, sleeps
@@ -407,35 +406,14 @@ class TestReadinessFastWindow:
         assert sleeps[:1] == [0.5]
         assert sleeps[-2:] == [5, 5]
 
-    def test_lemonade_ignores_the_fast_window(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(_mod, "_lemonade_runtime_base_url", lambda _env: "http://127.0.0.1:8080")
-        monkeypatch.setattr(_mod.subprocess, "run", lambda cmd, **_kw: (
-            calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "{}", "")
-        ))
-        monkeypatch.setattr(_mod, "_send_lemonade_warmup", lambda *_a, **_k: True)
-        sleeps = []
-        monkeypatch.setattr(_mod.time, "sleep", sleeps.append)
-
-        result = _mod._wait_for_model_readiness(
-            {"GPU_BACKEND": "amd", "LLM_BACKEND": "lemonade", "ODS_MODE": "lemonade"},
-            model_id="target-model",
-            gguf_file="new-model.gguf",
-            llm_model_name="new-model",
-            lemonade_model_id="extra.new-model.gguf",
-            attempts=2,
-            fast_poll_seconds=30,
-        )
-
-        assert result is False
-        assert sleeps == [5, 5]
-
 
 @pytest.mark.parametrize(
     ("runtime_kind", "fast"),
     [
         ("compose-llama", True),
         ("container-llama", True),
+        # ods.ps1 native-llm-restart returns only after the new model proved itself.
+        ("windows-native-llama", True),
         ("macos-native-llama", False),
     ],
 )
@@ -444,7 +422,7 @@ def test_activation_uses_fast_readiness_only_for_replaced_containers(
 ):
     install, env_path, env_text, *_ = _write_model_activation_fixture(
         tmp_path,
-        gpu_backend="apple" if runtime_kind == "macos-native-llama" else "nvidia",
+        gpu_backend={"macos-native-llama": "apple", "windows-native-llama": "amd"}.get(runtime_kind, "nvidia"),
     )
     monkeypatch.setattr(_mod, "INSTALL_DIR", install)
     monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
@@ -458,6 +436,15 @@ def test_activation_uses_fast_readiness_only_for_replaced_containers(
         monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
         monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install))
         monkeypatch.setattr(_mod, "_recreate_llama_server", lambda _env, override_image="": None)
+    elif runtime_kind == "windows-native-llama":
+        env_path.write_text(env_text + (
+            "LLM_BACKEND=llama-server\nAMD_INFERENCE_RUNTIME=llama-server\n"
+            "AMD_INFERENCE_RUNTIME_MODE=windows-native-llama-server\nAMD_INFERENCE_LOCATION=host\n"
+            "AMD_INFERENCE_MANAGED=true\nAMD_INFERENCE_PORT=8080\n"
+        ), encoding="utf-8")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
+        monkeypatch.setattr(_mod, "_restart_windows_native_llama_server", lambda *_args: None)
     else:
         llama_bin = install / "bin" / "llama-server"
         llama_bin.parent.mkdir(parents=True)

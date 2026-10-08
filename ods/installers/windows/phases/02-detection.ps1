@@ -74,10 +74,13 @@ if ($gpuInfo.Backend -eq "nvidia") {
 if ($gpuInfo.Backend -eq "amd") {
     if ($gpuInfo.MemoryType -eq "unified") {
         Write-AISuccess "AMD unified memory APU detected (Strix Halo / RDNA)"
-        Write-AI "  llama-server will run natively with Vulkan (not in Docker)"
     } else {
         Write-AISuccess "AMD discrete GPU detected"
-        Write-AI "  llama-server will use the Docker Vulkan overlay"
+    }
+    # WSL2 and Docker Desktop cannot drive an AMD GPU, so the model runs on
+    # this PC as ggml-org llama-server.exe (Vulkan); the stack stays in Docker.
+    if (-not $cloudMode) {
+        Write-AI "  The model will run natively on Windows with llama.cpp (Vulkan), not in Docker"
     }
 }
 

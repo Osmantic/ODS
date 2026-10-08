@@ -108,6 +108,14 @@ def test_audit_endpoint_contract(make_client):
     assert isinstance(body["entries"], list)
 
 
+def test_audit_endpoint_reports_unreadable_log_without_error_text(make_client, ape_env):
+    client, _ = make_client()
+    ape_env.audit_log.write_text("not-json\n", encoding="utf-8")
+    r = client.get("/audit", params={"last_n": 5})
+    assert r.status_code == 200
+    assert r.json() == {"entries": [], "error": "audit log unreadable"}
+
+
 def test_api_key_required(make_client):
     client, _ = make_client()
     r = client.post("/verify", headers={"X-API-Key": "wrong"},

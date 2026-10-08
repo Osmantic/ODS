@@ -31,7 +31,6 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableWorkflows,
         [bool]$EnableRag,
         [bool]$EnableHermes,
-        [bool]$EnableOpenClaw,
         [bool]$EnableComfyui,
         [bool]$EnableDeepResearch,
         [bool]$EnablePrivacyShield,
@@ -45,8 +44,7 @@ function New-ODSWindowsServicePlan {
     $enableSearxng = Test-ODSWindowsSearxngNeeded `
         -EnableRecommended $EnableRecommended `
         -EnableDeepResearch $EnableDeepResearch `
-        -EnableHermes $EnableHermes `
-        -EnableOpenClaw $EnableOpenClaw
+        -EnableHermes $EnableHermes
     $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $EnableRecommended "recommended" "recommended services not enabled"
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
@@ -60,8 +58,7 @@ function New-ODSWindowsServicePlan {
 
     $plan["hermes"] = New-ODSWindowsServicePlanEntry "hermes" $EnableHermes "agents" "Hermes agent not enabled"
     $plan["hermes-proxy"] = New-ODSWindowsServicePlanEntry "hermes-proxy" $EnableHermes "agents" "Hermes agent not enabled"
-    $plan["openclaw"] = New-ODSWindowsServicePlanEntry "openclaw" $EnableOpenClaw "legacy-agents" "OpenClaw is deprecated and was not explicitly enabled"
-    $plan["ape"] = New-ODSWindowsServicePlanEntry "ape" ($EnableHermes -or $EnableOpenClaw) "agents" "agent governance not needed without an enabled agent"
+    $plan["ape"] = New-ODSWindowsServicePlanEntry "ape" $EnableHermes "agents" "agent governance not needed without an enabled agent"
     # Pixel's current trusted host runtime is installed by the Linux installer
     # on native Linux or Ubuntu 24.04 under WSL2.  The native Windows installer
     # must not inherit the manifest's generic `core` fallback and start only the
@@ -93,11 +90,10 @@ function Test-ODSWindowsSearxngNeeded {
     param(
         [bool]$EnableRecommended = $false,
         [bool]$EnableDeepResearch = $false,
-        [bool]$EnableHermes = $false,
-        [bool]$EnableOpenClaw = $false
+        [bool]$EnableHermes = $false
     )
 
-    return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes -or $EnableOpenClaw)
+    return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes)
 }
 
 function Get-ODSWindowsServicePlanDecision {

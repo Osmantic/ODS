@@ -43,6 +43,9 @@ from jsonschema import validators as jsonschema_validators
 from jsonschema.exceptions import SchemaError, ValidationError
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from .completed_tool_sse import (
+    CompletionStreamIdentityError, assemble_chat_completion_sse,
+)
 from .probe_attempts import ProbeAttempts
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -87,6 +90,7 @@ EVIDENCE_LIMIT = 2048
 EVIDENCE_TTL_SECONDS = 15 * 60
 TOOL_EVIDENCE_MAX_COUNT = 256
 TOOL_EVIDENCE_MAX_BYTES = 256 * 1024
+MAX_COMPLETED_TOOL_STREAM_BYTES = 16 * 1024 * 1024
 
 FORWARD_PATHS = {
     "/v1/chat/completions": "POST",
@@ -227,6 +231,48 @@ def _native_tool_repair_feedback(
     )
 
 
+def _complete_structured_tool_decision(completion: dict[str, Any]) -> bool:
+    """Only a completed assistant call is eligible for protocol repair."""
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "tool_calls":
+        return False
+    if choice.get("index", 0) != 0:
+        return False
+    message = choice.get("message")
+    if (not isinstance(message, dict) or message.get("role") != "assistant"
+            or message.get("refusal")):
+        return False
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list) or not calls:
+        return False
+    # A malformed transport envelope is not a model decision to retry.
+    for call in calls:
+        if (not isinstance(call, dict) or call.get("type") != "function"
+                or not isinstance(call.get("id"), str) or not call["id"]):
+            return False
+        function = call.get("function")
+        if (not isinstance(function, dict)
+                or not isinstance(function.get("name"), str) or not function["name"]
+                or not isinstance(function.get("arguments"), str)):
+            return False
+    return True
+
+
+def _structured_tool_repair_feedback() -> str:
+    # Do not promote rejected model names or arguments into instructions.
+    # The unchanged request carries the authoritative tool schemas and policy.
+    return (
+        "Tool protocol error: your previous completion was discarded before any tool ran. "
+        "Return a valid function call through the API tool-call channel using exactly "
+        "the provided tools and their JSON parameter schemas. Respect tool_choice "
+        "and parallel_tool_calls. If tool_choice permits it and no tool is appropriate, "
+        "answer normally."
+    )
+
+
 def _repaired_tool_decision_invalid(
     completion: dict[str, Any], payload: dict[str, Any],
 ) -> bool:
@@ -286,6 +332,7 @@ def _repaired_tool_decision_invalid(
         except (ValueError, TypeError, SchemaError, ValidationError):
             return True
     return False
+
 
 app = FastAPI(title="ODS Model Router", docs_url=None, redoc_url=None,
               openapi_url=None)
@@ -648,6 +695,9 @@ def _validate_state_schema(doc: Any) -> bool:
             backend, {"kind", "endpointId"}, {"kind", "endpointId", "nativeRoute"}
         ):
             return False
+        # A pre-round-F state names the retired "lemonade" kind. It stays
+        # readable for one release so the host agent can replace it (contract
+        # section 6.7); no route path treats it specially.
         if backend["kind"] not in {"llama-server", "lemonade", "hipfire", "unknown"}:
             return False
         if not isinstance(backend["endpointId"], str) or not backend["endpointId"]:
@@ -1185,28 +1235,6 @@ def _completed_chat_as_sse(completion: dict[str, Any]) -> bytes:
     ) + b"data: [DONE]\n\n"
 
 
-def _lemonade_context_error(completion: dict[str, Any]) -> dict[str, Any] | None:
-    """Recognize Lemonade's HTTP-200 wrapper around a llama.cpp 400 error."""
-    outer = completion.get("error")
-    details = outer.get("details") if isinstance(outer, dict) else None
-    response = details.get("response") if isinstance(details, dict) else None
-    inner = response.get("error") if isinstance(response, dict) else None
-    if (not isinstance(inner, dict) or details.get("status_code") != 400
-            or inner.get("type") != "exceed_context_size_error"):
-        return None
-    context = inner.get("n_ctx")
-    prompt = inner.get("n_prompt_tokens")
-    if (type(context) is not int or context <= 0
-            or type(prompt) is not int or prompt <= 0):
-        return None
-    return {"error": {
-        "message": (f"Request ({prompt} tokens) exceeds the available context size "
-                    f"({context} tokens)"),
-        "type": "exceed_context_size_error", "code": "400",
-        "n_ctx": context, "n_prompt_tokens": prompt,
-    }}
-
-
 def _is_terminal_stream_payload(payload: dict[str, Any]) -> bool:
     """Recognize terminal Chat/Completions and Responses API stream events."""
     choices = payload.get("choices")
@@ -1695,17 +1723,32 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     completed_tool_stream = (
         is_stream
         and path == "/v1/chat/completions"
-        and route["backendKind"] in {"llama-server", "lemonade"}
+        and route["backendKind"] == "llama-server"
         and isinstance(payload.get("tools"), list)
         and bool(payload["tools"])
     )
-    if completed_tool_stream:
-        # llama.cpp may withdraw an incrementally parsed tool call, aborting
-        # its SSE stream. Ask this backend for its complete decision, then
-        # present that verified decision as SSE to the existing client.
-        # This is a transport adapter: tools and model selection are unchanged.
+    thinking_options = payload.get("chat_template_kwargs")
+    thinking_tool_compat = (
+        completed_tool_stream
+        and isinstance(thinking_options, dict)
+        and thinking_options.get("enable_thinking") is True
+    )
+    if thinking_tool_compat:
+        # Live thinking-enabled llama.cpp emitted a JSON description of a
+        # function as text when streaming, but a structured API call when
+        # nonstreaming. Keep its prior single-request behavior. Stop remains
+        # limited by that backend's nonstream cancellation semantics.
         payload["stream"] = False
         payload.pop("stream_options", None)
+    elif completed_tool_stream:
+        # Keep the upstream stream open while _while_connected watches Stop.
+        # Buffer and verify its complete decision before sending any tool call
+        # to the client; partial llama.cpp tool deltas are never exposed.
+        options = payload.get("stream_options")
+        payload["stream_options"] = {
+            **(options if isinstance(options, dict) else {}),
+            "include_usage": True,
+        }
 
     headers = _sanitize_headers(request)
     api_key = os.environ.get(route["apiKeyEnv"], "") if route["apiKeyEnv"] else ""
@@ -1719,6 +1762,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         "X-ODS-Backend": route["backendKind"],
         "X-ODS-Route-Seq": str(route["routeSeq"]),
     }
+    if thinking_tool_compat:
+        ods_headers["X-ODS-Tool-Stream-Compatibility"] = "thinking-nonstream"
 
     url = route["baseUrl"] + path
     client: httpx.AsyncClient = app.state.http
@@ -1736,18 +1781,147 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     }
 
     attempt_handle = None
+    next_attempt = 2
     try:
         forwarded_body = json.dumps(payload).encode("utf-8")
         attempt_handle = _begin_probe_attempt(probe_id, request_id, 1, forwarded_body, route)
-        if is_stream and not completed_tool_stream:
+        if thinking_tool_compat:
+            upstream = await client.post(
+                url, content=forwarded_body, headers=headers,
+                timeout=UPSTREAM_TIMEOUT_SECONDS,
+            )
+            _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
+        elif completed_tool_stream:
+            upstream_request = client.build_request(
+                "POST", url, content=forwarded_body,
+                headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
+            )
+            streaming_upstream = await client.send(upstream_request, stream=True)
+            try:
+                chunks: list[bytes] = []
+                byte_count = 0
+                async for chunk in streaming_upstream.aiter_bytes():
+                    byte_count += len(chunk)
+                    if byte_count > MAX_COMPLETED_TOOL_STREAM_BYTES:
+                        _finish_probe_attempt(attempt_handle, "stream-error",
+                                              streaming_upstream.status_code)
+                        return JSONResponse({"error": {
+                            "message": "Backend tool response exceeded the stream limit",
+                            "type": "upstream_invalid_response", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
+                    chunks.append(chunk)
+                raw_stream = b"".join(chunks)
+                fallback = False
+                decoded_headers = {
+                    name: value for name, value in streaming_upstream.headers.items()
+                    if name.lower() not in {
+                        "content-encoding", "content-length", "transfer-encoding",
+                    }
+                }
+                if 200 <= streaming_upstream.status_code < 300:
+                    try:
+                        complete = assemble_chat_completion_sse(
+                            raw_stream, route["runtimeModelId"],
+                            max_bytes=MAX_COMPLETED_TOOL_STREAM_BYTES,
+                        )
+                    except CompletionStreamIdentityError:
+                        _finish_probe_attempt(attempt_handle, "stream-error",
+                                              streaming_upstream.status_code)
+                        return JSONResponse({"error": {
+                            "message": "Backend response identity changed",
+                            "type": "response_identity_mismatch", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
+                    except ValueError:
+                        # Some backends ignore stream:true and return a
+                        # completed JSON response. Process that one response
+                        # without issuing a second inference.
+                        try:
+                            complete = json.loads(raw_stream.decode("utf-8"))
+                        except (ValueError, UnicodeDecodeError):
+                            complete = None
+                        if (not isinstance(complete, dict)
+                                or not isinstance(complete.get("choices"), list)
+                                and not isinstance(complete.get("error"), dict)):
+                            _finish_probe_attempt(attempt_handle, "stream-error",
+                                                  streaming_upstream.status_code)
+                            return JSONResponse({"error": {
+                                "message": "Backend returned an invalid completed tool stream",
+                                "type": "upstream_invalid_response", "code": "502",
+                            }}, status_code=502, headers=ods_headers), False
+                        if ("error" not in complete
+                                and complete.get("model") != route["runtimeModelId"]):
+                            _finish_probe_attempt(attempt_handle, "stream-error",
+                                                  streaming_upstream.status_code)
+                            return JSONResponse({"error": {
+                                "message": "Backend response identity changed",
+                                "type": "response_identity_mismatch", "code": "502",
+                            }}, status_code=502, headers=ods_headers), False
+                        decoded_headers["content-type"] = "application/json"
+                        upstream = httpx.Response(
+                            streaming_upstream.status_code, content=raw_stream,
+                            headers=decoded_headers,
+                        )
+                    else:
+                        invalid = _repaired_tool_decision_invalid(complete, payload)
+                        if (invalid and _complete_native_envelope_names(complete) is None
+                                and not _complete_structured_tool_decision(complete)):
+                            _finish_probe_attempt(attempt_handle, "stream-error",
+                                                  streaming_upstream.status_code)
+                            return JSONResponse({"error": {
+                                "message": "Backend returned an invalid tool decision",
+                                "type": "tool_protocol_invalid", "code": "502",
+                            }}, status_code=502, headers=ods_headers), False
+                        if invalid:
+                            # A complete rejected decision can use the single
+                            # shared repair before any call reaches the agent.
+                            ods_headers["X-ODS-Tool-Stream-Repair"] = "true"
+                        decoded_headers["content-type"] = "application/json"
+                        upstream = httpx.Response(
+                            streaming_upstream.status_code,
+                            content=json.dumps(complete).encode("utf-8"),
+                            headers=decoded_headers,
+                        )
+                elif (streaming_upstream.status_code == 500
+                        and b"Invalid diff: now finding less tool calls!" in raw_stream):
+                    # Older llama.cpp builds cannot complete streamed tool
+                    # diffs. Retain their complete-response compatibility path.
+                    fallback = True
+                else:
+                    upstream = httpx.Response(
+                        streaming_upstream.status_code, content=raw_stream,
+                        headers=decoded_headers,
+                    )
+
+                _finish_probe_attempt(attempt_handle,
+                                      "stream-error" if fallback else "complete",
+                                      streaming_upstream.status_code)
+                if fallback:
+                    fallback_payload = {**payload, "stream": False}
+                    fallback_payload.pop("stream_options", None)
+                    fallback_body = json.dumps(fallback_payload).encode("utf-8")
+                    attempt_handle = _begin_probe_attempt(
+                        probe_id, request_id, next_attempt, fallback_body, route,
+                    )
+                    next_attempt += 1
+                    ods_headers["X-ODS-Tool-Stream-Fallback"] = "true"
+                    remaining = UPSTREAM_TIMEOUT_SECONDS - (
+                        time.monotonic() - telemetry_started
+                    )
+                    if remaining <= 0:
+                        raise httpx.ReadTimeout("tool stream fallback deadline expired")
+                    upstream = await client.post(
+                        url, content=fallback_body, headers=headers, timeout=remaining,
+                    )
+                    _finish_probe_attempt(attempt_handle, "complete",
+                                          upstream.status_code)
+            finally:
+                await streaming_upstream.aclose()
+        elif is_stream:
             upstream_request = client.build_request(
                 "POST", url, content=forwarded_body,
                 headers=headers, timeout=UPSTREAM_TIMEOUT_SECONDS,
             )
             upstream = await client.send(upstream_request, stream=True)
-            lemonade_route = upstream.headers.get("x-lemonade-route")
-            if lemonade_route:
-                ods_headers["X-Lemonade-Route"] = lemonade_route
 
             async def cleanup_stream():
                 try:
@@ -1801,7 +1975,6 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             # Never present it as a backend identity when the
                             # stream supplied no model field to observe.
                             "responseModel": rewriter.response_model or "",
-                            "lemonadeRoute": lemonade_route,
                         })
                     if (
                         completed
@@ -1828,11 +2001,12 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                 media_type=media_type, headers=ods_headers, cleanup=cleanup_stream,
             ), True
 
-        upstream = await client.post(
-            url, content=forwarded_body, headers=headers,
-            timeout=UPSTREAM_TIMEOUT_SECONDS,
-        )
-        _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
+        else:
+            upstream = await client.post(
+                url, content=forwarded_body, headers=headers,
+                timeout=UPSTREAM_TIMEOUT_SECONDS,
+            )
+            _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
     except asyncio.CancelledError:
         _finish_probe_attempt(attempt_handle, "cancelled")
         raise
@@ -1845,8 +2019,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         ), False
     except httpx.HTTPError as exc:
         _finish_probe_attempt(attempt_handle, "transport-error")
+        logger.warning("Upstream model runtime unavailable: %s", exc)
         return JSONResponse(
-            {"error": {"message": f"Upstream model runtime unavailable: {exc}",
+            {"error": {"message": "Upstream model runtime unavailable",
                        "type": "upstream_unavailable", "code": "502"}},
             status_code=502, headers=ods_headers,
         ), False
@@ -1855,7 +2030,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     # tool call. A complete native envelope is a model decision, not an
     # executed action; no host/tool operation is replayed here.
     if (path == "/v1/chat/completions"
-            and route["backendKind"] in {"llama-server", "lemonade"}
+            and route["backendKind"] == "llama-server"
             and _repairable_native_tool_request(payload)
             and isinstance(payload.get("messages"), list)
             and 200 <= upstream.status_code < 300):
@@ -1865,10 +2040,14 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             initial_decision = None
         if isinstance(initial_decision, dict):
             native_names = _complete_native_envelope_names(initial_decision)
-            if native_names is not None and not _normalize_native_tool_markup(
+            native_invalid = native_names is not None and not _normalize_native_tool_markup(
                 initial_decision, payload,
-            ):
-                if (pinned_route and initial_decision.get("model")
+            )
+            structured_invalid = (native_names is None
+                and _complete_structured_tool_decision(initial_decision)
+                and _repaired_tool_decision_invalid(initial_decision, payload))
+            if native_invalid or structured_invalid:
+                if ((pinned_route or structured_invalid) and initial_decision.get("model")
                         != route["runtimeModelId"]):
                     return JSONResponse({'error': {'message': 'Backend response identity changed',
                         'type': 'response_identity_mismatch', 'code': '502'}},
@@ -1881,12 +2060,15 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     }}, status_code=504, headers=ods_headers), False
                 repair_payload = {**payload, "stream": False,
                     "messages": [*payload["messages"], {"role": "user",
-                        "content": _native_tool_repair_feedback(native_names, payload)}]}
+                        "content": (_structured_tool_repair_feedback() if structured_invalid
+                                    else _native_tool_repair_feedback(native_names, payload))}]}
                 repair_payload.pop("stream_options", None)
                 repair_handle = None
                 try:
                     repair_body = json.dumps(repair_payload).encode("utf-8")
-                    repair_handle = _begin_probe_attempt(probe_id, request_id, 2, repair_body, route)
+                    repair_handle = _begin_probe_attempt(
+                        probe_id, request_id, next_attempt, repair_body, route,
+                    )
                     upstream = await client.post(
                         url, content=repair_body,
                         headers=headers, timeout=remaining,
@@ -1903,8 +2085,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     }}, status_code=504, headers=ods_headers), False
                 except httpx.HTTPError as exc:
                     _finish_probe_attempt(repair_handle, "transport-error")
+                    logger.warning("Upstream model runtime unavailable during tool protocol repair: %s", exc)
                     return JSONResponse({"error": {
-                        "message": f"Upstream model runtime unavailable during tool protocol repair: {exc}",
+                        "message": "Upstream model runtime unavailable during tool protocol repair",
                         "type": "upstream_unavailable", "code": "502",
                     }}, status_code=502, headers=ods_headers), False
                 if 200 <= upstream.status_code < 300:
@@ -1912,16 +2095,18 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         repaired = json.loads(upstream.content.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
                         repaired = None
+                    if (structured_invalid and isinstance(repaired, dict)
+                            and repaired.get("model") != route["runtimeModelId"]):
+                        return JSONResponse({"error": {
+                            "message": "Backend response identity changed",
+                            "type": "response_identity_mismatch", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
                     if (not isinstance(repaired, dict)
                             or _repaired_tool_decision_invalid(repaired, payload)):
                         return JSONResponse({"error": {
                             "message": "Model returned an invalid tool decision after one protocol repair",
                             "type": "tool_protocol_invalid", "code": "502",
                         }}, status_code=502, headers=ods_headers), False
-
-    lemonade_route = upstream.headers.get("x-lemonade-route")
-    if lemonade_route:
-        ods_headers["X-Lemonade-Route"] = lemonade_route
 
     response_model = None
     response_usage = {
@@ -1942,22 +2127,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             if "model" in parsed:
                 parsed["model"] = requested_alias
             _sanitize_choice_content(parsed)
-            lemonade_meta = parsed.get("x_lemonade_route")
-            if lemonade_meta is not None:
-                ods_headers.setdefault("X-Lemonade-Route",
-                                       json.dumps(lemonade_meta)
-                                       if not isinstance(lemonade_meta, str)
-                                       else lemonade_meta)
             content = json.dumps(parsed).encode("utf-8")
     except (ValueError, UnicodeDecodeError):
         pass
-
-    if (route["backendKind"] == "lemonade" and 200 <= upstream.status_code < 300
-            and path == "/v1/chat/completions" and parsed is not None):
-        context_error = _lemonade_context_error(parsed)
-        if context_error is not None:
-            return JSONResponse(context_error, status_code=400,
-                                headers=ods_headers), False
 
     if pinned_route and 200 <= upstream.status_code < 300 and response_model != route['runtimeModelId']:
         return JSONResponse({'error': {'message': 'Backend response identity changed',
@@ -1965,7 +2137,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
     if (parsed is not None and 200 <= upstream.status_code < 300
             and path == "/v1/chat/completions"
-            and route["backendKind"] in {"llama-server", "lemonade"}
+            and route["backendKind"] == "llama-server"
             and isinstance(payload.get("tools"), list) and payload["tools"]
             and _normalize_native_tool_markup(parsed, payload)):
         content = json.dumps(parsed).encode("utf-8")
@@ -1987,8 +2159,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
     if probe_id:
         _record_evidence({**evidence_base,
                           "status": upstream.status_code,
-                          "responseModel": str(response_model or ""),
-                          "lemonadeRoute": lemonade_route})
+                          "responseModel": str(response_model or "")})
 
     if 200 <= upstream.status_code < 300:
         _emit_telemetry(_build_telemetry_event(

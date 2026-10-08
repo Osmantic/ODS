@@ -15,7 +15,8 @@ def route(tmp_path, monkeypatch):
     monkeypatch.setattr(tma._mod, '_switchboard_initial_verify_cancel', threading.Event())
     monkeypatch.delenv('ODS_HOST_INSTALL_DIR', raising=False)
     monkeypatch.setattr(tma._mod, '_chat_completion_ready', lambda *_a, **_k: True)
-    monkeypatch.setattr(tma._mod, '_llama_runtime_context_length', lambda *_a: 65536)
+    monkeypatch.setattr(tma._mod, '_runtime_health', lambda _env: 'ok')
+    monkeypatch.setattr(tma._mod, '_llama_runtime_props', lambda _env: (65536, ''))
     monkeypatch.setattr(tma._mod, '_load_model_library_records', lambda: [])
     monkeypatch.setattr(tma._mod.time, 'sleep', lambda _s: None)
     state_path = install / 'data' / 'model-state.json'
@@ -132,22 +133,19 @@ def test_fast_poll_preserves_stale_route_predicate(route, monkeypatch):
     assert len(calls) == 1
 
 
-def test_env_change_during_native_identity_probe_prevents_old_model_warmup(route, monkeypatch):
+def test_env_change_during_identity_probe_never_runs_the_old_completion(route, monkeypatch):
     env_path, _ = route
     snapshot = tma._mod.load_env(env_path)
-    monkeypatch.setattr(tma._mod, '_uses_lemonade_runtime', lambda _env: True)
-    monkeypatch.setattr(tma._mod, '_lemonade_runtime_base_url', lambda _env: 'http://127.0.0.1:8080')
-    monkeypatch.setattr(tma._mod, '_lemonade_loaded_model_identity', lambda *_a: '')
-    monkeypatch.setattr(tma._mod, '_send_lemonade_warmup',
-                        lambda *_a, **_k: pytest.fail('installer selected bootstrap; old full model must not be warmed'))
+    monkeypatch.setattr(tma._mod, '_chat_completion_ready',
+                        lambda *_a, **_k: pytest.fail('installer selected bootstrap; old model must not be proved'))
 
     def probe(command, **_kwargs):
         set_model(env_path, 'bootstrap-2b.gguf')
-        return subprocess.CompletedProcess(command, 0, stdout='{"model_loaded":"bootstrap-2b"}', stderr='')
+        return fake_response(command, 'old-model.gguf')
 
     monkeypatch.setattr(tma._mod.subprocess, 'run', probe)
     assert tma._mod._wait_for_model_readiness(
         snapshot, model_id='old-model', gguf_file='old-model.gguf', llm_model_name='old-model',
-        lemonade_model_id='old-model', attempts=2, initial_delay=0, interval=0,
+        attempts=2, initial_delay=0, interval=0,
         return_proof=True,
         env_still_current=lambda: tma._mod._initial_switchboard_route_env_matches(snapshot)) == {}

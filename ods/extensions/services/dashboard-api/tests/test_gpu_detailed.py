@@ -6,6 +6,8 @@ import json
 from collections import deque
 from unittest.mock import patch
 
+import pytest
+
 from gpu import (
     decode_gpu_assignment,
     get_gpu_info_amd_detailed,
@@ -483,16 +485,20 @@ class TestGetRawGpusAmdHostRuntime:
 
         assert gpu_mod._get_raw_gpus("amd") == native
 
-    def test_windows_host_lemonade_falls_back_without_sysfs(self, monkeypatch):
-        """Windows-hosted Lemonade has no AMD sysfs inside Docker Desktop."""
+    @pytest.mark.parametrize("runtime", ["llama-server", "lemonade"])
+    def test_windows_host_llama_server_falls_back_without_sysfs(self, monkeypatch, runtime):
+        """A Windows-hosted llama-server has no AMD sysfs inside Docker Desktop.
+
+        An unmigrated .env still naming Lemonade reads as the same runtime.
+        """
         import routers.gpu as gpu_mod
 
         monkeypatch.setattr(gpu_mod, "get_gpu_info_amd_detailed", lambda: None)
         monkeypatch.setattr(gpu_mod, "get_gpu_info_windows_host_detailed", lambda: None)
         monkeypatch.setattr(gpu_mod, "get_gpu_info_windows_host", lambda: None)
-        monkeypatch.setenv("AMD_INFERENCE_RUNTIME", "lemonade")
+        monkeypatch.setenv("AMD_INFERENCE_RUNTIME", runtime)
         monkeypatch.setenv("AMD_INFERENCE_LOCATION", "host")
-        monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "windows-legacy-lemonade")
+        monkeypatch.setenv("AMD_INFERENCE_RUNTIME_MODE", "windows-native-llama-server")
         monkeypatch.setenv("AMD_INFERENCE_BACKEND", "vulkan")
         monkeypatch.setenv("GPU_COUNT", "1")
 
@@ -501,7 +507,7 @@ class TestGetRawGpusAmdHostRuntime:
         assert result is not None
         assert len(result) == 1
         assert result[0].uuid == "amd-host-runtime-0"
-        assert result[0].name == "AMD Lemonade host runtime (vulkan)"
+        assert result[0].name == "AMD llama-server host runtime (vulkan)"
         assert result[0].memory_total_mb == 0
         assert result[0].memory_usage_available is False
         assert result[0].utilization_available is False

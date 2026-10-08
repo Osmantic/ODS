@@ -99,9 +99,10 @@ ods doctor --json > report.json
   (`ods` vs `external`), expected gateway (`llama-server` vs
   `litellm`), key LLM URLs, resolved compose files, and stable mismatch IDs.
 - **runtime.amd_runtime**: Explicit AMD inference runtime diagnostics from
-  installer-written env state. Reports runtime (`lemonade` or `llama-server`),
+  installer-written env state. Reports runtime (`llama-server`),
   host/container location, selected backend, supported backends, ODS
-  management state, and health endpoint reachability.
+  management state, and health endpoint reachability. An `.env` that still
+  names the retired `lemonade` runtime is reported as retired.
 - **runtime.dgx_spark_cuda_arch_check**: Warns when a DGX Spark / GB10
   machine is running a llama.cpp CUDA binary that does not report `sm_121`
   support in `llama-server` logs.
@@ -140,13 +141,19 @@ JSON.
 
 ODS supports several deployment shapes, but support cases often fail
 when the install metadata and runtime routing disagree. For example, cloud mode
-should not start or target ODS's managed `llama-server`, and external
-Lemonade should remain host-managed while ODS keeps LiteLLM and model-router
-available for clients, Pixel, and model switching.
+should not start or target ODS's managed `llama-server`, and the Windows
+Portal's host-native `llama-server.exe` should stay outside the stack while ODS
+keeps LiteLLM and model-router available for clients, Pixel, and model
+switching.
 
 ODS Doctor records those expectations under `runtime.inference_contract` and
 adds diagnoses when the evidence contradicts the selected mode:
 
+- `ODS-RUNTIME-LEMONADE-RETIRED`: `.env` still selects the retired Lemonade
+  runtime (`ODS_MODE=lemonade`, `LLM_BACKEND=lemonade`,
+  `LEMONADE_EXTERNAL=true` or `AMD_INFERENCE_RUNTIME=lemonade`). Rerun the
+  installer to move the settings to llama.cpp; see
+  [AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
 - `ODS-RUNTIME-MODE-UNKNOWN`: `.env` contains an unrecognized `ODS_MODE`.
 - `ODS-RUNTIME-CLOUD-OVERLAY-MISSING`: `ODS_MODE=cloud` but cached
   `.compose-flags` does not include `docker-compose.cloud.yml`.
@@ -156,25 +163,33 @@ adds diagnoses when the evidence contradicts the selected mode:
   at local `llama-server`.
 - `ODS-RUNTIME-CLOUD-GATEWAY-BYPASS`: cloud mode points ODS services somewhere
   other than the LiteLLM gateway.
-- `ODS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-CONFLICT`: external Lemonade is
-  active while cached `.compose-flags` includes the cloud overlay, which
-  incorrectly profiles out model-router. The dedicated Lemonade overlay
-  profiles out only managed `llama-server`.
-- `ODS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING`: external Lemonade is active
-  while cached `.compose-flags` lacks `docker-compose.lemonade-external.yml`.
-- `ODS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE`: external Lemonade still routes
-  clients to local `llama-server`.
+- `ODS-RUNTIME-HOST-NATIVE-CLOUD-OVERLAY-CONFLICT`: a host-native llama-server
+  (`NATIVE_LLM_BASE_URL`) is configured while cached `.compose-flags` includes
+  the cloud overlay, which incorrectly profiles out model-router.
+  `docker-compose.host-native-llm.yml` profiles out only the in-stack
+  `llama-server`.
+- `ODS-RUNTIME-HOST-NATIVE-OVERLAY-MISSING`: a host-native llama-server is
+  configured while cached `.compose-flags` lacks
+  `docker-compose.host-native-llm.yml`.
+- `ODS-RUNTIME-HOST-NATIVE-LOCAL-ROUTE`: a host-native llama-server is
+  configured but `LLM_API_URL` still points at the in-stack `llama-server`.
+- `ODS-RUNTIME-HOST-NATIVE-KEY-MISSING`: `LLAMA_SERVER_API_KEY` is empty, so
+  LiteLLM and model-router send no key to the Windows llama-server, which
+  requires one.
 - `ODS-RUNTIME-LOCAL-CLOUD-OVERLAY`: local mode still has the cloud overlay in
   cached `.compose-flags`.
-- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: non-AMD managed-local mode unexpectedly
-  routes through LiteLLM. Explicit `LLM_BACKEND=external` /
-  `EXTERNAL_LLM_URL` installs expect LiteLLM and do not emit this warning.
+- `ODS-RUNTIME-LOCAL-LITELLM-ROUTE`: managed local mode unexpectedly routes
+  through LiteLLM; every GPU, AMD included, routes directly to `llama-server`.
+  External (`LLM_BACKEND=external` / `EXTERNAL_LLM_URL`) and host-native
+  (`NATIVE_LLM_BASE_URL`) installs expect LiteLLM and do not emit this
+  warning.
 
 The support bundle embeds the same contract evidence in
 `manifest/evidence.json`. Its Compose validation resolves the stack with the
-recorded `ODS_MODE`, external Lemonade flags, and AMD runtime ownership so
-Linux, WSL, and macOS support cases show the stack the install actually
-intended to run. Bundle metadata also records whether the Linux host appears to
+recorded `ODS_MODE`, host-native llama-server origin (`NATIVE_LLM_BASE_URL`)
+and AMD image choice (`AMD_INFERENCE_BACKEND`), and records AMD runtime
+ownership, so Linux, WSL, and macOS support cases show the stack the install
+actually intended to run. Bundle metadata also records whether the Linux host appears to
 be WSL and which Bash executable was selected for nested diagnostics.
 
 ## Exit Codes
@@ -197,9 +212,9 @@ The doctor command integrates with:
 - `scripts/build-capability-profile.sh` - Hardware detection
 - `scripts/preflight-engine.sh` - Requirement validation
 - Service registry - Port resolution
-- AMD runtime contract - ROCm on Linux container installs, Vulkan on Windows
-  host-managed installs, and external Lemonade SDK runtimes that ODS
-  wraps without managing.
+- AMD runtime contract - llama-server on Linux container installs (Vulkan by
+  default, ROCm optional) and `llama-server.exe` (Vulkan) on Windows
+  host-managed installs.
 
 ## Default Report Path
 

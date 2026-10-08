@@ -30,8 +30,16 @@ def directory(path):
 def preflight(install):
     root, source, backup = paths(install)
     legacy = Path.home() / '.ods-models-backup'
-    if os.path.lexists(backup) or os.path.lexists(legacy):
-        raise ValueError('existing model backup must be recovered first: ' + str(backup) + ' or ' + str(legacy))
+    # A later install does not automatically restore a standalone backup.
+    # Name the existing path and recovery choices before any mutation (#7425).
+    for existing in (backup, legacy):
+        if os.path.lexists(existing):
+            raise ValueError(
+                'A model backup already exists at ' + str(existing) + '. An earlier --keep-models '
+                'uninstall may have left it. A later install does not automatically restore it: '
+                'check it, recover needed models into ' + str(source) + ' without overwriting existing '
+                'files, verify the recovered models, then move the backup aside (or delete it) '
+                'and rerun. Or rerun without --keep-models, and the models are removed with the install.')
     directory(root)
     if os.path.lexists(root / 'data'):
         directory(root / 'data')

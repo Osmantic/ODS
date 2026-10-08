@@ -190,6 +190,10 @@ def test_windows_cli_migration_backfills_then_preserves_token() -> None:
         env = os.environ.copy()
         env["ODS_HOME"] = temp_dir
         env["ODS_TEST_ROOT"] = str(ROOT)
+        # ods.ps1 loads constants.ps1, which builds paths from Windows profile
+        # variables; give pwsh on Linux or macOS scratch values for them.
+        for name in ("USERPROFILE", "TEMP", "ProgramFiles", "LOCALAPPDATA", "APPDATA"):
+            env.setdefault(name, temp_dir)
         script = r'''
 $ErrorActionPreference = "Stop"
 . (Join-Path $env:ODS_TEST_ROOT "installers/windows/ods.ps1") -Command help *> $null

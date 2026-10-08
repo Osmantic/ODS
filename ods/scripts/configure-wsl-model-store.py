@@ -24,14 +24,33 @@ registration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(registration)
 
 
+# The Lemonade migration writes the round-F keys. The WSL bridge
+# (bin/model_switchboard) still reads the Lemonade-era names, so the bridge
+# gets both, filled from whichever the .env holds (compatibility, one release).
+_BRIDGE_ALIASES = {
+    "ODS_HOST_LLM_TRANSPORT": "LEMONADE_HOST_TRANSPORT",
+    "NATIVE_LLM_BASE_URL": "LEMONADE_BASE_URL",
+    "NATIVE_LLM_CONTAINER_BASE_URL": "LEMONADE_CONTAINER_BASE_URL",
+}
+_KEYS = {*_BRIDGE_ALIASES, *_BRIDGE_ALIASES.values(), "AMD_INFERENCE_PORT", "ODS_WINDOWS_SYSTEM_DIRECTORY"}
+
+
+def _with_bridge_aliases(values: dict) -> dict:
+    for key, legacy in _BRIDGE_ALIASES.items():
+        if values.get(key) and not values.get(legacy):
+            values[legacy] = values[key]
+        elif values.get(legacy) and not values.get(key):
+            values[key] = values[legacy]
+    return values
+
+
 def _env(install_dir: Path) -> dict:
     values = {}
     for line in (install_dir / ".env").read_text(encoding="utf-8").splitlines():
         key, separator, value = line.partition("=")
-        if separator and key.strip() in {"LEMONADE_HOST_TRANSPORT", "LEMONADE_BASE_URL",
-                                         "LEMONADE_CONTAINER_BASE_URL", "AMD_INFERENCE_PORT", "ODS_WINDOWS_SYSTEM_DIRECTORY"}:
+        if separator and key.strip() in _KEYS:
             values[key.strip()] = parse_env_value(value)
-    return values
+    return _with_bridge_aliases(values)
 
 
 def _previous(path: Path) -> dict | None:

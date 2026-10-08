@@ -87,7 +87,7 @@ else
 fi
 
 # 4. .env with all required keys (minimal) → exit 0
-# Schema required: WEBUI_SECRET, SEARXNG_SECRET, N8N_USER, N8N_PASS, LITELLM_KEY, OPENCLAW_TOKEN
+# Schema required: WEBUI_SECRET, SEARXNG_SECRET, N8N_USER, N8N_PASS, LITELLM_KEY
 # Values must satisfy the schema minLength (10) on these secret keys, so use
 # realistic-length placeholders rather than short tokens like "admin"/"testkey".
 cat > "$TMP_DIR/valid.env" <<'EOF'
@@ -96,7 +96,6 @@ SEARXNG_SECRET=test-searxng-secret
 N8N_USER=admin@ods.local
 N8N_PASS=test-pass-1234
 LITELLM_KEY=sk-test-key-1234
-OPENCLAW_TOKEN=test-openclaw-token
 EOF
 set +e
 "$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/valid.env" "$ROOT_DIR/.env.schema.json" >/dev/null 2>&1
@@ -156,11 +155,10 @@ else
 fi
 
 cat > "$TMP_DIR/missing.env" <<'EOF'
-WEBUI_SECRET=test-secret
-SEARXNG_SECRET=searxsecret
-N8N_USER=admin
-N8N_PASS=testpass
-LITELLM_KEY=testkey
+WEBUI_SECRET=test-webui-secret
+SEARXNG_SECRET=test-searxng-secret
+N8N_USER=admin@ods.local
+N8N_PASS=test-pass-1234
 EOF
 set +e
 out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/missing.env" "$ROOT_DIR/.env.schema.json" 2>&1)
@@ -171,10 +169,58 @@ if [[ $r -eq 2 ]]; then
 else
     fail "Missing required key should yield exit 2, got $r"
 fi
-if echo "$out" | grep -q "Missing required\|OPENCLAW_TOKEN"; then
-    pass "Output mentions missing key or required"
+if echo "$out" | grep -q "Missing required" && echo "$out" | grep -q "LITELLM_KEY"; then
+    pass "Output names the missing required key"
 else
-    pass "Script produced validation output"
+    fail "Output should name the missing required key"
+fi
+
+# 5b. The legacy OpenClaw extension was removed. New installs no longer write
+# its keys, but an older .env that still carries them must keep validating.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/retired-openclaw.env"
+cat >> "$TMP_DIR/retired-openclaw.env" <<'EOF'
+OPENCLAW_TOKEN=test-openclaw-token
+OPENCLAW_PORT=7860
+OPENCLAW_DANGEROUSLY_DISABLE_DEVICE_AUTH=
+OPENCLAW_LLM_URL=
+OPENCLAW_HTTP_API=
+OPENCLAW_CONFIG=openclaw.json
+OPENCLAW_API_KEY=test-key
+BOOTSTRAP_MODEL=qwen3:8b-q4_K_M
+HOST_LAN_IP=192.0.2.10
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/retired-openclaw.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Retired legacy OpenClaw keys in an older .env still validate"
+else
+    echo "$out"
+    fail "Retired legacy OpenClaw keys should still validate, got $r"
+fi
+
+# 5c. The AMD GAIA library recipe was removed. An older .env that still sets
+# its keys, which a GAIA copy installed before then still reads, must keep
+# validating.
+cp "$TMP_DIR/valid.env" "$TMP_DIR/retired-gaia.env"
+cat >> "$TMP_DIR/retired-gaia.env" <<'EOF'
+GAIA_PORT=7822
+GAIA_AGENT_UI_VERSION=0.19.0
+GAIA_LEMONADE_BASE_URL=
+GAIA_SKIP_GAIA_INIT=true
+GAIA_UI_SERVE_ONLY=false
+GAIA_DISABLE_UPDATE=1
+EOF
+set +e
+out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/retired-gaia.env" "$ROOT_DIR/.env.schema.json" 2>&1)
+r=$?
+set -e
+if [[ $r -eq 0 ]]; then
+    pass "Retired AMD GAIA keys in an older .env still validate"
+else
+    echo "$out"
+    fail "Retired AMD GAIA keys should still validate, got $r"
 fi
 
 # 6. Unknown key (not in schema) → exit 2
@@ -184,7 +230,6 @@ SEARXNG_SECRET=test-secret
 N8N_USER=admin
 N8N_PASS=testpass
 LITELLM_KEY=testkey
-OPENCLAW_TOKEN=testtoken
 UNKNOWN_KEY=value
 EOF
 set +e
@@ -206,7 +251,6 @@ SEARXNG_SECRET=test-searxng-secret
 N8N_USER=admin@ods.local
 N8N_PASS=test-pass-1234
 LITELLM_KEY=sk-test-key-1234
-OPENCLAW_TOKEN=test-openclaw-token
 EOF
 set +e
 out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/short.env" "$ROOT_DIR/.env.schema.json" 2>&1)

@@ -11,7 +11,7 @@ const inventory=[
   {id:'not-installed',name:'Install me',status:'available',fitsVram:true},
 ]
 let current,ready,postResult,lifecycle
-const payload=()=>({models:inventory,currentModel:current,loadedModel:technical,activationReadyModel:ready,odsMode:'lemonade',configuredMode:'lemonade',llmBackend:'lemonade',modelLifecycle:lifecycle,gpu:{vramTotal:8}})
+const payload=()=>({models:inventory,currentModel:current,loadedModel:technical,activationReadyModel:ready,odsMode:'local',configuredMode:'local',llmBackend:'llama-server',modelLifecycle:lifecycle,gpu:{vramTotal:8}})
 const view=props=><MemoryRouter><PortalModelSelector activeModel={technical} runtimeSource="local-switchboard" {...props}/></MemoryRouter>
 beforeEach(()=>{
   current=old;ready=old;postResult={ok:true};lifecycle=null
@@ -492,7 +492,7 @@ it('reports the active switch instead of an expected temporary unknown source',a
 })
 
 it.each([true,false])('an external host selector requires explicit managed activation capability (%s)',async managed=>{
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),externalLemonade:true,
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),hostRuntime:true,
     modelManagement:{managed,canActivate:true,canUnload:true,running:true}})})))
   render(view({runtimeSource:'external-host'}))
   await open()
@@ -504,7 +504,7 @@ it.each([true,false])('an external host selector requires explicit managed activ
 
 it('keeps unknown management distinct from an external service and recovers on refresh',async()=>{
   let capability={managed:null,canActivate:false,canUnload:false,running:false,reason:'Runtime management could not be verified'}
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),externalLemonade:true,modelManagement:capability})})))
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),hostRuntime:true,modelManagement:capability})})))
   render(view({runtimeSource:'external-host'}))
   await open()
   expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeDisabled()

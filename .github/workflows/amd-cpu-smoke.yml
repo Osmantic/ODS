@@ -1,0 +1,54 @@
+name: AMD CPU smoke
+
+# AMD GPUs run the upstream llama.cpp server image. A hosted runner has no AMD
+# GPU, so this job checks the rendered AMD stacks and then runs the pinned
+# Vulkan image on the CPU with a tiny SHA-pinned GGUF: /health, /v1/models,
+# a chat completion and /metrics (ods/tests/test-amd-cpu-smoke.sh).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ods/docker-compose.base.yml"
+      - "ods/docker-compose.amd.yml"
+      - "ods/docker-compose.amd-rocm.yml"
+      - "ods/docker-compose.multigpu-amd.yml"
+      - "ods/config/backends/amd.json"
+      - "ods/config/dependency-lock.json"
+      - "ods/extensions/services/llama-server/**"
+      - "ods/scripts/resolve-compose-stack.sh"
+      - "ods/tests/test-amd-cpu-smoke.sh"
+      - ".github/workflows/amd-cpu-smoke.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "ods/docker-compose.base.yml"
+      - "ods/docker-compose.amd.yml"
+      - "ods/docker-compose.amd-rocm.yml"
+      - "ods/docker-compose.multigpu-amd.yml"
+      - "ods/config/backends/amd.json"
+      - "ods/config/dependency-lock.json"
+      - "ods/extensions/services/llama-server/**"
+      - "ods/scripts/resolve-compose-stack.sh"
+      - "ods/tests/test-amd-cpu-smoke.sh"
+      - ".github/workflows/amd-cpu-smoke.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: amd-cpu-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  amd-cpu-smoke:
+    name: amd-cpu-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Render the AMD stacks and serve a tiny model on CPU
+        working-directory: ods
+        run: bash tests/test-amd-cpu-smoke.sh

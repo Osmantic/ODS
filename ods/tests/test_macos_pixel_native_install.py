@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,91 @@ SPEC = importlib.util.spec_from_file_location('native_install',
     ROOT / 'installers/macos/lib/pixel-native-install.py')
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+
+
+@pytest.mark.parametrize('code', [0, 1])
+def test_pixel_diagnostic_reaches_install_log_without_hiding_failure(tmp_path, code):
+    script = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    start = script.index('        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py"')
+    end = script.index('\n        fi', start) + len('\n        fi')
+    command = script[start:end].replace('/usr/bin/python3', shlex.quote(sys.executable))
+    helper = tmp_path / 'pixel-native-install.py'
+    helper.write_text('import sys\nprint("public-health-diagnostic", file=sys.stderr)\nsys.exit(' + str(code) + ')\n')
+    log = tmp_path / 'install.log'
+    shell = 'set -euo pipefail\nai_err() { printf "%s\\n" "$*"; }\n_pixel_install_args=(--fixture)\n' + command
+    result = subprocess.run(['/bin/bash', '-c', shell], text=True, capture_output=True,
+        env={**os.environ, 'LIB_DIR': str(tmp_path), 'ODS_LOG_FILE': str(log)})
+    assert result.returncode == code
+    assert 'public-health-diagnostic' in result.stdout
+    assert log.read_text() == 'public-health-diagnostic\n'
+
+
+@pytest.mark.parametrize('code,detail', [
+    ('native-compose-health-timeout', 'pixel-native-ingress, pixel-workspace-preview, pixel-edge'),
+    ('compose-security-policy-missing', 'scripts/compose-cache-policy.py'),
+])
+def test_main_reports_allowlisted_activation_failures(monkeypatch, capsys, code, detail):
+    def fail(**kwargs):
+        raise ValueError(code)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert 'Native Pixel installation stopped (ValueError).' in captured.err
+    assert '[' + code + ']' in captured.err
+    assert detail in captured.err
+    assert 'do not reset receipts or repeat activation automatically' in captured.err
+
+
+def test_main_reports_individual_health_without_docker_output(monkeypatch, capsys):
+    compose = module.helper('compose')
+    states = {name: {'state': 'running', 'health': 'healthy'} for name in compose.SERVICES}
+    states['pixel-workspace-preview'] = {'state': 'restarting', 'health': 'unhealthy'}
+    def fail(**kwargs):
+        raise compose.NativeHealthTimeout(states)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'pixel-workspace-preview=restarting/unhealthy' in output.err
+    assert 'pixel-native-ingress=running/healthy' in output.err
+    assert 'pixel-edge=running/healthy' in output.err
+
+
+@pytest.mark.parametrize('error', [
+    ValueError('secret-canary-value'),
+    ValueError('native-compose-health-timeout secret-canary-near-match'),
+    OSError('secret-canary-path'),
+    KeyError('secret-canary-key'),
+    subprocess.CalledProcessError(1, ['secret-canary-argument'],
+        output='secret-canary-output', stderr='secret-canary-stderr'),
+])
+def test_main_does_not_disclose_unknown_exception_details(monkeypatch, capsys, error):
+    def fail(**kwargs):
+        raise error
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out == ''
+    assert 'secret-canary' not in captured.err
+    assert '[' not in captured.err
+    assert 'Check prerequisites and private preparation/activation receipts' in captured.err
+
+
+def test_main_keeps_preflight_guidance(monkeypatch, capsys):
+    def fail(*args, **kwargs):
+        raise ValueError('native-apple-silicon-owner-required')
+    monkeypatch.setattr(module, 'preflight', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--preflight-only'])
+    assert module.main() == 1
+    assert '[native-apple-silicon-owner-required] Run as the signed-in owner' in capsys.readouterr().err
 
 
 @pytest.mark.parametrize('fault', [None, 'root', 'intel', 'linux', 'existing', 'partial', 'relative'])
@@ -48,7 +135,7 @@ def test_preflight_retained_identity_requires_root_proof(tmp_path, monkeypatch, 
     if verified:
         assert module.preflight(tmp_path / 'fresh-ods') == tmp_path / 'fresh-ods'
     else:
-        with pytest.raises(ValueError, match='existing-native-pixel'):
+        with pytest.raises(ValueError, match='retained-pixel-identity-rejected'):
             module.preflight(tmp_path / 'fresh-ods')
     assert calls == [{'empty_home': False, 'prompt_for_sudo': False}]
     assert not list(tmp_path.iterdir())
@@ -84,7 +171,10 @@ def test_preflight_allows_only_root_verified_empty_retained_home(
     if receipt and verified:
         assert module.preflight(tmp_path / 'fresh-ods') == tmp_path / 'fresh-ods'
     else:
-        with pytest.raises(ValueError, match='existing-native-pixel'):
+        # A home without the identity receipt is leftover state; a receipt
+        # whose proof fails is a rejected identity, not existing Pixel state.
+        with pytest.raises(ValueError, match='retained-pixel-identity-rejected' if receipt
+                else 'existing-native-pixel'):
             module.preflight(tmp_path / 'fresh-ods')
     assert calls == ([{'empty_home': True, 'prompt_for_sudo': False}] if receipt else [])
 
@@ -104,26 +194,107 @@ def test_retained_identity_proof_is_read_only_and_fails_closed(monkeypatch):
     assert module.retained_identity_only(empty_home=True) is True
     assert calls[1][0][-1] == '--verify-empty-home-only'
     monkeypatch.setattr(module.subprocess, 'run',
-        lambda *args, **kwargs: SimpleNamespace(returncode=os.EX_DATAERR))
+        lambda *args, **kwargs: SimpleNamespace(returncode=os.EX_DATAERR, stderr=None))
     assert module.retained_identity_only() is False
 
 
-@pytest.mark.parametrize('prompt,stdin_tty,stderr_tty,interactive', [
+@pytest.mark.parametrize('prompt,tty,stderr_tty,interactive', [
     (False, True, True, False), (True, False, True, False),
-    (True, True, False, False), (True, True, True, True)])
+    (False, True, False, False), (True, False, False, False),
+    (True, True, False, True), (True, True, True, True)])
 def test_identity_prompt_requires_explicit_opt_in_and_terminal(
-        monkeypatch, prompt, stdin_tty, stderr_tty, interactive):
-    monkeypatch.setattr(module.sys.stdin, 'isatty', lambda: stdin_tty)
+        monkeypatch, prompt, tty, stderr_tty, interactive):
+    # `curl ... | bash` leaves stdin a pipe; sudo still prompts on /dev/tty.
+    monkeypatch.setattr(module.sys.stdin, 'isatty', lambda: False)
     monkeypatch.setattr(module.sys.stderr, 'isatty', lambda: stderr_tty)
+    monkeypatch.setattr(module, 'controlling_terminal', lambda: tty)
     calls = []
     monkeypatch.setattr(module.subprocess, 'run', lambda argv, **kw:
         calls.append((argv, kw)) or SimpleNamespace(returncode=0))
     assert module.retained_identity_only(prompt_for_sudo=prompt)
     argv, kw = calls[0]
     assert ('-n' not in argv) == interactive
-    assert kw['stdin'] == (None if interactive else subprocess.DEVNULL)
+    assert kw['stdin'] == subprocess.DEVNULL
     assert kw['stderr'] == (None if interactive else subprocess.PIPE)
     assert argv[-1] == '--verify-identity-only'
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='requires a POSIX controlling terminal')
+def test_identity_prompt_survives_shipped_installer_logging_pipeline(tmp_path):
+    import fcntl
+    import pty
+    import termios
+
+    installer = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    start = installer.index('        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py"')
+    end = installer.index('\n        fi', start) + len('\n        fi')
+    command = installer[start:end].replace('/usr/bin/python3', shlex.quote(sys.executable))
+    helper = tmp_path / 'pixel-native-install.py'
+    source = ROOT / 'installers/macos/lib/pixel-native-install.py'
+    # Only sudo execution is replaced. Terminal detection and the installer's
+    # actual stderr/stdout logging pipeline run in a real child process.
+    helper.write_text(f'''import importlib.util, json, sys
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location('native', {str(source)!r})
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+def sudo(argv, **kwargs):
+    print(json.dumps({{'argv': argv, 'stdin_tty': sys.stdin.isatty(),
+                      'stderr_tty': sys.stderr.isatty(),
+                      'controlling_tty': module.controlling_terminal()}}))
+    return SimpleNamespace(returncode=0)
+module.subprocess.run = sudo
+assert module.retained_identity_only(prompt_for_sudo='--prompt-for-sudo' in sys.argv)
+''')
+    log = tmp_path / 'install.log'
+    shell = 'set -euo pipefail\nai_err() { printf "%s\\n" "$*"; }\n_pixel_install_args=(--prompt-for-sudo)\n' + command
+    master, slave = pty.openpty()
+
+    def acquire_terminal():
+        os.setsid()
+        fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+    try:
+        result = subprocess.run(['/bin/bash', '-c', shell], input='', text=True,
+            capture_output=True, timeout=10, preexec_fn=acquire_terminal,
+            pass_fds=(slave,), env={**os.environ, 'LIB_DIR': str(tmp_path), 'ODS_LOG_FILE': str(log)})
+    finally:
+        os.close(slave)
+        os.close(master)
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert observed['controlling_tty'] is True
+    assert observed['stdin_tty'] is False
+    assert observed['stderr_tty'] is False
+    assert '-n' not in observed['argv']
+    assert log.read_text() == result.stdout
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_controlling_terminal_probes_dev_tty_without_acquiring_it(monkeypatch, available):
+    opened, closed = [], []
+    def fake_open(path, flags):
+        opened.append((path, flags))
+        if not available:
+            raise OSError('no controlling terminal')
+        return 99
+    monkeypatch.setattr(module.os, 'open', fake_open)
+    monkeypatch.setattr(module.os, 'close', closed.append)
+    assert module.controlling_terminal() is available
+    assert opened == [('/dev/tty', module.os.O_RDWR | module.os.O_NOCTTY)]
+    assert closed == ([99] if available else [])
+
+
+def test_identity_rejection_relays_only_the_helper_reason_line(monkeypatch, capsys):
+    stderr = (b'unrelated diagnostic\n'
+        b'Native Pixel Operations identity verification rejected: operations-identity-process-active.\n')
+    monkeypatch.setattr(module.subprocess, 'run', lambda *args, **kw:
+        SimpleNamespace(returncode=os.EX_DATAERR, stderr=stderr))
+    assert module.retained_identity_only() is False
+    assert capsys.readouterr().err == (
+        'Native Pixel Operations identity verification rejected: operations-identity-process-active.\n')
+    guidance = module.ERROR_GUIDANCE['retained-pixel-identity-rejected']
+    assert 'launchctl bootout user/' in guidance and 'Existing native Pixel state' not in guidance
 
 
 @pytest.mark.parametrize('result', [1, 127, -9])
@@ -278,11 +449,52 @@ def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persiste
     assert script.index('--preflight-only') < script.index('# PHASE 1')
     launch = script.index('"$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}"')
     assert script.index('compose_exit="${PIPESTATUS[0]}"') < launch
-    assert launch < script.index('echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"')
+    save = 'echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"'
+    # The base stack is saved before it starts; Pixel's fragments only after it.
+    assert script.index(save) < script.index(
+        'docker compose "${COMPOSE_FLAGS[@]}" "${_macos_compose_up_args[@]}"')
+    assert launch < script.rindex(save)
     shared = (ROOT / 'installers/phases/06-directories.sh').read_text()
     source_contract = (ROOT / 'installers/lib/pixel-integration.sh').read_text()
     assert 'ODS_PIXEL_BUNDLED_REF' in shared
     assert module.DEFAULT_REF in source_contract
+
+
+@pytest.mark.parametrize('outcome', ['activated', 'failed-before-activation', 'failed-during-activation'])
+def test_saved_compose_flags_cover_pixel_containers_after_a_failed_step(tmp_path, outcome):
+    script = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    start = script.index('    if $ENABLE_PIXEL; then\n        ai "Preparing native Pixel')
+    stop = script.index('\n', script.index('    echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"', start))
+    block = script[start:stop].replace('/usr/bin/python3', 'fixture_python')
+    base = '-f docker-compose.base.yml -f installers/macos/docker-compose.macos.yml'
+    (tmp_path / '.compose-flags').write_text(base + '\n')
+    shell = f'''set -euo pipefail
+INSTALL_DIR={tmp_path}; LIB_DIR=/fixture; ENABLE_PIXEL=true
+ODS_LOG_FILE="$INSTALL_DIR/install.log"
+COMPOSE_FLAGS=({base}); _pixel_install_args=(--install-dir "$INSTALL_DIR")
+ai() {{ :; }}; ai_ok() {{ :; }}; ai_err() {{ :; }}
+fixture_python() {{
+    printf 'native activation {outcome}\\n'
+    case {outcome} in
+        activated) return 0 ;;
+        failed-before-activation) return 1 ;;
+        failed-during-activation)
+            mkdir -p "$INSTALL_DIR/data/pixel-native/preparation"
+            printf '{{"status":"error"}}\\n' > "$INSTALL_DIR/data/pixel-native/preparation/activation.json"
+            return 1 ;;
+    esac
+}}
+''' + block + '\n'
+    result = subprocess.run(['bash'], input=shell, text=True, capture_output=True)
+    assert result.returncode == (0 if outcome == 'activated' else 1), result.stderr
+    assert (tmp_path / 'install.log').read_text() == f'native activation {outcome}\n'
+    fragments = ('-f extensions/services/pixel-model-relay/compose.yaml.disabled'
+        ' -f extensions/services/pixel-edge/compose.yaml.disabled'
+        ' -f installers/macos/pixel-native.compose.yaml.disabled')
+    saved = (tmp_path / '.compose-flags').read_text().strip()
+    # Without an activation journal no Pixel container was started and its
+    # .env bindings may be missing, so the fragments must not be recorded.
+    assert saved == (base if outcome == 'failed-before-activation' else base + ' ' + fragments)
 
 
 @pytest.mark.parametrize('pixel', ['true', 'false'])
@@ -295,7 +507,7 @@ def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
 CLOUD_MODE=false; ENABLE_RECOMMENDED=false
-ENABLE_HERMES=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
+ENABLE_HERMES=false; ENABLE_APE=false
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false; OPENCODE_ENABLE_EXPLICIT=false; OPENCODE_DISABLE_EXPLICIT=false
 OPENCODE_DISABLE_SELECTED=false
@@ -304,11 +516,11 @@ ENABLE_ODS_PROXY=false
 read_env_value() { printf '\\n'; }
 ai_err() { printf '%s\\n' "$*" >&2; }
 ''' + script[resolver_start:resolver_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
-printf '%s %s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
+printf '%s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
 '''
     result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True,
         env={**os.environ, 'SOURCE_ROOT': str(ROOT), 'INSTALL_DIR': str(tmp_path)})
-    assert result.stdout == 'false true false false false false false false'
+    assert result.stdout == 'false true false false false false false'
 
 
 @pytest.mark.parametrize('mode', ['direct', 'volta', 'brew', 'missing-brew', 'bad-brew'])

@@ -1,96 +1,144 @@
-# Migrating from OpenClaw to Hermes Agent
+# Legacy OpenClaw extension removed
 
-As of **2026-05-12**, ODS's default agent is [Hermes Agent](HERMES.md) (Nous Research, MIT). OpenClaw is deprecated and will be removed in the next release.
+ODS deprecated its legacy OpenClaw extension on 2026-05-12 and has now removed
+it: the `ods-openclaw` container (image `ghcr.io/openclaw/openclaw:2026.3.8`,
+port 7860), its configuration templates and its installer options. It still
+pinned OpenClaw 2026.3.8, an older release than the 2026.6.33 runtime that
+Pixel qualifies.
 
-This document covers the migration path for existing ODS installs that have OpenClaw enabled.
+The supported agents are [Portal (Pixel)](PIXEL.md) on qualified hosts and
+[Hermes Agent](HERMES.md). Pixel runs its own OpenClaw runtime as the host
+service `openclaw-gateway.service`. That runtime is separate from this
+extension and is not affected.
 
-## TL;DR
+## Before you update a git checkout
 
-- **New installs:** Hermes is installed by default; OpenClaw is not. No action needed.
-- **Existing installs:** OpenClaw keeps running as-is until you remove it. Hermes can be enabled in parallel any time. The two agents are independent — neither shares storage with the other.
-- **No automatic data migration.** Sessions, memories, skills, and cron jobs in OpenClaw do not transfer. The migration is a clean break.
+This applies only when ODS runs from a git checkout and you update with
+`ods-update.sh update` or the Dashboard update action. Installer reruns do not
+need it.
 
-## Platform support in this release
-
-The default-agent swap is wired through the **Linux, macOS, and Windows** installers in this release. New installs select Hermes for agent-enabled profiles, keep OpenClaw disabled unless the operator explicitly opts in with `--openclaw` on Linux/macOS or `-OpenClaw` on Windows, and Windows now has parity for `-Hermes` / `-NoHermes`, Hermes data-dir creation, and the same context handling used on the other platforms.
-
-## Why the swap
-
-| | OpenClaw | Hermes Agent |
-|---|---|---|
-| Project age | older, stable | younger (Feb 2026), fast-moving |
-| Browser dashboard | yes (one surface) | yes (chat / sessions / skills / memories / cron / profiles / models / analytics / logs) |
-| Persistent memory | basic | first-class, agent-curated, with FTS5 cross-session recall |
-| Skills | static config | **agent autonomously creates** skill documents from successful runs |
-| Tool count | ~12 | 70+ |
-| Multi-platform | Discord/Telegram/Signal | Telegram/Discord/Slack/WhatsApp/Signal/Teams/Matrix/Mattermost/SMS/email — gateway abstraction |
-| Voice | bring-your-own | OpenAI-compatible STT/TTS — wired through ODS's whisper + kokoro out of the box |
-| Policy / audit | none | APE policy plugin (pre_tool_call hook) routes every tool call through ODS's policy engine |
-| License | OSS | MIT |
-
-The deciding factor was the self-improving loop: Hermes writes Markdown skill files after solving hard problems and reloads them automatically on the next similar task. That capability does not exist in OpenClaw.
-
-## Coexistence (deprecation release)
-
-In this release both agents are installable:
+If OpenClaw is enabled, disable it first:
 
 ```bash
-ods enable hermes
-ods enable hermes-proxy  # recommended LAN-facing auth gate
-ods enable openclaw      # still available (deprecated)
-```
-
-Ports do not conflict — Hermes is internal on 9119 and is reached through hermes-proxy on 9120; OpenClaw is on 7860.
-
-The default at install time has flipped: `install.sh` no longer enables OpenClaw without `--openclaw`. Existing installs that already had `ENABLE_OPENCLAW=true` keep it enabled through `ods update`; nothing is removed for you.
-
-## Clean-cut migration
-
-If you want to move now:
-
-```bash
-# 1. Enable Hermes (parallel to OpenClaw — they don't conflict)
-ods enable hermes
-ods enable hermes-proxy
-
-# 2. Verify Hermes is healthy
-docker inspect --format '{{.State.Health.Status}}' ods-hermes
-curl http://localhost:9120/health
-
-# 3. Re-create any cron jobs / important sessions in Hermes via its
-#    dashboard at http://<device>:9120. There is no import.
-
-# 4. When you're satisfied, stop OpenClaw
 ods disable openclaw
-
-# 5. Optionally archive OpenClaw data (it's untouched by the swap)
-mv data/openclaw data/openclaw.archive.$(date +%Y%m%d)
 ```
 
-If you want to keep using OpenClaw, you can — until the next release. After that, `ods update` will remove the OpenClaw extension and warn (not error) if `ENABLE_OPENCLAW=true` is still set.
+The updater of the release you are leaving restarts the stack with its old file
+list, so it stops with an error once the pull deletes the OpenClaw files.
+Disabling OpenClaw takes it out of that list. After the update,
+`extensions/services/openclaw` holds only the `compose.yaml.disabled` file that
+`ods disable` left; you can delete that folder.
 
-## n8n flows that target OpenClaw
+If `git status` lists `config/openclaw/openclaw.json` as modified, move it out
+of the checkout before you update, and keep the copy private. While OpenClaw
+was enabled, the installer wrote your model name into that tracked file, and on
+Strix Halo tiers your LiteLLM key. `git pull` refuses to delete a changed file,
+so the update would stop with "Git pull failed."
 
-`config/n8n/openclaw-agent-trigger.json` still ships in this release and continues to point at OpenClaw's port 7860. A `hermes-agent-trigger.json` ships alongside it for Hermes. In the default auth-gated stack, users enter through port 9120 and containers call Hermes on the internal Docker network at `ods-hermes:9119`.
+```bash
+mv config/openclaw/openclaw.json ~/openclaw.json.bak
+chmod 600 ~/openclaw.json.bak
+```
 
-In the removal release, only the Hermes trigger ships.
+If an update already stopped after the pull because OpenClaw was still
+enabled, run `ods-update.sh update` again. The pull has already installed the
+updater of this release, which finishes the update.
 
-## What will be removed in the next release
+## What an upgrade does
 
-For planning, here's what the removal PR drops:
+- Rerunning the installer on Linux, macOS or Windows deletes
+  `extensions/services/openclaw` from the install directory and removes the
+  `ods-openclaw` container when it starts the stack. In a git checkout,
+  `git pull` deletes the files; the updater from this release on resolves the
+  stack again after the pull, so its restart removes the container.
+- The installers delete the OpenClaw templates in `config/openclaw` that are
+  unchanged from a shipped version, and remove the folder when nothing else is
+  left in it. When OpenClaw files remain, the installer names the folders it
+  kept.
+- On Linux, a rerun leaves the extension files and templates in place while an
+  unfinished Pixel source upgrade is pending. Finish or roll back that upgrade
+  with the release that started it; the next rerun of this release then cleans
+  up.
+- The installers no longer turn OpenClaw back on when they find its container
+  or data.
+- If OpenClaw was the only feature that needed SearXNG or APE, the upgrade
+  turns those services off and removes their containers.
+- `--openclaw` and `--no-openclaw` (Linux and macOS) and `-OpenClaw` (Windows)
+  are still accepted. They print a notice and change nothing.
+- Installers no longer write `OPENCLAW_TOKEN`, `OPENCLAW_PORT` or `HOST_LAN_IP`
+  to `.env`. Linux and Windows reruns rewrite `.env` without them; macOS keeps
+  existing values. Retired keys that remain are ignored, still pass `.env`
+  validation, and can be cleared in the Dashboard settings.
+- On AMD Linux installs, a rerun stops and deletes the
+  `openclaw-session-cleanup` user timer if it still has the definition ODS
+  shipped.
+- `ods start` warns while an `ods-openclaw` container still exists, for
+  example after an installer run that stopped early.
 
-- `extensions/services/openclaw/` (manifest, compose, README — entire directory)
-- `docs/OPENCLAW-INTEGRATION.md`
-- `config/openclaw/` (inject-token.js, openclaw.json, pro.json, openclaw-strix-halo.json, workspace/SYSTEM.md)
-- `scripts/systemd/openclaw-session-cleanup.service` + `.timer`
-- `config/n8n/openclaw-agent-trigger.json`
-- `tests/test-openclaw-inject-token.sh`
-- All `ENABLE_OPENCLAW` / `--openclaw` / `--no-openclaw` references in `install-core.sh` and `ods-uninstall.sh`
-- The OpenClaw row from `extensions/CATALOG.md`
-- The legacy OpenClaw launch blog is removed from the maintained product tree
+Nothing migrates to Hermes or Portal. OpenClaw sessions, memories and cron jobs
+do not transfer. n8n workflows that call port 7860 stop working; the bundled
+`config/n8n/hermes-agent-trigger.json` workflow targets Hermes instead.
 
-If any of these touch a workflow you care about, please open an issue before the next release ships so we can either preserve it (rename / refactor under the Hermes namespace) or document a clean alternative.
+## What stays on disk
 
-## Questions / migration pain
+The upgrade deletes no owner data. These remain until you remove them:
 
-File an issue at <https://github.com/Osmantic/ODS/issues> with the `migration` label.
+- `data/openclaw/`: agent state. On macOS and Windows,
+  `data/openclaw/home/openclaw.json` contains the gateway token, and on macOS
+  also a provider key.
+- `config/openclaw/`: files you changed or added, such as `workspace/` and a
+  changed `openclaw.json`. On Strix Halo tiers, `openclaw.json` can contain a
+  copy of your LiteLLM key.
+- Retired `.env` keys, pre-update backups in `data/backups/` that include a
+  `config-openclaw` copy, and the downloaded OpenClaw image.
+- On AMD Linux installs, the `memory-shepherd-memory` and
+  `memory-shepherd-workspace` user timers, which reset files in
+  `config/openclaw/workspace`.
+
+## Removing the leftovers
+
+Remove a remaining `ods-openclaw` container before the folders: it reads
+`config/openclaw` when it starts, so it fails on every restart once the folder
+is gone.
+
+On Linux or macOS, from the install directory (`~/ods` by default):
+
+```bash
+# Only if `docker ps -a` still lists it.
+docker rm -f ods-openclaw
+
+# AMD Linux: stop the timers that maintain the old workspace.
+# They fail on every run once config/openclaw is gone.
+for timer in openclaw-session-cleanup memory-shepherd-memory memory-shepherd-workspace; do
+    systemctl --user disable --now "$timer.timer" 2>/dev/null
+    rm -f ~/.config/systemd/user/"$timer".timer ~/.config/systemd/user/"$timer".service
+done
+systemctl --user daemon-reload
+
+# Optional: keep an archive only you can read; it contains the secrets listed
+# above. Name only the folders that still exist.
+(umask 077; tar czf ~/openclaw-archive.tgz data/openclaw config/openclaw)
+
+rm -rf data/openclaw config/openclaw
+
+# ODS pulled the image by digest, so it may have no tag.
+docker image rm ghcr.io/openclaw/openclaw@sha256:7b1294f6aa2eb05b2070cc614743f79212313fc294e5de221ada8a2969ea52f6
+# Older releases pulled other versions; list what is left:
+docker image ls --digests ghcr.io/openclaw/openclaw
+```
+
+On Linux these folders can belong to UID 1000, the container's user; use
+`sudo` for `tar` and `rm` if they report permission errors.
+
+On Windows, from `%USERPROFILE%\ods`, naming only the folders that still exist:
+
+```powershell
+docker rm -f ods-openclaw
+Remove-Item -Recurse -Force data\openclaw, config\openclaw
+docker image rm ghcr.io/openclaw/openclaw@sha256:7b1294f6aa2eb05b2070cc614743f79212313fc294e5de221ada8a2969ea52f6
+docker image ls --digests ghcr.io/openclaw/openclaw
+```
+
+You can also delete the retired `OPENCLAW_*`, `HOST_LAN_IP` and
+`BOOTSTRAP_MODEL` lines from `.env`, or clear them in the Dashboard settings;
+ODS ignores them either way.

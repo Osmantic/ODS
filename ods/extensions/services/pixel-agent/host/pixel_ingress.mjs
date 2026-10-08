@@ -41,6 +41,7 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
+const EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS = "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.";
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 const CONNECT_TIMEOUT_MS = 5000;
@@ -959,7 +960,8 @@ async function awaitSubagentDelivery(completion, user, token, gatewayPort, signa
 
 function missingVisibleAssistantText(content) {
   return typeof content === 'string' && (!content.trim() ||
-    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE].includes(content.trim()));
+    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE,
+      EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS].includes(content.trim()));
 }
 
 // Standalone ingress is installed beside host helpers, without plugin code.
@@ -1219,7 +1221,8 @@ async function unfinishedExtensionDecision(completion, user, token, gatewayPort,
   if (!OPENAI_RUN_ID.test(completion?.id ?? '') || typeof user !== 'string' ||
       completion?.choices?.length !== 1 || completion.choices[0]?.finish_reason !== 'stop' ||
       typeof completion.choices[0]?.message?.content !== 'string' ||
-      completion.choices[0].message.content === EMPTY_ASSISTANT_RESPONSE) return null;
+      [EMPTY_ASSISTANT_RESPONSE, EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS]
+        .includes(completion.choices[0].message.content)) return null;
   try {
     const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/unfinished-extension-decision`, {
       method:'POST', headers:upstreamHeaders(false, token),
@@ -1990,7 +1993,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     // does not turn an anonymous history snapshot into a stable owner session.
     const outgoing = buildOutgoing(parsed, user ?? (!parsed.history_snapshot ? `ods-${randomBytes(32).toString('hex')}` : undefined));
     if(historyLedger && user) release=historyLedger.lock(user);
-    if(historyLedger?.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
+    if(historyLedger && user && historyLedger.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
     if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);

@@ -248,7 +248,7 @@ _prune_rollback_snapshots() {
 #   Creates data/backups/pre-update-<timestamp>/ and copies:
 #     • .env and .env.* variants
 #     • docker-compose*.yml overlays (tracks active stack)
-#     • config/{litellm,n8n,openclaw,searxng}/ (per-extension config)
+#     • config/{litellm,n8n,searxng}/ (per-extension config)
 #     • .version
 #   Validates timestamp format, writes snapshot.json, verifies integrity,
 #   then prints the snapshot directory path on stdout.
@@ -292,8 +292,10 @@ snapshot_pre_update() {
         files_saved=$(( files_saved + 1 ))
     fi
 
-    # Per-extension config directories
-    for ext_dir in litellm n8n openclaw searxng; do
+    # Per-extension config directories. config/openclaw is no longer captured:
+    # the legacy OpenClaw extension was removed and its folder is left on disk
+    # untouched, so it does not need a rollback copy.
+    for ext_dir in litellm n8n searxng; do
         local src="${INSTALL_DIR}/config/${ext_dir}"
         if [[ -d "$src" ]]; then
             cp -r "$src" "${snap_dir}/config-${ext_dir}"
@@ -371,6 +373,9 @@ _restore_snapshot() (
         sources+=("$f")
         destinations+=("${INSTALL_DIR}/${base}")
     done
+    # config-openclaw exists only in snapshots taken before the legacy OpenClaw
+    # extension was removed. Restoring it keeps a rollback across the removal
+    # faithful to what that snapshot captured; newer snapshots never contain it.
     for ext_dir in litellm n8n openclaw searxng; do
         f="${snap_dir}/config-${ext_dir}"
         [[ -d "$f" ]] || continue
@@ -529,6 +534,15 @@ _update_rollback() {
     fi
 
     local -a rollback_compose_args=()
+    if [[ -n "$compose_flags_arg" ]] && ! compose_flags_files_exist "$compose_flags_arg"; then
+        # Rollback restores configuration, not git, so the update may have
+        # deleted Compose files these flags name. Restart the stack the
+        # current tree resolves to instead.
+        log_warn "Compose flags name files that no longer exist; resolving the stack again."
+        if ! compose_flags_arg="$(resolve_compose_flags)"; then
+            compose_flags_arg=""
+        fi
+    fi
     if ! compose_flags_parse "$compose_flags_arg"; then
         log_error "Cannot restart rollback with malformed compose flags."
         return 1
@@ -570,13 +584,15 @@ cmd_check() {
     
     # Fetch latest release from GitHub
     local api_url="https://api.github.com/repos/${GITHUB_REPO}/releases/latest"
-    local response
-    local curl_args=(-sf --max-time 15)
+    local response fetched=true
+    # A header file keeps the token out of argv, which any local user can read.
     if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-        curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+        response=$(curl -sf --max-time 15 -H @<(printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN") \
+            "${api_url}" 2>/dev/null) || fetched=false
+    else
+        response=$(curl -sf --max-time 15 "${api_url}" 2>/dev/null) || fetched=false
     fi
-
-    if ! response=$(curl "${curl_args[@]}" "${api_url}" 2>/dev/null); then
+    if [[ "$fetched" != true ]]; then
         log_error "Failed to check for updates. Check network or GITHUB_TOKEN."
         return 1
     fi
@@ -727,8 +743,8 @@ cmd_backup() {
     # Per-extension config directories — the same set snapshot_pre_update
     # captures. `ods update` delegates its pre-update snapshot to this
     # command; without config-* entries a rollback cannot restore litellm,
-    # n8n, openclaw, or searxng configuration.
-    for ext_dir in litellm n8n openclaw searxng; do
+    # n8n, or searxng configuration.
+    for ext_dir in litellm n8n searxng; do
         local src="${INSTALL_DIR}/config/${ext_dir}"
         if [[ -d "$src" ]]; then
             cp -r "$src" "${backup_path}/config-${ext_dir}"
@@ -869,6 +885,25 @@ cmd_update() {
                 fi
             fi
         done
+    fi
+
+    # The pull and the migrations can delete Compose files that the pre-pull
+    # flags name, for example a removed bundled service. Resolve the stack
+    # again so the restart uses the updated tree, and so `down
+    # --remove-orphans` removes containers whose service is gone.
+    if ! compose_flags_files_exist "$compose_flags"; then
+        log_warn "The update removed Compose files the running stack used; resolving the stack again."
+        local updated_compose_flags=""
+        if ! updated_compose_flags="$(resolve_compose_flags)"; then
+            updated_compose_flags=""
+        fi
+        if ! compose_flags_parse "$updated_compose_flags"; then
+            _update_rollback "Cannot restart with malformed compose flags after the update." \
+                "$snap_dir" "$compose_flags"
+            return 1
+        fi
+        compose_flags="$updated_compose_flags"
+        compose_args=("${COMPOSE_PARSED_ARGS[@]}")
     fi
 
     # ── Step 4: restart services ──────────────────────────────────────────────
@@ -1248,7 +1283,7 @@ Commands:
 
 Rollback snapshots:
   Stored in:  <install_dir>/data/backups/pre-update-<timestamp>/
-  Contents:   .env, docker-compose overlays, config/{litellm,n8n,openclaw,searxng}/
+  Contents:   .env, docker-compose overlays, config/{litellm,n8n,searxng}/
   Retained:   MAX_BACKUPS most recent snapshots (oldest pruned automatically)
 
 Environment Variables:

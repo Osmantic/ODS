@@ -17,8 +17,9 @@ see [MACOS-QUICKSTART.md](docs/MACOS-QUICKSTART.md),
 
 - Docker with Compose v2+
 - `curl` and `git`
-- NVIDIA Container Toolkit for NVIDIA GPUs, ROCm devices for AMD Strix Halo, or
-  Intel compute runtime for Arc
+- NVIDIA Container Toolkit for NVIDIA GPUs, the AMD GPU render node
+  (`/dev/dri`; also `/dev/kfd` for the optional ROCm image) for AMD, or Intel
+  compute runtime for Arc
 - 40 GB+ free disk space for models and container images
 
 **macOS:**
@@ -46,31 +47,38 @@ curl -fsSL https://install.osmantic.com/ods.sh | bash
 
 The hosted endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
-[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
-stable release or audited commit manually.
+[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install an
+audited commit manually; no release has qualified for the verified channel yet.
 
 Do not run this command from Windows PowerShell; use the Windows installer below.
 
 ### Manual Clone
 
 ```bash
-git clone https://github.com/Osmantic/ODS.git
-cd ODS
+git clone https://github.com/Osmantic/ODS.git ~/src/ODS
+cd ~/src/ODS
 ./install.sh
 ```
+
+On macOS, keep the clone out of `~/ODS`: the disk is case-insensitive, so that
+is the same folder as the default install directory `~/ods`.
 
 ### Windows
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 The Windows command guides Ubuntu/WSL2 preparation and requires Pixel, with no Hermes fallback. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done. See [Windows Quickstart](docs/WINDOWS-QUICKSTART.md).
@@ -106,7 +114,14 @@ cd $installDir
 .\ods.ps1 uninstall --force
 ```
 
-Use `--keep-data` or `--keep-models` to preserve local state. If the Windows
+Use `--keep-data` or `--keep-models` to preserve local state. `--keep-data`
+keeps only the `data` folder inside the install directory. It still deletes
+`.env` (your settings and generated secrets) and `config/`, and on Linux and
+macOS the backups in `~/.ods`. If you plan to reinstall over the kept data,
+copy those somewhere safe first and put `.env` back before running the
+installer; without it, the installer generates new secrets.
+
+If the Windows
 runtime folder is partial and `.\ods.ps1` is missing, run
 `.\ods\installers\windows\ods.ps1 uninstall --force` from a source checkout.
 

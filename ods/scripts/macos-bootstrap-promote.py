@@ -67,8 +67,12 @@ def _read_private_env(path):
         body = stream.read(MAX_ENV_BYTES + 1)
         if len(body) > MAX_ENV_BYTES:
             raise ValueError('environment-too-large')
+    return _parse_env(body.decode('utf-8'))
+
+
+def _parse_env(text):
     env = {}
-    for line in body.decode('utf-8', 'replace').splitlines():
+    for line in text.splitlines():
         match = ASSIGNMENT.match(line)
         if match:
             env[match.group(1)] = values.parse_env_value(match.group(2))
@@ -179,6 +183,8 @@ def _preflight(base, auth, transport):
     headers = {'Authorization': f'Bearer {auth}', 'Accept': 'application/json'}
     recovery = transport(f'{base}/v1/model/recovery', method='GET',
                         headers=headers, body=None, timeout=PREFLIGHT_TIMEOUT)
+    if isinstance(recovery, dict) and recovery.get('pending') is True:
+        raise PreflightFailure('model-switch-recovery-required')
     if not isinstance(recovery, dict) or recovery.get('pending') is not False \
             or recovery.get('error'):
         raise PreflightFailure('recovery-not-clear')
@@ -241,6 +247,8 @@ def _verify_activation(response, model_id, full_gguf, full_llm, context):
 
 def _verify_persisted(env_path, full_gguf, full_llm, context):
     env = _read_private_env(env_path)
+    if env.get('ODS_MODE', 'local').strip().lower() not in {'local', 'hybrid'} or env.get('GPU_BACKEND') != 'apple':
+        raise AmbiguousActivation('persisted-runtime-mode-mismatch')
     if env.get('GGUF_FILE') != full_gguf:
         raise AmbiguousActivation('persisted-gguf-mismatch')
     if env.get('LLM_MODEL') != full_llm:
@@ -269,6 +277,8 @@ def _verify_runtime(base, auth, full_gguf, context, install_dir, transport):
     runtime = status.get('activeRuntime')
     if not isinstance(runtime, dict):
         raise AmbiguousActivation('active-runtime-missing')
+    if runtime.get('source') != 'local-switchboard':
+        raise AmbiguousActivation('active-runtime-source-mismatch')
     canonical = str(install_dir / 'data' / 'models' / full_gguf)
     if runtime.get('model') not in (full_gguf, canonical):
         raise AmbiguousActivation('active-runtime-model-mismatch')
@@ -368,6 +378,10 @@ def main(argv=None):
         return 1
     except PreflightFailure as exc:
         print(f'preflight_failure: {exc}', file=sys.stderr)
+        if str(exc) == 'model-switch-recovery-required':
+            print('An existing model switch needs recovery. This upgrade did not '
+                  'start another activation. Preserve data/pixel-model-transaction.json; '
+                  'see docs/MACOS-MODEL-PROMOTION.md before retrying.', file=sys.stderr)
         return 1
     except (ValueError, OSError):
         print('validation_failure: invalid-installation-state', file=sys.stderr)

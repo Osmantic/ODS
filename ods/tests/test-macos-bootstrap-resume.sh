@@ -40,7 +40,7 @@ NATIVE
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
 touch "$install_dir/data/models/Qwen3.5-2B-Q4_K_M.gguf"
-touch "$install_dir/bin/llama-server"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$install_dir/bin/llama-server"
 chmod +x "$install_dir/bin/llama-server"
 
 cat > "$install_dir/.env" <<'ENV'

@@ -26,11 +26,11 @@ boundary and third-party notices.
 
 > | Platform | Status |
 > |----------|--------|
-> | **Linux** (NVIDIA + AMD + Intel Arc) | **Supported** — install and run today |
+> | **Linux** (NVIDIA + AMD Strix Halo) | **Supported** — install and run today; Intel Arc is experimental |
 > | **macOS** (Apple Silicon) | **Supported** — install and run today |
 > | **Windows** (NVIDIA + AMD) | **Supported** — install and run today |
 >
-> All three platforms are fully supported with one-command installers. See [`docs/SUPPORT-MATRIX.md`](docs/SUPPORT-MATRIX.md) for detailed tier status.
+> All three platforms have one-command installers. See [`docs/SUPPORT-MATRIX.md`](docs/SUPPORT-MATRIX.md) for each platform's support tier.
 
 See [`docs/SUPPORT-MATRIX.md`](docs/SUPPORT-MATRIX.md) for current support tiers and platform status.
 Launch-claim guardrails: [`docs/PLATFORM-TRUTH-TABLE.md`](docs/PLATFORM-TRUTH-TABLE.md)
@@ -58,8 +58,8 @@ curl -fsSL https://install.osmantic.com/ods.sh | bash
 
 The hosted endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
-[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install a
-stable release or audited commit manually.
+[Installer Trust](docs/INSTALLER_TRUST.md) to inspect the script or install an
+audited commit manually; no release has qualified for the verified channel yet.
 
 Do not run the `curl ... | bash` installer from Windows PowerShell. Use the
 Windows PowerShell installer below.
@@ -67,40 +67,38 @@ Windows PowerShell installer below.
 Or manually:
 
 ```bash
-git clone https://github.com/Osmantic/ODS.git
-cd ODS
+git clone https://github.com/Osmantic/ODS.git ~/src/ODS
+cd ~/src/ODS
 ./install.sh
 ```
+
+On macOS, keep the clone out of `~/ODS`: the disk is case-insensitive, so that
+is the same folder as the default install directory `~/ods`.
 
 On Linux, the Core Only and API-only gateway choices skip the optional Node.js,
 Claude Code, and Codex CLI install. Use `./install.sh --with-devtools` to add
 those host tools; `--no-devtools` skips future installs without removing any
 existing binaries. The Custom menu offers the same separate choice.
 
-The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open **http://localhost:3000** and start chatting.
+The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open the address it prints when it finishes: **http://localhost:3001** for the ODS Dashboard and Portal, or **http://localhost:3000** for Open WebUI on hosts that use it.
 
-On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.
+On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and the Windows AMD `llama-server.exe` use **http://localhost:8080** unless overridden; the Windows server requires its API key.
 
-On Linux AMD hosts already running Lemonade SDK, install ODS around it with
-`./install.sh --use-existing-lemonade` so ODS manages the app stack while
-Lemonade keeps owning inference and model storage. The installer auto-detects
-common Lemonade ports and the first served model, then verifies a real completion
-through LiteLLM before declaring success. See
-[docs/LEMONADE-SDK-COMPAT.md](docs/LEMONADE-SDK-COMPAT.md). Existing Lemonade
-mode only reuses Lemonade for LLM inference; Full Stack still enables
-ODS-managed Whisper, Kokoro, and ComfyUI unless you pass `--no-voice` and/or
-`--no-comfyui` or choose alternate ports where supported.
+To use a model server you already run, such as Ollama, LM Studio or Lemonade
+Server, install with `--external-llm-url` and the related options; see
+[Can ODS reuse a model already running in Ollama or LM Studio?](docs/FAQ.md#can-ods-reuse-a-model-already-running-in-ollama-or-lm-studio).
+Installs made with the retired `--use-existing-lemonade` option move to that
+route when the installer runs again; see
+[AMD GPUs now run on llama.cpp](docs/MIGRATION-LEMONADE-TO-LLAMACPP.md).
 
 ### Instant Start (Bootstrap Mode)
 
-By default, ODS uses **bootstrap mode** for instant gratification:
+By default, ODS uses **bootstrap mode** so you can start before the full model arrives:
 
-1. Starts immediately with a tiny 1.5B model (downloads in <1 minute)
-2. You can start chatting within **2 minutes** of running the installer
-3. The full model downloads in the background
-4. Use the Dashboard **Models** page to download and load larger catalog models
-
-No more staring at download bars. Start playing immediately.
+1. It starts Qwen3.5 2B (about 1.3 GB) as soon as the core services are up
+2. You can chat while the full model for your hardware downloads in the background
+3. Once that download is verified, ODS restarts the model server on the full model
+4. Use the Dashboard **Models** page to download and load other catalog models
 
 Hermes-enabled installs keep this fast-start path: the bootstrap model runs at a
 64K context floor so the agent can start cleanly, then the background full-model
@@ -127,21 +125,25 @@ llama-server runs natively with Metal GPU acceleration; all other services run i
 > **Prerequisite:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend and make sure it is running before you start.
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with
 Hermes disabled. Start in normal PowerShell; feature preparation may request
 administrator approval and a restart. The runtime lives at `~/ods` inside Ubuntu;
-manage it there with `./ods status`. Docker Desktop must expose Docker/Compose
+manage it there with `ods status` (or `./ods-cli status`). Docker Desktop must expose Docker/Compose
 to that distribution. Existing native Windows installations are not migrated.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
@@ -154,8 +156,9 @@ data, configuration, and runtime files are replaced. Without `--keep-models`,
 `--force` keeps its normal full cleanup behavior. The option requires an
 identified existing installation and is consumed by the bootstrap, not `install.sh`.
 
-Preservation temporarily uses `~/.ods-models-backup`; an existing backup or a
-symlink conflict blocks replacement. Resolve that backup manually before retrying.
+Preservation temporarily uses a `.models-backup` directory next to the
+installation (for example `~/ods.models-backup`); an existing backup, a legacy
+`~/.ods-models-backup`, or a symlink conflict blocks replacement. Resolve that backup manually before retrying.
 If moving the models fails, remaining files stay in the original model directory
 and/or the backup for recovery. Restored models follow the ordinary installer
 validation and download path; retention does not itself verify their contents.
@@ -177,7 +180,24 @@ cd $installDir
 .\ods.ps1 uninstall --force
 ```
 
-Use `--keep-data` or `--keep-models` if you want to preserve local state. If a
+Use `--keep-data` or `--keep-models` if you want to preserve local state.
+On Linux and macOS, `--keep-data` keeps the `data` folder, the backups in
+`.backups/`, the `presets/` folder, and the update snapshots in `~/.ods`.
+It still deletes `.env` (your settings and generated secrets) and `config/`.
+If you plan to reinstall over the kept data, copy those somewhere safe first
+and put `.env` back before running the installer; without it, the installer
+generates new secrets.
+
+On Linux and macOS, `--keep-models` moves models to `<install>.models-backup`
+(for example `~/ods.models-backup`). A later install does not automatically
+restore a backup left by a standalone uninstall. After reinstalling, recover
+needed models into `data/models` without overwriting existing files. Verify
+the recovered models before deleting the backup, or move the backup aside;
+the next `--keep-models` uninstall stops while it exists.
+This is separate from `get-ods.sh --force --keep-models`, which restores the
+backup it creates during that reinstall and refuses a pre-existing backup.
+
+If a
 Windows runtime is partial and `.\ods.ps1` is missing, run the cleanup from a
 source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 
@@ -195,8 +215,7 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
 | **Portal** | Core conversational assistant in Dashboard; default chat on fresh qualified Linux installs | Private Unix socket; no host TCP port | Core feature on qualified hosts |
-| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
-| **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
+| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
 | **Perplexica** | Deep research engine | 3004 | Optional |
@@ -233,7 +252,7 @@ The examples below are current catalog-selector outputs for common hardware enve
 
 Unified-memory hosts are routed away from qwen3-coder-next when that model would otherwise be selected, because current repo policy documents correctness issues on those backends. Bootstrap mode uses `qwen3.5-2b` for instant startup; the full model downloads in the background via GGUF from HuggingFace.
 
-**Inference backend:** selected by the platform installer and support matrix. Linux AMD paths use ROCm-capable containers; Windows Strix Halo uses the Windows-specific accelerated path.
+**Inference backend:** llama.cpp's `llama-server`, as on every platform. Linux AMD installs run its Vulkan container image by default (ROCm is optional); Windows AMD installs run `llama-server.exe` (Vulkan) on Windows.
 
 ### NVIDIA (Discrete GPU)
 
@@ -347,8 +366,8 @@ Full guide: [docs/EXTENSIONS.md](docs/EXTENSIONS.md)
 
 ### Installer Architecture
 
-The installer is modular — 19 library modules, a shared service registry, and
-13 ordered phases. The architecture doc also maps the generated config writers
+The installer is modular — 41 library modules, a shared service registry, and
+14 ordered phase files. The architecture doc also maps the generated config writers
 that have to stay in sync across Linux, macOS, Windows, bootstrap upgrades, and
 host-agent model activation.
 Want to add a hardware tier, swap the theme, or skip a phase? Start with the
@@ -358,7 +377,7 @@ before shipping.
 ```
 installers/lib/       # Pure function libraries (colors, GPU detection, tier mapping)
 installers/phases/    # Sequential install steps (01-preflight through 13-summary)
-install-core.sh       # Thin orchestrator (~150 lines)
+install-core.sh       # Orchestrator that sources the libraries and runs the phases
 ```
 
 Every file has a standardized header: Purpose, Expects, Provides, Modder notes.
@@ -456,23 +475,25 @@ ods stop                       # Stop everything
 ods start                      # Start everything
 
 # Management scripts
-./scripts/session-cleanup.sh             # Clean up bloated agent sessions
 ./scripts/llm-cold-storage.sh --status   # Check model hot/cold storage
 ods mode                               # Show current mode
 ```
 
 ## Comparison
 
-| Feature | ODS | Ollama + WebUI | LocalAI |
-|---------|:---:|:---:|:---:|
-| Full-stack one-command install | **LLM + agent + workflows + RAG** | LLM + chat only | LLM only |
-| Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
-| AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
-| Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Portal on qualified hosts; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
-| Workflow automation | **n8n (400+ integrations)** | No | No |
-| LLM usage monitoring | **Open WebUI built-in** | No | No |
-| Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |
+ODS builds on tools you may already use rather than replacing them. It installs them, wires them
+together, and gives you one place to run them.
+
+| If you use… | It gives you | ODS adds |
+|---|---|---|
+| **Ollama, llama.cpp or LM Studio** | Local model serving | Hardware-aware model choice, the surrounding services, and a dashboard to manage them |
+| **Open WebUI** | A chat UI with RAG, voice and image-generation integrations | Installs and configures it next to local inference, speech, search and image services, and manages sign-in and network exposure |
+| **LocalAI** | An OpenAI-compatible API with text, audio and image backends | A dashboard, the Portal agent, workflows, and a catalog of add-on apps around local inference |
+| **n8n's self-hosted AI starter kit** | Workflow automation with a local model | Workflows as one part of a managed local AI server |
+
+ODS's own focus is the layer around those tools: detecting your hardware (NVIDIA, AMD Strix Halo,
+Apple Silicon, with CPU and cloud fallbacks; Intel Arc by manual `--tier`), choosing and verifying
+models, lifecycle commands (install, update, backup, uninstall), and an extension catalog.
 
 ---
 
@@ -488,7 +509,7 @@ ods mode                               # Show current mode
 
 **Open WebUI shows "Connection error"**
 - llama-server is still loading. On Linux Docker installs, wait for the host health check to pass: `curl localhost:11434/health`
-- On macOS native Metal and Windows native/Lemonade paths, use `curl localhost:8080/health`
+- On macOS native Metal and with the Windows AMD `llama-server.exe`, use `curl localhost:8080/health`
 - From another container on the ODS network, use `http://llama-server:8080/health`
 
 **Port already in use**
@@ -506,9 +527,9 @@ ods mode                               # Show current mode
 
 **AMD Strix Halo: llama-server won't start**
 - Check GGUF model exists: `ls -lh data/models/*.gguf`
-- Watch logs: `docker compose -f docker-compose.base.yml -f docker-compose.amd.yml logs -f llama-server`
-- Verify GPU devices: `ls /dev/kfd /dev/dri/renderD128`
-- Ensure ROCm env: `HSA_OVERRIDE_GFX_VERSION=11.5.1` must be set
+- Watch logs: `ods logs llama-server`
+- Verify the GPU render node: `ls /dev/dri/renderD128`. The ROCm image (`AMD_INFERENCE_BACKEND=rocm`) also needs `/dev/kfd`
+- Leave `HSA_OVERRIDE_GFX_VERSION` unset unless the installer set it: the default Vulkan image ignores it, and the ROCm image is built for Strix Halo (gfx1151)
 
 **AMD: "missing tensor" errors**
 - Use upstream llama.cpp GGUF files (from `unsloth/` on HuggingFace)

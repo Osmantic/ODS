@@ -1,21 +1,21 @@
 {
   "id": "amd",
-  "llm_engine": "lemonade",
+  "llm_engine": "llama-server",
   "service_name": "llama-server",
   "public_api_port": 8080,
-  "public_health_url": "http://127.0.0.1:8080/api/v1/health",
-  "provider_name": "local-lemonade",
-  "provider_url": "http://llama-server:8080/api/v1",
+  "public_health_url": "http://127.0.0.1:8080/health",
+  "provider_name": "local-llama",
+  "provider_url": "http://llama-server:8080/v1",
   "runtime": {
-    "lemonade": {
-      "container_image": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a",
-      "windows_version": "10.0.0",
-      "windows_msi_file": "lemonade-server-minimal.msi",
-      "windows_executable": "lemonade-server.exe",
-      "api_port": 8080,
-      "health_path": "/api/v1/health",
-      "linux_backend": "rocm",
-      "windows_backend": "vulkan"
+    "llama_server": {
+      "linux_image": "ghcr.io/ggml-org/llama.cpp:server-vulkan-b9014@sha256:15c30b560d61ead1e08bee837503203a776fd968736118e313240c32157fd973",
+      "linux_rocm_image": "ghcr.io/ggml-org/llama.cpp:server-rocm-b9014@sha256:68403f82fe496302bb1c681bab2ee569a04cc13da8fcf14456376b485562236d",
+      "windows": {
+        "release_tag": "b9014",
+        "asset": "llama-b9014-bin-win-vulkan-x64.zip",
+        "sha256": "6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f",
+        "size": 33541404
+      }
     }
   }
 }

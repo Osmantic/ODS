@@ -151,24 +151,26 @@ class TestStateModule:
         [
             ({"GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf", "LLM_MODEL": "qwen3.5-9b"},
              {"catalogId": "qwen3.5-9b", "runtimeModelId": "Qwen3.5-9B-Q4_K_M.gguf", "backendKind": "llama-server"}),
-            ({"LEMONADE_MODEL": "extra.Qwen3.5-9B-Q4_K_M.gguf", "LLM_BACKEND": "lemonade"},
-             {"catalogId": "Qwen3.5-9B-Q4_K_M", "runtimeModelId": "extra.Qwen3.5-9B-Q4_K_M.gguf", "backendKind": "lemonade"}),
+            # A pre-round-F Lemonade .env: the GGUF filename is the runtime
+            # identity (--alias), never the retired LEMONADE_MODEL id.
+            ({"LEMONADE_MODEL": "extra.Qwen3.5-9B-Q4_K_M.gguf", "LLM_BACKEND": "lemonade",
+              "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf"},
+             {"catalogId": "Qwen3.5-9B-Q4_K_M", "runtimeModelId": "Qwen3.5-9B-Q4_K_M.gguf", "backendKind": "llama-server"}),
             ({"GGUF_FILE": "M.gguf", "AMD_INFERENCE_RUNTIME": "lemonade"},
-             {"catalogId": "M", "runtimeModelId": "M.gguf", "backendKind": "lemonade"}),
+             {"catalogId": "M", "runtimeModelId": "M.gguf", "backendKind": "llama-server"}),
             ({"LLM_MODEL": "native-model"},
              {"catalogId": "native-model", "runtimeModelId": "native-model", "backendKind": "llama-server"}),
+            # A leftover LEMONADE_MODEL line never relabels the route.
             ({
-                "GPU_BACKEND": "cpu",
-                "LLM_BACKEND": "lemonade",
-                "AMD_INFERENCE_RUNTIME_MODE": "external-lemonade",
-                "LEMONADE_EXTERNAL": "true",
+                "GPU_BACKEND": "amd",
+                "LLM_BACKEND": "llama-server",
                 "LEMONADE_MODEL": "Qwen3.6-35B-A3B-GGUF",
                 "LLM_MODEL": "qwen3.5-9b",
                 "GGUF_FILE": "Qwen3.5-9B-Q4_K_M.gguf",
             }, {
-                "catalogId": "Qwen3.6-35B-A3B-GGUF",
-                "runtimeModelId": "Qwen3.6-35B-A3B-GGUF",
-                "backendKind": "lemonade",
+                "catalogId": "qwen3.5-9b",
+                "runtimeModelId": "Qwen3.5-9B-Q4_K_M.gguf",
+                "backendKind": "llama-server",
             }),
             ({
                 "LLM_BACKEND": "lemonade",
@@ -177,9 +179,9 @@ class TestStateModule:
                 "LLM_MODEL": "stale-model",
                 "GGUF_FILE": "stale.gguf",
             }, {
-                "catalogId": "portable-model",
-                "runtimeModelId": "portable-model",
-                "backendKind": "lemonade",
+                "catalogId": "stale-model",
+                "runtimeModelId": "stale.gguf",
+                "backendKind": "llama-server",
             }),
         ],
     )
@@ -240,7 +242,7 @@ class TestStateModule:
         assert doc["active"]["contextLength"] == 65536
         assert doc["active"]["capabilities"]["agentViable"] is True
 
-    def test_initialize_uses_lemonade_endpoint_id(self, tmp_path):
+    def test_initialize_for_a_legacy_lemonade_env_uses_the_llama_server_endpoint(self, tmp_path):
         path = tmp_path / "model-state.json"
         doc = sb.initialize_if_missing(
             path,
@@ -251,7 +253,30 @@ class TestStateModule:
                 "GGUF_FILE": "Model.gguf",
             },
         )
-        assert doc["active"]["backend"]["endpointId"] == "lemonade-default"
+        assert doc["active"]["backend"] == {
+            "kind": "llama-server", "endpointId": "llama-server-default", "nativeRoute": None,
+        }
+        assert doc["active"]["runtimeModelId"] == "Model.gguf"
+
+    def test_legacy_lemonade_route_is_readable_but_never_written(self, tmp_path):
+        path = tmp_path / "model-state.json"
+        doc = _record(path, runtime="Model.gguf")
+        doc["active"]["backend"] = {
+            "kind": "lemonade", "endpointId": "lemonade-default", "nativeRoute": "extra.Model.gguf",
+        }
+        doc["active"]["runtimeModelId"] = "extra.Model.gguf"
+        doc["active"]["proof"]["identity"] = "extra.Model.gguf"
+        path.write_text(json.dumps(doc), encoding="utf-8")
+        legacy, errors = sb.read_state(path)
+        # Readable for one release so the host agent can migrate it.
+        assert errors == [] and legacy["active"]["backend"]["kind"] == "lemonade"
+        assert sb.is_legacy_route(legacy["active"]) is True
+        assert sb.is_legacy_route(_record(tmp_path / "current.json")["active"]) is False
+        before = path.read_text(encoding="utf-8")
+        for backend, endpoint in (("lemonade", "llama-server-default"), ("llama-server", "lemonade-default")):
+            with pytest.raises(sb.StateError, match="readable only"):
+                _record(path, runtime="Model.gguf", backend=backend, endpoint=endpoint)
+        assert path.read_text(encoding="utf-8") == before
 
     def test_initialize_cloud_only_writes_nothing(self, tmp_path):
         path = tmp_path / "model-state.json"
@@ -382,9 +407,8 @@ class TestObserveHook:
             lambda: (config_dir / "opencode.json", config_dir / "config.json"),
         )
         monkeypatch.setattr(tma._mod, "_chat_completion_ready", lambda *_a, **_k: True)
-        monkeypatch.setattr(
-            tma._mod, "_llama_runtime_context_length", lambda *_args: 65536
-        )
+        monkeypatch.setattr(tma._mod, "_runtime_health", lambda _env: "ok")
+        monkeypatch.setattr(tma._mod, "_llama_runtime_props", lambda _env: (65536, ""))
         monkeypatch.setattr(tma._mod, "_container_exists", lambda _c: False)
         monkeypatch.setattr(tma._mod, "_container_running", lambda _c: False)
         monkeypatch.setattr(
@@ -492,7 +516,7 @@ class TestObserveHook:
             "completion": True,
         }
 
-    def test_external_lemonade_initial_route_ignores_stale_local_identity(
+    def test_legacy_lemonade_env_initial_route_proves_the_gguf_alias(
         self, tmp_path, monkeypatch
     ):
         import test_model_activate as tma
@@ -502,15 +526,10 @@ class TestObserveHook:
         env_path.write_text(
             "\n".join([
                 "ODS_MODE=lemonade",
-                "GPU_BACKEND=cpu",
+                "GPU_BACKEND=amd",
                 "LLM_BACKEND=lemonade",
                 "AMD_INFERENCE_RUNTIME=lemonade",
-                "AMD_INFERENCE_RUNTIME_MODE=external-lemonade",
-                "AMD_INFERENCE_MANAGED=false",
-                "LEMONADE_EXTERNAL=true",
-                "LEMONADE_BASE_URL=http://172.19.224.1:8080",
-                "LEMONADE_API_BASE_PATH=/api/v1",
-                "LEMONADE_MODEL=Qwen3.6-35B-A3B-GGUF",
+                "LEMONADE_MODEL=extra.Qwen3.5-9B-Q4_K_M.gguf",
                 "LLM_MODEL=qwen3.5-9b",
                 "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf",
                 "CTX_SIZE=65536",
@@ -519,17 +538,15 @@ class TestObserveHook:
             encoding="utf-8",
         )
         state_path = install_dir / "data" / "model-state.json"
-        env = tma._mod.load_env(env_path)
-        reconstructed = sb.initialize_if_missing(state_path, env)
-        assert reconstructed["active"]["catalogId"] == "Qwen3.6-35B-A3B-GGUF"
-        assert reconstructed["active"]["backend"]["kind"] == "lemonade"
+        reconstructed = sb.initialize_if_missing(state_path, tma._mod.load_env(env_path))
+        assert reconstructed["active"]["backend"]["kind"] == "llama-server"
 
         readiness_calls = []
 
         def readiness(*_args, **kwargs):
             readiness_calls.append(kwargs)
             return {
-                "identity": "Qwen3.6-35B-A3B-GGUF",
+                "identity": "Qwen3.5-9B-Q4_K_M.gguf",
                 "contextLength": 65536,
                 "contextVerified": True,
                 "verifiedAt": "2026-09-04T00:00:00Z",
@@ -539,31 +556,28 @@ class TestObserveHook:
         monkeypatch.setattr(tma._mod, "_wait_for_model_readiness", readiness)
 
         assert tma._mod._publish_verified_initial_switchboard_route(
-            reason="external-test", attempts=1, initial_delay=0, interval=0
+            reason="legacy-env-test", attempts=1, initial_delay=0, interval=0
         ) is True
-        assert readiness_calls[0]["model_id"] == "Qwen3.6-35B-A3B-GGUF"
-        assert readiness_calls[0]["gguf_file"] == "Qwen3.6-35B-A3B-GGUF"
-        assert readiness_calls[0]["llm_model_name"] == "Qwen3.6-35B-A3B-GGUF"
-        assert readiness_calls[0]["lemonade_model_id"] == "Qwen3.6-35B-A3B-GGUF"
+        assert readiness_calls[0]["gguf_file"] == "Qwen3.5-9B-Q4_K_M.gguf"
+        assert "lemonade_model_id" not in readiness_calls[0]
 
         doc, errors = sb.read_state(state_path)
         assert errors == [] and doc is not None
-        assert doc["active"]["catalogId"] == "Qwen3.6-35B-A3B-GGUF"
-        assert doc["active"]["runtimeModelId"] == "Qwen3.6-35B-A3B-GGUF"
+        assert doc["active"]["runtimeModelId"] == "Qwen3.5-9B-Q4_K_M.gguf"
         assert doc["active"]["backend"] == {
-            "kind": "lemonade",
-            "endpointId": "lemonade-default",
-            "nativeRoute": "Qwen3.6-35B-A3B-GGUF",
+            "kind": "llama-server",
+            "endpointId": "llama-server-default",
+            "nativeRoute": None,
         }
 
     @pytest.mark.parametrize(
         "key,new_value",
         [
-            ("GPU_BACKEND", "amd"),
-            ("AMD_INFERENCE_MANAGED", "true"),
+            ("GPU_BACKEND", "nvidia"),
+            ("GGUF_FILE", "Other.gguf"),
         ],
     )
-    def test_external_initial_route_discards_proof_after_runtime_contract_changes(
+    def test_initial_route_discards_proof_after_runtime_contract_changes(
         self, tmp_path, monkeypatch, key, new_value
     ):
         import test_model_activate as tma
@@ -571,15 +585,11 @@ class TestObserveHook:
         install_dir = tma._write_model_activation_fixture(tmp_path)[0]
         env_path = install_dir / ".env"
         original_values = {
-            "ODS_MODE": "lemonade",
-            "GPU_BACKEND": "cpu",
-            "LLM_BACKEND": "lemonade",
-            "AMD_INFERENCE_RUNTIME": "lemonade",
-            "AMD_INFERENCE_RUNTIME_MODE": "external-lemonade",
-            "AMD_INFERENCE_MANAGED": "false",
-            "LEMONADE_EXTERNAL": "true",
-            "LEMONADE_BASE_URL": "http://172.19.224.1:8080",
-            "LEMONADE_MODEL": "portable-model",
+            "ODS_MODE": "local",
+            "GPU_BACKEND": "amd",
+            "LLM_BACKEND": "llama-server",
+            "AMD_INFERENCE_RUNTIME": "llama-server",
+            "GGUF_FILE": "portable-model.gguf",
             "CTX_SIZE": "65536",
         }
         original = "".join(f"{name}={value}\n" for name, value in original_values.items())
@@ -595,7 +605,7 @@ class TestObserveHook:
                 encoding="utf-8",
             )
             return {
-                "identity": "portable-model",
+                "identity": "portable-model.gguf",
                 "contextLength": 65536,
                 "contextVerified": True,
                 "verifiedAt": "2026-09-04T00:00:00Z",
@@ -662,7 +672,7 @@ class TestObserveHook:
             reason="test", attempts=1, initial_delay=0, interval=0
         ) is False
 
-    def test_cancelled_initial_route_readiness_never_warms_lemonade(
+    def test_cancelled_initial_route_readiness_never_probes_the_runtime(
         self, tmp_path, monkeypatch
     ):
         import test_model_activate as tma
@@ -688,7 +698,6 @@ class TestObserveHook:
             model_id="qwen3-4b-instruct-2507-q4",
             gguf_file="Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
             llm_model_name="Qwen3-4B-Instruct-2507-Q4_K_M",
-            lemonade_model_id="Qwen3-4B-Instruct-2507-Q4_K_M",
             attempts=60,
             initial_delay=0,
             interval=5,

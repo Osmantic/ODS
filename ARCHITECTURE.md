@@ -44,7 +44,6 @@ graph TB
 
     subgraph Agents["Agents & Automation"]
         HERMES["hermes<br/>:9120 via proxy<br/>Default Agent"]
-        CLAW["openclaw<br/>:7860<br/>Deprecated Agent"]
         APE["ape<br/>:7890<br/>Policy Engine"]
         N8N["n8n<br/>:5678<br/>Workflows"]
     end
@@ -95,8 +94,6 @@ graph TB
     DAPI --> SHIELD
 
     HERMES --> LLAMA
-    CLAW --> LLAMA
-    CLAW --> SEARX
 
     PERP --> LLAMA
     PERP --> SEARX
@@ -116,7 +113,7 @@ The LLM inference engine (`llama-server`) is the foundation. GPU overlays select
 | Backend | Image | Acceleration |
 |---------|-------|-------------|
 | NVIDIA | `llama.cpp:server-cuda-b9014` (digest-pinned) default, overrideable via `LLAMA_SERVER_IMAGE` | CUDA, all GPUs reserved |
-| AMD | Custom `ods-lemonade-server` | ROCm / Vulkan / NPU via Lemonade |
+| AMD | `llama.cpp:server-vulkan-b9014` (digest-pinned) default; `llama.cpp:server-rocm-b9014` with `AMD_INFERENCE_BACKEND=rocm`. On Windows, `llama-server.exe` (Vulkan) runs on the host | Vulkan; ROCm on request and on Instinct cards |
 | Apple | Native host `llama-server` via macOS installer; Docker overlay is CPU fallback | Metal on host; containers reach `host.docker.internal:8080` |
 | Intel Arc | SYCL backend | Experimental |
 | CPU | `llama.cpp:server-b9014` (digest-pinned) | Pure CPU fallback |
@@ -137,7 +134,6 @@ The LLM inference engine (`llama-server`) is the foundation. GPU overlays select
 ### 4. Agents & Automation
 
 - **hermes** (internal 9119, auth proxy on 9120) — default agent, fronted by `hermes-proxy` and magic-link auth
-- **openclaw** (port 7860) — deprecated optional agent framework retained for compatibility
 - **ape** (port 7890) — Agent Policy Engine enforcing allow/deny rules on tool access
 - **n8n** (port 5678) — Visual workflow automation with a pre-built catalog
 
@@ -222,7 +218,7 @@ graph LR
 | 13 Summary | Generate URLs, desktop shortcuts, summary JSON |
 
 Generated config is written in more than one place. When changing `.env`,
-OpenCode, Perplexica, Hermes, or LiteLLM/Lemonade behavior, review
+OpenCode, Perplexica, Hermes, LiteLLM or model-router behavior, review
 `docs/INSTALLER-ARCHITECTURE.md#generated-config-writers` before merging.
 
 ## Docker Compose Layering
@@ -265,8 +261,8 @@ Browser → `open-webui:3000` → `llama-server:8080/v1/chat/completions` → GP
 
 Browser → `hermes-proxy:9120` → magic-link auth gate → `ods-hermes:9119`
 inside the Docker network → Hermes tools/search/reasoning → local LLM via an
-OpenAI-compatible endpoint. OpenClaw still exists as a deprecated optional
-agent on `:7860`; APE provides policy/audit controls for agent tool surfaces.
+OpenAI-compatible endpoint. APE provides policy/audit controls for agent tool
+surfaces.
 
 ### 5. Dashboard Feature Discovery Flow
 
@@ -297,12 +293,12 @@ All services bind to `127.0.0.1` (localhost only). Canonical port assignments li
 | 3005 | token-spy | 3006 | langfuse |
 | 4000 | litellm | 5678 | n8n |
 | 6333 | qdrant | 6334 | qdrant gRPC |
-| 7860 | openclaw | 7890 | ape |
-| 8080 | llama-server | 8085 | privacy-shield |
-| 8090 | embeddings | 8188 | comfyui |
-| 8585 | brave-search | 8880 | tts |
-| 8888 | searxng | 9000 | whisper |
-| 9120 | hermes-proxy | host network | tailscale |
+| 7890 | ape | 8080 | llama-server |
+| 8085 | privacy-shield | 8090 | embeddings |
+| 8188 | comfyui | 8585 | brave-search |
+| 8880 | tts | 8888 | searxng |
+| 9000 | whisper | 9120 | hermes-proxy |
+| host network | tailscale | | |
 
 ## Extension System
 

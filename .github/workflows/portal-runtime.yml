@@ -186,3 +186,19 @@ jobs:
         run: python -m pytest -q ods/extensions/services/pixel-agent/tests
       - name: Edge contracts
         run: python -m pytest -q ods/extensions/services/pixel-edge/tests
+  retained-edge-restart:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - name: Install focused test dependencies
+        run: python -m pip install pytest pyyaml
+      - name: Verify source custody and model hold regressions
+        run: python -m pytest -q ods/extensions/services/pixel-agent/tests/test_source_edge_restart.py ods/tests/test_pixel_source_upgrade.py ods/tests/test_pixel_model_transition.py
+      - name: Qualify retained Edge restart with the real image and private volume
+        # This runner is isolated. The test refuses any pre-existing Edge,
+        # starts no daemon, and removes only its own generated Compose project.
+        run: sudo env ODS_TEST_SOURCE_EDGE_DOCKER=1 "$(command -v python)" -m pytest -q -s ods/extensions/services/pixel-agent/tests/test_source_edge_restart_docker.py

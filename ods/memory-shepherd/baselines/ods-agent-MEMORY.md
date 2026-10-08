@@ -27,7 +27,6 @@
 | LiteLLM | 4000 | monitoring | Proxy/router |
 | n8n | 5678 | workflows | Workflow automation |
 | Qdrant | 6333 | rag | Vector database for RAG |
-| OpenClaw | 7860 | openclaw | That's me! Agent interface |
 | Embeddings | 8090 | rag | Text embeddings service |
 | Kokoro TTS | 8880 | voice | Text-to-speech |
 | Whisper STT | 9000 | voice | Speech-to-text |
@@ -49,5 +48,5 @@
 - Zero cost per token — all inference on local hardware
 - Web search via SearXNG — self-hosted, no API keys, aggregates DuckDuckGo/Google/Brave/Wikipedia/GitHub/StackOverflow
 - ROCm 7.2 is required (Vulkan crashes on qwen3-coder-next architecture)
-- Services behind profiles must be enabled: `COMPOSE_PROFILES=voice,rag,workflows,openclaw`
+- Services behind profiles must be enabled: `COMPOSE_PROFILES=voice,rag,workflows`
 - Docker compose files: `docker-compose.base.yml` + `docker-compose.amd.yml`

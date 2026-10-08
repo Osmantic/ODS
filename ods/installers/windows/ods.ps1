@@ -37,6 +37,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# The native-llm-* entry points run from the ODSNativeLlamaRuntime task and
+# from Git Bash, without the installer's environment, so they name the
+# installation explicitly. Set before constants.ps1 derives its paths.
+if ($Command -in @("native-llm-start", "native-llm-restart") -and @($Arguments).Count -ge 1 -and $Arguments[0]) {
+    $env:ODS_HOME = [System.IO.Path]::GetFullPath([string]$Arguments[0])
+}
+
 # ── Locate libraries ──
 # NOTE: Nested Join-Path required -- PS 5.1 only accepts 2 arguments
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -48,16 +55,19 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "native-llama-args.ps1")
+. (Join-Path $LibDir "native-llama-runtime.ps1")
+. (Join-Path $LibDir "native-llama-legacy.ps1")
 . (Join-Path $LibDir "model-activation.ps1")
+. (Join-Path $LibDir "host-agent-process.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
 
-$_resolvedLemonadeExe = Resolve-ODSLemonadeExe
-if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
+# Retired by install-windows.ps1 (Round F); uninstall still removes it when
+# its action is one this installation owns.
 $script:LEMONADE_TASK_NAME = "ODSLemonadeRuntime"
 $script:ODS_MODEL_UPGRADE_TASK_NAME = "ODSModelUpgrade"
-# Registered by install-windows.ps1 for the native llama-server runtime.
-$script:NATIVE_LLAMA_TASK_NAME = "ODSNativeLlamaRuntime"
+# Registered by install-windows.ps1: starts the native llama-server at logon.
+$script:NATIVE_LLAMA_TASK_NAME = $script:ODSNativeLlamaLegacyTaskName
 
 # ── Resolve install directory ──
 $InstallDir = $script:ODS_INSTALL_DIR
@@ -227,6 +237,22 @@ function Test-ODSDockerRunningQuiet {
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
+    } finally {
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
+function Test-ODSLegacyOpenClawContainer {
+    # The legacy OpenClaw extension was removed. Starts never remove orphan
+    # containers, so an upgrade that stopped before its final stack start can
+    # leave the old ods-openclaw container running.
+    $previousPreference = $ErrorActionPreference
+    try {
+        # PowerShell 5.1 turns native stderr into terminating errors under
+        # Stop; a missing container is the normal case here.
+        $ErrorActionPreference = 'Continue'
+        $null = & docker container inspect ods-openclaw 2>$null
+        return ($LASTEXITCODE -eq 0)
     } finally {
         $ErrorActionPreference = $previousPreference
     }
@@ -626,6 +652,16 @@ function Test-ODSUninstallCommandOwned {
             # Inline commands and unknown switches cannot establish script execution.
             return $false
         }
+    } elseif ($program -match '^bash(\.exe)?$') {
+        # Native model upgrades use Git Bash with exactly one generated ODS
+        # wrapper. Do not infer ownership from -c, another script, or a shared
+        # bash.exe location.
+        if ($argv.Count -ne 1 -or -not (Test-ODSUninstallPathOwned $argv[0])) { return $false }
+        try {
+            $expected=[IO.Path]::GetFullPath((Join-Path $InstallDir 'logs\bootstrap-run.sh'))
+            $actual=[IO.Path]::GetFullPath($argv[0])
+            return $actual.Equals($expected, [StringComparison]::OrdinalIgnoreCase)
+        } catch { return $false }
     } elseif ($program -match '^(python(?:3(?:\.\d+)?)?|pythonw|py)(\.exe)?$') {
         foreach ($arg in $argv) {
             if ($arg -in @('-u','-B','-E','-s','-S') -or $arg -match '^-[23](?:\.\d+)?$') { continue }
@@ -651,6 +687,15 @@ function Test-ODSUninstallTaskOwned {
     return $true
 }
 
+function Test-ODSUninstallStartupLauncherOwned {
+    param([string]$Content)
+    if ([string]::IsNullOrWhiteSpace($Content)) { return $false }
+    # Both native installer paths write the exact comment before this VBS
+    # launcher. Older generated files omitted it. Reject any extra commands.
+    $launcher=[regex]::Match($Content.Trim(), '(?i)^(?:'' ODS Host Agent login startup launcher\r?\n)?Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "([^"\r\n]+)", 0, False$')
+    return ($launcher.Success -and (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value))
+}
+
 function Stop-ODSUninstallOwnedHelpers {
     # Shared executable locations, ports and stale PID files cannot identify
     # an installation. Only a helper's executable/script path can do that.
@@ -666,7 +711,7 @@ function Stop-ODSUninstallOwnedHelpers {
     $owned=@{}
     foreach ($process in $processes) {
         if ($ancestors.ContainsKey([int]$process.ProcessId)) { continue }
-        if ([string]$process.Name -notmatch '^(python(?:3(?:\.\d+)?)?|pythonw|py|powershell|pwsh|wscript|cscript|opencode|llama-server|lemonade-server)(\.exe)?$') { continue }
+        if ([string]$process.Name -notmatch '^(python(?:3(?:\.\d+)?)?|pythonw|py|bash|powershell|pwsh|wscript|cscript|opencode|llama-server|lemonade-server)(\.exe)?$') { continue }
         if ((Test-ODSUninstallPathOwned ([string]$process.ExecutablePath)) -or
             (Test-ODSUninstallCommandOwned ([string]$process.CommandLine) ([string]$process.Name))) {
             $owned[[int]$process.ProcessId]=$true
@@ -696,8 +741,7 @@ function Stop-ODSUninstallOwnedHelpers {
         $entry = Join-Path $startup 'ods-host-agent.vbs'
         if (Test-Path -LiteralPath $entry) {
             $content=Get-Content -LiteralPath $entry -Raw -ErrorAction Stop
-            $launcher=[regex]::Match($content.Trim(), '(?i)^Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "([^"\r\n]+)", 0, False$')
-            if ($launcher.Success -and (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value)) {
+            if (Test-ODSUninstallStartupLauncherOwned $content) {
                 Remove-Item -LiteralPath $entry -Force -ErrorAction Stop
             }
         }
@@ -831,12 +875,11 @@ function Sync-ODSNativeInferenceConfig {
     #>
     try {
         $envMap = Read-ODSEnv
-        $lemonadePort = $envMap["AMD_INFERENCE_PORT"]
-        if (-not [string]::IsNullOrWhiteSpace($lemonadePort)) {
+        $nativePort = $envMap["AMD_INFERENCE_PORT"]
+        if (-not [string]::IsNullOrWhiteSpace($nativePort)) {
             $parsedPort = 0
-            if ([int]::TryParse($lemonadePort, [ref]$parsedPort) -and $parsedPort -gt 0 -and $parsedPort -le 65535) {
-                $script:LEMONADE_PORT = $parsedPort
-                $script:LEMONADE_HEALTH_URL = "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/health"
+            if ([int]::TryParse($nativePort, [ref]$parsedPort) -and $parsedPort -gt 0 -and $parsedPort -le 65535) {
+                $script:NATIVE_LLM_PORT = $parsedPort
             }
         }
     } catch { }
@@ -865,7 +908,9 @@ function Invoke-HermesSoulRefresh {
     $profileArgs = @()
     try {
         $envMap = Read-ODSEnv
-        if ($envMap["LLM_BACKEND"] -eq "lemonade" -and $envMap["AMD_INFERENCE_RUNTIME"] -eq "lemonade") {
+        # Windows AMD keeps the compact prompt profile. Its name is the
+        # build-installation-context.py interface, not a runtime choice.
+        if ($envMap["AMD_INFERENCE_RUNTIME_MODE"] -eq "windows-native-llama-server") {
             $profileArgs = @("--profile", "local-lemonade")
         }
     } catch { }
@@ -1298,6 +1343,28 @@ function Set-ODSProxyAuthRequired {
     $env:WEBUI_AUTH = "true"
 }
 
+# A BIND_ADDRESS other than loopback publishes Open WebUI beyond this machine,
+# with or without the ODS proxy, so it needs the same sign-in enforcement.
+# Same rule as _bind_address_is_network in bin/ods-host-agent.py.
+function Test-ODSBindAddressIsNetwork {
+    param([string]$BindAddress)
+
+    $bind = $BindAddress.Trim().Trim([char[]]@('"', "'"))
+    if ($bind -eq "") { $bind = "127.0.0.1" }
+    # -notin ignores case, as the host agent's lower() does.
+    return $bind -notin @("127.0.0.1", "::1", "[::1]", "localhost")
+}
+
+# Mirrors _ods_cli_network_access_enabled in ods-cli.
+function Test-ODSNetworkAccessEnabled {
+    param([string[]]$ComposeFlags)
+
+    if (Test-ODSBindAddressIsNetwork -BindAddress (Get-ODSEnvValue -Name "BIND_ADDRESS")) {
+        return $true
+    }
+    return [bool](Test-ODSComposeServiceAvailable -ComposeFlags $ComposeFlags -Service "ods-proxy")
+}
+
 function Invoke-ODSProxyAuthPreflight {
     param([Parameter(Mandatory = $true)][string[]]$ComposeFlags)
 
@@ -1440,7 +1507,7 @@ function Ensure-LlamaCpuBudget {
     }
 }
 
-# ── AMD native inference server management (Lemonade or llama-server) ──
+# ── AMD native inference server management (llama-server.exe, Vulkan) ──
 
 function Get-ODSNativeModelSelection {
     param([switch]$VerifyArtifacts, [switch]$AllowMissingModel)
@@ -1508,9 +1575,6 @@ function Get-NativeInferenceBackend {
         Determine which native inference backend is configured (from .env LLM_BACKEND).
     #>
     Sync-ODSNativeInferenceConfig
-    $env = Read-ODSEnv
-    $backend = $env["LLM_BACKEND"]
-    if ($backend -eq "lemonade" -and (Test-Path $script:LEMONADE_EXE)) { return "lemonade" }
     $configuredExecutable = Get-ODSConfiguredNativeExecutable
     # A removed external disk must not erase the identity needed to stop an
     # already-running process. Start verifies the file separately.
@@ -1522,7 +1586,7 @@ function Get-NativeInferenceBackend {
 function Get-NativeInferenceStatus {
     <#
     .SYNOPSIS
-        Check if native inference server is running (AMD path: Lemonade or llama-server).
+        Check if the native llama-server is running (AMD path).
     .OUTPUTS
         @{ Running; Pid; Healthy; Backend }
     #>
@@ -1531,12 +1595,8 @@ function Get-NativeInferenceStatus {
     $result = @{ Running = $false; Pid = 0; Healthy = $false; Backend = $backend; Recovered = $false }
     if ($backend -eq "none") { return $result }
 
-    $expectedExecutable = if ($backend -eq "lemonade") { $script:LEMONADE_EXE } else { Get-ODSConfiguredNativeExecutable }
-    $healthUrl = if ($backend -eq "lemonade") {
-        $script:LEMONADE_HEALTH_URL
-    } else {
-        "http://127.0.0.1:$($script:LEMONADE_PORT)/health"
-    }
+    $expectedExecutable = Get-ODSConfiguredNativeExecutable
+    $healthUrl = "http://127.0.0.1:$($script:NATIVE_LLM_PORT)/health"
 
     $savedPid = 0
     $pidFileValid = $false
@@ -1563,18 +1623,12 @@ function Get-NativeInferenceStatus {
     # Recover only from a healthy listener owned by the configured executable.
     if (Test-ODSNativeInferenceHealth -HealthUrl $healthUrl) {
         $listenerOwnerPid = Get-ODSNativeInferencePortOwnerProcessId `
-            -Port $script:LEMONADE_PORT
+            -Port $script:NATIVE_LLM_PORT
         $listenerPid = if (Test-ODSNativeProcessExecutable `
             -ProcessId $listenerOwnerPid -ExpectedExecutable $expectedExecutable) {
             $listenerOwnerPid
         } else {
             0
-        }
-        if ($listenerPid -le 0 -and $backend -eq "lemonade") {
-            $listenerPid = Get-ODSManagedLemonadeTaskProcessId `
-                -TaskName $script:LEMONADE_TASK_NAME `
-                -ExpectedExecutable $expectedExecutable `
-                -ListenerProcessId $listenerOwnerPid
         }
         if ($listenerPid -gt 0) {
             $pidDir = Split-Path -Parent $script:INFERENCE_PID_FILE
@@ -1617,50 +1671,6 @@ function Get-ODSNativeInferencePortOwnerProcessId {
         Where-Object { $_ -gt 0 } |
         Select-Object -Unique)
     if ($owners.Count -eq 1) { return $owners[0] }
-    return 0
-}
-
-function Get-ODSManagedLemonadeTaskProcessId {
-    param(
-        [string]$TaskName,
-        [string]$ExpectedExecutable,
-        [int]$ListenerProcessId
-    )
-
-    if ([string]::IsNullOrWhiteSpace($TaskName) -or
-        [string]::IsNullOrWhiteSpace($ExpectedExecutable) -or
-        $ListenerProcessId -le 0) { return 0 }
-    try {
-        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-        if (-not $task -or [string]$task.State -ne "Running") { return 0 }
-
-        $expectedPath = [System.IO.Path]::GetFullPath($ExpectedExecutable)
-        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-        $byPid = @{}
-        $matchingPids = @{}
-        foreach ($process in $processes) {
-            $processId = [int]$process.ProcessId
-            if ($processId -le 0) { continue }
-            $byPid[$processId] = $process
-            try {
-                if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) { continue }
-                $actualPath = [System.IO.Path]::GetFullPath([string]$process.ExecutablePath)
-                if ($actualPath.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
-                    $matchingPids[$processId] = $true
-                }
-            } catch { }
-        }
-
-        $currentPid = $ListenerProcessId
-        $visited = @{}
-        for ($depth = 0; $depth -lt 64 -and $currentPid -gt 0; $depth++) {
-            if ($visited.ContainsKey($currentPid)) { return 0 }
-            $visited[$currentPid] = $true
-            if ($matchingPids.ContainsKey($currentPid)) { return $currentPid }
-            if (-not $byPid.ContainsKey($currentPid)) { return 0 }
-            $currentPid = [int]$byPid[$currentPid].ParentProcessId
-        }
-    } catch { }
     return 0
 }
 
@@ -1861,494 +1871,86 @@ function Start-ODSOpenCodeRuntime {
     return $false
 }
 
-function Stop-ODSLemonadeRuntime {
-    Sync-ODSNativeInferenceConfig
-    # Capture ancestry before terminating the router. Qualified executables can
-    # live outside Lemonade's bin/cache folders; never stop an unrelated process
-    # merely because it uses the same executable.
-    $externalChildren = @()
-    try {
-        $selection = Get-ODSNativeModelSelection -AllowMissingModel
-        if ($selection.profile) {
-            $expected = [string]$selection.profile.executable
-            $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-            $byPid = @{}
-            foreach ($process in $processes) { $byPid[[int]$process.ProcessId] = $process }
-            foreach ($process in $processes) {
-                if (-not $process.ExecutablePath -or
-                    -not ([string]$process.ExecutablePath).Equals($expected, [StringComparison]::OrdinalIgnoreCase)) { continue }
-                $ancestorId = [int]$process.ParentProcessId
-                $visited = @{}
-                for ($depth = 0; $depth -lt 64 -and $byPid.ContainsKey($ancestorId); $depth++) {
-                    if ($visited.ContainsKey($ancestorId)) { break }
-                    $visited[$ancestorId] = $true
-                    $ancestor = $byPid[$ancestorId]
-                    if ($ancestor.ExecutablePath -and
-                        ([string]$ancestor.ExecutablePath).Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase)) {
-                        $externalChildren += @{ Id = [int]$process.ProcessId; Executable = $expected }
-                        break
-                    }
-                    $ancestorId = [int]$ancestor.ParentProcessId
-                }
-            }
-        }
-    } catch { }
-    try { Stop-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
-    try { Unregister-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-
-    if (Test-Path $script:INFERENCE_PID_FILE) {
-        $rawPid = (Get-Content -LiteralPath $script:INFERENCE_PID_FILE -Raw).Trim()
-        if ($rawPid -match '^\d+$') {
-            $savedPid = [int]$rawPid
-            if (Test-ODSNativeProcessExecutable -ProcessId $savedPid -ExpectedExecutable $script:LEMONADE_EXE) {
-                Stop-ODSNativeProcessId -ProcessId $savedPid
-            }
-        }
-        Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force -ErrorAction SilentlyContinue
-    }
-
-    foreach ($listener in @(Get-NetTCPConnection -LocalPort $script:LEMONADE_PORT -State Listen -ErrorAction SilentlyContinue)) {
-        $ownerPid = [int]$listener.OwningProcess
-        if (Test-ODSNativeProcessExecutable -ProcessId $ownerPid -ExpectedExecutable $script:LEMONADE_EXE) {
-            Stop-ODSNativeProcessId -ProcessId $ownerPid
-        }
-    }
-
-    $binDir = Split-Path -Parent $script:LEMONADE_EXE
-    $userProfile = [Environment]::GetFolderPath("UserProfile")
-    $cacheBin = if ($userProfile) { Join-Path (Join-Path (Join-Path $userProfile ".cache") "lemonade") "bin" } else { $null }
-    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
-    foreach ($child in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        ($_.ExecutablePath -and $_.ExecutablePath.StartsWith($binDir, [StringComparison]::OrdinalIgnoreCase)) -or
-        ($cacheBin -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($cacheBin, [StringComparison]::OrdinalIgnoreCase)) -or
-        ($_.CommandLine -and $_.CommandLine.IndexOf($modelsDir, [StringComparison]::OrdinalIgnoreCase) -ge 0)
-    })) {
-        Stop-ODSNativeProcessId -ProcessId ([int]$child.ProcessId)
-    }
-    foreach ($child in $externalChildren) {
-        if (Test-ODSNativeProcessExecutable -ProcessId $child.Id -ExpectedExecutable $child.Executable) {
-            Stop-ODSNativeProcessId -ProcessId $child.Id
-        }
-    }
-}
-
-function Start-ODSLemonadeRuntime {
-    param([string]$BindAddress)
-
-    Sync-ODSNativeInferenceConfig
-    # Resolve and verify before stopping a working runtime. An unplugged SSD
-    # must never silently fall back to a different checkpoint or executable.
-    $selection = Get-ODSNativeModelSelection -VerifyArtifacts
-    $modelsDir = [string]$selection.modelsDirectory
-    $runtimeEnvironment = @{}
-    if ($selection.profile) {
-        $runtimeEnvironment['LEMONADE_LLAMACPP_' + ([string]$selection.profile.backend).ToUpperInvariant() + '_BIN'] = [string]$selection.profile.executable
-    }
-    $envPath = Join-Path $InstallDir ".env"
-    $contextRaw = Get-ODSEnvValue -Name "CTX_SIZE" -Default (Get-ODSEnvValue -Name "MAX_CONTEXT" -Default "0")
-    $contextSize = [long]0
-    $null = [long]::TryParse([string]$contextRaw, [ref]$contextSize)
-    Stop-ODSLemonadeRuntime
-
-    $adminApiKey = Get-ODSLemonadeAdminApiKey -EnvPath $envPath
-    $launchContract = Get-ODSLemonadeLaunchContract `
-        -ExecutablePath $script:LEMONADE_EXE `
-        -Port $script:LEMONADE_PORT `
-        -BindAddress $BindAddress `
-        -ModelsDir $modelsDir `
-        -ContextSize $contextSize `
-        -AdminApiKey $adminApiKey -RuntimeEnvironment $runtimeEnvironment
-    $diagnosticLog = Join-Path (Join-Path $InstallDir "logs") "lemonade-launch.log"
-    $launchMethod = "scheduled task"
-    $directProcess = $null
-    try {
-        $action = New-ODSLemonadeScheduledTaskAction `
-            -Contract $launchContract -EnvPath $envPath -DiagnosticLogPath $diagnosticLog
-        $trigger = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddYears(1))
-        $lemonadeSettings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit ([TimeSpan]::Zero)
-        $principal = New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited
-        Register-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Action $action -Trigger $trigger -Settings $lemonadeSettings -Principal $principal -Force -ErrorAction Stop | Out-Null
-        Start-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction Stop
-    } catch {
-        $launchMethod = "direct process"
-        Write-AIWarn "Could not start Lemonade through Task Scheduler: $_"
-        Write-AI "Starting Lemonade directly for this Windows session..."
-        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
-    }
-
-    Start-Sleep -Seconds 5
-    $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
-        Sort-Object ProcessId -Descending |
-        Select-Object -First 1
-    if (-not $proc -and $launchMethod -eq "scheduled task") {
-        $scheduledDiagnostics = Get-ODSLemonadeLaunchDiagnostics -TaskName $script:LEMONADE_TASK_NAME
-        $launchMethod = "direct process"
-        Write-AIWarn "Lemonade scheduled task did not start a server process."
-        Write-AIWarn (Format-ODSLemonadeLaunchDiagnostics -Diagnostics $scheduledDiagnostics)
-        Write-AI "Starting Lemonade directly for this Windows session..."
-        $directProcess = Start-ODSLemonadeDirectProcess -Contract $launchContract -DiagnosticLogPath $diagnosticLog
-        Start-Sleep -Seconds 3
-        $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase) } |
-            Sort-Object ProcessId -Descending |
-            Select-Object -First 1
-    }
-    if (-not $proc) {
-        $launchDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
-            -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
-        throw "Lemonade $launchMethod started but no Lemonade process was found. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $launchDiagnostics)"
-    }
-
-    $healthy = $false
-    for ($i = 0; $i -lt 45; $i++) {
-        try {
-            $response = Invoke-WebRequest -Uri $script:LEMONADE_HEALTH_URL `
-                -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
-            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
-                $healthy = $true
-                break
-            }
-        } catch { }
-        Start-Sleep -Seconds 1
-    }
-    if (-not $healthy) {
-        $healthDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
-            -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
-        throw "Lemonade did not become healthy. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $healthDiagnostics)"
-    }
-    if ($launchContract.RequiresRuntimeConfiguration) {
-        try {
-            $null = Set-ODSLemonadeModernRuntimeConfig `
-                -Port $script:LEMONADE_PORT -ModelsDir $modelsDir `
-                -AdminApiKey $adminApiKey -ContextSize $contextSize
-        } catch {
-            $configDiagnostics = Get-ODSLemonadeLaunchDiagnostics `
-                -TaskName $script:LEMONADE_TASK_NAME -ChildProcess $directProcess
-            throw "Lemonade 10.7+ runtime configuration failed: $_. $(Format-ODSLemonadeLaunchDiagnostics -Diagnostics $configDiagnostics)"
-        }
-    }
-
-    $pidDir = Split-Path $script:INFERENCE_PID_FILE
-    New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
-    Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.ProcessId
-    return [int]$proc.ProcessId
-}
-
-function Test-ODSLemonadeLoadedModelMatches {
-    param(
-        [string]$LoadedModel,
-        [string]$ExpectedModelId,
-        [string]$GgufFile
-    )
-
-    if ([string]::IsNullOrWhiteSpace($LoadedModel)) { return $false }
-    $targetFile = [IO.Path]::GetFileName($GgufFile)
-    if ([string]::IsNullOrWhiteSpace($targetFile)) { return $false }
-    $targetStem = [IO.Path]::GetFileNameWithoutExtension($targetFile)
-
-    $actualValues = New-Object System.Collections.Generic.List[string]
-    $normalizedLoaded = ([string]$LoadedModel).Replace('\', '/').Trim()
-    $actualValues.Add($normalizedLoaded)
-    $loadedLeaf = ($normalizedLoaded -split '/')[-1]
-    $actualValues.Add($loadedLeaf)
-    if ($loadedLeaf.Contains(':')) {
-        $actualValues.Add(($loadedLeaf -split ':')[-1])
-    }
-    $actualValues.Add(($loadedLeaf -replace '^(extra|user)[\.\:_-]', ''))
-
-    $expectedValues = @(
-        $ExpectedModelId,
-        $targetFile,
-        $targetStem,
-        "extra.$targetFile"
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
-
-    foreach ($actual in @($actualValues)) {
-        foreach ($expected in @($expectedValues)) {
-            if ([string]$actual -and [string]$expected -and
-                ([string]$actual).Equals([string]$expected, [StringComparison]::OrdinalIgnoreCase)) {
-                return $true
-            }
-        }
-    }
-    return $false
-}
-
-function Wait-ODSLemonadeConfiguredModel {
-    param([hashtable]$EnvVars)
-
-    $ggufFile = $EnvVars["GGUF_FILE"]
-    if ([string]::IsNullOrWhiteSpace($ggufFile)) { return }
-
-    $selection = Get-ODSNativeModelSelection
-    $modelPath = [string]$selection.modelPath
-    if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
-        throw "Configured Lemonade model file is missing: $modelPath"
-    }
-
-    $modelId = $EnvVars["LEMONADE_MODEL"]
-    try {
-        $modelId = Resolve-ODSLemonadeModelId -Port $script:LEMONADE_PORT -GgufFile $ggufFile
-    } catch {
-        if ([string]::IsNullOrWhiteSpace($modelId)) {
-            $modelId = [IO.Path]::GetFileNameWithoutExtension($ggufFile)
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($modelId)) {
-        $modelId = [IO.Path]::GetFileNameWithoutExtension($ggufFile)
-    }
-
-    if ($selection.profile) {
-        $contextSize = [long]$selection.profile.contextLength
-        if ($EnvVars['CTX_SIZE']) { $contextSize = [long]$EnvVars['CTX_SIZE'] }
-        $load = @{ model_name = $modelId; save_options = $false; ctx_size = $contextSize;
-            llamacpp_backend = [string]$selection.profile.backend;
-            llamacpp_args = (@($selection.profile.args) -join ' ') } | ConvertTo-Json -Compress
-        $headers = @{}
-        $key = Get-ODSLemonadeAdminApiKey -EnvPath (Join-Path $InstallDir '.env')
-        if ($key) { $headers.Authorization = "Bearer $key" }
-        $loaded = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/load" `
-            -Headers $headers -ContentType 'application/json' -Body $load -TimeoutSec 300 -ErrorAction Stop
-        if ([string]$loaded.status -notin @('success', 'ok')) {
-            throw 'Lemonade did not accept the configured model runtime profile'
-        }
-    }
-
-    $chatUrl = "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/chat/completions"
-    $payload = @{
-        model = $modelId
-        messages = @(@{ role = "user"; content = "hello" })
-        max_tokens = 1
-    } | ConvertTo-Json -Depth 5 -Compress
-
-    $lastError = ""
-    for ($i = 0; $i -lt 60; $i++) {
-        try {
-            $health = Invoke-RestMethod -Method Get -Uri $script:LEMONADE_HEALTH_URL `
-                -TimeoutSec 5 -ErrorAction Stop
-            if (Test-ODSLemonadeLoadedModelMatches `
-                    -LoadedModel ([string]$health.model_loaded) `
-                    -ExpectedModelId $modelId `
-                    -GgufFile $ggufFile) {
-                Write-AISuccess "Lemonade model ready ($modelId)"
-                return
-            }
-        } catch {
-            $lastError = $_.Exception.Message
-        }
-
-        try {
-            $null = Invoke-RestMethod -Method Post -Uri $chatUrl `
-                -ContentType "application/json" -Body $payload `
-                -TimeoutSec 30 -ErrorAction Stop
-        } catch {
-            $lastError = $_.Exception.Message
-        }
-        Start-Sleep -Seconds 5
-    }
-
-    throw "Lemonade did not load configured model '$ggufFile' using request id '$modelId'. Last error: $lastError"
-}
-
-function Resolve-ODSModelLibraryIdForGguf {
-    param([string]$GgufFile)
-
-    if ([string]::IsNullOrWhiteSpace($GgufFile)) { return $null }
-    $libraryPath = Join-Path (Join-Path $InstallDir "config") "model-library.json"
-    if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) { return $null }
-    try {
-        $library = Get-Content -LiteralPath $libraryPath -Raw -ErrorAction Stop |
-            ConvertFrom-Json -ErrorAction Stop
-        foreach ($model in @($library.models)) {
-            if ([string]$model.gguf_file -and
-                ([string]$model.gguf_file).Equals($GgufFile, [StringComparison]::OrdinalIgnoreCase) -and
-                -not [string]::IsNullOrWhiteSpace([string]$model.id)) {
-                return [string]$model.id
-            }
-        }
-    } catch { }
-    return $null
-}
-
-function Invoke-ODSHostAgentConfiguredModelActivation {
-    param([hashtable]$EnvVars)
-
-    $ggufFile = $EnvVars["GGUF_FILE"]
-    if ([string]::IsNullOrWhiteSpace($ggufFile)) { return $false }
-    $modelId = Resolve-ODSModelLibraryIdForGguf -GgufFile $ggufFile
-    if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = $ggufFile }
-
-    $agentKey = $EnvVars["ODS_AGENT_KEY"]
-    if ([string]::IsNullOrWhiteSpace($agentKey)) { $agentKey = $EnvVars["DASHBOARD_API_KEY"] }
-    if ([string]::IsNullOrWhiteSpace($agentKey)) { return $false }
-
-    $agentPort = $EnvVars["ODS_AGENT_PORT"]
-    if ([string]::IsNullOrWhiteSpace($agentPort)) { $agentPort = $script:ODS_AGENT_PORT }
-    if ([string]::IsNullOrWhiteSpace($agentPort)) { $agentPort = "7710" }
-
-    $agentHealthUrl = "http://127.0.0.1:$agentPort/health"
-    $agentUrl = "http://127.0.0.1:$agentPort/v1/runtime/lemonade/ensure"
-    try {
-        $null = Invoke-WebRequest -Uri $agentHealthUrl `
-            -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
-        Write-AI "Loading configured Lemonade model through host agent..."
-        $body = @{
-            model_id = $modelId
-            gguf_file = $ggufFile
-        } | ConvertTo-Json -Compress
-        $headers = @{ Authorization = "Bearer $agentKey" }
-        $null = Invoke-RestMethod -Method Post -Uri $agentUrl `
-            -Headers $headers -ContentType "application/json" -Body $body `
-            -TimeoutSec 900 -ErrorAction Stop
-        Wait-ODSLemonadeConfiguredModel -EnvVars $EnvVars
-        return $true
-    } catch {
-        Write-AIWarn "Host agent Lemonade activation unavailable: $($_.Exception.Message)"
-        return $false
-    }
-}
-
 # Backward-compat alias
 function Get-NativeLlamaStatus { return Get-NativeInferenceStatus }
+
+function Get-ODSNativeLlamaStartPlan {
+    <#
+    .SYNOPSIS
+        Everything a native llama-server launch can fail on, checked before
+        any process is touched: the .env selection and its GGUF, the launch
+        options, pin.json, the API key and the launch arguments.
+    #>
+    Sync-ODSNativeInferenceConfig
+    if ((Get-NativeInferenceBackend) -eq "none") {
+        throw "No native llama-server is installed. Re-run the ODS installer."
+    }
+    $envVars = Read-ODSEnv
+    $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+    $options = Read-ODSNativeLlamaLegacyOptions
+    if (-not $selection.profile) {
+        # Antivirus quarantine or a partial copy must stop here, not mid-load.
+        $null = Test-ODSNativeLlamaInstall -Directory $script:LLAMA_SERVER_DIR `
+            -ExpectedZipSha256 ([string]$options.ZipSha256) -ExpectedReleaseTag ([string]$options.ReleaseTag)
+    }
+    # Brings the key file in line with .env only; a running server keeps the
+    # key it loaded at startup.
+    $apiKey = Sync-ODSNativeLlamaLegacyApiKey -EnvMap $envVars -Path ([string]$options.ApiKeyPath)
+    $launch = New-ODSNativeLlamaLegacyLaunch -EnvMap $envVars -Selection $selection `
+        -Port $script:NATIVE_LLM_PORT -Options $options -PinnedExecutable $script:LLAMA_SERVER_EXE
+    return [pscustomobject]@{ Launch = $launch; ApiKey = $apiKey }
+}
+
+function Start-ODSNativeLlamaFromPlan {
+    # Launch a prepared plan and prove its model and context.
+    param([Parameter(Mandatory = $true)]$Plan)
+    foreach ($warning in @($Plan.Launch.Warnings)) { Write-AIWarn $warning }
+    Write-AI "Starting native llama-server with $($Plan.Launch.GgufFile) (large models can take a few minutes)..."
+    $started = Start-ODSNativeLlamaLegacyProcess -Launch $Plan.Launch -Port $script:NATIVE_LLM_PORT `
+        -ApiKey $Plan.ApiKey -PidFile $script:INFERENCE_PID_FILE
+    Write-AISuccess "Native llama-server ready (PID $($started.ProcessId)): $($started.Proof.ModelId), $($started.Proof.ContextLength) tokens of context"
+}
 
 function Start-NativeInferenceServer {
     <#
     .SYNOPSIS
-        Start native inference server for AMD path (Lemonade or llama-server).
+        Start the native llama-server (AMD path) from the current .env and
+        prove it serves the configured model and context. Throws on failure.
+    .DESCRIPTION
+        pin.json is verified before the pinned runtime starts; the API key
+        file follows LLAMA_SERVER_API_KEY; the launch follows the Round F
+        contract (native-llama-legacy.ps1).
     #>
+    Sync-ODSNativeInferenceConfig
     $status = Get-NativeInferenceStatus
     if ($status.Running) {
-        Write-AISuccess "Native $($status.Backend) already running (PID $($status.Pid))"
+        Write-AISuccess "Native llama-server already running (PID $($status.Pid))"
         return
     }
+    Start-ODSNativeLlamaFromPlan -Plan (Get-ODSNativeLlamaStartPlan)
+}
 
-    $backend = Get-NativeInferenceBackend
-    $envVars = Read-ODSEnv
-
-    # Match the installer's private inference listener across restarts.
-    $bindAddr = "127.0.0.1"
-
-    if ($backend -eq "lemonade") {
-        if (Invoke-ODSHostAgentConfiguredModelActivation -EnvVars $envVars) {
-            return
-        }
-        $procId = Start-ODSLemonadeRuntime -BindAddress $bindAddr
-        Write-AISuccess "Lemonade server started (PID $procId)"
-        Write-AI "Waiting for health..."
-
-        $maxWait = 60; $waited = 0
-        while ($waited -lt $maxWait) {
-            Start-Sleep -Seconds 2; $waited += 2
-            $resp = $null
-            try {
-                $resp = Invoke-WebRequest -Uri $script:LEMONADE_HEALTH_URL `
-                -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
-            } catch { }
-            if ($resp -and $resp.StatusCode -eq 200) {
-                Write-AISuccess "Lemonade server healthy"
-                Wait-ODSLemonadeConfiguredModel -EnvVars $envVars
-                return
-            }
-        }
-        Write-AIWarn "Lemonade server may still be starting..."
-    } elseif ($backend -eq "llama-server") {
-        $selection = Get-ODSNativeModelSelection -VerifyArtifacts
-        $llamaExecutable = if ($selection.profile) { [string]$selection.profile.executable } else { $script:LLAMA_SERVER_EXE }
-        $ggufFile = $envVars["GGUF_FILE"]
-        $ctxSize  = $envVars["CTX_SIZE"]
-        $gpuLayers = $envVars["N_GPU_LAYERS"]
-        if (-not $ggufFile) { $ggufFile = "Qwen3.5-9B-Q4_K_M.gguf" }
-        if (-not $ctxSize) { $ctxSize = if ($selection.profile) { [string]$selection.profile.contextLength } else { "16384" } }
-        if (-not $gpuLayers) { $gpuLayers = "auto" }
-
-        $modelPath = [string]$selection.modelPath
-        if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
-            Write-AIError "Model not found: $modelPath"
-            return
-        }
-
-        # Map the .env values (off/on/auto) onto llama-server's own vocabulary,
-        # the same way scripts/bootstrap-upgrade.sh does for its Windows
-        # hot-swap. Defaulting to off keeps thinking models from spending the
-        # whole token budget on internal reasoning.
-        $reasoning = $envVars["LLAMA_REASONING"]
-        if (-not $reasoning) { $reasoning = "off" }
-        switch ($reasoning) {
-            "off"   { $reasoningFmt = "none" }
-            "on"    { $reasoningFmt = "deepseek" }
-            default { $reasoningFmt = $reasoning }
-        }
-
-        $llamaArgs = @(
-            "--model", $modelPath,
-            "--host", $bindAddr,
-            "--port", [string]$script:LEMONADE_PORT,
-            "--n-gpu-layers", $gpuLayers,
-            "--ctx-size", $ctxSize,
-            # llama.cpp keeps /metrics off unless asked. The dashboard's
-            # tokens/sec reading and the Usage page's local-runtime counters
-            # both scrape that endpoint, so every other launch path passes
-            # this too.
-            "--metrics"
-        )
-        if ($selection.profile) {
-            # A registered profile keeps its own qualified argument list.
-            $llamaArgs += @("--reasoning-format", $reasoningFmt)
-            $llamaArgs += @($selection.profile.args)
-        } else {
-            # b9014 has --reasoning and defaults it to auto, which turns
-            # Qwen3.5 thinking on; where the binary has the switch, pass the
-            # mode itself (as Docker does) instead of the format.
-            $llamaArgs += @(Get-ODSNativeReasoningArgs -Executable $llamaExecutable -Mode $reasoning -FallbackFormat $reasoningFmt)
-            if ($envVars["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $envVars["LLAMA_ARG_FLASH_ATTN"]) }
-            if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
-            if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
-            if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
-            if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
-            # Only when this llama-server still has the flag (removed in
-            # llama.cpp b9310); an unknown flag stops llama-server.
-            $checkpointArgs = Get-ODSNativeCheckpointIntervalArgs -Executable $llamaExecutable -Value $envVars["LLAMA_ARG_CHECKPOINT_EVERY_NT"]
-            if ($checkpointArgs.Warning) { Write-AIWarn $checkpointArgs.Warning }
-            $llamaArgs += @($checkpointArgs.Arguments)
-            if ($envVars["LLAMA_ARG_CTX_CHECKPOINTS"]) { $llamaArgs += @("--ctx-checkpoints", $envVars["LLAMA_ARG_CTX_CHECKPOINTS"]) }
-            if ($envVars["LLAMA_ARG_CACHE_RAM"]) { $llamaArgs += @("--cache-ram", $envVars["LLAMA_ARG_CACHE_RAM"]) }
-            if ($envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -and $envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
-            if ($envVars["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]) }
-            if ($envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
-            if ($envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_K"]) { $llamaArgs += @("--spec-draft-type-k", $envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_K"]) }
-            if ($envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_V"]) { $llamaArgs += @("--spec-draft-type-v", $envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_V"]) }
-        }
-
-        $pidDir = Split-Path $script:INFERENCE_PID_FILE
-        New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
-
-        $proc = Start-Process -FilePath $llamaExecutable `
-            -ArgumentList (ConvertTo-ODSNativeArgumentString -Values $llamaArgs) `
-            -WorkingDirectory (Split-Path -Parent $llamaExecutable) -WindowStyle Hidden -PassThru
-        Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.Id
-
-        Write-AISuccess "Native llama-server started (PID $($proc.Id))"
-        Write-AI "Waiting for health..."
-
-        $maxWait = 60; $waited = 0
-        while ($waited -lt $maxWait) {
-            Start-Sleep -Seconds 2; $waited += 2
-            try {
-                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$($script:LEMONADE_PORT)/health" `
-                    -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
-                if ($resp.StatusCode -eq 200) {
-                    Write-AISuccess "Native llama-server healthy"
-                    return
-                }
-            } catch { }
-        }
-        Write-AIWarn "llama-server may still be loading model..."
-    } else {
-        Write-AIError "No native inference server found. Re-run the installer."
+function Restart-ODSNativeLlamaServer {
+    <#
+    .SYNOPSIS
+        Replace the running native llama-server with the .env selection (model
+        switches, the host agent's rollback, the full-model upgrade).
+    .DESCRIPTION
+        The new launch is prepared and validated first, so a bad key, launch
+        option, pin.json or missing GGUF leaves the running server untouched.
+        Only then is the proven old process stopped; a stop that fails leaves
+        it running, keeps its PID record and changes nothing else.
+    #>
+    $plan = Get-ODSNativeLlamaStartPlan
+    # The server being replaced may run the pinned runtime or any registered
+    # model-store runtime of this installation.
+    $known = @($script:LLAMA_SERVER_EXE) + @(Get-ODSNativeLlamaLegacyRegisteredExecutables -InstallDir $InstallDir)
+    try {
+        $null = Stop-ODSNativeLlamaLegacyProcess -PidFile $script:INFERENCE_PID_FILE -Port $script:NATIVE_LLM_PORT -ExecutablePaths $known
+    } catch {
+        throw "Could not stop the running llama-server ($($_.Exception.Message)), so the new model was not started; nothing else was changed."
     }
+    Start-ODSNativeLlamaFromPlan -Plan $plan
 }
 
 # Backward-compat alias
@@ -2356,22 +1958,18 @@ function Start-NativeLlamaServer { Start-NativeInferenceServer }
 
 function Stop-NativeInferenceServer {
     $status = Get-NativeInferenceStatus
-    if ($status.Backend -eq "lemonade") {
-        Stop-ODSLemonadeRuntime
-        Write-AISuccess "Native lemonade stopped"
-        return
-    }
-
     if (-not $status.Running) {
-        Write-AI "Native inference server not running"
+        Write-AI "Native llama-server not running"
         return
     }
 
-    try {
-        Stop-Process -Id $status.Pid -Force -ErrorAction SilentlyContinue
-        Write-AISuccess "Native $($status.Backend) stopped (PID $($status.Pid))"
-    } catch {
-        Write-AIWarn "Could not stop PID $($status.Pid): $_"
+    # The PID is proven by its executable (Get-NativeInferenceStatus); wait
+    # for it to exit so a restart finds its port free.
+    Stop-ODSNativeProcessId -ProcessId ([int]$status.Pid)
+    if (Get-Process -Id ([int]$status.Pid) -ErrorAction SilentlyContinue) {
+        Write-AIWarn "Could not stop native llama-server (PID $($status.Pid))"
+    } else {
+        Write-AISuccess "Native llama-server stopped (PID $($status.Pid))"
     }
 
     if (Test-Path $script:INFERENCE_PID_FILE) {
@@ -2381,6 +1979,35 @@ function Stop-NativeInferenceServer {
 
 # Backward-compat alias
 function Stop-NativeLlamaServer { Stop-NativeInferenceServer }
+
+function Invoke-NativeLlmCommand {
+    <#
+    .SYNOPSIS
+        Internal entry points without Docker: "native-llm-start" (the
+        ODSNativeLlamaRuntime at-logon task) and "native-llm-restart" (the
+        host agent's model switches and rollbacks, and
+        scripts/bootstrap-upgrade.sh after promoting the full model).
+    .OUTPUTS
+        The process exit code: 0 only after the model and context were
+        proven, 1 otherwise.
+    #>
+    param([switch]$Restart)
+    $action = $(if ($Restart) { "restart" } else { "start" })
+    try {
+        if ($Restart) {
+            Restart-ODSNativeLlamaServer
+        } else {
+            Start-NativeInferenceServer
+        }
+        Write-ODSNativeLlamaLegacyLog "ready: $(Get-ODSEnvValue -Name 'GGUF_FILE') on port $($script:NATIVE_LLM_PORT)"
+        return 0
+    } catch {
+        $message = $_.Exception.Message
+        Write-AIError "Native llama-server did not ${action}: $message"
+        Write-ODSNativeLlamaLegacyLog "$action failed: $message"
+        return 1
+    }
+}
 
 # ============================================================================
 # Commands
@@ -2395,7 +2022,7 @@ function Invoke-Status {
         Write-Host "  ODS Status" -ForegroundColor Cyan
         Write-Host ("  " + ("-" * 40)) -ForegroundColor DarkGray
 
-        # Native inference server status (AMD: Lemonade or llama-server)
+        # Native inference server status (AMD: llama-server.exe)
         $nativeStatus = Get-NativeInferenceStatus
         if ($nativeStatus.Backend -ne "none") {
             if ($nativeStatus.Running) {
@@ -2560,9 +2187,14 @@ function Invoke-Start {
     try {
         Ensure-LlamaCpuBudget
 
-        # Start native inference server first (AMD path: Lemonade or llama-server)
+        # Start the native llama-server first (AMD path). A model that fails
+        # its proof is reported; the rest of the stack still starts.
         if (-not $Service -and ((Get-NativeInferenceBackend) -ne "none")) {
-            Start-NativeInferenceServer
+            try {
+                Start-NativeInferenceServer
+            } catch {
+                Write-AIError "Native llama-server did not start: $($_.Exception.Message)"
+            }
         }
 
         # Start host agent (if not already running)
@@ -2576,7 +2208,7 @@ function Invoke-Start {
         if ($Service -eq "ods-proxy") {
             Invoke-ODSProxyAuthPreflight -ComposeFlags $flags
         } elseif ((-not $Service -or $Service -eq "open-webui") -and
-            (Test-ODSComposeServiceAvailable -ComposeFlags $flags -Service "ods-proxy")) {
+            (Test-ODSNetworkAccessEnabled -ComposeFlags $flags)) {
             Set-ODSProxyAuthRequired
         }
         if ($Service) {
@@ -2613,6 +2245,9 @@ function Invoke-Start {
                 exit 1
             }
             Write-AISuccess "All services started"
+            if (Test-ODSLegacyOpenClawContainer) {
+                Write-AIWarn "The removed legacy OpenClaw container ods-openclaw still exists. Remove it with: docker rm -f ods-openclaw (see docs/MIGRATION-OPENCLAW-TO-HERMES.md)"
+            }
             if ($hermesInStack) {
                 Invoke-HermesSoulRefresh -SyncContainer
             }
@@ -2721,7 +2356,7 @@ function Invoke-Restart {
         if ($Service -eq "ods-proxy") {
             Invoke-ODSProxyAuthPreflight -ComposeFlags $flags
         } elseif ((-not $Service -or $Service -eq "open-webui") -and
-            (Test-ODSComposeServiceAvailable -ComposeFlags $flags -Service "ods-proxy")) {
+            (Test-ODSNetworkAccessEnabled -ComposeFlags $flags)) {
             Set-ODSProxyAuthRequired
         }
         if ($Service) {
@@ -2761,10 +2396,14 @@ function Invoke-Restart {
                 $null = Get-ODSNativeModelSelection -VerifyArtifacts
             }
             Stop-ODSOpenCodeRuntime
-            # For AMD, also restart native inference server
+            # For AMD, also restart the native llama-server: validated first,
+            # so a failure leaves the running model in place.
             if ($nativeBackend -ne "none") {
-                Stop-NativeInferenceServer
-                Start-NativeInferenceServer
+                try {
+                    Restart-ODSNativeLlamaServer
+                } catch {
+                    Write-AIError "Native llama-server did not restart: $($_.Exception.Message)"
+                }
             }
             if ($hermesInStack) {
                 Invoke-HermesSoulRefresh
@@ -2908,6 +2547,10 @@ function Invoke-Update {
             Write-AIError "docker compose pull failed (exit code: $pullExit)"
             Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 update (pull)"
             exit 1
+        }
+        # Recreating everything recreates Open WebUI too.
+        if (Test-ODSNetworkAccessEnabled -ComposeFlags $flags) {
+            Set-ODSProxyAuthRequired
         }
         Write-AI "Recreating containers..."
         $upExit = Invoke-ODSDockerCompose -InstallDir $InstallDir -ComposeFlags $flags `
@@ -3223,7 +2866,7 @@ function Invoke-Agent {
             if (Test-Path $pidFile) {
                 try {
                     $_oldPid = [int](Get-Content $pidFile -Raw).Trim()
-                    Stop-Process -Id $_oldPid -Force -ErrorAction SilentlyContinue
+                    Stop-ODSHostAgentProcess -ProcessId $_oldPid -AgentScript $agentScript
                 } catch { }
                 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             }
@@ -3323,8 +2966,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
             if (Test-Path $pidFile) {
                 try {
                     $_pid = [int](Get-Content $pidFile -Raw).Trim()
-                    Stop-Process -Id $_pid -Force -ErrorAction SilentlyContinue
-                    Write-AISuccess "Host agent stopped (PID $_pid)"
+                    Stop-ODSHostAgentProcess -ProcessId $_pid -AgentScript $agentScript
                 } catch {
                     Write-AIWarn "Could not stop agent PID: $_"
                 }
@@ -3334,7 +2976,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
             }
             foreach ($_listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
                 if ($_listener.OwningProcess -gt 0) {
-                    Stop-Process -Id ([int]$_listener.OwningProcess) -Force -ErrorAction SilentlyContinue
+                    Stop-ODSHostAgentProcess -ProcessId ([int]$_listener.OwningProcess) -AgentScript $agentScript
                 }
             }
         }
@@ -4115,6 +3757,9 @@ switch ($Command.ToLower()) {
     }
     "version" { Write-Host "ODS v$($script:ODS_VERSION) (Windows)" -ForegroundColor Green }
     "help"    { Show-Help }
+    # Internal: the ODSNativeLlamaRuntime task and scripts/bootstrap-upgrade.sh.
+    "native-llm-start"   { exit ([int]@(Invoke-NativeLlmCommand)[-1]) }
+    "native-llm-restart" { exit ([int]@(Invoke-NativeLlmCommand -Restart)[-1]) }
     default   {
         Write-AIWarn "Unknown command: $Command"
         Show-Help

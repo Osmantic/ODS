@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import socket
 import sys
 import tempfile
@@ -134,6 +135,48 @@ def test_compose_service_is_internal_only_and_hardened() -> None:
     assert_true("/remote-provider/secrets/provider-api-key" in block, "service must use a secret file path")
     assert_true("http://remote-provider-ssh-tunnel:18090/health" in block, "service must check internal SSH tunnel health")
     assert_true("REMOTE_LLM_API_KEY" not in block, "service must not source provider API keys from public env")
+    assert_true(
+        "    networks:\n      - remote-provider\n      - remote-provider-outbound\n" in block,
+        "egress must join only the remote-provider networks",
+    )
+    assert_true("      - default\n" not in block, "egress must not join ods-network")
+    assert_true(
+        "ODS_REMOTE_PROVIDER_CALLER_KEY=${LITELLM_KEY:-}" in block,
+        "egress must admit callers by the LiteLLM gateway key",
+    )
+
+
+def test_remote_provider_networks_admit_only_the_gateway_and_dashboard_api() -> None:
+    """GHSA-4rpc: containers on ods-network must not reach the egress or its tunnel."""
+    compose = read(BASE_COMPOSE)
+    top_level = compose.split("\nnetworks:\n", 1)[1]
+    assert_true(
+        "  remote-provider:\n    name: ods-remote-provider\n    internal: true\n" in top_level,
+        "the shared remote-provider network must be internal so it never becomes a default route",
+    )
+    assert_true(
+        "  remote-provider-outbound:\n    name: ods-remote-provider-outbound\n" in top_level,
+        "the egress needs its own outbound network",
+    )
+    dashboard_api = compose.split("  dashboard-api:", 1)[1].split("\n  # ", 1)[0]
+    assert_true(
+        "    networks:\n      - default\n      - remote-provider\n" in dashboard_api,
+        "dashboard-api must keep ods-network and join the internal remote-provider network",
+    )
+    litellm = read(ROOT / "extensions" / "services" / "litellm" / "compose.yaml")
+    assert_true(
+        "    networks:\n      - default\n      - remote-provider\n" in litellm,
+        "LiteLLM must keep ods-network and join the internal remote-provider network",
+    )
+    joins = re.compile(r"^[ \t]+(?:- )?remote-provider(?:-outbound)?:?[ \t]*$", re.M)
+    assert_true(
+        len(joins.findall(compose.split("\nnetworks:\n", 1)[0])) == 5,
+        "only dashboard-api, the egress and the SSH tunnel may join remote-provider networks in base compose",
+    )
+    for path in sorted((ROOT / "extensions" / "services").glob("*/compose*")):
+        if path.parent.name == "litellm" and path.name == "compose.yaml":
+            continue
+        assert_true(not joins.search(read(path)), f"{path.parent.name}/{path.name} must not join a remote-provider network")
 
 
 def test_manifest_and_network_policy_mark_no_lan_exposure() -> None:
@@ -388,6 +431,9 @@ def test_service_source_avoids_public_env_secret_names() -> None:
     assert_true("probe_route_response" in text, "probe endpoint must use the shared egress probe helper")
     assert_true("ssh_tunnel_not_ready" in text, "app must fail closed when the SSH tunnel is down")
     assert_true("trust_env=False" in text, "egress requests must not delegate pinned connections or private headers to environment proxies")
+    assert_true("ODS_REMOTE_PROVIDER_CALLER_KEY" in text, "app must read the caller key")
+    assert_true('@app.middleware("http")' in text, "caller auth must run before every route")
+    assert_true("hmac.compare_digest" in text, "caller key must be compared in constant time")
     assert_true(POLICY.exists(), "policy document must exist for mounted service config")
 
 
@@ -476,6 +522,7 @@ def test_pinned_request_preserves_non_default_port_and_separates_tls_origins() -
 def main() -> int:
     tests = [
         test_compose_service_is_internal_only_and_hardened,
+        test_remote_provider_networks_admit_only_the_gateway_and_dashboard_api,
         test_manifest_and_network_policy_mark_no_lan_exposure,
         test_image_copies_shared_policy_package,
         test_route_state_prepares_direct_provider_request_without_client_auth,

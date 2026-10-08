@@ -128,7 +128,7 @@ function Resolve-QwenTierConfig {
         "SH_LARGE" {
             # Strix Halo (AMD Ryzen AI MAX+ 395, 124GB unified) should stay
             # on the A3B MoE path proven by fleet. Dense 70B/Coder Next choices
-            # are too aggressive for Windows Lemonade first-run recovery.
+            # are too aggressive for Windows first-run recovery.
             return @{
                 TierName   = "Strix Halo 90+"
                 LlmModel   = "qwen3.6-35b-a3b"
@@ -1114,7 +1114,7 @@ function Resolve-CatalogModelRecommendation {
             if ($isSparkAarch64) {
                 $rationale = "is selected for arm64 NV_ULTRA Spark-class NVIDIA hosts because qwen3-coder-next is excluded on this architecture by the tier map"
             } else {
-                $rationale = "is selected for AMD unified-memory SH_LARGE hosts because Qwen3.6-35B-A3B is the fleet-proven Windows Lemonade target. Dense 70B and Coder Next defaults are avoided for first-run recovery"
+                $rationale = "is selected for AMD unified-memory SH_LARGE hosts because Qwen3.6-35B-A3B is the fleet-proven Windows AMD target. Dense 70B and Coder Next defaults are avoided for first-run recovery"
             }
             $reason = "Arch-aware catalog policy ($archPolicy): $($archModel.name) $rationale. It needs about $($archCandidate.RequiredGB) GiB ($breakdown), fits $([Math]::Round($capacityGb, 1)) GiB $($memory.Label), and gives ${contextK}K context. Throughput requires a local benchmark after first launch."
             Set-CatalogTierConfigFromCandidate -TierConfig $TierConfig -Candidate $archCandidate

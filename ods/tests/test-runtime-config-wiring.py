@@ -16,64 +16,45 @@ def read(path: str) -> str:
 def test_linux_installer_uses_renderer_as_sole_writer() -> None:
     text = read("installers/phases/06-directories.sh")
     assert "scripts/render-runtime-configs.py" in text
-    assert "--surface litellm-lemonade" in text
+    # AMD serves llama.cpp in the stack (litellm-local); the Windows Portal's
+    # host-native llama-server has its own surface; Lemonade has none.
+    assert "--surface litellm-local --output-root" in text
+    assert "--surface litellm-local-native" in text
+    assert "litellm-lemonade" not in text
     assert "LITELLM_EOF" not in text
     assert "falling back to inline writer" not in text
 
 
-def test_bootstrap_upgrade_uses_renderer_as_sole_writer() -> None:
+def test_bootstrap_upgrade_writes_no_lemonade_route() -> None:
     text = read("scripts/bootstrap-upgrade.sh")
-    assert "scripts/render-runtime-configs.py" in text
-    assert "--surface litellm-lemonade" in text
+    # llama-server serves the GGUF it loaded, so a full-model swap re-renders
+    # nothing; the Lemonade route and its inline writers are gone.
+    assert "litellm-lemonade" not in text
     assert "LITELLM_UPGRADE_EOF" not in text
     assert "LITELLM_WINDOWS_LEMONADE_EOF" not in text
     assert "falling back to inline writer" not in text
 
 
-def test_bootstrap_upgrade_promotes_lemonade_model_id() -> None:
+def test_bootstrap_upgrade_tracks_no_lemonade_model_id() -> None:
     text = read("scripts/bootstrap-upgrade.sh")
-    assert 'write_env_value LEMONADE_MODEL "$_promotion_lemonade_model_id"' in text
-    assert 'lemonade_model_id_matches_gguf "$_loaded_model_id" "$FULL_GGUF_FILE"' in text
-    assert 'resolve_live_lemonade_model_id "${OLLAMA_PORT:-8080}" "$FULL_GGUF_FILE"' in text
-    assert 'json_has_id "$models_json" "$model_id"' in text
+    for retired in ("_promotion_lemonade_model_id", "lemonade_model_id_matches_gguf",
+                    "resolve_live_lemonade_model_id", "json_has_id"):
+        assert retired not in text, retired
 
 
 def test_host_agent_uses_renderer_as_sole_writer() -> None:
     text = read("bin/ods-host-agent.py")
     assert "def _render_runtime_config" in text
     assert "--surface" in text
-    assert '"--lemonade-model-id"' in text
-    assert "litellm-lemonade" in text
     assert "Runtime config renderer failed" in text
-    lemonade_writer = text.split("def _write_lemonade_config(", 1)[1].split(
-        "def _write_windows_native_litellm_config(", 1
-    )[0]
-    assert "model_list:\\n" not in lemonade_writer
-
-
-def test_windows_lemonade_uses_renderer_as_sole_writer() -> None:
-    text = read("installers/windows/lib/env-generator.ps1")
-    assert "scripts" in text
-    assert "render-runtime-configs.py" in text
-    assert '"litellm-lemonade"' in text
-    assert '"--lemonade-model-id"' in text
-    assert "Install-WindowsODSRuntimeConfigPython" in text
-    assert "sys.version_info >= (3, 8)" in text
-    assert "IsNullOrWhiteSpace($env:LOCALAPPDATA)" in text
-    assert 'Join-Path $env:LOCALAPPDATA "Programs\\Python"' in text
-    assert "winget install --exact --id Python.Python.3.12" in text
-    lemonade_writer = text.split("function Write-WindowsODSLemonadeLiteLlmConfig", 1)[
-        1
-    ].split("function Set-WindowsODSLemonadeModelConfiguration", 1)[0]
-    assert "model_list:" not in lemonade_writer
-
-
-def test_openclaw_receives_persisted_lemonade_model_id() -> None:
-    compose = read("extensions/services/openclaw/compose.yaml")
-    injector = read("config/openclaw/inject-token.js")
-    assert "LEMONADE_MODEL=${LEMONADE_MODEL:-}" in compose
-    assert "LEMONADE_MODEL ||" in injector
-    assert "`extra.${GGUF_FILE}`" in injector
+    # Round F: one llama-server runtime family. A host-native key reaches the
+    # renderer by its env var name only; no Lemonade surface or id remains.
+    assert '"--llm-api-key-env"' in text
+    assert "--lemonade-model-id" not in text
+    assert "litellm-lemonade" not in text
+    native_writer = text.split("def _write_host_native_litellm_config(", 1)[1].split("\ndef ", 1)[0]
+    assert '"litellm-local-native"' in native_writer
+    assert "model_list:" not in native_writer
 
 
 def test_cloud_callers_do_not_render_local_switchboard() -> None:
@@ -90,23 +71,37 @@ def test_runtime_renderer_callers_keep_credentials_out_of_process_arguments() ->
         read("installers/phases/06-directories.sh"),
         read("installers/macos/install-macos.sh"),
         read("installers/windows/lib/env-generator.ps1"),
-        read("scripts/bootstrap-upgrade.sh"),
         read("bin/ods-host-agent.py"),
     ]
     assert all('"--litellm-key"' not in text for text in callers)
-    assert all("ODS_RENDER_LITELLM_KEY" in text for text in callers)
+    # A caller that runs the renderer passes the key through the environment;
+    # the Windows env generator writes its host-native config itself.
+    assert all("ODS_RENDER_LITELLM_KEY" in text for text in callers if "render-runtime-configs.py" in text)
+    # bootstrap-upgrade.sh no longer renders runtime configs at all.
+    assert "render-runtime-configs.py" not in read("scripts/bootstrap-upgrade.sh")
+
+
+def test_installer_names_the_native_key_for_litellm_and_the_router() -> None:
+    # A host-native llama-server answers 401 without its key. The installer's
+    # renders must name LLAMA_SERVER_API_KEY as the host agent's do, or LiteLLM
+    # and model-router send no key until the first model activation.
+    phase06 = read("installers/phases/06-directories.sh")
+    native = phase06[phase06.index("--surface litellm-local-native"):]
+    native = native[:native.index("--write")]
+    assert "--llm-api-key-env LLAMA_SERVER_API_KEY" in native
+    router = phase06[phase06.index("_router_common_args=("):phase06.index("_router_surfaces=(model-router-endpoints)")]
+    assert '[[ "$NATIVE_LLM_ACTIVE" != "true" ]] || _router_common_args+=(--llm-api-key-env LLAMA_SERVER_API_KEY)' in router
 
 
 def main() -> int:
     for test in (
         test_linux_installer_uses_renderer_as_sole_writer,
-        test_bootstrap_upgrade_uses_renderer_as_sole_writer,
-        test_bootstrap_upgrade_promotes_lemonade_model_id,
+        test_bootstrap_upgrade_writes_no_lemonade_route,
+        test_bootstrap_upgrade_tracks_no_lemonade_model_id,
         test_host_agent_uses_renderer_as_sole_writer,
-        test_windows_lemonade_uses_renderer_as_sole_writer,
-        test_openclaw_receives_persisted_lemonade_model_id,
         test_cloud_callers_do_not_render_local_switchboard,
         test_runtime_renderer_callers_keep_credentials_out_of_process_arguments,
+        test_installer_names_the_native_key_for_litellm_and_the_router,
     ):
         test()
         print(f"[PASS] {test.__name__}")

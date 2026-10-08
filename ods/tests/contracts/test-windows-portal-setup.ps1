@@ -31,9 +31,9 @@ $null = New-Item -ItemType Directory -Path $delegateRoot
 try {
     $record = Join-Path $delegateRoot 'args.json'
     Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value @"
-param([string]`$Distro, [string]`$InstallRoot, [switch]`$OpenPortal, [string[]]`$PassthroughArgs, [string]`$DockerDesktopPath, [string]`$StateRoot)
+param([string]`$Distro, [string]`$InstallRoot, [switch]`$OpenPortal, [string[]]`$PassthroughArgs, [string]`$DockerDesktopPath, [string]`$StateRoot, [string[]]`$NewInstallationArgs)
 Write-Output 'delegate stdout'
-[IO.File]::WriteAllText('$record', (ConvertTo-Json -Compress @{ d = `$Distro; r = `$InstallRoot; o = [bool]`$OpenPortal; a = `$PassthroughArgs; docker = `$DockerDesktopPath; s = `$StateRoot }))
+[IO.File]::WriteAllText('$record', (ConvertTo-Json -Compress @{ d = `$Distro; r = `$InstallRoot; o = [bool]`$OpenPortal; a = `$PassthroughArgs; docker = `$DockerDesktopPath; s = `$StateRoot; n = `$NewInstallationArgs }))
 exit 23
 "@
     $returned = @(Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @('--pixel', "it's `$(x)", 'two words') "/home/o'brien/ODS data" $true 'D:\Custom Docker\Docker Desktop.exe')
@@ -48,8 +48,37 @@ exit 23
     $returned=Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @('--pixel') '/home/user/ods' $true 'D:\Custom Docker\Docker Desktop.exe' $stateLocation
     $seen=Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
     Check ($returned -eq 23 -and $seen.s -ceq $stateLocation -and $seen.o -eq $true -and $seen.docker -ceq 'D:\Custom Docker\Docker Desktop.exe') 'state location, Docker location and Portal opening coexist in the delegated process'
+    Check ($null -eq $seen.n) 'no new-installation flags reach the delegate unless setup passes them'
+    $returned=Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @('--pixel') '/home/user/ods' $false '' '' @('--no-hermes', "it's new")
+    $seen=Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+    Check ($returned -eq 23 -and (@($seen.n) -join '|') -ceq "--no-hermes|it's new" -and (@($seen.a) -join ' ') -ceq '--pixel') 'new-installation flags reach the delegate intact and separate from the Linux flags'
     Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value "throw 'delegate failed'"
     Check ((Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @() '' $false) -ne 0) 'delegate that throws is a failure'
+    # The llama.cpp API key reaches the Linux installer through WSLENV only.
+    $envRecord = Join-Path $delegateRoot 'env.json'
+    Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value @"
+param([string]`$Distro, [string]`$InstallRoot, [switch]`$OpenPortal, [string[]]`$PassthroughArgs, [string]`$DockerDesktopPath, [string]`$StateRoot)
+[IO.File]::WriteAllText('$envRecord', (ConvertTo-Json -Compress @{ key = `$env:ODS_NATIVE_LLM_API_KEY; wslenv = `$env:WSLENV; command = [Environment]::CommandLine; a = `$PassthroughArgs }))
+exit 0
+"@
+    $fixtureKey = 'f' * 64
+    $previousWslEnv = $env:WSLENV
+    $previousKey = $env:ODS_NATIVE_LLM_API_KEY
+    try {
+        $env:WSLENV = 'PSModulePath/w:ODS_NATIVE_LLM_API_KEY/w:USERPROFILE/p'
+        Remove-Item Env:ODS_NATIVE_LLM_API_KEY -ErrorAction SilentlyContinue
+        $returned = Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @('--pixel', '--native-llm-api-key-env', 'ODS_NATIVE_LLM_API_KEY') '/home/user/ods' $false '' '' @() @{ ODS_NATIVE_LLM_API_KEY = $fixtureKey }
+        $seen = Get-Content -LiteralPath $envRecord -Raw | ConvertFrom-Json
+        Check ($returned -eq 0 -and $seen.key -ceq $fixtureKey) 'the API key reaches the delegated installer process as an environment variable'
+        Check (($seen.wslenv -split ':') -contains 'ODS_NATIVE_LLM_API_KEY/u' -and ($seen.wslenv -split ':') -contains 'PSModulePath/w' -and
+            ($seen.wslenv -split ':') -contains 'USERPROFILE/p' -and -not (($seen.wslenv -split ':') -contains 'ODS_NATIVE_LLM_API_KEY/w')) 'WSLENV forwards the key Win32-to-WSL only and keeps the caller''s other entries'
+        Check (-not ([string]$seen.command).Contains($fixtureKey) -and -not ((@($seen.a) -join ' ').Contains($fixtureKey)) -and
+            (@($seen.a) -join ' ') -ceq '--pixel --native-llm-api-key-env ODS_NATIVE_LLM_API_KEY') 'the key is never on any command line; only its variable name is passed'
+        Check ($env:WSLENV -ceq 'PSModulePath/w:ODS_NATIVE_LLM_API_KEY/w:USERPROFILE/p' -and -not (Test-Path Env:ODS_NATIVE_LLM_API_KEY)) 'the setup process environment is restored after the delegate starts'
+    } finally {
+        $env:WSLENV = $previousWslEnv
+        if ($null -eq $previousKey) { Remove-Item Env:ODS_NATIVE_LLM_API_KEY -ErrorAction SilentlyContinue } else { $env:ODS_NATIVE_LLM_API_KEY = $previousKey }
+    }
 } finally { Remove-Item -LiteralPath $delegateRoot -Recurse -Force }
 function Reset-Scenario {
     $script:calls = [Collections.Generic.List[string]]::new()
@@ -59,6 +88,7 @@ function Reset-Scenario {
     $script:featureCode = 0
     $script:allowPreparation = $true
     $script:capturedArguments = @()
+    $script:capturedNewInstallation = @()
     $script:capturedRoot = ''
     $script:capturedStateRoot = ''
     $script:downloadCode = 0
@@ -70,6 +100,7 @@ function Reset-Scenario {
     $script:virtualization = $true
     $script:freeGB = 200
     $script:dockerInstalled = $true
+    $script:dockerAlreadyInstalled = $false
     $script:engineUp = $true
     $script:integrated = $true
     $script:userEnablesIntegration = $true
@@ -77,6 +108,8 @@ function Reset-Scenario {
     $script:installNeedsRestart = $false
     $script:amdPlan = $null
     $script:amdArgs = @()
+    $script:amdEnvironment = @{}
+    $script:capturedEnvironment = @{}
     $script:linuxHome = '/home/user'
     $script:amdBinding = @()
     $script:distroListFailure = $null
@@ -85,7 +118,10 @@ function Reset-Scenario {
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
 function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$script:dockerInstalled; Exe='docker-desktop.exe'; Cli='docker.exe' } }
-function Install-ODSPortalDockerDesktop { $script:calls.Add('docker-install'); $script:dockerInstalled = $true }
+function Install-ODSPortalDockerDesktop {
+    $script:calls.Add('docker-install'); $script:dockerInstalled = $true
+    return [pscustomobject]@{ AlreadyInstalled=$script:dockerAlreadyInstalled; Desktop=(Get-ODSPortalDockerDesktop) }
+}
 function Test-ODSPortalDockerEngine($Desktop) { return $script:engineUp }
 function Start-ODSPortalDockerDesktop($Desktop) { $script:calls.Add('docker-start'); $script:engineUp = $true }
 function Wait-ODSPortalDistroDocker([string]$Distro, [int]$Seconds) {
@@ -107,10 +143,11 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
 }
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Get-ODSPortalAmdPlan([string]$SourceRoot) { $script:calls.Add('amd-plan'); return $script:amdPlan }
-function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro, [string]$WslInstallDir) {
-    $script:calls.Add('amd-lemonade:' + $Plan.GpuName)
+function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro, [string]$WslInstallDir) {
+    $script:calls.Add('amd-runtime:' + $Plan.GpuName)
     $script:amdBinding = @($WslDistro, $WslInstallDir)
-    return $script:amdArgs
+    if (@($script:amdArgs).Count -eq 0) { return $null }
+    return [pscustomobject]@{ Arguments = $script:amdArgs; Environment = $script:amdEnvironment }
 }
 function Test-ODSPortalAdministrator { return $script:scenario -eq 'admin' }
 function Test-ODSNativeWindowsInstall { return $script:scenario -eq 'native' }
@@ -126,12 +163,14 @@ function Initialize-ODSPortalUbuntuUser([string]$Distro) {
     if ($script:scenario -eq 'resume-user') { $script:scenario='ready' }
     return $script:userSetupCode
 }
-function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal, [string]$DockerDesktopPath = '', [string]$StateRoot = '') {
+function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal, [string]$DockerDesktopPath = '', [string]$StateRoot = '', [string[]]$NewInstallationArguments = @(), [System.Collections.IDictionary]$ForwardEnvironment = @{}) {
     $script:calls.Add('install:' + $Distro)
     $script:openPortal = $OpenPortal
     $script:capturedArguments = $LinuxArguments
+    $script:capturedNewInstallation = $NewInstallationArguments
     $script:capturedRoot = $InstallRoot
     $script:capturedStateRoot = $StateRoot
+    $script:capturedEnvironment = $ForwardEnvironment
     return $script:delegateCode
 }
 function Invoke-ODSPortalWsl([string[]]$Arguments) {
@@ -218,10 +257,40 @@ try {
     Reset-Scenario
     $options = @{All=$true; NoLangfuse=$true; Tier='2'; InstallDir='/home/user/ODS data'; SummaryJsonPath='/home/user/result.json'; StateRoot='C:\ODS private\state'}
     Check ((Invoke-ODSPortalSetup $options 'unused') -eq 0) 'ready host delegates successfully'
-    Check (($script:capturedArguments[-3..-1] -join ' ') -eq '--pixel --no-hermes --no-openclaw') 'mandatory Pixel policy wins after --all'
+    Check (($script:capturedArguments[-2..-1] -join ' ') -eq '--pixel --no-hermes') 'mandatory Pixel policy wins after --all'
     Check (($script:capturedArguments -join ' ') -match '--all --no-langfuse') 'explicit disable follows all'
     Check ($script:capturedRoot -eq '/home/user/ODS data') 'Linux install path forwarded intact'
     Check ($script:capturedStateRoot -ceq 'C:\ODS private\state' -and ($script:capturedArguments -join ' ') -notmatch 'StateRoot|ODS private') 'setup forwards Windows state location without injecting it into Linux flags'
+    Check ((@($script:capturedNewInstallation) -join ' ') -ceq '--no-hermes') 'a new installation still starts without Hermes'
+    Reset-Scenario
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'ready host without -All delegates successfully'
+    Check ($script:capturedArguments[-1] -ceq '--pixel' -and $script:capturedArguments -notcontains '--no-hermes') 'Linux flags leave --no-hermes out, so a rerun keeps the installed selection'
+    Check ((@($script:capturedNewInstallation) -join ' ') -ceq '--no-hermes') 'Hermes is turned off only through the new-installation flag'
+    Reset-Scenario
+    $null = Invoke-ODSPortalSetup @{NoHermes=$true} 'unused'
+    Check ($script:capturedArguments -contains '--no-hermes') '-NoHermes turns Hermes off on a rerun too'
+    # windows.ps1 owns the new-installation probe (no <root>/.env before
+    # install-core). Run its real flag block for a new installation and a rerun.
+    $windowsAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../installers/windows.ps1'), [ref]$null, [ref]$null)
+    $envProbe = $windowsAst.Find({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -eq '$newInstallation' }, $true)
+    $flagBlock = $windowsAst.Find({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and $n.Clauses[0].Item1.Extent.Text -eq '$newInstallation -and $NewInstallationArgs' }, $true)
+    $launch = $windowsAst.Find({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and $n.Extent.Text -eq '& wsl.exe -d $Distro bash -lc $wslCommand' }, $true)
+    Check ($envProbe -and $flagBlock -and $launch -and $envProbe.Extent.EndOffset -lt $flagBlock.Extent.StartOffset -and $flagBlock.Extent.EndOffset -lt $launch.Extent.StartOffset) 'windows.ps1 decides the new-installation flags after its .env probe and before the Linux installer runs'
+    function New-ODSWslInstallerCommand([string]$RepoRoot, [string[]]$Arguments, [string]$ResolvedRoot) { "install-core $($Arguments -join ' ')" }
+    $repoRootWsl = '/mnt/c/source'
+    $lifetimeIdentity = [pscustomobject]@{ installRoot = '/home/user/ods' }
+    $NewInstallationArgs = @('--no-hermes')
+    foreach ($case in @(
+        @{ New=$false; Given=@('--windows-system-directory', 'C:\Windows\system32', '--pixel'); Expected='--windows-system-directory C:\Windows\system32 --pixel'; Command='unchanged'; Name='a rerun omits --no-hermes, so the installed selection stays' },
+        @{ New=$true; Given=@('--windows-system-directory', 'C:\Windows\system32', '--pixel'); Expected='--windows-system-directory C:\Windows\system32 --pixel --no-hermes'; Command='install-core --windows-system-directory C:\Windows\system32 --pixel --no-hermes'; Name='a new installation gets --no-hermes' },
+        @{ New=$true; Given=@('--all', '--pixel', '--no-hermes'); Expected='--all --pixel --no-hermes'; Command='install-core --all --pixel --no-hermes'; Name='a new installation with -All gets the flag once' }
+    )) {
+        $newInstallation = $case.New
+        $PassthroughArgs = $case.Given
+        $wslCommand = 'unchanged'
+        . ([scriptblock]::Create($flagBlock.Extent.Text))
+        Check ((@($PassthroughArgs) -join ' ') -ceq $case.Expected -and $wslCommand -ceq $case.Command) ('windows.ps1: ' + $case.Name)
+    }
     foreach ($badState in @('relative\state','C:\','\\server\share','C:\a\..\state','C:\bad"state')) {
         Reset-Scenario
         $message=''
@@ -256,7 +325,7 @@ try {
                 Check ($message -match '0x8007274c' -and $message.Contains("wsl exit $($probe.Code)")) 'failed PID 1 preserves the WSL exit code and diagnostic'
             }
             Check (-not $script:calls.Contains('confirm') -and -not $script:calls.Contains('systemd:Ubuntu-24.04')) 'unknown systemd state never offers or enables systemd'
-            Check (-not ($script:calls -match '^(install:|docker-wait:|amd-lemonade:)')) 'unknown systemd state stops before Docker preparation or installation'
+            Check (-not ($script:calls -match '^(install:|docker-wait:|amd-runtime:)')) 'unknown systemd state stops before Docker preparation or installation'
         }
     }
     Reset-Scenario
@@ -306,22 +375,33 @@ try {
     Check ((Invoke-ODSPortalSetup @{Cloud=$true} 'unused') -eq 0) 'cloud mode does not require local NVIDIA readiness'
     Check (-not ($script:calls -match 'nvidia-smi|Runtimes')) 'cloud mode performs no GPU probes'
     Check (-not $script:calls.Contains('amd-plan')) 'cloud mode does not plan an AMD GPU route'
-    # AMD: the model runs in Lemonade Server on Windows; Linux gets --lemonade-url.
+    # AMD: the model runs in llama.cpp on Windows; Linux gets --native-llm-*.
     $fixturePlan = [pscustomobject]@{ GpuName='AMD Radeon RX 9070 XT'; VramMB=16304; Model='qwen3.5-9b'; LinuxTier='2' }
-    $fixtureLemonadeArgs = @('--lemonade-url', 'http://localhost:8080', '--lemonade-model', 'extra.Qwen3.5-9B-Q4_K_M.gguf', '--lemonade-gpu-name', 'AMD Radeon RX 9070 XT', '--lemonade-gpu-vram-mb', '16304')
+    $fixtureNativeArgs = @('--native-llm-url', 'http://localhost:8080', '--native-llm-host-transport', 'model-router',
+        '--native-llm-model', 'Qwen3.5-9B-Q4_K_M.gguf', '--native-llm-context-size', '65536',
+        '--native-llm-gpu-name', 'AMD Radeon RX 9070 XT', '--native-llm-gpu-vram-mb', '16304', '--native-llm-api-key-env', 'ODS_NATIVE_LLM_API_KEY')
+    $fixtureEnvironment = @{ ODS_NATIVE_LLM_API_KEY = ('e' * 64) }
     Reset-Scenario
     $script:amdPlan = $fixturePlan
-    $script:amdArgs = $fixtureLemonadeArgs
-    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host installs through Windows Lemonade'
-    Check (($script:capturedArguments -join ' ') -match '--pixel --no-hermes --no-openclaw --lemonade-url http://localhost:8080 --lemonade-model extra\.Qwen3\.5-9B-Q4_K_M\.gguf --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304 --tier 2$') 'AMD host passes the Lemonade route and GPU tier to Linux'
-    Check ($script:calls.IndexOf('amd-lemonade:AMD Radeon RX 9070 XT') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'Lemonade is ready before the Linux installer starts'
+    $script:amdArgs = $fixtureNativeArgs
+    $script:amdEnvironment = $fixtureEnvironment
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host installs through llama.cpp on Windows'
+    Check (($script:capturedArguments -join ' ') -match '--pixel --native-llm-url http://localhost:8080 --native-llm-host-transport model-router --native-llm-model Qwen3\.5-9B-Q4_K_M\.gguf --native-llm-context-size 65536 --native-llm-gpu-name AMD Radeon RX 9070 XT --native-llm-gpu-vram-mb 16304 --native-llm-api-key-env ODS_NATIVE_LLM_API_KEY --tier 2$') 'AMD host passes the native llama.cpp route and GPU tier to Linux'
+    Check ((@($script:capturedNewInstallation) -join ' ') -ceq '--no-hermes') 'AMD host keeps the new-installation flag'
+    Check (-not (($script:capturedArguments -join ' ') -match 'lemonade') -and -not (($script:capturedArguments -join ' ').Contains($fixtureEnvironment.ODS_NATIVE_LLM_API_KEY))) 'no Lemonade flag and no key value reach the Linux arguments'
+    Check ($script:capturedEnvironment['ODS_NATIVE_LLM_API_KEY'] -ceq $fixtureEnvironment.ODS_NATIVE_LLM_API_KEY) 'the key is handed to the Linux installer launch for WSLENV forwarding'
+    Check ($script:calls.IndexOf('amd-runtime:AMD Radeon RX 9070 XT') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'the Windows model server is ready before the Linux installer starts'
     Check (($script:amdBinding -join '|') -ceq 'Ubuntu-24.04|/home/user/ods' -and $script:capturedRoot -ceq '/home/user/ods') 'default AMD binding and delegated install use the same explicit Linux path'
     Reset-Scenario
-    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:linuxHome = "/home/some user's home"
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureNativeArgs; $script:amdEnvironment = $fixtureEnvironment; $script:delegateCode = 9
+    $failureNotice = @(& { $script:failedResult = Invoke-ODSPortalSetup @{} 'unused' } 6>&1 | ForEach-Object { [string]$_ }) -join "`n"
+    Check ($script:failedResult -eq 9 -and $failureNotice -match 'chat stays unavailable until it does\. Rerun the same install\.ps1 command') 'a failed Linux step after the Windows cutover tells the user to rerun'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureNativeArgs; $script:linuxHome = "/home/some user's home"
     $null = Invoke-ODSPortalSetup @{} 'unused'
     Check ($script:amdBinding[1] -ceq "/home/some user's home/ods" -and $script:capturedRoot -ceq $script:amdBinding[1]) 'HOME spaces and apostrophes survive binding without shell interpolation'
     Reset-Scenario
-    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureNativeArgs
     $null = Invoke-ODSPortalSetup @{InstallDir='/srv/ODS data'} 'unused'
     Check ($script:amdBinding[1] -ceq '/srv/ODS data' -and $script:capturedRoot -ceq '/srv/ODS data' -and
         -not ($script:calls -like '*printenv HOME')) 'custom install directory is bound verbatim without querying HOME'
@@ -330,18 +410,18 @@ try {
         $script:amdPlan = $fixturePlan; $script:linuxHome = $badHome
         $message = ''
         try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
-        Check ($message -and -not ($script:calls -like 'amd-lemonade:*') -and -not ($script:calls -like 'install:*')) 'ambiguous or non-normalized HOME stops before model and Linux installation'
+        Check ($message -and -not ($script:calls -like 'amd-runtime:*') -and -not ($script:calls -like 'install:*')) 'ambiguous or non-normalized HOME stops before model and Linux installation'
     }
     Reset-Scenario
     $script:amdPlan = $fixturePlan
-    $script:amdArgs = $fixtureLemonadeArgs
+    $script:amdArgs = $fixtureNativeArgs
     Check ((Invoke-ODSPortalSetup @{Tier='3'} 'unused') -eq 0) 'AMD host with an explicit tier installs'
     Check ((@($script:capturedArguments | Where-Object { $_ -eq '--tier' })).Count -eq 1 -and ($script:capturedArguments -join ' ') -match '--tier 3') 'explicit -Tier is kept and not duplicated by the AMD route'
     Reset-Scenario
     $script:amdPlan = $fixturePlan
     $script:amdArgs = @()
-    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host that declines Lemonade still installs'
-    Check (-not (($script:capturedArguments -join ' ') -match 'lemonade|--tier')) 'declined Lemonade keeps the CPU route'
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host that keeps the CPU route still installs'
+    Check (-not (($script:capturedArguments -join ' ') -match 'native-llm|lemonade|--tier') -and $script:capturedEnvironment.Count -eq 0) 'the CPU route passes no native flags and no key'
     Reset-Scenario
     $script:nvidiaDriver = 576
     $script:amdPlan = $fixturePlan
@@ -366,7 +446,7 @@ try {
         $script:engineUp=$false
         Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'resuming after Docker installation reaches Pixel setup'
         Check ($script:calls.Contains('docker-start') -and $script:calls.Contains('install:Ubuntu-24.04')) 'resumed setup starts Docker and delegates to Ubuntu'
-        Check ($script:capturedArguments -contains '--pixel' -and $script:capturedArguments -contains '--no-hermes') 'empty-host recovery retains Pixel and excludes Hermes'
+        Check ($script:capturedArguments -contains '--pixel' -and $script:capturedNewInstallation -contains '--no-hermes') 'empty-host recovery retains Pixel and excludes Hermes from the new installation'
     }
     foreach ($failure in @('Wsl/E_ACCESSDENIED', 'Wsl/WSL_E_SERVICE_NOT_AVAILABLE', 'Wsl/WSL_E_DEFAULT_DISTRO_NOT_FOUND_OTHER', 'Wsl/NOT_WSL_E_DEFAULT_DISTRO_NOT_FOUND', '')) {
         Reset-Scenario
@@ -429,12 +509,20 @@ try {
     Reset-Scenario
     $script:delegateCode=17
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 17) 'delegated install/health failure remains failure'
-    foreach ($bad in @(@{Hermes=$true}, @{OpenClaw=$true}, @{InstallDir='D:\ODS'}, @{InstallDir='/'}, @{SummaryJsonPath='/tmp/../secret'}, @{Tier='9'}, @{Distro='x --user root'})) {
+    foreach ($bad in @(@{Hermes=$true}, @{InstallDir='D:\ODS'}, @{InstallDir='/'}, @{SummaryJsonPath='/tmp/../secret'}, @{Tier='9'}, @{Distro='x --user root'})) {
         Reset-Scenario
         $rejected=$false
         try { $null=Invoke-ODSPortalSetup $bad 'unused' } catch { $rejected=$true }
         Check ($rejected -and $script:calls.Count -eq 0) 'invalid options fail before system operations'
     }
+    # The legacy OpenClaw extension was removed. Existing commands that still
+    # pass -OpenClaw keep working: the switch prints a notice and is ignored.
+    Reset-Scenario
+    # Join the host records directly; Out-String would wrap at console width.
+    $legacyNotice = @(& { $script:legacyResult = Invoke-ODSPortalSetup @{OpenClaw=$true} 'unused' } 6>&1 | ForEach-Object { [string]$_ }) -join "`n"
+    Check ($script:legacyResult -eq 0 -and $script:calls.Contains('install:Ubuntu-24.04')) 'legacy -OpenClaw is accepted'
+    Check (($script:capturedArguments -join ' ') -notmatch 'openclaw') 'legacy -OpenClaw passes nothing to the Linux installer'
+    Check ($legacyNotice -match 'The legacy OpenClaw extension was removed; -OpenClaw is ignored\.') 'legacy -OpenClaw prints the removal notice'
     Reset-Scenario
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'ready host installs'
     Check ($script:openPortal) 'interactive install opens Portal at the end'
@@ -467,6 +555,27 @@ try {
     $script:dockerInstalled=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'installing Docker Desktop requests a restart'
     Check ($script:calls.Contains('docker-install') -and $script:calls.Contains('resume') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'Docker Desktop install continues after restart, not before'
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:dockerAlreadyInstalled=$true; $script:engineUp=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'a verified winget no-update result continues with the existing Desktop'
+    Check ($script:calls.Contains('docker-start') -and -not $script:calls.Contains('resume')) 'existing Desktop starts without scheduling a Windows restart'
+    $order = $script:calls.ToArray()
+    $delegate = [Array]::IndexOf($order, 'install:Ubuntu-24.04')
+    foreach ($probe in @('--distribution Ubuntu-24.04 --exec docker info', '--distribution Ubuntu-24.04 --exec docker compose version')) {
+        $index = [Array]::IndexOf($order, $probe)
+        Check ($index -ge 0 -and $index -lt $delegate) 'existing Desktop must pass its WSL Docker and Compose probes before Linux setup'
+    }
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:dockerAlreadyInstalled=$true
+    $script:integrated=$false; $script:userEnablesIntegration=$false
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'Resources > WSL integration, turn on Ubuntu-24\.04' -and -not $script:calls.Contains('install:Ubuntu-24.04') -and -not $script:calls.Contains('resume')) 'winget no-update never bypasses missing WSL integration'
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:dockerAlreadyInstalled=$true; $script:scenario='compose'
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'docker compose version must succeed' -and -not $script:calls.Contains('install:Ubuntu-24.04') -and -not $script:calls.Contains('resume')) 'winget no-update never bypasses a failed Compose probe'
     Reset-Scenario
     $script:dockerInstalled=$false; $script:allowPreparation=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1) 'declining Docker Desktop cancels setup'
@@ -517,5 +626,44 @@ try {
         if (-not $resolved.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolved -Leaf) -notlike 'ods-portal-entry-*') { throw 'Unsafe test cleanup path' }
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
+
+    # API mode: an external OpenAI-compatible server serves the model. The key
+    # file stays on Windows and only its variable name reaches the Linux flags.
+    $api = @(Get-ODSPortalLinuxArguments @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'deepseek-v4.1-flash'; ExternalLlmKeyFile = 'C:\keys\api.key' })
+    $joined = $api -join ' '
+    Check ($joined.Contains('--external-llm-url https://api.example.test --external-llm-provider openai-compatible --external-llm-model deepseek-v4.1-flash') -and
+        $joined.Contains('--external-llm-key-env ODS_EXTERNAL_LLM_API_KEY') -and -not $joined.Contains('api.key')) 'API mode passes the server, model and key variable name, never the key file or key'
+    $ollama = (@(Get-ODSPortalLinuxArguments @{ ExternalLlmUrl = 'http://192.168.1.20:11434'; ExternalLlmModel = 'qwen3:8b'; ExternalLlmProvider = 'ollama' }) -join ' ')
+    Check ($ollama.Contains('--external-llm-provider ollama') -and -not $ollama.Contains('--external-llm-key-env')) 'API mode accepts Ollama and needs no key'
+    # Back from API mode: -NoExternalLlm drops the API route (fleet row 24:
+    # Windows had no way back short of uninstalling).
+    $local = (@(Get-ODSPortalLinuxArguments @{ NoExternalLlm = $true }) -join ' ')
+    Check ($local.Contains('--no-external-llm') -and -not $local.Contains('--external-llm-url')) '-NoExternalLlm asks the Linux installer to leave API mode'
+    Check (-not ((@(Get-ODSPortalLinuxArguments @{}) -join ' ').Contains('--no-external-llm'))) 'a plain rerun does not leave API mode'
+    foreach ($bad in @(
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm'; NoExternalLlm = $true },
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm'; Cloud = $true },
+        @{ ExternalLlmModel = 'm' },
+        @{ ExternalLlmUrl = 'ftp://api.example.test'; ExternalLlmModel = 'm' },
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = '' },
+        @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm'; ExternalLlmProvider = 'other' })) {
+        $refused = $false
+        try { $null = Get-ODSPortalLinuxArguments $bad } catch { $refused = $true }
+        Check $refused ("API mode refuses " + (($bad.Keys | Sort-Object) -join '+'))
+    }
+    $keyDir = Join-Path ([IO.Path]::GetTempPath()) ('ods-api-key-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $keyDir
+    try {
+        $keyFile = Join-Path $keyDir 'api.key'
+        Set-Content -LiteralPath $keyFile -Value "  sk-fixture-123  `r`n" -NoNewline
+        Check ((Read-ODSPortalExternalLlmKey $keyFile) -ceq 'sk-fixture-123') 'the API key file is read as one trimmed line'
+        Set-Content -LiteralPath $keyFile -Value "sk-one`r`nsk-two`r`n" -NoNewline
+        $refused = $false
+        try { $null = Read-ODSPortalExternalLlmKey $keyFile } catch { $refused = $_.Exception.Message -match 'exactly one API key' }
+        Check $refused 'a key file with two keys is refused'
+        $refused = $false
+        try { $null = Read-ODSPortalExternalLlmKey (Join-Path $keyDir 'missing.key') } catch { $refused = $_.Exception.Message -match 'was not found' }
+        Check $refused 'a missing key file is named'
+    } finally { Remove-Item -LiteralPath $keyDir -Recurse -Force }
     Write-Host "Passed $script:checks Windows Portal setup contracts."
 } finally { $env:OS=$originalOS }

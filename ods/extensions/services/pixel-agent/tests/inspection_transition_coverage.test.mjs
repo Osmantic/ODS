@@ -311,7 +311,21 @@ test('tower2 round 102 update turn: the refused edit, repairs and both plans rep
   assert.equal(r.verification().status, 'passed');
   await r.until(update, TOWER2_UPDATE_NO_MATCH);
   const failed = await r.run(TOWER2_UPDATE_NO_MATCH);
-  assert.equal(failed.content[0].text, TOWER2_UPDATE_NO_MATCH.text, 'byte-identical to the recorded failure');
+  // Keep the historical fixture intact. Only post-click coaching has changed;
+  // every observation, failed step, snapshot and plan hash must still replay.
+  assert.equal(failed.isError, true);
+  assert.equal(failed.details.status, 'failed');
+  const {ok: recordedOk, ...recordedReceipt} = TOWER2_UPDATE_NO_MATCH.details;
+  assert.equal(recordedOk, false, 'the historical host envelope also reported failure');
+  assert.deepEqual(failed.details, recordedReceipt);
+  const failedText = failed.content[0].text;
+  assert.equal(failedText.slice(failedText.indexOf(INSPECTION_SCOPE)),
+    TOWER2_UPDATE_NO_MATCH.text.slice(TOWER2_UPDATE_NO_MATCH.text.indexOf(INSPECTION_SCOPE)),
+    'scope, rendered observations and serialized evidence remain byte-identical');
+  const guidance = failedText.slice(0, failedText.indexOf(INSPECTION_SCOPE));
+  assert.match(guidance, /An earlier click passed, but the requested result remains unverified/);
+  assert.match(guidance, /either a locator mismatch or that the interaction did not create or render the expected state/);
+  assert.doesNotMatch(guidance, /the handler did not run|no DOM change|the page did not change|cannot make it appear/i);
   const {args} = assertIncomplete(await r.run(TOWER2_INSPECT_UPDATE), TOWER2_INSPECT_UPDATE, TOWER2_PUBLISH_UPDATE, TOWER2_TARGET);
   assert.equal(r.verification().status, 'failed');
   await r.inspect(args, 'update-corrected');

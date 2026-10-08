@@ -5,6 +5,9 @@ on:
   push:
     branches: [main, master, public-beta]
 
+permissions:
+  contents: read
+
 jobs:
   readiness:
     strategy:

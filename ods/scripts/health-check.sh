@@ -101,10 +101,9 @@ _now_ms() {
 test_llm() {
     local start
     start=$(_now_ms)
-    # Lemonade (AMD) serves its OpenAI-compatible API under /api/v1;
-    # llama-server uses /v1. Honor LLM_API_BASE_PATH from .env (written by
-    # phase 06, default /v1) so the probe hits the backend that is actually
-    # running instead of failing on every Lemonade install.
+    # llama-server serves its OpenAI-compatible API under /v1. Honor
+    # LLM_API_BASE_PATH from .env (written by phase 06, default /v1) so the
+    # probe hits the path the configured backend serves.
     local base_path="${LLM_API_BASE_PATH:-/v1}"
     local response
     response=$(curl -sf --max-time $TIMEOUT \

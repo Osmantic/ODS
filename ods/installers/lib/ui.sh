@@ -25,7 +25,7 @@
 DIVIDER="──────────────────────────────────────────────────────────────────────────────"
 
 # Resolve presentation separately from install interactivity. The cinematic UI
-# is for a human at a real terminal; pipes, CI, Tauri, and unattended installs
+# is for a human at a real terminal; pipes, CI, GUI front ends, and unattended installs
 # get stable one-line output with no cursor motion or screen clearing.
 ods_ui_cinematic() {
   case "${ODS_UI_MODE:-auto}" in
@@ -235,7 +235,7 @@ ods_select_lore_messages() {
   fi
   case "${ODS_MODE:-local}" in
     cloud) LORE_MESSAGES=("${ODS_CLOUD_LORE_MESSAGES[@]}") ;;
-    lemonade|external) LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}") ;;
+    external) LORE_MESSAGES=("${ODS_EXTERNAL_LORE_MESSAGES[@]}") ;;
     *) LORE_MESSAGES=("${ODS_LOCAL_LORE_MESSAGES[@]}") ;;
   esac
 }
@@ -596,22 +596,29 @@ check_service() {
   return 1
 }
 
-# Show hardware summary — CRT monospace box
+# Show hardware summary — memory arguments include their display units.
 show_hardware_summary() {
     local gpu_name="$1"
     local gpu_vram="$2"
     local cpu_info="$3"
     local ram_gb="$4"
     local disk_gb="$5"
+    local windows_ram="${6:-}"
+    local is_wsl="${7:-false}"
 
     echo ""
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     echo -e "${GRN}|${NC}  ${BGRN}HARDWARE SCAN RESULTS${NC}                                      ${GRN}|${NC}"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
     printf "${GRN}|${NC}  GPU:    %-50s ${GRN}|${NC}\n" "${gpu_name:-Not detected}"
-    [[ -n "$gpu_vram" ]] && printf "${GRN}|${NC}  VRAM:   %-50s ${GRN}|${NC}\n" "${gpu_vram}GB"
+    [[ -n "$gpu_vram" ]] && printf "${GRN}|${NC}  VRAM:   %-50s ${GRN}|${NC}\n" "$gpu_vram"
     printf "${GRN}|${NC}  CPU:    %-50s ${GRN}|${NC}\n" "${cpu_info:-Unknown}"
-    printf "${GRN}|${NC}  RAM:    %-50s ${GRN}|${NC}\n" "${ram_gb}GB"
+    if [[ "$is_wsl" == true ]]; then
+        printf "${GRN}|${NC}  Windows RAM: %-45s ${GRN}|${NC}\n" "${windows_ram:-Unavailable (Windows interop)}"
+        printf "${GRN}|${NC}  WSL RAM:     %-45s ${GRN}|${NC}\n" "$ram_gb"
+    else
+        printf "${GRN}|${NC}  RAM:    %-50s ${GRN}|${NC}\n" "$ram_gb"
+    fi
     printf "${GRN}|${NC}  Disk:   %-50s ${GRN}|${NC}\n" "${disk_gb}GB available"
     echo -e "${GRN}+-------------------------------------------------------------+${NC}"
 }
@@ -683,7 +690,6 @@ show_install_menu() {
             # --hermes/--no-hermes on the command line wins over the preset
             # (the Windows Pixel path passes --no-hermes).
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
-            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
             [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=true
             ENABLE_COMFYUI=true
@@ -711,7 +717,6 @@ show_install_menu() {
             ENABLE_RAG=false
             ENABLE_RECOMMENDED=false
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=false
-            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=false
             [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=false
             ENABLE_COMFYUI=false
@@ -735,7 +740,7 @@ show_install_menu() {
 show_success_card() {
     local webui_url=$1
     local dashboard_url=$2
-    local ip_addr=$3
+    local lan_address=$3  # host:port other devices can reach, or empty
 
     if ods_ui_cinematic; then
         printf '\a'  # terminal bell only for a human terminal
@@ -756,9 +761,9 @@ show_success_card() {
         printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
     fi
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
-    if [[ -n "$ip_addr" ]]; then
+    if [[ -n "$lan_address" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"
-        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${ip_addr}:3001"
+        printf "${GRN}|${NC}   ${WHT}http://%-51s${NC} ${GRN}|${NC}\n" "${lan_address}"
         echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     fi
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
@@ -772,7 +777,7 @@ show_success_card() {
             type_line "Cloud mode is active; your configured providers may receive prompts and responses." "$DGRN" 0.04
             type_line "Review provider privacy, retention, and usage terms before sending sensitive data." "$DGRN" 0.04
             ;;
-        lemonade|external)
+        external)
             type_line "Inference uses the external endpoint you configured." "$DGRN" 0.04
             type_line "Traffic handling depends on that endpoint and its operator." "$DGRN" 0.04
             ;;

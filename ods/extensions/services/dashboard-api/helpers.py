@@ -67,8 +67,8 @@ class _DirSizeCache:
 
 _dir_size_cache = _DirSizeCache()
 
-# Lemonade serves at /api/v1 instead of llama.cpp's /v1
-_LLM_API_PREFIX = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
+# Every managed runtime is upstream llama-server (OpenAI routes under /v1).
+_LLM_API_PREFIX = "/v1"
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +507,24 @@ def _saved_lifetime_tokens():
     return int(value) if value is not None else None
 
 
+def _host_native_llm() -> bool:
+    """The model runs in an ODS-owned llama-server on the Windows host.
+
+    That server requires its API key for /props and /metrics, which this
+    container never holds; the host agent reads them for the dashboard
+    (``/v1/llm/status``), through the WSL bridge when the stack runs in WSL.
+    """
+    return (LLM_BACKEND != "external"
+            and read_live_env_value("AMD_INFERENCE_LOCATION").strip().lower() == "host")
+
+
+async def _host_llm_status() -> dict:
+    status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
+    if not isinstance(status, dict) or not isinstance(status.get("health"), dict):
+        raise ValueError("host llama-server status is invalid")
+    return status
+
+
 def get_cached_llama_metrics() -> dict:
     """Last known measurement for status fallback; never claim fresh telemetry."""
     result = dict(_llama_metrics_sample.get("result", {}))
@@ -532,7 +550,7 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
     service = SERVICES.get("llama-server", {})
     identity = (LLM_BACKEND, service.get("host"), service.get("port"),
                 str(os.environ.get("LLAMA_METRICS_PORT", service.get("port", ""))), model_name,
-                read_live_env_value("AMD_INFERENCE_LOCATION") if LLM_BACKEND == "lemonade" else "")
+                "host-native" if _host_native_llm() else "")
     async with _llama_metrics_lock:
         now = _metrics_clock()
         previous_identity = _llama_metrics_sample.get("identity")
@@ -545,19 +563,11 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
             _prev_tokens.clear()
             if not same_endpoint:
                 _llama_metrics_sample.clear()
-            saved = _llama_metrics_sample.get("result", {}) if same_endpoint else {}
-            if LLM_BACKEND == "lemonade":
-                lifetime = saved.get("lifetime_tokens")
-                count_mode = saved.get("token_count_mode", "unavailable")
-            else:
-                lifetime = _saved_lifetime_tokens()
-                count_mode = "cumulative"
             return {
                 "tokens_per_second": previous["rate"] if previous else None,
-                "lifetime_tokens": lifetime,
-                "token_count_mode": count_mode,
-                "throughput_mode": (previous.get("mode") if previous else None) or (
-                    "latest_completion" if LLM_BACKEND == "lemonade" else "generation_interval"),
+                "lifetime_tokens": _saved_lifetime_tokens(),
+                "token_count_mode": "cumulative",
+                "throughput_mode": (previous.get("mode") if previous else None) or "generation_interval",
                 "throughput_state": "unavailable",
                 "throughput_sampled_at": previous["at"] if previous else None,
                 "throughput_model": previous_identity[4] if previous else None,
@@ -580,7 +590,7 @@ async def get_llama_metrics(model_hint: Optional[str] = None) -> dict:
                 _llama_metrics_sample["result"].update(
                     throughput_state="unavailable", inference_active=None)
             raise
-        mode = result.pop("_throughput_mode", "latest_completion" if LLM_BACKEND == "lemonade" else "generation_interval")
+        mode = result.pop("_throughput_mode", "generation_interval")
 
         available = result.pop("_available", False)
         reset = result.pop("_counter_reset", False)
@@ -655,6 +665,26 @@ def _observe_live_output_slots(payload, sampled_at: float):
     return round(sum(count - previous["counts"][key] for key, count in counts.items()) / elapsed, 1)
 
 
+def _parse_llama_prometheus(body: str) -> dict:
+    """Read the llama.cpp counters the dashboard samples from a /metrics body."""
+    metrics: dict = {}
+    for line in body.split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        metric_name = parts[0].split("{", 1)[0]
+        for counter in ("requests_processing", "tokens_predicted_total", "tokens_predicted_seconds_total"):
+            if metric_name.endswith(counter):
+                try:
+                    metrics[counter] = float(parts[1])
+                except ValueError:
+                    pass
+    return metrics
+
+
 async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Optional[str] = None) -> dict:
     """Get inference metrics from llama-server Prometheus /metrics endpoint.
 
@@ -662,101 +692,35 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
     loaded model name can avoid a redundant HTTP round-trip.
     """
     try:
-        if LLM_BACKEND == "lemonade":
-            if read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
-                if read_live_env_value("LEMONADE_HOST_TRANSPORT") == "model-router":
-                    host_status = await request_agent_json("GET", "/v1/model/external-observation?stats=1", timeout=6)
-                    if (not isinstance(host_status, dict) or host_status.get("status") != "verified"
-                            or host_status.get("modelId") != model_hint):
-                        raise ValueError("Lemonade telemetry does not match the observed model")
-                else:
-                    host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
-                stats = host_status.get("stats")
-            else:
-                if "llama-server" not in SERVICES:
-                    return {
-                        "tokens_per_second": None,
-                        "lifetime_tokens": None,
-                        "token_count_mode": "unavailable",
-                    }
-                host = SERVICES["llama-server"]["host"]
-                port = SERVICES["llama-server"]["port"]
-                client = await _get_httpx_client()
-                stats = None
-                last_error: Exception | None = None
-                api_key = read_live_env_value("LEMONADE_API_KEY")
-                headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
-                for prefix in ("/api/v1", "/v1"):
-                    try:
-                        resp = await client.get(
-                            f"http://{host}:{port}{prefix}/stats", headers=headers,
-                        )
-                        resp.raise_for_status()
-                        stats = resp.json()
-                        break
-                    except (httpx.HTTPError, ValueError) as exc:
-                        last_error = exc
-                if stats is None:
-                    raise ValueError(f"Lemonade stats endpoint is unavailable: {last_error}")
-            if not isinstance(stats, dict):
-                raise ValueError("Lemonade stats response is unavailable")
-            tokens_per_second = _measurement_number(stats.get("tokens_per_second"))
-            if tokens_per_second and not is_plausible_single_request_tps(tokens_per_second):
-                logger.warning("Ignoring implausible Lemonade single-request throughput")
-                tokens_per_second = None
-            output_tokens = _measurement_number(stats.get("output_tokens"))
-            return {
-                "tokens_per_second": round(tokens_per_second, 1) if tokens_per_second is not None else None,
-                # Lemonade /v1/stats documents only the most recent request.
-                # It has no cumulative counter or stable event sequence, so
-                # polling cannot truthfully construct a lifetime total.
-                "lifetime_tokens": int(output_tokens) if output_tokens is not None else None,
-                "token_count_mode": "latest_completion" if output_tokens is not None else "unavailable",
-                "_available": tokens_per_second is not None,
-                "_completion_identity": hashlib.sha256(json.dumps({key: stats.get(key) for key in ("time_to_first_token", "tokens_per_second", "input_tokens", "output_tokens", "prompt_tokens", "decode_token_times")}, sort_keys=True).encode()).hexdigest(),
-            }
-
-        if "llama-server" not in SERVICES:
-            return {
-                "tokens_per_second": None,
-                "lifetime_tokens": _saved_lifetime_tokens(),
-                "token_count_mode": "cumulative",
-            }
-
-        host = SERVICES["llama-server"]["host"]
-        port = SERVICES["llama-server"]["port"]
-        metrics_port = int(os.environ.get("LLAMA_METRICS_PORT", port))
-        model_name = model_hint if model_hint is not None else (await get_loaded_model() or "")
-        url = f"http://{host}:{metrics_port}/metrics"
-        params = {"model": model_name} if model_name else {}
-        client = await _get_httpx_client()
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-
-        metrics = {}
-        for line in resp.text.split("\n"):
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            parts = line.split()
-            if len(parts) < 2:
-                continue
-            metric_name = parts[0].split("{", 1)[0]
-            if metric_name.endswith("requests_processing"):
-                try:
-                    metrics["requests_processing"] = float(parts[1])
-                except ValueError:
-                    pass
-            if metric_name.endswith("tokens_predicted_total"):
-                try:
-                    metrics["tokens_predicted_total"] = float(parts[1])
-                except ValueError:
-                    pass
-            if metric_name.endswith("tokens_predicted_seconds_total"):
-                try:
-                    metrics["tokens_predicted_seconds_total"] = float(parts[1])
-                except ValueError:
-                    pass
+        slots_url = None
+        params: dict = {}
+        if _host_native_llm():
+            # The host agent already parsed llama.cpp's Prometheus counters.
+            reported = (await _host_llm_status()).get("metrics")
+            if not isinstance(reported, dict):
+                raise ValueError("host llama-server metrics are unavailable")
+            metrics = {key: reported[key] for key in (
+                "requests_processing", "tokens_predicted_total", "tokens_predicted_seconds_total",
+            ) if key in reported}
+            client = None
+        else:
+            if "llama-server" not in SERVICES:
+                return {
+                    "tokens_per_second": None,
+                    "lifetime_tokens": _saved_lifetime_tokens(),
+                    "token_count_mode": "cumulative",
+                }
+            host = SERVICES["llama-server"]["host"]
+            port = SERVICES["llama-server"]["port"]
+            metrics_port = int(os.environ.get("LLAMA_METRICS_PORT", port))
+            model_name = model_hint if model_hint is not None else (await get_loaded_model() or "")
+            url = f"http://{host}:{metrics_port}/metrics"
+            params = {"model": model_name} if model_name else {}
+            slots_url = f"http://{host}:{metrics_port}/slots"
+            client = await _get_httpx_client()
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            metrics = _parse_llama_prometheus(resp.text)
 
         # A successful HTTP response is not sufficient proof that this is the
         # llama.cpp Prometheus endpoint. Treat HTML, proxy error pages, and
@@ -792,9 +756,9 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
         mode = "generation_interval"
         if reset or active is not True:
             _prev_tokens.pop("live_slots", None)
-        if active is True:
+        if active is True and slots_url:
             try:
-                slots = await client.get(f"http://{host}:{metrics_port}/slots", params=params, timeout=2.0)
+                slots = await client.get(slots_url, params=params, timeout=2.0)
                 slots.raise_for_status()
                 live_rate = _observe_live_output_slots(slots.json(), _metrics_clock())
                 if live_rate is not None and live_rate > 0:
@@ -817,12 +781,6 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
     except (AgentClientError, httpx.HTTPError, httpx.TimeoutException, OSError, ValueError, KeyError) as e:
         _prev_tokens.clear()  # never measure a rate across an unavailable gap
         logger.warning("get_llama_metrics failed: %s: %s", type(e).__name__, e)
-        if LLM_BACKEND == "lemonade":
-            return {
-                "tokens_per_second": None,
-                "lifetime_tokens": None,
-                "token_count_mode": "unavailable",
-            }
         return {
             "tokens_per_second": None,
             "lifetime_tokens": _saved_lifetime_tokens(),
@@ -832,58 +790,25 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
 
 async def get_loaded_model() -> Optional[str]:
     """Query llama-server for actually loaded model name."""
-    if LLM_BACKEND == "lemonade" and read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
+    if _host_native_llm():
         try:
-            if read_live_env_value("LEMONADE_HOST_TRANSPORT") == "model-router":
-                # Windows Lemonade reached through WSL has no Windows-native
-                # /v1/llm/status endpoint on its Linux host agent. Use the
-                # agent's live observation through the configured transport.
-                observation = await request_agent_json("GET", "/v1/model/external-observation", timeout=6)
-                if not isinstance(observation, dict) or observation.get("status") != "verified":
-                    return None
-                loaded = observation.get("modelId")
-                return loaded.strip() if isinstance(loaded, str) and loaded.strip() else None
-            status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
-            health = status.get("health") or {}
-            loaded = health.get("model_loaded")
-            return loaded.strip() if health.get("status") == "ok" and isinstance(loaded, str) and loaded.strip() else None
-        except (AgentClientError, OSError, ValueError, KeyError):
+            health = (await _host_llm_status())["health"]
+        except (AgentClientError, OSError, ValueError):
             return None
+        loaded = health.get("model_loaded")
+        return loaded.strip() if health.get("status") == "ok" and isinstance(loaded, str) and loaded.strip() else None
     if "llama-server" not in SERVICES:
         return None
     try:
         host = SERVICES["llama-server"]["host"]
         port = SERVICES["llama-server"]["port"]
         client = await _get_httpx_client()
-
-        # Lemonade lists ALL available models at /v1/models without a status
-        # field, so the first entry is arbitrary.  The health endpoint is the
-        # authoritative source for which model is actually loaded.
-        if LLM_BACKEND == "lemonade":
-            resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/health")
-            loaded = resp.json().get("model_loaded")
-            return loaded if loaded else None
-
-        # A host Lemonade server may have been installed as a generic
-        # OpenAI-compatible external backend. Its /v1/models lists every
-        # available model, with no loaded status; the first entry is not the
-        # active model. Prefer its explicit health identity when present.
+        # A generic OpenAI-compatible server lists every available model with
+        # no loaded status; its first entry is not the active model.
         external_compatible = (
             LLM_BACKEND == "external"
             and os.environ.get("EXTERNAL_LLM_PROVIDER", "").strip().lower() == "openai-compatible"
         )
-        if external_compatible:
-            try:
-                health = await client.get(f"http://{host}:{port}/api/v1/health")
-                if health.status_code == 200:
-                    payload = health.json()
-                    if isinstance(payload, dict) and "model_loaded" in payload:
-                        loaded = payload["model_loaded"]
-                        if payload.get("status") == "ok" and isinstance(loaded, str) and loaded.strip():
-                            return loaded
-                        return None
-            except (httpx.HTTPError, ValueError):
-                pass
 
         # llama.cpp: /v1/models returns the loaded model with status info.
         resp = await client.get(f"http://{host}:{port}{_LLM_API_PREFIX}/models")
@@ -905,6 +830,12 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
     Accepts an optional *model_hint* to skip the redundant
     ``get_loaded_model()`` call when the caller already has it.
     """
+    if _host_native_llm():
+        try:
+            context = (await _host_llm_status())["health"].get("context_length")
+        except (AgentClientError, OSError, ValueError):
+            return None
+        return context if type(context) is int and context > 0 else None
     if "llama-server" not in SERVICES:
         return None
     try:
@@ -921,6 +852,34 @@ async def get_llama_context_size(model_hint: Optional[str] = None) -> Optional[i
     except (httpx.HTTPError, httpx.TimeoutException, ValueError, KeyError) as e:
         logger.debug("get_llama_context_size failed: %s", e)
         return None
+
+
+async def get_llama_vision_support() -> Optional[bool]:
+    """Whether the active llama-server loaded a vision projector.
+
+    llama-server reports it as ``/props`` ``modalities.vision``. None when that
+    cannot be read: the owner's own server, an unreachable runtime, or a build
+    without the field.
+    """
+    if _host_native_llm():
+        try:
+            vision = (await _host_llm_status())["health"].get("vision")
+        except (AgentClientError, OSError, ValueError):
+            return None
+        return vision if type(vision) is bool else None
+    if LLM_BACKEND == "external" or "llama-server" not in SERVICES:
+        return None
+    try:
+        host = SERVICES["llama-server"]["host"]
+        port = SERVICES["llama-server"]["port"]
+        client = await _get_httpx_client()
+        props = (await client.get(f"http://{host}:{port}/props")).json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.debug("get_llama_vision_support failed: %s", e)
+        return None
+    modalities = props.get("modalities") if isinstance(props, dict) else None
+    vision = modalities.get("vision") if isinstance(modalities, dict) else None
+    return vision if type(vision) is bool else None
 
 
 # --- Service Health Cache ---
@@ -1037,7 +996,12 @@ async def check_service_health(
             raise ValueError("HTTP health port must be positive")
     except (ValueError, TypeError):
         return _service_status_from_config(service_id, config, "down")
-    url = f"http://{host}:{health_port}{health_path}"
+    # A model API (API mode) is not a local service: probe it with its own
+    # scheme and Host header. The probe carries no key (only LiteLLM holds
+    # it), so an API that answers 401/403 is up; this checks reachability.
+    external_api = config.get("external_api") is True
+    scheme = config.get("scheme") if external_api and config.get("scheme") in ("http", "https") else "http"
+    url = f"{scheme}://{host}:{health_port}{health_path}"
     status = "unknown"
     response_time = None
 
@@ -1045,8 +1009,9 @@ async def check_service_health(
         session = await _get_aio_session()
         start = asyncio.get_event_loop().time()
         # Send Host header so reverse-proxy services (e.g. Caddy in Baserow)
-        # route the request correctly instead of returning 404.
-        headers = {"Host": "localhost"}
+        # route the request correctly instead of returning 404. Some API
+        # front ends refuse a library User-Agent (Cloudflare error 1010).
+        headers = {"User-Agent": "ODS-Dashboard"} if external_api else {"Host": "localhost"}
         get_kwargs: dict = {"headers": headers}
         health_auth_env = config.get("health_auth_env")
         if health_auth_env is not None:
@@ -1066,7 +1031,10 @@ async def check_service_health(
             get_kwargs["timeout"] = timeout
         async with session.get(url, **get_kwargs) as resp:
             response_time = (asyncio.get_event_loop().time() - start) * 1000
-            status = "healthy" if resp.status < (300 if health_auth_env is not None else 400) else "unhealthy"
+            if external_api:
+                status = "healthy" if resp.status < 400 or resp.status in (401, 403) else "unhealthy"
+            else:
+                status = "healthy" if resp.status < (300 if health_auth_env is not None else 400) else "unhealthy"
     except asyncio.TimeoutError:
         # Service is reachable but slow — report degraded rather than down
         # to avoid false "offline" flashes during startup or heavy load.
@@ -1088,6 +1056,23 @@ async def check_service_health(
         external_port=config.get("external_port", config["port"]),
         status=status, response_time_ms=round(response_time, 1) if response_time else None
     )
+
+
+def _switched_off_status(service_id: str, config: dict):
+    """An awaitable not-deployed status for a service the install switched off, else None.
+
+    The Compose resolver leaves Open WebUI out when ENABLE_OPEN_WEBUI is not
+    "true" (docker-compose.gateway-only.yml). Probing it then failed on name
+    resolution, and only two exact DNS error texts count as not deployed;
+    Docker in WSL words it differently, so Windows counted a core service
+    offline (fleet, Strixy: "6/7 core services online").
+    """
+    if service_id != "open-webui" or (read_live_env_value("ENABLE_OPEN_WEBUI") or "true").strip().lower() == "true":
+        return None
+
+    async def not_deployed():
+        return _service_status_from_config(service_id, config, "not_deployed")
+    return not_deployed()
 
 
 async def get_all_services() -> list[ServiceStatus]:
@@ -1114,7 +1099,8 @@ async def get_all_services() -> list[ServiceStatus]:
                 service_configs.setdefault(service_id, current_optional[service_id])
             else:
                 service_configs.pop(service_id, None)
-    tasks = [check_service_health(sid, cfg) for sid, cfg in service_configs.items()]
+    tasks = [_switched_off_status(sid, cfg) or check_service_health(sid, cfg)
+             for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     statuses: list[ServiceStatus] = []
@@ -1175,20 +1161,19 @@ async def get_all_services() -> list[ServiceStatus]:
             status = status.model_copy(update={"status": replacement})
         reconciled.append(status)
 
-    if LLM_BACKEND == "lemonade" and read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
+    if _host_native_llm():
         llama_index = next(
             (index for index, status in enumerate(reconciled) if status.id == "llama-server"),
             None,
         )
         if llama_index is not None and reconciled[llama_index].status != "healthy":
             try:
-                host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
-                health = host_status.get("health")
-                if isinstance(health, dict) and str(health.get("status") or "").casefold() == "ok":
+                health = (await _host_llm_status())["health"]
+                if str(health.get("status") or "").casefold() == "ok":
                     reconciled[llama_index] = reconciled[llama_index].model_copy(
                         update={"status": "healthy"},
                     )
-            except AgentClientError:
+            except (AgentClientError, ValueError):
                 pass
     return reconciled
 
@@ -1339,6 +1324,7 @@ def get_bootstrap_status() -> BootstrapStatus:
             return BootstrapStatus(active=False)
         if status == "" and not data.get("bytesDownloaded") and not data.get("percent"):
             return BootstrapStatus(active=False)
+        phase = status if status in ("starting", "downloading", "verifying", "swapping") else None
 
         # Reconcile with the filesystem only for non-active states. If the
         # target model file is already present on disk and the status is
@@ -1384,7 +1370,7 @@ def get_bootstrap_status() -> BootstrapStatus:
             bytes_downloaded = max(0, min(bytes_downloaded, bytes_total))
 
         return BootstrapStatus(
-            active=True, model_name=data.get("model"), percent=percent,
+            active=True, phase=phase, model_name=data.get("model"), percent=percent,
             downloaded_gb=bytes_downloaded / (1024**3) if bytes_downloaded else None,
             total_gb=bytes_total / (1024**3) if bytes_total else None,
             speed_mbps=speed_bps / (1024**2) if speed_bps else None,

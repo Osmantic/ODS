@@ -7,9 +7,9 @@
 #          pre-download STT model
 #
 # Expects: DRY_RUN, GPU_BACKEND, ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT,
-#           ENABLE_EMBEDDINGS, ENABLE_HERMES, ENABLE_OPENCLAW, LLM_MODEL,
+#           ENABLE_EMBEDDINGS, ENABLE_HERMES, LLM_MODEL,
 #           LOG_FILE, BGRN, AMB, NC,
-#           WHISPER_PORT, TTS_PORT, OPENCLAW_PORT,
+#           WHISPER_PORT, TTS_PORT,
 #           PERPLEXICA_PORT (:-3004), COMFYUI_PORT (:-8188),
 #           show_phase(), check_service(), ai(), ai_ok(), ai_warn(), signal(),
 #           ui_status_line(), ods_ui_cinematic()
@@ -58,7 +58,6 @@ if $DRY_RUN; then
     log "[DRY RUN]   - Auto-configure Perplexica for ${LLM_MODEL:-default model}"
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN]   - Hermes Agent + hermes-proxy"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Pixel gateway + private ingress + edge"
-    [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN]   - OpenClaw"
     [[ "$ENABLE_VOICE" == "true" ]] && log "[DRY RUN]   - Whisper (STT), Kokoro (TTS), pre-download STT model"
     [[ "$ENABLE_WORKFLOWS" == "true" ]] && log "[DRY RUN]   - n8n"
     [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && log "[DRY RUN]   - Qdrant"
@@ -140,12 +139,22 @@ _phase12_env_get() {
     echo "$default"
 }
 
-_phase12_external_lemonade() {
-    local external managed mode
-    external="${LEMONADE_EXTERNAL:-$(_phase12_env_get LEMONADE_EXTERNAL false)}"
-    managed="${AMD_INFERENCE_MANAGED:-$(_phase12_env_get AMD_INFERENCE_MANAGED "")}"
-    mode="${ODS_MODE:-$(_phase12_env_get ODS_MODE local)}"
-    [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+# curl with an optional bearer token. The token reaches curl through a header
+# file descriptor, never argv, which any local user can read with ps.
+_phase12_curl_bearer() {
+    local token="$1"
+    shift
+    if [[ -n "$token" ]]; then
+        curl -H @<(printf 'Authorization: Bearer %s\n' "$token") "$@"
+    else
+        curl "$@"
+    fi
+}
+
+# True when the model runs in a host-native llama-server outside the stack
+# (the Windows Portal's llama-server.exe); containers reach it through LiteLLM.
+_phase12_host_native_llm() {
+    [[ -n "${NATIVE_LLM_BASE_URL:-$(_phase12_env_get NATIVE_LLM_BASE_URL "")}" ]]
 }
 
 _phase12_external_llm() {
@@ -169,24 +178,22 @@ _phase12_model_looks_non_chat() {
         || [[ "$model_lc" == *comfy* ]]
 }
 
-_phase12_verify_external_lemonade_completion() {
+_phase12_verify_host_native_llm_completion() {
     local litellm_port="${SERVICE_PORTS[litellm]:-4000}"
     local litellm_key="${LITELLM_KEY:-$(_phase12_env_get LITELLM_KEY "")}"
-    local model="${LEMONADE_MODEL:-$(_phase12_env_get LEMONADE_MODEL default)}"
+    local model="${GGUF_FILE:-$(_phase12_env_get GGUF_FILE default)}"
+    local native_url="${NATIVE_LLM_BASE_URL:-$(_phase12_env_get NATIVE_LLM_BASE_URL "")}"
     [[ -n "$model" ]] || model="default"
-    local auth_header=()
-    [[ -n "$litellm_key" ]] && auth_header=(-H "Authorization: Bearer ${litellm_key}")
     local body response response_file error_file http_status curl_rc curl_error
     body='{"model":"default","messages":[{"role":"user","content":"Reply with exactly OK."}],"max_tokens":16,"temperature":0,"stream":false,"chat_template_kwargs":{"enable_thinking":false}}'
 
-    ai "Verifying external Lemonade completion route through LiteLLM..."
-    response_file="$(mktemp "${TMPDIR:-/tmp}/ods-lemonade-response.XXXXXX")"
-    error_file="$(mktemp "${TMPDIR:-/tmp}/ods-lemonade-error.XXXXXX")"
-    if http_status="$(curl -sS --max-time 180 \
+    ai "Verifying the host-native llama-server completion route through LiteLLM..."
+    response_file="$(mktemp "${TMPDIR:-/tmp}/ods-native-llm-response.XXXXXX")"
+    error_file="$(mktemp "${TMPDIR:-/tmp}/ods-native-llm-error.XXXXXX")"
+    if http_status="$(_phase12_curl_bearer "$litellm_key" -sS --max-time 180 \
         -o "$response_file" \
         -w '%{http_code}' \
         -X POST "http://127.0.0.1:${litellm_port}/v1/chat/completions" \
-        "${auth_header[@]}" \
         -H "Content-Type: application/json" \
         -d "$body" 2>"$error_file")"; then
         curl_rc=0
@@ -198,21 +205,21 @@ _phase12_verify_external_lemonade_completion() {
     rm -f -- "$response_file" "$error_file"
 
     if (( curl_rc != 0 )); then
-        printf "  ${RED}ERR${NC} External Lemonade completion failed\n"
+        printf "  ${RED}ERR${NC} Host-native llama-server completion failed\n"
         ai_warn "LiteLLM request failed before an HTTP response (curl exit ${curl_rc}, model: ${model})."
-        ai_warn "Check that Lemonade is reachable from Docker containers, is bound to 0.0.0.0 on trusted hosts, and that LEMONADE_MODEL matches /api/v1/models."
-        printf 'External Lemonade curl failure (exit %s):\n%s\n' "$curl_rc" "$curl_error" >> "$LOG_FILE"
+        ai_warn "Check that LiteLLM is running and that llama-server on Windows answers: curl ${native_url:-<NATIVE_LLM_BASE_URL>}/health"
+        printf 'Host-native llama-server curl failure (exit %s):\n%s\n' "$curl_rc" "$curl_error" >> "$LOG_FILE"
         return 1
     fi
 
     case "$http_status" in
         2??) ;;
         *)
-            printf "  ${RED}ERR${NC} External Lemonade completion route returned HTTP %s\n" "$http_status"
-            ai_warn "LiteLLM rejected the external Lemonade completion (HTTP ${http_status}, model: ${model})."
-            ai_warn "Inspect the bounded response recorded in ${LOG_FILE}; restore the active model route, then rerun the installer."
+            printf "  ${RED}ERR${NC} Host-native llama-server completion route returned HTTP %s\n" "$http_status"
+            ai_warn "LiteLLM rejected the host-native llama-server completion (HTTP ${http_status}, model: ${model})."
+            ai_warn "Inspect the bounded response recorded in ${LOG_FILE}; check the llama-server task in the ODS Portal, then rerun setup from the Portal."
             {
-                printf 'External Lemonade completion HTTP %s:\n' "$http_status"
+                printf 'Host-native llama-server completion HTTP %s:\n' "$http_status"
                 printf '%.*s\n' 4096 "$response"
             } >> "$LOG_FILE"
             return 1
@@ -220,22 +227,17 @@ _phase12_verify_external_lemonade_completion() {
     esac
 
     if printf '%s\n' "$response" | grep -Eq '"content"[[:space:]]*:[[:space:]]*"[^"]+'; then
-        printf "  ${BGRN}OK${NC} External Lemonade completion route healthy\n"
+        printf "  ${BGRN}OK${NC} Host-native llama-server completion route healthy\n"
         return 0
     fi
 
-    printf "  ${RED}ERR${NC} External Lemonade returned no assistant content\n"
+    printf "  ${RED}ERR${NC} Host-native llama-server returned no assistant content\n"
     ai_warn "LiteLLM returned HTTP ${http_status} but did not provide non-empty assistant content (model: ${model})."
     if _phase12_model_looks_non_chat "$model"; then
-        ai_warn "The selected Lemonade model looks like an image/non-chat model. ODS needs a text/chat model for the LLM route."
+        ai_warn "The selected model looks like an image/non-chat model. ODS needs a text/chat model for the LLM route."
     fi
-    ai_warn "Run: curl ${LEMONADE_BASE_URL:-$(_phase12_env_get LEMONADE_BASE_URL http://127.0.0.1:13305)}${LEMONADE_API_BASE_PATH:-$(_phase12_env_get LEMONADE_API_BASE_PATH /api/v1)}/models"
-    if [[ -f "${SCRIPT_DIR}/install.sh" ]]; then
-        ai_warn "Then rerun from ${SCRIPT_DIR}: LEMONADE_MODEL=<chat-model-id> ./install.sh --use-existing-lemonade ..."
-    else
-        ai_warn "Then rerun from ${SCRIPT_DIR}: LEMONADE_MODEL=<chat-model-id> bash install-core.sh --use-existing-lemonade ..."
-    fi
-    printf '%s\n' "$response" >> "$LOG_FILE"
+    ai_warn "Check the model loaded by llama-server on Windows: curl ${native_url:-<NATIVE_LLM_BASE_URL>}/health, then rerun setup from the ODS Portal."
+    printf '%.*s\n' 4096 "$response" >> "$LOG_FILE"
     return 1
 }
 
@@ -277,6 +279,7 @@ _phase12_verify_external_llm_completion() {
         fi | "${docker_cmd_arr[@]}" exec -i "$dashboard_container" python -c '
 import json
 import sys
+import urllib.error
 import urllib.request
 
 base = sys.argv[1].rstrip("/")
@@ -289,7 +292,9 @@ payload = json.dumps({
     "temperature": 0,
     "stream": False,
 }).encode()
-headers = {"Content-Type": "application/json"}
+# Some API front ends refuse the default Python User-Agent (Cloudflare
+# error 1010), so the probe names ODS.
+headers = {"Content-Type": "application/json", "User-Agent": sys.argv[3]}
 if key:
     headers["Authorization"] = "Bearer " + key
 request = urllib.request.Request(
@@ -297,8 +302,13 @@ request = urllib.request.Request(
     data=payload,
     headers=headers,
 )
-with urllib.request.urlopen(request, timeout=90) as result:
-    body = json.load(result)
+try:
+    with urllib.request.urlopen(request, timeout=90) as result:
+        body = json.load(result)
+except urllib.error.HTTPError as exc:
+    # The status picks the installer hint; the start of the reply goes to the log.
+    detail = " ".join(exc.read(300).decode("utf-8", "replace").split())[:200]
+    raise SystemExit("API answered HTTP %d: %s" % (exc.code, detail))
 choices = body.get("choices") if isinstance(body, dict) and not body.get("error") else None
 if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
     raise SystemExit("completion response did not contain a valid choice")
@@ -319,11 +329,23 @@ elif content in (None, "") and reasoning and choice.get("finish_reason") == "len
     print("reasoning token received; one-token probe exhausted")
 else:
     raise SystemExit("completion response contained no usable inference token")
-' "$container_url" "$model" 2>&1
+' "$container_url" "$model" "ODS/${VERSION:-unknown}" 2>&1
     )" || {
         ai_bad "External ${provider} probe did not return a usable inference token."
-        ai "Check the saved probe error for provider response or connectivity problems before changing network settings."
-        printf '%s\n' "$response" >> "$LOG_FILE"
+        if [[ "$response" =~ API\ answered\ HTTP\ ([0-9]{3}) ]]; then
+            case "${BASH_REMATCH[1]}" in
+                401|403) ai "The API refused this request from the ODS Docker network (HTTP ${BASH_REMATCH[1]}), although the same key worked from this computer. A firewall or bot filter in front of the API may be blocking it." ;;
+                429) ai "The API is rate-limiting this key (HTTP 429). Wait a minute, then rerun the installer." ;;
+                *) ai "The API answered HTTP ${BASH_REMATCH[1]}. Its reply is saved in ${LOG_FILE}." ;;
+            esac
+        else
+            ai "Check the saved probe error for provider response or connectivity problems before changing network settings."
+        fi
+        # A LiteLLM proxy in front of the API echoes the end of a refused key
+        # and the key's hash; neither belongs in a log people share for help.
+        printf '%s\n' "$response" | sed -E \
+            -e 's/(Received API Key[[:space:]]*=[[:space:]]*)[^,[:space:]"]+/\1[redacted]/g' \
+            -e 's/(Key Hash \(Token\)[[:space:]]*=[[:space:]]*)[0-9A-Fa-f]+/\1[redacted]/g' >> "$LOG_FILE"
         return 1
     }
 
@@ -339,12 +361,12 @@ if _phase12_external_llm; then
     if ! _phase12_verify_external_llm_completion; then
         exit 1
     fi
-elif [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade; then
+elif [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_host_native_llm; then
     ods_progress 86 "health" "Waiting for LiteLLM gateway"
     _check_health "LiteLLM" "http://127.0.0.1:${SERVICE_PORTS[litellm]:-4000}${SERVICE_HEALTH[litellm]:-/health/readiness}" 60 10 "$(sr_container litellm)"
-    if _phase12_external_lemonade; then
-        ods_progress 87 "health" "Verifying external Lemonade route"
-        if ! _phase12_verify_external_lemonade_completion; then
+    if _phase12_host_native_llm; then
+        ods_progress 87 "health" "Verifying the host-native llama-server route"
+        if ! _phase12_verify_host_native_llm_completion; then
             exit 1
         fi
     fi
@@ -406,17 +428,13 @@ fi
 # cold path inside the installer (where time isn't surprising) so Hermes
 # lands on an already-hot slot. Bounded by curl --max-time so a stalled
 # llama-server doesn't hang phase 12.
-if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_external_lemonade || _phase12_external_llm; then
-    ai "External LLM mode - skipping local llama-server pre-warm"
+if [[ "${ODS_MODE:-local}" == "cloud" ]] || _phase12_host_native_llm || _phase12_external_llm; then
+    ai "The LLM runs outside the stack - skipping local llama-server pre-warm"
 else
     ods_progress 87 "health" "Pre-warming LLM slot"
-    _prewarm_api_path="/v1"
+    # llama-server serves the GGUF file name (--alias) under /v1 on every GPU.
     _prewarm_model="${GGUF_FILE:-${LLM_MODEL:-default}}"
-    if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
-        _prewarm_api_path="/api/v1"
-        [[ -n "${GGUF_FILE:-}" ]] && _prewarm_model="extra.${GGUF_FILE}"
-    fi
-    _prewarm_url="http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}${_prewarm_api_path}/chat/completions"
+    _prewarm_url="http://127.0.0.1:${SERVICE_PORTS[llama-server]:-8080}/v1/chat/completions"
     _prewarm_body="{\"model\":\"${_prewarm_model}\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"temperature\":0,\"stream\":false}"
     if curl -sf --max-time 120 -X POST "$_prewarm_url" \
         -H "Content-Type: application/json" \
@@ -471,18 +489,8 @@ if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
         # selected from the external provider in Perplexica's persisted route.
         PERPLEXICA_MODEL="$EXTERNAL_LLM_MODEL"
     elif [[ -n "${GGUF_FILE:-}" ]]; then
+        # llama-server serves the GGUF file name (--alias) on every runtime.
         PERPLEXICA_MODEL="$GGUF_FILE"
-        # Lemonade serves the model under a separate id. An AMD local install
-        # runs Lemonade while LLM_BACKEND stays "llama-server", so the runtime
-        # and the backend have to be checked independently — same rule as
-        # scripts/bootstrap-upgrade.sh and the container-side
-        # extensions/services/perplexica/sync-model-config.js.
-        _perplexica_runtime="$(printf '%s' "${AMD_INFERENCE_RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
-        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$_perplexica_runtime" == "lemonade" || "$_perplexica_backend" == "lemonade" ]]; then
-            PERPLEXICA_MODEL="${LEMONADE_MODEL:-}"
-            [[ -n "$PERPLEXICA_MODEL" ]] || PERPLEXICA_MODEL="extra.$GGUF_FILE"
-        fi
     fi
     PERPLEXICA_LLM_BASE_URL="${LLM_API_URL:-http://llama-server:8080}"
     if [[ "$_perplexica_switchboard_mode" == "enabled" ]]; then
@@ -535,7 +543,8 @@ import sys, json, urllib.request
 
 config = json.load(sys.stdin)["values"]
 providers = config.get("modelProviders", [])
-openai_prov = next((p for p in providers if p["type"] == "openai"), None)
+openai_index = next((i for i, p in enumerate(providers) if p["type"] == "openai"), None)
+openai_prov = providers[openai_index] if openai_index is not None else None
 transformers_prov = next((p for p in providers if p["type"] == "transformers"), None)
 
 if not openai_prov:
@@ -567,7 +576,9 @@ openai_prov["config"] = {
     "apiKey": api_key,
     "baseURL": base_url,
 }
-post("modelProviders", providers)
+# GET includes Vane-built-in models. Write only route fields for this provider.
+post(f"modelProviders.{openai_index}.chatModels", openai_prov["chatModels"])
+post(f"modelProviders.{openai_index}.config", openai_prov["config"])
 
 # Set default providers and models
 post("preferences", {
@@ -615,7 +626,6 @@ if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
         HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
     fi
 fi
-[[ "$ENABLE_OPENCLAW" == "true" ]] && _check_health "OpenClaw" "http://127.0.0.1:${SERVICE_PORTS[openclaw]:-7860}${SERVICE_HEALTH[openclaw]:-/}" 150 10 "$(sr_container openclaw)"
 if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
     ods_systemctl_user is-active opencode-web &>/dev/null && _check_health "OpenCode Web" "http://127.0.0.1:3003/" 10 5
 fi

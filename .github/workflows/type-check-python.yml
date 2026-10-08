@@ -5,54 +5,86 @@ on:
     branches: [main]
     paths:
       - "ods/**/*.py"
+      - "ods/extensions/services/*/requirements.lock"
+      - ".github/mypy-baseline.json"
+      - ".github/scripts/mypy-ratchet.py"
+      - ".github/scripts/test_mypy_ratchet.py"
       - ".github/workflows/type-check-python.yml"
   pull_request:
     branches: [main]
     paths:
       - "ods/**/*.py"
+      - "ods/extensions/services/*/requirements.lock"
+      - ".github/mypy-baseline.json"
+      - ".github/scripts/mypy-ratchet.py"
+      - ".github/scripts/test_mypy_ratchet.py"
       - ".github/workflows/type-check-python.yml"
 
 permissions:
   contents: read
 
+# mypy and each service's locked dependencies are pinned, so a run's result depends
+# only on the code. Existing errors are recorded in .github/mypy-baseline.json; a job
+# fails when a change adds a new one. See .github/scripts/mypy-ratchet.py.
 jobs:
   mypy:
-    name: Type check with mypy
+    name: mypy (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: dashboard-api
+            directory: ods/extensions/services/dashboard-api
+            sources: .
+          - target: token-spy
+            directory: ods/extensions/services/token-spy
+            sources: .
+          - target: privacy-shield
+            directory: ods/extensions/services/privacy-shield
+            sources: .
+          - target: scripts
+            directory: ods/scripts
+            sources: "*.py"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.11"
 
-      - name: Install mypy
-        run: pip install mypy
-
-      - name: Type check dashboard-api
-        continue-on-error: true
-        working-directory: ods/extensions/services/dashboard-api
+      - name: Install mypy and the locked dependencies
+        working-directory: ${{ matrix.directory }}
+        shell: bash
         run: |
-          pip install -r requirements.txt
-          mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
+          python -m pip install 'mypy==2.4.0'
+          if [[ -f requirements.lock ]]; then
+            python -m pip install --require-hashes -r requirements.lock
+          fi
 
-      - name: Type check token-spy
-        continue-on-error: true
-        working-directory: ods/extensions/services/token-spy
-        run: |
-          pip install -r requirements.txt
-          mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
+      - name: Self-test the ratchet
+        run: python -m unittest discover -s .github/scripts -p test_mypy_ratchet.py
 
-      - name: Type check privacy-shield
-        continue-on-error: true
-        working-directory: ods/extensions/services/privacy-shield
+      - name: Type check ${{ matrix.target }}
+        working-directory: ${{ matrix.directory }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          DIRECTORY: ${{ matrix.directory }}
+          SOURCES: ${{ matrix.sources }}
         run: |
-          pip install -r requirements.txt
-          mypy . --ignore-missing-imports --no-strict-optional --check-untyped-defs
-
-      - name: Type check scripts
-        continue-on-error: true
-        working-directory: ods/scripts
-        run: |
-          mypy *.py --ignore-missing-imports --no-strict-optional --check-untyped-defs
+          status=0
+          # shellcheck disable=SC2086  # SOURCES is a glob or a directory
+          mypy $SOURCES --ignore-missing-imports --no-strict-optional --check-untyped-defs \
+            > "$RUNNER_TEMP/mypy.txt" || status=$?
+          cat "$RUNNER_TEMP/mypy.txt"
+          # mypy exits 1 when it reports errors, which the ratchet judges; any other
+          # nonzero status means mypy itself failed.
+          if [[ "$status" -gt 1 ]]; then
+            exit "$status"
+          fi
+          python "$GITHUB_WORKSPACE/.github/scripts/mypy-ratchet.py" \
+            --target "$TARGET" --prefix "$DIRECTORY" < "$RUNNER_TEMP/mypy.txt"

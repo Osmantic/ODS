@@ -7,8 +7,8 @@ image has the benchmarked implementation: the dedicated ngram-mod parameters
 (llama.cpp b8955+) and speculative checkpoints for hybrid models such as
 Qwen3.5 (b8842+). The benchmarked build is b9014. LLAMA_SPEC_TYPE=none is the
 single opt-out, and a per-model LLAMA_ARG_SPEC_TYPE (e.g. draft-mtp) wins.
-Lemonade (AMD), Intel/Arc (b9014), Apple Docker (b9014) and native Windows get
-no default. Native macOS applies the same default through
+AMD (Vulkan and ROCm, b9014; not yet measured with ngram-mod), Intel/Arc
+(b9014), Apple Docker (b9014) and native Windows get no default. Native macOS applies the same default through
 installers/macos/lib/native-checkpoint-args.py, only when the installed binary
 has the implementation; tests/test_macos_runtime_llama_args.py covers it.
 
@@ -113,8 +113,8 @@ CHECKPOINT_READERS = (
     "installers/macos/lib/native-model.sh",
     "installers/phases/02-detection.sh",
     "installers/phases/06-directories.sh",
-    "installers/windows/install-windows.ps1",
-    "installers/windows/ods.ps1",
+    # The Windows legacy launch (installer logon task and ods.ps1) reads .env here.
+    "installers/windows/lib/native-llama-legacy.ps1",
     "installers/windows/lib/env-generator.ps1",
     "lib/safe-env.sh",
     "scripts/bootstrap-upgrade.sh",
@@ -276,8 +276,9 @@ def main() -> int:
         "nvidia": (BASE, "docker-compose.nvidia.yml"),
         "nvidia multi-GPU": (BASE, "docker-compose.nvidia.yml", "docker-compose.multigpu-nvidia.yml"),
         "cpu": (BASE, "docker-compose.cpu.yml"),
-        "amd (Lemonade)": (BASE, "docker-compose.amd.yml"),
-        "amd multi-GPU (Lemonade)": (BASE, "docker-compose.amd.yml", "docker-compose.multigpu-amd.yml"),
+        "amd": (BASE, "docker-compose.amd.yml"),
+        "amd rocm": (BASE, "docker-compose.amd.yml", "docker-compose.amd-rocm.yml"),
+        "amd multi-GPU": (BASE, "docker-compose.amd.yml", "docker-compose.multigpu-amd.yml"),
         "intel": (BASE, "docker-compose.intel.yml"),
         "arc": (BASE, "docker-compose.arc.yml"),
         "apple": (BASE, "docker-compose.apple.yml"),

@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY *.py ./
 COPY performance_evidence.json ./
 COPY routers/ routers/
+# A strict host umask can make copied source 0600/0700. Only the public code
+# copied into this image needs to be readable by the non-root runtime user.
+RUN chmod -R a+rX /app
 
 # Non-root user
 RUN useradd -m -u 1000 odser

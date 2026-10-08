@@ -24,11 +24,11 @@ python scripts/qualify-mtp.py --runtime /path/to/llama-server --model /path/to/m
 
 The command inspects files and runtime capabilities, then parses the complete baseline and MTP argument lists with `--help` last. It does not load the model or start an inference server. Choose a runtime backend that actually works on the host, such as Metal, CUDA, Vulkan, ROCm, or CPU, and verify the requested context under realistic memory conditions before serving traffic. Activation and verified cold starts repeat the argument preflight before stopping an existing runtime.
 
-For a Lemonade multimodal model, add `--launch-mode lemonade --vision-projector /path/to/mmproj.gguf`. This signs the actual full GPU layer count and projector hash alongside the model, executable, context, and cache settings. A standalone text-only test does not qualify the memory requirements of that deployment.
+For a multimodal model, add `--vision-projector /path/to/mmproj.gguf` so the baseline and MTP commands load the projector (`--mmproj`). A standalone text-only test does not qualify the memory requirements of that deployment.
 
-Runtime and router compatibility must be checked together. Lemonade 10 adds `--no-mmap` when it detects an integrated GPU, even when the chosen accelerator is discrete. Its custom-argument handling recognizes the legacy `--mmap`/`--no-mmap` pair. llama.cpp b10874 supports that pair and native MTP; b10875 removed the legacy flags, so an otherwise MTP-capable newer executable cannot be substituted into this Lemonade 10 path without updating the router contract. The qualifier checks these capabilities instead of assuming that a newer version is compatible. Loading flags are recorded in the qualified profile rather than added globally. See the [Lemonade 10 command builder](https://github.com/lemonade-sdk/lemonade/blob/v10.0.0/src/cpp/server/backends/llamacpp_server.cpp) and [llama.cpp change log](https://github.com/ggml-org/llama.cpp/issues/9289).
+The qualifier checks the runtime's capabilities instead of assuming that a newer version is compatible. Loading flags are recorded in the qualified profile rather than added globally.
 
-An explicit local profile can then be registered for Lemonade:
+An explicit local profile can then be registered:
 
 ```text
 python scripts/register-model-store.py --install-dir /path/to/ods --id models-ssd --directory /path/to/models --qualified-profile qualified.json --backend vulkan --enable-mtp
@@ -40,7 +40,7 @@ When the generic VRAM estimate cannot establish fit, the chat selector requires 
 
 This availability proves a successful native load and the measured workload, not that every weight resides in dedicated VRAM. Windows and GPU drivers can execute a model using both dedicated memory and shared system RAM, with a substantial performance cost. `activationSupport` therefore remains separate from the generic `fitsVram` result; a verified profile can be available while `fitsVram` remains false. Keep per-process dedicated/shared-memory observations with the benchmark when diagnosing such a deployment. A projector being loaded does not prove that image inference was tested.
 
-Availability currently requires the supported host-managed Windows Lemonade route, the same reported GPU identity/backend, sufficient GPU and system-memory capacity, and the registered artifact/context qualification. Model, executable and projector hashes are rechecked before activation. A changed context cannot reuse an existing memory qualification: activation and cold restart reject the mismatch. Existing default stores and unqualified profiles continue through their existing capacity checks.
+Availability currently requires the host-managed Windows llama-server route (native installer or Portal), the same reported GPU identity/backend, sufficient GPU and system-memory capacity, and the registered artifact/context qualification. Model, executable and projector hashes are rechecked before activation. A changed context cannot reuse an existing memory qualification: activation and cold restart reject the mismatch. Existing default stores and unqualified profiles continue through their existing capacity checks.
 
 ## Measure before recommending
 

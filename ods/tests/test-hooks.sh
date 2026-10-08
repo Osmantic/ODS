@@ -98,6 +98,8 @@ export EXTENSIONS_DIR="$TMPDIR_TEST/extensions/services"
 # Reset loaded flag
 _SR_LOADED=false
 . "$PROJECT_DIR/lib/service-registry.sh"
+# Sourcing the registry derives EXTENSIONS_DIR from SCRIPT_DIR; point it at the fixture.
+EXTENSIONS_DIR="$TMPDIR_TEST/extensions/services"
 sr_load 2>/dev/null
 
 HOOK_PATH="${SERVICE_SETUP_HOOKS[test-ext]:-}"

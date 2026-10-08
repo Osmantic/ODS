@@ -33,7 +33,8 @@ check_defaults() (
             exit 1
         }
     done
-    [[ "$ENABLE_OPENCODE" == false && "$ENABLE_OPENCLAW" == false ]]
+    # The removed legacy OpenClaw extension has no feature flag anymore.
+    [[ "$ENABLE_OPENCODE" == false && -z "${ENABLE_OPENCLAW+x}" ]]
 )
 
 check_defaults false false
@@ -70,7 +71,8 @@ check_fresh_source_layout() (
             exit 1
         }
     done
-    [[ "$ENABLE_OPENCODE" == false && "$ENABLE_OPENCLAW" == false ]]
+    # The removed legacy OpenClaw extension has no feature flag anymore.
+    [[ "$ENABLE_OPENCODE" == false && -z "${ENABLE_OPENCLAW+x}" ]]
 )
 check_fresh_source_layout
 check_gateway_default() (

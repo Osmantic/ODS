@@ -104,12 +104,6 @@
       "auth_required": true,
       "notes": "Primary chat UI."
     },
-    "openclaw": {
-      "risk": "deprecated-agent",
-      "lan_exposure": "opt-in-only",
-      "auth_required": true,
-      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Deprecated legacy agent. Must remain optional and token-gated."
-    },
     "opencode": {
       "risk": "code-execution-ui",
       "lan_exposure": "loopback-only",

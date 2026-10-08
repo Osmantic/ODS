@@ -584,6 +584,41 @@ def test_scoped_app_compatibility_applies_only_to_matching_runtime():
     assert lemonade_amd["agentViability"]["status"] == "unknown"
 
 
+def test_unmigrated_lemonade_env_reads_as_llama_server(tmp_path, monkeypatch):
+    # Round F serves the model through llama-server before the installer
+    # rewrites a Lemonade-era .env: llama-server evidence applies to it, and
+    # evidence recorded on Lemonade never does (contract section 6.6).
+    for key in ("ODS_MODE", "LLM_BACKEND", "GPU_BACKEND"):
+        monkeypatch.delenv(key, raising=False)
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text(
+        "ODS_MODE=lemonade\nGPU_BACKEND=amd\nLLM_BACKEND=lemonade\n", encoding="utf-8",
+    )
+    model = {
+        "id": "scoped-model",
+        "app_compatibility": {
+            "hermes_talk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Talk probe failed on llama-server",
+                "llmBackendScope": ["llama-server"],
+            },
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Perplexica probe failed through Lemonade",
+                "llmBackendScope": ["lemonade"],
+            },
+        },
+    }
+
+    context = model_compatibility_runtime_context(install_dir=install_dir)
+    verdicts = model_app_compatibility(model, runtime_context=context)
+
+    assert (context["llmBackend"], context["runtime"], context["odsMode"]) == ("llama-server", "llama-server", "local")
+    assert verdicts["hermesTalk"]["status"] == "unsupported_until_revalidated"
+    assert verdicts["perplexica"]["status"] == "unknown"
+
+
 def test_host_scoped_app_compatibility_applies_only_to_matching_host():
     model = {
         "id": "granite4.1-3b-q4",
@@ -680,24 +715,18 @@ def test_host_scoped_positive_override_must_be_current_and_dated():
     assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == "verified"
 
 
-def test_real_smollm3_strixy_revalidation_is_not_global():
+def test_real_smollm3_strixy_verdict_recorded_on_lemonade_no_longer_applies():
+    # The Strixy Perplexica proof ran through Lemonade; round F invalidates
+    # evidence recorded on it (contract section 6.6), so the global verdict
+    # holds on every host until Strixy is revalidated on llama-server.
     model = next(
         model for model in _official_model_catalog() if model["id"] == "smollm3-3b-q4"
     )
-    strixy = model_app_compatibility(
-        model, runtime_context={"hosts": ["strixy"], "llmBackend": "lemonade"},
-    )
-    windows = model_app_compatibility(
-        model, runtime_context={"hosts": ["windows-laptop"], "llmBackend": "llama-server"},
-    )
-    tower2 = model_app_compatibility(
-        model, runtime_context={"hosts": ["tower2"], "llmBackend": "lemonade"},
-    )
-
-    assert strixy["perplexica"]["status"] == "verified"
-    assert "r391/cycle-001/strixy-wsl-beta" in strixy["perplexica"]["evidence"]
-    assert windows["perplexica"]["status"] == "unsupported_until_revalidated"
-    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "scopedOverrides" not in model["app_compatibility"]["perplexica"]
+    for hosts, backend in ((["strixy"], "llama-server"), (["strixy"], "lemonade"),
+                           (["windows-laptop"], "llama-server"), (["tower2"], "llama-server")):
+        verdict = model_app_compatibility(model, runtime_context={"hosts": hosts, "llmBackend": backend})
+        assert verdict["perplexica"]["status"] == "unsupported_until_revalidated", (hosts, backend)
 
 
 def test_pixel_compatibility_is_explicit_and_host_scoped():
@@ -848,6 +877,45 @@ def test_model_payload_applies_host_scoped_app_compatibility_from_install_env(da
     assert windows_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "not_agent_viable"
     assert strixy_payload["models"][0]["appCompatibility"]["hermesTalk"]["status"] == "unknown"
     assert strixy_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "unknown"
+
+
+def test_host_scope_ignores_a_machine_name_that_matches_a_fleet_host(monkeypatch, tmp_path):
+    # A user's machine that happens to share a fleet host's name gets no
+    # fleet-scoped verdicts; only an explicit identity selects them.
+    import performance_oracle
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("ODS_DEVICE_NAME=strixy\n", encoding="utf-8")
+    for key in ("ODS_FLEET_HOST_ID", "ODS_COMPATIBILITY_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOSTNAME", "strixy")
+    monkeypatch.setenv("COMPUTERNAME", "strixy")
+    monkeypatch.setattr(performance_oracle.platform, "node", lambda: "strixy")
+    model = {
+        "id": "scoped-model",
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Global block",
+                "scopedOverrides": [{
+                    "status": "verified", "reason": "Fleet proof", "hostScope": ["strixy"],
+                    "expiresAt": "2999-01-01T00:00:00Z",
+                }],
+            },
+        },
+    }
+
+    context = model_compatibility_runtime_context(install_dir)
+    assert context["hosts"] == [] and context["host"] == ""
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
+
+    (install_dir / ".env").write_text("ODS_COMPATIBILITY_HOST=strixy\n", encoding="utf-8")
+    explicit = model_compatibility_runtime_context(install_dir)
+    assert explicit["hosts"] == ["strixy"]
+    assert model_app_compatibility(model, runtime_context=explicit)["perplexica"]["status"] == "verified"
 
 
 def test_real_catalog_gemma_perplexica_block_is_global():
@@ -1844,8 +1912,8 @@ def test_windows_amd_host_runtime_uses_install_ram_when_gpu_probe_is_unavailable
     (models_dir / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf").write_text("placeholder", encoding="utf-8")
     (install_dir / ".env").write_text(
         "GPU_BACKEND=amd\n"
-        "LLM_BACKEND=lemonade\n"
-        "AMD_INFERENCE_RUNTIME=lemonade\n"
+        "LLM_BACKEND=llama-server\n"
+        "AMD_INFERENCE_RUNTIME=llama-server\n"
         "AMD_INFERENCE_LOCATION=host\n"
         "SYSTEM_RAM_GB=128\n"
         "MODEL_RECOMMENDATION_POLICY=context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1\n",
@@ -2383,3 +2451,54 @@ def test_model_list_plans_every_context_with_the_install_policy(data_dir, tmp_pa
     small_27b = next(model for model in small["models"] if model["id"] == "qwen3.5-27b-q4")
     assert small_27b["contextLength"] < 65536
     assert small_27b["appCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+
+def _memory_budget_payload(tmp_path, data_dir, monkeypatch, *, ram, backend="amd", total_mb=32768):
+    # The recorded host RAM must win over a smaller container memory limit.
+    monkeypatch.setattr("performance_oracle._system_ram_gb", lambda: 8)
+    install = tmp_path / "memory-budget-install"
+    install.mkdir()
+    (install / ".env").write_text(
+        f"SYSTEM_RAM_GB={ram}\nLLM_MODEL=qwen3.5-9b\nGGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+    )
+    catalog = _official_model_catalog()
+    target = next(m for m in catalog if m.get("gguf_file") == "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
+    gpu = GPUInfo(name="AMD Radeon(TM) 8060S Graphics" if backend == "amd" else backend,
+        memory_used_mb=9276, memory_total_mb=total_mb, memory_percent=28.3,
+        utilization_percent=0, temperature_c=0, gpu_backend=backend,
+        memory_type="discrete" if backend == "nvidia" else "unified")
+    payload = build_models_payload(gpu, "Qwen3.5-9B-Q4_K_M", 0, install, data_dir,
+        catalog=catalog, evidence=[], downloaded_files_override={})
+    entry = next(m for m in payload["models"] if m["id"] == target["id"])
+    plan = planned_model_context(normalize_catalog_entry(target), gpu, ram, preferred_context=131072)
+    return payload, entry, plan
+
+
+def test_memory_budget_strixy_return_switch_agrees_with_activation(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=46)
+    assert plan["fits"] is True
+    assert entry["fitsVram"] is True
+    assert any(o["contextLength"] == plan["context_length"] and o["fitsVram"] for o in entry["contextOptions"])
+    validated = ModelLibraryResponse(**payload)
+    assert validated.gpu.modelMemoryBudgetGb == plan["capacity_gb"] == 25.3
+    assert validated.gpu.vramTotal == 32
+
+
+def test_memory_budget_small_shared_host_still_rejects_35b(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=24)
+    assert plan["fits"] is False
+    assert entry["fitsVram"] is False
+    assert not any(o["fitsVram"] for o in entry["contextOptions"])
+    assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 13.2
+
+
+def test_memory_budget_apple_keeps_recorded_host_ram_not_container_limit(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=64, backend="apple", total_mb=65536)
+    assert entry["fitsVram"] is True
+    assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 35.2
+
+
+def test_memory_budget_discrete_gpu_remains_bounded_by_vram(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=128, backend="nvidia", total_mb=16384)
+    assert entry["fitsVram"] is False
+    assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 16

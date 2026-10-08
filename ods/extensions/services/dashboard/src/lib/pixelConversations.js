@@ -1,6 +1,7 @@
 import { conversationLabels, deleteConversationLabels } from './pixelConversationLabels'
 import {parseProjectTasks} from './pixelTaskActivity'
 import {draftImageReceipts, messageImageRefs} from './pixelImages'
+import {sha256} from '@noble/hashes/sha2.js'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
@@ -55,12 +56,27 @@ function conversationSnapshot(chat) {
   if (!chat) return null
   // Save timestamps alone do not make identical content a conflicting edit.
   return JSON.stringify(Object.fromEntries(Object.entries(chat)
-    .filter(([key]) => key !== 'updatedAt' && key !== 'persistenceVersion')
+    .filter(([key]) => !['updatedAt', 'persistenceVersion', 'persistenceRevision', 'recoverySource'].includes(key))
     .sort(([left], [right]) => left.localeCompare(right))))
 }
 
+function persistenceRevision() {
+  // getRandomValues is also available on HTTP LAN origins, unlike randomUUID.
+  return Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+const snapshotHash = snapshot => Array.from(sha256(new TextEncoder().encode(snapshot)), byte => byte.toString(16).padStart(2, '0')).join('')
+function recoveryContext(chat, includeWorkspace = false) {
+  return conversationSnapshot({...Object.fromEntries(Object.entries(chat)
+    .filter(([key]) => !['requestId', 'inFlight', 'interrupted', ...(includeWorkspace ? [] : ['preview', 'workspaceOpen'])].includes(key))),
+  messages:chat.messages.slice(0, -1)})
+}
+
+const terminalOutcome = message => JSON.stringify({status:message?.status,
+  content:message?.content || (message?.status === 'done' ? 'Completed without a text response.' : '')})
+
 const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
-  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'draftImages'])
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceRevision', 'draftImages'])
 function omittedEmptyBaseline(chat) {
   // The library omits an empty draft. Moving the shared active pointer does
   // not edit that draft, but pending operations and unknown metadata stay strict.
@@ -74,14 +90,65 @@ function omittedEmptyBaseline(chat) {
  * This is an optimistic stale-editor check; localStorage has no atomic CAS.
  */
 export function createConversationWriter(initial = null) {
+  let record = initial
   let chatId = initial?.chatId
   let expected = conversationSnapshot(initial)
   let omitted = omittedEmptyBaseline(initial)
-  return chat => saveConversation(chat, {
-    matches: current => conversationSnapshot(current) === (chat.chatId === chatId ? expected : null)
-      || (chat.chatId === chatId && current === null && omitted),
-    committed: value => {chatId = value.chatId; expected = conversationSnapshot(value); omitted = omittedEmptyBaseline(value)},
+  // A recovery receipt names one exact pending revision, never a transcript or
+  // a chain of earlier receipts. Only its original writer can finish the handoff.
+  let revision = initial?.persistenceRevision
+  let requestId = initial?.requestId
+  let ownsPending = false
+  const committed = value => {
+    record = value
+    chatId = value.chatId; expected = conversationSnapshot(value); omitted = omittedEmptyBaseline(value)
+    revision = value.persistenceRevision; requestId = value.requestId
+    ownsPending = value.inFlight === true && Boolean(requestId)
+  }
+  const recoveryOfExpected = current => Boolean(ownsPending && revision && requestId && current?.chatId === chatId
+    && current.recoverySource?.revision === revision && current.recoverySource?.requestId === requestId
+    && current.recoverySource?.sourceHash === snapshotHash(expected)
+    && current.recoverySource?.resultHash === snapshotHash(conversationSnapshot(current)))
+  const write = chat => saveConversation(chat, {
+    matches: current => {
+      if (conversationSnapshot(current) === (chat.chatId === chatId ? expected : null)
+        || (chat.chatId === chatId && current === null && omitted)) return true
+      if (chat.chatId !== chatId || !recoveryOfExpected(current)) return false
+      const pending = chat.inFlight || chat.interrupted || chat.requestId
+      // Only response progress may be ignored while this reader drains. A
+      // sender-side edit must report a conflict immediately, and must not regain
+      // permission to replace the recovery when a later DONE reaches the UI.
+      if (chat.messages.at(-1)?.role !== 'assistant'
+        || (pending ? recoveryContext(record, true) !== recoveryContext({...record, ...chat}, true)
+          : terminalOutcome(current.messages.at(-1)) !== terminalOutcome(chat.messages.at(-1)))) {
+        ownsPending = false
+        return false
+      }
+      return true
+    },
+    // A retained terminal response can arrive before the originating SSE
+    // reader drains. Never replace it with that reader's remaining partials.
+    skip: current => recoveryOfExpected(current) && (chat.inFlight || chat.interrupted || chat.requestId),
+    committed,
   })
+  write.recover = chat => {
+    if (!requestId || chat.chatId !== chatId || chat.requestId || chat.inFlight || chat.interrupted
+      || record.messages.at(-1)?.role !== 'assistant' || chat.messages.at(-1)?.role !== 'assistant'
+      || recoveryContext(record) !== recoveryContext(chat)) throw new Error('Invalid conversation recovery')
+    return saveConversation(chat, {
+      matches: current => conversationSnapshot(current) === expected,
+      recoverySource: revision ? {revision, requestId, sourceHash:snapshotHash(expected)} : null,
+      committed,
+    })
+  }
+  // Selecting an existing conversation may move the shared active pointer,
+  // but must not normalize a live request or end a pending recovery handoff.
+  write.activate = () => saveConversation(record, {
+    matches: current => conversationSnapshot(current) === expected,
+    activate: true,
+    committed: value => {committed(value); ownsPending = false},
+  })
+  return write
 }
 
 export function saveConversation(chat, checkpoint) {
@@ -102,7 +169,14 @@ export function saveConversation(chat, checkpoint) {
     error.code = 'conversation-changed'
     throw error
   }
-  const value = { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2 }
+  if (checkpoint?.skip?.(latest)) return latest
+  const value = checkpoint?.activate
+    ? {...latest, persistenceVersion:2, persistenceRevision:latest.persistenceRevision || persistenceRevision()}
+    : { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2, persistenceRevision: persistenceRevision() }
+  // A normal edit (even one made by the recovery observer) ends the handoff.
+  // Never carry a receipt forward through an object spread from saved data.
+  if (!checkpoint?.activate) delete value.recoverySource
+  if (checkpoint?.recoverySource) value.recoverySource = {...checkpoint.recoverySource, resultHash:snapshotHash(conversationSnapshot(value))}
   const remaining = entries.filter(item => !valid(item) || item.chatId !== value.chatId)
   const next = value.messages.length || value.draft?.trim() || value.draftImages?.length ? [value, ...remaining] : remaining
   if (valid(current) && current.chatId !== value.chatId) {
@@ -122,6 +196,7 @@ export function saveConversation(chat, checkpoint) {
   } finally {
     window.dispatchEvent(new Event(LIBRARY_EVENT))
   }
+  return value
 }
 
 export function conversationTitle(chat) {

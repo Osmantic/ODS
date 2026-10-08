@@ -54,3 +54,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  # Open WebUI is reachable through this proxy wherever the proxy is published.
+  # Its start-up treats that like a published port: sign-in on, and no start
+  # while the built-in administrator keeps its default password.
+  open-webui:
+    environment:
+      ODS_WEBUI_PROXY_BIND: "${ODS_PROXY_BIND:-0.0.0.0}"

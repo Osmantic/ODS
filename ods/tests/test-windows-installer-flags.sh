@@ -61,7 +61,13 @@ check 'throw "ODS_INSTALL_ABORTED"' "$ROOT_DIR/installers/windows/phases/04-requ
 check '-NoHermes' "$WINDOWS_QUICKSTART" "Windows quickstart documents mandatory Hermes disable"
 check '-NoBootstrap' "$WINDOWS_QUICKSTART" "Windows quickstart documents bootstrap option"
 check '.\install.ps1 -InstallDir /home/youruser/ods' "$WINDOWS_QUICKSTART" "Windows quickstart uses Linux install path"
-check '--pixel --no-hermes --no-openclaw' "$WINDOWS_QUICKSTART" "Windows quickstart requires Pixel"
+check '--pixel --no-hermes' "$WINDOWS_QUICKSTART" "Windows quickstart requires Pixel"
+if grep -Fq -- '--no-openclaw' "$WINDOWS_QUICKSTART"; then
+    fail "Windows quickstart still passes the removed --no-openclaw flag"
+else
+    pass "Windows quickstart no longer passes the removed --no-openclaw flag"
+fi
+check '[switch]$OpenClaw' "$ROOT_INSTALLER" "root wrapper still accepts the ignored -OpenClaw switch"
 check '.\ods\installers\windows\install-windows.ps1' "$WINDOWS_WALKTHROUGH" "Legacy walkthrough invokes native implementation explicitly"
 
 echo ""

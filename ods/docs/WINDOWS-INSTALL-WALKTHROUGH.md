@@ -57,8 +57,9 @@ For NVIDIA:
 **Note:** Windows drivers automatically provide GPU access to WSL2. No separate WSL driver needed.
 
 For AMD Strix Halo, install the current AMD Windows graphics/compute driver
-from AMD. The ODS installer selects the Windows host accelerated path
-and falls back when Lemonade is unavailable.
+from AMD. The ODS installer runs llama.cpp's `llama-server.exe` (Vulkan) on
+Windows; when it finds no usable Vulkan device, a new install runs the model on
+the CPU and says so.
 
 ---
 
@@ -290,7 +291,7 @@ cd $installDir
 .\ods.ps1 uninstall --force
 ```
 
-Use `--keep-data` or `--keep-models` if you want to preserve local state.
+Use `--keep-data` or `--keep-models` if you want to preserve local state. `--keep-data` keeps only the `data` folder inside the install directory; it still deletes `.env` (your settings and generated secrets) and `config\`. Copy `.env` somewhere safe first if you may reinstall over the kept data.
 
 If the runtime folder is partial and `.\ods.ps1` is missing, run the same cleanup from a source checkout:
 

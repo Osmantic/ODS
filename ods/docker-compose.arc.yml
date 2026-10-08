@@ -53,6 +53,9 @@ services:
     command:
       - --model
       - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
+      # Same served id as docker-compose.base.yml: the GGUF file name.
+      - --alias
+      - ${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
       - --host
       - 0.0.0.0
       - --port

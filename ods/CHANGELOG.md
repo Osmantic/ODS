@@ -6,7 +6,170 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple
+  GPU reporters instead of choosing NVIDIA tooling merely because it is
+  installed. AMD device counting in `ods gpu status` uses DRM sysfs, and
+  `ods status --json` no longer queries `nvidia-smi` for non-NVIDIA backends.
+  AMD JSON GPU summaries remain `null`.
+  Unavailable Apple GPU details and disappearing AMD device/sensor probes no
+  longer abort text status reporting.
+
 ### Security
+- Open WebUI no longer starts for other devices while its built-in
+  administrator, `admin@localhost`, still has the password `admin`. Open WebUI
+  creates that account while it runs without sign-in, the default for a
+  localhost-only install, and the account keeps working after sign-in is
+  turned on. So anyone on the network could sign in as administrator once the
+  install was exposed. When Open WebUI would be reachable from other devices,
+  through `BIND_ADDRESS` or the ODS proxy, its start-up now refuses, changes
+  nothing, and explains in its log how to change that password first. The
+  ODS proxy now also counts as exposure for the sign-in rule below.
+- An imported extension can no longer take the name of a folder ODS keeps
+  under `data/` or `config/` (such as `models`, `config-backups` or
+  `persona`). Before, an extension's own `./data/<id>` and `./config/<id>`
+  binds would then have reached ODS's folder. Both extension validators
+  refuse those binds. Purging extension data now refuses those folders and
+  any id that no shipped, listed or installed extension owns, as
+  `ods purge` already did.
+- Open WebUI now starts with sign-in on whenever it is published beyond this
+  machine (`BIND_ADDRESS` not loopback), whatever `WEBUI_AUTH` says in `.env`.
+  The CLI, `ods.ps1` and the host agent already turn sign-in on in that case.
+  The check now also runs inside the container, so paths that skip those
+  tools cannot publish Open WebUI on the network without sign-in: the
+  Dashboard's update, a rollback, or a plain `docker compose up`.
+- Other containers can no longer spend a remote LLM provider's API key
+  (GHSA-4rpc-g4mc-jm9c). The remote-provider egress, which adds the
+  provider key to outbound requests, accepted unauthenticated requests from
+  any container on `ods-network`, including installed extensions. The SSH
+  tunnel's forwards were reachable the same way.
+  - The egress and the tunnel now run on their own networks. Only LiteLLM and
+    dashboard-api can reach them, over an internal network.
+  - The egress refuses every request except its status reads unless the
+    caller presents the LiteLLM gateway key.
+  - The extension policy refuses extensions that join those networks, join a
+    network their own file does not declare, or name a container after a core
+    service.
+  - This only mattered when a remote provider was configured.
+- n8n is upgraded from 2.6.4 to 2.41.6. Twelve critical advisories affect
+  2.6.4, most of them remote code execution by a signed-in n8n user, and
+  2.6.4's owner account went to whoever completed n8n's first-run screen
+  first, including another container on `ods-network`.
+  - New installs, and installs where nobody had created n8n's owner, now
+    get the owner from `N8N_USER`/`N8N_PASS` before n8n starts. An owner
+    someone already created stays as it is.
+  - n8n's database upgrades cannot be undone, so ODS copies the database
+    to `data/n8n/ods-backups/` before a new n8n version first starts.
+  - The plaintext `N8N_PASS` no longer reaches n8n's environment; ODS
+    passed it as `N8N_DEFAULT_ADMIN_PASSWORD`, which n8n does not read.
+- Open WebUI is upgraded from 0.7.2 to 0.11.4, which fixes 101 published
+  advisories that affect 0.7.2: 1 critical, 41 high, 54 medium and 5 low. Two
+  of the high ones are fixed only in 0.11.4.
+  - Open WebUI's settings now come from ODS at every start
+    (`ENABLE_PERSISTENT_CONFIG=false`). Since 0.10, Open WebUI otherwise writes
+    every setting into its database on its first start and ignores later
+    changes, so mode switches, Pixel, key rotation and the Dashboard Settings
+    page would have stopped applying. Changes made in Open WebUI's Admin Panel
+    > Settings now last until Open WebUI restarts, and settings saved there
+    before this release are no longer used.
+  - Signup is closed (`ENABLE_SIGNUP=false`). Open WebUI still lets the first
+    account sign up on a new install with sign-in on and makes it the
+    administrator, who adds other accounts in Admin Panel > Users.
+  - Open WebUI's database migrations cannot be undone, so ODS copies
+    `webui.db` to `data/open-webui/ods-backups/` before a new Open WebUI
+    version first starts and keeps the two newest copies. It refuses to start
+    Open WebUI, with the reason in its log, when two accounts have email
+    addresses that differ only in case (the upgrade would stop partway
+    through), or when the image is older than the version that last used the
+    data. The first start after this upgrade migrates the database and can
+    take many minutes on a large install.
+  - Chats and models without a chosen function-calling mode now use Open
+    WebUI's Native tool calling.
+- Token Spy's dashboard now shows agent and model names as text
+  (GHSA-7jvf-39fc-rwr6). The programs that send requests through Token Spy
+  supply those names, and the dashboard inserted them into the page as HTML, so
+  a crafted name could run script in the browser of whoever opened the
+  dashboard, where the Token Spy API key is held for the session. The reset
+  button also no longer places the agent name inside inline JavaScript.
+- On native Windows, `.\ods.ps1 start`, `restart` and `update` now turn Open
+  WebUI sign-in on whenever `BIND_ADDRESS` publishes Open WebUI beyond this
+  machine, as `ods start` and `ods restart` already did on Linux, WSL and macOS
+  (GHSA-69cg-cxxf-jc6m). Before, a localhost-only Windows install whose `.env`
+  was edited to `BIND_ADDRESS=0.0.0.0` restarted Open WebUI with sign-in off,
+  reachable from the network. `ods update` on Linux, WSL and macOS now applies
+  the same rule before it recreates the containers.
+- Installer, update, health-check and CLI scripts no longer put API keys on a
+  command line. Fifteen curl calls passed `Authorization: Bearer <key>` as an
+  argument, which any local user can read with `ps` while the call runs. The
+  background model upgrade polls repeatedly, so its keys were exposed for
+  long stretches. Keys now reach curl through a header file descriptor, or on
+  stdin when curl runs inside a container through `docker exec`. The affected
+  keys were the LiteLLM key, the host-agent key, the dashboard API key, the
+  Lemonade key and an optional `GITHUB_TOKEN`. A CI check now fails on any
+  shipped script that puts a credential header on a command line.
+- The Portal Full Access confirmation now says what it turns off. It disables
+  the sandbox and per-command approval, so commands run directly as the owner
+  account, while web search and page fetching stay on. It also notes that
+  docker group membership is equivalent to root. It previously said that
+  existing operating system restrictions remain.
+- Pixel's agent can no longer create or edit command-type scheduled jobs.
+  OpenClaw 2026.6.33, which Pixel pins, rejected only the exact payload kind
+  `command` and lowercased it afterwards, so a kind such as `Command` became a
+  command job that runs in the gateway process outside the sandbox
+  (GHSA-8xxh-v4vc-qvm4, fixed upstream in 2026.7.1). The Pixel plugin now
+  refuses any agent cron add or update whose payload kind normalizes to
+  `command`. Command jobs the owner creates through the CLI are unaffected.
+- The host agent now keeps only the newest 20 `.env` backups in
+  `data/config-backups/`. Each Dashboard settings save added another full copy
+  of every secret, with no limit. Only regular files that match the backup
+  name pattern are pruned, and a pruning failure never fails the save.
+- Before Pixel's workspace-guidance migration changes `AGENTS.md` or
+  `MEMORY.md` in an existing owner workspace, it now keeps the original files
+  in a private `.ods-workspace-guidance-backups/` directory beside the
+  workspace, outside what the agent reads. If the backup cannot be written,
+  nothing is changed. A new CI check fails when owner-private or fleet-specific
+  text (maintainer names, test machine names, private workflow terms, personal
+  home paths or LAN addresses) would reach the Pixel workspace template or the
+  agent and stack templates.
+- Pixel 4.3.29 no longer ships the retired owner-private section in its
+  workspace template. `AGENTS.md` now carries the same neutral model-routing
+  guidance that the installer already wrote into existing workspaces, and the
+  matching `MEMORY.md` entry is gone, so a new workspace starts where a migrated
+  one ends. Existing installations move to 4.3.29 through the held source
+  upgrade; the version changes only so that upgrade accepts the new source. The
+  installer migration still repairs workspaces created from older releases, the
+  Portal bootstrap filter presents an unmigrated 4.3.28 default as the 4.3.29
+  one, and CI fails if the shipped template would ever need the migration again.
+- Support bundles now mask credentials by format wherever they appear (provider
+  API keys such as OpenAI, Anthropic, Hugging Face, GitHub, Slack and AWS, JWTs
+  and PEM private keys), not only under secret-looking key names, and mask every
+  secret value from the installation's `.env` wherever a log echoes it. The
+  bundle directory and archive are owner-only. Before this change, 28 of 28
+  tested credential formats survived in log lines, JSON values and custom
+  headers.
+- NVIDIA Secure Boot enrollment no longer installs a root systemd unit to
+  resume the install after the reboot. That unit ran the user-writable
+  `install.sh` as root at every boot. The installer refuses root, so the
+  unit failed every time and never removed itself. The reboot screen now prints
+  the command that finishes the install, and the installer's preflight removes
+  `ods-install-resume.service` left by older versions (not in
+  `--preflight-only` or dry-run mode).
+- Open WebUI sign-in is now enforced whenever `BIND_ADDRESS` publishes it
+  beyond loopback, not only when the ODS proxy is installed. Saving a
+  network `BIND_ADDRESS` in Dashboard Settings writes `WEBUI_AUTH=true`, and
+  `ods start` / `ods restart` (Linux, WSL and macOS) and the host agent's
+  Open WebUI start and recreate paths apply it before the container starts.
+  Previously a localhost-only install moved to `0.0.0.0` this way kept Open
+  WebUI's single-user mode, whose built-in `admin@localhost` account has the
+  password `admin`.
+- Vulnerability reports now go through GitHub private vulnerability reporting
+  (Security → Report a vulnerability) or `security@osmantic.com`; `SECURITY.md`
+  no longer asks reporters to open public issues. The security guide now covers
+  the full set of generated secrets, a rotation recipe that works with every
+  generated value, the Open WebUI `admin@localhost` account to secure before LAN
+  exposure, the trust boundary for local browsers, `ods-network` containers,
+  the host agent and Pixel Full Access, and how to apply code fixes to an
+  existing installation (`ods update` refreshes images only).
 - Native Windows uninstall now verifies each container's Compose installation
   directory before any mutation. A shared `ods` project label cannot authorize
   removing another WSL/Windows installation or unattached volumes of unknown
@@ -35,10 +198,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Every llama.cpp image is now pinned by tag and sha256 digest, including the
   tier-map, installer, host-agent and catalog copies. The dependency pin check
   rejects a llama.cpp image without a digest.
+- The host agent now accepts only whole, plain extension ids. Its check also
+  passed an id that ends in a line break, such as `n8n` followed by a newline,
+  which then reached extension folder names and Compose arguments.
+- Pixel's provider connection and health probes now require TLS 1.2 or newer.
+  Python 3.10 and later already refuse older protocols; the host side also runs
+  on Python 3.9, whose default context can still allow them.
+- The host agent reads the Hermes model settings in `data/hermes/config.yaml`
+  with a linear-time pattern. The previous pattern slowed down polynomially on
+  a long line of spaces.
 
 ### Changed
+- The unsupported Tauri desktop installer under `installer/` is removed. No CI
+  built it and no release shipped it, and its installer arguments no longer
+  matched the current installers. Its build dependencies carried the
+  repository's last four open Dependabot alerts. Install with the commands in
+  the README.
+- Error responses no longer repeat internal exception text. The dashboard API
+  (model state, OAuth, remote-provider status, setup diagnostics, update
+  check, usage report, the owner-card check and extension manifest errors),
+  model-router, the remote-provider egress and APE now report a fixed
+  failure category, such as "not valid JSON" or "Could not reach GitHub". The
+  exception detail goes to that service's log. Manifest errors name the
+  extension folder instead of the container path.
+- Privacy defaults: bundled services no longer phone home. Open WebUI's
+  upstream version check, Qdrant usage telemetry, LiteLLM's start-up cost-map
+  fetch from GitHub, n8n diagnostics and version notifications, and the
+  Whisper Hugging Face client's telemetry are off. The dashboard now honors
+  `DISABLE_UPDATE_CHECK=true`, which `--offline` already writes, and skips its
+  GitHub release check. The FAQs and offline-mode guide now list exactly what
+  ODS contacts by default, including the Portal agent's web search provider,
+  and how to turn each off.
+- Retired the AI GitHub workflows (`ai-issue-triage`, `claude-review`,
+  `issue-to-pr`, `autonomous-code-scanner`, `nightly-code-review`,
+  `nightly-docs-update`, `release-notes`). The repository holds no model API
+  secrets, so they only produced skipped "green" reviews and failures, and
+  `release-notes.yml` let untrusted PR titles steer an agent with release
+  write access. A CI contract keeps them out until a reviewed redesign, and
+  `docs/AI_WORKFLOW_GUARDRAILS.md` sets the policy for AI-assisted PRs.
 - Windows: `install.ps1` now installs ODS inside Ubuntu/WSL2 with Pixel
-  (`--pixel --no-hermes --no-openclaw`) instead of the native Windows stack.
+  (`--pixel --no-hermes`) instead of the native Windows stack.
   It prepares WSL and Ubuntu 24.04 when needed, and stops with instructions,
   before changing anything in Ubuntu, when WSL2, systemd, a non-root user,
   Docker Desktop's WSL integration or, on NVIDIA machines, a Windows driver
@@ -47,9 +246,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   authenticated Portal status API to report the agent available. Existing
   native Windows installs are detected and left untouched; `install.ps1`
   refuses to run beside them. Keep managing them with their own `ods.ps1`, or
-  rerun `ods\installers\windows\install-windows.ps1`. AMD machines that used
-  the native Lemonade path now get a GPU backend detected inside WSL, CPU, or
-  an explicitly configured endpoint. The Linux installer runs on the same
+  rerun `ods\installers\windows\install-windows.ps1`. On AMD machines the model
+  runs on the GPU through llama.cpp's `llama-server.exe` on Windows (see "AMD
+  GPUs now run on llama.cpp" below). The Linux installer runs on the same
   console (download progress and UTF-8 output stay visible), and warnings WSL
   prints on stderr no longer turn a passing check into a failure.
 - Windows: setup now needs only the pasted PowerShell command. It checks disk
@@ -81,57 +280,116 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The installer menu presets (Full Stack, Core Only) no longer override an
   explicit `--hermes` or `--no-hermes`. The Windows Pixel path passes
   `--no-hermes`; choosing Full Stack downloaded and enabled Hermes anyway.
-- Windows (`install.ps1`) with an AMD GPU now runs the model on the GPU through
-  Lemonade Server on Windows instead of on the CPU in WSL. Setup detects the
-  GPU and its memory in Windows, picks the model as the native installer does,
-  installs the pinned Lemonade for the user after asking, downloads the model
-  with checksum verification, runs Lemonade on 127.0.0.1 from a sign-in
-  scheduled task (`ODSLemonadeRuntime`), loads the model, and passes the route
-  to the Linux installer. `install-core.sh` gains `--lemonade-model`,
-  `--lemonade-gpu-name` and `--lemonade-gpu-vram-mb`; the hardware scan shows
-  that GPU instead of "None". An existing Lemonade (including 10.7+) is reused,
-  and Lemonade moves to the next free port when another program holds 8080.
-- Windows/WSL AMD setup now selects `--lemonade-host-transport model-router`.
-  The WSL host agent verifies the Windows Lemonade model through the running
-  model-router container belonging to this installation, where
-  `host.docker.internal` reaches Windows. This avoids probing WSL's own
-  localhost while keeping Lemonade bound to Windows loopback. Model identity,
-  context and completion checks still decide readiness; this transport does
-  not enable LAN access or cloud inference. Other Lemonade installs keep the
-  default `direct` transport.
+- AMD GPUs now run on llama.cpp. ODS no longer uses Lemonade Server: AMD GPUs
+  run upstream llama.cpp's `llama-server` (b9014), like NVIDIA, Apple and CPU
+  installs. ODS never uninstalls or reconfigures a Lemonade Server installed
+  on your computer. Upgrades keep the model files and, on Linux and in the
+  Windows Portal, the selected model and its context;
+  [AMD GPUs now run on llama.cpp](docs/MIGRATION-LEMONADE-TO-LLAMACPP.md)
+  explains what an upgrade does and how to remove what is left.
+  - Linux: the `llama-server` service runs the official
+    `ghcr.io/ggml-org/llama.cpp:server-vulkan-b9014` image, pinned by digest,
+    with `/dev/dri` and the video and render groups, and needs neither ROCm on
+    the host nor an HSA override. `AMD_INFERENCE_BACKEND=rocm` adds
+    `docker-compose.amd-rocm.yml` with the `server-rocm-b9014` image (about
+    7 GB) and `/dev/kfd`. The installer selects ROCm for Instinct (CDNA)
+    cards, which have no Vulkan driver, and sets `HSA_OVERRIDE_GFX_VERSION`
+    only for GPUs that image was not built for (gfx1031 to gfx1036 as 10.3.0,
+    gfx1103 as 11.0.0). One GPU runs with `LLAMA_ARG_SPLIT_MODE=none`; the AMD
+    multi-GPU overlay uses layer split and passes the assigned GPUs as
+    `GGML_VK_VISIBLE_DEVICES` and `ROCR_VISIBLE_DEVICES`. An integrated GPU
+    next to a discrete one is left out of AMD detection and assignment. ODS no
+    longer builds the `ods-lemonade-server` image.
+  - Windows (`install.ps1`): with an AMD GPU the model runs on the GPU through
+    llama.cpp's `llama-server.exe` (Vulkan) on Windows instead of on the CPU in
+    WSL. Setup detects the GPU and its memory in Windows, picks the model as
+    the native installer does, downloads the pinned
+    `llama-b9014-bin-win-vulkan-x64.zip` into `%LOCALAPPDATA%\ODS\llama.cpp`
+    (after asking on a new install; size and SHA-256 are checked before
+    extraction, and every file again before each launch), checks it with
+    `--version` and `--list-devices`, downloads the model with checksum
+    verification, and runs it on 127.0.0.1 with an API key from the sign-in
+    scheduled task `ODSLlamaServerRuntime-<SID>`. llama-server moves to 18080
+    or 28080 when another program holds 8080. The task proves the model and
+    context (`/v1/models`, `/props`) before setup proceeds and at each sign-in,
+    keeps its launcher and plan in `%LOCALAPPDATA%\ODS\lemonade\portal-runtime`
+    instead of a temporary installer checkout, and cleans up the verified
+    process tree after a failed start; separate process ownership records let
+    an interrupted cleanup resume without treating a failed launch as ready.
+    Re-running setup stops only the verified ODS task and its process tree,
+    and keeps the selected model and context, the port and the key. Setup
+    passes the route to the Linux installer with the new `--native-llm-url`,
+    `--native-llm-model`, `--native-llm-context-size`, `--native-llm-gpu-name`,
+    `--native-llm-gpu-vram-mb`, `--native-llm-host-transport` and
+    `--native-llm-api-key-env` options; the key travels in an environment
+    variable, never on a command line. The hardware scan shows that GPU
+    instead of "None". Without a usable Vulkan device a new install stays on
+    the CPU and says so.
+  - Windows/WSL routing: setup selects `--native-llm-host-transport
+    model-router`. The WSL host agent verifies the Windows model through the
+    running model-router container belonging to this installation, where
+    `host.docker.internal` reaches Windows. This avoids probing WSL's own
+    localhost while keeping llama-server bound to Windows loopback. Model
+    identity, context and completion checks still decide readiness; this
+    transport does not enable LAN access or cloud inference. Other installs
+    keep the default `direct` transport. The Dashboard reads the Windows
+    model, its context and llama.cpp's counters through the authenticated host
+    agent (`/v1/llm/status`). Models and the Portal model selector follow the
+    host agent's proof that this installation manages the server; a server it
+    does not manage is shown as managed externally, without incorrectly
+    reporting that the local runtime is unavailable. The hardware scan no
+    longer claims CPU inference immediately after identifying the Windows GPU;
+    Linux services retain their detected backend.
+  - Windows (native installer): `install-windows.ps1` and `ods.ps1` run the
+    same pinned `llama-server.exe` for AMD GPUs. The installer stages and
+    checks it before it changes `.env`, so a failed download, checksum, Visual
+    C++ runtime, policy block or driver changes nothing. It keeps a verified
+    copy at `<install>\llama-server`, which a rerun replaces when it no longer
+    matches the pin, keeps the API key file, launch options and log in
+    `%LOCALAPPDATA%\ODS\native-runtime`, and starts the model at sign-in
+    through the `ODSNativeLlamaRuntime` task (`ods.ps1 native-llm-start`).
+    Model switches and the full-model swap after bootstrap relaunch through
+    `ods.ps1 native-llm-restart`, which validates the new launch before it
+    stops the running model. LiteLLM receives the server's key
+    (`LLAMA_SERVER_API_KEY`) from its own environment. Without a usable Vulkan
+    device a new install runs the model on the CPU and says so. Whisper keeps
+    port 9000 unless a Lemonade router holds it.
+  - Every platform: the Docker `llama-server` and the Windows `llama-server.exe`
+    serve the GGUF file name as the model id (`--alias`), so `/v1/models`,
+    model state, the model router and every consumer use one id. Every
+    managed runtime is proven the same way: `/health` (503 while loading), the
+    served model id, `/props` model path and context, and a completion. The
+    Dashboard samples throughput from llama.cpp's cumulative `/metrics`
+    counters on every runtime.
+  - ODS Talk sends an image to the active model only when its llama-server
+    loaded a vision projector, and otherwise answers 409 with a plain message.
+    `ODS_TALK_VISION_MODEL` with `ODS_TALK_VISION_URL` and `ODS_TALK_VISION_KEY`
+    still names a separate vision server.
+  - A Lemonade Server you run yourself is an external OpenAI-compatible
+    server: `--external-llm-url URL --external-llm-provider openai-compatible
+    --external-llm-model ID`.
+  - Upgrading: rerun the installer on Linux and with the native Windows
+    installer, or `install.ps1` for the Portal. `ods update` only refreshes
+    images and does not move an install off Lemonade. The installer moves
+    Lemonade-era `.env` settings to llama.cpp before anything reads them. The
+    Portal stages and checks llama.cpp while Lemonade keeps serving, stops
+    only the Lemonade task ODS created, and restores and restarts it if the
+    new runtime does not come up. An install that used its own Lemonade moves
+    to the generic external route and keeps the server's address, its model
+    and an API key you gave it (now in `config/litellm/external-upstream.key`);
+    in a git checkout `ods-update.sh update` does this too. The Lemonade
+    container's volumes and the `ods-lemonade-server:latest` image stay until
+    `ods-uninstall.sh` removes them or you run the `docker volume rm` command
+    the upgrade prints. `ods doctor` reports an `.env` that still selects
+    Lemonade as `ODS-RUNTIME-LEMONADE-RETIRED`.
 - On WSL, the host agent identifies Docker Desktop before choosing its bind
   address. A leftover native `docker0` bridge could have the same gateway IP
   as Docker Desktop and make the agent listen where ODS containers could not
   reach it. Docker Desktop now selects WSL loopback regardless of that stale
   bridge, for GPU and CPU installations alike.
-- The Windows AMD startup task restores and verifies the selected Lemonade
-  model and context at each sign-in, including Lemonade 10.0. A healthy API
-  without a loaded model no longer counts as completed setup. The task keeps
-  its launcher and configuration in the user's ODS directory instead of a
-  temporary installer checkout.
-- Re-running Windows AMD setup stops only the verified ODS task and its
-  process descendants, including cached llama.cpp workers. Other Lemonade
-  instances are preserved. Both the former direct task and the Lemonade
-  10.7 task launcher migrate to the durable launcher.
-- Failed Windows AMD startup cleans up the verified process tree, including
-  workers that outlive their parent. Separate process ownership records allow
-  an interrupted cleanup to resume without treating a failed launch as ready.
-- Portal reads the loaded Windows/WSL Lemonade model from the Linux host
-  agent's verified external-model observation instead of calling the
-  Windows-only model-status endpoint on that Linux agent.
-- The Windows/WSL Dashboard reads Lemonade's measured last-completion speed
-  through the authenticated host agent and owned model-router transport.
-  Repeated samples remain the last measurement rather than becoming live
-  throughput or accumulating into an invented token total.
-- Models describes externally managed Lemonade model changes without
-  incorrectly reporting that the local runtime is unavailable. Adoption
-  remains available; model activation still follows the runtime's capabilities.
-- The Windows/WSL hardware scan no longer claims CPU inference immediately
-  after identifying the Windows GPU used by Lemonade. Linux services retain
-  their detected backend.
-- Explicit Hermes and OpenClaw flags now take precedence in the Custom
+- An explicit `--hermes` or `--no-hermes` now takes precedence in the Custom
   feature menu as well as presets. The Windows Pixel path no longer asks to
-  enable agents that its command line explicitly disabled.
+  enable an agent that its command line explicitly disabled.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
@@ -168,16 +426,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `ods-llama-sycl:local`, and b9014 has not been compiled on its oneAPI
     2025.0.0 base. Only its source defaults changed (tag `b9014`, pinned
     commit).
-  - Native Windows: re-running the installer keeps an existing
-    `llama-server.exe`, so installs from before this change stay on b8248.
-    To move to b9014, delete `<install>\llama-server` and re-run the
-    installer. Every Windows launch path now reads the installed binary's
-    `--help`: on b9014 it passes `LLAMA_REASONING` as `--reasoning` (b9014
-    defaults it to `auto`, and `--reasoning-format none` alone returns the
-    reasoning inside the reply); on b8248 it keeps `--reasoning-format` and,
-    for `off`, adds `--reasoning-budget 0`, which is what turns thinking off
-    there. Before this change, b8248 installs returned Qwen3.5's reasoning
-    inside every reply.
+  - Native Windows: an installer rerun on an AMD GPU replaces an older
+    `llama-server.exe` that does not match the pinned b9014 build (see "AMD
+    GPUs now run on llama.cpp"). Every Windows launch path now reads the
+    installed binary's `--help`: on b9014 it passes `LLAMA_REASONING` as
+    `--reasoning` (b9014 defaults it to `auto`, and `--reasoning-format none`
+    alone returns the reasoning inside the reply); on b8248 it keeps
+    `--reasoning-format` and, for `off`, adds `--reasoning-budget 0`, which is
+    what turns thinking off there. Before this change, b8248 installs returned
+    Qwen3.5's reasoning inside every reply.
 - Model selection ranks installable models by a curated priority per memory
   class and checks fit with a memory estimate built from each model's
   attention layout, instead of picking the largest file that fits. Fleet
@@ -211,9 +468,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runtime profile sets its own `LLAMA_ARG_SPEC_TYPE`. On an RTX 5090 with
   Qwen3.5-27B, a copy-heavy edit fell from 89.5 s to 13.3 s and a whole-file
   rewrite from 70.1 s to 15.6 s. Novel generation and prefill did not change.
-  Set `LLAMA_SPEC_TYPE=none` in `.env` to turn it off. Lemonade, Intel/Arc,
-  Apple Docker and native Windows runtimes are unchanged; native macOS is
-  covered below.
+  Set `LLAMA_SPEC_TYPE=none` in `.env` to turn it off. The AMD, Intel/Arc,
+  Apple Docker and native Windows runtimes get no such default; native macOS
+  is covered below.
 - Native macOS installs llama.cpp b9014 (Metal, `llama-b9014-bin-macos-arm64.tar.gz`,
   SHA-256 `565aecda…4f22d`) instead of b8210, the same release as the Linux
   images. b8210 turns speculative decoding off for hybrid models such as
@@ -231,7 +488,288 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `--reasoning`, as Docker does. Without it, b9014 turned Qwen3.5 thinking on
   and put `<think>` blocks in replies.
 
+### Removed
+- The legacy OpenClaw extension, deprecated since 2026-05-12, is removed: the
+  `ods-openclaw` container (image `ghcr.io/openclaw/openclaw:2026.3.8`, port
+  7860), its configuration templates, its session-cleanup script and timer,
+  the n8n OpenClaw trigger workflow and the dashboard API's
+  `/api/service-tokens` endpoint, which only served the OpenClaw sidebar link.
+  The extension still pinned OpenClaw 2026.3.8, an older release than the
+  2026.6.33 runtime that Pixel qualifies. Portal (Pixel) and Hermes Agent are
+  the supported agents. Pixel's own OpenClaw runtime
+  (`openclaw-gateway.service`) is separate and unchanged.
+- Installer reruns on Linux, macOS and Windows delete
+  `extensions/services/openclaw` from the install directory and remove the
+  `ods-openclaw` container when they start the stack. They also delete the
+  OpenClaw templates in `config/openclaw` that are unchanged from a shipped
+  version. Files the owner changed or added there, and `data/openclaw`, stay
+  on disk; the installer names what it kept, and the
+  [removal notice](docs/MIGRATION-OPENCLAW-TO-HERMES.md) explains how to
+  delete it. On Linux, this cleanup waits while an unfinished Pixel source
+  upgrade is pending, so the release that started it can still finish or roll
+  it back. The installers no longer re-enable OpenClaw when they find its
+  container or data.
+- On installs where OpenClaw was the only feature that needed SearXNG or APE,
+  an upgrade turns those services off and removes their containers.
+- Git checkouts updated with `ods-update.sh update` must run
+  `ods disable openclaw` first when OpenClaw is enabled, and move a modified
+  `config/openclaw/openclaw.json` out of the checkout (see the removal
+  notice). The updater of the previous release restarts the stack with its old
+  file list, which fails once the pull deletes the OpenClaw files; running
+  `ods-update.sh update` again then finishes the update. From this release on,
+  the updater resolves the stack again after the pull and during a rollback.
+- `--openclaw` and `--no-openclaw` (Linux and macOS) and `-OpenClaw` (Windows)
+  are still accepted, but only print a notice. Installers no longer write
+  `OPENCLAW_TOKEN`, `OPENCLAW_PORT` or `HOST_LAN_IP`. An `.env` that still has
+  these or the other retired OpenClaw keys keeps validating; the Dashboard
+  settings page lists them only when they are present, and clearing one
+  removes it. AMD reruns retire the `openclaw-session-cleanup` user timer
+  while it still carries the shipped definition, and new AMD installs no
+  longer install the memory-shepherd timers that maintained OpenClaw's
+  workspace. `ods start` warns when an `ods-openclaw` container is still
+  present.
+- Token Spy no longer has a poll-frequency setting
+  (`poll_interval_minutes`). It only rewrote the OpenClaw session-cleanup
+  timer, which was removed with that extension. The Token Spy dashboard no
+  longer shows the field, `/api/settings` no longer reports or stores it, and
+  a value saved by an earlier version disappears from `settings.json` on the
+  next save. `session-manager.sh` still runs on whatever timer or cron job
+  you give it.
+- Lemonade Server support is removed; AMD GPUs run on llama.cpp (see Changed
+  and [AMD GPUs now run on llama.cpp](docs/MIGRATION-LEMONADE-TO-LLAMACPP.md)).
+  - Linux: the locally built `ods-lemonade-server` image
+    (`extensions/services/llama-server/Dockerfile.amd`,
+    `lemonade-entrypoint.sh`), the external-Lemonade overlay
+    `docker-compose.lemonade-external.yml`,
+    `scripts/select-external-lemonade-model.py` and the Lemonade LiteLLM
+    configs (`config/litellm/lemonade.yaml`,
+    `config/litellm/strix-halo-config.yaml`) are removed. Upgrades delete the
+    copies you never edited, including an unchanged rendered `lemonade.yaml`,
+    and name the edited ones they keep (an edited `lemonade.yaml` in the
+    install log).
+  - Windows: after `llama-server.exe` has proven its model, setup retires the
+    tasks ODS ran Lemonade with (the Portal's `ODSLemonadeRuntime-<SID>`, this
+    user's legacy `ODSLemonadeRuntime` and the native installer's
+    `ODSLemonadeRuntime`, in their direct, 10.7 wrapper and durable launcher
+    forms) and the launcher files ODS wrote, keeps logs, and shows a one-time
+    notice. When ODS installed Lemonade Server itself, the notice says so;
+    uninstall it from Settings > Apps if you do not use it. ODS never runs the
+    Lemonade installer, never touches Lemonade's folders, cache, settings or
+    registry, never changes a task it did not write, and never stops a
+    Lemonade it cannot prove it started. A task that changed or restarted
+    after ODS stopped it stays registered, and setup says so.
+  - The `lemonade` mode, the `--use-existing-lemonade` and `--lemonade-*`
+    installer options and the Lemonade-era `.env` keys (`LEMONADE_*`,
+    `LITELLM_LEMONADE_API_KEY`, `LLAMA_CPP_REF`, `AMDGPU_TARGET`, `HSA_XNACK`)
+    are retired. For one release the options still parse and map to
+    `--external-llm-*` or `--native-llm-*` with a notice, `ODS_MODE=lemonade`
+    reads as `local`, and the keys keep validating. Upgrades rewrite or remove
+    them; the Dashboard settings page lists a retired key only when it is
+    present, and clearing one removes it.
+  - **Adopt loaded model** is removed. The Dashboard API's
+    `/api/models/external-observation` and `/api/models/external-adopt` and
+    the host agent's `/v1/model/external-observation`,
+    `/v1/model/external-adopt` and `/v1/runtime/lemonade/ensure` answer 410
+    (`external_lemonade_removed`) for one release.
+  - MTP memory fits measured through the Lemonade launch stay recorded but no
+    longer qualify a model-store activation; `scripts/qualify-mtp.py` has no
+    Lemonade launch mode.
+  - The external-Lemonade fleet test (`tests/fleet-external-lemonade-e2e.sh`)
+    is removed with the route it exercised. A hosted AMD CPU smoke
+    (`.github/workflows/amd-cpu-smoke.yml`) renders the AMD stacks and serves
+    a tiny model on the pinned Vulkan image.
+- The AMD GAIA library recipe is removed. GAIA's local models need Lemonade
+  Server, which ODS no longer runs, so the Extensions page no longer offers
+  GAIA.
+  - An installed GAIA keeps running until you disable it. ODS no longer
+    updates it, and once you stop or disable it the Dashboard cannot start it
+    again. Upgraded installs are the exception while they keep the old recipe
+    in `data/extensions-library/gaia`, which installer reruns never delete.
+    The Extensions page does not list that copy, but a direct
+    `POST /api/extensions/gaia/install` still installs GAIA from it.
+  - To remove GAIA, disable it on the Extensions page, choose Purge Data if
+    you no longer need `data/gaia`, then choose Remove. On Linux,
+    `ods disable gaia` and `ods purge gaia` do the first two steps, and
+    `ods purge` also deletes files the GAIA container owns. Purge before you
+    remove it: afterwards ODS no longer knows `gaia`, and `data/gaia` has to
+    be deleted by hand.
+  - An `.env` that still sets the `GAIA_*` keys keeps validating. The
+    Dashboard settings page lists them only when they are present, and
+    clearing one removes it.
+
 ### Fixed
+- On Windows with an AMD GPU, choosing another model, often the first switch
+  after setup, could be refused with "This installation cannot change the
+  model runtime on the Windows host right now" while the model kept running.
+  The Portal's periodic access check counted as a model operation and
+  invalidated the host agent's ownership proof. It no longer does, a switch
+  that arrives while that check runs waits up to 30 s for it, and every
+  check that cannot be verified is now logged with its cause.
+- A long chat message with many unclosed quotes and backslashes no longer
+  stalls Pixel chat. pixel-edge masks quoted text before it looks for
+  workspace directives, and that step took time quadratic in the message
+  length; it is now linear. Quoted text that continues past an escaped line
+  break also stays masked now.
+- Enabling Token Spy, APE, Privacy Shield or Brave Search on an install that
+  started without them no longer fails with "uses a local build without a
+  verified source recipe". They build their image from their own folder,
+  and the dashboard refused any local build that was not one of two
+  reviewed Langfuse Dockerfiles. It now accepts
+  these four when their folder matches the files this ODS version shipped,
+  pinned by digest; a changed, added or removed file, or a link, is still
+  refused. Changing one of these folders needs
+  `python3 scripts/pin-builtin-build-contexts.py --write`, and CI fails
+  until it is run.
+- APE or Token Spy enabled after install on Linux with rootful Docker now
+  gets its state folder owned by the container's user before the first start,
+  as the installer already does for services enabled at install. APE
+  restarted in a loop with "Permission denied: '/data/ape/state.json'".
+  An APE container that is already restarting must be stopped (disable it)
+  before enabling it again.
+- An installer rerun or upgrade no longer stops at once with "Voice, RAG
+  documents, and ODS proxy currently require Open WebUI" when voice or RAG
+  services were added from Extensions while Open WebUI was off, as on a
+  Portal chat install. It keeps that selection and says so; ODS Talk uses
+  voice without Open WebUI. A new installation, and the ODS proxy, still
+  require Open WebUI.
+- On Windows, when a native Windows program already listens on port 9000, an
+  install without voice now gives Whisper (STT) a free host port (9100, then
+  9001), so Whisper added later from the Extensions Library starts. The
+  installer used to move Whisper off 9000 only when voice was selected, and
+  Docker Desktop then could not publish the port. A rerun (update) moves a
+  9000 written by an earlier installer; a port you set yourself is never
+  changed.
+- Rerunning the installer on Windows no longer moves a working Whisper (STT)
+  off port 9000. Docker Desktop serves Whisper's port through a Windows
+  listener, which the installer took for another program. It now checks
+  whether that listener is this installation's running Whisper.
+- When an extension fails to start, its card shows why instead of "Host
+  agent failed to start extension", and the host agent logs the same reason.
+  A host port another program holds is named with the `.env` setting that
+  moves it, such as `WHISPER_PORT`; other errors show the end of Docker's
+  output, where its error is, with credentials removed.
+- Uninstalling on Windows (WSL) no longer refuses with "Pixel validation
+  failed; nothing was changed" after WSL restarts. WSL attaches its disks in a
+  different order on each start, so a completed Pixel update's private scratch
+  folder came back under a new device number and failed its identity check.
+  Uninstall now accepts exactly that: the same folders, still empty and
+  root-private. Anything else still stops the uninstall.
+- Turning Hermes off and on again from the Extensions Library after an
+  installer update no longer leaves it unable to start on Docker Desktop
+  ("error mounting ... cli-config.yaml.example ... no such file or
+  directory").
+  - The host agent's patch of Hermes's configuration template replaced every
+    comment and blank line that followed the compression `context_length`
+    with another `context_length` line. Its template never matched the
+    installer's, so the next start rewrote it.
+  - That rewrite replaced the file. Docker Desktop keeps an existing
+    container's single-file mount on the file it replaced, so the Hermes
+    container could no longer start.
+  - The agent now writes the same template as the installer for the same
+    model route, so a start after an update changes nothing. When the
+    template must change, the agent updates the file in place. It refuses
+    when the file is not a regular file that the ODS user owns.
+- Rerunning `install.ps1` on Windows (an update) no longer turns off Hermes
+  Agent that was added from the Extensions Library. Windows setup passed
+  `--no-hermes` on every run, so the rerun disabled Hermes and its proxy and
+  Compose removed both containers. Only a new installation (no `.env` yet)
+  gets the flag now; a rerun keeps the current choice, and `-NoHermes` turns
+  Hermes off explicitly.
+- After an update of a Pixel installation, adding Hermes back from the
+  Extensions Library no longer fails with "Host agent failed to start
+  extension." The Pixel source update runs as root and set only the owner of
+  the files it replaced, so they kept root's group, and the host agent could
+  not rewrite Hermes's configuration template. Replaced files and new
+  directories now get the owner's primary group, as on a new installation.
+- Installations that an earlier Pixel source update already left with files
+  in group root are repaired by the next installer run. The installer returns
+  its owner's files and folders in `bin`, `lib`, `scripts`, `installers`,
+  `extensions` and `vendor` from group root to the owner's group, without
+  sudo and without following links, and logs how many it changed.
+- A non-interactive rerun on a Tier 0 or Tier 1 machine keeps ComfyUI when it
+  is already running (for example after adding it from the Extensions
+  Library). Its low-memory safety check now applies only when ComfyUI is not
+  installed yet, as the interactive "Keep current selection" already did.
+- Updating a Pixel installation that has Hermes on no longer rewrites Hermes's
+  configuration template while the Pixel source update is still in progress.
+  That update finishes only over the exact files it installed, so the change
+  could stop the update. The installer now writes Hermes's model route after
+  the Pixel update finishes, still before Hermes starts.
+- Rerunning the installer (an update) no longer fails with "Embeddings model
+  prefetch failed" after Embeddings was added from Extensions. The Embeddings
+  service downloads the model itself, as root, so the installer could not
+  write into that cache. The installer now leaves a cache owned by the service
+  alone; fresh installs still prefetch the model and still stop if that fails.
+- Two defects stopped Pixel's held source upgrade, which installs a new Pixel
+  release over an existing one on Linux and WSL. No release has used that path
+  yet; its first live run found both.
+  - In Sandbox mode, the installer proved access on Pixel's raw candidate
+    before ODS's runtime settings were back in place. The proof's command
+    wrapper is mounted only by those settings, so it always failed. The proof
+    now runs after the settings, and again before admission reopens, as
+    intended.
+  - With Full Access, the installer rewrote the OpenClaw config with its keys
+    sorted even when nothing changed. The upgrade compares the exact bytes it
+    recorded at the start, so it refused to continue. The config is now left
+    alone when the chat endpoint is already enabled.
+  - A held upgrade that failed after its point of no return could only resume
+    the same candidate. When that candidate failed every time, the machine
+    stayed stuck: Portal was paused, another installer was refused, and so was
+    uninstall. A corrected installer for the same update can now take it over
+    under the same hold, and the update completes normally. The takeover is
+    refused unless the installed tree exactly matches the stuck plan and the
+    protected coordinator is intact. A Full Access update whose configuration
+    bytes changed still needs manual recovery
+    (`docs/pixel/SOURCE-UPGRADE-RECOVERY.md`).
+- `ods-uninstall.sh` now validates Pixel before it stops the background model
+  upgrade or turns off Windows startup. A Pixel refusal used to leave start-up
+  at sign-in disabled; now it changes nothing.
+- Adding a bundled extension or Open WebUI from Extensions no longer fails on a slow
+  link. A first image download (several GB for Hermes Agent or Open WebUI) ran
+  inside a 600-second start allowance, and the Dashboard gave up on adding Open
+  WebUI after 180 seconds, while the host kept going and the card lost its Add
+  button. The Extensions page now downloads the images first, showing elapsed time
+  and completed layers on the card, and enables once they are local. A download
+  stops only when Docker makes no progress for 15 minutes (or after 6 hours);
+  Library installs download the same way.
+- Model compatibility verdicts recorded on named test machines now apply only
+  to an install that sets `ODS_FLEET_HOST_ID` or `ODS_COMPATIBILITY_HOST`. The
+  Dashboard used to fall back to the computer's own name, so a machine called
+  `mac-mini`, `spark` or `windows-laptop` received another machine's verdicts.
+- `ods model list` on Linux and WSL now resolves each tier from the installed
+  tier map, the same way `ods model swap` does, and marks models that are
+  already downloaded. It used to print a hard-coded list that still named
+  retired tier models.
+- The Linux installer's success card no longer tells you to open
+  `http://<your-ip>:3001` from other devices. That port only listens on
+  localhost. The card now shows the Dashboard's LAN address
+  (`http://<your-ip>:3011`, sign-in required) only when LAN access is
+  enabled.
+- On openSUSE, the Linux installer now installs Docker and the Compose plugin
+  from the distribution's own packages (`zypper install docker
+  docker-compose`). It used to pipe get.docker.com, which refuses openSUSE, so
+  Docker had to be installed by hand first. get.docker.com remains the
+  fallback for the SLES variants it supports.
+- The Qwen3.5-2B model used for CPU-only and lightweight installs, and as the
+  fast-start bootstrap model, is now downloaded from a fixed Hugging Face
+  commit and verified against its SHA-256 on Linux and macOS. The tier maps
+  previously fetched it from `resolve/main` with no checksum, and the bootstrap
+  checked a hash against a moving branch. The pin matches the catalog entry.
+- macOS: the installer refuses to run when the install directory overlaps
+  the source checkout (the clone root, an ancestor, or a folder inside it),
+  comparing directories by identity rather than spelling. On the default
+  case-insensitive APFS volume, the README steps (clone to `~/ODS`, install to
+  `~/ods`) previously copied ODS into the clone itself, and uninstall then
+  deleted the clone. Running the installer from the install directory, as the
+  bootstrap does, is unchanged.
+- `get-ods.sh` no longer deletes a directory that has no `.env` unless it is
+  empty or still carries the ODS source tree. A `data/` directory kept by
+  `ods-uninstall.sh --keep-data`, or an unrelated directory named by
+  `ODS_INSTALL_DIR`, now stops the bootstrap with instructions instead of
+  being removed by `--force` or a "y" answer. The reinstall prompt now reads
+  its answer from the terminal, so it works under `curl | bash`, and stops
+  cleanly when no terminal exists. The bootstrap banner no longer claims the
+  source is verified.
 - Windows `ods.ps1 uninstall` no longer stops at "Docker cleanup is incomplete"
   when a volume or network with the `ods` compose label is not in the saved
   compose files (an older release or a since-disabled extension). It now removes

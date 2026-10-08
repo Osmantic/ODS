@@ -46,7 +46,7 @@ See [PIXEL.md](PIXEL.md) for rollback and the full qualification gate.
 
 **AMD:**
 ```bash
-rocm-smi
+ods gpu status
 ```
 
 **Apple Silicon** — GPU is used automatically; no separate check needed.

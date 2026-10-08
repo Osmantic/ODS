@@ -64,7 +64,8 @@ def _validate_document(doc: Any) -> list[str]:
         Draft202012Validator.check_schema(schema)
         validator = Draft202012Validator(schema)
     except (OSError, ValueError, SchemaError) as exc:
-        return [f"state schema unavailable or invalid: {exc}"]
+        logger.warning("model-state schema unavailable or invalid: %s", exc)
+        return ["state schema unavailable or invalid"]
 
     errors = []
     def sort_key(item):
@@ -111,12 +112,13 @@ async def get_model_state(api_key: str = Depends(verify_api_key)):
         return _invalid_response([], exists=False)
     except (OSError, UnicodeError) as exc:
         logger.warning("model-state read failed: %s", exc)
-        return _invalid_response([f"read failed: {exc}"])
+        return _invalid_response(["read failed"])
 
     try:
         doc = json.loads(raw)
     except ValueError as exc:
-        return _invalid_response([f"not valid JSON: {exc}"])
+        logger.warning("model-state is not valid JSON: %s", exc)
+        return _invalid_response(["not valid JSON"])
 
     if not isinstance(doc, dict):
         return _invalid_response(["document root must be a JSON object"])

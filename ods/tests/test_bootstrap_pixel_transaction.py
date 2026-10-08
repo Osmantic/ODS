@@ -48,8 +48,7 @@ ods_pixel_reconcile_promoted_model() {
 '''
             names = ['acquire_bootstrap_pixel_model_transaction', 'finish_bootstrap_pixel_model_transaction',
                      'cleanup_bootstrap_pixel_model_transaction', 'reconcile_ods_managed_pixel_model',
-                     'restore_docker_llama_server_after_swap_failure', 'rollback_windows_lemonade_swap',
-                     'restore_active_model_config', 'restore_bootstrap_model_after_windows_swap_failure']
+                     'restore_docker_llama_server_after_swap_failure', 'restore_active_model_config']
             script = preamble + '\n'.join(function(BOOTSTRAP, name) for name in names) + '\n' + body
             result = subprocess.run(['bash', '-c', script], text=True, capture_output=True,
                                     env={'PATH': '/usr/bin:/bin', 'EVENTS': str(log)})
@@ -57,11 +56,10 @@ ods_pixel_reconcile_promoted_model() {
             return log.read_text().splitlines() if log.exists() else []
 
     def test_pixel_drain_precedes_router_gate_and_model_snapshot(self):
-        start = BOOTSTRAP.index('if [[ "$_windows_lemonade_swap_applies" == "true" ||', BOOTSTRAP.index('_docker_llama_swap_applies=false'))
+        start = BOOTSTRAP.index('if [[ "$_windows_native_llama_swap_applies" == "true" ||', BOOTSTRAP.index('_docker_llama_swap_applies=false'))
         end = BOOTSTRAP.index('# ── Phase 3: Update .env', start)
         flow = BOOTSTRAP[start:end]
         events = self.run_shell('''
-_windows_lemonade_swap_applies=false
 _windows_native_llama_swap_applies=false
 _docker_llama_swap_applies=true
 acquire_model_router_swap_gate() { test -n "$BOOTSTRAP_PIXEL_TRANSACTION"; echo router-drained >> "$EVENTS"; }
@@ -124,33 +122,11 @@ if finish_bootstrap_pixel_model_transaction rolled-back; then exit 12; fi
 ''')
         self.assertEqual(events.count('transition:finish:rolled-back'), 1)
 
-    def test_uncertain_release_blocks_windows_and_shared_restore_entry_points(self):
+    def test_uncertain_release_blocks_shared_restore_entry_points(self):
         self.run_shell('''
 BOOTSTRAP_PIXEL_RELEASE_FAILED=true
-if rollback_windows_lemonade_swap; then exit 10; fi
 if restore_active_model_config; then exit 11; fi
-if restore_bootstrap_model_after_windows_swap_failure; then exit 12; fi
 ''')
-
-    def test_windows_borrowed_hold_requires_verified_inference_before_pixel_release(self):
-        for restored in ('true', 'false'):
-            events = self.run_shell('''
-acquire_bootstrap_pixel_model_transaction
-BOOTSTRAP_PIXEL_CONFIG_MUTATED=true
-BOOTSTRAP_GGUF_FILE=bootstrap2b.gguf
-WINDOWS_LEMONADE_OPENCLAW_PRESENT=false
-snapshot_env_value() { case "$1" in GGUF_FILE) echo bootstrap2b.gguf ;; LLM_MODEL) echo bootstrap2b ;; LEMONADE_MODEL) echo bootstrap2b ;; esac; }
-restore_bootstrap_model_after_windows_swap_failure() { :; }
-restore_active_model_config() { :; }
-restart_windows_lemonade_with_previous_model() { "''' + restored + '''"; }
-read_env_value() { case "$1" in LEMONADE_MODEL) echo bootstrap2b ;; MAX_CONTEXT) echo 65536 ;; LLAMA_REASONING) echo off ;; esac; }
-restart_windows_lemonade_dependents_after_rollback() { :; }
-release_model_router_swap_gate() { :; }
-verify_windows_lemonade_downstream_route() { :; }
-rollback_windows_lemonade_swap || true
-''')
-            releases = [x for x in events if x.startswith('transition:finish:')]
-            self.assertEqual(releases, ['transition:finish:rolled-back'] if restored == 'true' else [])
 
     def test_borrowed_transaction_must_match_held_root_journal(self):
         for phase, tx in [('draining', TX), ('held', 'b' * 64), ('error', TX)]:

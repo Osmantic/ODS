@@ -11,7 +11,7 @@ cat > "$tmp/run-phase.sh" <<'EOF'
 set -euo pipefail
 SCRIPT_DIR="__ROOT__/installers"
 INSTALL_DIR="__INSTALL__"
-OFFLINE_MODE=true DRY_RUN=false ENABLE_OPENCLAW=false ENABLE_VOICE=false
+OFFLINE_MODE=true DRY_RUN=false ENABLE_VOICE=false
 LOG_FILE="$INSTALL_DIR/install.log"
 ods_progress() { :; }
 chapter() { :; }

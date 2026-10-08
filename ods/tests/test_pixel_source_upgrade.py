@@ -3,6 +3,7 @@ import importlib.util
 import fcntl
 import os
 import json
+import pwd
 import re
 import socket
 import subprocess
@@ -289,6 +290,32 @@ def test_mode_and_new_nested_directory_preserved_on_rollback(trees):
     manager.publish(verify, rollback=True)
     assert not (old / "bin/nested/new.py").exists()
     assert (old / "bin/a.py").stat().st_mode & 0o777 == 0o500
+
+
+def test_published_paths_take_the_owner_primary_group(trees):
+    """Root publishes the update. Setting only the owner left new files and
+    directories in root's group; a fresh install's owner-run copy leaves them
+    in the owner's primary group, and the host agent keeps a file's group when
+    it rewrites one (a non-root chown to root's group fails)."""
+    manager, old, new, identity = trees
+    uid = os.getuid()
+    assert upgrade.SourceUpgrade(manager.state, old, uid, state_uid=uid).gid == pwd.getpwuid(uid).pw_gid
+    # Unprivileged stand-in for root: this process creates the payloads in
+    # its own group, and the owner's group is another one it may assign.
+    creator = os.getegid()
+    owner_group = next((group for group in os.getgroups() if group != creator), None)
+    if owner_group is None:
+        pytest.skip("needs a supplementary group other than the creating group")
+    manager = upgrade.SourceUpgrade(manager.state, old, uid, state_uid=uid, owner_gid=owner_group)
+    (new / "extensions/services/hermes").mkdir(parents=True)
+    (new / "extensions/services/hermes/compose.yaml.disabled").write_text("services: {}\n")
+    verify, _ = held(manager, new, identity)
+    manager.publish(verify)
+    for path in ("bin/a.py", "bin/added.py", "extensions/services", "extensions/services/hermes",
+                 "extensions/services/hermes/compose.yaml.disabled"):
+        assert (old / path).stat().st_gid == owner_group, path
+    # Paths the update does not change are not rewritten.
+    assert (old / "bin/removed.py").stat().st_gid == creator
 
 
 def test_root_release_gate_requires_exact_completed_source(tmp_path, monkeypatch):
@@ -690,6 +717,152 @@ def test_unheld_permission_restage_cannot_change_candidate_or_marker(mirrored):
     assert manager.journal()['identity'] == identity
 
 
+def test_new_download_refreshes_unheld_plan_without_copying_or_losing_mirror(mirrored):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    original_source = upgrade.inventory(old, os.getuid())
+    mirror_name = manager._mirror_name()
+    mirror_bytes = (manager.state / mirror_name).read_bytes()
+    protected_bytes = {path.name: path.read_bytes() for path in mirror.iterdir()}
+    (new / 'bin/a.py').write_text('new main download')
+    refreshed = manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert refreshed['phase'] == 'staged' and refreshed['hold'] is None
+    assert refreshed['before'] == prior['before'] == original_source
+    assert refreshed['candidate'] == upgrade.inventory(new, os.getuid(), candidate=True)
+    assert (manager.state / upgrade.sha(upgrade.encoded(prior))).read_bytes() == upgrade.encoded(prior)
+    assert (manager.state / mirror_name).read_bytes() == mirror_bytes
+    assert {path.name: path.read_bytes() for path in mirror.iterdir()} == protected_bytes
+    assert upgrade.inventory(old, os.getuid()) == original_source
+    # The normal protected installer writer can now journal the refreshed
+    # coordinator, then acquire its own hold and apply the selected candidate.
+    for path in mirror.iterdir():
+        manager.record_mirror_write(path, path.read_bytes(), 0o644, os.getuid(), os.getgid())
+    manager.bind('d' * 64, lambda _: None)
+    manager.publish(lambda _: None)
+    assert (old / 'bin/a.py').read_text() == 'new main download'
+    manager.finish(lambda *_: None)
+    manager.verify_mirror()
+
+
+def test_stage_cli_selects_guarded_refresh_for_a_new_download(mirrored, monkeypatch):
+    manager, old, new, identity, mirror = mirrored
+    for service in ('pixel-edge', 'litellm'):
+        path = new / f'extensions/services/{service}/compose.yaml'
+        path.parent.mkdir(parents=True)
+        path.write_text('services: {}')
+    marker = dict(schema_version=2, manager='ods', install_dir=str(old),
+                  initial_active_state='absent', state='ready', pixel_source_ref=identity['beforeRef'])
+    monkeypatch.setattr(upgrade, '_protected_json', lambda *a, **kw: (marker, identity['markerSha256']))
+    monkeypatch.setattr(upgrade, 'owner_baseline', lambda *a: {
+        'configSha256': identity['configSha256'], 'receiptSha256': identity['receiptSha256']})
+    account = SimpleNamespace(pw_dir=str(old.parent / 'owner'), pw_uid=os.getuid())
+    upgrade._stage(manager, account, new, identity['afterRef'])
+    assert manager.journal()['candidate'] == upgrade.inventory(new, os.getuid(), candidate=True)
+    assert manager.journal()['hold'] is None
+    assert (old / 'bin/a.py').read_text() == 'old'
+
+
+@pytest.mark.parametrize('boundary', ['before-journal', 'after-journal'])
+def test_unheld_refresh_replays_interrupted_journal_publication(mirrored, monkeypatch, boundary):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    (new / 'bin/a.py').write_text('new main download')
+    save = manager._save
+    def interrupted(value):
+        if boundary == 'after-journal':
+            save(value)
+        raise RuntimeError('interrupted refresh')
+    monkeypatch.setattr(manager, '_save', interrupted)
+    with pytest.raises(RuntimeError, match='interrupted refresh'):
+        manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    monkeypatch.setattr(manager, '_save', save)
+    if boundary == 'before-journal':
+        assert manager.journal() == prior
+    result = manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert result['candidate'] == upgrade.inventory(new, os.getuid(), candidate=True)
+    assert result['phase'] == 'staged' and result['hold'] is None
+    assert upgrade.inventory(old, os.getuid()) == prior['before']
+
+
+def test_unheld_refresh_rejournals_a_partially_installed_changed_coordinator(mirrored):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    # A bootstrap interruption left this file at the recorded before bytes.
+    (mirror / 'pixel_source_upgrade.py').write_bytes(b'old-pixel_source_upgrade.py')
+    (new / 'bin/pixel_access_bridge.py').write_bytes(b'corrected controller')
+    manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    for path in mirror.iterdir():
+        rel = ('extensions/services/pixel-agent/host/' if path.name == 'access_mode_server.py' else 'bin/') + path.name
+        raw = (new / rel).read_bytes()
+        manager.record_mirror_write(path, raw, 0o644, os.getuid(), os.getgid())
+        path.write_bytes(raw)
+    manager.verify_mirror()
+    assert upgrade.inventory(old, os.getuid()) == prior['before']
+    assert manager.journal()['hold'] is None
+
+
+def test_unheld_refresh_rechecks_live_source_before_publishing(mirrored, monkeypatch):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    (new / 'bin/a.py').write_text('new main download')
+    inventory = upgrade.inventory
+    calls = 0
+    def racing_inventory(path, uid, **kwargs):
+        nonlocal calls
+        if path == old:
+            calls += 1
+            if calls == 2:
+                (old / 'bin/a.py').write_text('concurrent owner edit')
+        return inventory(path, uid, **kwargs)
+    monkeypatch.setattr(upgrade, 'inventory', racing_inventory)
+    with pytest.raises(upgrade.UpgradeError, match='source-live-drift'):
+        manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert manager.journal() == prior
+    assert (old / 'bin/a.py').read_text() == 'concurrent owner edit'
+
+
+@pytest.mark.parametrize('condition', [
+    'hold', 'applying', 'applied', 'restoring', 'restored', 'complete',
+    'pending', 'downstream', 'live-bytes', 'live-mode', 'mirror', 'scratch',
+    'marker', 'before-ref', 'after-ref',
+])
+def test_unheld_refresh_refuses_ambiguous_state_without_replacing_plan(mirrored, condition):
+    manager, old, new, identity, mirror = mirrored
+    if condition == 'hold':
+        manager.bind('d' * 64, lambda _: None)
+    elif condition in ('applying', 'applied', 'restoring', 'restored', 'complete'):
+        value = manager.journal()
+        value['phase'] = condition
+        manager._save(value)
+    elif condition == 'pending':
+        (manager.state.parent / 'transition.json').write_text('{}')
+    elif condition == 'downstream':
+        manager._write(manager.downstream_name(), b'{}')
+    elif condition == 'live-bytes':
+        (old / 'bin/a.py').write_text('owner edit')
+    elif condition == 'live-mode':
+        (old / 'bin/a.py').chmod(0o600)
+    elif condition == 'mirror':
+        (mirror / 'pixel_access_bridge.py').write_text('unrecognized controller')
+    elif condition == 'scratch':
+        record = json.loads((manager.state / 'source-scratch.json').read_text())
+        (old / record['name'] / 'payload').write_text('interrupted write')
+    else:
+        key = {'marker': 'markerSha256', 'before-ref': 'beforeRef', 'after-ref': 'afterRef'}[condition]
+        identity = {**identity, key: 'f' * len(identity[key])}
+    (new / 'bin/a.py').write_text('new main download')
+    prior = manager.journal()
+    source = upgrade.inventory(old, os.getuid())
+    records = {p.name: p.read_bytes() for p in manager.state.iterdir() if p.is_file()}
+    protected = {p.name: p.read_bytes() for p in mirror.iterdir()}
+    with pytest.raises(upgrade.UpgradeError):
+        manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert manager.journal() == prior
+    assert upgrade.inventory(old, os.getuid()) == source
+    assert {p.name: p.read_bytes() for p in manager.state.iterdir() if p.is_file()} == records
+    assert {p.name: p.read_bytes() for p in mirror.iterdir()} == protected
+
+
 @pytest.mark.parametrize('mutation', ['extra', 'symlink', 'blob', 'pending', 'mirror'])
 def test_completed_uninstall_inventory_rejects_unknown_or_changed_state(mirrored, mutation):
     manager, old, new, identity, mirror = mirrored
@@ -709,6 +882,64 @@ def test_completed_uninstall_inventory_rejects_unknown_or_changed_state(mirrored
         (mirror / 'pixel_access_bridge.py').write_bytes(b'not the reviewed guard')
     with pytest.raises((upgrade.UpgradeError, OSError)):
         manager.uninstall_inventory()
+
+
+def _completed(mirrored):
+    manager, old, _new, _identity, _mirror = mirrored
+    manager.bind('d' * 64, lambda _: None)
+    manager.publish(lambda _: None)
+    manager.finish(lambda *_: None)
+    return manager, old
+
+
+def _renumbered_receipt(manager):
+    """The receipt as a WSL VM restart leaves it: same inodes, a new device."""
+    record = json.loads((manager.state / 'source-scratch.json').read_text())
+    record['parent'][0] += 100
+    record['identity'][0] += 100
+    return record
+
+
+def test_completed_uninstall_inventory_accepts_a_renumbered_device(mirrored):
+    manager, old = _completed(mirrored)
+    expected = manager.uninstall_inventory()
+    record = _renumbered_receipt(manager)
+    raw = upgrade.encoded(record)
+    manager._write('source-scratch.json', raw)
+    with pytest.raises(upgrade.UpgradeError, match='source-scratch-invalid'):
+        with manager._scratch():
+            pass
+
+    assert manager.uninstall_inventory() == expected
+    # Validation only reads: the receipt and the buffer stay as they were.
+    assert (manager.state / 'source-scratch.json').read_bytes() == raw
+    assert (old / record['name']).is_dir() and list((old / record['name']).iterdir()) == []
+
+
+@pytest.mark.parametrize('condition', ['buffer-inode', 'content', 'mode', 'parent-inode',
+                                       'split-device', 'pending'])
+def test_completed_uninstall_inventory_refuses_anything_but_a_renumbered_device(mirrored, condition):
+    manager, old = _completed(mirrored)
+    record = _renumbered_receipt(manager)
+    buffer = old / record['name']
+    if condition == 'buffer-inode':
+        record['identity'][1] += 1
+    elif condition == 'content':
+        (buffer / 'payload').write_text('never adopt')
+    elif condition == 'mode':
+        buffer.chmod(0o755)
+    elif condition == 'parent-inode':
+        record['parent'][1] += 1
+    elif condition == 'split-device':
+        record['identity'][0] += 1
+    else:
+        (manager.state.parent / 'transition.json').write_text('{}')
+    raw = upgrade.encoded(record)
+    manager._write('source-scratch.json', raw)
+
+    with pytest.raises(upgrade.UpgradeError):
+        manager.uninstall_inventory()
+    assert (manager.state / 'source-scratch.json').read_bytes() == raw
 
 
 def test_source_begin_protocol_has_no_caller_supplied_authority():
@@ -932,6 +1163,10 @@ def test_source_acquisition_crash_resumes_same_owner_mode_and_token(
     ('applied', '', ['restore', 'stage', 'status', 'hold', 'copy', 'downstream']),
     ('staged', 'stage', ['restore', 'stage']),
     ('staged', 'hold', ['restore', 'stage', 'status', 'bootstrap', 'hold']),
+    # Past the downstream boundary (a taken-over or resumed update), the
+    # applied tree's coordinator is installed before anything else runs.
+    ('downstream', '', ['restore', 'stage', 'status', 'hold', 'copy', 'downstream', 'bootstrap']),
+    ('downstream', 'copy', ['restore', 'stage', 'status', 'hold', 'copy']),
 ])
 def test_phase06_actual_handoff_slice_never_uninstalls_or_rebootstraps_held_code(phase, failure, expected):
     source = (MODULE.parents[1] / 'installers/phases/06-directories.sh').read_text()
@@ -954,6 +1189,7 @@ FAILURE="$2"
 _phase06_step() { :; }
 ai() { :; }
 error() { :; }
+_phase06_source_failed() { return 1; }
 _ods_pixel_restore_transition_source() { printf 'restore\n' >&2; }
 _ods_pixel_openclaw_bin() { printf /fixture/openclaw; }
 _ods_pixel_install_access_service() { printf 'bootstrap\n' >&2; }
@@ -967,7 +1203,12 @@ _ods_pixel_source_upgrade() {
     *) return 90;;
   esac
 }
-jq() { [[ "$PHASE" == staged ]]; }
+jq() {
+  case "$2" in
+    '.downstream == true') [[ "$PHASE" == downstream ]] ;;
+    *) [[ "$PHASE" == staged ]] ;;
+  esac
+}
 exercise() {
 '''
     result = subprocess.run(['/bin/bash', '--noprofile', '--norc', '-c',
@@ -1164,3 +1405,117 @@ def test_plugin_candidate_bytes_remain_bound_to_held_plan(trees):
     path.write_text('changed')
     with pytest.raises(upgrade.UpgradeError, match='source-candidate-changed'):
         manager.stage(new, os.getuid(), identity)
+
+
+def applied(manager, new, identity, token='d' * 64):
+    """A held plan whose tree is fully applied and past the downstream boundary."""
+    manager.stage(new, os.getuid(), identity)
+    manager.bind(token, lambda _: None)
+    manager.publish(lambda _: None)
+    manager._write(manager.downstream_name(), upgrade.encoded({'transaction': token}))
+    return manager.journal()
+
+
+def test_corrected_candidate_takes_over_a_failed_update_under_its_hold(mirrored):
+    manager, old, new, identity, mirror = mirrored
+    stuck = applied(manager, new, identity)
+    stuck_downstream = manager.downstream_name()
+    (new / 'bin/a.py').write_text('corrected')
+    # Without an explicit takeover a different candidate is still refused.
+    with pytest.raises(upgrade.UpgradeError, match='source-candidate-changed'):
+        manager.stage(new, os.getuid(), identity)
+    plan = manager.stage(new, os.getuid(), identity, supersede=True)
+    assert plan['hold'] == stuck['hold'] and plan['phase'] == 'held'
+    assert plan['identity'] == identity
+    assert plan['before'] == stuck['after'] == upgrade.inventory(old, os.getuid())
+    raw = upgrade.encoded(stuck)
+    assert (manager.state / upgrade.sha(raw)).read_bytes() == raw
+    assert (manager.state / stuck_downstream).exists()
+    assert json.loads((manager.state / manager.downstream_name()).read_text()) == {'transaction': stuck['hold']}
+    # Rerunning the same corrected installer resumes; it is not a new takeover.
+    assert manager.stage(new, os.getuid(), identity, supersede=True) == plan
+    manager.bind(stuck['hold'], lambda _: None)
+    manager.publish(lambda _: None)
+    assert (old / 'bin/a.py').read_text() == 'corrected'
+    # The applied tree's coordinator is recorded for the new plan before finish.
+    for name in ('pixel_access_bridge.py', 'pixel_source_upgrade.py', 'access_mode_server.py'):
+        manager.record_mirror_write(mirror / name, (mirror / name).read_bytes(), 0o644,
+                                    os.getuid(), os.getgid())
+    manager.finish(lambda *_: None)
+    assert manager.journal()['phase'] == 'complete'
+    manager.uninstall_inventory()
+
+
+@pytest.mark.parametrize('state', ['staged', 'held', 'restored', 'identity', 'drift', 'mirror'])
+def test_takeover_refuses_anything_but_an_exactly_applied_plan(mirrored, state):
+    manager, old, new, identity, mirror = mirrored
+    if state == 'held':
+        manager.bind('d' * 64, lambda _: None)
+    elif state != 'staged':
+        applied(manager, new, identity)
+    if state == 'restored':
+        manager.publish(lambda _: None, rollback=True)
+    before = manager.journal()
+    requested = dict(identity, afterRef='f' * 40) if state == 'identity' else identity
+    if state == 'drift':
+        (old / 'bin/a.py').write_text('owner edit')
+    if state == 'mirror':
+        (mirror / 'pixel_access_bridge.py').write_bytes(b'replaced coordinator')
+    (new / 'bin/a.py').write_text('corrected')
+    with pytest.raises(upgrade.UpgradeError, match='supersede-refused|live-drift|mirror-changed'):
+        manager.stage(new, os.getuid(), requested, supersede=True)
+    assert manager.journal() == before
+
+
+@pytest.mark.parametrize('plan_phase,status_phase,downstream,expected', [
+    ('staged', None, False, True),
+    ('held', 'acquiring', False, True),
+    ('held', 'error', False, True),
+    ('held', 'error', True, False),
+    ('applied', 'error', True, False),
+    ('held', 'held', True, False),
+])
+def test_hold_reacquires_admission_only_before_the_downstream_boundary(
+        plan_phase, status_phase, downstream, expected):
+    plan = dict(phase=plan_phase, hold=None if plan_phase == 'staged' else 'd' * 64)
+    status = dict(pending=True, phase=status_phase) if status_phase else {'pending': False}
+    assert upgrade.needs_source_begin(plan, status, downstream) is expected
+
+
+@pytest.mark.parametrize('before_ref,version,active,accepted', [
+    ('a' * 40, b'4.3.29\n', '4.3.28', True),
+    ('a' * 40, b'4.10.0\n', '4.9.9', True),  # numeric, not lexical, ordering
+    ('a' * 40, b'4.3.28\n', '4.3.28', False),  # different source with the active version
+    ('a' * 40, b'4.3.27\n', '4.3.28', False),
+    ('a' * 40, b'4.3.29-rc1\n', '4.3.28', False),
+    ('a' * 40, None, '4.3.28', False),  # the incoming source has no VERSION
+    ('a' * 40, b'4.3.29\n', '', False),  # no verified active release to compare against
+    ('b' * 40, b'4.3.28\n', '4.3.28', True),  # the same source needs no new version
+])
+def test_changed_pixel_source_requires_a_strictly_newer_release(tmp_path, monkeypatch, before_ref, version,
+                                                                 active, accepted):
+    install = tmp_path / 'install'
+    marker = dict(schema_version=2, manager='ods', install_dir=str(install), initial_active_state='absent',
+                  state='ready', pixel_source_ref=before_ref, active_release_version=active)
+    files = {'extensions/services/pixel-edge/compose.yaml': b'services: {}\n',
+             'extensions/services/litellm/compose.yaml': b'services: {}\n',
+             'vendor/pixel/VERSION': version}
+
+    def read_file(root, name, uid, *, candidate=False):
+        raw = files.get(name)
+        return (None, None) if raw is None else (dict(sha256=upgrade.sha(raw), mode=0o644), raw)
+
+    monkeypatch.setattr(upgrade, 'read_file', read_file)
+    monkeypatch.setattr(upgrade, '_protected_json', lambda path, uid=0: (marker, 'c' * 64))
+    monkeypatch.setattr(upgrade, 'owner_baseline', lambda home, uid: dict(configSha256='e' * 64, receiptSha256=None))
+    staged = []
+    manager = SimpleNamespace(install=install, state=tmp_path / 'state/source-upgrade', journal=lambda: None,
+                              stage=lambda source, uid, identity, **options: staged.append(identity))
+    account = SimpleNamespace(pw_dir=str(tmp_path / 'home'), pw_uid=1000)
+    if accepted:
+        upgrade._stage(manager, account, str(tmp_path / 'candidate'), 'b' * 40)
+        assert [identity['beforeRef'] for identity in staged] == [before_ref]
+    else:
+        with pytest.raises(upgrade.UpgradeError, match='source-new-version-required'):
+            upgrade._stage(manager, account, str(tmp_path / 'candidate'), 'b' * 40)
+        assert staged == []

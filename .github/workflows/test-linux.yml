@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   host-request-deadline:
     runs-on: ${{ matrix.os }}
@@ -91,7 +94,7 @@ jobs:
       - name: GPU assignment capacity contracts
         run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
       - name: macOS TCP bridge lifecycle contracts
-        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py -q
+        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
@@ -110,8 +113,6 @@ jobs:
 
       - name: Token Spy proxy persistence and disconnect contracts
         run: python -m pytest extensions/services/token-spy/tests/test_proxy_persistence_io.py extensions/services/token-spy/tests/test_anthropic_cumulative_usage.py -q
-      - name: Lemonade context cache persistence
-        run: sudo env LEMONADE_REQUIRE_NAMESPACE=1 "$(command -v python)" -m pytest tests/test_lemonade_context_persistence.py -q
 
       - name: Settings transaction and access preservation contracts
         run: |
@@ -227,7 +228,6 @@ jobs:
       - name: Documented Security Suites
         run: |
           bash tests/test-secret-security.sh
-          bash tests/test-openclaw-device-auth-default.sh
 
       - name: Documented Security Suites Stay Wired
         run: bash tests/contracts/test-security-suites-wired.sh
@@ -270,6 +270,9 @@ jobs:
       - name: Model Catalog Artifact Pins
         run: python3 tests/test-model-library-pinned-urls.py
 
+      - name: README Model Tables Match the Selector
+        run: python3 tests/test-readme-model-tables.py
+
       - name: Active Model Preservation Tests
         run: python3 tests/test-preserve-active-model.py
 
@@ -286,7 +289,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Pixel Inspection Upgrade Cleanup Contracts
-        run: python3 -m pytest -q tests/test_pixel_inspection_upgrade_dispatch.py tests/test_preview_inspection_distribution.py tests/test_preview_select.py
+        run: python3 -m pytest -q tests/test_pixel_inspection_upgrade_dispatch.py tests/test_preview_inspection_distribution.py tests/test_preview_select.py tests/test_pixel_verify_lifecycle.py
 
       - name: Pixel Native Integration Contracts
         run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py
@@ -307,6 +310,9 @@ jobs:
         run: |
           python3 tests/test-extension-build-context-materialization.py
           python3 tests/test-install-footprint-contract.py
+
+      - name: Seeded Content Privacy
+        run: python3 tests/test-seeded-content-privacy.py
 
       - name: Validate Manifests Tests
         run: |
@@ -346,6 +352,9 @@ jobs:
 
       - name: Uninstall Compose Flags Tests
         run: bash tests/test-uninstall-compose-flags.sh
+
+      - name: Uninstall stops the background model upgrade
+        run: bash tests/test-uninstall-stops-model-upgrade.sh
 
       - name: Uninstall volume custody and stopped-stack tests
         run: |
@@ -424,6 +433,11 @@ jobs:
       - name: CLI Install Directory Resolution Tests
         run: bash tests/test-cli-install-dir-resolution.sh
 
+      - name: CLI Model List and Activation Contracts
+        run: |
+          bash tests/test-ods-cli-model-list.sh
+          bash tests/contracts/test-ods-cli-model-activation.sh
+
       - name: Preset Export Archive Permissions
         run: bash tests/test-preset-export-permissions.sh
 
@@ -464,11 +478,11 @@ jobs:
       - name: Runtime Config Wiring Tests
         run: python3 tests/test-runtime-config-wiring.py
 
-      - name: OpenClaw HTTP Shim Lifecycle Tests
-        run: node --test tests/test-openclaw-shim-lifecycle.mjs
-
       - name: Perplexica Entrypoint Contract Tests
         run: python3 tests/test-perplexica-entrypoint.py
+
+      - name: Perplexica Client Citation Tests
+        run: node --test tests/test-perplexica-client-citations.js
 
       - name: ComfyUI Template Seeding Tests
         run: sudo env COMFYUI_REQUIRE_NAMESPACE=1 "$(command -v python3)" tests/test_comfyui_template_seeding.py -v
@@ -500,6 +514,7 @@ jobs:
           bash tests/test-gateway-only-linux.sh
           bash tests/test-portal-no-webui-selection.sh
           bash tests/test-linux-devtools-opt-in.sh
+          bash tests/test-pixel-node-provision.sh
           bash tests/test-dashboard-data-permissions.sh
           bash tests/test-extensions-library-copy.sh
           sudo -n python3 tests/test_dashboard_data_permissions.py
@@ -517,15 +532,18 @@ jobs:
           python3 tests/contracts/test-remote-provider-egress-service.py
           python3 tests/contracts/test-llama-spec-default.py
           python3 -m unittest -v tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
+          bash tests/test-macos-install-overlap.sh
 
       - name: WSL Windows Runtime Ownership and Retirement Contracts
         run: |
           python3 tests/contracts/test-wsl-stack.py
           python3 tests/test-wsl-bind-recovery.py
-          python3 tests/test-wsl-lemonade-control.py
+          python3 tests/test-wsl-runtime-control.py
           python3 tests/test-configure-wsl-model-store.py
           python3 tests/test-retire-wsl-runtime.py
-          bash tests/test-lemonade-host-transport.sh
+          bash tests/test-native-llm-flags.sh
+          bash tests/test-wsl-memory-reporting.sh
+          bash tests/test-recover-retired-pixel-sandbox.sh
 
       - name: Pixel Public Source and Local Bundle Contract
         run: |
@@ -540,6 +558,7 @@ jobs:
         run: |
           bash tests/test-pixel-integration.sh
           bash tests/test-pixel-host-install.sh
+          bash tests/test-pixel-owner-docker-preflight.sh
           bash tests/test-pixel-same-pin-upgrade.sh
           python3 -m unittest -v tests/test_pixel_model_transition.py
           python3 -m unittest -v tests/test_pixel_native_search.py
@@ -558,6 +577,7 @@ jobs:
         run: |
           python3 -m pytest -q tests/test_cloud_installer_messages.py
           bash tests/test-preflight-network-check.sh
+          bash tests/test-phase11-local-build-failure.sh
           bash tests/test-phase03-no-gpu-assignment-message.sh
           bash tests/test-preflight-external-gpu.sh
           bash tests/test-linux-install-preflight.sh
@@ -617,7 +637,7 @@ jobs:
       - name: Test support bundle command deadlines
         run: |
           python3 -m pip install pytest==8.4.2
-          python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py
+          python3 -m pytest -q tests/test_support_bundle_timeouts.py tests/test_support_bundle_log_scope.py tests/test_support_bundle_uri_credentials.py tests/test_support_bundle_token_formats.py
 
       - name: Linux Node runtime path tests
         run: |
@@ -640,9 +660,6 @@ jobs:
         run: |
           python3 tests/test_wsl_agent_address.py
           bash tests/test-wsl-agent-start.sh
-
-      - name: Issue-to-PR Security Contract Tests
-        run: bash tests/test-issue-to-pr-security.sh
 
       - name: NVIDIA Multi-GPU Visibility Contract Tests
         run: bash tests/test-multigpu-nvidia-visibility.sh

@@ -139,7 +139,8 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
                                 yield f"\u2717 {name}: {resp.status}\n"
                                 all_ok = False
                     except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
-                        yield f"\u2717 {name}: {e}\n"
+                        logger.warning("setup connectivity check for %s failed: %s", name, e)
+                        yield f"\u2717 {name}: unreachable\n"
                         all_ok = False
             # Emit trailer + sentinel in a single chunk (see run_tests() for
             # why separate yields drop the sentinel at the Starlette boundary).
@@ -183,7 +184,7 @@ async def run_setup_diagnostics(api_key: str = Depends(verify_api_key)):
                 # close the stream with a FAIL sentinel rather than leaving the
                 # client to fall back on best-effort log scraping.
                 logger.exception("run_setup_diagnostics generator raised: %s", exc)
-                yield f"\nDiagnostic runner error: {exc}\n__ODS_RESULT__:FAIL:1\n"
+                yield "\nDiagnostic runner error (see dashboard-api logs)\n__ODS_RESULT__:FAIL:1\n"
         finally:
             if not completed:
                 try:

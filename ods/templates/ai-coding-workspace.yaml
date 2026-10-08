@@ -5,7 +5,7 @@ template:
   description: "Local AI-assisted coding with version control and project memory — code stays on your machine."
   icon: Code2
   tags: [development, ai-assistant, self-hosted]
-  services: [aider, gitea, chromadb, n8n, openclaw]
+  services: [aider, gitea, chromadb, n8n]
   tier_minimum: T2
   estimated_disk_gb: 15
   service_notes:

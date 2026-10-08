@@ -3,7 +3,7 @@
 # ODS macOS Installer -- Environment Generator
 # ============================================================================
 # Part of: installers/macos/lib/
-# Purpose: Generate .env file, SearXNG config, OpenClaw configs
+# Purpose: Generate .env file and SearXNG config
 #          Uses /dev/urandom + openssl for secrets
 #
 # Canonical source: installers/phases/06-directories.sh (keep .env format in sync)
@@ -44,6 +44,8 @@ _ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
 # shellcheck source=../../lib/searxng-locale.sh
 . "$_ODS_MACOS_ENV_ROOT/installers/lib/searxng-locale.sh"
+# shellcheck source=../../lib/llama-memory-budget.sh
+. "$_ODS_MACOS_ENV_ROOT/installers/lib/llama-memory-budget.sh"
 unset _ODS_MACOS_ENV_ROOT
 
 env_key_exists() {
@@ -150,24 +152,6 @@ select_env_service_cpu_reservation() {
     select_auto_cpu_value "$(read_env_value "$env_path" "$key")" "$(cap_cpu_value "$desired" "$limit")"
 }
 
-# Detect the host's LAN IP. Used to populate HOST_LAN_IP when the operator
-# has set BIND_ADDRESS=0.0.0.0 (macOS has no --lan flag; this is opt-in via
-# manual .env edit). Returns empty string when no non-loopback address can
-# be found. BSD-safe: macOS lacks `hostname -I`, so we probe ifconfig first.
-detect_host_lan_ip() {
-    local ip=""
-    if command -v ifconfig >/dev/null 2>&1; then
-        ip=$(ifconfig 2>/dev/null | awk '/inet / && $2 != "127.0.0.1" {print $2; exit}')
-    fi
-    if [[ -z "$ip" ]] && command -v ip >/dev/null 2>&1; then
-        ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1); exit}')
-    fi
-    if [[ -z "$ip" ]] && command -v hostname >/dev/null 2>&1 && hostname -I >/dev/null 2>&1; then
-        ip=$(hostname -I 2>/dev/null | awk '{print $1}')
-    fi
-    printf '%s\n' "$ip"
-}
-
 sanitize_device_name() {
     local raw="${1:-}"
     local name
@@ -241,7 +225,6 @@ generate_ods_env() {
     # Idempotency: preserve existing .env (and secrets) unless --force was provided.
     if [[ -f "$env_path" ]] && [[ "$force_overwrite" != "true" ]]; then
         ENV_DASHBOARD_KEY="$(read_env_value "$env_path" "DASHBOARD_API_KEY")"
-        ENV_OPENCLAW_TOKEN="$(read_env_value "$env_path" "OPENCLAW_TOKEN")"
 
         # SearXNG secret: prefer .env, fall back to settings.yml, then generate.
         ENV_SEARXNG_SECRET="$(read_env_value "$env_path" "SEARXNG_SECRET")"
@@ -276,10 +259,19 @@ generate_ods_env() {
         comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
         upsert_env_value "$env_path" "TTS_CPU_LIMIT" "$tts_cpu_limit"
         upsert_env_value "$env_path" "TTS_CPU_RESERVATION" "$tts_cpu_reservation"
-        local tts_workers
+        local tts_workers tts_threads
         tts_workers="$(read_env_value "$env_path" "TTS_WORKERS")"
+        if [[ "$tts_workers" == "'"*"'" || "$tts_workers" == '"'*'"' ]]; then
+            tts_workers="${tts_workers:1:${#tts_workers}-2}"
+        fi
         [[ "$tts_workers" =~ ^[1-9][0-9]*$ ]] || tts_workers=1
         upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"
+        tts_threads="$(read_env_value "$env_path" "TTS_THREADS")"
+        if [[ "$tts_threads" == "'"*"'" || "$tts_threads" == '"'*'"' ]]; then
+            tts_threads="${tts_threads:1:${#tts_threads}-2}"
+        fi
+        tts_threads="$(ods_select_tts_threads "$tts_threads" "$tts_cpu_limit" "$tts_workers")"
+        upsert_env_value "$env_path" "TTS_THREADS" "$tts_threads"
         upsert_env_value "$env_path" "WHISPER_CPU_LIMIT" "$whisper_cpu_limit"
         upsert_env_value "$env_path" "WHISPER_CPU_RESERVATION" "$whisper_cpu_reservation"
         upsert_env_value "$env_path" "HERMES_CPU_LIMIT" "$hermes_cpu_limit"
@@ -386,24 +378,8 @@ generate_ods_env() {
         fi
         upsert_env_value "$env_path" "N_GPU_LAYERS" "$_n_gpu_layers"
 
-        # HOST_LAN_IP backfill: the fresh-install heredoc below populates
-        # HOST_LAN_IP when BIND_ADDRESS=0.0.0.0 was pre-set, so openclaw can
-        # extend allowedOrigins for LAN clients. Pre-existing installs that
-        # opted into LAN mode (BIND_ADDRESS=0.0.0.0 in their .env) but were
-        # generated before this code shipped have no HOST_LAN_IP — openclaw
-        # then rejects LAN client requests until a manual .env edit. Detect
-        # and upsert when missing, gated by the operator's existing BIND_ADDRESS
-        # opt-in. Linux Phase 06 doesn't need this — it always reads HOST_LAN_IP
-        # via _env_get unconditionally.
         local _existing_bind
         _existing_bind=$(read_env_value "$env_path" "BIND_ADDRESS")
-        if [[ "$_existing_bind" == "0.0.0.0" ]] && [[ -z "$(read_env_value "$env_path" "HOST_LAN_IP")" ]]; then
-            local _host_lan_ip
-            _host_lan_ip=$(detect_host_lan_ip)
-            if [[ -n "$_host_lan_ip" ]]; then
-                upsert_env_value "$env_path" "HOST_LAN_IP" "$_host_lan_ip"
-            fi
-        fi
 
         # A local install may later be exposed by editing BIND_ADDRESS or
         # enabling the ODS proxy. Do not preserve an authless localhost value
@@ -448,14 +424,13 @@ generate_ods_env() {
     fi
     tts_cpu_limit="$(select_env_service_cpu_limit "$env_path" "TTS_CPU_LIMIT" "8.0" "$docker_available_cpus")"
     tts_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "TTS_CPU_RESERVATION" "2.0" "$tts_cpu_limit")"
+    tts_threads="$(ods_default_tts_threads "$tts_cpu_limit" 1)"
     whisper_cpu_limit="$(select_env_service_cpu_limit "$env_path" "WHISPER_CPU_LIMIT" "4.0" "$docker_available_cpus")"
     whisper_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "WHISPER_CPU_RESERVATION" "1.0" "$whisper_cpu_limit")"
     hermes_cpu_limit="$(select_env_service_cpu_limit "$env_path" "HERMES_CPU_LIMIT" "4.0" "$docker_available_cpus")"
     hermes_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "HERMES_CPU_RESERVATION" "0.5" "$hermes_cpu_limit")"
     comfyui_cpu_limit="$(select_env_service_cpu_limit "$env_path" "COMFYUI_CPU_LIMIT" "16.0" "$docker_available_cpus")"
     comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
-    local openclaw_token
-    openclaw_token=$(new_secure_hex 24)
     local qdrant_api_key
     qdrant_api_key=$(new_secure_hex 32)
     local opencode_password
@@ -541,13 +516,6 @@ generate_ods_env() {
         fi
     fi
 
-    # Host LAN IP — only populated when the operator has pre-set
-    # BIND_ADDRESS=0.0.0.0 in the environment (macOS has no --lan flag).
-    # Used by openclaw to extend allowedOrigins for LAN clients.
-    local host_lan_ip=""
-    if [[ "${BIND_ADDRESS:-127.0.0.1}" == "0.0.0.0" ]]; then
-        host_lan_ip=$(detect_host_lan_ip)
-    fi
     local device_name
     device_name=$(detect_device_name)
 
@@ -609,9 +577,8 @@ generate_ods_env() {
 
 #=== Network Binding ===
 # macOS has no --lan flag; operators opt in by setting BIND_ADDRESS=0.0.0.0
-# manually. HOST_LAN_IP is only populated when that pre-existed at install time.
+# manually.
 BIND_ADDRESS=${bind_address}
-HOST_LAN_IP=${host_lan_ip}
 # Device name used by ods-mdns/ods-proxy hostnames and magic-link URLs.
 # Derived from the macOS LocalHostName/hostname so multiple installs on one LAN
 # do not all collide on auth.ods.local/chat.ods.local.
@@ -689,6 +656,7 @@ LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
 TTS_CPU_LIMIT=${tts_cpu_limit}
 TTS_CPU_RESERVATION=${tts_cpu_reservation}
 TTS_WORKERS=1
+TTS_THREADS=${tts_threads}
 WHISPER_CPU_LIMIT=${whisper_cpu_limit}
 WHISPER_CPU_RESERVATION=${whisper_cpu_reservation}
 HERMES_CPU_LIMIT=${hermes_cpu_limit}
@@ -714,7 +682,6 @@ QDRANT_PORT=6333
 QDRANT_GRPC_PORT=6334
 EMBEDDINGS_PORT=8090
 LITELLM_PORT=4000
-OPENCLAW_PORT=7860
 LANGFUSE_PORT=3006
 
 #=== Hermes Agent ===
@@ -739,7 +706,6 @@ N8N_PASS=${n8n_pass}
 LITELLM_KEY=${litellm_key}
 LIVEKIT_API_KEY=${livekit_api_key}
 LIVEKIT_API_SECRET=${livekit_secret}
-OPENCLAW_TOKEN=${openclaw_token}
 QDRANT_API_KEY=${qdrant_api_key}
 TOKEN_SPY_API_KEY=${token_spy_api_key}
 SEARXNG_SECRET=${searxng_secret}
@@ -757,7 +723,7 @@ AUDIO_STT_MODEL=Systran/faster-whisper-base
 TTS_VOICE=en_US-lessac-medium
 
 #=== Embeddings / RAG ===
-# Open WebUI uses this canonical model at first boot unless an explicit
+# Open WebUI uses this canonical model at every start unless an explicit
 # external-provider override is configured.
 EMBEDDING_MODEL=${embedding_model}
 RAG_EMBEDDING_MODEL=${rag_embedding_model}
@@ -802,7 +768,6 @@ ENVEOF
 
     # Export secrets for use by other generators
     ENV_SEARXNG_SECRET="$searxng_secret"
-    ENV_OPENCLAW_TOKEN="$openclaw_token"
     ENV_DASHBOARD_KEY="$dashboard_api_key"
 }
 
@@ -859,222 +824,6 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXEOF
-}
-
-generate_openclaw_config() {
-    local install_dir="$1"
-    local llm_model="$2"
-    local max_context="$3"
-    local token="$4"
-    local provider_url="${5:-http://host.docker.internal:8080}"
-    local force_overwrite="${6:-false}"
-    local provider_api_key="${7:-none}"
-    local provider_name="local-llama"
-
-    # Create directories
-    local home_dir="${install_dir}/data/openclaw/home"
-    local agent_dir="${home_dir}/agents/main/agent"
-    local canvas_dir="${home_dir}/canvas"
-    local cron_dir="${home_dir}/cron"
-    local sess_dir="${home_dir}/agents/main/sessions"
-    mkdir -p "$agent_dir" "$canvas_dir" "$cron_dir" "$sess_dir"
-
-    # Preserve unrelated user configuration, but always refresh ODS's managed
-    # provider on local/cloud transitions so an old endpoint or key cannot win.
-    if [[ -f "${home_dir}/openclaw.json" ]] && [[ "$force_overwrite" != "true" ]]; then
-        ODS_OPENCLAW_HOME_CONFIG="${home_dir}/openclaw.json" \
-        ODS_OPENCLAW_AUTH_CONFIG="${agent_dir}/auth-profiles.json" \
-        ODS_OPENCLAW_MODELS_CONFIG="${agent_dir}/models.json" \
-        ODS_OPENCLAW_PROVIDER="$provider_name" \
-        ODS_OPENCLAW_MODEL="$llm_model" \
-        ODS_OPENCLAW_CONTEXT="$max_context" \
-        ODS_OPENCLAW_BASE_URL="$provider_url" \
-        ODS_OPENCLAW_API_KEY="$provider_api_key" \
-            python3 - <<'OPENCLAW_REFRESH_PY'
-import json
-import os
-from pathlib import Path
-
-provider_id = os.environ["ODS_OPENCLAW_PROVIDER"]
-model_id = os.environ["ODS_OPENCLAW_MODEL"]
-context = int(os.environ["ODS_OPENCLAW_CONTEXT"])
-base_url = os.environ["ODS_OPENCLAW_BASE_URL"]
-api_key = os.environ["ODS_OPENCLAW_API_KEY"]
-provider_model = f"{provider_id}/{model_id}"
-
-model_entry = {
-    "id": model_id,
-    "name": "ODS LLM",
-    "reasoning": False,
-    "input": ["text"],
-    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    "contextWindow": context,
-    "maxTokens": min(8192, context),
-    "compat": {
-        "supportsStore": False,
-        "supportsDeveloperRole": False,
-        "supportsReasoningEffort": False,
-        "maxTokensField": "max_tokens",
-    },
-}
-
-def load(path):
-    try:
-        value = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    except (OSError, ValueError):
-        value = {}
-    return value if isinstance(value, dict) else {}
-
-def save(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-
-home_path = Path(os.environ["ODS_OPENCLAW_HOME_CONFIG"])
-home = load(home_path)
-provider = home.setdefault("models", {}).setdefault("providers", {}).setdefault(provider_id, {})
-provider.update({
-    "baseUrl": base_url,
-    "apiKey": api_key,
-    "api": "openai-completions",
-    "models": [model_entry],
-})
-defaults = home.setdefault("agents", {}).setdefault("defaults", {})
-defaults["model"] = {"primary": provider_model}
-defaults["models"] = {provider_model: {}}
-defaults.setdefault("subagents", {})["model"] = provider_model
-save(home_path, home)
-
-auth_path = Path(os.environ["ODS_OPENCLAW_AUTH_CONFIG"])
-auth = load(auth_path)
-auth.setdefault("version", 1)
-auth.setdefault("profiles", {})[f"{provider_id}:default"] = {
-    "type": "api_key",
-    "provider": provider_id,
-    "key": api_key,
-}
-auth.setdefault("lastGood", {})[provider_id] = f"{provider_id}:default"
-auth.setdefault("usageStats", {})
-save(auth_path, auth)
-
-models_path = Path(os.environ["ODS_OPENCLAW_MODELS_CONFIG"])
-models = load(models_path)
-models.setdefault("providers", {})[provider_id] = {
-    "baseUrl": base_url,
-    "apiKey": api_key,
-    "api": "openai-completions",
-    "models": [model_entry],
-}
-save(models_path, models)
-
-for path in (home_path, auth_path, models_path):
-    check = load(path)
-    if not check:
-        raise SystemExit(f"OpenClaw config verification failed: {path}")
-OPENCLAW_REFRESH_PY
-        return 0
-    fi
-
-    # Home config
-    cat > "${home_dir}/openclaw.json" << OCEOF
-{
-  "models": {
-    "providers": {
-      "${provider_name}": {
-        "baseUrl": "${provider_url}",
-        "apiKey": "${provider_api_key}",
-        "api": "openai-completions",
-        "models": [
-          {
-            "id": "${llm_model}",
-            "name": "ODS LLM",
-            "reasoning": false,
-            "input": ["text"],
-            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-            "contextWindow": ${max_context},
-            "maxTokens": 8192,
-            "compat": {
-              "supportsStore": false,
-              "supportsDeveloperRole": false,
-              "supportsReasoningEffort": false,
-              "maxTokensField": "max_tokens"
-            }
-          }
-        ]
-      }
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {"primary": "${provider_name}/${llm_model}"},
-      "models": {"${provider_name}/${llm_model}": {}},
-      "compaction": {"mode": "safeguard"},
-      "subagents": {"maxConcurrent": 20, "model": "${provider_name}/${llm_model}"}
-    }
-  },
-  "commands": {"native": "auto", "nativeSkills": "auto"},
-  "gateway": {
-    "mode": "local",
-    "bind": "lan",
-    "controlUi": {"allowInsecureAuth": true},
-    "auth": {"mode": "token", "token": "${token}"}
-  }
-}
-OCEOF
-
-    # Auth profiles
-    cat > "${agent_dir}/auth-profiles.json" << AUTHEOF
-{
-  "version": 1,
-  "profiles": {
-    "${provider_name}:default": {
-      "type": "api_key",
-      "provider": "${provider_name}",
-      "key": "${provider_api_key}"
-    }
-  },
-  "lastGood": {"${provider_name}": "${provider_name}:default"},
-  "usageStats": {}
-}
-AUTHEOF
-
-    # Models config
-    cat > "${agent_dir}/models.json" << MODEOF
-{
-  "providers": {
-    "${provider_name}": {
-      "baseUrl": "${provider_url}",
-      "apiKey": "${provider_api_key}",
-      "api": "openai-completions",
-      "models": [
-        {
-          "id": "${llm_model}",
-          "name": "ODS LLM",
-          "reasoning": false,
-          "input": ["text"],
-          "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-          "contextWindow": ${max_context},
-          "maxTokens": 8192,
-          "compat": {
-            "supportsStore": false,
-            "supportsDeveloperRole": false,
-            "supportsReasoningEffort": false,
-            "maxTokensField": "max_tokens"
-          }
-        }
-      ]
-    }
-  }
-}
-MODEOF
-
-    chmod 600 "${home_dir}/openclaw.json" \
-        "${agent_dir}/auth-profiles.json" "${agent_dir}/models.json"
-
-    # Workspace directory
-    mkdir -p "${install_dir}/config/openclaw/workspace/memory"
 }
 
 # Auto-configure Perplexica to use local llama-server

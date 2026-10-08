@@ -1,0 +1,46 @@
+name: Vendored Pixel suite
+
+# ODS maintains the Pixel source under ods/vendor/pixel; run its end-to-end suite
+# (clean-room plan/apply/verify against fake Docker and systemd) whenever that
+# source changes. Pixel's tests/static.sh is not run here yet: its
+# maintenance-recovery-guardian systemd tests expect the host layout of
+# Pixel's own CI and fail on GitHub-hosted runners.
+on:
+  pull_request:
+    paths:
+      - 'ods/vendor/pixel/**'
+      - '.github/workflows/pixel-vendored-suite.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ods/vendor/pixel/**'
+      - '.github/workflows/pixel-vendored-suite.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-vendored-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pixel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: ods/vendor/pixel
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+      - name: Install suite tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq age > /dev/null
+      - name: Operations inventory startup readiness
+        run: python3 -m unittest discover -s tests -p test_ops_broker_readiness.py -v
+      - name: Pixel end-to-end suite (fake Docker and systemd)
+        run: bash tests/e2e.sh

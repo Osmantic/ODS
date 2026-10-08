@@ -120,20 +120,21 @@ else
     fail "Does not probe actual Docker port mapping"
 fi
 
-# 11. External Lemonade mode checks LiteLLM, not a managed llama-server container
-if grep -q 'is_external_lemonade()' "$SCRIPT_DIR/../lib/preflight-llm-route.sh" \
+# 11. A host-native llama-server (Windows Portal) checks LiteLLM, not the
+# in-stack llama-server container
+if grep -q 'ods_preflight_host_native_llm()' "$SCRIPT_DIR/../lib/preflight-llm-route.sh" \
    && grep -q 'if ods_preflight_uses_litellm; then' "$PREFLIGHT" \
    && grep -q 'LiteLLM gateway' "$PREFLIGHT" \
    && grep -q 'ods-litellm' "$PREFLIGHT"; then
-    pass "External Lemonade preflight checks LiteLLM gateway"
+    pass "Host-native llama-server preflight checks LiteLLM gateway"
 else
-    fail "External Lemonade preflight must not require managed ods-llama-server"
+    fail "Host-native llama-server preflight must not require the in-stack ods-llama-server"
 fi
 
 # 12. Extension health checks honor .env port overrides
-# Linux AMD/Lemonade reserves host port 9000 for Lemonade, so the installer may
-# write WHISPER_PORT=9100. Root preflight must follow that configured port
-# instead of probing a stale hard-coded default.
+# An install can keep WHISPER_PORT=9100 (earlier AMD installs moved it there).
+# Root preflight must follow that configured port instead of probing a stale
+# hard-coded default.
 if grep -q 'WHISPER_PORT_RESOLVED="${WHISPER_PORT:-9000}"' "$PREFLIGHT" \
    && grep -q 'TTS_PORT_RESOLVED="${TTS_PORT:-8880}"' "$PREFLIGHT" \
    && grep -q 'EMBEDDINGS_PORT_RESOLVED="${EMBEDDINGS_PORT:-8090}"' "$PREFLIGHT"; then
@@ -174,6 +175,108 @@ if [[ "$run_exit" -eq 0 ]] || [[ "$run_exit" -eq 1 ]]; then
     pass "Exit code is valid (0=pass, 1=fail): $run_exit"
 else
     fail "Unexpected exit code $run_exit — script may have crashed"
+fi
+
+# ── detect_backend WSL2 hardware witness (no Docker required) ───────────────
+#
+# WSL2 passes the host GPU through a paravirtualized nvidia-smi bridge and
+# exposes no matching /sys/class/drm card* vendor node. A sysfs-only probe
+# returned "cpu", so the preflight printed a false
+# "CPU mode — no GPU runtime required" pass and the NVIDIA branch that warns
+# about a missing NVIDIA Docker runtime never ran. Drive the production
+# functions against a mock sysfs tree and a stub nvidia-smi, the way
+# tests/test_bootstrap_system_bash.py drives the bootstrap preliminary check.
+
+BACKEND_DIR="$(mktemp -d)"
+trap 'rm -rf "$BACKEND_DIR"' EXIT
+mkdir -p "$BACKEND_DIR/drm/card0/device" "$BACKEND_DIR/bin"
+SMI_CALLS="$BACKEND_DIR/smi-calls"
+
+extract_fn() {
+    awk -v fn="$1" 'index($0, fn "()") == 1 { inside = 1 } inside { print } inside && $0 == "}" { exit }' "$PREFLIGHT"
+}
+
+# Production functions verbatim; only the external sysfs path is redirected.
+{
+    printf '%s\n' 'set -euo pipefail'
+    extract_fn is_wsl
+    extract_fn detect_backend | sed "s#/sys/class/drm#$BACKEND_DIR/drm#g"
+    printf '%s\n' 'detect_backend'
+} > "$BACKEND_DIR/probe.sh"
+
+# stub_nvidia_smi <shell body>
+stub_nvidia_smi() {
+    printf '#!/bin/bash\necho called >> "%s"\n%s\n' "$SMI_CALLS" "$1" > "$BACKEND_DIR/bin/nvidia-smi"
+    chmod +x "$BACKEND_DIR/bin/nvidia-smi"
+}
+
+vendor() {
+    mkdir -p "$BACKEND_DIR/drm/card0/device"
+    printf '%s\n' "$1" > "$BACKEND_DIR/drm/card0/device/vendor"
+}
+clear_vendor() { rm -rf "$BACKEND_DIR/drm/card0"; }
+
+printf '%s\n' 'Linux version 5.15.90.1-microsoft-standard-WSL2' > "$BACKEND_DIR/wsl-release"
+printf '%s\n' 'Linux version 6.8.0-generic' > "$BACKEND_DIR/native-release"
+
+# detect <wsl|native> <nvidia-smi body>
+detect() {
+    local out
+    stub_nvidia_smi "$2"
+    out=$(GPU_BACKEND="" ODS_PROC_VERSION_FILE="$BACKEND_DIR/$1-release" \
+        SMI_CALLS="$SMI_CALLS" PATH="$BACKEND_DIR/bin:$PATH" \
+        bash "$BACKEND_DIR/probe.sh" 2>/dev/null) || out=""
+    printf '%s' "$out"
+}
+
+# 15. WSL2 without a DRM vendor node trusts a successful, non-empty query
+clear_vendor
+got=$(detect wsl 'printf "NVIDIA GeForce RTX 4070 SUPER\n"')
+if [[ "$got" == "nvidia" ]]; then
+    pass "WSL2 nvidia-smi query is the hardware witness"
+else
+    fail "WSL2 with a working GPU and no DRM vendor node reported '$got', expected nvidia"
+fi
+
+# 16. The query must succeed and name a GPU, not merely exit 0
+for body in 'exit 1' 'exit 0'; do
+    clear_vendor
+    got=$(detect wsl "$body")
+    if [[ "$got" == "cpu" ]]; then
+        pass "WSL2 query '$body' does not prove a GPU"
+    else
+        fail "WSL2 query '$body' reported '$got', expected cpu"
+    fi
+done
+
+# 17. Bare metal still requires the sysfs witness
+clear_vendor
+got=$(detect native 'printf "NVIDIA stub\n"')
+if [[ "$got" == "cpu" ]]; then
+    pass "Bare metal does not trust an installed nvidia-smi"
+else
+    fail "Bare metal without a DRM vendor node reported '$got', expected cpu"
+fi
+
+# 18. The bare-metal sysfs witness still selects NVIDIA
+vendor 0x10de
+got=$(detect native 'printf "NVIDIA GeForce RTX 4070 SUPER\n"')
+if [[ "$got" == "nvidia" ]]; then
+    pass "Bare metal 0x10de vendor node still selects nvidia"
+else
+    fail "Bare metal 0x10de vendor node reported '$got', expected nvidia"
+fi
+
+# 19. An explicit .env backend still wins over probing
+clear_vendor
+stub_nvidia_smi 'printf "NVIDIA GeForce RTX 4070 SUPER\n"'
+got=$(GPU_BACKEND="amd" ODS_PROC_VERSION_FILE="$BACKEND_DIR/wsl-release" \
+    SMI_CALLS="$SMI_CALLS" PATH="$BACKEND_DIR/bin:$PATH" \
+    bash "$BACKEND_DIR/probe.sh" 2>/dev/null) || got=""
+if [[ "$got" == "amd" ]]; then
+    pass "An explicit .env backend still wins over probing"
+else
+    fail "Explicit GPU_BACKEND=amd reported '$got', expected amd"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────────────

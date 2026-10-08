@@ -14,7 +14,6 @@
 | n8n Workflows | n8n | 5678 (workflows profile) |
 | Qdrant (RAG) | qdrant | 6333 (rag profile) |
 | Embeddings | embeddings | 8090 (rag profile) |
-| OpenClaw | openclaw | 7860 (openclaw profile) |
 | ComfyUI | comfyui | 8188 (comfyui profile) |
 
 ## Network

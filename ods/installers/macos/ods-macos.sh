@@ -464,6 +464,18 @@ resolve_cli_llm_route() {
     CLI_LLM_HEALTH_URL="${CLI_LLM_BASE_URL}/health"
 }
 
+# curl with an optional bearer token. The token reaches curl through a header
+# file descriptor, never argv, which any local user can read with ps.
+curl_with_bearer() {
+    local token="$1"
+    shift
+    if [[ -n "$token" ]]; then
+        curl -H @<(printf 'Authorization: Bearer %s\n' "$token") "$@"
+    else
+        curl "$@"
+    fi
+}
+
 read_env_value() {
     local env_file="$1"
     local key="$2"
@@ -508,6 +520,22 @@ ensure_hermes_dashboard_session_token() {
 proxy_is_enabled() {
     [[ -f "${INSTALL_DIR}/extensions/services/ods-proxy/compose.yaml" ]] \
         || [[ -f "${INSTALL_DIR}/data/user-extensions/ods-proxy/compose.yaml" ]]
+}
+
+# A BIND_ADDRESS other than loopback publishes Open WebUI beyond this Mac,
+# with or without the ODS proxy, so it needs the same sign-in enforcement.
+bind_is_network() {
+    local bind
+    bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
+    bind="${bind#\"}"; bind="${bind%\"}"; bind="${bind#\'}"; bind="${bind%\'}"
+    case "${bind:-127.0.0.1}" in
+        127.0.0.1|::1|\[::1\]|localhost) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+network_access_is_enabled() {
+    proxy_is_enabled || bind_is_network
 }
 
 webui_is_selected() {
@@ -849,8 +877,14 @@ cmd_status() {
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
     # Parallel arrays (Bash 3.2 compatible)
-    local ep_names=("$CLI_LLM_NAME" "Dashboard" "OpenCode (IDE)")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
+    local ep_names=("$CLI_LLM_NAME" "Dashboard")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3001")
+    # OpenCode is opt-in; lean installs never create its LaunchAgent, so only
+    # an installed one is expected to answer.
+    if [[ -e "$OPENCODE_PLIST" ]]; then
+        ep_names+=("OpenCode (IDE)")
+        ep_urls+=("http://127.0.0.1:3003")
+    fi
     if webui_is_selected "$flags"; then
         ep_names+=("Chat UI (Open WebUI)")
         ep_urls+=("http://127.0.0.1:3000")
@@ -865,17 +899,16 @@ cmd_status() {
     for ((i=0; i<${#ep_names[@]}; i++)); do
         local name="${ep_names[$i]}"
         local url="${ep_urls[$i]}"
-        local code
-        local -a auth_args=()
+        local code token=""
         if [[ "$i" -eq 0 ]] && [[ "$CLI_LLM_MODE" == "cloud" ]]; then
             if [[ -z "$CLI_LLM_API_KEY" ]]; then
                 ai_warn "${name}: LITELLM_KEY is missing"
                 continue
             fi
-            auth_args=(-H "Authorization: Bearer ${CLI_LLM_API_KEY}")
+            token="$CLI_LLM_API_KEY"
         fi
-        code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
-            "${auth_args[@]}" "$url" 2>/dev/null || echo "000")
+        code=$(curl_with_bearer "$token" -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            "$url" 2>/dev/null || echo "000")
         if [[ "$code" -ge 200 ]] && [[ "$code" -lt 400 ]]; then
             ai_ok "${name}: healthy"
         elif [[ "$i" -ne 0 ]] && { [[ "$code" == "401" ]] || [[ "$code" == "403" ]]; }; then
@@ -918,7 +951,7 @@ cmd_start() {
 
     if [[ "$service" == "ods-proxy" ]]; then
         prepare_proxy_start "$flags" || return 1
-    elif [[ -z "$service" || "$service" == "open-webui" ]] && proxy_is_enabled; then
+    elif [[ -z "$service" || "$service" == "open-webui" ]] && network_access_is_enabled; then
         require_proxy_auth || return 1
     fi
 
@@ -941,6 +974,12 @@ cmd_start() {
             return 1
         fi
         ai_ok "All services started"
+        # The legacy OpenClaw extension was removed. Starts never remove orphan
+        # containers, so an upgrade that stopped before its final stack start
+        # can leave the old ods-openclaw container running.
+        if docker container inspect ods-openclaw >/dev/null 2>&1; then
+            ai_warn "The removed legacy OpenClaw container ods-openclaw still exists. Remove it with: docker rm -f ods-openclaw (see docs/MIGRATION-OPENCLAW-TO-HERMES.md)"
+        fi
     fi
 
     if [[ -z "$service" || "$service" == "llama-server" || "$service" == "llama" ]]; then
@@ -1017,7 +1056,7 @@ cmd_restart() {
 
     if [[ "$service" == "ods-proxy" ]]; then
         prepare_proxy_start "$flags" || return 1
-    elif [[ -z "$service" || "$service" == "open-webui" ]] && proxy_is_enabled; then
+    elif [[ -z "$service" || "$service" == "open-webui" ]] && network_access_is_enabled; then
         require_proxy_auth || return 1
     fi
 
@@ -1148,14 +1187,13 @@ cmd_chat() {
     payload=$(jq -n --arg msg "$message" \
         '{model: "default", messages: [{role: "user", content: $msg}], max_tokens: 500}')
 
-    local -a auth_args=()
+    local token=""
     if [[ "$CLI_LLM_MODE" == "cloud" ]]; then
-        auth_args=(-H "Authorization: Bearer ${CLI_LLM_API_KEY}")
+        token="$CLI_LLM_API_KEY"
     fi
     local response
-    response=$(curl -sf -X POST "${CLI_LLM_BASE_URL}/v1/chat/completions" \
+    response=$(curl_with_bearer "$token" -sf -X POST "${CLI_LLM_BASE_URL}/v1/chat/completions" \
         -H "Content-Type: application/json" \
-        "${auth_args[@]}" \
         -d "$payload" 2>/dev/null) || {
         ai_err "Chat request failed."
         ai "Check the active inference backend with: ./ods-macos.sh status"
@@ -1194,6 +1232,11 @@ cmd_update() {
 
     ai "Pulling latest images..."
     compose_pull_with_retry "$flags"
+
+    # Recreating everything recreates Open WebUI too.
+    if network_access_is_enabled; then
+        require_proxy_auth || return 1
+    fi
 
     ai "Recreating containers..."
     # shellcheck disable=SC2086

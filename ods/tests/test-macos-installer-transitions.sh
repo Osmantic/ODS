@@ -28,7 +28,11 @@ pass() {
 }
 
 extract_installer_function() {
-    sed -n "/^${1}() {/,/^}$/p" "$INSTALLER"
+    local source="$INSTALLER"
+    if [[ "$1" == _write_macos_opencode_config ]]; then
+        source="$ROOT_DIR/installers/macos/lib/post-pixel-install.sh"
+    fi
+    sed -n "/^${1}() {/,/^}$/p" "$source"
 }
 
 # shellcheck source=lib/python-cmd.sh
@@ -178,7 +182,7 @@ else
 fi
 pass "disabled Hermes routing patches through a safe image or fails closed"
 
-# OpenCode and OpenClaw must update only their managed routes across modes.
+# OpenCode must update only its managed route across modes.
 eval "$(extract_installer_function _write_macos_opencode_config | sed "s|/usr/bin/python3|$python_cmd|g")"
 opencode_path="$TMP_DIR/opencode/opencode.json"
 mkdir -p "$(dirname "$opencode_path")"
@@ -247,39 +251,17 @@ source "$ENV_GENERATOR"
         || fail "macOS switchboard env must route Open WebUI through LiteLLM"
     grep -Fqx "OPEN_WEBUI_LLM_API_KEY=${litellm_key}" "$env_file" \
         || fail "macOS switchboard env must give Open WebUI the LiteLLM key"
+    # The legacy OpenClaw extension was removed; fresh installs write none of its keys.
+    if grep -Eq '^(OPENCLAW_[A-Z_]+|HOST_LAN_IP)=' "$env_file"; then
+        fail "macOS env still writes keys for the removed legacy OpenClaw extension"
+    fi
 )
 pass "macOS switchboard env persists gateway consumers without hiding backend URL"
 
-openclaw_dir="$TMP_DIR/openclaw-install"
-mkdir -p "$openclaw_dir/data/openclaw/home"
-printf '{"custom":{"preserve":true}}\n' > "$openclaw_dir/data/openclaw/home/openclaw.json"
-openclaw_secret="sk-openclaw-transition-secret"
-openclaw_output="$(generate_openclaw_config "$openclaw_dir" default 200000 token \
-    http://litellm:4000 false "$openclaw_secret" 2>&1)"
-[[ "$openclaw_output" != *"$openclaw_secret"* ]] || fail "OpenClaw secret was logged"
-"$python_cmd" - "$openclaw_dir" "$openclaw_secret" <<'PY'
-import json, pathlib, sys
-root = pathlib.Path(sys.argv[1]) / "data/openclaw/home"
-home = json.load(open(root / "openclaw.json", encoding="utf-8"))
-auth = json.load(open(root / "agents/main/agent/auth-profiles.json", encoding="utf-8"))
-provider = home["models"]["providers"]["local-llama"]
-assert home["custom"]["preserve"] is True
-assert provider["baseUrl"] == "http://litellm:4000"
-assert provider["apiKey"] == sys.argv[2]
-assert home["agents"]["defaults"]["model"]["primary"] == "local-llama/default"
-assert auth["profiles"]["local-llama:default"]["key"] == sys.argv[2]
-PY
-generate_openclaw_config "$openclaw_dir" local.gguf 65536 token \
-    http://host.docker.internal:8080 false none >/dev/null
-"$python_cmd" - "$openclaw_dir/data/openclaw/home/openclaw.json" <<'PY'
-import json, sys
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-provider = data["models"]["providers"]["local-llama"]
-assert provider["baseUrl"] == "http://host.docker.internal:8080"
-assert provider["apiKey"] == "none"
-assert data["agents"]["defaults"]["model"]["primary"] == "local-llama/local.gguf"
-PY
-pass "OpenCode and OpenClaw routes transition without secret output"
+if declare -F generate_openclaw_config >/dev/null; then
+    fail "macOS env generator still configures the removed legacy OpenClaw extension"
+fi
+pass "OpenCode routes transition without secret output"
 
 # Fake the pinned Perplexica provider/config API, including its fresh state with
 # no OpenAI provider, then exercise cloud -> local updates through production code.

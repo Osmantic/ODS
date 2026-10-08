@@ -21,8 +21,14 @@ def _load_module():
 
 
 @pytest.fixture()
-def mod():
-    return _load_module()
+def mod(monkeypatch):
+    module = _load_module()
+    if os.name == 'nt':
+        # Windows can exercise orchestration and real HTTP, not POSIX file
+        # custody. Those checks run unmodified on Ubuntu and macOS in CI.
+        monkeypatch.setattr(module, '_read_private_env',
+                            lambda path: module._parse_env(Path(path).read_text(encoding='utf-8')))
+    return module
 
 
 class FakeTransport:
@@ -84,7 +90,7 @@ def _ok_status(gguf='model-9b.gguf', ctx=32768, install=None):
     canonical = str(install / 'data' / 'models' / gguf) if install else gguf
     return {'status': 'idle', 'modelTransactionPending': False,
             'activeAgentViable': True,
-            'activeRuntime': {'model': canonical, 'contextLength': ctx}}
+            'activeRuntime': {'source': 'local-switchboard', 'model': canonical, 'contextLength': ctx}}
 
 
 def _install_transport(mod, monkeypatch, transport):
@@ -245,6 +251,68 @@ def test_pending_recovery_blocks_before_post(mod, tmp_path, monkeypatch):
     assert all(c['method'] != 'POST' for c in transport.calls)
 
 
+def test_completed_bootstrap_does_not_clear_held_2b_switch(mod, tmp_path, monkeypatch):
+    # Reported retained state: the legacy updater finished 9B, but a later
+    # Portal switch captured the old 2B contract. "complete" is not permission
+    # to discard the host/controller journals or replay model activation.
+    install, env_path, transport = _setup(tmp_path, mod, monkeypatch,
+        responses=[{'pending': True, 'phase': 'held', 'transactionId': 'a' * 64}])
+    data = install / 'data'
+    data.mkdir()
+    journal = data / 'pixel-model-transaction.json'
+    journal.write_text(json.dumps({'phase': 'held', 'outcome': None,
+        'previous': {'model': 'Qwen3.5-2B-Q4_K_M.gguf', 'contextLength': 65536},
+        'target': None}))
+    status = data / 'bootstrap-status.json'
+    status.write_text(json.dumps({'status': 'complete',
+        'model': 'Qwen3.5-9B-Q4_K_M.gguf', 'percent': 100}))
+    model = data / 'Qwen3.5-9B-Q4_K_M.gguf'
+    model.write_bytes(b'existing-model-fixture')
+    before = {path: path.read_bytes() for path in (env_path, journal, status, model)}
+    with pytest.raises(mod.PreflightFailure, match='model-switch-recovery-required'):
+        _run(mod, install, env_path)
+    assert len(transport.calls) == 1 and transport.calls[0]['method'] == 'GET'
+    assert {path: path.read_bytes() for path in before} == before
+
+
+@pytest.mark.parametrize('source', ['remote-provider', None, 'unknown'])
+def test_runtime_proof_requires_local_source(mod, tmp_path, source):
+    status = _ok_status()
+    status['activeRuntime']['source'] = source
+    transport = FakeTransport([{'pending': False}, status])
+    with pytest.raises(mod.AmbiguousActivation, match='active-runtime-source-mismatch'):
+        mod._verify_runtime('http://127.0.0.1:7710', 'test-secret', 'model-9b.gguf',
+                            32768, tmp_path, transport)
+
+
+@pytest.mark.parametrize('mode', ['cloud', 'remote', 'unknown'])
+def test_persisted_remote_mode_never_proves_native_promotion(mod, tmp_path, mode):
+    path = tmp_path / '.env'
+    _write_env(path, _base_env(tmp_path, ODS_MODE=mode, GGUF_FILE='model-9b.gguf',
+        LLM_MODEL='qwen3.5-9b', MAX_CONTEXT='32768', CTX_SIZE='32768'))
+    with pytest.raises(mod.AmbiguousActivation, match='persisted-runtime-mode-mismatch'):
+        mod._verify_persisted(path, 'model-9b.gguf', 'qwen3.5-9b', 32768)
+
+
+@pytest.mark.parametrize('mode', ['local', 'hybrid'])
+def test_persisted_local_modes_allow_native_promotion(mod, tmp_path, mode):
+    path = tmp_path / '.env'
+    _write_env(path, _base_env(tmp_path, ODS_MODE=mode, GGUF_FILE='model-9b.gguf',
+        LLM_MODEL='qwen3.5-9b', MAX_CONTEXT='32768', CTX_SIZE='32768'))
+    mod._verify_persisted(path, 'model-9b.gguf', 'qwen3.5-9b', 32768)
+
+
+def test_pending_guidance_does_not_expose_private_values(mod, monkeypatch, capsys):
+    def pending(*args):
+        raise mod.PreflightFailure('model-switch-recovery-required')
+    monkeypatch.setattr(mod, 'run', pending)
+    assert mod.main(['/private/install', 'model.gguf', 'model', '65536']) == 1
+    output = capsys.readouterr().err
+    assert 'Preserve data/pixel-model-transaction.json' in output
+    assert 'MACOS-MODEL-PROMOTION.md' in output
+    assert '/private/install' not in output
+
+
 def test_unsafe_env_symlink_refused(mod, tmp_path, monkeypatch):
     install, env_path, transport = _setup(
         tmp_path, mod, monkeypatch, responses=[])
@@ -256,6 +324,7 @@ def test_unsafe_env_symlink_refused(mod, tmp_path, monkeypatch):
     assert transport.calls == []
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX custody is exercised on Ubuntu/macOS CI')
 def test_unsafe_env_permissions_refused(mod, tmp_path, monkeypatch):
     install, env_path, transport = _setup(
         tmp_path, mod, monkeypatch, responses=[])
@@ -347,6 +416,7 @@ def test_env_path_must_be_canonical(mod, tmp_path, monkeypatch):
     assert transport.calls == []
 
 
+@pytest.mark.skipif(os.name == 'nt', reason='POSIX O_NOFOLLOW is exercised on Ubuntu/macOS CI')
 def test_env_symlink_oserror_sanitized(mod, tmp_path, monkeypatch):
     install, env_path, transport = _setup(
         tmp_path, mod, monkeypatch, responses=[])

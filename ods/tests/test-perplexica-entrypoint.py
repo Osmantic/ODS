@@ -30,6 +30,14 @@ ENTRYPOINT = SERVICE_DIR / "docker-entrypoint.sh"
 SYNC_SCRIPT = SERVICE_DIR / "sync-model-config.js"
 SEARCH_SYNC_SCRIPT = SERVICE_DIR / "sync-search-config.js"
 WHISPER_COMPOSE = ROOT / "extensions" / "services" / "whisper" / "compose.yaml"
+
+
+def _apply_config_post(state: dict, payload: dict) -> None:
+    target = state
+    parts = payload["key"].split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target[part]
+    target[parts[-1]] = payload["value"]
 BRAVE_DIR = ROOT / "extensions" / "services" / "brave-search"
 HEALTH_PHASE = ROOT / "installers" / "phases" / "12-health.sh"
 SUMMARY_PHASE = ROOT / "installers" / "phases" / "13-summary.sh"
@@ -90,9 +98,15 @@ def test_compose_uses_ods_entrypoint() -> None:
     assert 'exec /bin/sh /app/ods-entrypoint.sh \\"$@\\"' in compose
     assert "OPENAI_BASE_URL=${HERMES_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}" in compose
     assert "OPENAI_API_KEY=${HERMES_LLM_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}" in compose
-    assert "LEMONADE_MODEL=${LEMONADE_MODEL:-}" in compose
+    # The served model id is the GGUF alias; no retired Lemonade id is passed.
+    assert "LEMONADE_MODEL" not in compose
     assert "sync-model-config.js:/app/ods-sync-model-config.js:ro" in compose
     assert "sync-search-config.js:/app/ods-sync-search-config.js:ro" in compose
+    assert "patch-client-citations.js:/app/ods-patch-client-citations.js:ro" in compose
+    assert "citation-renderer.js:/app/citation-renderer.js:ro" in compose
+    windows_copy = (ROOT / "installers" / "windows" / "phases" / "06-directories.ps1").read_text(encoding="utf-8")
+    assert r"extensions\services\perplexica\patch-client-citations.js" in windows_copy
+    assert r"extensions\services\perplexica\citation-renderer.js" in windows_copy
     assert "SEARXNG_API_URL=http://searxng:8080" in compose
     assert "PERPLEXICA_SEARXNG_API_URL=${PERPLEXICA_SEARXNG_API_URL:-}" in compose
 
@@ -166,6 +180,12 @@ def test_entrypoint_patches_scrape_url_result_content() -> None:
     # Vane 1.12.2 moved the app root from /home/perplexica to /home/vane.
     assert 'for app_root in "$PWD" /home/vane /home/perplexica; do' in script
     assert 'search_root="/home/perplexica/.next/server"' not in script
+
+
+def test_client_citation_patch_runs_before_vane_server() -> None:
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    assert script.count("node /app/ods-patch-client-citations.js") == 1
+    assert script.index("node /app/ods-patch-client-citations.js") < script.index('exec docker-entrypoint.sh "$@"')
 
 
 # The scrape_url action objects from the minified .next/server/chunks/641.js of
@@ -406,23 +426,8 @@ def test_entrypoint_reconciles_explicit_search_route_independently() -> None:
     assert "PERPLEXICA_SEARCH_SYNC_ATTEMPTS" in script
 
 
-def test_sync_script_persists_exact_lemonade_route() -> None:
-    node = _node_cmd_or_skip()
-    if node is None:
-        return
-
-    state = {
-        "modelProviders": [{
-            "id": "openai-provider",
-            "type": "openai",
-            "chatModels": [{"key": "old", "name": "old"}],
-            "config": {"baseURL": "http://old/v1", "apiKey": "old-key"},
-        }],
-        "preferences": {
-            "defaultChatModel": "old",
-            "defaultChatProvider": "openai-provider",
-        },
-    }
+def _run_sync_script(node: str, state: dict, env_values: dict[str, str]) -> subprocess.CompletedProcess:
+    """Run sync-model-config.js against an in-process Perplexica config API."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -435,8 +440,7 @@ def test_sync_script_persists_exact_lemonade_route() -> None:
 
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, json.loads(self.rfile.read(length)))
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -452,36 +456,55 @@ def test_sync_script_persists_exact_lemonade_route() -> None:
     thread.start()
     try:
         env = os.environ.copy()
-        env.update({
-            "PERPLEXICA_CONFIG_URL": f"http://127.0.0.1:{server.server_port}/api/config",
-            "ODS_MODE": "lemonade",
-            "AMD_INFERENCE_RUNTIME": "lemonade",
-            "LEMONADE_MODEL": "Modern-Model",
-            "GGUF_FILE": "Modern-Model.gguf",
-            "OPENAI_BASE_URL": "http://litellm:4000/v1",
-            "OPENAI_API_KEY": "litellm-key",
-        })
-        result = subprocess.run(
-            [node, str(SYNC_SCRIPT)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
+        env.update(env_values)
+        env["PERPLEXICA_CONFIG_URL"] = f"http://127.0.0.1:{server.server_port}/api/config"
+        return subprocess.run(
+            [node, str(SYNC_SCRIPT)], capture_output=True, text=True, timeout=10, env=env,
         )
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
 
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "Modern-Model"
-    provider = state["modelProviders"][0]
-    assert provider["chatModels"] == [{"key": "Modern-Model", "name": "Modern-Model"}]
-    assert provider["config"] == {
-        "baseURL": "http://litellm:4000/v1",
-        "apiKey": "litellm-key",
-    }
-    assert state["preferences"]["defaultChatModel"] == "Modern-Model"
+
+def test_sync_script_persists_the_gguf_alias_for_an_unmigrated_lemonade_env() -> None:
+    node = _node_cmd_or_skip()
+    if node is None:
+        return
+
+    # llama-server serves the GGUF under --alias, whatever a Lemonade-era
+    # .env still names: neither its model id nor an extra. id is used.
+    for retired_id in ("Modern-Model", ""):
+        state = {
+            "modelProviders": [{
+                "id": "openai-provider",
+                "type": "openai",
+                "chatModels": [{"key": "old", "name": "old"}],
+                "config": {"baseURL": "http://old/v1", "apiKey": "old-key"},
+            }],
+            "preferences": {
+                "defaultChatModel": "old",
+                "defaultChatProvider": "openai-provider",
+            },
+        }
+        result = _run_sync_script(node, state, {
+            "ODS_MODE": "lemonade",
+            "AMD_INFERENCE_RUNTIME": "lemonade",
+            "LEMONADE_MODEL": retired_id,
+            "GGUF_FILE": "Modern-Model.gguf",
+            "OPENAI_BASE_URL": "http://litellm:4000/v1",
+            "OPENAI_API_KEY": "litellm-key",
+        })
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "Modern-Model.gguf"
+        provider = state["modelProviders"][0]
+        assert provider["chatModels"] == [{"key": "Modern-Model.gguf", "name": "Modern-Model.gguf"}]
+        assert provider["config"] == {
+            "baseURL": "http://litellm:4000/v1",
+            "apiKey": "litellm-key",
+        }
+        assert state["preferences"]["defaultChatModel"] == "Modern-Model.gguf"
 
 
 def test_sync_script_uses_stable_alias_when_switchboard_enabled() -> None:
@@ -514,7 +537,7 @@ def test_sync_script_uses_stable_alias_when_switchboard_enabled() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -563,78 +586,6 @@ def test_sync_script_uses_stable_alias_when_switchboard_enabled() -> None:
     assert state["preferences"]["defaultChatModel"] == "ods/current"
 
 
-def test_sync_script_falls_back_to_extra_gguf_when_exact_lemonade_id_is_absent() -> None:
-    node = _node_cmd_or_skip()
-    if node is None:
-        return
-
-    state = {
-        "modelProviders": [{
-            "id": "openai-provider",
-            "type": "openai",
-            "chatModels": [],
-            "config": {},
-        }],
-        "preferences": {},
-    }
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            body = json.dumps({"values": state}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", "0"))
-            payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
-            body = b"{}"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, _format, *_args):
-            return
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        env = os.environ.copy()
-        env.update({
-            "PERPLEXICA_CONFIG_URL": f"http://127.0.0.1:{server.server_port}/api/config",
-            "ODS_MODE": "lemonade",
-            "AMD_INFERENCE_RUNTIME": "lemonade",
-            "LEMONADE_MODEL": "",
-            "GGUF_FILE": "Modern-Model.gguf",
-            "OPENAI_BASE_URL": "http://litellm:4000/v1",
-            "OPENAI_API_KEY": "litellm-key",
-        })
-        result = subprocess.run(
-            [node, str(SYNC_SCRIPT)],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=env,
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "extra.Modern-Model.gguf"
-    assert state["modelProviders"][0]["chatModels"] == [{
-        "key": "extra.Modern-Model.gguf",
-        "name": "extra.Modern-Model.gguf",
-    }]
-
-
 def test_sync_script_normalizes_base_url_without_v1_suffix() -> None:
     node = _node_cmd_or_skip()
     if node is None:
@@ -662,7 +613,7 @@ def test_sync_script_normalizes_base_url_without_v1_suffix() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -755,7 +706,6 @@ def _run_search_route_sync(
             "OPENAI_BASE_URL": "",
             "GGUF_FILE": "",
             "LLM_MODEL": "",
-            "LEMONADE_MODEL": "",
             "ODS_MODEL_SWITCHBOARD": "",
             "ODS_MODE": "",
             "AMD_INFERENCE_RUNTIME": "",
@@ -822,10 +772,10 @@ def test_invalid_search_adapter_fails_closed_without_mutating_config() -> None:
 
 # The model id Perplexica must end up with is decided in five places: the
 # container-side sync script, scripts/bootstrap-upgrade.sh, the seeding step in
-# phase 12, the post-install validation in phase 13, and the repair script. The
-# last three used to read `${LLM_BACKEND:-${AMD_INFERENCE_RUNTIME:-}}`, which
-# can never see AMD_INFERENCE_RUNTIME because phase 06 always writes a
-# non-empty LLM_BACKEND.
+# phase 12, the post-install validation in phase 13, and the repair script.
+# Every managed llama-server serves its model as --alias <GGUF_FILE>, so an AMD
+# .env that still names Lemonade (until the installer rewrites it) resolves to
+# the GGUF as well.
 # The matrix below pins the resolution rule for every runtime combination the
 # installer can produce.
 _MODEL_ID_CASES = (
@@ -837,7 +787,6 @@ _MODEL_ID_CASES = (
             "GGUF_FILE": "stale-local-tier.gguf",
             "LLM_BACKEND": "external",
             "AMD_INFERENCE_RUNTIME": "",
-            "LEMONADE_MODEL": "",
         },
         "Qwen3.5-9B-Q4_K_M.gguf",
     ),
@@ -849,29 +798,18 @@ _MODEL_ID_CASES = (
             "GGUF_FILE": "active-local-tier.gguf",
             "LLM_BACKEND": "llama-server",
             "AMD_INFERENCE_RUNTIME": "",
-            "LEMONADE_MODEL": "",
         },
         "active-local-tier.gguf",
     ),
     (
-        "amd_local_runs_lemonade_under_llama_server_backend",
-        {
-            "GGUF_FILE": "Modern-Model.gguf",
-            "LLM_BACKEND": "llama-server",
-            "AMD_INFERENCE_RUNTIME": "lemonade",
-            "LEMONADE_MODEL": "",
-        },
-        "extra.Modern-Model.gguf",
-    ),
-    (
-        "external_lemonade_uses_the_discovered_model_id",
+        "unmigrated_amd_lemonade_env_serves_the_gguf_alias",
         {
             "GGUF_FILE": "Modern-Model.gguf",
             "LLM_BACKEND": "lemonade",
             "AMD_INFERENCE_RUNTIME": "lemonade",
             "LEMONADE_MODEL": "Qwen3-8B-GGUF",
         },
-        "Qwen3-8B-GGUF",
+        "Modern-Model.gguf",
     ),
     (
         "llama_server_backends_use_the_bare_gguf_id",
@@ -879,7 +817,6 @@ _MODEL_ID_CASES = (
             "GGUF_FILE": "Modern-Model.gguf",
             "LLM_BACKEND": "llama-server",
             "AMD_INFERENCE_RUNTIME": "",
-            "LEMONADE_MODEL": "",
         },
         "Modern-Model.gguf",
     ),
@@ -955,6 +892,7 @@ if __name__ == "__main__":
     test_search_adapter_config_and_secret_contracts()
     test_bind_mounted_entrypoints_do_not_require_executable_bit()
     test_entrypoint_patches_scrape_url_result_content()
+    test_client_citation_patch_runs_before_vane_server()
     test_scrape_patch_disables_and_caps_legacy_and_vane_bundles_idempotently()
     test_patched_scrape_url_is_never_offered_and_opens_no_url()
     test_scrape_patch_fails_closed_on_unknown_shapes()
@@ -966,9 +904,8 @@ if __name__ == "__main__":
     test_entrypoint_falls_back_to_node_server_when_no_args()
     test_entrypoint_reconciles_persisted_model_route_on_every_start()
     test_entrypoint_reconciles_explicit_search_route_independently()
-    test_sync_script_persists_exact_lemonade_route()
+    test_sync_script_persists_the_gguf_alias_for_an_unmigrated_lemonade_env()
     test_sync_script_uses_stable_alias_when_switchboard_enabled()
-    test_sync_script_falls_back_to_extra_gguf_when_exact_lemonade_id_is_absent()
     test_sync_script_normalizes_base_url_without_v1_suffix()
     test_explicit_search_adapter_updates_persisted_install()
     test_empty_search_adapter_preserves_existing_searxng_setting()

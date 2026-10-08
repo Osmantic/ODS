@@ -598,9 +598,10 @@ def _ods_proxy_lan_ready() -> tuple[bool, str]:
                 return True, ""
             return False, f"ods-proxy health returned HTTP {status}"
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
+        logger.warning("ods-proxy readiness probe failed: %s", exc)
         return (
             False,
-            f"ods-proxy is configured but not reachable in the active stack: {exc}",
+            "ods-proxy is configured but not reachable in the active stack.",
         )
 
 

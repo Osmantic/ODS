@@ -26,6 +26,24 @@ PROTOCOL_SPEC.loader.exec_module(protocol)
 IMAGE = "sha256:" + "a" * 64
 
 
+def test_rejected_docker_reports_custody_metadata(monkeypatch):
+    original_stat = Path.stat
+    binary = Path('/usr/bin/docker')
+    monkeypatch.setattr(Path, 'resolve', lambda path, **kwargs: path)
+    monkeypatch.setattr(Path, 'stat', lambda path, **kwargs:
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o777, st_uid=1000,
+                        st_gid=1000, st_nlink=1)
+        if path == binary else original_stat(path, **kwargs))
+    with pytest.raises(ValueError, match='unsafe-inspection-docker') as failure:
+        module.docker_path('local')
+    message = str(failure.value)
+    assert '"resolved": "/usr/bin/docker"' in message
+    assert '"mode": "0o777"' in message
+    assert '"uid": 1000' in message
+    assert '"transport": "local"' in message
+    assert 'do not chmod' in message
+
+
 @pytest.mark.parametrize('docker,socket', [
     ('/Applications/OrbStack.app/Contents/MacOS/xbin/docker', '/Users/owner/.orbstack/run/docker.sock'),
     ('/Applications/Docker.app/Contents/Resources/bin/docker', '/Users/owner/.docker/run/docker.sock'),
@@ -88,30 +106,8 @@ def test_native_engine_paths_pass_installer_and_runtime(tmp_path, monkeypatch, d
         runtime.load_config()
 
 
-@pytest.mark.parametrize(
-    "fault",
-    [
-        None,
-        "writable-mount",
-        "world-write",
-        "owner",
-        "group",
-        "hardlink",
-        "kernel",
-        "parent-write",
-        "parent-link",
-        "unsticky",
-        "path",
-        "stat-error",
-        "filesystem",
-        "mount-target",
-        "nested-mount",
-        "mount-options",
-        "super-options",
-        "malformed-mountinfo",
-    ],
-)
-def test_read_only_wsl_desktop_cli_is_exact(monkeypatch, fault):
+def patch_wsl_desktop_cli(monkeypatch, fault, group_write_parents=()):
+    """Model Desktop's immutable ISO and the directories controlling its path."""
     binary = Path("/mnt/wsl/docker-desktop/cli-tools/usr/bin/docker")
     info = SimpleNamespace(st_mode=stat.S_IFREG | 0o775, st_uid=0, st_gid=0, st_nlink=1)
     if fault == "world-write":
@@ -128,7 +124,10 @@ def test_read_only_wsl_desktop_cli_is_exact(monkeypatch, fault):
     def mount_info(path):
         if fault == "stat-error":
             raise OSError("unavailable mount")
-        return SimpleNamespace(f_flag=0 if fault == "writable-mount" else os.ST_RDONLY)
+        writable = fault == "writable-mount" or (
+            fault == "parent-writable-mount" and path == binary.parent
+        )
+        return SimpleNamespace(f_flag=0 if writable else os.ST_RDONLY)
 
     monkeypatch.setattr(protocol.os, "statvfs", mount_info)
     monkeypatch.setattr(
@@ -156,16 +155,128 @@ def test_read_only_wsl_desktop_cli_is_exact(monkeypatch, fault):
 
     def parent_info(path):
         mode = stat.S_IFDIR | (0o1777 if path == Path("/mnt/wsl") else 0o755)
+        if str(path) in group_write_parents or (
+            fault == "parent-writable-mount" and path == binary.parent
+        ):
+            mode = stat.S_IFDIR | 0o775
         if path == binary.parent and fault == "parent-write":
             mode |= 0o002
+        if path == binary.parent and fault == "parent-mode":
+            mode = stat.S_IFDIR | 0o770
+        if path == binary.parent and fault == "parent-setgid":
+            mode = stat.S_IFDIR | 0o2775
+        if path == binary.parent and fault == "parent-sticky":
+            mode = stat.S_IFDIR | 0o1775
         if path == binary.parent and fault == "parent-link":
             mode = stat.S_IFLNK | 0o777
         if path == Path("/mnt/wsl") and fault == "unsticky":
             mode &= ~stat.S_ISVTX
-        return SimpleNamespace(st_mode=mode, st_uid=0, st_gid=0)
+        return SimpleNamespace(
+            st_mode=mode,
+            st_uid=1000 if path == binary.parent and fault == "parent-owner" else 0,
+            st_gid=1000 if path == binary.parent and fault == "parent-group" else 0,
+        )
 
     monkeypatch.setattr(protocol.Path, "lstat", parent_info)
+    return binary, info
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "writable-mount",
+        "world-write",
+        "owner",
+        "group",
+        "hardlink",
+        "kernel",
+        "parent-write",
+        "parent-link",
+        "parent-owner",
+        "parent-group",
+        "unsticky",
+        "path",
+        "stat-error",
+        "filesystem",
+        "mount-target",
+        "nested-mount",
+        "mount-options",
+        "super-options",
+        "malformed-mountinfo",
+    ],
+)
+def test_read_only_wsl_desktop_cli_is_exact(monkeypatch, fault):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, fault)
     assert protocol.read_only_wsl_docker(binary, info) is (fault is None)
+
+
+WSL_ISO_PARENTS = (
+    "/mnt/wsl/docker-desktop/cli-tools/usr/bin",
+    "/mnt/wsl/docker-desktop/cli-tools/usr",
+    "/mnt/wsl/docker-desktop/cli-tools",
+)
+
+
+@pytest.mark.parametrize("parents", [(parent,) for parent in WSL_ISO_PARENTS] + [WSL_ISO_PARENTS])
+def test_read_only_wsl_desktop_accepts_exact_775_iso_parents(monkeypatch, parents):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, None, parents)
+    assert protocol.read_only_wsl_docker(binary, info)
+
+
+@pytest.mark.parametrize("parent", ["/mnt/wsl/docker-desktop", "/mnt/wsl", "/mnt", "/"])
+def test_read_only_wsl_desktop_rejects_775_outside_iso(monkeypatch, parent):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, None, (parent,))
+    assert not protocol.read_only_wsl_docker(binary, info)
+
+
+@pytest.mark.parametrize("fault", [
+    "parent-write", "parent-owner", "parent-group", "parent-link",
+    "parent-mode", "parent-setgid", "parent-sticky", "parent-writable-mount",
+    "writable-mount", "nested-mount", "mount-options", "super-options",
+])
+def test_read_only_wsl_desktop_775_parents_preserve_custody(monkeypatch, fault):
+    binary, info = patch_wsl_desktop_cli(monkeypatch, fault, WSL_ISO_PARENTS)
+    assert not protocol.read_only_wsl_docker(binary, info)
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "writable-mount", "nested-mount", "parent-owner", "parent-group", "parent-writable-mount"]
+)
+@pytest.mark.parametrize("group_write_parents", [(), WSL_ISO_PARENTS[:1]])
+def test_wsl_desktop_symlink_has_same_installer_and_runtime_custody(monkeypatch, fault, group_write_parents):
+    host = ROOT / "extensions/services/pixel-agent/host"
+    monkeypatch.syspath_prepend(str(host))
+    spec = importlib.util.spec_from_file_location(
+        "wsl_desktop_inspection_runtime", host / "preview_inspection.py"
+    )
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    binary, info = patch_wsl_desktop_cli(monkeypatch, fault, group_write_parents)
+    original_resolve, original_stat = Path.resolve, Path.stat
+    alias = Path("/usr/bin/docker")
+    monkeypatch.setattr(
+        Path, "resolve", lambda path, **kwargs:
+        binary if path == alias else original_resolve(path, **kwargs)
+    )
+    monkeypatch.setattr(
+        Path, "stat", lambda path, **kwargs:
+        info if path == binary else original_stat(path, **kwargs)
+    )
+    document = config()
+    monkeypatch.setattr(runtime, "CONFIG", SimpleNamespace(
+        lstat=lambda: SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0),
+        read_bytes=lambda: json.dumps(document).encode(),
+    ))
+
+    if fault is None:
+        assert module.docker_path("local") == str(alias)
+        assert runtime.load_config() == document
+    else:
+        with pytest.raises(ValueError, match="unsafe-inspection-docker"):
+            module.docker_path("local")
+        with pytest.raises(runtime.Invalid, match="unsafe Docker binary"):
+            runtime.load_config()
 
 
 def test_inspection_unit_supports_external_docker_daemon():
@@ -173,7 +284,10 @@ def test_inspection_unit_supports_external_docker_daemon():
         ROOT / "extensions/services/pixel-agent/host/pixel-preview-inspection.service"
     ).read_text()
     assert "Requires=pixel-workspace-preview.service\n" in unit
-    assert "Wants=docker.service\n" in unit
+    # Ordering is useful for an enabled native daemon, but the inspector must
+    # never activate a different daemon behind the selected Desktop endpoint.
+    dependencies = [line for line in unit.splitlines() if line.startswith(('Wants=', 'Requires='))]
+    assert all('docker.service' not in line and 'docker.socket' not in line for line in dependencies)
     assert "After=docker.service pixel-workspace-preview.service\n" in unit
     assert "ProcSubset=pid\n" in unit
 
@@ -426,6 +540,46 @@ def test_native_transport_requires_explicit_arguments(monkeypatch, tmp_path):
     monkeypatch.setenv("DOCKER_HOST", "unix:///Users/owner/.docker/run/docker.sock")
     with pytest.raises(ValueError, match="explicit-native"):
         module.build_config(source=tmp_path, owner_uid=501, transport="docker-desktop")
+
+
+@pytest.mark.parametrize("failure_kind", ["build", "timeout"])
+def test_failed_build_keeps_original_error_and_conditionally_guides_dns(
+    monkeypatch, tmp_path, capsys, failure_kind
+):
+    monkeypatch.setattr(module, "docker_path", lambda transport: "/usr/bin/docker")
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir="/home/owner"))
+    for name in module.BUILD_FILES:
+        (tmp_path / name).write_bytes(b"fixed input")
+        (tmp_path / name).chmod(0o644)
+    calls = []
+    original = (
+        subprocess.CalledProcessError(17, ["docker", "build"])
+        if failure_kind == "build"
+        else subprocess.TimeoutExpired(["docker", "build"], 1800)
+    )
+
+    def run(argv, **kw):
+        calls.append(argv)
+        assert argv[:4] == ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "build"]
+        assert kw["check"] is True and kw["timeout"] == 1800
+        assert kw["stdout"] is module.sys.stderr
+        assert kw["env"] == {"PATH": "/usr/bin:/bin", "HOME": "/home/owner"}
+        assert "--network=host" not in argv and "--dns" not in argv
+        raise original
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    with pytest.raises(type(original)) as caught:
+        module.build_config(source=tmp_path, owner_uid=1000, transport="local")
+    assert caught.value is original
+    assert len(calls) == 1  # No image inspection, probe or restart after failure.
+    output = capsys.readouterr()
+    assert output.out == ""  # Never contaminate the JSON config channel.
+    if failure_kind == "build":
+        assert "If it reports EAI_AGAIN" in output.err
+        assert "INSTALL-TROUBLESHOOTING.md#container-build-dns" in output.err
+        assert "alone does not establish DNS failure" in output.err
+    else:
+        assert output.err == ""
 
 
 @pytest.mark.parametrize("fault", ["symlink", "owner", "mode", "hardlink"])

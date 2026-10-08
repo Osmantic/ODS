@@ -129,39 +129,71 @@ test('compact Models highlights the running model and keeps configuration behind
   expect(state.loadModel).not.toHaveBeenCalled()
 })
 
+test.each([true, false])('API mode names the API model and host, without local leftovers (compact=%s)', (compact) => {
+  // Fleet, Tower3: API mode showed "Runtime: Local", "No model running" and
+  // the installer's stale local pick, and never named the API in use.
+  useModelsMock.mockReturnValue(baseState({
+    models: [model()], llmBackend: 'external', canActivateModels: false,
+    activationModeError: 'ODS uses a model API at api.example.test.',
+    externalApi: { model: 'deepseek-v4.1-flash', host: 'api.example.test' },
+    configuredModel: 'qwen3.5-27b-q4',
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+
+  expect(screen.getByText('Using a model API')).toBeVisible()
+  expect(screen.getByText(/deepseek-v4\.1-flash/)).toBeVisible()
+  expect(screen.getByText('Served by the API at api.example.test')).toBeVisible()
+  expect(screen.getByText('Runtime: API (api.example.test)')).toBeVisible()
+  expect(screen.queryByText('No model running')).toBeNull()
+  expect(screen.queryByText(/Selected during install/)).toBeNull()
+})
+
+test.each([true, false])('a downloaded model in API mode says API mode instead of offering Run (compact=%s)', (compact) => {
+  // Fleet, Strixy: in API mode a greyed "Run" on installed models read as available.
+  useModelsMock.mockReturnValue(baseState({
+    models: [model({ status: 'downloaded' })], llmBackend: 'external', canActivateModels: false,
+    activationModeError: 'ODS uses a model API at api.example.test.',
+    externalApi: { model: 'deepseek-v4.1-flash', host: 'api.example.test' },
+  }))
+  render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+
+  const button = screen.getByRole('button', { name: 'API mode' })
+  expect(button).toBeDisabled()
+  expect(button).toHaveAttribute('title', 'ODS uses a model API at api.example.test.')
+  expect(screen.queryByRole('button', { name: 'Run' })).toBeNull()
+})
+
 test('compact external mode keeps the catalog visible without promising local activation', () => {
   useModelsMock.mockReturnValue(baseState({
     models: [model()], llmBackend: 'external', canActivateModels: false,
-    activationModeError: 'This install routes to a model service outside ODS.',
+    activationModeError: 'ODS uses a model API.',
+    externalApi: { model: null, host: null },
   }))
   render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
 
-  expect(screen.getByText('Model changes managed externally')).toBeVisible()
+  expect(screen.getByText('Using a model API')).toBeVisible()
   expect(screen.getByRole('button',{name:'Browse 1 model ↓'})).toBeVisible()
   expect(screen.getByRole('tab',{name:/ODS Recommended/})).toHaveAttribute('aria-selected','true')
   expect(screen.getByRole('button',{name:'Download'})).toBeVisible()
   expect(screen.queryByText(/--no-external-llm/)).not.toBeInTheDocument()
 })
 
-test.each([false, true])('loaded external Lemonade describes managed model changes without claiming runtime failure (compact=%s)', async (compact) => {
+test.each([false, true])('an unmanaged Windows-hosted server describes model changes as external, with nothing to adopt (compact=%s)', async (compact) => {
   const state = baseState({
-    odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade',
-    externalLemonade: true, canActivateModels: false,
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server',
+    hostRuntime: true, canActivateModels: false,
     modelManagement: { managed: false, canActivate: false, canUnload: false, running: false },
-    activationModeError: 'Change the loaded model in Lemonade, then adopt it here.',
-    currentModel: 'qwen3.5-9b-q4', loadedModel: 'extra.Qwen3.5-9B-Q4_K_M.gguf',
+    activationModeError: 'The model server on this computer is not managed by this ODS installation.',
+    currentModel: 'qwen3.5-9b-q4', loadedModel: 'Qwen3.5-9B-Q4_K_M.gguf',
     models: [model({ status: 'loaded' }), model({ id: 'another-model', name: 'Another model', status: 'downloaded' })],
   })
   useModelsMock.mockReturnValue(state)
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-    ok: true, status: 200, json: async () => ({
-      status: 'verified', modelId: state.loadedModel, contextLength: 65536,
-    }),
-  }))
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no adoption probe') }))
   try {
     render(createElement(MemoryRouter, null, createElement(Models, { compact })))
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Adopt loaded model in ODS' })).toBeEnabled())
     expect(screen.getByText('Model changes managed externally')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
     expect(screen.queryByText('Local model runtime unavailable')).not.toBeInTheDocument()
     const notice = screen.getByText('Model changes managed externally').closest('section')
     expect(within(notice).getByText(state.activationModeError)).toBeVisible()
@@ -178,7 +210,7 @@ test.each([false, true])('loaded external Lemonade describes managed model chang
 test.each([true, false])('only managed runtimes expose unload/resume and hide adoption (running=%s)', async running => {
   const state = baseState({
     models: [model({ status: running ? 'loaded' : 'downloaded' })],
-    odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade', externalLemonade: true,
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
     modelManagement: { managed: true, canActivate: running, canUnload: true, running },
     canActivateModels: running,
     stopRuntime: vi.fn(), startRuntime: vi.fn(),
@@ -194,10 +226,10 @@ test.each([true, false])('only managed runtimes expose unload/resume and hide ad
 
 test.each([false, true])('unavailable management proof never offers adoption and recovers to managed controls (compact=%s)', compact => {
   const state = baseState({
-    odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade', externalLemonade: true,
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
     modelManagement: { managed: null, canActivate: false, canUnload: false, running: false },
     canActivateModels: false, activationModeError: 'Runtime management could not be verified',
-    currentModel: 'qwen3.5-9b-q4', loadedModel: 'extra.Qwen3.5-9B-Q4_K_M.gguf',
+    currentModel: 'qwen3.5-9b-q4', loadedModel: 'Qwen3.5-9B-Q4_K_M.gguf',
     models: [model({ status: 'loaded' }), model({ id: 'next', name: 'Next model', status: 'downloaded' })],
   })
   useModelsMock.mockReturnValue(state)
@@ -1028,6 +1060,9 @@ test('shows terminal download failures with a retry action', async () => {
 
   expect(screen.getByText('Download Failed')).toBeInTheDocument()
   expect(screen.getByText('The download checksum did not match.')).toBeInTheDocument()
+  // A failed download names where to get help, like the page's other errors.
+  expect(screen.getByRole('link', { name: /get help on discord/i }))
+    .toHaveAttribute('href', expect.stringContaining('discord.gg/'))
   fireEvent.click(screen.getByRole('button', { name: /retry/i }))
 
   expect(clearTerminal).toHaveBeenCalled()
@@ -1409,4 +1444,27 @@ test('filters models by search and category without changing catalog data', () =
 
   fireEvent.click(screen.getByRole('button', { name: /reset/i }))
   expect(screen.getByText('Qwen 3.5 9B')).toBeInTheDocument()
+})
+
+
+test('explains the model memory budget separately from detected shared GPU memory', () => {
+  useModelsMock.mockReturnValue(baseState({
+    gpu: { vramTotal: 32, vramUsed: 9, vramFree: 23, modelMemoryBudgetGb: 17.6 },
+    models: [model({ status: 'downloaded', fitsVram: false, estimatedRequired: 23.8,
+      contextOptions: [{ contextLength: 65536, estimatedRequired: 23.8, fitsVram: false }] })],
+  }))
+  renderModels()
+  const run = screen.getByRole('button', { name: /^run$/i })
+  expect(run).toBeDisabled()
+  expect(run).toHaveAttribute('title', 'Requires 23.8 GB; ODS has a 17.6 GB model memory budget (32 GB GPU memory detected).')
+})
+
+test('does not invent a fitting context above the supplied model memory budget', () => {
+  useModelsMock.mockReturnValue(baseState({
+    gpu: { vramTotal: 32, vramUsed: 9, vramFree: 23, modelMemoryBudgetGb: 17.6 },
+    models: [model({ status: 'downloaded', fitsVram: false, estimatedRequired: 23.8,
+      sizeGb: 20.6, contextLength: 65536, maxContextLength: 65536, contextOptions: [] })],
+  }))
+  renderModels()
+  expect(screen.getByRole('button', { name: /^run$/i })).toBeDisabled()
 })

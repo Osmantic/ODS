@@ -24,7 +24,7 @@ from starlette.requests import ClientDisconnect
 import hermes_bridge
 import session_signer
 from config import INSTALL_DIR, SERVICES
-from helpers import check_service_health, get_llama_context_size, get_loaded_model
+from helpers import check_service_health, get_llama_context_size, get_llama_vision_support, get_loaded_model
 from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
@@ -33,6 +33,7 @@ from performance_oracle import (
     read_env_file_value,
     read_env_value,
 )
+from setup_chat_route import resolve_chat_route
 
 logger = logging.getLogger(__name__)
 
@@ -207,27 +208,31 @@ async def _require_hermes_talk_compatible() -> dict[str, Any]:
     return compatibility
 
 
-def _vision_model_name() -> str:
-    """Lemonade name of the vision-capable model. Defaults match the strix
-    user.* registration we ship; operators can override per-host via env."""
-    return os.environ.get("ODS_TALK_VISION_MODEL", "user.Qwen3.6-35B-A3B-Vision")
+# Shown instead of a vision answer. llama-server serves exactly one model, so
+# an image goes to the active model, which must have loaded a vision projector.
+TALK_VISION_UNSUPPORTED_MESSAGE = (
+    "The active model can't read images. Switch to a model with vision support to attach photos."
+)
+TALK_VISION_UNCONFIRMED_MESSAGE = (
+    "ODS Talk can't confirm that the active model reads images, so photo attachments are off for now."
+)
+
+
+def _vision_override_model() -> str:
+    """A separately configured vision model, served at ``ODS_TALK_VISION_URL``.
+
+    Empty (the default) sends images to the active model.
+    """
+    return os.environ.get("ODS_TALK_VISION_MODEL", "").strip()
 
 
 def _vision_backend_base_url() -> str:
-    """OpenAI-compatible base URL for multimodal requests.
-
-    Defaults to Lemonade / llama-server direct (``http://llama-server:8080/v1``)
-    — NOT litellm — because litellm's
-    ``model_name: '*'`` wildcard normalises our ``user.*`` model id down to
-    whatever llama-server has currently loaded, which silently downgrades
-    image queries to the text-only model. Lemonade routes by exact model
-    id and auto-swaps to the vision variant on first multimodal call.
+    """OpenAI-compatible base URL of a separately configured vision server.
 
     ``ODS_TALK_VISION_URL`` accepts either a host root
     (``http://host:8080``) or a full OpenAI-compatible base
     (``http://host:8080/v1`` / ``http://host:8080/api/v1``). Normalising here
-    keeps Linux container, Windows host, llama-server, and Lemonade paths from
-    accidentally becoming ``/v1/v1`` or ``/api/v1/v1``.
+    keeps a host root from becoming ``/v1/v1`` or ``/api/v1/v1``.
     """
     raw = (
         os.environ.get("ODS_TALK_VISION_URL")
@@ -250,26 +255,54 @@ def _vision_chat_completions_url() -> str:
 
 
 def _vision_backend_key() -> str:
-    """Bearer token for the vision backend. Empty when hitting Lemonade
-    direct on the internal docker network (no auth needed there); set when
-    a host routes through litellm or another authenticated proxy."""
+    """Bearer token for a separately configured vision server, if it needs one."""
     return os.environ.get("ODS_TALK_VISION_KEY") or ""
 
 
-async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text: str) -> AsyncIterator[bytes]:
-    """Send a single multimodal turn directly to litellm and translate the
-    streaming response into the same SSE frame shape ODS Talk already uses
-    (session / delta / complete / done / error). Bypasses Hermes for image
-    queries because Hermes's prompt.submit only takes text — the multimodal
-    content array is a litellm/llama-server-level concept.
+async def _vision_route() -> tuple[str, str, dict[str, str]]:
+    """Chat Completions URL, model and headers for an image turn.
+
+    A separately configured vision server (``ODS_TALK_VISION_MODEL`` with
+    ``ODS_TALK_VISION_URL`` and ``ODS_TALK_VISION_KEY``) is used as set.
+    Otherwise the image goes to the active model over its chat route, and only
+    when its llama-server loaded a vision projector; raises 409 otherwise.
+    """
+    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+    override = _vision_override_model()
+    if override:
+        key = _vision_backend_key()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        return _vision_chat_completions_url(), override, headers
+    vision = await get_llama_vision_support()
+    if vision is False:
+        raise HTTPException(status_code=409, detail=TALK_VISION_UNSUPPORTED_MESSAGE)
+    if vision is not True:
+        raise HTTPException(status_code=409, detail=TALK_VISION_UNCONFIRMED_MESSAGE)
+    url, model, route_headers = resolve_chat_route("http://llama-server:8080")
+    return url, model, {**route_headers, **headers}
+
+
+async def _stream_vision_chat(
+    image_bytes: bytes,
+    content_type: str,
+    prompt_text: str,
+    route: tuple[str, str, dict[str, str]],
+) -> AsyncIterator[bytes]:
+    """Send a single multimodal turn over ``route`` (from ``_vision_route``)
+    and translate the streaming response into the same SSE frame shape ODS
+    Talk already uses (session / delta / complete / done / error). Bypasses
+    Hermes for image queries because Hermes's prompt.submit only takes text —
+    the multimodal content array is a llama-server-level concept.
 
     Trade-off: image queries don't get Hermes's tool layer (no web_search,
     memory, etc.) — they're a one-shot "describe this image" exchange. For
     follow-up turns, users continue typing normally and Hermes resumes.
     """
+    url, model, headers = route
     image_url = f"data:{content_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
     payload = {
-        "model": _vision_model_name(),
+        "model": model,
         "stream": True,
         "max_tokens": 1024,
         "messages": [
@@ -285,15 +318,11 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
     completed = False
     warning = None
     timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
-    headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
-    key = _vision_backend_key()
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
                 "POST",
-                _vision_chat_completions_url(),
+                url,
                 headers=headers,
                 json=payload,
             ) as resp:
@@ -924,10 +953,10 @@ async def talk_attachment(
 
     Two routing paths inside:
 
-    1. **Images** → multimodal one-shot to litellm against the vision-capable
-       model (e.g. ``user.Qwen3.6-35B-A3B-Vision`` on Lemonade hosts). Hermes's
-       prompt.submit API only accepts plain text, so vision queries bypass
-       the agent loop. Acceptable trade-off for v1: image queries don't get
+    1. **Images** → multimodal one-shot to the active model when its
+       llama-server loaded a vision projector (or to a separately configured
+       vision server). Hermes's prompt.submit API only accepts plain text, so
+       vision queries bypass the agent loop. Acceptable trade-off for v1: image queries don't get
        Hermes's tool layer, but they do get a real model-vision answer.
     2. **Text-like files** (.txt/.md/.csv/.json/code) → extract content,
        prepend to the user's caption, route through the existing Hermes
@@ -947,8 +976,9 @@ async def talk_attachment(
         if len(data) > MAX_IMAGE_BYTES:
             raise HTTPException(status_code=413, detail=f"Image is too large (max {MAX_IMAGE_BYTES // (1024 * 1024)} MB).")
         prompt_text = caption or "Describe what you see in this image."
+        route = await _vision_route()
         return StreamingResponse(
-            _stream_vision_chat(data, _image_content_type(file), prompt_text),
+            _stream_vision_chat(data, _image_content_type(file), prompt_text, route),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

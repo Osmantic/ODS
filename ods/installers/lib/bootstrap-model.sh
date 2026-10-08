@@ -19,7 +19,7 @@ BOOTSTRAP_GGUF_FILE="Qwen3.5-2B-Q4_K_M.gguf"
 # Exact artifact size rounded down to MiB. This is display metadata for the
 # pinned GGUF below; keep it aligned with tier-map.sh when the artifact changes.
 BOOTSTRAP_GGUF_SIZE_MB=1221
-BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+BOOTSTRAP_GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
 BOOTSTRAP_GGUF_SHA256="aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 BOOTSTRAP_LLM_MODEL="qwen3.5-2b"
 BOOTSTRAP_MAX_CONTEXT=65536
@@ -32,6 +32,7 @@ BOOTSTRAP_MAX_CONTEXT=65536
 #   3. --no-bootstrap flag was NOT set
 #   4. Not in offline mode (can't download anything)
 #   5. Not in cloud mode (no local model needed)
+#   6. No host-native llama-server (it serves the model chosen on Windows)
 #
 bootstrap_needed() {
     local tier_rank
@@ -51,7 +52,7 @@ bootstrap_needed() {
 
     # Cloud mode — no local model needed
     [[ "${ODS_MODE:-local}" == "cloud" ]] && return 1
-    [[ "${LEMONADE_EXTERNAL:-false}" == "true" ]] && return 1
+    [[ -n "${NATIVE_LLM_BASE_URL:-}" ]] && return 1
 
     return 0
 }

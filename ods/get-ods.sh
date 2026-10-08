@@ -69,7 +69,7 @@ ODS_REF="${ODS_REF:-${ODS_BOOTSTRAP_REF:-}}"
 log()     { echo -e "${CYAN}[ods]${NC} $1"; }
 success() { echo -e "${GREEN}[  ok ]${NC} $1"; }
 warn()    { echo -e "${YELLOW}[warn ]${NC} $1"; }
-error()   { echo -e "${RED}[error]${NC} $1"; exit 1; }
+error()   { echo -e "${RED}[error]${NC} $1"; echo "        Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC"; exit 1; }
 
 # This bootstrap-only option is consumed before the platform installer sees it.
 if [[ "$BOOTSTRAP_HELP" == true ]]; then
@@ -101,14 +101,29 @@ validate_bootstrap_model_preservation() {
         warn "Python 3 is required for safe same-filesystem model preservation."
         return 1
     }
-    validate_force_reinstall_target "$INSTALL_DIR" \
-        || validate_force_reinstall_target "$INSTALL_DIR" stranded \
-        || return 1
-    [[ -n "${HOME:-}" && "$HOME" == /* ]] || return 1
-    [[ ! -e "$HOME/.ods-models-backup" && ! -L "$HOME/.ods-models-backup" ]] || return 1
-    [[ ! -e "${INSTALL_DIR%/}.models-backup" && ! -L "${INSTALL_DIR%/}.models-backup" ]] || return 1
-    [[ ! -L "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data/models" ]] || return 1
-    [[ ! -e "$INSTALL_DIR/data/models" || -d "$INSTALL_DIR/data/models" ]]
+    # Each refusal names what is in the way and the choices (fleet row 29:
+    # one sentence covered every case and named no path).
+    if ! validate_force_reinstall_target "$INSTALL_DIR" \
+        && ! validate_force_reinstall_target "$INSTALL_DIR" stranded; then
+        warn "$INSTALL_DIR is not a recognized ODS installation, so it has no models to keep. Rerun without --keep-models."
+        return 1
+    fi
+    [[ -n "${HOME:-}" && "$HOME" == /* ]] || { warn "HOME must be an absolute path to keep models."; return 1; }
+    local backup
+    for backup in "$HOME/.ods-models-backup" "${INSTALL_DIR%/}.models-backup"; do
+        if [[ -e "$backup" || -L "$backup" ]]; then
+            warn "A model backup already exists at $backup. An earlier reinstall may have left it, and it can hold your models: check it, then move it aside (or delete it if you no longer need it) and rerun. Or rerun without --keep-models, and models download again."
+            return 1
+        fi
+    done
+    if [[ -L "$INSTALL_DIR/data" || -L "$INSTALL_DIR/data/models" ]]; then
+        warn "$INSTALL_DIR/data or data/models is a symbolic link, and --keep-models keeps only a real folder. Rerun without --keep-models."
+        return 1
+    fi
+    if [[ -e "$INSTALL_DIR/data/models" && ! -d "$INSTALL_DIR/data/models" ]]; then
+        warn "$INSTALL_DIR/data/models is not a folder. Rerun without --keep-models."
+        return 1
+    fi
 }
 
 restore_bootstrap_models() {
@@ -204,6 +219,29 @@ validate_force_reinstall_target() {
         return 0
     fi
     [[ -f "$target_dir/docker-compose.yml" && ! -L "$target_dir/docker-compose.yml" ]] || return 1
+}
+
+# An incomplete install with no .env is only ours to delete when it is empty or
+# still carries the ODS source tree (the bootstrap copies the tree before the
+# installer runs). Anything else, such as the data/ directory that
+# `ods-uninstall.sh --keep-data` leaves behind, or an unrelated directory named
+# by ODS_INSTALL_DIR, is left for the owner to move or remove.
+incomplete_install_is_removable() {
+    local target_dir="$1" target_real
+
+    [[ "$target_dir" == /* ]] || return 1
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || return 1
+    target_real="$(cd -P -- "$target_dir" 2>/dev/null && pwd -P)" || return 1
+    [[ "$target_real" != / && "$target_real" != "$(cd -P -- "$HOME" 2>/dev/null && pwd -P)" ]] || return 1
+    if [[ -z "$(ls -A -- "$target_dir" 2>/dev/null)" ]]; then
+        return 0
+    fi
+    [[ -f "$target_dir/ods-cli" && ! -L "$target_dir/ods-cli" ]] || return 1
+    [[ -f "$target_dir/ods-uninstall.sh" && ! -L "$target_dir/ods-uninstall.sh" ]] || return 1
+}
+
+refuse_unidentified_incomplete_install() {
+    error "Refusing to remove $INSTALL_DIR: it has no .env and is not an ODS source tree. It may hold data kept by 'ods-uninstall.sh --keep-data'. Move it aside or remove it yourself, then re-run."
 }
 
 is_truthy() {
@@ -364,7 +402,7 @@ cat << 'BANNER'
 BANNER
 echo -e "${NC}"
 echo -e "${BRIGHT_MAGENTA}  O D S   B O O T S T R A P${NC}  ${GREEN}Acquiring the local stack${NC}"
-echo -e "${CYAN}  The full ODSGATE sequence begins after the source is verified.${NC}"
+echo -e "${CYAN}  The full ODSGATE sequence begins after the source is fetched.${NC}"
 echo ""
 
 # ── Detect OS ──────────────────────────────────────
@@ -384,7 +422,7 @@ OS=$(detect_os)
 log "Detected OS: $OS"
 
 if ! validate_bootstrap_model_preservation; then
-    error "Cannot preserve models: --keep-models requires a recognized existing install, a real data/models directory, and no existing adjacent or legacy model backup. Resolve any backup or symlink conflict before retrying."
+    error "Cannot preserve models for this reinstall; the reason is above. Nothing was changed."
 fi
 
 case "$OS" in
@@ -413,7 +451,19 @@ fi
 
 # GPU check (early info — real detection happens in the installer)
 _gpu_found=false
+# WSL may expose no DRM cards, or only Microsoft's virtual device. A
+# successful query is the hardware witness here, as in the main installer.
+# Capture the entire response before selecting a line to avoid SIGPIPE.
+if [[ "$OS" == "wsl" ]] && command -v nvidia-smi &> /dev/null; then
+    _info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) || _info=""
+    _info=${_info%%$'\n'*}
+    if [[ -n "$_info" ]]; then
+        success "NVIDIA GPU detected: $_info"
+        _gpu_found=true
+    fi
+fi
 for _v in /sys/class/drm/card*/device/vendor; do
+    $_gpu_found && break
     case "$(cat "$_v" 2>/dev/null)" in
         0x10de) # NVIDIA
             if command -v nvidia-smi &> /dev/null; then
@@ -440,7 +490,7 @@ for _v in /sys/class/drm/card*/device/vendor; do
     $_gpu_found && break
 done
 if [[ "$OS" != "macos" ]] && ! $_gpu_found; then
-    warn "No GPU detected — CPU-only mode will be used (slow but functional)"
+    warn "No GPU detected by this preliminary check — the installer will check again"
 fi
 
 # git
@@ -536,14 +586,23 @@ if [[ -d "$INSTALL_DIR" ]]; then
         warn "Directory exists but incomplete install at $INSTALL_DIR"
         echo ""
         if [[ "$BOOTSTRAP_FORCE" == "true" ]]; then
+            incomplete_install_is_removable "$INSTALL_DIR" || refuse_unidentified_incomplete_install
             echo "  Removing incomplete install because --force was provided."
             remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
         elif [[ "$BOOTSTRAP_NON_INTERACTIVE" == "true" ]]; then
             echo "  Aborting. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
             exit 1
         else
+            incomplete_install_is_removable "$INSTALL_DIR" || refuse_unidentified_incomplete_install
             echo -n "  Remove and reinstall? [y/N] "
-            read -r response
+            # Under `curl | bash` stdin is this script, so answer from the
+            # terminal. Without one, stop rather than guess.
+            response=""
+            if ! { read -r response < /dev/tty; } 2>/dev/null; then
+                echo ""
+                echo "  No terminal is available to answer. Re-run with --force to remove it automatically, or remove manually with: rm -rf $INSTALL_DIR"
+                exit 1
+            fi
             if [[ "$response" =~ ^[Yy]$ ]]; then
                 remove_install_dir "$INSTALL_DIR" || error "Failed to remove incomplete install at $INSTALL_DIR. Try: sudo rm -rf \"$INSTALL_DIR\""
             else
@@ -609,6 +668,15 @@ git sparse-checkout set ods 2>/dev/null || {
 # environment preflight). Running those checks only after the uninstaller left
 # hosts that could never take the new install with no working ODS and no .env.
 if [[ "$BOOTSTRAP_REINSTALL" == "true" || "$BOOTSTRAP_RECOVER_STRANDED" == "true" ]]; then
+    # The uninstaller removes data/, so a model API connected in Settings >
+    # Remote model does not survive a reinstall. Say so now, and have the
+    # installer's summary say it again (fleet row 26: it vanished silently).
+    if [[ "$BOOTSTRAP_REINSTALL" == "true" ]] \
+        && [[ -f "$INSTALL_DIR/data/remote-provider/provider-profile.json" \
+            || -f "$INSTALL_DIR/data/remote-provider/routing-state.json" ]]; then
+        warn "This reinstall removes your model API connection (Settings > Remote model). Connect it again there after the install."
+        export ODS_REINSTALL_REMOTE_ROUTE_REMOVED=true
+    fi
     candidate_uninstaller="$TEMP_DIR/repo/ods/ods-uninstall.sh"
     [[ -f "$candidate_uninstaller" && ! -L "$candidate_uninstaller" ]] \
         || error "Requested ODS source does not contain a safe candidate uninstaller. Existing installation was not replaced."

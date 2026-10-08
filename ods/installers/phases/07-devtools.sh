@@ -15,10 +15,58 @@
 #   Add new developer tools or change installation methods here.
 # ============================================================================
 
+# Isolated phase reuse (tests) gets the route predicate installers/lib/
+# native-llm.sh gives install-core: a host-native llama-server is in use.
+declare -F ods_native_llm_requested >/dev/null 2>&1 \
+    || ods_native_llm_requested() { [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; }
+
 ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
+
+# Install Linux Node.js 22 with the host package manager when Linux Node.js
+# 20+ and npm are missing. $1 names the consumer for messages. Failures are
+# reported here; callers decide whether a missing runtime is fatal.
+_phase07_install_linux_node() {
+    local consumer="$1" tmpfile
+    if ! ods_sudo_available; then
+        ai_warn "sudo unavailable — skipping Linux Node.js install for $consumer."
+        ai "  Install Linux Node.js 22+ yourself and re-run."
+        return 0
+    fi
+    ai "Installing Linux Node.js for $consumer..."
+    case "$PKG_MANAGER" in
+        apt)
+            tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
+            if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
+                ods_sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script for $consumer"
+            fi
+            rm -f "$tmpfile"
+            ods_sudo apt-get install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via apt-get for $consumer"
+            ;;
+        dnf)
+            ods_sudo dnf module install -y nodejs:22 2>&1 | tee -a "$LOG_FILE" || \
+                ods_sudo dnf install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via dnf for $consumer"
+            ;;
+        pacman)
+            ods_sudo pacman -S --noconfirm --needed nodejs npm 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via pacman for $consumer"
+            ;;
+        zypper)
+            ods_sudo zypper --non-interactive install nodejs22 2>&1 | tee -a "$LOG_FILE" || \
+                ods_sudo zypper --non-interactive install nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via zypper for $consumer"
+            ;;
+        *)
+            ai_warn "Unknown package manager — cannot install Node.js automatically for $consumer"
+            ;;
+    esac
+    hash -r
+}
+
 if $DRY_RUN; then
+    # Pixel's host runtime needs Linux Node.js even when developer CLIs are off.
+    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] && ! ods_linux_node_tools_available; then
+        log "[DRY RUN] Would install Linux Node.js 22 for Portal (Pixel)"
+    fi
     if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
         log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
     else
@@ -32,46 +80,27 @@ if $DRY_RUN; then
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
+    # Portal (Pixel) bootstraps a pinned Node.js runtime in phase 11 and needs
+    # Linux Node.js 20+ and npm whether or not the developer CLIs are selected.
+    # A fresh Ubuntu (including a new WSL distro) has neither, so provision it
+    # here and stop now with a clear reason instead of after the image builds.
+    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] && ! ods_linux_node_tools_available; then
+        _phase07_install_linux_node "Portal (Pixel)"
+        if ! ods_linux_node_tools_available; then
+            ai_bad "Portal (Pixel) requires Linux Node.js 20+ and npm, and they could not be installed automatically. See $LOG_FILE."
+            ai "  Install Linux Node.js 22 inside this Linux system (https://nodejs.org/en/download), then rerun the installer."
+            return 1 2>/dev/null || exit 1
+        fi
+        ai_ok "Linux Node.js $(node -p 'process.versions.node') ready for Portal (Pixel)"
+    fi
+
     if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
         ai "Installing AI developer tools..."
 
-    # Ensure Node.js/npm is available (needed for Claude Code and Codex)
+    # Ensure Node.js/npm is available (needed for Claude Code and Codex). The
+    # CLIs are optional: a failed or skipped Node.js install only skips them.
     if ! ods_linux_node_tools_available; then
-        # Node.js install needs root. When sudo isn't usable (rootless box, or
-        # non-interactive without cached/passwordless sudo), skip it with a clear
-        # warning instead of failing the install. The optional AI dev-tool CLIs
-        # (Claude Code / Codex) simply won't be installed; core ODS is
-        # unaffected. ods_sudo() below also skips these calls when sudo is absent.
-        if ! ods_sudo_available; then
-            ai_warn "sudo unavailable — skipping Node.js install (optional dev-tool CLIs will be skipped)."
-            ai "  Install Node.js 22+ yourself and re-run to add Claude Code / Codex."
-        else
-            ai "Installing Node.js..."
-            case "$PKG_MANAGER" in
-                apt)
-                    tmpfile=$(mktemp /tmp/nodesource-setup.XXXXXX.sh)
-                    if curl -fsSL --max-time 300 https://deb.nodesource.com/setup_22.x -o "$tmpfile" 2>/dev/null; then
-                        ods_sudo -E bash "$tmpfile" 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to run NodeSource apt setup script (non-fatal — Claude Code/Codex CLI will be skipped)"
-                    fi
-                    rm -f "$tmpfile"
-                    ods_sudo apt-get install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via apt-get (non-fatal — Claude Code/Codex CLI will be skipped)"
-                    ;;
-                dnf)
-                    ods_sudo dnf module install -y nodejs:22 2>&1 | tee -a "$LOG_FILE" || \
-                        ods_sudo dnf install -y nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via dnf (non-fatal — Claude Code/Codex CLI will be skipped)"
-                    ;;
-                pacman)
-                    ods_sudo pacman -S --noconfirm --needed nodejs npm 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via pacman (non-fatal — Claude Code/Codex CLI will be skipped)"
-                    ;;
-                zypper)
-                    ods_sudo zypper --non-interactive install nodejs22 2>&1 | tee -a "$LOG_FILE" || \
-                        ods_sudo zypper --non-interactive install nodejs 2>&1 | tee -a "$LOG_FILE" || ai_warn "Failed to install nodejs via zypper (non-fatal — Claude Code/Codex CLI will be skipped)"
-                    ;;
-                *)
-                    ai_warn "Unknown package manager — cannot install Node.js automatically"
-                    ;;
-            esac
-        fi
+        _phase07_install_linux_node "Claude Code and Codex CLI"
     fi
 
     if ods_linux_node_tools_available; then
@@ -155,7 +184,8 @@ else
         if [[ -f "$INSTALL_DIR/.env" ]]; then
             [[ -z "${OLLAMA_PORT:-}" ]] && OLLAMA_PORT=$(grep -m1 '^OLLAMA_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             # Always re-read ODS_MODE from .env — Phase 06 may have changed it
-            # (e.g. "local" → "lemonade" for AMD) but the shell variable is stale.
+            # (e.g. to "local" for an external endpoint) but the shell variable
+            # is stale.
             ODS_MODE=$(grep -m1 '^ODS_MODE=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
@@ -163,9 +193,10 @@ else
             [[ -z "${EXTERNAL_LLM_URL:-}" ]] && EXTERNAL_LLM_URL=$(grep -m1 '^EXTERNAL_LLM_URL=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${EXTERNAL_LLM_MODEL:-}" ]] && EXTERNAL_LLM_MODEL=$(grep -m1 '^EXTERNAL_LLM_MODEL=' "$INSTALL_DIR/.env" | cut -d= -f2-)
         fi
-        # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
+        # Route through LiteLLM for the switchboard, an external endpoint and a
+        # host-native llama-server; direct to the in-stack llama-server otherwise.
         #
-        # The Lemonade branch hits LiteLLM at :4000. LiteLLM is NOT auth-disabled
+        # The gateway branches hit LiteLLM at :4000. LiteLLM is NOT auth-disabled
         # on this install — its container env carries LITELLM_MASTER_KEY from
         # .env (phase 06 wires it; the docker-compose for LiteLLM honors it),
         # and any request without a matching Authorization header gets 401.
@@ -178,9 +209,10 @@ else
         #   $ curl -sSI http://127.0.0.1:4000/v1/models   → 401
         #   $ curl -sSI -H "Authorization: Bearer $LITELLM_KEY" ... → 200
         #
-        # Use LITELLM_KEY (read above at line 122) on the lemonade branch.
-        # The llama-server-direct branch keeps "no-key" — llama.cpp's OpenAI-
-        # compat server doesn't validate the key.
+        # Use LITELLM_KEY (read above) on the gateway branches. The
+        # llama-server-direct branch keeps "no-key": the in-stack llama.cpp
+        # server does not validate the key. A host-native llama-server does
+        # (LLAMA_SERVER_API_KEY), and only LiteLLM holds that key.
         _opencode_model_id="${LLM_MODEL}"
         _opencode_model_name="${LLM_MODEL}"
         _opencode_provider_name="llama-server (local)"
@@ -200,9 +232,10 @@ else
             _opencode_model_id="$EXTERNAL_LLM_MODEL"
             _opencode_model_name="$EXTERNAL_LLM_MODEL"
             _opencode_provider_name="External LLM via ODS gateway"
-        elif [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
+        elif ods_native_llm_requested; then
             _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
-            _opencode_key="${LITELLM_KEY:-no-key}"
+            _opencode_key="${LITELLM_KEY:-}"
+            _opencode_provider_name="llama-server (Windows) via ODS gateway"
         else
             _opencode_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/v1"
             _opencode_key="no-key"

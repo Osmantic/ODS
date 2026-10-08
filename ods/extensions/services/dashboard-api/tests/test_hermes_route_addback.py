@@ -286,22 +286,30 @@ def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch
     assert agent._hermes_compose_plan_error(["-f", "extensions/services/hermes/compose.yaml"]) == ""
 
 
-def test_hermes_start_prepares_route_before_compose_up(monkeypatch):
+@pytest.mark.parametrize("refresh_ok", [True, False])
+def test_hermes_start_prepares_route_before_compose_up(monkeypatch, refresh_ok):
     order = []
+
+    def record(name, result):
+        order.append(name)
+        return result
+
     monkeypatch.setattr(agent, "resolve_compose_flags", lambda: [])
     monkeypatch.setattr(agent, "_hermes_compose_plan_error", lambda flags: "")
-    monkeypatch.setattr(agent, "_prepare_hermes_route_for_start", lambda: (order.append("route") or (True, "")))
-    monkeypatch.setattr(agent, "_prepare_hermes_persona_for_start", lambda: (order.append("persona") or (True, "")))
+    monkeypatch.setattr(agent, "_prepare_hermes_route_for_start", lambda: record("route", (True, "")))
+    monkeypatch.setattr(agent, "_prepare_hermes_persona_for_start", lambda: record("persona", (True, "")))
+    refresh_result = (refresh_ok, "" if refresh_ok else "Persona refresh failed")
+    monkeypatch.setattr(agent, "_refresh_running_hermes_persona", lambda: record("refresh", refresh_result))
     monkeypatch.setattr(agent, "_precreate_data_dirs", lambda service: None)
     monkeypatch.setattr(agent, "_repair_rootless_data_ownership", lambda service: None)
     monkeypatch.setattr(agent, "_find_ext_dir", lambda service: None)
-    monkeypatch.setattr(agent, "_run_selected_extension_up", lambda service, flags, **kwargs: (
-        order.append("compose") or subprocess.CompletedProcess([], 0, "", "")))
+    monkeypatch.setattr(agent, "_run_selected_extension_up", lambda service, flags, **kwargs: record(
+        "compose", subprocess.CompletedProcess([], 0, "", "")))
     monkeypatch.setattr(agent.subprocess, "run", lambda command, **kwargs: (
         pytest.fail(f"Unexpected subprocess outside selected start: {command}")))
 
-    assert agent.docker_compose_action("hermes", "start") == (True, "")
-    assert order == ["route", "persona", "compose"]
+    assert agent.docker_compose_action("hermes", "start") == refresh_result
+    assert order == ["route", "persona", "compose", "refresh"]
 
 
 def test_hermes_persona_repairs_empty_mount_directory_without_deleting_owner_data(tmp_path, monkeypatch):
@@ -337,6 +345,145 @@ def test_hermes_persona_repairs_empty_mount_directory_without_deleting_owner_dat
     (output / "owner.txt").write_text("keep", encoding="utf-8")
     assert agent._prepare_hermes_persona_for_start()[0] is False
     assert (output / "owner.txt").read_text(encoding="utf-8") == "keep"
+
+
+SHIPPED_TEMPLATE = ODS_ROOT / "extensions/services/hermes/cli-config.yaml.template"
+INSTALLER_SPEC = importlib.util.spec_from_file_location(
+    "ods_patch_hermes_config_addback", ODS_ROOT / "scripts" / "patch-hermes-config.py",
+)
+installer_patcher = importlib.util.module_from_spec(INSTALLER_SPEC)
+INSTALLER_SPEC.loader.exec_module(installer_patcher)
+# The switchboard route that both phase 11 and a Library start select.
+ROUTE = ("ods/current", "http://model-router:9099/v1", 65536)
+
+
+def shipped_install(tmp_path):
+    template = tmp_path / "extensions/services/hermes/cli-config.yaml.template"
+    template.parent.mkdir(parents=True)
+    template.write_bytes(SHIPPED_TEMPLATE.read_bytes())
+    model, base_url, context = ROUTE
+    env = {"LLM_BACKEND": "llama-server", "ODS_MODEL_SWITCHBOARD": "enabled",
+           "HERMES_LLM_BASE_URL": base_url, "HERMES_LLM_API_KEY": "no-key",
+           "MAX_CONTEXT": str(context)}
+    (tmp_path / ".env").write_text("\n".join(f"{k}={json.dumps(v)}" for k, v in env.items()) + "\n")
+    return template
+
+
+def installer_output(path):
+    # The installer runs on Linux and WSL. Windows text mode would write
+    # CRLF, so normalize only there; the CI comparison stays exact.
+    raw = path.read_bytes()
+    return raw.replace(b"\r\n", b"\n") if os.name == "nt" else raw
+
+
+def test_shipped_template_keeps_comments_blank_lines_and_one_context_per_key():
+    original = SHIPPED_TEMPLATE.read_text(encoding="utf-8")
+    model, base_url, context = ROUTE
+    patched, changed = agent._patch_hermes_config_text(
+        original, model, base_url=base_url, context_length=context)
+
+    def layout(text):
+        return [line for line in text.splitlines() if not line.strip() or line.lstrip().startswith("#")]
+
+    assert changed
+    assert layout(patched) == layout(original)
+    assert not [line for line in patched.splitlines() if line.startswith("context_length:")]
+    config = yaml.safe_load(patched)
+    assert "context_length" not in config
+    assert config["model"]["context_length"] == context
+    assert config["auxiliary"]["compression"]["context_length"] == context
+    assert agent._patch_hermes_config_text(
+        patched, model, base_url=base_url, context_length=context) == (patched, False)
+
+
+def test_agent_and_installer_write_identical_template_bytes(tmp_path, monkeypatch):
+    template = shipped_install(tmp_path)
+    installer_copy = tmp_path / "installer-template.yaml"
+    installer_copy.write_bytes(SHIPPED_TEMPLATE.read_bytes())
+    model, base_url, context = ROUTE
+    assert installer_patcher.patch_config(installer_copy, model, base_url, context) is True
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+    assert template.read_bytes() == installer_output(installer_copy)
+
+
+def test_library_start_after_installer_update_does_not_write_the_template(tmp_path, monkeypatch):
+    template = shipped_install(tmp_path)
+    model, base_url, context = ROUTE
+    # Phase 11's switchboard route also sets the gateway key and timeout.
+    assert installer_patcher.patch_config(template, model, base_url, context, "no-key", 900) is True
+    template.write_bytes(installer_output(template))
+    content, before = template.read_bytes(), template.stat()
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+    after = template.stat()
+    assert template.read_bytes() == content
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+def bound_view_of(path, tmp_path):
+    """A second name for the file's inode, as a container's bind holds it."""
+    view = tmp_path / "bound-view"
+    try:
+        os.link(path, view)
+    except (OSError, NotImplementedError):
+        pytest.skip("This host cannot create a hard link")
+    return view
+
+
+def test_library_start_rewrites_the_template_in_place(tmp_path, monkeypatch):
+    template = shipped_install(tmp_path)
+    view = bound_view_of(template, tmp_path)
+    inode = template.stat().st_ino
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+    assert template.stat().st_ino == inode
+    assert view.read_bytes() == template.read_bytes()
+    assert yaml.safe_load(view.read_text(encoding="utf-8"))["model"]["default"] == "ods/current"
+
+
+def test_model_activation_patches_the_template_in_place(tmp_path):
+    template = tmp_path / "cli-config.yaml.template"
+    template.write_bytes(SHIPPED_TEMPLATE.read_bytes())
+    view = bound_view_of(template, tmp_path)
+    inode = template.stat().st_ino
+
+    assert agent._patch_hermes_model_config(
+        template, "new.gguf", base_url="http://llama-server:8080/v1", context_length=32768) is True
+    assert template.stat().st_ino == inode
+    assert yaml.safe_load(view.read_text(encoding="utf-8"))["model"]["default"] == "new.gguf"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows files have no POSIX owner to check")
+def test_library_start_refuses_a_template_the_install_owner_does_not_own(tmp_path, monkeypatch):
+    template = shipped_install(tmp_path)
+    before = template.read_bytes()
+    other_uid = template.stat().st_uid + 1
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(agent.os, "geteuid", lambda: other_uid)
+
+    assert agent._prepare_hermes_route_for_start() == (
+        False,
+        "Refused to update the Hermes configuration template: "
+        "cli-config.yaml.template is not owned by the ODS install owner",
+    )
+    assert template.read_bytes() == before
+
+
+def test_bound_file_writer_refuses_a_symlink(tmp_path):
+    target = tmp_path / "owner-file.yaml"
+    target.write_bytes(b"owner: data\n")
+    link = tmp_path / "cli-config.yaml.template"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("This host cannot create a file symlink")
+    with pytest.raises(agent.BindSourceRefused, match="is not a regular file"):
+        agent._write_bound_file_in_place(link, b"replaced\n")
+    assert target.read_bytes() == b"owner: data\n"
 
 
 def test_hermes_external_plan_keeps_search_without_managed_llama():

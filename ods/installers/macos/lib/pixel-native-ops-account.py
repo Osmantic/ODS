@@ -29,6 +29,18 @@ PREFIX = 'dsAttrTypeStandard:'
 SYSTEM_JOBS = ('com.ods.pixel-native-gateway', 'com.ods.pixel-access',
     'com.ods.pixel-access-relay', 'com.ods.pixel-native-manager',
     'com.ods.pixel-native-promoter', 'com.ods.pixel-native-operations')
+# Fixed reason codes the identity proofs raise. A rejection names only these,
+# never other exception text, so diagnostics cannot carry receipt contents.
+REPORTED_REJECTIONS = frozenset((
+    'macos-root-required', 'operations-directory-read-failed',
+    'operations-directory-record-invalid', 'operations-home-not-empty-or-owned',
+    'operations-identity-attribute-conflict', 'operations-identity-authority-conflict',
+    'operations-identity-foreign-record', 'operations-identity-id-collision',
+    'operations-identity-id-conflict', 'operations-identity-intent-invalid',
+    'operations-identity-lock-custody-invalid', 'operations-identity-not-only-protected-state',
+    'operations-identity-process-active', 'operations-identity-receipt-custody-invalid',
+    'operations-identity-record-missing', 'operations-identity-service-loaded-or-ambiguous',
+    'operations-identity-unexpected-membership'))
 
 
 def dscl(*arguments):
@@ -240,10 +252,12 @@ def main(argv=None):
     if args.verify_empty_home_only or args.verify_identity_only:
         try:
             result = verify_empty_home_only() if args.verify_empty_home_only else verify_identity_only()
-        except (ValueError, OSError, subprocess.SubprocessError):
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
             # Distinguish an executed proof rejecting state from sudo failing to
             # run the proof. Do not expose private receipt contents in diagnostics.
-            print('Native Pixel Operations identity verification rejected.', file=sys.stderr)
+            reason = str(error) if str(error) in REPORTED_REJECTIONS else ''
+            print('Native Pixel Operations identity verification rejected'
+                + (': ' + reason if reason else '') + '.', file=sys.stderr)
             return os.EX_DATAERR
     else:
         result = provision()

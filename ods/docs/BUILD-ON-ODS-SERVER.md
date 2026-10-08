@@ -71,7 +71,7 @@ Safe places to customize:
 Be careful with:
 
 - generated `.env` output
-- generated runtime configs for LiteLLM, Hermes, OpenCode, Perplexica, and Lemonade
+- generated runtime configs for LiteLLM, model-router, Hermes, OpenCode, and Perplexica
 - platform-specific installer phases
 - base compose files shared by every install path
 - service IDs, aliases, and ports used by existing manifests

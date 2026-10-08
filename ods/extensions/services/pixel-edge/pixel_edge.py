@@ -485,15 +485,17 @@ def _workspace_mutation_positions(text: str) -> set[int]:
             return " " + value[1:-1] + " "
         return "".join("\n" if char == "\n" else " " for char in value)
 
+    # A backslash escapes any character, a line break included, and an open
+    # quote may end in one. Every quote can then match to the end of the
+    # text, which keeps the scan linear (a failed match per quote made it
+    # quadratic in the length of the owner text).
     instructions = re.sub(
         r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^\s*>[^\n]*)|"
-        r"`[^`\n]*`|\"(?:\\.|[^\"\\])*(?:\"|$)|"
-        r"(?<!\w)'(?:\\.|[^'\\])*(?:'|$)|"
+        r"`[^`\n]*`|\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|"
+        r"(?<!\w)'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
         mask_content, text,
     )
-    if not _WORKSPACE_MUTATION_SCOPE.search(instructions):
-        return set()
     negated = re.compile(
         r"^\s*(?:please\s+)?(?:do\s+not|don['\u2019]t|never|must\s+not|"
         r"should\s+not|avoid|skip|omit|exclude|no)\b", re.IGNORECASE,
@@ -511,7 +513,9 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         instructions, re.IGNORECASE,
     ):
         value = clause.group("clause")
-        if not negated.search(value):
+        # A file mentioned in an earlier read-only clause does not turn a
+        # later "write the answer" directive into a workspace mutation.
+        if _WORKSPACE_MUTATION_SCOPE.search(value) and not negated.search(value):
             positions.update(clause.start("clause") + match.start("verb")
                              for match in directive.finditer(value))
     return positions
@@ -1068,6 +1072,23 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+_CONTROLLER_REASON = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+
+
+def _controller_reason(raw: bytes) -> str | None:
+    """The controller's own refusal code, when it is a plain token.
+
+    A code such as model-runtime-mismatch tells the owner what to fix; free
+    text (which could carry a path or credential) is never relayed.
+    """
+    try:
+        value = strict_json(raw)
+    except (ValueError, RecursionError):
+        return None
+    code = value.get('error') if isinstance(value, dict) else None
+    return code if isinstance(code, str) and _CONTROLLER_REASON.fullmatch(code) else None
+
+
 async def handle_model_control(request: web.Request):
     """Private model lifecycle control; ordinary chat callers cannot mutate it."""
     fail = _check_preview_auth(request)
@@ -1094,7 +1115,8 @@ async def handle_model_control(request: web.Request):
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:
                     status = response.status if response.status in (400, 403, 409, 503) else 503
-                    return web.json_response({'error': 'model-change-unconfirmed'}, status=status)
+                    return web.json_response({'error': _controller_reason(raw) or 'model-change-unconfirmed'},
+                                             status=status)
                 value = public_model_control(strict_json(raw))
         return web.json_response(value, headers={'Cache-Control': 'no-store'})
     except Exception:

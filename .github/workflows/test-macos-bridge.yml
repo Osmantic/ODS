@@ -19,6 +19,7 @@ on:
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
@@ -26,6 +27,11 @@ on:
       - 'ods/tests/test_macos_pixel_ops_state.py'
       - 'ods/tests/test_macos_pixel_ops_state_live.py'
       - 'ods/get-ods.sh'
+      - 'ods/scripts/bootstrap-upgrade.sh'
+      - 'ods/scripts/macos-bootstrap-promote.py'
+      - 'ods/tests/test_macos_bootstrap_promote.py'
+      - 'ods/tests/test_macos_bootstrap_dispatch.py'
+      - 'ods/tests/test-macos-bootstrap-resume.sh'
       - 'ods/tests/test_bootstrap_system_bash.py'
       - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
@@ -48,6 +54,7 @@ on:
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
@@ -55,6 +62,11 @@ on:
       - 'ods/tests/test_macos_pixel_ops_state.py'
       - 'ods/tests/test_macos_pixel_ops_state_live.py'
       - 'ods/get-ods.sh'
+      - 'ods/scripts/bootstrap-upgrade.sh'
+      - 'ods/scripts/macos-bootstrap-promote.py'
+      - 'ods/tests/test_macos_bootstrap_promote.py'
+      - 'ods/tests/test_macos_bootstrap_dispatch.py'
+      - 'ods/tests/test-macos-bootstrap-resume.sh'
       - 'ods/tests/test_bootstrap_system_bash.py'
       - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
@@ -75,6 +87,13 @@ jobs:
           python-version: '3.12'
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7'
+      - name: Verify protected macOS bootstrap promotion and retained-state refusal
+        run: >-
+          python -m pytest -q
+          ods/tests/test_macos_bootstrap_promote.py
+          ods/tests/test_macos_bootstrap_dispatch.py
+      - name: Verify saved macOS bootstrap resume arguments
+        run: bash ods/tests/test-macos-bootstrap-resume.sh
       - name: Verify the one-line bootstrap runs under the system Bash
         run: python -m pytest -q ods/tests/test_bootstrap_system_bash.py
       - name: Verify native retirement precedes destructive uninstall
@@ -92,6 +111,7 @@ jobs:
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py
           ods/tests/test_macos_pixel_native_finalize.py
+          ods/tests/test_macos_pixel_native_recover.py
           ods/tests/test_macos_pixel_access_install.py
           ods/tests/test_macos_pixel_runtime_upgrade.py
           ods/tests/test_pixel_startup_reproof.py

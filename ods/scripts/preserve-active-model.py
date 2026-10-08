@@ -1,10 +1,23 @@
 #!/usr/bin/env python3
-"""Safely recover a valid locally active model contract during ODS upgrades.
+"""Safely recover a retained active model contract during ODS upgrades.
 
 The installer owns recommendations, while the Dashboard owns the model the
 operator has activated.  A rerun must not silently replace that active model.
-This helper accepts only an installed, catalog-pinned local GGUF and emits a
-small allowlisted dotenv fragment for the installer to load without ``eval``.
+The default mode accepts only an installed, catalog-pinned local GGUF. The
+host-native mode (``--native-llm``) preserves a retained, catalog-pinned
+projection of the model an ODS-owned llama-server on the Windows host serves,
+without pretending the Linux host owns that Windows model artifact. Two more
+modes record that projection: one for a fresh install (from the model the
+Windows host serves), one to repair the mismatched fields earlier fresh
+installs wrote. Every mode emits a small allowlisted dotenv fragment without
+``eval``.
+
+Round F serves every model as ``--alias <GGUF_FILE>``, so a served model id is
+the GGUF filename. For one release the retired Lemonade forms of the same id
+(``<stem>``, ``extra.<GGUF>``, ``user.<GGUF>``), the pre-round-F ``.env``
+shapes (``ODS_MODE=lemonade``) and the pre-round-F flag names
+(``--external-lemonade``, ``--project-external-lemonade``,
+``--repair-external-lemonade``) are still accepted.
 """
 
 from __future__ import annotations
@@ -363,18 +376,198 @@ def valid_runtime_value(key: str, value: str) -> bool:
     return False
 
 
+def is_retained_external_lemonade(env: dict[str, str]) -> bool:
+    """A pre-round-F ``.env`` whose model a Windows-hosted Lemonade served.
+
+    Readable for one release, until the installer's ``.env`` migration.
+    """
+    return (
+        env.get("ODS_MODE", "").lower() == "lemonade"
+        and env.get("LLM_BACKEND", "").lower() == "lemonade"
+        and env.get("LEMONADE_EXTERNAL", "").lower() == "true"
+    )
+
+
+def is_retained_host_native(env: dict[str, str]) -> bool:
+    """A ``.env`` whose model the ODS-owned llama-server.exe on Windows serves.
+
+    The WSL Portal family: its stack reaches the Windows task through the
+    owned model-router, or directly at ``NATIVE_LLM_BASE_URL``, the origin
+    every host-native install records. Retired ``LEMONADE_*`` lines never
+    decide this.
+    """
+    transport = env.get("ODS_HOST_LLM_TRANSPORT", env.get("LEMONADE_HOST_TRANSPORT", ""))
+    return (
+        env.get("ODS_MODE", "local").lower() in {"local", "lemonade"}
+        and env.get("LLM_BACKEND", "").lower() == "llama-server"
+        and (
+            env.get("AMD_INFERENCE_RUNTIME_MODE", "").lower() == "windows-portal-llama-server"
+            or transport.lower() == "model-router"
+            or bool(env.get("NATIVE_LLM_BASE_URL", "").strip())
+        )
+    )
+
+
+def is_legacy_managed_lemonade(env: dict[str, str]) -> bool:
+    """A managed Linux AMD ``.env`` written before round F (one release).
+
+    Its GGUF_FILE is in this host's model directory; after the ``.env``
+    migration upstream llama-server serves exactly that file.
+    """
+    return (
+        env.get("ODS_MODE", "").lower() == "lemonade"
+        and env.get("LLM_BACKEND", "lemonade").lower() in {"lemonade", "llama-server"}
+        and env.get("LEMONADE_EXTERNAL", "false").lower() != "true"
+        and not (
+            env.get("AMD_INFERENCE_RUNTIME", "").lower() == "lemonade"
+            and env.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
+        )
+    )
+
+
+def lemonade_model_ids(gguf_file: str) -> set[str]:
+    """The retired Lemonade ids that name a catalog GGUF (one release).
+
+    Its stem, or its ``extra.``/``user.`` alias: the matchers contract
+    section 6.7 keeps readable.
+    """
+    return {Path(gguf_file).stem, f"extra.{gguf_file}", f"user.{gguf_file}"}
+
+
+def served_model_ids(gguf_file: str) -> set[str]:
+    """Every id that names a catalog GGUF: the ``--alias`` filename itself first."""
+    return {gguf_file} | lemonade_model_ids(gguf_file)
+
+
+def served_model_projection(
+    records: list[dict[str, Any]], model_id: str, context: int | None
+) -> dict[str, str] | None:
+    """Describe, for .env, the catalog model a served model id names.
+
+    The Windows installer chooses and loads the model its llama-server
+    serves; this host only records it. The id must name exactly one catalog
+    GGUF, by the rule the rerun check applies, so the record always passes
+    that check. The context is the one the server loaded when given, else
+    the catalog's, and never above the model's native maximum.
+    """
+    matches = [
+        item
+        for item in records
+        if isinstance(item.get("gguf_file"), str)
+        and Path(item["gguf_file"]).name == item["gguf_file"]
+        and model_id in served_model_ids(item["gguf_file"])
+    ]
+    if len(matches) != 1:
+        return None
+    model = matches[0]
+    manifest = manifest_for(model)
+    llm_model = str(model.get("llm_model_name") or model.get("id") or "").strip()
+    if manifest is None or not llm_model:
+        return None
+    primary = next(item for item in manifest if item["file"] == model["gguf_file"])
+    if context is None:
+        context = positive_int(model.get("context_length"))
+    if context is None or context < 1024 or context > 9_007_199_254_740_991:
+        return None
+    native_max = positive_int(model.get("max_context_length"))
+    if native_max and context > native_max:
+        context = native_max
+    image = str(model.get("llama_server_image") or "")
+    if image and not re.fullmatch(r"[A-Za-z0-9._/@:+-]{1,300}", image):
+        return None
+    return {
+        "LLM_MODEL": llm_model,
+        "GGUF_FILE": model["gguf_file"],
+        "GGUF_URL": str(primary["url"]),
+        "GGUF_SHA256": str(primary["sha256"]),
+        "MAX_CONTEXT": str(context),
+        # The rerun check records at least 1 MB when the file is not on this host.
+        "LLM_MODEL_SIZE_MB": str(max(positive_int(model.get("size_mb")) or 0, 1)),
+        "MODEL_RUNTIME_PROFILE": "",
+        "MODEL_RUNTIME_PROFILE_LABEL": "",
+        "MODEL_RUNTIME_PROFILE_SOURCE": "",
+        "MODEL_SELECTION_SOURCE": "installer",
+        "LLAMA_SERVER_IMAGE": image,
+    }
+
+
+def repaired_served_model_contract(
+    args: argparse.Namespace, served_id: str | None,
+) -> tuple[dict[str, str], str, dict[str, str]] | None:
+    """Re-record the mismatched model fields an earlier fresh install wrote.
+
+    Fresh Windows-hosted installs recorded this host's own catalog pick, a
+    model nobody serves, next to the model the Windows host serves; the
+    rerun check rightly refuses that. Repair only that exact shape: the
+    saved pick is still the installer's own recommendation (no Dashboard or
+    operator choice is overwritten) and the served id names exactly one
+    catalog model. The served model does not change, only its description.
+
+    ``served_id`` is the model the Windows host serves now (its GGUF). The
+    pre-round-F flag passes None and the id is the ``.env``'s own retired
+    ``LEMONADE_MODEL``; a pre-round-F ``.env`` that records another served
+    model than the one named is refused.
+    """
+    env = parse_dotenv(args.env)
+    legacy = is_retained_external_lemonade(env)
+    recorded_id = env.get("LEMONADE_MODEL", "") if legacy else ""
+    if served_id is None:
+        served_id = recorded_id
+    active_file = env.get("GGUF_FILE", "").strip()
+    if not (
+        (legacy or is_retained_host_native(env))
+        and not env.get("EXTERNAL_LLM_URL")
+        and env.get("MODEL_SELECTION_SOURCE") == "installer"
+        and env.get("ODS_ACTIVE_MODEL_STORE", "default") == "default"
+        and served_id
+        and active_file
+        and Path(active_file).name == active_file
+        and served_id not in served_model_ids(active_file)
+        and env.get("MODEL_RECOMMENDED_GGUF") == active_file
+        and env.get("MODEL_RECOMMENDED_MODEL", env.get("LLM_MODEL")) == env.get("LLM_MODEL")
+    ):
+        return None
+    contract = served_model_projection(load_records(args.catalog, args.imports), served_id, args.context)
+    if contract is None:
+        return None
+    if recorded_id and recorded_id not in served_model_ids(contract["GGUF_FILE"]):
+        return None
+    return env, served_id, contract
+
+
+def is_local_runtime(env: dict[str, str]) -> bool:
+    """A ``.env`` whose model this host's managed llama-server serves."""
+    if env.get("EXTERNAL_LLM_URL", "") or env.get("LEMONADE_EXTERNAL", "false").lower() == "true":
+        return False
+    if is_legacy_managed_lemonade(env):
+        return True
+    return (
+        env.get("ODS_MODE", "local").lower() == "local"
+        and env.get("LLM_BACKEND", "llama-server").lower() == "llama-server"
+    )
+
+
 def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     env = parse_dotenv(args.env)
-    if (
-        env.get("ODS_MODE", "local").lower() != "local"
-        or env.get("LLM_BACKEND", "llama-server").lower() != "llama-server"
-        or env.get("EXTERNAL_LLM_URL", "")
-        or env.get("LEMONADE_EXTERNAL", "false").lower() == "true"
-    ):
+    # The pre-round-F name of the host-native mode stays an alias for one release.
+    host_native = getattr(args, "native_llm", False) or getattr(args, "external_lemonade", False)
+    legacy_shape = host_native and is_retained_external_lemonade(env)
+    if host_native:
+        if not (
+            (legacy_shape or is_retained_host_native(env))
+            and env.get("MODEL_SELECTION_SOURCE") in {"dashboard", "operator", "installer", "preserved-external"}
+            and (env.get("LEMONADE_MODEL") or not legacy_shape)
+            and not env.get("EXTERNAL_LLM_URL")
+        ):
+            return None
+    elif not is_local_runtime(env):
         return None
 
     records = load_records(args.catalog, args.imports)
-    verified_state = load_verified_active_state(args.state)
+    # The local state proof belongs to this host's llama-server. A Windows-
+    # hosted model is never proven here: preserve a separately validated
+    # .env projection; later installer health checks still prove the route.
+    verified_state = None if host_native else load_verified_active_state(args.state)
     state_authoritative = verified_state is not None
     if state_authoritative:
         active_file = str(verified_state["runtimeModelId"])
@@ -387,6 +580,15 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     else:
         active_file = env.get("GGUF_FILE", "").strip()
         if not active_file or Path(active_file).name != active_file:
+            return None
+        if (legacy_shape or is_legacy_managed_lemonade(env)) and env.get("LEMONADE_MODEL") and (
+                env["LEMONADE_MODEL"] not in lemonade_model_ids(active_file)):
+            # A pre-round-F .env's explicit Lemonade id must identify the saved
+            # catalog artifact, not an unrelated model left in the same .env.
+            return None
+        served = getattr(args, "served_model", None)
+        if host_native and served is not None and served not in served_model_ids(active_file):
+            # The Windows host serves another model than the retained record.
             return None
         matches = [
             item for item in records if str(item.get("gguf_file") or "").lower() == active_file.lower()
@@ -401,7 +603,9 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     actual_bytes = 0
     models_dir = args.models_dir
     active_store_id = env.get("ODS_ACTIVE_MODEL_STORE", "default")
-    if active_store_id != "default":
+    if host_native and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", active_store_id):
+        return None
+    if active_store_id != "default" and not host_native:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
         try:
             from model_stores import active_store
@@ -412,7 +616,7 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         models_root = models_dir.resolve()
     except (OSError, RuntimeError):
         return None
-    for artifact in manifest:
+    for artifact in (() if host_native else manifest):
         artifact_path = models_dir / artifact["file"]
         try:
             resolved_artifact = artifact_path.resolve()
@@ -461,6 +665,12 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     # of turning a catalog advisory into an upgrade-time hard limit.
     if context < 1024 or context > 9_007_199_254_740_991:
         return None
+    # A host-native llama-server reports the context it actually loaded the
+    # retained model with; that is what is served, so it replaces the saved
+    # value. The owner stays, and the cap below still applies.
+    loaded_context = getattr(args, "context", None)
+    if host_native and loaded_context is not None:
+        context = int(loaded_context)
     # The owner's choice is honored up to the model's declared native
     # maximum only. Above it llama.cpp caps the slot at the training context,
     # so the recorded value is never served and the activation's context
@@ -489,7 +699,7 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         ]
         if len(profile_matches) != 1:
             return None
-        if profile_is_eligible(profile_matches[0], args):
+        if host_native or profile_is_eligible(profile_matches[0], args):
             runtime_profile = profile_matches[0]
             runtime_defaults_profile = runtime_profile
         elif state_authoritative:
@@ -563,7 +773,7 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
 
     old_source = "dashboard" if state_authoritative else env.get("MODEL_SELECTION_SOURCE", "")
     recommended_file = env.get("MODEL_RECOMMENDED_GGUF", "")
-    if old_source in {"installer", "dashboard", "operator", "preserved-local"}:
+    if host_native or old_source in {"installer", "dashboard", "operator", "preserved-local"}:
         source = old_source
     elif recommended_file and recommended_file != active_file:
         source = "dashboard"
@@ -589,6 +799,13 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     return contract
 
 
+def context_tokens(value: str) -> int:
+    number = positive_int(value) if re.fullmatch(r"[0-9]{1,16}", value) else None
+    if number is None or number < 1024:
+        raise argparse.ArgumentTypeError("a whole number of tokens from 1024")
+    return number
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env", type=Path, required=True)
@@ -601,11 +818,62 @@ def main() -> int:
     parser.add_argument("--vram-mb", type=float, default=0)
     parser.add_argument("--ram-gb", type=float, default=0)
     parser.add_argument("--host-arch", default=platform.machine())
+    parser.add_argument("--local-model", action="store_true")
+    parser.add_argument("--native-llm", action="store_true",
+                        help="preserve the model the ODS-owned llama-server on the Windows host serves")
+    parser.add_argument("--project-native-llm", metavar="MODEL_ID",
+                        help="print the catalog record of the served model (its GGUF filename)")
+    parser.add_argument("--repair-native-llm", metavar="MODEL_ID",
+                        help="re-record an installer-written mismatch from the served model (its GGUF filename)")
+    parser.add_argument("--served-model", metavar="MODEL_ID",
+                        help="with --native-llm: the model the Windows host serves must be the retained one")
+    # Pre-round-F names, accepted for one release.
+    parser.add_argument("--external-lemonade", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--project-external-lemonade", metavar="MODEL_ID", help=argparse.SUPPRESS)
+    parser.add_argument("--repair-external-lemonade", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--context", type=context_tokens, help="the context the server loaded the model with")
     args = parser.parse_args()
+    modes = [args.native_llm, args.external_lemonade,
+             args.project_native_llm is not None, args.project_external_lemonade is not None,
+             args.repair_native_llm is not None, args.repair_external_lemonade]
+    if sum(modes) > 1:
+        parser.error("choose one of --native-llm, --project-native-llm, --repair-native-llm")
+    if args.served_model is not None and not (args.native_llm or args.external_lemonade):
+        parser.error("--served-model applies only to --native-llm")
+    project_id = args.project_native_llm if args.project_native_llm is not None else args.project_external_lemonade
 
-    contract = preserved_contract(args)
-    if contract is None:
-        return 0
+    if project_id is not None:
+        contract = served_model_projection(load_records(args.catalog, args.imports), project_id, args.context)
+        if contract is None:
+            print(f"Served model {project_id!r} names no single ODS catalog model; "
+                  "refusing to record a different model.", file=sys.stderr)
+            return 2
+    elif args.repair_native_llm is not None or args.repair_external_lemonade:
+        repaired = repaired_served_model_contract(args, args.repair_native_llm)
+        if repaired is None:
+            print("The saved model settings are not the installer-written mismatch "
+                  "this release repairs; refusing to change them.", file=sys.stderr)
+            return 2
+        env, served_id, contract = repaired
+        changes = ", ".join(
+            f"{key} {env.get(key, '')} -> {contract[key]}"
+            for key in ("LLM_MODEL", "GGUF_FILE", "MAX_CONTEXT")
+            if env.get(key, "") != contract[key]
+        )
+        print(f"Repairing the saved description of the served model ({served_id}): "
+              f"{changes}. The served model is unchanged.", file=sys.stderr)
+    else:
+        contract = preserved_contract(args)
+        if contract is None:
+            env = parse_dotenv(args.env)
+            if (args.native_llm or args.external_lemonade) and is_retained_external_lemonade(env):
+                print("Invalid retained external Lemonade model contract; refusing to replace it.", file=sys.stderr)
+                return 2
+            if (args.native_llm or args.external_lemonade) and is_retained_host_native(env):
+                print("Invalid retained host-native model contract, or the Windows host serves another "
+                      "model; refusing to replace it.", file=sys.stderr)
+                return 2
+            return 0
     for key, value in contract.items():
         # Compose's list-form environment entries inherit exported host values.
         # Emitting an empty optional LLAMA_* key would therefore turn "unset"

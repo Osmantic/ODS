@@ -72,6 +72,33 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    @pytest.mark.parametrize("service_id,port,path,public_url", [
+        ("hermes-proxy", 9120, "/auth/ods", None),
+        ("hermes-proxy", 19320, "/auth/ods", None),
+        ("hermes", 0, "/", None),
+        ("example", 11146, "/nifi", "https://service.example.test/nifi?view=home"),
+    ])
+    def test_catalog_and_detail_preserve_resolved_launch_metadata(
+            self, test_client, monkeypatch, tmp_path, service_id, port, path, public_url):
+        # The shipped row lacks launch metadata, just as in the failed live launch.
+        catalog = [{**_make_catalog_ext(service_id), "catalog_source": "builtin"}]
+        services = {service_id: {"ui_path": path, "external_port": port,
+                                 "public_url": public_url}}
+        _patch_extensions_config(monkeypatch, catalog, services=services, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / service_id
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+            detail = test_client.get(f"/api/extensions/{service_id}", headers=test_client.auth_headers)
+        assert response.status_code == detail.status_code == 200
+        row = next(item for item in response.json()["extensions"] if item["id"] == service_id)
+        for item in (row, detail.json()):
+            assert item["ui_path"] == path
+            assert item["external_port"] == port
+            assert item.get("public_url") == public_url
+
     @pytest.mark.parametrize("service_id", ["perplexica", "searxng"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):
@@ -236,6 +263,46 @@ class TestExtensionsCatalog:
         assert llm["consumes"] is True
         assert llm["route"] == "direct"
         assert llm["swap_safe"] is False
+
+    def test_catalog_normalizes_llm_after_library_enable(self, test_client, monkeypatch, tmp_path):
+        """A service enabled after API startup still reports its swap contract."""
+        catalog = [{
+            **_make_catalog_ext("perplexica", "Perplexica"),
+            "catalog_source": "builtin",
+            "llm": {"consumes": True, "route": "gateway", "pinning": "none",
+                    "min_context": 65536},
+        }]
+        # SERVICES was snapshotted before this optional service was enabled.
+        _patch_extensions_config(monkeypatch, catalog, services={}, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "perplexica"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text(
+            "services: {perplexica: {image: test/perplexica}}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+
+        mock_svc = _make_service_status("perplexica", "healthy")
+        with patch("helpers.get_all_services", new_callable=AsyncMock,
+                   return_value=[mock_svc]), \
+             patch("helpers.get_cached_services", return_value=None):
+            catalog_response = test_client.get(
+                "/api/extensions/catalog", headers=test_client.auth_headers,
+            )
+            detail_response = test_client.get(
+                "/api/extensions/perplexica", headers=test_client.auth_headers,
+            )
+
+        assert catalog_response.status_code == 200
+        assert detail_response.status_code == 200
+        catalog_llm = catalog_response.json()["extensions"][0]["llm"]
+        detail_llm = detail_response.json()["llm"]
+        assert detail_response.json()["status"] == "enabled"
+        assert catalog_llm == detail_llm
+        assert catalog_llm["swap_safe"] is True
+        assert catalog_llm["swapSafe"] is True
+        assert catalog_llm["badge"] == "swap-safe"
+        assert catalog_llm["swap_safe_reason"]
+        assert catalog_llm["min_context"] == 65536
 
     def test_catalog_category_filter(self, test_client, monkeypatch, tmp_path):
         """Category filter returns only matching extensions."""
@@ -3002,10 +3069,10 @@ class TestScanComposeSkipGpuPassthroughCheck:
 
 class TestScanComposeSkipRootUserCheck:
     """Direct unit tests for the skip_root_user_check parameter that permits
-    built-in extensions (e.g. openclaw, which uses `user: "0:0"` to perform
-    init-time chown before dropping privileges via setpriv) to declare a
-    root user, while user/library extensions cannot. Regression guard for
-    the openclaw init-time chown + setpriv pattern."""
+    built-in extensions (which may use `user: "0:0"` to perform init-time
+    chown before dropping privileges via setpriv) to declare a root user,
+    while user/library extensions cannot. Regression guard for the built-in
+    init-time chown + setpriv pattern."""
 
     _ROOT_COMPOSE = (
         'services:\n  svc:\n    image: test\n    user: "0:0"\n'
@@ -3013,7 +3080,7 @@ class TestScanComposeSkipRootUserCheck:
 
     def test_builtin_with_root_user_accepted(self, tmp_path):
         """A built-in extension with user: 0:0 (init-time chown + setpriv
-        pattern, e.g. openclaw) must be accepted via
+        pattern) must be accepted via
         skip_root_user_check=True. Regression guard: built-ins with
         `user: '0:0'` must be accepted when skip_root_user_check=True.
         """
@@ -3480,6 +3547,7 @@ class TestPurgeExtensionData:
     def test_purge_happy_path(self, test_client, monkeypatch, tmp_path):
         """Purge succeeds for disabled extension with existing data dir."""
         _patch_mutation_config(monkeypatch, tmp_path)
+        (tmp_path / "user" / "my-ext").mkdir()
         data_dir = tmp_path / "my-ext"
         data_dir.mkdir()
         (data_dir / "some-file.db").write_text("data")
@@ -3503,6 +3571,7 @@ class TestPurgeExtensionData:
         """Purge also deletes the per-service install-progress entry so the UI
         does not keep showing a stale 'installing' status."""
         _patch_mutation_config(monkeypatch, tmp_path)
+        (tmp_path / "user" / "my-ext").mkdir()
         data_dir = tmp_path / "my-ext"
         data_dir.mkdir()
         (data_dir / "some-file.db").write_text("data")
@@ -3591,6 +3660,7 @@ class TestPurgeExtensionData:
     def test_purge_404_no_data_dir(self, test_client, monkeypatch, tmp_path):
         """404 when valid ID but no data directory exists."""
         _patch_mutation_config(monkeypatch, tmp_path)
+        (tmp_path / "user" / "my-ext").mkdir()
 
         with patch("routers.extensions._extensions_lock", return_value=contextlib.nullcontext()):
             resp = test_client.request(
@@ -3605,6 +3675,7 @@ class TestPurgeExtensionData:
     def test_purge_400_confirm_false(self, test_client, monkeypatch, tmp_path):
         """400 when data exists but confirm is false."""
         _patch_mutation_config(monkeypatch, tmp_path)
+        (tmp_path / "user" / "my-ext").mkdir()
         data_dir = tmp_path / "my-ext"
         data_dir.mkdir()
 
@@ -3619,6 +3690,47 @@ class TestPurgeExtensionData:
         assert "Confirmation required" in resp.json()["detail"]
         # Data dir should still exist
         assert data_dir.exists()
+
+    @pytest.mark.parametrize("folder", [
+        "models", "config-backups", "user-extensions", "extensions-library",
+        "persona", "auth", "remote-provider",
+    ])
+    def test_purge_refuses_folders_that_belong_to_ods(self, test_client, monkeypatch, tmp_path, folder):
+        """An extension named like an ODS folder (an imported recipe could be)
+        still cannot purge it."""
+        _patch_mutation_config(monkeypatch, tmp_path)
+        (tmp_path / "user" / folder).mkdir()
+        data_dir = tmp_path / folder
+        data_dir.mkdir()
+        (data_dir / "keep").write_text("ODS state")
+
+        with patch("routers.extensions._extensions_lock", return_value=contextlib.nullcontext()):
+            resp = test_client.request(
+                "DELETE", f"/api/extensions/{folder}/data",
+                headers=test_client.auth_headers,
+                json={"confirm": True},
+            )
+
+        assert resp.status_code == 403
+        assert (data_dir / "keep").read_text() == "ODS state"
+
+    def test_purge_404_for_a_folder_no_extension_owns(self, test_client, monkeypatch, tmp_path):
+        """A data folder that no shipped, listed or installed extension owns is
+        not purgeable through the extensions API."""
+        _patch_mutation_config(monkeypatch, tmp_path)
+        data_dir = tmp_path / "stray-folder"
+        data_dir.mkdir()
+        (data_dir / "keep").write_text("unknown")
+
+        with patch("routers.extensions._extensions_lock", return_value=contextlib.nullcontext()):
+            resp = test_client.request(
+                "DELETE", "/api/extensions/stray-folder/data",
+                headers=test_client.auth_headers,
+                json={"confirm": True},
+            )
+
+        assert resp.status_code == 404
+        assert (data_dir / "keep").read_text() == "unknown"
 
     def test_purge_path_traversal(self, test_client, monkeypatch, tmp_path):
         """Path traversal attempts are blocked by regex or path check."""
@@ -4761,7 +4873,7 @@ class TestAssertNotCoreAllowsBuiltins:
     """_assert_not_core blocks only the 4 always-on base-compose services."""
 
     @pytest.mark.parametrize("service_id", [
-        "n8n", "tts", "whisper", "comfyui", "litellm", "openclaw",
+        "n8n", "tts", "whisper", "comfyui", "litellm",
         "perplexica", "searxng", "privacy-shield", "token-spy", "qdrant",
         "embeddings", "ape", "langfuse", "opencode", "hermes", "hermes-proxy",
     ])

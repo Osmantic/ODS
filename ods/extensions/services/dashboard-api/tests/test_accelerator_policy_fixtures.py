@@ -287,6 +287,28 @@ MUST_REJECT = [
      None),
     ("network-alias-core-name", "compose.yaml", True,
      svc("    networks:\n      ods-network:\n        aliases: [litellm, ods-dashboard-api]\n", tail=ODS_NETWORK), None),
+    # Compose merges every -f file into one project, so a service may name a
+    # network key that only docker-compose.base.yml declares and join it. The
+    # remote-provider networks reach the egress and its SSH tunnel.
+    ("core-remote-provider-network-joined", "compose.yaml", True,
+     svc("    networks: [remote-provider]\n"), None),
+    ("core-remote-provider-network-mapping", "compose.yaml", True,
+     svc("    networks:\n      remote-provider:\n"), None),
+    ("core-remote-provider-network-redeclared", "compose.yaml", True,
+     svc("    networks: [remote-provider]\n", tail="networks:\n  remote-provider: {}\n"), None),
+    ("core-outbound-network-redeclared-internal", "compose.yaml", True,
+     svc("    networks: [remote-provider-outbound]\n",
+         tail="networks:\n  remote-provider-outbound:\n    internal: true\n"), None),
+    ("network-key-not-declared-in-file", "compose.yaml", True,
+     svc("    networks: [core-only]\n"), None),
+    # Docker DNS answers to container names, so these would shadow a core
+    # service for every caller on ods-network.
+    ("container-name-core-egress", "compose.yaml", True,
+     svc("    container_name: remote-provider-egress\n"), None),
+    ("container-name-core-prefixed-mixed-case", "compose.yaml", True,
+     svc("    container_name: ODS-LiteLLM\n"), None),
+    ("container-name-interpolated", "compose.yaml", True,
+     svc("    container_name: ${RECIPE_NAME:-ods-litellm}\n"), None),
     # --- other files, containers and host code pulled in by Compose ----------
     ("include-sibling-file", "compose.nvidia.yaml", True,
      "include:\n  - extra.yml\n" + svc(NV),
@@ -436,6 +458,8 @@ MUST_ACCEPT = [
      svc("    networks: [ods-network]\n", tail="networks:\n  ods-network:\n    external: true\n")),
     ("project-default-network-is-ods", "compose.yaml", False,
      svc("    networks: [default]\n", tail="networks:\n  default:\n    name: ods-network\n")),
+    ("project-default-network-undeclared", "compose.yaml", False, svc("    networks: [default]\n")),
+    ("container-name-own", "compose.yaml", False, svc("    container_name: ods-recipe\n")),
     ("service-networks-mapping-without-options", "compose.yaml", False,
      svc("    networks:\n      ods-network: {}\n      recipe-internal:\n",
          tail=ODS_NETWORK + "  recipe-internal:\n    internal: true\n")),
@@ -521,6 +545,26 @@ def test_imported_recipe_binds_only_its_own_data_and_config(tmp_path, volume, cu
         assert rejected.status_code == 400
         dashboard_ok = False
     assert dashboard_ok is allowed
+
+
+# An imported recipe named after a folder ODS keeps under ./data or ./config
+# would otherwise get that folder as its own (./data/config-backups holds the
+# owner's .env backups).
+@pytest.mark.parametrize("folder, identifier", [
+    ("data", "config-backups"), ("data", "models"), ("data", "persona"),
+    ("data", "user-extensions"), ("config", "backends"),
+])
+def test_an_imported_recipe_cannot_take_a_folder_ods_keeps(tmp_path, folder, identifier):
+    compose = tmp_path / "compose.yaml"
+    compose.write_text(svc(f"    volumes:\n      - './{folder}/{identifier}:/mounted'\n"), encoding="utf-8")
+    scan, _ = _resolver_scan(tmp_path)
+    resolver_ok, warnings = scan(compose, False, None, extension_id=identifier)
+    assert resolver_ok is False
+    assert any("folder ODS keeps" in warning for warning in warnings), warnings
+    with pytest.raises(HTTPException) as rejected:
+        extensions._scan_compose_content(compose, trusted=False, extension_id=identifier)
+    assert rejected.value.status_code == 400
+    assert "folder ODS keeps" in str(rejected.value.detail)
 
 
 def test_fixture_ids_are_unique():

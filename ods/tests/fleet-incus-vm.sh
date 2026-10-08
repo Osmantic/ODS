@@ -474,8 +474,7 @@ run_installer_dry_run() {
             --no-workflows \
             --no-rag \
             --no-recommended \
-            --no-hermes \
-            --no-openclaw
+            --no-hermes
     '
     info "installer dry-run completed with Docker enabled"
 }

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from model_stores import active_store, lemonade_profile, registered_stores, resolve_model_file, scan_model_files, validated_compose_overlay, resolve_runtime_selection
+from model_stores import active_store, registered_runtime_profile, registered_stores, resolve_model_file, scan_model_files, validated_compose_overlay, resolve_runtime_selection
 
 
 def registry(tmp_path, **profile):
@@ -61,7 +61,7 @@ def test_bad_or_foreign_registry_cannot_map_arbitrary_container_paths(tmp_path):
 
 def test_profile_is_typed_and_does_not_accept_shell_arguments(tmp_path):
     data, _ = registry(tmp_path, extraArgs='--evil ; do something')
-    profile = lemonade_profile(data, 'new.gguf')
+    profile = registered_runtime_profile(data, 'new.gguf')
     assert profile['mtp'] is True
     assert profile['args'][-8:] == ['--spec-type','draft-mtp','--spec-draft-n-max','2','--spec-draft-type-k','q4_0','--spec-draft-type-v','q4_0']
     assert '--evil' not in profile['args']
@@ -69,13 +69,13 @@ def test_profile_is_typed_and_does_not_accept_shell_arguments(tmp_path):
     document['stores'][0]['profiles']['new.gguf']['draftTokens'] = '; rm'
     (data/'model-stores.json').write_text(json.dumps(document))
     with pytest.raises(ValueError):
-        lemonade_profile(data, 'new.gguf')
+        registered_runtime_profile(data, 'new.gguf')
 
 
 @pytest.mark.parametrize('load_args', [[], ['--mmap'], ['--load-mode','mmap']])
 def test_profile_uses_only_qualified_load_mode_arguments(tmp_path, load_args):
     data, _ = registry(tmp_path, loadModeArguments=load_args)
-    arguments = lemonade_profile(data, 'new.gguf')['args']
+    arguments = registered_runtime_profile(data, 'new.gguf')['args']
     assert ('--mmap' in arguments) == ('--mmap' in load_args)
     assert ('--load-mode' in arguments) == ('--load-mode' in load_args)
     if '--load-mode' in load_args:
@@ -85,7 +85,7 @@ def test_profile_uses_only_qualified_load_mode_arguments(tmp_path, load_args):
 def test_profile_rejects_unqualified_load_mode_instead_of_sending_arbitrary_flags(tmp_path):
     data, _ = registry(tmp_path, loadModeArguments=['--load-mode','mmap','--extra'])
     with pytest.raises(ValueError):
-        lemonade_profile(data, 'new.gguf')
+        registered_runtime_profile(data, 'new.gguf')
 
 
 def test_cold_start_cannot_increase_measured_profile_context(tmp_path, monkeypatch):
@@ -93,7 +93,7 @@ def test_cold_start_cannot_increase_measured_profile_context(tmp_path, monkeypat
     data, external = registry(tmp_path,
         modelSha256=hashlib.sha256(b'checkpoint').hexdigest(),
         runtimeSha256=hashlib.sha256(b'executable').hexdigest(),
-        memoryQualification={'contextLength':16384,'visionProjectorFile':'mmproj.gguf',
+        memoryQualification={'runtimeMode':'native','contextLength':16384,'visionProjectorFile':'mmproj.gguf',
             'visionProjectorSha256':hashlib.sha256(b'projector').hexdigest()})
     (external/'mmproj.gguf').write_bytes(b'projector')
     (tmp_path/'.env').write_text('GGUF_FILE=new.gguf\nODS_ACTIVE_MODEL_STORE=ssd\nCTX_SIZE=65536\n')
@@ -110,7 +110,29 @@ def test_cold_start_cannot_increase_measured_profile_context(tmp_path, monkeypat
     assert len(validations) == 1
 
 
-def test_host_uses_registered_store_and_real_lemonade_load_options(tmp_path, monkeypatch):
+def test_lemonade_measured_fit_never_qualifies_a_native_launch(tmp_path, monkeypatch):
+    """R6: a fit measured through Lemonade's launch is not native evidence."""
+    import model_stores
+    data, external = registry(tmp_path,
+        modelSha256=hashlib.sha256(b'checkpoint').hexdigest(),
+        runtimeSha256=hashlib.sha256(b'executable').hexdigest(),
+        memoryQualification={'runtimeMode':'lemonade','gpuLayers':'99','contextLength':16384,
+            'visionProjectorFile':'mmproj.gguf',
+            'visionProjectorSha256':hashlib.sha256(b'projector').hexdigest()})
+    (tmp_path/'.env').write_text('GGUF_FILE=new.gguf\nODS_ACTIVE_MODEL_STORE=ssd\nCTX_SIZE=32768\n')
+    validations: list = []
+    monkeypatch.setattr(model_stores,'validate_profile_command',lambda *args,**kwargs:validations.append(args))
+    # Neither the qualified context nor its (absent) projector binds the
+    # launch: the Lemonade-era record stays on disk but is ignored.
+    selected = resolve_runtime_selection(tmp_path,verify_hashes=True)
+    assert selected['profile']['memoryQualification'] is None
+    assert selected['profile']['contextLength'] == 32768
+    assert len(validations) == 1
+    stored = json.loads((data/'model-stores.json').read_text())
+    assert stored['stores'][0]['profiles']['new.gguf']['memoryQualification']['runtimeMode'] == 'lemonade'
+
+
+def test_host_launches_the_registered_executable_from_its_store(tmp_path, monkeypatch):
     data, external = registry(tmp_path)
     agent_path = Path(__file__).resolve().parents[4] / 'bin/ods-host-agent.py'
     spec = importlib.util.spec_from_file_location('test_mtp_store_agent', agent_path)
@@ -119,19 +141,59 @@ def test_host_uses_registered_store_and_real_lemonade_load_options(tmp_path, mon
     monkeypatch.setattr(agent, 'INSTALL_DIR', tmp_path)
     assert agent._installed_model_file('new.gguf') == external/'new.gguf'
     assert agent._active_model_directory({'ODS_ACTIVE_MODEL_STORE':'ssd'}) == external
-    requests = []
-    class Response:
-        def __enter__(self): return self
-        def __exit__(self, *_): pass
-        def read(self, _limit): return b'{"status":"success"}'
-    monkeypatch.setattr(agent.urllib_request, 'urlopen', lambda request, **kwargs: requests.append(request) or Response())
-    monkeypatch.setattr(agent, '_lemonade_runtime_base_url', lambda env:'http://127.0.0.1:13305')
-    agent._load_registered_lemonade_profile({'CTX_SIZE':'8192'}, 'extra.new.gguf', lemonade_profile(data,'new.gguf'))
-    payload = json.loads(requests[0].data)
-    assert requests[0].full_url == 'http://127.0.0.1:13305/api/v1/load'
-    assert payload['ctx_size'] == 8192 and payload['save_options'] is True
-    assert '--spec-type draft-mtp' in payload['llamacpp_args']
-    assert payload['model_name'] == 'extra.new.gguf'
+    env = {'GGUF_FILE':'new.gguf', 'ODS_ACTIVE_MODEL_STORE':'ssd', 'CTX_SIZE':'8192',
+           'LLAMA_ARG_SPEC_TYPE':'draft-mtp', 'LLAMA_ARG_SPEC_DRAFT_N_MAX':'2'}
+    monkeypatch.setattr(agent, 'load_env', lambda _path: env)
+    monkeypatch.setattr(agent.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(agent.subprocess, 'run', lambda *_a, **_k: pytest.fail('a registered profile needs no probe'))
+    launched: list = []
+    class Process:
+        pid = 4321
+    def popen(args, **_kwargs):
+        launched.append(args)
+        return Process()
+    monkeypatch.setattr(agent.subprocess, 'Popen', popen)
+    agent._launch_native_llama_server(tmp_path/'.env', tmp_path/'bundled-llama-server.exe', tmp_path/'log', tmp_path/'pid')
+    command = launched[0]
+    # The qualified executable serves the model from its registered store.
+    assert command[0] == str(tmp_path/'llama-server')
+    assert command[command.index('--model') + 1] == str(external/'new.gguf')
+    assert command[command.index('--alias') + 1] == 'new.gguf'
+    assert command[command.index('--ctx-size') + 1] == '8192'
+    assert command[command.index('--spec-type') + 1] == 'draft-mtp'
+    assert command[command.index('--spec-draft-n-max') + 1] == '2'
+
+
+def test_native_launch_loads_exactly_the_memory_qualified_projector(tmp_path, monkeypatch):
+    agent_path = Path(__file__).resolve().parents[4] / 'bin/ods-host-agent.py'
+    spec = importlib.util.spec_from_file_location('test_mtp_store_agent_mmproj', agent_path)
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    launched: list = []
+    class Process:
+        pid = 4321
+    monkeypatch.setattr(agent.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(agent.subprocess, 'run', lambda *_a, **_k: pytest.fail('a registered profile needs no probe'))
+    def popen(args, **_kwargs):
+        launched.append(args)
+        return Process()
+    monkeypatch.setattr(agent.subprocess, 'Popen', popen)
+    fit = {'runtimeMode':'native','gpuLayers':'auto','contextLength':16384,'visionProjectorFile':'mmproj-F16.gguf',
+           'visionProjectorSha256':hashlib.sha256(b'projector').hexdigest()}
+    for mode, expected in (('native', True), ('lemonade', False)):
+        root = tmp_path / mode
+        data, external = registry(root, memoryQualification={**fit, 'runtimeMode': mode})
+        (external/'mmproj-F16.gguf').write_bytes(b'projector')
+        monkeypatch.setattr(agent, 'INSTALL_DIR', root)
+        monkeypatch.setattr(agent, 'load_env', lambda _path: {'GGUF_FILE':'new.gguf', 'ODS_ACTIVE_MODEL_STORE':'ssd',
+                                                              'CTX_SIZE':'16384'})
+        agent._launch_native_llama_server(root/'.env', root/'bundled.exe', root/'log', root/'pid')
+        command = launched.pop()
+        # A native fit was measured with its projector loaded; a Lemonade-era
+        # record qualifies nothing, so the plain text model launches.
+        assert ('--mmproj' in command) is expected, mode
+        if expected:
+            assert command[command.index('--mmproj') + 1] == str(external/'mmproj-F16.gguf')
 
 
 def test_registration_creates_readonly_mount_without_selecting_or_moving_files(tmp_path):

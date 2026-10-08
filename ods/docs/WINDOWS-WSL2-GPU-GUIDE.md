@@ -1,17 +1,19 @@
 # Windows WSL2 GPU Guide for ODS
 
 `install.ps1` installs ODS and Pixel/Portal inside Ubuntu/WSL2. NVIDIA inference
-uses GPU passthrough through Docker Desktop. AMD inference uses Lemonade on
-Windows through the ODS scheduled task; it does not require ROCm inside WSL.
+uses GPU passthrough through Docker Desktop. AMD inference uses llama.cpp's
+`llama-server.exe` (Vulkan) on Windows through the ODS scheduled task; it does
+not require ROCm inside WSL.
 
 For AMD, follow the [Windows Quickstart](WINDOWS-QUICKSTART.md#gpu-placement).
 The installer binds its Windows task and model store to one WSL distribution
 and ODS runtime directory. After ownership is verified, the Models page can
 download compatible catalog or Hugging Face GGUFs, activate them, change
-context, and unload/resume the runtime. Older unbound ODS tasks need a rerun of
-the current Windows installer for the same installation. Independent Lemonade
-services remain external; endpoint reachability or **Adopt loaded model** does
-not grant control of them.
+context, and unload/resume the runtime. Installs whose task ran Lemonade Server
+move to llama.cpp when you rerun the current Windows installer for the same
+installation; see [AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
+A model server that this installation does not manage stays external; a
+reachable endpoint does not grant control of it.
 
 The checks and troubleshooting below apply to **NVIDIA passthrough**. For AMD,
 verify the Windows runtime and Portal route using the Quickstart instead of
@@ -232,7 +234,7 @@ processors=8
 swap=4GB
 swapFile=C:\temp\wsl-swap.vhdx
 localhostForwarding=true
-# Keep Windows interoperability enabled for the AMD/Lemonade control path.
+# Keep Windows interoperability enabled for the AMD llama-server control path.
 ```
 
 After editing:
@@ -293,7 +295,7 @@ If you've verified the checklist and still have issues:
 
 1. After install, run diagnostics: `cd $env:USERPROFILE\ods; .\ods.ps1 report`
 2. Check WSL2 GPU issues: https://github.com/microsoft/WSL/issues?q=label%3Agpu
-3. ODS Discord: https://discord.gg/clawd
+3. ODS Discord: https://discord.gg/4ntNp9MAwC
 
 **When reporting issues, include:**
 - Output of `wsl nvidia-smi`

@@ -9,7 +9,7 @@ if ($Scenario) {
     function Set-ODSWslStartupIntent { param($Identity,[bool]$Running);$script:fixtureIntent=[pscustomobject]@{desiredRunning=$Running;generation=('a'*32)} }
     function Get-ODSWslStartupIntent { param($Identity);$script:fixtureIntent }
     function Write-ODSPrivateBytes { param($Path,$Bytes,[switch]$CreateOnly) }
-    function Assert-ODSWslCommandSettled { param($Identity) }
+    function Assert-ODSWslCommandSettled { param($Identity,[switch]$MayStartDistribution) }
     # Only external authority boundaries are replaced. The real stack planner,
     # lifecycle ordering, and public PowerShell result pipeline remain in use.
     $script:fixtureRunning = $true

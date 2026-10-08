@@ -1,7 +1,7 @@
 # ODS -- Windows AMD local-LLM readiness sidecar
-# Loaded only when local inference (Lemonade or llama-server.exe) is enabled.
-# Probes both /api/v1/health (Lemonade) and /health (llama-server.exe) so the
-# same overlay works for both backends without env-var configuration.
+# Loaded only when the native llama-server.exe runs on the Windows host.
+# Probes its public /health, which answers 503 while the model loads and 200
+# once it can serve, so open-webui starts after the model is ready.
 #
 # Use with: docker compose -f docker-compose.base.yml \
 #                          -f installers/windows/docker-compose.windows-amd.yml \
@@ -18,9 +18,8 @@ services:
       - sh
       - -c
       - |
-        echo "Waiting for native inference server on host..."
-        while ! { wget -qO- "http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}/api/v1/health" >/dev/null 2>&1 \
-              || wget -qO- "http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}/health"        >/dev/null 2>&1; }; do
+        echo "Waiting for the native llama-server on the host..."
+        while ! wget -qO- "http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}/health" >/dev/null 2>&1; do
           sleep 2
         done
         echo "Inference server is ready"
@@ -28,7 +27,7 @@ services:
     healthcheck:
       test:
         - "CMD-SHELL"
-        - 'wget -qO- "http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}/api/v1/health" >/dev/null 2>&1 || wget -qO- "http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}/health" >/dev/null 2>&1 || exit 1'
+        - 'wget -qO- "http://host.docker.internal:${AMD_INFERENCE_PORT:-8080}/health" >/dev/null 2>&1 || exit 1'
       interval: 10s
       timeout: 5s
       retries: 90

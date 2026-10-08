@@ -33,7 +33,13 @@ HISTORY_LIMIT = 10
 PUBLIC_MODEL_DEFAULT = "ods/current"
 STATE_FILE_MODE = 0o644
 
-_BACKEND_KINDS = {"llama-server", "lemonade", "hipfire", "unknown"}
+_WRITABLE_BACKEND_KINDS = {"llama-server", "hipfire", "unknown"}
+# Readable for one release only: records written before round F carry the
+# retired Lemonade route until the host agent rewrites and re-proves them.
+_LEGACY_BACKEND_KINDS = {"lemonade"}
+_LEGACY_ENDPOINT_IDS = {"lemonade-default"}
+_BACKEND_KINDS = _WRITABLE_BACKEND_KINDS | _LEGACY_BACKEND_KINDS
+DEFAULT_ENDPOINT_ID = "llama-server-default"
 _OPERATION_PHASES = {
     "requested", "staging", "verifying", "publishing",
     "flipping", "serving", "failed", "rolling_back",
@@ -412,7 +418,9 @@ def record_verified_route(
     and newer than our cache, the on-disk record wins as the base — a writer
     can never regress ``seq``.
     """
-    if backend_kind not in _BACKEND_KINDS:
+    if backend_kind in _LEGACY_BACKEND_KINDS or endpoint_id in _LEGACY_ENDPOINT_IDS:
+        raise StateError(f"legacy route {backend_kind}/{endpoint_id} is readable only")
+    if backend_kind not in _WRITABLE_BACKEND_KINDS:
         backend_kind = "unknown"
     with _WRITE_LOCK:
         base, errors = read_state(path)
@@ -488,45 +496,45 @@ def record_verified_route(
         return doc
 
 
-def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
-    """Derive a best-effort runtime identity from legacy ``.env`` values.
+def is_legacy_route(active: Any) -> bool:
+    """Whether ``active`` still names the retired Lemonade route (one release)."""
+    backend = active.get("backend") if isinstance(active, dict) else None
+    return isinstance(backend, dict) and (
+        backend.get("kind") in _LEGACY_BACKEND_KINDS
+        or backend.get("endpointId") in _LEGACY_ENDPOINT_IDS
+    )
 
-    Handles the shipped forms: plain GGUF filenames, Lemonade stems,
-    ``extra.``-prefixed Lemonade IDs, and native model names. Returns ``None``
-    when the environment carries no local model identity (e.g. cloud-only).
+
+def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
+    """Derive a best-effort runtime identity from ``.env`` values.
+
+    Every managed runtime is upstream llama-server serving ``--alias
+    <GGUF_FILE>``, so the runtime identity is the GGUF filename (or the model
+    name when no file is recorded). A retired ``LEMONADE_MODEL`` line is never
+    read: a leftover key must not relabel the route. Returns ``None`` when the
+    environment carries no local model identity (e.g. cloud-only).
     """
     if str(env.get("ODS_MODE") or "").strip().casefold() == "cloud":
         return None
 
     gguf = str(env.get("GGUF_FILE") or "").strip()
-    lemonade = str(env.get("LEMONADE_MODEL") or "").strip()
     llm_model = str(env.get("LLM_MODEL") or "").strip()
 
-    runtime_id = lemonade or gguf or llm_model
+    runtime_id = gguf or llm_model
     if not runtime_id:
         return None
 
     backend = str(env.get("LLM_BACKEND") or "").strip().lower()
-    if not backend:
-        runtime_hint = str(env.get("AMD_INFERENCE_RUNTIME") or "").strip().lower()
-        backend = "lemonade" if (lemonade or runtime_hint == "lemonade") else "llama-server"
-    if backend not in _BACKEND_KINDS:
+    if backend in {"", "lemonade"}:
+        # A pre-migration LLM_BACKEND=lemonade install now serves through
+        # upstream llama-server; the retired kind is never derived again.
+        backend = "llama-server"
+    if backend not in _WRITABLE_BACKEND_KINDS:
         backend = "unknown"
 
-    runtime_mode = str(env.get("AMD_INFERENCE_RUNTIME_MODE") or "").strip().casefold()
-    managed = str(env.get("AMD_INFERENCE_MANAGED") or "").strip().casefold()
-    external_lemonade = (
-        str(env.get("LEMONADE_EXTERNAL") or "").strip().casefold()
-        in {"1", "true", "yes", "on"}
-        or runtime_mode == "external-lemonade"
-        or (
-            managed in {"0", "false", "no", "off"}
-            and backend == "lemonade"
-        )
-    )
-    catalog_guess = lemonade if external_lemonade and lemonade else llm_model
+    catalog_guess = llm_model
     if not catalog_guess:
-        stem = runtime_id[len("extra."):] if runtime_id.startswith("extra.") else runtime_id
+        stem = runtime_id
         if stem.lower().endswith(".gguf"):
             stem = stem[: -len(".gguf")]
         catalog_guess = stem
@@ -566,11 +574,7 @@ def initialize_if_missing(
     if identity is None:
         return None
     if endpoint_id is None:
-        endpoint_id = (
-            "lemonade-default"
-            if identity["backendKind"] == "lemonade"
-            else "llama-server-default"
-        )
+        endpoint_id = DEFAULT_ENDPOINT_ID
     return record_verified_route(
         path,
         catalog_id=identity["catalogId"],

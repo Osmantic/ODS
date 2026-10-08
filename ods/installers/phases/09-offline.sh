@@ -5,7 +5,7 @@
 # Part of: installers/phases/
 # Purpose: Configure M1 offline/air-gapped operation
 #
-# Expects: OFFLINE_MODE, DRY_RUN, INSTALL_DIR, ENABLE_OPENCLAW, LOG_FILE,
+# Expects: OFFLINE_MODE, DRY_RUN, INSTALL_DIR, ENABLE_VOICE, LOG_FILE,
 #           chapter(), ai(), ai_ok(), ai_warn(), log()
 # Provides: Offline mode marker, M1 config files, embedded embeddings
 #
@@ -17,7 +17,6 @@ ods_progress 65 "offline" "Configuring offline mode"
 if [[ "$OFFLINE_MODE" == "true" ]] && $DRY_RUN; then
     log "[DRY RUN] Would configure offline/air-gapped mode (M1)"
     log "[DRY RUN] Would create offline mode marker, disable cloud features"
-    [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN] Would create OpenClaw M1 config"
     log "[DRY RUN] Would pre-download GGUF embeddings for memory_search"
 elif [[ "$OFFLINE_MODE" == "true" ]] && ! $DRY_RUN; then
     chapter "CONFIGURING OFFLINE MODE (M1)"
@@ -47,31 +46,6 @@ DISABLE_UPDATE_CHECK=true
 WEB_SEARCH_ENABLED=false
 LOCAL_RAG_ENABLED=true
 OFFLINE_EOF
-
-    # Create OpenClaw M1 config if OpenClaw is enabled
-    if [[ "$ENABLE_OPENCLAW" == "true" ]]; then
-        mkdir -p "$INSTALL_DIR/config/openclaw"
-        cat > "$INSTALL_DIR/config/openclaw/openclaw-m1.yaml" << 'M1_EOF'
-# OpenClaw M1 Mode Configuration
-# Fully offline operation - no cloud dependencies
-
-memorySearch:
-  enabled: true
-  # Uses bundled GGUF embeddings (auto-downloaded during install)
-  # No external API calls
-
-# Disable web search (not available offline)
-# Use local RAG with Qdrant instead
-webSearch:
-  enabled: false
-
-# Local inference only
-inference:
-  provider: local
-  baseUrl: http://llama-server:8080/v1
-M1_EOF
-        ai_ok "OpenClaw M1 config created"
-    fi
 
     # Pre-download GGUF embeddings for memory_search.  Offline mode is only
     # valid when this required asset is present and structurally valid: a

@@ -34,6 +34,30 @@ source /etc/os-release
 VERSION="$_installer_version"
 log "Detected OS: $PRETTY_NAME"
 
+# Older installers wrote a root systemd unit after Secure Boot key enrollment
+# that re-ran this user-writable installer at every boot. The installer refuses
+# root, so the unit failed at every boot and never removed itself. Remove it.
+_ods_remove_obsolete_resume_unit() {
+    local unit="ods-install-resume.service" unit_dir="/etc/systemd/system"
+    [[ -e "$unit_dir/$unit" || -L "$unit_dir/multi-user.target.wants/$unit" ]] || return 0
+    # A --preflight-only run checks a host; it does not change it.
+    [[ "${PREFLIGHT_ONLY:-false}" == "true" ]] && return 0
+    if $DRY_RUN; then
+        log "[DRY RUN] Would remove the obsolete $unit_dir/$unit"
+        return 0
+    fi
+    ai "Removing the obsolete $unit left by an older installer..."
+    if ods_sudo_available \
+        && ods_sudo rm -f "$unit_dir/multi-user.target.wants/$unit" "$unit_dir/$unit" \
+        && [[ ! -e "$unit_dir/$unit" ]] \
+        && { ! command -v systemctl >/dev/null 2>&1 || ods_sudo systemctl daemon-reload; }; then
+        ai_ok "Removed obsolete $unit"
+    else
+        ai_warn "Could not remove $unit_dir/$unit. Remove it with: sudo rm -f $unit_dir/multi-user.target.wants/$unit $unit_dir/$unit && sudo systemctl daemon-reload"
+    fi
+}
+_ods_remove_obsolete_resume_unit
+
 # Check for required tools
 if ! command -v curl &> /dev/null; then
     case "$PKG_MANAGER" in
@@ -287,7 +311,7 @@ check_docker_desktop_sharing() {
     [[ -z "$probe" ]] && probe="/"
 
     local out=""
-    out=$(docker run --rm -v "${probe}:/check:ro" alpine true 2>&1) || true
+    out=$(docker run --rm -v "${probe}:/check:ro" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 true 2>&1) || true
     if echo "$out" | grep -qiE "not shared from the host|Mounts denied|file sharing|filesharing"; then
         error "Docker Desktop cannot bind-mount $INSTALL_DIR.
 

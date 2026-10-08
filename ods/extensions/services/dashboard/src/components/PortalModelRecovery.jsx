@@ -1,4 +1,5 @@
 import {useEffect,useRef,useState} from 'react'
+import HelpLink from './HelpLink'
 
 const phases=new Set(['idle','completed','prepared','held','applying','applied','committing','rolling-back','unavailable'])
 function recovery(value) {
@@ -13,6 +14,8 @@ function recovery(value) {
 /** Recovery verifies the existing transaction; it never starts a new model load. */
 export default function PortalModelRecovery({onPendingChange,onBusyChange,onRecovered,refreshKey=0,active=true}) {
   const [state,setState]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('')
+  // Offered only when the agent says the switch changed nothing (fleet row 27).
+  const [releasable,setReleasable]=useState(false)
   const mounted=useRef(false),request=useRef(null),locked=useRef(false)
   const callbacks=useRef({onPendingChange,onBusyChange,onRecovered})
   callbacks.current={onPendingChange,onBusyChange,onRecovered}
@@ -32,19 +35,24 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     }).catch(()=>{}).finally(()=>clearTimeout(timer))
     return ()=>{controller.abort();clearTimeout(timer)}
   },[refreshKey,active])
-  async function recover() {
+  async function recover(release=false) {
     if(locked.current || !state?.pending)return
     locked.current=true;setBusy(true);setError('');callbacks.current.onBusyChange?.(true)
     const controller=new AbortController();request.current=controller
     const timer=setTimeout(()=>controller.abort(),405000)
     try {
-      const response=await fetch('/api/models/recovery',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:controller.signal})
+      const response=await fetch('/api/models/recovery',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:release?'{"releaseUnverified":true}':'{}',signal:controller.signal})
       const value=recovery(await response.json())
       if(!mounted.current || controller.signal.aborted)return
       if(value){setState(value);callbacks.current.onPendingChange?.(value.pending)}
-      if(response.ok && value && !value.pending){callbacks.current.onRecovered?.();return}
-      setError(value?.reason==='model-recovery-proof-required'
-        ? 'The interrupted switch still needs repair. The saved state has been preserved.'
+      if(response.ok && value && !value.pending){setReleasable(false);callbacks.current.onRecovered?.();return}
+      const proofMissing=value?.reason==='model-recovery-proof-required'
+      setReleasable(proofMissing && value.releasable===true)
+      setError(proofMissing
+        ? value.releasable===true
+          ? 'ODS could not confirm the model Portal used before this switch, so it cannot finish the switch the usual way.'
+          : 'The interrupted switch still needs repair. The saved state has been preserved.'
         : 'Recovery could not be confirmed. Reopen the model menu to read the current state.')
     } catch {
       if(mounted.current)setError('Recovery could not be confirmed. Reopen the model menu to read the current state.')
@@ -56,7 +64,12 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
   if(!state?.pending)return null
   return <div className="portal-model-notice">
     <p>A previous model switch was interrupted. Verify it before continuing.</p>
-    <button type="button" disabled={busy} onClick={recover}>{busy?'Recovering…':'Recover model switch'}</button>
+    <button type="button" disabled={busy} onClick={()=>recover()}>{busy?'Recovering…':'Recover model switch'}</button>
     {error && <p role="alert">{error}</p>}
+    {releasable && <>
+      <p>The switch did not change anything, so ODS can release it and put Portal back on the model settings it had before. If that model was not working, choose another model or rerun the installer afterwards.</p>
+      <button type="button" disabled={busy} onClick={()=>recover(true)}>{busy?'Releasing…':'Release without checking'}</button>
+    </>}
+    {error && <HelpLink/>}
   </div>
 }

@@ -17,7 +17,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import DATA_DIR
+from config import DATA_DIR, read_live_env_value
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -58,8 +58,10 @@ _LOCAL_HOSTNAMES = {
     "localhost.localdomain",
 }
 _EGRESS_ERROR_MESSAGES = {
+    "caller_unauthorized": "Remote provider egress refused the LiteLLM gateway key",
     "invalid_route": "Remote provider route is invalid",
     "invalid_route_state": "Remote provider route state is invalid",
+    "missing_caller_key": "LITELLM_KEY is missing from .env; rerun the ODS installer",
     "missing_provider_secret": "Remote provider secret is missing",
     "provider_http_error": "Remote provider probe returned an HTTP error",
     "provider_probe_too_large": "Remote provider probe response exceeded the safety limit",
@@ -336,12 +338,14 @@ def _read_route_state() -> dict[str, Any]:
     except FileNotFoundError:
         return _state_response(exists=False, valid=True)
     except OSError as exc:
-        return _state_response(exists=True, valid=False, errors=[f"read failed: {exc}"])
+        logger.warning("remote-provider routing state read failed: %s", exc)
+        return _state_response(exists=True, valid=False, errors=["read failed"])
 
     try:
         doc = json.loads(raw)
     except ValueError as exc:
-        return _state_response(exists=True, valid=False, errors=[f"not valid JSON: {exc}"])
+        logger.warning("remote-provider routing state is not valid JSON: %s", exc)
+        return _state_response(exists=True, valid=False, errors=["not valid JSON"])
     if not isinstance(doc, Mapping):
         return _state_response(exists=True, valid=False, errors=["state root must be an object"])
     if doc.get("schema") != ROUTE_STATE_SCHEMA:
@@ -923,9 +927,13 @@ async def _fetch_egress_health() -> dict[str, Any]:
 
 async def _post_egress_probe() -> dict[str, Any]:
     url = f"{EGRESS_URL.rstrip('/')}/probe"
+    # The egress admits only holders of the LiteLLM gateway key. Read it live,
+    # as the egress and LiteLLM receive it from the same .env.
+    caller_key = read_live_env_value("LITELLM_KEY")
+    headers = {"Authorization": f"Bearer {caller_key}"} if caller_key else {}
     try:
         async with httpx.AsyncClient(timeout=EGRESS_PROBE_TIMEOUT_SECONDS) as client:
-            response = await client.post(url)
+            response = await client.post(url, headers=headers)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as exc:
         logger.debug("remote-provider-egress probe unavailable: %s", exc)
         raise HTTPException(
@@ -1089,11 +1097,17 @@ def _overall_status(
     route_state: Mapping[str, Any],
     egress: Mapping[str, Any],
     activation: Mapping[str, Any],
+    install_mode: str | None = None,
 ) -> str:
     if not route_state.get("valid"):
         return "invalid"
     if route_state.get("enabled") is not True:
         return "disabled"
+    # A route is in use only in cloud mode. An installer rerun (or `ods
+    # mode`) that kept ODS local or hybrid paused it; that is not a fault
+    # (fleet, laptop: it read "degraded" after the update paused it).
+    if activation.get("reason") == "consumer_drift" and install_mode in {"local", "hybrid"}:
+        return "paused"
     if not egress.get("reachable") or not egress.get("ready"):
         return "degraded"
     if not activation.get("valid") or not activation.get("proven"):
@@ -1113,7 +1127,8 @@ async def remote_provider_status() -> dict[str, Any]:
         _fetch_ssh_supervisor_status(),
     )
     peer = _peer_status(route_state, ssh_supervisor)
-    overall = _overall_status(route_state, egress, activation)
+    install_mode = str(read_live_env_value("ODS_MODE") or "").strip().lower()
+    overall = _overall_status(route_state, egress, activation, install_mode)
     return {
         "status": overall,
         "routeState": route_state,

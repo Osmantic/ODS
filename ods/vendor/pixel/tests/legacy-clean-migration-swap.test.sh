@@ -35,7 +35,7 @@ printf 'OLD-LIVE-STATE\n' > "$dest_root/state.json"
 
 cat > "$repo/.env" <<ENV
 PIXEL_INSTALL_DIR=$install
-PIXEL_RELEASE_VERSION=4.3.28
+PIXEL_RELEASE_VERSION=4.3.31
 OPENCLAW_HOME=$tmp/openclaw
 OPENCLAW_BIN=$fake/openclaw
 PIXEL_WORKSPACE=$tmp/workspace
@@ -467,7 +467,7 @@ occ_after=$(sha256sum "$journalOcc" | awk '{print $1}')
 journalRace="$custody/txn-race.json"
 receiptRace="$tmp/out/receipt-race.json"
 race_contract="$(printf 'other' | sha256sum | awk '{print $1}')"
-printf '%s\n' "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-reserved\",\"reservationId\":\"$(python3 -c 'import secrets;print(secrets.token_hex(16))')\",\"contractSha256\":\"$race_contract\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.28\"}" > "$journalRace"
+printf '%s\n' "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-reserved\",\"reservationId\":\"$(python3 -c 'import secrets;print(secrets.token_hex(16))')\",\"contractSha256\":\"$race_contract\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.31\"}" > "$journalRace"
 chmod 600 "$journalRace"
 race_before=$(sha256sum "$journalRace" | awk '{print $1}')
 run_swap "$journalRace" "$receiptRace"
@@ -589,7 +589,7 @@ newA=$(find "$(dirname "$dest_root")" -maxdepth 1 -name '.pixel-restore-state-ro
 [[ "$(cat "$oldA/state.json")" == "PRE-D-A" ]] || fail "SIGKILL mid-swap did not preserve root A old bytes at the old path"
 # Roots are processed in the manifest's sorted order (ops-state before state-root), so the
 # earlier root B fully swapped (new installed, old preserved) while the kill caught root A
-# half-swapped (destination moved to old, new not yet installed) — a genuine partial state.
+# half-swapped (destination moved to old, new not yet installed) â€” a genuine partial state.
 [[ "$(cat "$destB/state.json")" == "NEW-B" ]] || fail "SIGKILL mid-swap did not fully swap root B"
 oldB=$(find "$(dirname "$destB")" -maxdepth 1 -name '.pixel-restore-ops-state-*.old' | head -1)
 [[ -n "$oldB" && "$(cat "$oldB/state.json")" == "PRE-D-B" ]] || fail "SIGKILL mid-swap did not preserve root B old bytes at the old path"
@@ -724,12 +724,12 @@ export PIXEL_MIGRATION_TEST_SYSTEMCTL_NOTFOUND="$tmp/deploy-notfound"
 printf 'NEW-CONFIG\n' > "$tmp/deploy-config-new"
 config_sha=$(sha256sum "$tmp/deploy-config-new" | awk '{print $1}')
 stage_g="$tmp/deploy-stage"; mkdir -p "$stage_g"; chmod 700 "$stage_g"
-ln -s "releases/4.3.28" "$stage_g/.pixel-restore-current-0-0.new"
+ln -s "releases/4.3.31" "$stage_g/.pixel-restore-current-0-0.new"
 cp "$tmp/deploy-config-new" "$stage_g/.pixel-restore-app.json-0-1.new"
 specG="$tmp/deploy-spec.json"
 cat > "$specG" <<JSON
 {"deploymentItems":[
-  {"kind":"symlink","path":"$deploy_root/current","oldPath":"$deploy_root/.pixel-restore-current-0-0.old","newPath":"$deploy_root/.pixel-restore-current-0-0.new","hadOld":1,"target":"releases/4.3.28"},
+  {"kind":"symlink","path":"$deploy_root/current","oldPath":"$deploy_root/.pixel-restore-current-0-0.old","newPath":"$deploy_root/.pixel-restore-current-0-0.new","hadOld":1,"target":"releases/4.3.31"},
   {"kind":"config","path":"$deploy_root/app.json","oldPath":"$deploy_root/.pixel-restore-app.json-0-1.old","newPath":"$deploy_root/.pixel-restore-app.json-0-1.new","hadOld":1,"sha256":"$config_sha"}
 ],
 "serviceDesired":{
@@ -752,7 +752,7 @@ for fixed_unit in openclaw-gateway.service pixel-web-courier.service pixel-sourc
   grep -Fq "$fixed_unit" "$journalG" || fail "migration affected-unit set omitted fixed unit: $fixed_unit"
 done
 # install/activate applied the current link + config.
-[[ "$(readlink "$deploy_root/current")" == "releases/4.3.28" ]] || fail "deployment-path activation did not switch the current link"
+[[ "$(readlink "$deploy_root/current")" == "releases/4.3.31" ]] || fail "deployment-path activation did not switch the current link"
 [[ "$(cat "$deploy_root/app.json")" == "NEW-CONFIG" ]] || fail "deployment-path activation did not apply the config candidate"
 # finalize applied the exact desired state (gateway active+enabled) through the wrapper.
 grep -Fqx "openclaw-gateway.service" "$PIXEL_MIGRATION_TEST_SYSTEMCTL_STATE" \

@@ -14,12 +14,19 @@ function Record([int]$Number) { [pscustomobject]@{pid=$Number;startTicks=('ticks
 function Key([string]$Name) { Join-Path $script:identity.directory $Name }
 function Reset {
     $script:files=@{}; $script:task=$null; $script:processes=@{}; $script:started=0; $script:spawned=0; $script:stopped=@(); $script:mode='running'; $script:ticks=0; $script:holder=$false
+    $script:lifetimeTask=$null; $script:lifetimeWedged=$false; $script:lateLifetime=$false
     $script:directoryExists=$false; $script:intentWrites=0; $script:lockBusy=$false; $script:pending=$false
     $script:processes[101]=Record 101; $script:processes[102]=Record 102; $script:processes[$PID]=Record $PID
 }
 # Every execution boundary is mocked. No directory is created and no WSL,
 # Scheduler or real process operation is permitted by this fixture.
-function Get-ScheduledTask { param($TaskName,$ErrorAction); if ($TaskName -ceq ($script:identity.taskName+'-Startup')) { return $null }; if ($TaskName -cne ($script:identity.taskName+'-Relay')) { throw 'Unexpected task' }; $script:task }
+function Get-ScheduledTask { param($TaskName,$ErrorAction)
+    if ($TaskName -ceq ($script:identity.taskName+'-Startup')) { return $null }
+    if ($TaskName -ceq $script:identity.taskName) { return $script:lifetimeTask }
+    if ($TaskName -cne ($script:identity.taskName+'-Relay')) { throw 'Unexpected task' }
+    $script:task
+}
+function Get-ODSWslRunningDistributions { 'Fixture' }
 function New-ScheduledTaskAction { param($Execute,$Argument); [pscustomobject]@{Execute=$Execute;Arguments=$Argument} }
 function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel); [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
 function New-ScheduledTaskSettingsSet { param([switch]$Hidden,$ExecutionTimeLimit,$MultipleInstances,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries); [pscustomobject]@{ExecutionTimeLimit='PT0S';RestartCount=0;MultipleInstances=$MultipleInstances} }
@@ -33,7 +40,11 @@ function Start-ScheduledTask { param($TaskName)
     $script:files[(Key 'relay-runtime.json')]=@{generation=$generation;state=$script:mode;controller=(Record 101);child=(Record 102);error='fixture failure'}
     $script:files[(Key 'agent-relay-process.json')]=Record 102
 }
-function Stop-ScheduledTask { param($TaskName); $script:task.State='Ready' }
+function Stop-ScheduledTask { param($TaskName)
+    if ($TaskName -ceq $script:identity.taskName) { $script:lifetimeTask.State='Ready'; return }
+    if ($TaskName -cne ($script:identity.taskName+'-Relay')) { throw 'Unexpected task stop' }
+    $script:task.State='Ready'
+}
 function Assert-ODSWslManifest { param($Identity) }
 function Assert-ODSPrivatePath { param($Path,[switch]$Directory) }
 function Assert-ODSWslStartupStillWanted { }
@@ -62,6 +73,12 @@ function Test-Path { param($LiteralPath,$PathType)
 function Get-FileHash { param($LiteralPath,$Algorithm); [pscustomobject]@{Hash='same-source'} }
 function Start-Sleep { param($Milliseconds,$Seconds)
     $script:ticks++
+    if ($script:lifetimeTask -and -not $script:lifetimeWedged -and $script:files.ContainsKey((Key 'request.json')) -and $script:files[(Key 'request.json')].action -eq 'stop') {
+        Stop-ODSOwnedProcess $script:files[(Key 'runtime.json')].child
+        $script:processes.Remove(103)
+        $script:lifetimeTask.State='Ready'
+        $script:files[(Key 'runtime.json')].state='stopped'
+    }
     if ($script:holder) { $script:files[(Key 'relay-request.json')].action='stop' }
     elseif ($script:task -and $script:files.ContainsKey((Key 'relay-request.json')) -and $script:files[(Key 'relay-request.json')].action -eq 'stop') { $script:task.State='Ready' }
 }
@@ -125,7 +142,11 @@ Check ($script:files[(Key 'relay-runtime.json')].state -eq 'stopped') 'holder re
 # interop, lock file, process or startup preference may escape these fakes.
 function Get-ODSWslStartupIntent { param($Identity); $null }
 function Set-ODSWslStartupIntent { param($Identity,$DesiredRunning); $script:intentWrites++ }
-function Open-ODSWslCommandLock { param($Identity); if ($script:lockBusy) { throw 'fixture command lock busy' }; [IO.MemoryStream]::new() }
+function Open-ODSWslCommandLock { param($Identity)
+    if ($script:lockBusy) { throw 'fixture command lock busy' }
+    if ($script:lateLifetime) { NewLifetimeTask }
+    [IO.MemoryStream]::new()
+}
 function Assert-ODSWslCommandSettled { param($Identity,[switch]$ValidateOnly); if ($script:pending) { throw 'fixture command pending' } }
 function Disable-ScheduledTask { param($TaskName); throw 'Fixture has no startup task to disable' }
 Reset; NewTask; $script:directoryExists=$true
@@ -157,4 +178,71 @@ Check ($script:intentWrites -eq 0 -and $script:stopped.Count -eq 0) 'missing man
 Reset
 Check ((Disable-ODSWslStartup $script:identity -RetireRelay).relayRetirement -eq 'unmanaged') 'absent installation and relay remain unmanaged'
 Reject { Invoke-ODSWslLifecycle 'start' 'Fixture' '/home/fixture/ods' -RetireRelay } '*only for disable-startup*'
-Write-Host "Passed $script:checks relay checks; all execution and filesystem mutation boundaries mocked."
+# Use the real lifetime retirement helper, with Scheduler/process boundaries
+# mocked. A sibling process must remain untouched throughout uninstall.
+function NewLifetimeTask {
+    $script:lifetimeTask=[pscustomobject]@{
+        Actions=@([pscustomobject]@{Execute=(Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe');Arguments=(Get-ODSWslTaskArguments $script:identity)})
+        Principal=[pscustomobject]@{UserId=$script:identity.ownerSid;RunLevel='Limited'}
+        Settings=[pscustomobject]@{ExecutionTimeLimit='PT0S';RestartCount=0};Triggers=@();State='Running'
+    }
+    $script:processes[103]=Record 103; $script:processes[104]=Record 104; $script:processes[105]=Record 105
+    $script:files[(Key 'request.json')]=@{generation='lifetime';action='run'}
+    $script:files[(Key 'runtime.json')]=@{generation='lifetime';state='running';controller=(Record 103);child=(Record 104)}
+}
+Reset; NewTask; NewLifetimeTask; $script:directoryExists=$true
+Start-ODSWslAgentRelay $script:identity
+$null=Disable-ODSWslStartup $script:identity
+Check ($script:lifetimeTask.State -eq 'Running' -and $script:processes.ContainsKey(104) -and $script:files[(Key 'request.json')].action -eq 'run') 'plain login opt-out preserves the running lifetime holder'
+$before=$script:files | ConvertTo-Json -Depth 12 -Compress
+$writes=$script:intentWrites
+$null=Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly
+Check ($before -ceq ($script:files | ConvertTo-Json -Depth 12 -Compress) -and $writes -eq $script:intentWrites -and $script:stopped.Count -eq 0) 'retirement validation leaves both runtimes and startup intent unchanged'
+$null=Disable-ODSWslStartup $script:identity -RetireRelay
+Check ($script:lifetimeTask.State -eq 'Ready' -and -not $script:processes.ContainsKey(104) -and $script:files[(Key 'runtime.json')].state -eq 'stopped') 'uninstall releases the actual lifetime holder as well as the relay'
+Check ($script:task.State -eq 'Ready' -and -not $script:processes.ContainsKey(102) -and $script:processes.ContainsKey(105)) 'both owned children exit while unrelated process remains'
+$stops=$script:stopped.Count
+$null=Disable-ODSWslStartup $script:identity -RetireRelay
+Check ($script:stopped.Count -eq $stops -and $script:processes.ContainsKey(105)) 'repeated retirement does not kill any process again'
+Reset; $script:directoryExists=$true; $script:lateLifetime=$true
+$null=Disable-ODSWslStartup $script:identity -RetireRelay
+Check ($script:lifetimeTask.State -eq 'Ready' -and -not $script:processes.ContainsKey(104)) 'uninstall retires a holder created by a start that held the command lock first'
+foreach ($readonly in @($true,$false)) {
+    foreach ($mutation in @(
+        { $script:lifetimeTask.Actions[0].Arguments+=' foreign' },
+        { $script:lifetimeTask.Principal.UserId='S-1-5-18' },
+        { $script:lifetimeTask.Settings.ExecutionTimeLimit='PT25M' }
+    )) {
+        Reset; NewTask; NewLifetimeTask; $script:directoryExists=$true; & $mutation
+        Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*lifetime task identity changed*'
+        Check ($script:intentWrites -eq 0 -and $script:stopped.Count -eq 0 -and $script:files[(Key 'request.json')].action -eq 'run') 'foreign lifetime task is rejected before startup or runtime mutation'
+    }
+    Reset; NewLifetimeTask
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*without its owner manifest*'
+    Check ($script:intentWrites -eq 0 -and $script:stopped.Count -eq 0) 'orphan lifetime task without relay or startup fails closed'
+    Reset; NewLifetimeTask; $script:directoryExists=$true; $script:lifetimeTask=$null
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*lifetime task is missing*'
+    Check ($script:intentWrites -eq 0 -and $script:processes.ContainsKey(104)) 'missing task with retained lifetime records requires owner recovery'
+    Reset; NewLifetimeTask; $script:directoryExists=$true; $script:files.Remove((Key 'request.json'))
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*lifetime request is missing*'
+    Check ($script:intentWrites -eq 0 -and $script:processes.ContainsKey(104) -and -not $script:files.ContainsKey((Key 'request.json'))) 'missing request cannot be replaced with an ambiguous stop generation'
+    Reset; NewLifetimeTask; $script:directoryExists=$true; $script:lifetimeTask.State='Ready'
+    $script:files.Remove((Key 'request.json')); $script:files.Remove((Key 'runtime.json'))
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*lifetime request is missing*'
+    Check ($script:intentWrites -eq 0 -and $script:processes.ContainsKey(104) -and -not $script:files.ContainsKey((Key 'runtime.json'))) 'both missing records cannot fabricate stopped state while an orphan child survives'
+    Reset; NewLifetimeTask; $script:directoryExists=$true; $script:lifetimeTask.State='Ready'
+    $script:files.Remove((Key 'runtime.json'))
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*lifetime runtime*recovery*'
+    Check ($script:intentWrites -eq 0 -and $script:processes.ContainsKey(104) -and -not $script:files.ContainsKey((Key 'runtime.json'))) 'missing runtime alone also cannot prove the former child exited'
+}
+foreach ($failure in @('lockBusy','pending')) {
+    Reset; NewTask; NewLifetimeTask; $script:directoryExists=$true
+    Set-Variable -Name $failure -Value $true -Scope Script
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay } '*fixture command*'
+    Check ($script:intentWrites -eq 1 -and $script:stopped.Count -eq 0 -and $script:files[(Key 'request.json')].action -eq 'run') 'busy command saves stop preference but prevents lifetime teardown'
+}
+Reset; NewLifetimeTask; $script:directoryExists=$true; $script:lifetimeWedged=$true
+$script:processes[104]=Record 104; $script:processes[104].startTicks='recycled'
+Reject { Disable-ODSWslStartup $script:identity -RetireRelay } '*process identity changed*'
+Check ($script:processes.ContainsKey(104) -and $script:processes.ContainsKey(105)) 'failed lifetime release propagates without killing a recycled or unrelated process'
+Write-Host "Passed $script:checks relay and lifetime checks; all execution and filesystem mutation boundaries mocked."

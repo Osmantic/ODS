@@ -91,8 +91,6 @@ def main() -> int:
         errors.append("stable channel requires stable_version to equal ods_version")
 
     for relative in (
-        "installer/package.json", "installer/package-lock.json",
-        "installer/src-tauri/tauri.conf.json",
         "ods/extensions/services/dashboard/package.json",
         "ods/extensions/services/dashboard/package-lock.json",
     ):
@@ -104,9 +102,6 @@ def main() -> int:
         checks.append((f"{relative} version", str(value.get("version", ""))))
         if relative.endswith("package-lock.json"):
             checks.append((f"{relative} root package version", str(value.get("packages", {}).get("", {}).get("version", ""))))
-    for relative in ("installer/src-tauri/Cargo.toml", "installer/src-tauri/Cargo.lock"):
-        add_regex_check(checks, errors, f"{relative} ods-installer version", ROOT.parent / relative,
-                        r'^name = "ods-installer"\nversion = "([^"]+)"')
     for relative, pattern in (
         (".env.example", r"^# ODS_VERSION=([^\n]+)"),
         ("bin/ods-host-agent.py", r'^ODS_VERSION = "([^"]+)"'),

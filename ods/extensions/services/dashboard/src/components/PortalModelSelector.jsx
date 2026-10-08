@@ -86,14 +86,14 @@ export default function PortalModelSelector(props) {
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
 function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavailableLabel,busy=false,onSwitchingChange,onSettled}) {
   const catalog=useModels({observe:observeCatalog})
-  const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
+  const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,hostRuntime,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
   const installed=models.filter(model=>observeCatalog && model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
     .map(quickSwitchProfile)
   const [open,setOpen]=useState(true),[confirmId,setConfirmId]=useState(null),[pending,setPending]=useState(false),[localError,setLocalError]=useState('')
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
-  const managementUnavailable=externalLemonade===true && modelManagement?.managed==null
+  const managementUnavailable=hostRuntime===true && modelManagement?.managed==null
   const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=runtimeSource==='local-switchboard' || (runtimeSource==='external-host' && modelManagement?.managed===true)
   // A confirmed cloud route is independent of the local catalog's lifecycle,
   // which may remain stale after a catalog failure. Keep mutations initiated

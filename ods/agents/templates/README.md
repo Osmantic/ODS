@@ -1,6 +1,6 @@
 # Agent Templates for ODS
 
-**Mission:** M7 (OpenClaw Frontier Pushing)  
+**Mission:** M7\
 **Status:** 5 templates created, awaiting validation
 
 Validated agent templates that work reliably on local Qwen3-30B-A3B.
@@ -16,12 +16,6 @@ Validated agent templates that work reliably on local Qwen3-30B-A3B.
 | `system-admin` | Docker, Linux admin | ✅ Primary | None | exec, read, web_search |
 
 ## Usage
-
-### Import in OpenClaw
-```bash
-/agent load code-assistant
-/agent load data-analyst
-```
 
 ### Use in Workflows
 ```yaml

@@ -14,7 +14,7 @@ The governing starting point is [ODS licensing](../LICENSING.md).
 | --- | --- | --- |
 | Pixel | [Pixel License for ODS](../vendor/pixel/LICENSE.md) | Keep the ODS-only grant and third-party notices; do not extract Pixel into another product. Contributions need an agreed inbound basis. |
 | OpenClaw used by Pixel | [Current generated notices](../vendor/pixel/THIRD_PARTY_NOTICES.md) | Retain upstream MIT and incorporated third-party notices. Do not apply Pixel's restrictions to OpenClaw itself. |
-| Open WebUI v0.7.2 | [Pinned license](https://github.com/open-webui/open-webui/blob/v0.7.2/LICENSE) | Preserve upstream branding unless a stated exception or written permission applies; see [branding guidance](../extensions/services/open-webui/BRANDING.md). |
+| Open WebUI v0.11.4 | [Pinned license](https://github.com/open-webui/open-webui/blob/v0.11.4/LICENSE) | Preserve upstream branding unless a stated exception or written permission applies; see [branding guidance](../extensions/services/open-webui/BRANDING.md). |
 | n8n 2.6.4 | [Pinned Sustainable Use License and enterprise exclusions](https://github.com/n8n-io/n8n/blob/n8n%402.6.4/LICENSE.md) | Internal-business use and redistributing or offering n8n to others have different permissions. Review paid appliances and hosted offerings separately. |
 | AudioCraft | [MIT code](https://github.com/facebookresearch/audiocraft/blob/main/LICENSE) and [CC BY-NC 4.0 weights](https://github.com/facebookresearch/audiocraft/blob/main/LICENSE_weights) | The manifest/catalog now identify the weight restriction. Resolve exact model terms and any separate output rights; the code license is not a commercial weight grant. |
 | XTTS-v2 | [Coqui Public Model License](https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt) | Review noncommercial model/output use and notice requirements. The current recipe supplies `COQUI_TOS_AGREED=1`; an explicit operator acceptance flow remains to be implemented. |
@@ -29,17 +29,16 @@ actual built distribution. Container boundaries alone do not answer that questio
 
 ## Recipe provenance coverage
 
-The source contains 171 library recipe directories: 137 include `upstream.json`
-and 34 do not. The latter also lack a local license file. The strict extension
-auditor passes 203 total service definitions; that structural result does not
-close these provenance gaps.
+The source contains 170 library recipe directories: 137 include `upstream.json`
+and 33 do not. The latter also lack a local license file. The strict extension
+auditor's structural checks do not close these provenance gaps.
 
-Recipes missing structured upstream records at the reviewed commit:
+Recipes missing structured upstream records:
 
-`aider`, `anythingllm`, `audiocraft`, `bark`, `baserow`, `chromadb`, `continue`, `crewai`, `dify`, `flowise`, `forge`, `frigate`, `gaia`, `gitea`, `immich`, `invokeai`, `jan`, `jupyter`, `label-studio`, `langflow`, `librechat`, `localai`, `milvus`, `miniflux`, `ntfy`, `ollama`, `open-interpreter`, `paperless-ngx`, `piper-audio`, `rvc`, `sillytavern`, `text-generation-webui`, `weaviate`, `xtts`.
+`aider`, `anythingllm`, `audiocraft`, `bark`, `baserow`, `chromadb`, `continue`, `crewai`, `dify`, `flowise`, `forge`, `frigate`, `gitea`, `immich`, `invokeai`, `jan`, `jupyter`, `label-studio`, `langflow`, `librechat`, `localai`, `milvus`, `miniflux`, `ntfy`, `ollama`, `open-interpreter`, `paperless-ngx`, `piper-audio`, `rvc`, `sillytavern`, `text-generation-webui`, `weaviate`, `xtts`.
 
 The [recipe source register](RECIPE-SOURCE-REGISTER.md) now provides pinned
-upstream license evidence for all 34; image-to-source provenance remains open.
+upstream license evidence for all 33; image-to-source provenance remains open.
 
 Backfill source repository, exact ref/image, application and model license
 distinctions, required notices and any restrictions. Verify against upstream;

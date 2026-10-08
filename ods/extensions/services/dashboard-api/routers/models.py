@@ -81,25 +81,29 @@ def _installed_model_path(filename: str) -> Path | None:
 _ENV_PATH = Path(INSTALL_DIR) / ".env"
 
 
-def _external_lemonade_runtime() -> bool:
-    """Whether Lemonade is owned by the host rather than this ODS install."""
+def _windows_hosted_runtime() -> bool:
+    """The model runs on the Windows host, controlled only through the host agent.
+
+    The WSL Portal drives an ODS-owned llama-server.exe through the WSL
+    bridge; the agent's ownership proof decides whether this install may
+    change or stop it. ``LEMONADE_HOST_TRANSPORT`` is the transport key's
+    one-release legacy name. An unmigrated pre-round-F .env for the owner's
+    own Lemonade (``LLM_BACKEND=lemonade`` with ``LEMONADE_EXTERNAL=true``)
+    is never controllable from here.
+    """
     env = read_live_env_values((
-        "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME_MODE", "AMD_INFERENCE_MANAGED",
-        "ODS_MODE", "LLM_BACKEND", "AMD_INFERENCE_RUNTIME",
+        "ODS_HOST_LLM_TRANSPORT", "LEMONADE_HOST_TRANSPORT", "AMD_INFERENCE_RUNTIME_MODE",
+        "LLM_BACKEND", "LEMONADE_EXTERNAL",
     ))
-    runtime_mode = str(env.get("AMD_INFERENCE_RUNTIME_MODE") or "").strip().casefold()
-    managed = str(env.get("AMD_INFERENCE_MANAGED") or "").strip().casefold()
-    external = str(env.get("LEMONADE_EXTERNAL") or "").strip().casefold()
+    transport = str(env.get("ODS_HOST_LLM_TRANSPORT") or env.get("LEMONADE_HOST_TRANSPORT") or "")
+    unmigrated_external = (
+        str(env.get("LLM_BACKEND") or "").strip().casefold() == "lemonade"
+        and str(env.get("LEMONADE_EXTERNAL") or "").strip().casefold() in {"1", "true", "yes", "on"}
+    )
     return (
-        runtime_mode == "external-lemonade"
-        or external in {"1", "true", "yes", "on"}
-        or (
-            managed in {"0", "false", "no", "off"}
-            and any(
-                str(env.get(key) or "").strip().casefold() == "lemonade"
-                for key in ("ODS_MODE", "LLM_BACKEND", "AMD_INFERENCE_RUNTIME")
-            )
-        )
+        transport.strip().casefold() == "model-router"
+        or str(env.get("AMD_INFERENCE_RUNTIME_MODE") or "").strip().casefold() == "windows-portal-llama-server"
+        or unmigrated_external
     )
 
 
@@ -181,7 +185,20 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
 
 def _configured_ods_mode() -> str:
     """Return the current persisted mode without treating process env as config."""
-    return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR))
+    try:
+        return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
+    except PermissionError:
+        # The private .env can belong to a different host UID than this API.
+        # Ask its owner-side agent for only the persisted mode, never secrets
+        # or the process environment. Read freshly before every activation.
+        try:
+            snapshot = request_agent_json("GET", "/v1/model/config", timeout=5)
+        except AgentClientError:
+            return "unknown"
+        mode = snapshot.get("configuredMode") if isinstance(snapshot, dict) else None
+        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else "unknown"
+    except (OSError, UnicodeError):
+        return "unknown"
 
 
 def _model_activation_mode_denial(
@@ -197,9 +214,9 @@ def _model_activation_mode_denial(
         code = "external_llm_managed"
         reason = "external_backend_selected"
         message = (
-            "Local model activation is unavailable with a generic external "
-            "model service. Select an ODS-managed backend or a supported "
-            "Lemonade integration before activating downloaded models."
+            "Local model activation is unavailable while ODS uses your own "
+            "model server. Change the model in that server, or rerun the "
+            "installer with an ODS-managed backend to activate downloaded models."
         )
     elif "unknown" in {effective_mode, configured_mode}:
         code = "ods_mode_unknown"
@@ -381,21 +398,22 @@ def _strip_llm_api_suffix(base_url: str) -> str:
 
 
 def _configured_llm_base_url(host: str, port: int) -> str:
-    # LiteLLM's LLM_API_URL is an alias gateway, not the physical Lemonade
-    # runtime. Model identity and readiness probes must follow the same
-    # backend endpoint as the installed host-inference route.
-    if LLM_BACKEND == "lemonade":
-        for key in ("LEMONADE_CONTAINER_BASE_URL", "LEMONADE_BASE_URL"):
-            value = read_env_value(key, INSTALL_DIR)
-            if value:
-                return _strip_llm_api_suffix(value)
+    # LiteLLM's LLM_API_URL is an alias gateway, not the physical runtime.
+    # Model identity probes must follow the server that serves the model.
     if LLM_BACKEND == "external":
         value = read_env_value("EXTERNAL_LLM_CONTAINER_URL", INSTALL_DIR)
         if value:
             return _strip_llm_api_suffix(value)
+    if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
+        # A Windows-hosted llama-server, as containers reach it (the legacy
+        # key name is read for one release).
+        for key in ("NATIVE_LLM_CONTAINER_BASE_URL", "LEMONADE_CONTAINER_BASE_URL"):
+            value = read_env_value(key, INSTALL_DIR)
+            if value:
+                return _strip_llm_api_suffix(value)
     for key in ("LLM_URL", "LLM_API_URL", "OLLAMA_URL"):
         value = read_env_value(key, INSTALL_DIR)
-        if value:
+        if value and "litellm" not in value.lower():
             return _strip_llm_api_suffix(value)
     return f"http://{host}:{port}"
 
@@ -408,8 +426,11 @@ def _model_name_tokens(value: str | None) -> set[str]:
         return set()
     lower = token.lower()
     tokens = {lower}
-    if lower.startswith("extra."):
-        tokens.add(lower[6:])
+    # Retired Lemonade ids stay matchable for one release, so a persisted
+    # receipt or performance row still names its GGUF.
+    for prefix in ("extra.", "user."):
+        if lower.startswith(prefix):
+            tokens.add(lower[len(prefix):])
     for candidate in tuple(tokens):
         if candidate.endswith(".gguf"):
             tokens.add(candidate[:-5])
@@ -430,53 +451,11 @@ def _fetch_loaded_model_sync() -> str | None:
     service = SERVICES.get("llama-server", {})
     host = service.get("host", "llama-server")
     port = int(service.get("port", 8080))
-    api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(_fetch_llama_loaded_model(host, port, api_prefix))
+        return loop.run_until_complete(_fetch_llama_loaded_model(host, port))
     except (httpx.HTTPError, OSError, RuntimeError, ValueError):
         return None
-    finally:
-        loop.close()
-
-
-async def _probe_loaded_lemonade_model(model_name: str) -> bool:
-    service = SERVICES.get("llama-server", {})
-    host = service.get("host", "llama-server")
-    port = int(service.get("port", 8080))
-    base_url = _configured_llm_base_url(host, port)
-    headers = {}
-    api_key = read_env_value("LEMONADE_API_KEY", INSTALL_DIR) or "lemonade"
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    payload = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1,
-        "temperature": 0,
-        "stream": False,
-    }
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(f"{base_url}/api/v1/chat/completions", json=payload, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, dict):
-            return False
-        if isinstance(data.get("error"), dict):
-            return False
-        return bool(data.get("choices"))
-
-
-def _loaded_model_backend_ready_sync(loaded_model: str | None) -> bool:
-    if not loaded_model:
-        return False
-    if LLM_BACKEND != "lemonade":
-        return True
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(_probe_loaded_lemonade_model(loaded_model))
-    except (httpx.HTTPError, OSError, RuntimeError, ValueError):
-        return False
     finally:
         loop.close()
 
@@ -562,14 +541,10 @@ def _already_active_model(model_id: str, model: dict) -> tuple[bool, str | None]
         return False, loaded_model
 
     if _model_name_tokens(loaded_model) & _catalog_model_tokens(model):
-        # Lemonade's health endpoint is the authoritative loaded-model source.
-        # A one-token chat probe against a large already-active model can take
-        # longer than dashboard/UI clients will wait, which turns an idempotent
-        # Run click into an unnecessary activation.
-        if (
-            _activation_receipt_matches(model_id, model, loaded_model)
-            and (LLM_BACKEND == "lemonade" or _loaded_model_backend_ready_sync(loaded_model))
-        ):
+        # llama-server serves exactly one model, proven by the activation
+        # receipt; a chat probe here would only turn an idempotent Run click
+        # into a long wait.
+        if _activation_receipt_matches(model_id, model, loaded_model):
             return True, loaded_model
     return False, loaded_model
 
@@ -1423,7 +1398,7 @@ def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
 
 def _model_management() -> dict:
     """Project capability evidence; a network topology flag grants no control."""
-    if not _external_lemonade_runtime():
+    if not _windows_hosted_runtime():
         return {"managed": False, "canActivate": False, "canUnload": False, "running": False}
     try:
         value = request_agent_json("GET", "/v1/model/management", timeout=20)
@@ -1462,9 +1437,8 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         service = SERVICES.get("llama-server", {})
         host = service.get("host", "llama-server")
         port = int(service.get("port", 8080))
-        api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
         loaded_model = await _await_or_default(
-            _fetch_llama_loaded_model(host, port, api_prefix),
+            _fetch_llama_loaded_model(host, port),
             None,
             "loaded model fallback",
             timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
@@ -1528,10 +1502,15 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             flags=signature.get("flags"),
         )
     payload["odsMode"] = ODS_MODE_EFFECTIVE
-    payload["configuredMode"] = _configured_ods_mode()
+    payload["configuredMode"] = await asyncio.to_thread(_configured_ods_mode)
     payload["llmBackend"] = LLM_BACKEND or "unknown"
-    payload["externalLemonade"] = _external_lemonade_runtime()
-    if payload["externalLemonade"]:
+    if LLM_BACKEND == "external":
+        # API mode: name the model and the API's host so the page can say
+        # what serves chat. The installer refuses URLs with credentials.
+        payload["externalModel"] = read_env_value("EXTERNAL_LLM_MODEL", INSTALL_DIR).strip() or None
+        payload["externalHost"] = _external_api_host(read_env_value("EXTERNAL_LLM_URL", INSTALL_DIR))
+    payload["hostRuntime"] = _windows_hosted_runtime()
+    if payload["hostRuntime"]:
         payload["modelManagement"] = await asyncio.to_thread(_model_management)
     payload["activationReadyModel"] = (
         payload.get("currentModel")
@@ -1674,21 +1653,36 @@ def _stale_bootstrap_download_status(status: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bootstrap_retry_pending_error(model_name: Any) -> str:
+    """Say why downloads wait on the first full model and how to retry it.
+
+    The retry starts with the next ODS start or restart, and nothing else
+    told the owner that (a user hit this on three computers with no way on).
+    """
+    model = str(model_name or "").strip() or "the full model"
+    return (f"ODS's first download of {model} stopped before it finished, and it goes before other "
+            "model downloads. Restart ODS to retry it (ods restart). The reason is in "
+            "logs/model-upgrade.log in your ODS folder.")
+
+
 def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
     """Return a lifecycle-busy payload when bootstrap upgrade owns download priority."""
     bootstrap_status = _read_bootstrap_status_file()
     if _is_stale_active_bootstrap_status(bootstrap_status):
+        target = bootstrap_status.get("model") if bootstrap_status else None
         return {
-            "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+            "error": _bootstrap_retry_pending_error(target),
             "code": "model_lifecycle_busy",
             "activeOperation": "bootstrap_upgrade_retry_pending",
-            "activeTarget": bootstrap_status.get("model") if bootstrap_status else None,
+            "activeTarget": target,
         }
 
     bootstrap_info = get_bootstrap_status()
     if bootstrap_info.active:
+        model = str(bootstrap_info.model_name or "").strip() or "the full model"
         return {
-            "error": "Cannot start model download while bootstrap full-model upgrade is in progress",
+            "error": (f"ODS is still downloading {model}, its first full model. "
+                      "Other model downloads can start when it finishes."),
             "code": "model_lifecycle_busy",
             "activeOperation": "bootstrap_upgrade",
             "activeTarget": bootstrap_info.model_name,
@@ -1716,7 +1710,7 @@ def _bootstrap_upgrade_download_conflict() -> dict[str, Any] | None:
         return None
 
     return {
-        "error": "Cannot start model download while bootstrap full-model upgrade is pending retry",
+        "error": _bootstrap_retry_pending_error(model_name),
         "code": "model_lifecycle_busy",
         "activeOperation": "bootstrap_upgrade_retry_pending",
         "activeTarget": model_name,
@@ -1764,6 +1758,14 @@ def _invalidate_agent_model_status_cache() -> None:
 # releases the model_download lifecycle lock. Keep this finite so unrelated
 # conflicts still surface, but cover observed 30s+ multipart teardown lag.
 _MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS = 120.0
+# The Pixel access monitor re-proves every ~45 s under the model lifecycle lock
+# for a few seconds. A switch that lands in that window waits it out instead of
+# returning 409 to a Models page that keeps waiting (Strixy, 2026-10-05).
+_PIXEL_LIFECYCLE_OPERATIONS = frozenset({
+    "pixel_startup_reproof", "pixel_access_mode", "pixel_open_app",
+    "pixel_providers", "pixel_settings",
+})
+_MODEL_PIXEL_BUSY_ACTIVATION_GRACE_SECONDS = 30.0
 
 
 def _agent_http_detail(exc: AgentHTTPError) -> Any:
@@ -1785,15 +1787,26 @@ def _is_download_lifecycle_busy(detail: Any) -> bool:
     )
 
 
+def _is_pixel_lifecycle_busy(detail: Any) -> bool:
+    return (
+        isinstance(detail, dict)
+        and detail.get("code") == "model_lifecycle_busy"
+        and detail.get("activeOperation") in _PIXEL_LIFECYCLE_OPERATIONS
+    )
+
+
 def _call_agent_model(
     path: str,
     body: dict,
     timeout: int = 30,
     *,
     retry_download_busy_seconds: float = 0.0,
+    retry_pixel_busy_seconds: float = 0.0,
 ) -> dict:
     """Call the host agent model endpoint."""
-    deadline = time.monotonic() + max(float(retry_download_busy_seconds or 0.0), 0.0)
+    started = time.monotonic()
+    deadline = started + max(float(retry_download_busy_seconds or 0.0), 0.0)
+    pixel_deadline = started + max(float(retry_pixel_busy_seconds or 0.0), 0.0)
     try:
         while True:
             try:
@@ -1803,9 +1816,12 @@ def _call_agent_model(
                     raise
                 detail = _agent_http_detail(exc)
                 if (
-                    retry_download_busy_seconds > 0
-                    and _is_download_lifecycle_busy(detail)
-                    and time.monotonic() < deadline
+                    (retry_download_busy_seconds > 0
+                     and _is_download_lifecycle_busy(detail)
+                     and time.monotonic() < deadline)
+                    or (retry_pixel_busy_seconds > 0
+                        and _is_pixel_lifecycle_busy(detail)
+                        and time.monotonic() < pixel_deadline)
                 ):
                     time.sleep(0.5)
                     continue
@@ -1833,8 +1849,11 @@ def _find_model_in_library(model_id: str) -> Optional[dict]:
 def _local_gguf_filename_from_id(model_id: str) -> str | None:
     """Map a dashboard fallback model ID to a local GGUF filename."""
     token = str(model_id or "").strip()
-    if token.lower().startswith("extra."):
-        token = token[6:]
+    # A retired Lemonade id still names its GGUF for one release.
+    for prefix in ("extra.", "user."):
+        if token.lower().startswith(prefix):
+            token = token[len(prefix):]
+            break
     if not token or any(sep in token for sep in ("/", "\\", "\x00")):
         return None
     filename = token if token.lower().endswith(".gguf") else f"{token}.gguf"
@@ -1919,53 +1938,42 @@ def _find_normalized_model(model_id: str) -> Optional[dict]:
     return find_catalog_model(load_model_catalog(INSTALL_DIR), model_id, None)
 
 
-async def _fetch_llama_loaded_model(host: str, port: int, api_prefix: str) -> str | None:
+def _external_api_host(url: str) -> str | None:
+    """The host (and port) of the API URL, without anything else."""
+    try:
+        parsed = urlsplit(url.strip())
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return None
+    if not host or parsed.scheme not in {"http", "https"}:
+        return None
+    return f"{host}:{port}" if port else host
+
+
+async def _fetch_llama_loaded_model(host: str, port: int) -> str | None:
     base_url = _configured_llm_base_url(host, port)
-    lemonade_api = api_prefix == "/api/v1"
+    # A generic OpenAI-compatible server lists every model it can serve with no
+    # loaded status: its first entry is not the active model.
     external_compatible = (
         LLM_BACKEND == "external"
         and os.environ.get("EXTERNAL_LLM_PROVIDER", "").strip().lower() == "openai-compatible"
     )
     async with httpx.AsyncClient(timeout=10.0) as client:
-        if external_compatible:
-            try:
-                resp = await client.get(f"{base_url}/api/v1/health")
-                resp.raise_for_status()
-                health = resp.json()
-                if isinstance(health, dict) and "model_loaded" in health:
-                    loaded = health["model_loaded"]
-                    if health.get("status") == "ok" and isinstance(loaded, str) and loaded.strip():
-                        return loaded
-                    return None
-            except (httpx.HTTPError, ValueError):
-                pass
-        if lemonade_api:
-            try:
-                resp = await client.get(f"{base_url}{api_prefix}/health")
-                resp.raise_for_status()
-                health = resp.json()
-                loaded = health.get("model_loaded")
-                if loaded:
-                    return loaded
-                if "model_loaded" in health:
-                    return None
-            except (httpx.HTTPError, ValueError):
-                pass
-
         try:
-            resp = await client.get(f"{base_url}{api_prefix}/models")
+            resp = await client.get(f"{base_url}/v1/models")
             resp.raise_for_status()
             data = resp.json().get("data") or []
             for model in data:
                 status = model.get("status", {})
                 if isinstance(status, dict) and status.get("value") == "loaded":
                     return model.get("id")
-            if lemonade_api:
-                return None
             if data and data[0].get("id") and not external_compatible:
                 return data[0]["id"]
         except (httpx.HTTPError, ValueError):
             pass
+        if external_compatible:
+            return None
 
         try:
             resp = await client.get(f"{base_url}/props")
@@ -2007,11 +2015,10 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         raise HTTPException(status_code=503, detail="llama-server service is not configured")
     host = service.get("host", "llama-server")
     port = int(service.get("port", 8080))
-    api_prefix = "/api/v1" if LLM_BACKEND == "lemonade" else "/v1"
 
     loaded_model = await get_loaded_model()
     if not loaded_model:
-        loaded_model = await _fetch_llama_loaded_model(host, port, api_prefix)
+        loaded_model = await _fetch_llama_loaded_model(host, port)
     if not loaded_model:
         loaded_model = _read_active_model() or read_env_value("LLM_MODEL", INSTALL_DIR)
     if not loaded_model:
@@ -2048,10 +2055,17 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "context length, and GPU memory bandwidth. Continue until the token budget ends."
     )
 
+    # A Windows-hosted llama-server requires its key, which only LiteLLM
+    # holds; every other runtime is measured directly.
+    url, headers = f"http://{host}:{port}/v1/chat/completions", None
+    if read_env_value("AMD_INFERENCE_LOCATION", INSTALL_DIR).strip().lower() == "host":
+        gateway_key = read_env_value("LITELLM_KEY", INSTALL_DIR) or read_env_value("LITELLM_MASTER_KEY", INSTALL_DIR)
+        url = "http://litellm:4000/v1/chat/completions"
+        headers = {"Authorization": f"Bearer {gateway_key}"} if gateway_key else None
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(60.0, max_tokens * 3.0)) as client:
         resp = await client.post(
-            f"http://{host}:{port}{api_prefix}/chat/completions",
+            url,
             json={
                 "model": loaded_model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -2059,6 +2073,7 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
                 "max_tokens": max_tokens,
                 "stream": False,
             },
+            headers=headers,
         )
         resp.raise_for_status()
         response_data = resp.json()
@@ -2157,13 +2172,20 @@ def _model_recovery_projection(value):
         result['outcome'] = value['outcome']
     if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable'):
         result['reason'] = value['reason']
+    # The agent offers the owner a release without the live proof only for a
+    # switch that changed nothing (fleet row 27).
+    if value['pending'] and type(value.get('releasable')) is bool:
+        result['releasable'] = value['releasable']
     return result
 
 
-def _model_recovery_request(method):
+_RECOVERY_REQUESTS: tuple[dict[str, bool], ...] = ({}, {'releaseUnverified': True})
+
+
+def _model_recovery_request(method, body=None):
     try:
         value = request_agent_json(method, '/v1/model/recovery' if method == 'GET' else '/v1/model/recover',
-                                   payload=None if method == 'GET' else {}, timeout=5 if method == 'GET' else 400)
+                                   payload=None if method == 'GET' else body, timeout=5 if method == 'GET' else 400)
         return _model_recovery_projection(value)
     except AgentHTTPError as exc:
         if exc.status_code in (409, 503):
@@ -2185,95 +2207,31 @@ def model_recovery_status(api_key: str = Depends(verify_api_key)):
 
 @router.post('/api/models/recovery')
 def recover_model_switch(body: dict | None = Body(default=None), api_key: str = Depends(verify_api_key)):
-    if body != {}:
-        raise HTTPException(status_code=400, detail='Recovery accepts an empty request only.')
-    value = _model_recovery_request('POST')
+    if body is None or not any(body == allowed and all(type(body[key]) is type(value) for key, value in allowed.items())
+                               for allowed in _RECOVERY_REQUESTS):
+        raise HTTPException(status_code=400, detail='Recovery accepts {} or {"releaseUnverified": true} only.')
+    value = _model_recovery_request('POST', dict(body))
     return value if isinstance(value, JSONResponse) else JSONResponse(value, headers={'Cache-Control': 'no-store'})
 
 
-def _external_model_observation_projection(value: Any) -> dict[str, Any]:
-    """Keep the browser response limited to a proved, nonsecret model identity."""
-    if not isinstance(value, dict):
-        raise ValueError('External model observation is invalid')
-    model_id = value.get('modelId')
-    context_length = value.get('contextLength')
-    backend = value.get('backend')
-    if (
-        value.get('status') != 'verified'
-        or not isinstance(model_id, str)
-        or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}', model_id) is None
-        or type(context_length) is not int
-        or not 1 <= context_length <= 10_000_000
-        or not isinstance(backend, str)
-        or re.fullmatch(r'[A-Za-z0-9._-]{1,64}', backend) is None
-    ):
-        raise ValueError('External model observation is invalid')
-    return {
-        'status': 'verified', 'modelId': model_id,
-        'contextLength': context_length, 'backend': backend,
-    }
+_RETIRED_ADOPTION = {
+    "error": "Adopting a model loaded in Lemonade was removed",
+    "code": "external_lemonade_removed",
+    "hint": ("ODS runs llama-server for every managed runtime. To use your own Lemonade, "
+             "change its model there and select it with the installer's --external-llm-* options."),
+}
 
 
 @router.get('/api/models/external-observation')
 def external_model_observation(api_key: str = Depends(verify_api_key)):
-    try:
-        value = request_agent_json('GET', '/v1/model/external-observation', timeout=20)
-        return JSONResponse(_external_model_observation_projection(value), headers={'Cache-Control': 'no-store'})
-    except AgentHTTPError as exc:
-        if exc.status_code == 409:
-            raise HTTPException(status_code=409, detail='External Lemonade is not configured') from None
-        raise HTTPException(status_code=503, detail='External Lemonade identity is unavailable') from None
-    except (AgentClientError, ValueError):
-        raise HTTPException(status_code=503, detail='External Lemonade identity is unavailable') from None
+    """Removed with Lemonade (round F); answers 410 for one release."""
+    raise HTTPException(status_code=410, detail=_RETIRED_ADOPTION)
 
 
 @router.post('/api/models/external-adopt')
-def adopt_external_model(
-    body: dict | None = Body(default=None),
-    api_key: str = Depends(verify_api_key),
-):
-    model_id = body.get('model_id') if isinstance(body, dict) else None
-    if (
-        not isinstance(body, dict) or set(body) != {'model_id'}
-        or not isinstance(model_id, str)
-        or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}', model_id) is None
-    ):
-        raise HTTPException(status_code=400, detail='An exact model_id is required')
-    if pixel_stream_active():
-        raise HTTPException(status_code=409, detail={
-            'code': 'pixel_chat_active',
-            'message': 'Portal is working. Stop the active response before adopting a model.',
-        })
-    try:
-        value = request_agent_json(
-            'POST', '/v1/model/external-adopt', payload={'model_id': model_id}, timeout=600,
-        )
-    except AgentHTTPError as exc:
-        if exc.status_code in {400, 409, 503}:
-            detail = _agent_http_detail(exc)
-            if isinstance(detail, dict):
-                projected = {key: detail[key] for key in ('error', 'code', 'pending') if key in detail}
-                detail = projected or 'External model adoption was not confirmed'
-            else:
-                detail = 'External model adoption was not confirmed'
-            raise HTTPException(status_code=exc.status_code, detail=detail) from None
-        raise HTTPException(status_code=502, detail='External model adoption failed') from None
-    except AgentClientError:
-        raise HTTPException(status_code=503, detail='External model adoption was not confirmed; refresh recovery status') from None
-    if (
-        not isinstance(value, dict) or value.get('status') != 'adopted'
-        or value.get('modelId') != model_id
-        or type(value.get('contextLength')) is not int
-        or not 16384 <= value['contextLength'] <= 10_000_000
-        or not isinstance(value.get('modelTransactionId'), str)
-        or re.fullmatch(r'[a-f0-9]{64}', value['modelTransactionId']) is None
-    ):
-        raise HTTPException(status_code=502, detail='External model adoption response is invalid')
-    return JSONResponse({
-        'status': 'adopted', 'modelId': model_id,
-        'contextLength': value.get('contextLength'),
-        'modelTransactionId': value.get('modelTransactionId'),
-    }, headers={'Cache-Control': 'no-store'})
+def adopt_external_model(api_key: str = Depends(verify_api_key)):
+    """Removed with Lemonade (round F); answers 410 for one release."""
+    raise HTTPException(status_code=410, detail=_RETIRED_ADOPTION)
 
 
 @router.post("/api/models/runtime/{operation}")
@@ -2310,11 +2268,11 @@ def load_model(
             status_code=409,
             detail={**mode_denial, "requestedModelId": model_id},
         )
-    if _external_lemonade_runtime() and not _model_management().get("canActivate"):
+    if _windows_hosted_runtime() and not _model_management().get("canActivate"):
         raise HTTPException(
             status_code=409,
             detail={
-                "error": "Externally managed Lemonade cannot use local model activation",
+                "error": "This installation cannot change the model runtime on the Windows host right now",
                 "code": "external_runtime_unmanaged",
                 "requestedModelId": model_id,
             },
@@ -2412,6 +2370,7 @@ def load_model(
             activation_body,
             timeout=2700,
             retry_download_busy_seconds=_MODEL_DOWNLOAD_BUSY_ACTIVATION_GRACE_SECONDS,
+            retry_pixel_busy_seconds=_MODEL_PIXEL_BUSY_ACTIVATION_GRACE_SECONDS,
         )
     finally:
         # A status read cached while the activation ran still reports its

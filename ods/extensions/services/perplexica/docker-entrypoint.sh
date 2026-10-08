@@ -134,6 +134,10 @@ NODE
 
 patch_scrape_url
 
+# Vane v1.12.2's client converts bracketed code into citations before Markdown
+# rendering. An unknown chunk stops startup instead of corrupting answers.
+node /app/ods-patch-client-citations.js
+
 sync_model_route() {
     attempts="${PERPLEXICA_MODEL_SYNC_ATTEMPTS:-30}"
     delay="${PERPLEXICA_MODEL_SYNC_DELAY_SECONDS:-2}"

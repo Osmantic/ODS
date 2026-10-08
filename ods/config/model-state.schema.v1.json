@@ -56,7 +56,10 @@
               "required": ["kind", "endpointId"],
               "additionalProperties": false,
               "properties": {
-                "kind": { "enum": ["llama-server", "lemonade", "hipfire", "unknown"] },
+                "kind": {
+                  "enum": ["llama-server", "lemonade", "hipfire", "unknown"],
+                  "description": "lemonade names a pre-round-F route: readable for one release so the host agent can replace it, never written"
+                },
                 "endpointId": { "type": "string", "minLength": 1 },
                 "nativeRoute": { "type": ["string", "null"] }
               }

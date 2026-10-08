@@ -54,7 +54,7 @@ Verify: `docker compose logs llama-server | grep parallel` after restart.
 ./install.sh --lan
 ```
 
-Or set `BIND_ADDRESS=0.0.0.0` in `.env` and run `ods restart`. `install-core.sh` maps `--lan` to that value, and the base plus extension compose port bindings use `${BIND_ADDRESS:-127.0.0.1}` — no per-service edits needed.
+Or set `BIND_ADDRESS=0.0.0.0` in `.env` and run `ods restart` (`.\ods.ps1 restart` on native Windows), which turns Open WebUI sign-in on before recreating it. `install-core.sh` maps `--lan` to that value, and the base plus extension compose port bindings use `${BIND_ADDRESS:-127.0.0.1}` — no per-service edits needed.
 
 ### 3. Add firewall rules
 
@@ -126,11 +126,13 @@ Be honest with your users about this:
 
 `open-webui` is the only service in the stack with a real multi-user account model — chat history is per-account. If your users only interact via open-webui, the sharing problems above mostly don't surface.
 
+ODS keeps open-webui's self-signup closed. The first account created on a new install with `WEBUI_AUTH=true` becomes the administrator, who creates each user's account in **Admin Panel > Users**. Settings changed in open-webui's Admin Panel last until it restarts; see [Settings come from ODS](../extensions/services/open-webui/README.md#settings-come-from-ods).
+
 ---
 
 ## Capacity guidance
 
-[`HARDWARE-GUIDE.md`](HARDWARE-GUIDE.md) has the canonical per-tier user counts. Treat them as ceilings that assume the steps above are done. A default install on a Pro-tier machine will not serve 10–15 users — it will serve one at a time. The same machine *with* `LLAMA_PARALLEL=12`, network bind, and the relevant firewall rules will get close.
+ODS publishes no per-tier user counts; measure on your own hardware (`ods benchmark`) before you promise a capacity. A default install serves one request at a time (`LLAMA_PARALLEL=1`). Raising `LLAMA_PARALLEL` lets llama-server serve several requests concurrently, at the cost of context per request, once the network and firewall steps above are done.
 
 ---
 
@@ -178,13 +180,13 @@ Run through this before declaring multi-user ready:
 - [ ] open-webui has `WEBUI_AUTH=true` (the network-deployment default) and a strong `WEBUI_SECRET`.
 - [ ] Inference backend matches user count: llama-server up to ~10–15, vLLM beyond.
 - [ ] Reverse proxy or VPN in place for any remote access.
-- [ ] Capacity claim from `HARDWARE-GUIDE.md` reality-checked under load before announcing.
+- [ ] Capacity measured under load on this hardware before announcing.
 
 ---
 
 ## Future work
 
-The single highest-leverage change ODS itself could make: **tier-aware default values for `LLAMA_PARALLEL`** in the installer (`installers/lib/tier-map.sh`), so a Prosumer install lands at `LLAMA_PARALLEL=6` automatically and a Pro install at `LLAMA_PARALLEL=12`. That would close most of the gap between the hardware-guide capacity claims and what a default install actually delivers.
+The single highest-leverage change ODS itself could make: **tier-aware default values for `LLAMA_PARALLEL`** in the installer (`installers/lib/tier-map.sh`), so a Prosumer install lands at `LLAMA_PARALLEL=6` automatically and a Pro install at `LLAMA_PARALLEL=12`. That would let a default install serve several users without manual tuning.
 
 This guide deliberately stops at documenting the current state. The installer-side change touches tier-mapping logic, which is core, and per the contribution policy that warrants a discussion issue before a PR. If a maintainer is interested, that's the natural next thread.
 
@@ -196,6 +198,6 @@ The configuration values, exposure-profile recommendations, and capacity caveats
 
 1. The ODS codebase as of `origin/main` at the time of writing — `install-core.sh`, `docker-compose.base.yml`, `SECURITY.md`, `HARDWARE-GUIDE.md`, and the relevant extension manifests.
 2. A public-facing multi-tile demo deployment validated for ~hundreds of unique visitors and peaks above 60 concurrent on a single Blackwell-class workstation (the source of the vLLM, Brave Search, and "rate-limit at the proxy, not in the app" recommendations in the public-facing pattern).
-3. The community capacity numbers documented in `HARDWARE-GUIDE.md` and `FAQ.md`, which originate from a 2× RTX 4090 reference rig.
+3. Community capacity numbers from a 2× RTX 4090 reference rig, formerly published in `HARDWARE-GUIDE.md` and `FAQ.md`. They were retired on 2026-10-03 because no measurements were published behind them.
 
 None of these are universal. Treat the guide as a starting recipe, not a benchmark.

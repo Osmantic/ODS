@@ -58,6 +58,7 @@ import {
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
@@ -480,6 +481,7 @@ export default definePluginEntry({
       guard = withPixelSubagentWorkspace(guard, event, context, AGENT_ID, runtimeConfig,
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
+      guard = withCronCommandPayloadBlock(guard, event, context);
       const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);

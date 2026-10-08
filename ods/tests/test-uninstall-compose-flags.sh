@@ -43,9 +43,34 @@ emit_filtered() {
 }
 
 if [[ "${1:-}" == "ps" ]]; then
-    [[ " $* " == *" label=com.docker.compose.project="* ]] && exit 0
+    if [[ " $* " == *" label=com.docker.compose.project="* ||
+          " $* " == *" label=com.docker.compose.project "* ]]; then
+        # Docker's path-list scan uses formatted metadata, while the full
+        # ownership inspection still requests only immutable container IDs.
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            if [[ " $* " == *" --format "* ]]; then
+                printf '{"Id":"%s","workingDir":"%s","configFiles":"%s/docker-compose.base.yml"}\n' \
+                    "$container_id" "$INSTALL_DIR" "$INSTALL_DIR"
+            else
+                printf '%s\n' "$container_id"
+            fi
+        done < <(
+            [[ -z "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]] || printf '%s\n' "$DOCKER_RESIDUAL_CONTAINER_ID"
+            if [[ -n "${DOCKER_PROFILE_STATE_FILE:-}" && -s "$DOCKER_PROFILE_STATE_FILE" ]]; then
+                cat "$DOCKER_PROFILE_STATE_FILE"
+            fi
+        )
+        exit 0
+    fi
     NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
     emit_filtered "$@"
+    exit 0
+fi
+if [[ "${1:-}" == "inspect" && ( -n "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ||
+        ( -n "${DOCKER_PROFILE_STATE_FILE:-}" && -s "$DOCKER_PROFILE_STATE_FILE" ) ) ]]; then
+    printf '[{"Id":"%s","Config":{"Labels":{"com.docker.compose.project":"ods","com.docker.compose.service":"open-webui","com.docker.compose.project.working_dir":"%s","com.docker.compose.project.config_files":"%s/docker-compose.base.yml"}},"Mounts":[{"Type":"bind","Source":"%s/data/open-webui"}]}]\n' \
+        "${2:?}" "$INSTALL_DIR" "$INSTALL_DIR" "$INSTALL_DIR"
     exit 0
 fi
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
@@ -54,11 +79,33 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
     emit_filtered "$@"
     exit 0
 fi
+if [[ "${1:-}" == "compose" && -n "${DOCKER_REQUIRE_ENV:-}" && ! -f "$INSTALL_DIR/.env" ]]; then
+    # Real Compose cannot render the base stack without the secrets in .env.
+    printf 'required variable WEBUI_SECRET is missing a value\n' >&2
+    exit 1
+fi
+if [[ "${1:-}" == "compose" && -n "${DOCKER_GID_EXPECTED:-}" ]]; then
+    [[ "${PIXEL_INGRESS_GID:-}" == "$DOCKER_GID_EXPECTED" ]] || {
+        printf 'Compose interpolation GID mismatch\n' >&2
+        exit 1
+    }
+    cmp -s "$INSTALL_DIR/.env" "$DOCKER_GID_ENV_COPY" || {
+        printf 'Cleanup interpolation changed installed environment\n' >&2
+        exit 1
+    }
+    printf 'gid=%s %s\n' "$PIXEL_INGRESS_GID" "$*" >> "$DOCKER_LOG"
+fi
 if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
     printf '{"name":"ods","volumes":{}}\n'
     exit 0
 fi
 if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
+    # Compose retains a service in a disabled profile unless all profiles are
+    # selected. The real postflight must observe that container disappearing.
+    if [[ "${DOCKER_DOWN_EXIT_CODE:-0}" == "0" && -n "${DOCKER_PROFILE_STATE_FILE:-}" &&
+          " $* " == *" --profile * down "* ]]; then
+        : > "$DOCKER_PROFILE_STATE_FILE"
+    fi
     [[ "${DOCKER_DOWN_EXIT_CODE:-0}" == "0" ]] || printf 'fixture Compose diagnostic\n' >&2
     exit "${DOCKER_DOWN_EXIT_CODE:-0}"
 fi
@@ -88,7 +135,8 @@ EOF
     cat > "$stub_dir/id" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-    -u|-g) printf '1000\n' ;;
+    -u) printf '1000\n' ;;
+    -g) printf '%s\n' "${ID_PRIMARY_GROUP-1000}"; exit "${ID_PRIMARY_EXIT-0}" ;;
     -un) printf 'fixture-owner\n' ;;
     *) exit 1 ;;
 esac
@@ -147,6 +195,14 @@ run_uninstall() {
     SUDO_LOG="${SUDO_LOG:?}" \
     SUDO_VALIDATE_EXIT_CODE="${SUDO_VALIDATE_EXIT_CODE:-0}" \
     DOCKER_DOWN_EXIT_CODE="${DOCKER_DOWN_EXIT_CODE:-0}" \
+    DOCKER_RESIDUAL_CONTAINER_ID="${DOCKER_RESIDUAL_CONTAINER_ID:-}" \
+    DOCKER_PROFILE_STATE_FILE="${DOCKER_PROFILE_STATE_FILE:-}" \
+    DOCKER_GID_EXPECTED="${DOCKER_GID_EXPECTED:-}" \
+    DOCKER_GID_ENV_COPY="${DOCKER_GID_ENV_COPY:-}" \
+    DOCKER_REQUIRE_ENV="${DOCKER_REQUIRE_ENV:-}" \
+    PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID-}" \
+    ID_PRIMARY_GROUP="${ID_PRIMARY_GROUP-1000}" \
+    ID_PRIMARY_EXIT="${ID_PRIMARY_EXIT-0}" \
     ODS_UNINSTALL_SYSTEMD_DIR="$install_dir/systemd" \
         bash "$install_dir/ods-uninstall.sh" --force "$@" >/dev/null
 }
@@ -231,6 +287,41 @@ EOF
         || fail "missing Compose flags must explain the refusal"
     pass "missing Compose flags are refused before uninstall mutation"
 
+    # An install that stopped before phase 06 has no .env, so its Compose stack
+    # cannot render. With nothing in the ods Compose project there is nothing
+    # to stop or purge, and the uninstall must still complete.
+    local unconfigured_install="$TMP_DIR/unconfigured-install" unconfigured_home="$TMP_DIR/unconfigured-home"
+    local unconfigured_docker="$TMP_DIR/unconfigured-docker.log"
+    make_install "$unconfigured_install"
+    mkdir -p "$unconfigured_home"
+    rm "$unconfigured_install/.env"
+    DOCKER_LOG="$unconfigured_docker" SUDO_LOG="$TMP_DIR/unconfigured-sudo.log" DOCKER_REQUIRE_ENV=1 \
+        run_uninstall "$unconfigured_install" "$unconfigured_home" "$stub_dir" 2>"$TMP_DIR/unconfigured-error" \
+        || fail "an install without .env and without ODS Docker resources must uninstall: $(cat "$TMP_DIR/unconfigured-error")"
+    [[ ! -e "$unconfigured_install" ]] || fail "unconfigured install directory must be removed"
+    if grep -q '^compose ' "$unconfigured_docker"; then
+        fail "an unconfigured install must not render or run its Compose stack"
+    fi
+    assert_no_name_cleanup "$unconfigured_docker"
+    pass "an install that stopped before .env uninstalls when Docker holds nothing for it"
+
+    # The same install with a container in the ods project keeps the full
+    # ownership checks, which refuse because the stack cannot render.
+    local residual_install="$TMP_DIR/unconfigured-residual" residual_home="$TMP_DIR/unconfigured-residual-home"
+    make_install "$residual_install"
+    mkdir -p "$residual_home"
+    rm "$residual_install/.env"
+    printf 'retain owner data\n' > "$residual_install/data/owner.txt"
+    if DOCKER_LOG="$TMP_DIR/unconfigured-residual-docker.log" SUDO_LOG="$TMP_DIR/unconfigured-sudo.log" \
+        DOCKER_REQUIRE_ENV=1 DOCKER_RESIDUAL_CONTAINER_ID="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" \
+        run_uninstall "$residual_install" "$residual_home" "$stub_dir" 2>"$TMP_DIR/unconfigured-residual-error"; then
+        fail "an unconfigured install with ODS Docker resources must not skip ownership checks"
+    fi
+    [[ -f "$residual_install/data/owner.txt" ]] || fail "refused unconfigured install must keep its data"
+    grep -qF 'Docker ownership could not be proven' "$TMP_DIR/unconfigured-residual-error" \
+        || fail "unconfigured install with ODS resources must report the ownership refusal"
+    pass "an install without .env keeps ownership checks while ODS Docker resources exist"
+
     if [[ "$(uname -s)" == "Linux" ]]; then
         local changed_install="$TMP_DIR/changed-install" changed_home="$TMP_DIR/changed-home"
         local changed_docker="$TMP_DIR/changed-docker.log"
@@ -259,6 +350,39 @@ EOF
         pass "recipe drift during retirement is rechecked before Compose down"
     fi
 
+    # A stopped, bind-only service can be absent from the selected profiles
+    # while still belonging to this installation. Exercise both data policies;
+    # the existing permanent-residue case below must continue to fail closed.
+    local profile_mode profile_install profile_home profile_log profile_state
+    local profile_id="cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    for profile_mode in keep purge; do
+        profile_install="$TMP_DIR/profile-$profile_mode"
+        profile_home="$TMP_DIR/profile-home-$profile_mode"
+        profile_log="$TMP_DIR/profile-$profile_mode.log"
+        profile_state="$TMP_DIR/profile-$profile_mode.container"
+        make_install "$profile_install"
+        mkdir -p "$profile_home"
+        printf 'retained user data\n' > "$profile_install/data/owner.txt"
+        printf '%s\n' "$profile_id" > "$profile_state"
+        if [[ "$profile_mode" == keep ]]; then
+            DOCKER_LOG="$profile_log" SUDO_LOG="$TMP_DIR/profile-sudo.log" \
+                DOCKER_PROFILE_STATE_FILE="$profile_state" \
+                run_uninstall "$profile_install" "$profile_home" "$stub_dir" --keep-data
+            [[ -f "$profile_install/data/owner.txt" ]] || fail "profile cleanup must retain requested data"
+        else
+            DOCKER_LOG="$profile_log" SUDO_LOG="$TMP_DIR/profile-sudo.log" \
+                DOCKER_PROFILE_STATE_FILE="$profile_state" \
+                run_uninstall "$profile_install" "$profile_home" "$stub_dir"
+            [[ ! -e "$profile_install" ]] || fail "profile cleanup must complete full uninstall"
+        fi
+        [[ ! -s "$profile_state" ]] || fail "disabled-profile container must be removed"
+        assert_no_name_cleanup "$profile_log"
+        if grep -Eq ' down .* (-v|--volumes)( |$)' "$profile_log"; then
+            fail "profile cleanup must leave volume removal to the custody helper"
+        fi
+        pass "disabled-profile container is removed with $profile_mode data policy"
+    done
+
     local install_keep="$TMP_DIR/install-keep"
     local home_keep="$TMP_DIR/home-keep"
     local log_keep="$TMP_DIR/docker-keep.log"
@@ -268,14 +392,42 @@ EOF
     make_install "$install_keep"
     mkdir -p "$home_keep/.local/bin"
     ln -s "$install_keep/ods-cli" "$home_keep/.local/bin/ods"
+    # The owner's backups (ods-backup.sh writes to .backups/ by default),
+    # presets and update snapshots are user data too.
+    mkdir -p "$install_keep/.backups/backup-1" "$install_keep/presets/work" "$home_keep/.ods/backups/pre-update-1"
+    printf '{}\n' > "$install_keep/.backups/backup-1/manifest.json"
+    printf 'name=work\n' > "$install_keep/presets/work/meta.txt"
+    printf 'snapshot\n' > "$home_keep/.ods/backups/pre-update-1/.env"
+    printf 'chats\n' > "$install_keep/data/owner.txt"
     DOCKER_LOG="$log_keep" SUDO_LOG="$sudo_log" run_uninstall "$install_keep" "$home_keep" "$stub_dir" --keep-data
+    [[ -f "$install_keep/data/owner.txt" ]] || fail "--keep-data must keep data/"
+    [[ -f "$install_keep/.backups/backup-1/manifest.json" ]] || fail "--keep-data must keep the owner's backups in .backups/"
+    [[ -f "$install_keep/presets/work/meta.txt" ]] || fail "--keep-data must keep saved presets"
+    [[ -f "$home_keep/.ods/backups/pre-update-1/.env" ]] || fail "--keep-data must keep update snapshots in ~/.ods"
+    [[ ! -e "$install_keep/ods-cli" ]] || fail "--keep-data must still remove the installation files"
+    pass "--keep-data keeps data/, backups, presets and update snapshots"
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_keep" \
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_keep" \
         || fail "uninstall must use saved .compose-flags for docker compose down"
     if grep -qF 'down -v --remove-orphans' "$log_keep"; then
         fail "--keep-data must not remove compose volumes with -v"
     fi
     pass "uninstall uses saved compose flags and preserves volumes with --keep-data"
+
+    local install_full="$TMP_DIR/install-full" home_full="$TMP_DIR/home-full"
+    make_install "$install_full"
+    mkdir -p "$install_full/.backups/backup-1" "$home_full/.ods/backups/pre-update-1"
+    printf '{}\n' > "$install_full/.backups/backup-1/manifest.json"
+    printf 'snapshot\n' > "$home_full/.ods/backups/pre-update-1/.env"
+    HOME="$home_full" INSTALL_DIR="$install_full" PATH="$stub_dir:$PATH" \
+        DOCKER_LOG="$TMP_DIR/docker-full.log" SUDO_LOG="$sudo_log" \
+        ODS_UNINSTALL_SYSTEMD_DIR="$install_full/systemd" \
+        bash "$install_full/ods-uninstall.sh" --force > "$TMP_DIR/full.out" 2>&1
+    [[ ! -e "$install_full/.backups" && ! -e "$home_full/.ods" ]] \
+        || fail "a full uninstall removes backups and update snapshots"
+    grep -qF 'This also deletes 2 backup(s)' "$TMP_DIR/full.out" \
+        || fail "a full uninstall must say it deletes the owner's backups"
+    pass "a full uninstall names the backups it deletes"
     assert_no_name_cleanup "$log_keep"
     [[ ! -L "$home_keep/.local/bin/ods" ]] \
         || fail "uninstall must remove the user-level ods CLI symlink"
@@ -288,13 +440,31 @@ EOF
     make_install "$install_purge"
     DOCKER_LOG="$log_purge" SUDO_LOG="$sudo_log" run_uninstall "$install_purge" "$home_purge" "$stub_dir"
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_purge" \
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_purge" \
         || fail "normal uninstall must stop Compose without deleting volumes before custody review"
     if grep -qF 'down -v' "$log_purge"; then
         fail "normal uninstall must not let Compose delete volumes before custody review"
     fi
     pass "normal uninstall defers volume removal to the custody helper"
     assert_no_name_cleanup "$log_purge"
+
+    local residual_install="$TMP_DIR/residual-install" residual_home="$TMP_DIR/residual-home"
+    local residual_log="$TMP_DIR/docker-residual.log" residual_sudo="$TMP_DIR/sudo-residual.log"
+    make_install "$residual_install"
+    mkdir -p "$residual_home"
+    printf 'retain owner data\n' > "$residual_install/data/owner.txt"
+    local residual_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    if DOCKER_LOG="$residual_log" SUDO_LOG="$residual_sudo" \
+        DOCKER_RESIDUAL_CONTAINER_ID="$residual_id" \
+        run_uninstall "$residual_install" "$residual_home" "$stub_dir" 2>"$TMP_DIR/residual-error"; then
+        fail "a stopped bind-only ODS container must block uninstall completion"
+    fi
+    [[ -f "$residual_install/ods-uninstall.sh" && -f "$residual_install/data/owner.txt" ]] \
+        || fail "container residue must retain installation and owner data"
+    grep -qF "$residual_id" "$TMP_DIR/residual-error" \
+        || fail "container residue must identify the exact surviving container"
+    assert_no_name_cleanup "$residual_log"
+    pass "stopped bind-only ODS container prevents false uninstall success"
 
     local failed_install="$TMP_DIR/failed-install" failed_home="$TMP_DIR/failed-home"
     local failed_docker="$TMP_DIR/failed-docker.log" failed_sudo="$TMP_DIR/failed-sudo.log"
@@ -306,7 +476,7 @@ EOF
         run_uninstall "$failed_install" "$failed_home" "$stub_dir" 2>"$TMP_DIR/failed-error"; then
         fail "Compose down failure must fail uninstall"
     fi
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$failed_docker" \
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$failed_docker" \
         || fail "failure fixture must reach the existing Compose down command"
     assert_no_name_cleanup "$failed_docker"
     [[ -f "$failed_install/ods-uninstall.sh" && -f "$failed_install/data/owner.txt" && \
@@ -403,6 +573,66 @@ EOF
         fail "uninstall must not execute command substitutions from .env"
     fi
     pass "uninstall loads .env without executing shell substitutions"
+
+    # Exercise real env loading and both Compose config/down, with no real
+    # Docker or privileged commands. Partial installs may not have saved flags.
+    local gid_case gid_install gid_home gid_log gid_env_copy expected_gid
+    for gid_case in missing blank configured; do
+        gid_install="$TMP_DIR/gid-$gid_case"
+        gid_home="$TMP_DIR/gid-home-$gid_case"
+        gid_log="$TMP_DIR/gid-$gid_case.log"
+        gid_env_copy="$TMP_DIR/gid-$gid_case.env"
+        mkdir -p "$gid_home"
+        make_install "$gid_install"
+        rm "$gid_install/.compose-flags"
+        expected_gid=1000
+        case "$gid_case" in
+            blank) printf 'PIXEL_INGRESS_GID=\n' >> "$gid_install/.env" ;;
+            configured)
+                printf 'PIXEL_INGRESS_GID=4242\n' >> "$gid_install/.env"
+                expected_gid=4242 ;;
+        esac
+        cp "$gid_install/.env" "$gid_env_copy"
+        DOCKER_LOG="$gid_log" SUDO_LOG="$sudo_log" \
+            DOCKER_GID_EXPECTED="$expected_gid" DOCKER_GID_ENV_COPY="$gid_env_copy" \
+            PIXEL_INGRESS_GID="$(if [[ "$gid_case" == missing ]]; then printf ''; else printf '989'; fi)" \
+            run_uninstall "$gid_install" "$gid_home" "$stub_dir" --keep-data
+        grep -q "^gid=$expected_gid .* config --format json" "$gid_log" \
+            || fail "$gid_case GID must resolve through actual Compose ownership inspection"
+        grep -q "^gid=$expected_gid .* down --remove-orphans" "$gid_log" \
+            || fail "$gid_case GID must resolve through actual Compose down"
+        pass "$gid_case Pixel GID permits cleanup without changing installed env"
+    done
+
+    # A failed identity lookup must not pass even if it prints a numeric value.
+    local primary_exit primary_value gid_sudo
+    for gid_case in invalid failed; do
+        gid_install="$TMP_DIR/gid-$gid_case"
+        gid_home="$TMP_DIR/gid-home-$gid_case"
+        gid_log="$TMP_DIR/gid-$gid_case.log"
+        gid_sudo="$TMP_DIR/gid-$gid_case-sudo.log"
+        mkdir -p "$gid_home"
+        make_install "$gid_install"
+        printf 'PIXEL_INGRESS_GID=\n' >> "$gid_install/.env"
+        printf 'retained owner data\n' > "$gid_install/data/owner.txt"
+        cat > "$gid_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+        primary_value=invalid; primary_exit=0
+        if [[ "$gid_case" == failed ]]; then primary_value=1000; primary_exit=1; fi
+        if DOCKER_LOG="$gid_log" SUDO_LOG="$gid_sudo" PIXEL_INGRESS_GID=989 \
+            ID_PRIMARY_GROUP="$primary_value" ID_PRIMARY_EXIT="$primary_exit" \
+            run_uninstall "$gid_install" "$gid_home" "$stub_dir" --keep-data \
+            2>"$TMP_DIR/gid-$gid_case-error"; then
+            fail "$gid_case primary group lookup must refuse cleanup"
+        fi
+        [[ ! -s "$gid_log" && ! -s "$gid_sudo" && ! -e "$gid_install/pixel-retired" \
+            && -f "$gid_install/ods-uninstall.sh" && -f "$gid_install/data/owner.txt" ]] \
+            || fail "$gid_case primary group lookup must stop before mutations"
+        grep -qF 'Cannot determine a numeric group for Compose cleanup' "$TMP_DIR/gid-$gid_case-error" \
+            || fail "$gid_case primary group lookup must explain the refusal"
+        pass "$gid_case primary group lookup preserves the partial installation"
+    done
 
     # These stubs exercise the removed name fallback, not Docker Compose's
     # own project selection or the independent native Pixel retirement helper.

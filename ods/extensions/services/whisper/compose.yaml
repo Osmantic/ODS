@@ -7,6 +7,8 @@ services:
       - no-new-privileges:true
     environment:
       - WHISPER__TTL=86400
+      # The Hugging Face hub client reports usage by default.
+      - HF_HUB_DISABLE_TELEMETRY=1
     # Use a shell wrapper to wait for the bind-mounted entrypoint to become
     # visible, then run it through sh. Windows bind mounts can expose scripts
     # without a usable executable bit even when the file is readable.

@@ -1,49 +1,35 @@
 # ODS — AMD Multi-GPU Overlay
-# Applied when GPU_COUNT > 1 and GPU_BACKEND = amd.
-# llama-server gets all of /dev/dri + ROCR_VISIBLE_DEVICES for multi-GPU inference.
-# Single-GPU services use ROCR_VISIBLE_DEVICES for GPU isolation.
-# Dashboard-api gets all GPUs for monitoring.
+# Applied when GPU_COUNT > 1 and GPU_BACKEND = amd, after docker-compose.amd.yml
+# (and docker-compose.amd-rocm.yml when the ROCm image is selected).
 #
-# Lemonade passthrough: Lemonade launches its inner llama-server via fork()+execv()
-# and constructs the CLI explicitly — LLAMA_ARG_* env vars are NOT guaranteed to be
-# read by the inner process. We pass --split-mode explicitly via --llamacpp-args
-# (Lemonade's official mechanism). --split-mode and --tensor-split are NOT in
-# Lemonade's blocked flag list (-m, --port, --ctx-size, -ngl, --jinja, --mmproj,
-# --embeddings, --reranking), so they pass through safely.
-#
-# Backend selection: Lemonade's llamacpp.backend field accepts only auto|vulkan|cpu
-# (the "rocm" literal was tightened out of the schema upstream). We set "auto" and
-# rely on LEMONADE_LLAMACPP_ROCM_BIN (inherited from docker-compose.amd.yml) to
-# point Lemonade at the custom ROCm llama-server binary.
-# Note: command fully replaces the base docker-compose.amd.yml command.
+# llama-server reads the split settings from LLAMA_ARG_* like the NVIDIA
+# multi-GPU overlay. Layer split is the default: Vulkan has no row split.
+# LLAMA_SERVER_GPU_INDICES (written by the GPU assignment) limits llama-server
+# to its assigned GPUs: GGML_VK_VISIBLE_DEVICES for the Vulkan image and
+# ROCR_VISIBLE_DEVICES for the ROCm image; each image ignores the other's
+# variable. The indices follow the DRM card order that amd-topo.sh reports,
+# which leaves out an integrated GPU next to discrete ones. NODEVICE_SELECT=1
+# turns off Mesa's device-select layer, which would move the boot VGA device
+# to Vulkan index 0; the Vulkan loader then lists discrete GPUs first, in PCI
+# order (loader_linux.c), the order amdgpu probes them and numbers DRM cards.
+# An empty GGML_VK_VISIBLE_DEVICES would hide every GPU and leave llama.cpp on
+# the CPU, so the assignment is required here.
+# Dashboard-api gets every render node for monitoring. It reads sysfs only, so
+# it does not take /dev/kfd, which Vulkan-only hosts may not have.
 
 services:
   llama-server:
-    # devices and group_add inherited from docker-compose.amd.yml
-    command:
-      - serve
-      - --port
-      - "8080"
-      - --host
-      - "0.0.0.0"
-      - --no-tray
-      - --llamacpp
-      - "${LEMONADE_LLAMACPP:-auto}"
-      - --llamacpp-args
-      - "--metrics --host 0.0.0.0 --split-mode ${LLAMA_ARG_SPLIT_MODE:-layer}"
-      - --extra-models-dir
-      - /models
+    # devices and group_add are inherited from docker-compose.amd.yml.
     environment:
-      LEMONADE_LLAMACPP: "${LEMONADE_LLAMACPP:-auto}"
-      ROCR_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_INDICES:-}"
-      # Tensor split ratio (e.g. "0.5,0.5") — passed via env var because it may
-      # be empty (auto-split). Inherited by inner llama-server via fork()+execv().
+      LLAMA_ARG_SPLIT_MODE: "${LLAMA_ARG_SPLIT_MODE:-layer}"
+      # Ratio such as "0.5,0.5"; empty lets llama.cpp split by free memory.
       LLAMA_ARG_TENSOR_SPLIT: "${LLAMA_ARG_TENSOR_SPLIT:-}"
-      HSA_OVERRIDE_GFX_VERSION: "${HSA_OVERRIDE_GFX_VERSION:-}"
+      GGML_VK_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_INDICES:?LLAMA_SERVER_GPU_INDICES must be set for the AMD multi-GPU overlay}"
+      NODEVICE_SELECT: "1"
+      ROCR_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_INDICES:?LLAMA_SERVER_GPU_INDICES must be set for the AMD multi-GPU overlay}"
 
   dashboard-api:
     devices:
-      - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
     environment:
       GPU_COUNT: "${GPU_COUNT:-1}"

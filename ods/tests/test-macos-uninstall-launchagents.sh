@@ -97,6 +97,8 @@ make_install() {
     cp "$ROOT_DIR/scripts/resolve-compose-stack.sh" "$install_dir/scripts/"
     touch "$install_dir/docker-compose.base.yml"
     printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
+    # A configured install: the only state with destructive Docker cleanup.
+    printf '%s\n' 'WEBUI_SECRET=test-only' > "$install_dir/.env"
     mkdir -p "$install_dir/installers/macos/lib"
     cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
     touch "$install_dir/ods-cli"
@@ -168,8 +170,10 @@ main() {
     done
     pass "macOS uninstall boots out loaded agents and removes all ODS plists (incl. legacy)"
     local retire_line down_line
-    retire_line="$(grep -n '^native-retire$' "$TMP_DIR/out1.log.commands" | head -n 1 | cut -d: -f1)"
-    down_line="$(grep -n '^docker compose .* down --remove-orphans$' "$TMP_DIR/out1.log.commands" | head -n 1 | cut -d: -f1)"
+    # || true: under pipefail a missing line would end the test silently
+    # instead of printing the FAIL below.
+    retire_line="$(grep -n '^native-retire$' "$TMP_DIR/out1.log.commands" | head -n 1 | cut -d: -f1 || true)"
+    down_line="$(grep -n '^docker compose .* down --remove-orphans$' "$TMP_DIR/out1.log.commands" | head -n 1 | cut -d: -f1 || true)"
     [[ -n "$retire_line" && -n "$down_line" && "$retire_line" -lt "$down_line" ]] \
         || fail "native retirement must precede destructive Docker cleanup"
 
@@ -239,6 +243,23 @@ main() {
         fail "rejected retirement must not mutate Docker resources"
     fi
     pass "native retirement failure retains the install, agents and Docker resources"
+
+    # An install that stopped before .env was written (#7377): native
+    # retirement still runs, Docker is not touched, and the tree is removed.
+    local install7="$TMP_DIR/install7" home7="$TMP_DIR/home7"
+    make_install "$install7"
+    rm -f "$install7/.env"
+    mkdir -p "$home7/Library/LaunchAgents"
+    LAUNCHCTL_LOG="$TMP_DIR/launchctl7.log" \
+        run_uninstall "$install7" "$home7" "$stub_dir" "$TMP_DIR/out7.log" \
+        || { cat "$TMP_DIR/out7.log" >&2; fail "uninstall without .env exited non-zero"; }
+    grep -qx 'native-retire' "$TMP_DIR/out7.log.commands" \
+        || fail "uninstall without .env skipped native retirement"
+    if grep -q '^docker compose ' "$TMP_DIR/out7.log.commands"; then
+        fail "uninstall without .env ran Docker Compose"
+    fi
+    [[ ! -e "$install7" ]] || fail "uninstall without .env left the install directory"
+    pass "an install without .env retires native services and is removed without Docker cleanup"
 }
 
 main "$@"

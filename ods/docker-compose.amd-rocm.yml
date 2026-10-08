@@ -1,0 +1,34 @@
+# ODS — AMD ROCm overlay (upstream llama.cpp, HIP)
+# Layered after docker-compose.amd.yml when AMD_INFERENCE_BACKEND=rocm. It
+# swaps in the official ggml-org ROCm image of the same b9014 release and adds
+# the ROCm compute device; /dev/dri and the video and render groups come from
+# docker-compose.amd.yml.
+#
+# The image is built for gfx908, gfx90a, gfx942, gfx1030, gfx1100, gfx1101,
+# gfx1102, gfx1150, gfx1151, gfx1200 and gfx1201. Instinct (CDNA) cards need
+# this overlay because they have no Vulkan; on every other AMD GPU it is
+# opt-in. The image is about 7 GB compressed, against about 0.2 GB for Vulkan.
+#
+# Devices, groups and ROCBLAS_USE_HIPBLASLT=0 match the ROCm setup ODS ran on
+# Strix Halo before Lemonade. That setup also forced HSA_OVERRIDE_GFX_VERSION
+# to 11.5.1; this image is built for gfx1151, so the installer sets the
+# override only for GPUs outside the list above.
+#
+# Use with: docker compose -f docker-compose.base.yml -f docker-compose.amd.yml \
+#   -f docker-compose.amd-rocm.yml up -d
+
+services:
+  llama-server:
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm-b9014@sha256:68403f82fe496302bb1c681bab2ee569a04cc13da8fcf14456376b485562236d
+    devices:
+      - /dev/kfd:/dev/kfd
+    environment:
+      # Passed through only when .env sets it. The installer sets it only for
+      # GPUs the image was not built for; ROCm rejects an empty value, and a
+      # wrong one can hang the GPU, so there is no default.
+      - HSA_OVERRIDE_GFX_VERSION
+      - ROCBLAS_USE_HIPBLASLT=${ROCBLAS_USE_HIPBLASLT:-0}
+
+  dashboard-api:
+    environment:
+      - AMD_INFERENCE_BACKEND=${AMD_INFERENCE_BACKEND:-rocm}

@@ -8,7 +8,7 @@
 #
 # Expects: DRY_RUN, INSTALL_DIR, SCRIPT_DIR, LOG_FILE, INTERACTIVE,
 #           TIER, TIER_NAME, VERSION, GPU_BACKEND, LLM_MODEL, OFFLINE_MODE,
-#           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT, ENABLE_HERMES, ENABLE_OPENCLAW,
+#           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT, ENABLE_HERMES,
 #           ENABLE_PIXEL_RUNTIME, PIXEL_AGENT_MODE,
 #           COMPOSE_FLAGS, SUMMARY_JSON_FILE, PREFLIGHT_REPORT_FILE,
 #           BGRN, GRN, AMB, WHT, NC, DASHBOARD_PORT (:-3001),
@@ -55,12 +55,30 @@ if $DRY_RUN; then
     echo ""
 else
     _summary_chat_url=""
-    [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || _summary_chat_url="http://localhost:3000"
+    [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || _summary_chat_url="http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
     if [[ -z "$_summary_chat_url" && "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _summary_chat_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel"
     fi
-    show_success_card "$_summary_chat_url" "http://localhost:3001" "$LOCAL_IP"
-    unset _summary_chat_url
+    # Port 3001 is loopback-only. Other devices reach the Dashboard on the
+    # sign-in listener, and only when LAN access is enabled.
+    _summary_lan_address=""
+    _summary_bind="$(sed -n 's/^BIND_ADDRESS=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+    if [[ -n "$LOCAL_IP" && "$_summary_bind" == "0.0.0.0" ]]; then
+        _summary_remote_port="$(sed -n 's/^DASHBOARD_REMOTE_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+        [[ "$_summary_remote_port" =~ ^[0-9]+$ ]] || _summary_remote_port=3011
+        _summary_lan_address="${LOCAL_IP}:${_summary_remote_port}"
+    fi
+    show_success_card "$_summary_chat_url" "http://localhost:3001" "$_summary_lan_address"
+    unset _summary_chat_url _summary_lan_address _summary_bind _summary_remote_port
+fi
+if [[ "${ODS_REMOTE_ROUTE_PAUSED:-false}" == "true" ]]; then
+    ai_warn "Your model API (Settings > Remote model) is paused for this update; ODS uses the model on this computer."
+    ai "  Select Reconnect there to use the API again."
+fi
+# get-ods.sh --force exports this when the reinstall removed a saved one.
+if [[ "${ODS_REINSTALL_REMOTE_ROUTE_REMOVED:-false}" == "true" ]]; then
+    ai_warn "This reinstall removed your model API connection; ODS uses the model on this computer."
+    ai "  To use the API again, connect it in Settings > Remote model."
 fi
 
 # Mark the setup wizard as already completed for fresh installs. The
@@ -143,7 +161,7 @@ bootline
 # Core services always shown
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || echo "  • Chat UI:       http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
 echo "  • Dashboard:     http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
-if [[ -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" || "${ODS_MODE:-local}" == "lemonade" || "${LEMONADE_EXTERNAL:-false}" == "true" ]]; then
+if [[ -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" || -n "${NATIVE_LLM_BASE_URL:-}" ]]; then
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[litellm]:-4000}/v1  (managed LiteLLM gateway)"
 else
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
@@ -152,7 +170,6 @@ fi
 [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes: http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}"
-[[ "$ENABLE_OPENCLAW" == "true" ]] && echo "  • OpenClaw:      http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
 if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
     ods_systemctl_user is-active opencode-web &>/dev/null && echo "  • OpenCode:      http://localhost:3003"
 fi
@@ -370,19 +387,8 @@ if ! $DRY_RUN; then
         if [[ -n "${EXTERNAL_LLM_URL:-}" && -n "${EXTERNAL_LLM_MODEL:-}" ]]; then
             _perplexica_model="$EXTERNAL_LLM_MODEL"
         elif [[ -n "${GGUF_FILE:-}" ]]; then
+            # llama-server serves the GGUF file name (--alias) on every runtime.
             _perplexica_model="$GGUF_FILE"
-            # Lemonade serves the model under a separate id, so the expected
-            # route differs from the bare GGUF name. An AMD local install runs
-            # Lemonade while LLM_BACKEND stays "llama-server", so both
-            # variables have to be consulted independently — same rule as
-            # scripts/bootstrap-upgrade.sh and the container-side
-            # extensions/services/perplexica/sync-model-config.js.
-            _perplexica_runtime="$(printf '%s' "${AMD_INFERENCE_RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
-            _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
-            if [[ "$_perplexica_runtime" == "lemonade" || "$_perplexica_backend" == "lemonade" ]]; then
-                _perplexica_model="${LEMONADE_MODEL:-}"
-                [[ -n "$_perplexica_model" ]] || _perplexica_model="extra.$GGUF_FILE"
-            fi
         fi
         _perplexica_status=$(curl -sf --max-time 5 "http://127.0.0.1:${SERVICE_PORTS[perplexica]:-3004}/api/config" 2>>"$LOG_FILE" | \
             PERPLEXICA_MODEL="$_perplexica_model" "$PYTHON_CMD" -c '
@@ -441,8 +447,6 @@ if ! $DRY_RUN && command -v ods_readiness_summary >/dev/null 2>&1; then
             "${SERVICE_PORTS[litellm]:-4000}" "${SERVICE_HEALTH[litellm]:-/health/readiness}" "$(sr_container litellm)" "http://localhost:${SERVICE_PORTS[litellm]:-4000}"
         [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && printf 'Perplexica|http://127.0.0.1:%s%s|%s|%s\n' \
             "${SERVICE_PORTS[perplexica]:-3004}" "${SERVICE_HEALTH[perplexica]:-/}" "$(sr_container perplexica)" "http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
-        [[ "$ENABLE_OPENCLAW" == "true" ]] && printf 'OpenClaw|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[openclaw]:-7860}" "${SERVICE_HEALTH[openclaw]:-/}" "$(sr_container openclaw)" "http://localhost:${SERVICE_PORTS[openclaw]:-7860}"
         [[ "$ENABLE_VOICE" == "true" ]] && printf 'Whisper (STT)|http://127.0.0.1:%s%s|%s|%s\n' \
             "${SERVICE_PORTS[whisper]:-9000}" "${SERVICE_HEALTH[whisper]:-/health}" "$(sr_container whisper)" "http://localhost:${SERVICE_PORTS[whisper]:-9000}"
         [[ "$ENABLE_VOICE" == "true" ]] && printf 'Kokoro (TTS)|http://127.0.0.1:%s%s|%s|%s\n' \
@@ -473,7 +477,6 @@ DASHBOARD_REMOTE_PORT="${_dashboard_remote_port_config:-${DASHBOARD_REMOTE_PORT:
 [[ "$DASHBOARD_REMOTE_PORT" =~ ^[0-9]+$ ]] || DASHBOARD_REMOTE_PORT=3011
 unset _dashboard_remote_port_config
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
-OPENCLAW_PORT="${SERVICE_PORTS[openclaw]:-7860}"
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
 echo -e "${GRN}──────────────────────────────────────────────────────────────────────────────${NC}"
 if $DRY_RUN; then
@@ -489,8 +492,6 @@ echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC
 echo -e "  ${BGRN}Portal${NC}       ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(core agent)${NC}"
 [[ "$ENABLE_HERMES" == "true" ]] && \
 echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}"
-[[ "$ENABLE_OPENCLAW" == "true" ]] && \
-echo -e "  ${BGRN}OpenClaw${NC}     ${WHT}http://localhost:${OPENCLAW_PORT}${NC}"
 ods_systemctl_user is-active opencode-web &>/dev/null && \
 [[ "${ENABLE_OPENCODE:-false}" == "true" ]] && \
     echo -e "  ${BGRN}OpenCode${NC}     ${WHT}http://localhost:3003${NC}"

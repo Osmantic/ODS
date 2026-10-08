@@ -38,7 +38,11 @@ check 'New-ODSWindowsServicePlan' "$PLAN_LIB" "service-plan constructor exists"
 check 'Get-ODSWindowsServicePlanDecision' "$PLAN_LIB" "service-plan decision function exists"
 check 'Test-ODSWindowsServiceEnabled' "$PLAN_LIB" "service-plan enabled helper exists"
 check 'Set-ODSWindowsExtensionComposeState' "$PLAN_LIB" "service-plan compose-state helper exists"
-check 'OpenClaw is deprecated' "$PLAN_LIB" "OpenClaw is documented as opt-in legacy"
+if grep -qi 'openclaw' "$PLAN_LIB"; then
+    fail "service plan still selects the removed legacy OpenClaw extension"
+else
+    pass "service plan no longer selects the removed legacy OpenClaw extension"
+fi
 check 'Pixel requires the ODS Linux installer in Ubuntu 24.04 WSL2' "$PLAN_LIB" "native Windows install explains the supported Pixel path"
 check 'elseif ($currentBackend -eq "amd")' "$INSTALL_PS1" "Windows installer has AMD extension overlay branch"
 check 'compose.amd.yaml' "$INSTALL_PS1" "Windows installer includes AMD extension overlays"
@@ -69,7 +73,6 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableWorkflows $false `
             -EnableRag $false `
             -EnableHermes $false `
-            -EnableOpenClaw $false `
             -EnableComfyui $false `
             -EnableDeepResearch $false `
             -EnablePrivacyShield $false
@@ -80,21 +83,9 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableWorkflows $true `
             -EnableRag $true `
             -EnableHermes $true `
-            -EnableOpenClaw $false `
             -EnableComfyui $true `
             -EnableDeepResearch $true `
             -EnablePrivacyShield $true
-
-        $legacy = New-ODSWindowsServicePlan `
-            -EnableRecommended $false `
-            -EnableVoice $false `
-            -EnableWorkflows $false `
-            -EnableRag $false `
-            -EnableHermes $false `
-            -EnableOpenClaw $true `
-            -EnableComfyui $false `
-            -EnableDeepResearch $false `
-            -EnablePrivacyShield $false
 
         $unknownOptional = Get-ODSWindowsServicePlanDecision `
             -ServiceId "future-optional" `
@@ -111,19 +102,16 @@ if command -v pwsh >/dev/null 2>&1; then
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "hermes" -Plan $core)) "Core disables Hermes"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $core)) "Core disables SearXNG"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $core)) "Core disables LiteLLM"
-        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $core)) "Core disables OpenClaw"
+        Assert-Plan (-not $core.ContainsKey("openclaw")) "Plan has no entry for the removed legacy OpenClaw extension"
+        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $core)) "Core keeps APE off without an agent"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "pixel-edge" -Plan $core)) "Core does not launch a Pixel edge without a host runtime"
         Assert-Plan (-not (Get-ODSWindowsServicePlanDecision -ServiceId "pixel-model-relay" -Category "core" -Plan $core).Enabled) "Core does not launch a Pixel relay without a host runtime or bearer key"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "tailscale" -Plan $core)) "Core disables Tailscale"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "hermes" -Plan $full) "Full enables Hermes"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $full) "Full enables SearXNG"
-        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $full)) "Full keeps OpenClaw opt-in"
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $full) "Full enables APE with agents"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "pixel-edge" -Plan $full)) "Full does not advertise unsupported native Windows Pixel"
         Assert-Plan (-not (Get-ODSWindowsServicePlanDecision -ServiceId "pixel-model-relay" -Category "core" -Plan $full).Enabled) "Full does not launch an unsupported native Windows Pixel relay"
-        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $legacy) "OpenClaw flag enables legacy agent"
-        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $legacy) "OpenClaw opt-in enables SearXNG"
-        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $legacy) "OpenClaw opt-in enables APE"
 
         $deepResearchOnly = New-ODSWindowsServicePlan `
             -EnableRecommended $false `
@@ -131,7 +119,6 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableWorkflows $false `
             -EnableRag $false `
             -EnableHermes $false `
-            -EnableOpenClaw $false `
             -EnableComfyui $false `
             -EnableDeepResearch $true `
             -EnablePrivacyShield $false
@@ -144,7 +131,6 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableWorkflows $false `
             -EnableRag $false `
             -EnableHermes $true `
-            -EnableOpenClaw $false `
             -EnableComfyui $false `
             -EnableDeepResearch $false `
             -EnablePrivacyShield $false

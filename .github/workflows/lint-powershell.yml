@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   powershell-lint:
     strategy:
@@ -86,10 +89,24 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-portal-prereqs.ps1
 
+      - name: Public Windows bootstrap (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-readme-bootstrap.ps1
+
+      - name: Public Windows bootstrap (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-readme-bootstrap.ps1
+
       - name: Windows Portal Prerequisite Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-portal-prereqs.ps1
+
+      - name: Fresh Ubuntu account configuration without Python
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tests/test-wsl-first-account.sh
 
       - name: Windows Portal AMD Contracts (PowerShell 7)
         shell: pwsh
@@ -99,6 +116,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-portal-amd.ps1
+
+      - name: Windows Native llama.cpp Runtime Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-native-llama-runtime.ps1
+
+      - name: Windows Native llama.cpp Runtime Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-llama-runtime.ps1
 
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
@@ -121,25 +147,37 @@ jobs:
           ./tests/contracts/test-wsl-lifecycle.ps1
           ./tests/contracts/test-wsl-lifecycle-output.ps1
 
-      - name: Windows AMD Recovery and Model Control Contracts (PowerShell 7)
+      - name: Windows AMD Recovery, Model Control and Migration Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           ./tests/contracts/test-windows-portal-amd-recovery.ps1
-          ./tests/contracts/test-windows-portal-lemonade-restart.ps1
+          ./tests/contracts/test-windows-portal-llama-restart.ps1
           ./tests/contracts/test-windows-portal-model-control.ps1
+          ./tests/contracts/test-windows-portal-llama-migration.ps1
 
-      - name: Windows AMD Recovery and Model Control Contracts (Windows PowerShell)
+      - name: Windows AMD Recovery, Model Control and Migration Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
         run: |
           ./tests/contracts/test-windows-portal-amd-recovery.ps1
-          ./tests/contracts/test-windows-portal-lemonade-restart.ps1
+          ./tests/contracts/test-windows-portal-llama-restart.ps1
           ./tests/contracts/test-windows-portal-model-control.ps1
+          ./tests/contracts/test-windows-portal-llama-migration.ps1
 
-      - name: Windows Lemonade Task Cleanup Contract
+      - name: Windows Native llama-server (non-Portal) and Lemonade Retirement Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
         shell: pwsh
-        run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1
+        run: |
+          ./tests/contracts/test-windows-native-llama-legacy.ps1
+          ./tests/contracts/test-windows-native-lemonade-retire.ps1
+
+      - name: Windows Native llama-server (non-Portal) and Lemonade Retirement Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-windows-native-llama-legacy.ps1
+          ./tests/contracts/test-windows-native-lemonade-retire.ps1
 
       - name: Windows Hermes Config Runtime Contract
         shell: pwsh
@@ -211,6 +249,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Host Agent Stale PID Recovery (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-host-agent-stale-pid.ps1
+
+      - name: Windows Host Agent Stale PID Recovery (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-host-agent-stale-pid.ps1
+
       - name: Windows Install Model Proof
         shell: pwsh
         run: ./tests/contracts/test-windows-install-model-proof.ps1
@@ -247,3 +295,88 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Docker Pull Contract
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-windows-docker-pull.ps1
+
+      - name: WSL Lifecycle JSON Sharing Contract
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-json-sharing.ps1
+
+      - name: WSL Relay Lifetime Contract
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/contracts/test-wsl-relay-lifetime.ps1
+
+      - name: Windows AMD Memory Detection
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-amd-memory-detection.ps1
+
+      - name: Windows Hermes SOUL Refresh
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-hermes-soul-refresh.ps1
+
+      - name: Windows llama-server Memory Budget
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-llama-memory-budget.ps1
+
+      - name: Windows OpenCode Runtime
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-opencode-runtime.ps1
+
+      - name: Windows Restart Model Preflight
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-restart-model-preflight.ps1
+
+      - name: Windows OpenClaw Template Cleanup (PowerShell 7)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-openclaw-template-cleanup.ps1
+
+      - name: Windows OpenClaw Template Cleanup (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-openclaw-template-cleanup.ps1
+
+      - name: Windows Network Sign-in (PowerShell 7)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: ./tests/test-windows-network-signin.ps1
+
+      - name: Windows Network Sign-in (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-network-signin.ps1
+
+      - name: Windows Whisper Port Conflict
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/test-windows-whisper-port-conflict.ps1
+
+      - name: Windows Whisper Port Conflict (Windows PowerShell)
+        if: ${{ !cancelled() && runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/test-windows-whisper-port-conflict.ps1
+
+      - name: Every PowerShell test runs in a workflow
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          # Tests run from this directory (./tests/...) or the repository root (./ods/tests/...).
+          $workflows = (Get-ChildItem ../.github/workflows -Filter '*.yml' | Get-Content -Raw) -join "`n"
+          $missing = Get-ChildItem tests -Recurse -Filter 'test-*.ps1' |
+            ForEach-Object { [IO.Path]::GetRelativePath((Get-Location).Path, $_.FullName).Replace('\', '/') } |
+            Where-Object { -not $workflows.Contains('/' + $_) }
+          if ($missing) {
+            $missing | ForEach-Object { Write-Host "::error::ods/$_ is not run by any workflow" }
+            exit 1
+          }
+          Write-Host 'Every PowerShell test under ods/tests runs in a workflow.'

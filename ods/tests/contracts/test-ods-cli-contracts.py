@@ -26,10 +26,10 @@ COMMANDS = {
     "purge": ("cmd_purge", "purge <service>"),
     "preset": ("cmd_preset", "preset <action>"),
     "mode": ("cmd_mode", "mode [local|cloud|hybrid]"),
-    "model": ("cmd_model", "model [current|list|swap]"),
+    "model": ("cmd_model", "model [current|list|swap|recover]"),
     "remote-provider": (
         "cmd_remote_provider",
-        "remote-provider [status|plan|configure|test|disable|remove|peer-models]",
+        "remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]",
     ),
     "stt": ("cmd_stt", "stt [current|status|download]"),
     "backup": ("cmd_backup", "backup [options]"),
@@ -90,7 +90,7 @@ def main() -> int:
     )
     require(r"^cmd_help\(\) \{$", text, "ods-cli must define cmd_help")
     require(
-        r'"\$_ods_mode" != "cloud"[\s\S]*"\$_external_lemonade_active" != "true"[\s\S]*docker-compose\.cloud\.yml',
+        r'"\$_ods_mode" != "cloud" \]\] && \[\[ "\$cached" == \*"docker-compose\.cloud\.yml"\*',
         text,
         "ods-cli must reject stale cloud compose caches in local/managed modes",
     )

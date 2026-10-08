@@ -511,29 +511,13 @@ class TestReadinessPayload:
         assert "checks" in data
 
 
-# --- /api/service-tokens ---
+# --- /api/service-tokens (removed) ---
 
 
-class TestServiceTokens:
-
-    def test_returns_token_from_env(self, test_client, monkeypatch):
-        monkeypatch.setenv("OPENCLAW_TOKEN", "my-secret-token")
-
-        resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data.get("openclaw") == "my-secret-token"
-
-    def test_returns_empty_when_no_token(self, test_client, monkeypatch):
-        monkeypatch.delenv("OPENCLAW_TOKEN", raising=False)
-        # The file-based fallback paths (/data/openclaw/..., /ods/.env)
-        # won't exist in test environment, so all fallbacks fail gracefully.
-
-        resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        # Either empty dict or no openclaw key
-        assert "openclaw" not in data
+def test_service_tokens_endpoint_is_removed(test_client):
+    """The endpoint only served the removed legacy OpenClaw gateway token."""
+    resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
+    assert resp.status_code == 404
 
 
 # --- /api/external-links ---
@@ -894,6 +878,20 @@ class TestModelReadiness:
         assert result["context"]["meetsHermesTarget"] is False
         assert any("Full model is still downloading" in issue for issue in result["issues"])
 
+    def test_verifying_phase_is_reported_without_download_copy(self):
+        from models import BootstrapStatus, ModelInfo
+
+        result = _build_model_readiness_payload(
+            model_info=ModelInfo(name="qwen3.5-2b", size_gb=1.5, context_length=65536, quantization="GGUF"),
+            bootstrap_info=BootstrapStatus(active=True, phase="verifying", model_name="full-model.gguf", percent=100.0),
+            loaded_model="qwen3.5-2b",
+            runtime_context=65536,
+        )
+
+        assert result["bootstrap"]["phase"] == "verifying"
+        assert any("Full model is being verified" in issue for issue in result["issues"])
+        assert all("still downloading" not in issue for issue in result["issues"])
+
     def test_context_below_hermes_minimum_blocks_readiness(self):
         from models import BootstrapStatus, ModelInfo
 
@@ -1119,8 +1117,8 @@ class TestApiStatusServiceSerialization:
             "swap_safe": False,
         }
         monkeypatch.setattr("main.SERVICES", {
-            "openclaw": {
-                "name": "OpenClaw",
+            "sample-agent": {
+                "name": "Sample Agent",
                 "port": 18789,
                 "external_port": 7860,
                 "category": "optional",
@@ -1300,7 +1298,7 @@ class TestBuildApiStatusTiers:
             gpu_backend="nvidia",
         )
         bs = BootstrapStatus(
-            active=True, model_name="Qwen-32B", percent=50.0,
+            active=True, phase="downloading", model_name="Qwen-32B", percent=50.0,
             downloaded_gb=8.0, total_gb=16.0, eta_seconds=120, speed_mbps=100.0,
         )
         monkeypatch.setattr("main.get_gpu_info", lambda: gpu)
@@ -1318,6 +1316,7 @@ class TestBuildApiStatusTiers:
         assert result["bootstrap"]["active"] is True
         assert result["bootstrap"]["model"] == "Qwen-32B"
         assert result["bootstrap"]["percent"] == 50.0
+        assert result["bootstrap"]["phase"] == "downloading"
 
 
 def test_serialize_gpu_preserves_unavailable_sensor_state(monkeypatch):

@@ -12,7 +12,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REF = '9f3b6ecd25db3ab51bef4091473d88ee5824bc3b'
+DEFAULT_REF = '2ef78e7067211a198748c5499ed5a0261f4b48b6'
 INGRESS_IMAGE = 'node:24-bookworm-slim'
 FRAGMENTS = ('extensions/services/pixel-model-relay/compose.yaml.disabled',
     'extensions/services/pixel-edge/compose.yaml.disabled',
@@ -46,7 +46,23 @@ ERROR_GUIDANCE = {
         'Could not authorize the retained Pixel identity check. Run sudo -v and rerun this installer in the same terminal, or use the interactive installer in a terminal. Keep Pixel state intact.',
     'native-identity-verification-unavailable':
         'Could not complete the privileged Pixel identity check. Check sudo and system Python availability, then retry. Keep Pixel state intact.',
+    'native-compose-health-timeout':
+        'The native Docker services did not all become healthy: pixel-native-ingress, '
+        'pixel-workspace-preview, pixel-edge. Check their State/Health and the private '
+        'activation receipt. A ready gateway alone is not sufficient. Keep Pixel state '
+        'intact; do not reset receipts or repeat activation automatically.',
+    'compose-security-policy-missing':
+        'The shared Compose policy could not be loaded. Check the installed '
+        'scripts/compose-cache-policy.py and the private activation receipt. Keep Pixel '
+        'state intact; do not reset receipts or repeat activation automatically.',
+    'retained-pixel-identity-rejected':
+        'The retained _ods_pixel_ops account did not pass the identity-only check; the reason is shown above. '
+        'For operations-identity-process-active or operations-home-not-empty-or-owned, macOS per-user agents '
+        'for that account are usually running and writing Library/ into its home: stop them with '
+        'sudo launchctl bootout user/$(id -u _ods_pixel_ops). Its home /private/var/lib/pixel-ops-broker '
+        'must be empty for an identity-only reinstall. Keep other Pixel state intact.',
 }
+REJECTION_PREFIX = 'Native Pixel Operations identity verification rejected'
 
 
 def helper(name):
@@ -65,18 +81,42 @@ def command(args, *, env=None, timeout=60):
     return result.stdout.strip()
 
 
+def controlling_terminal():
+    """Report whether sudo can prompt on this process's controlling terminal.
+
+    sudo reads passwords from /dev/tty, never stdin, so the documented
+    `curl ... | bash` installer can still prompt although stdin is the pipe.
+    """
+    try:
+        fd = os.open('/dev/tty', os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
 def retained_identity_only(*, empty_home=False, prompt_for_sudo=False):
     """Ask the root-owned account helper to prove an identity-only reinstall."""
     try:
-        interactive = prompt_for_sudo and sys.stdin.isatty() and sys.stderr.isatty()
+        # The post-Docker re-check can outlive the sudo ticket from the
+        # preflight. With a terminal, let sudo prompt again instead of failing.
+        # Diagnostics are piped through tee by the installer; neither stdin
+        # nor stderr needs to be a TTY for sudo to use /dev/tty.
+        interactive = prompt_for_sudo and controlling_terminal()
         result = subprocess.run(['/usr/bin/sudo', *([] if interactive else ['-n']), '/usr/bin/python3',
             str(HERE / 'pixel-native-ops-account.py'),
             '--verify-empty-home-only' if empty_home else '--verify-identity-only'],
-            stdin=None if interactive else subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=None if interactive else subprocess.PIPE, timeout=60, check=False)
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError('native-identity-verification-unavailable') from error
     if result.returncode == os.EX_DATAERR:
+        # An interactive run already showed the helper's stderr; otherwise
+        # relay its one-line rejection so the reason code is not lost.
+        if result.stderr:
+            for line in result.stderr.decode('utf-8', 'replace').splitlines():
+                if line.startswith(REJECTION_PREFIX):
+                    print(line, file=sys.stderr)
         return False
     if result.returncode:
         raise ValueError('native-identity-authorization-required')
@@ -103,7 +143,7 @@ def preflight(install_dir, *, prompt_for_sudo=False):
         raise ValueError('existing-native-pixel-requires-migration-or-recovery')
     if retained_identity and not retained_identity_only(
             empty_home=retained_home, prompt_for_sudo=prompt_for_sudo):
-        raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+        raise ValueError('retained-pixel-identity-rejected')
     return install_dir
 
 
@@ -248,9 +288,17 @@ def main():
             install(install_dir=args.install_dir, ods_source=args.ods_source, compose_files=args.compose_file,
                 ref=args.ref, prompt_for_sudo=args.prompt_for_sudo)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-        # Error codes contain no captured subprocess output, environment or keys.
-        guidance = ERROR_GUIDANCE.get(str(error),
+        # Only exact, static allowlist entries may cross this diagnostic boundary.
+        # Unknown exception details may contain subprocess arguments or credentials.
+        code = str(error) if isinstance(error, ValueError) else None
+        guidance = ERROR_GUIDANCE.get(code,
             'Check prerequisites and private preparation/activation receipts; do not reset them.')
+        if code in ERROR_GUIDANCE:
+            guidance = '[' + code + '] ' + guidance
+        if code == 'native-compose-health-timeout':
+            detail = helper('compose').health_diagnostic(error)
+            if detail:
+                guidance += ' ' + detail
         print('Native Pixel installation stopped (' + type(error).__name__ + '). ' + guidance, file=sys.stderr)
         return 1
     return 0

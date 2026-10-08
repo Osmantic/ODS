@@ -23,7 +23,7 @@
       "id": "base.open-webui",
       "type": "image",
       "path": "docker-compose.base.yml",
-      "value": "ghcr.io/open-webui/open-webui:v0.7.2@sha256:16d9a3615b45f14a0c89f7ad7a3bf151f923ed32c2e68f9204eb17d1ce40774b"
+      "value": "ghcr.io/open-webui/open-webui:v0.11.4@sha256:9591b13f13843c7721c2b8eaf7382846c81b3ffe126526d1888d1fed50c6a33f"
     },
     {
       "id": "apple.llama-server",
@@ -48,6 +48,24 @@
       "type": "image",
       "path": "docker-compose.nvidia.yml",
       "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+    },
+    {
+      "id": "amd.llama-server",
+      "type": "image",
+      "path": "docker-compose.amd.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-vulkan-b9014@sha256:15c30b560d61ead1e08bee837503203a776fd968736118e313240c32157fd973"
+    },
+    {
+      "id": "amd-rocm.llama-server",
+      "type": "image",
+      "path": "docker-compose.amd-rocm.yml",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-rocm-b9014@sha256:68403f82fe496302bb1c681bab2ee569a04cc13da8fcf14456376b485562236d"
+    },
+    {
+      "id": "amd.llama-server-windows-vulkan",
+      "type": "archive",
+      "path": "config/backends/amd.json",
+      "value": "6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f"
     },
     {
       "id": "ape.python",
@@ -240,30 +258,10 @@
       "value": "ghcr.io/berriai/litellm:v1.90.7@sha256:917d480b7e4a7e61822e54f70be5c7cf753fb0b7328cbf6467612652ca748075"
     },
     {
-      "id": "llama-server.rocm-build",
-      "type": "image",
-      "path": "extensions/services/llama-server/Dockerfile.amd",
-      "raw": "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete@${ROCM_IMAGE_DIGEST}",
-      "value": "rocm/dev-ubuntu-24.04:7.2-complete@sha256:86e11093b4a7ec2a79b1b6701d10e840a6994f21c7e05929b51eb9be361c683a"
-    },
-    {
-      "id": "llama-server.lemonade-runtime",
-      "type": "image",
-      "path": "extensions/services/llama-server/Dockerfile.amd",
-      "raw": "${LEMONADE_SERVER_IMAGE}",
-      "value": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a"
-    },
-    {
       "id": "n8n.app",
       "type": "image",
       "path": "extensions/services/n8n/compose.yaml",
-      "value": "n8nio/n8n:2.6.4@sha256:b962d7f8ba9e990a0c530256d841fdc52312dce32173f29808e29a9430811ad3"
-    },
-    {
-      "id": "openclaw.app",
-      "type": "image",
-      "path": "extensions/services/openclaw/compose.yaml",
-      "value": "ghcr.io/openclaw/openclaw:2026.3.8@sha256:7b1294f6aa2eb05b2070cc614743f79212313fc294e5de221ada8a2969ea52f6"
+      "value": "n8nio/n8n:2.41.6@sha256:87e0bab2c93192e8dd885ff7b0697c22a1bd97489568a8c67cc140fd7dbb342d"
     },
     {
       "id": "perplexica.app",
@@ -383,11 +381,6 @@
       "reason": "Optional inference-only service built locally after explicit owner activation."
     },
     {
-      "path": "docker-compose.amd.yml",
-      "value": "ods-lemonade-server:latest",
-      "reason": "Local image built from extensions/services/llama-server/Dockerfile.amd by the AMD installer path."
-    },
-    {
       "path": "docker-compose.arc.yml",
       "value": "ods-llama-sycl:local",
       "reason": "Local image built for Intel Arc SYCL experiments."
@@ -464,20 +457,6 @@
       "value": "${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7}",
       "default": "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
       "reason": "Hermes Agent image can be overridden for upstream registry hotfixes, but the shipped default is locked."
-    },
-    {
-      "path": "extensions/services/llama-server/Dockerfile.amd",
-      "value": "rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete@${ROCM_IMAGE_DIGEST}",
-      "arg": "ROCM_VERSION",
-      "default": "7.2",
-      "reason": "ROCm builder defaults to a verified digest. Custom versions require a corresponding explicit ROCM_IMAGE_DIGEST build argument."
-    },
-    {
-      "path": "extensions/services/llama-server/Dockerfile.amd",
-      "value": "${LEMONADE_SERVER_IMAGE}",
-      "arg": "LEMONADE_SERVER_IMAGE",
-      "default": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a",
-      "reason": "AMD runtime image is overrideable for hotfix testing while the default stays locked."
     },
     {
       "path": "extensions/services/whisper/compose.yaml",

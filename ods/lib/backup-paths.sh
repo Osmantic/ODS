@@ -24,7 +24,6 @@ ODS_USER_DATA_PATHS=(
     "data/open-webui"       # chats, prompts, RAG documents
     "data/n8n"              # workflows and credentials
     "data/qdrant"           # vector collections
-    "data/openclaw"         # agent workspace
     "data/hermes"           # agent state and configuration
     "data/persona"          # Hermes persona (SOUL.md)
     "data/hermes-proxy"     # proxy session state
@@ -39,6 +38,7 @@ ODS_USER_DATA_PATHS=(
     "data/litellm"
     "data/livekit"
     "data/ollama"
+    "data/openclaw"         # removed legacy OpenClaw extension's agent data
 )
 
 # Excluded on purpose. Each entry is a cache that is re-downloaded or

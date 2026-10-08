@@ -14,8 +14,8 @@ than the original service catalog needed:
 
 - health checks can be HTTP, TCP, container-state, CLI, or intentionally absent;
 - services may be core, optional, deprecated, owner-card-only, or backend-specific;
-- GPU backend support now spans NVIDIA, AMD/Lemonade, Apple Metal, Intel Arc,
-  CPU, cloud, and hybrid paths;
+- GPU backend support now spans NVIDIA, AMD, Apple Metal, Intel Arc, CPU,
+  cloud, and hybrid paths;
 - dashboard, CLI, compose resolver, installer summary, and extension audit all
   consume overlapping manifest fields;
 - compatibility bounds such as `ods_min` and `ods_max` are doing real work

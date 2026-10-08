@@ -27,19 +27,27 @@ try {
     function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory)
         [pscustomobject]@{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory }
     }
+    # The profile path holds a non-ASCII character; llama.cpp gets 8.3 names.
+    function Get-ODSNativeLlamaShortPath([string]$Path) { return 'C:\FIXTUR~1\' + [IO.Path]::GetFileName($Path) }
     $onWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
     if (-not $onWindows) {
         function Get-ODSPortalUserSid([string]$UserId) { if ($UserId) { return $UserId }; return 'fixture-user' }
     }
-    $models = Join-Path (Get-ODSPortalStateDir) 'models'
+    $models = Get-ODSPortalModelsDir
     $null = New-Item -ItemType Directory -Path $models -Force
-    $exe = Join-Path $fixture 'LemonadeServer.exe'
+    $exeDir = Join-Path (Join-Path (Join-Path $fixture 'ODS') 'llama.cpp') 'b9014-win-vulkan-x64'
+    $null = New-Item -ItemType Directory -Path $exeDir -Force
+    $exe = Join-Path $exeDir 'llama-server.exe'
     [IO.File]::WriteAllText($exe, 'fixture, never executed')
     foreach ($name in @('Original-9B.gguf', 'Small-0.6B.gguf')) { [IO.File]::WriteAllText((Join-Path $models $name), 'fixture') }
     $unicodeModel = 'Model-' + [char]0x00E9 + '-' + [char]0x4E2D + '.gguf'
     [IO.File]::WriteAllText((Join-Path $models $unicodeModel), 'fixture')
-    $contract = [pscustomobject]@{ ExecutablePath = $exe; Port = 13305; ModelsDir = $models; ContextSize = 65536 }
-    $registration = New-ODSPortalLemonadeRuntimeAction $contract 'Original-9B.gguf' 'Ubuntu-24.04' '/home/some user/ods'
+    $plan = [ordered]@{ ExecutablePath = $exe; Port = 18080; ModelsDir = $models; ContextSize = 65536; GgufFile = 'Original-9B.gguf' }
+    $options = [ordered]@{ schemaVersion = 1; Device = 'Vulkan0'; NGpuLayers = 'auto'
+        ApiKeyPath = (Join-Path (Get-ODSPortalRuntimeDir) 'api-key'); LogPath = (Join-Path (Get-ODSPortalRuntimeDir) 'llama-server.log')
+        ReleaseTag = 'b9014'; ZipSha256 = ('a' * 64); ReasoningArguments = @('--reasoning', 'off'); ExtraArguments = @() }
+    $script:apiKey = New-ODSNativeLlamaApiKey
+    $registration = New-ODSPortalRuntimeAction $plan $options $script:apiKey 'Ubuntu-24.04' '/home/some user/ods'
     $planPath = Join-Path (Split-Path -Parent $registration.ReadyPath) 'runtime.json'
     $script:fixtureTask = [pscustomobject]@{ TaskPath = '\'; State = 'Ready'
         Principal = [pscustomobject]@{ UserId = Get-ODSPortalUserSid }; Actions = @($registration.Action) }
@@ -47,9 +55,12 @@ try {
     $script:healthFailure = $false; $script:staleProcess = $false; $script:wrongModel = $false
     $script:failStart = $false; $script:failReady = $false; $script:mutateDuringStop = $false
     $script:probeMutexDuringHealth = $false; $script:replacePlanDuringHealth = $false
+    $script:contextOffset = 0; $script:wrongKey = $false
     $script:events = [Collections.Generic.List[string]]::new()
+    $script:queried = [Collections.Generic.List[string]]::new()
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction, $ErrorVariable)
-        if (-not $script:taskMissing) { return $script:fixtureTask }
+        $script:queried.Add($TaskName)
+        if (-not $script:taskMissing -and $TaskName -ceq (Get-ODSPortalRuntimeTaskName)) { return $script:fixtureTask }
     }
     if (-not $onWindows) {
         function Get-Command { param($Name, $CommandType, $ErrorAction)
@@ -60,30 +71,30 @@ try {
     function Get-NetTCPConnection { param($LocalPort, $State, $ErrorAction)
         if ($script:occupied) { return [pscustomobject]@{ OwningProcess = 999; LocalAddress = '127.0.0.1' } }
     }
-    function Stop-ODSPortalLemonade([string]$ExecutablePath) {
+    function Stop-ODSPortalRuntime([string]$ExecutablePath) {
         Assert-Control ($ExecutablePath -eq $exe) 'controller stops only the verified plan executable'
         $script:events.Add('stop'); $script:running = $false
         if ($script:mutateDuringStop) { [IO.File]::AppendAllText($planPath, ' ') }
     }
     function Start-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
-        Assert-Control ($TaskName -ceq (Get-ODSPortalLemonadeTaskName) -and $TaskPath -ceq '\') 'only the existing owned task is started'
+        Assert-Control ($TaskName -ceq (Get-ODSPortalRuntimeTaskName) -and $TaskName -like 'ODSLlamaServerRuntime-*' -and $TaskPath -ceq '\') 'only the existing owned llama.cpp task is started'
         $script:events.Add('start')
         if ($script:failStart) { throw 'fixture task start failed' }
         $script:running = $true
     }
     function Disable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
-        Assert-Control (-not (Test-ODSPortalLemonadeWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json'))) 'stop intent is durable before retries are disabled'
+        Assert-Control (-not (Test-ODSNativeLlamaWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json'))) 'stop intent is durable before retries are disabled'
         $script:taskDisabled = $true
     }
     function Enable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
-        Assert-Control (Test-ODSPortalLemonadeWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json')) 'explicit start publishes running intent before enabling the owned task'
+        Assert-Control (Test-ODSNativeLlamaWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json')) 'explicit start publishes running intent before enabling the owned task'
         $script:taskDisabled = $false
     }
-    function Wait-ODSPortalLemonadeReady($Registration, [int]$Seconds = 1020) {
+    function Wait-ODSPortalRuntimeReady($Registration, [int]$Seconds = 1020) {
         if ($script:failReady) { throw 'fixture load failure' }
         $script:events.Add('ready')
         $ready = @{ ProcessId = 4242; StartedAt = '2026-01-01T00:00:00Z'; Port = $Registration.Plan.Port
-            ContextSize = $Registration.Plan.ContextSize; ModelId = [IO.Path]::GetFileNameWithoutExtension($Registration.Plan.GgufFile) }
+            ContextSize = $Registration.Plan.ContextSize; ModelId = $Registration.Plan.GgufFile; RuntimeContext = $Registration.Plan.ContextSize }
         Write-ODSPrivateEnvFile -Path $Registration.ReadyPath -Content ($ready | ConvertTo-Json -Compress)
         return $ready.ModelId
     }
@@ -94,42 +105,57 @@ try {
         $process | Add-Member ScriptMethod Dispose { }
         return $process
     }
-    function Assert-ODSPortalLemonadeListener([int]$Port, [int]$ProcessId, [string]$ExecutablePath) {
+    function Assert-ODSNativeLlamaListener([int]$Port, [int]$ProcessId, [string]$ExecutablePath) {
         if ($script:occupied) { throw 'fixture foreign listener' }
-        if ($Port -ne 13305 -or $ProcessId -ne 4242 -or $ExecutablePath -ne $exe) { throw 'wrong listener proof' }
+        if ($Port -ne 18080 -or $ProcessId -ne 4242 -or $ExecutablePath -ne $exe) { throw 'wrong listener proof' }
     }
-    function Invoke-RestMethod { param($Uri, $TimeoutSec, $ErrorAction)
-        if ($script:healthFailure) { throw [Net.WebException]::new('fixture health timeout') }
+    function Invoke-ODSNativeLlamaHttp { param([int]$Port, [string]$Path, [string]$ApiKey = '', [int]$TimeoutMilliseconds = 5000)
+        if ($script:healthFailure) { return [pscustomobject]@{ StatusCode = 0; Body = ''; Error = 'ConnectFailure' } }
         $current = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($script:probeMutexDuringHealth) {
-            $worker = [PowerShell]::Create()
-            try {
-                $null = $worker.AddScript({ param($Name)
-                    $mutex = [Threading.Mutex]::new($false, $Name)
-                    $acquired = $false
-                    try {
-                        $acquired = $mutex.WaitOne(0)
-                        [pscustomobject]@{ Acquired = $acquired; ThreadId = [Threading.Thread]::CurrentThread.ManagedThreadId }
-                    } finally { if ($acquired) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
-                }).AddArgument($script:fixtureMutex)
-                $proof = @($worker.Invoke())
-                Assert-Control ($proof.Count -eq 1 -and $proof[0].Acquired -and
-                    $proof[0].ThreadId -ne [Threading.Thread]::CurrentThread.ManagedThreadId) 'an in-flight status probe leaves the mutation mutex available to another thread'
-            } finally { $worker.Dispose() }
+        if ($Path -eq '/health') {
+            if ($script:probeMutexDuringHealth) {
+                $worker = [PowerShell]::Create()
+                try {
+                    $null = $worker.AddScript({ param($Name)
+                        $mutex = [Threading.Mutex]::new($false, $Name)
+                        $acquired = $false
+                        try {
+                            $acquired = $mutex.WaitOne(0)
+                            [pscustomobject]@{ Acquired = $acquired; ThreadId = [Threading.Thread]::CurrentThread.ManagedThreadId }
+                        } finally { if ($acquired) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+                    }).AddArgument($script:fixtureMutex)
+                    $proof = @($worker.Invoke())
+                    Assert-Control ($proof.Count -eq 1 -and $proof[0].Acquired -and
+                        $proof[0].ThreadId -ne [Threading.Thread]::CurrentThread.ManagedThreadId) 'an in-flight status probe leaves the mutation mutex available to another thread'
+                } finally { $worker.Dispose() }
+            }
+            if ($script:replacePlanDuringHealth) {
+                $changed = $current | ConvertTo-Json | ConvertFrom-Json
+                $changed.GgufFile = 'Original-9B.gguf'
+                Write-ODSPrivateEnvFile -Path $planPath -Content ($changed | ConvertTo-Json -Compress)
+            }
+            return [pscustomobject]@{ StatusCode = 200; Body = '{"status":"ok"}'; Error = '' }
         }
-        if ($script:replacePlanDuringHealth) {
-            $changed = $current | ConvertTo-Json | ConvertFrom-Json
-            $changed.GgufFile = 'Original-9B.gguf'
-            Write-ODSPrivateEnvFile -Path $planPath -Content ($changed | ConvertTo-Json -Compress)
+        if ($Path -eq '/v1/models') {
+            Assert-Control (-not $ApiKey) 'the public model list gets no credential'
+            $id = if ($script:wrongModel) { 'Unrelated.gguf' } else { $current.GgufFile }
+            return [pscustomobject]@{ StatusCode = 200; Error = ''; Body = (@{ data = @(@{ id = $id }) } | ConvertTo-Json -Depth 4) }
         }
-        $id = if ($script:wrongModel) { 'Unrelated' } else { [IO.Path]::GetFileNameWithoutExtension($current.GgufFile) }
-        [pscustomobject]@{ all_models_loaded = @([pscustomobject]@{ model_name = $id; recipe_options = @{ ctx_size = $current.ContextSize } }) }
+        if ($Path -eq '/props') {
+            if ($script:wrongKey -or $ApiKey -cne $script:apiKey) { return [pscustomobject]@{ StatusCode = 401; Body = '{}'; Error = '' } }
+            $body = @{ model_path = ('C:\FIXTUR~1\' + $current.GgufFile); total_slots = 1
+                default_generation_settings = @{ n_ctx = $current.ContextSize + $script:contextOffset } } | ConvertTo-Json -Depth 4
+            return [pscustomobject]@{ StatusCode = 200; Body = $body; Error = '' }
+        }
+        throw "unexpected path $Path"
     }
     $status = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
     if (-not $status.managed) { throw ($status | ConvertTo-Json -Compress) }
     Assert-Control ($status.managed -and -not $status.running -and $null -eq $status.observation -and
         $status.modelStoreWindowsPath -eq $models -and $status.planPathWindows -eq $planPath) 'stopped bound runtime remains managed and reports its actual private plan and model store'
     Assert-Control ($status.planDigest -cmatch '^[0-9a-f]{64}$' -and $status.plan.WslInstallDir -ceq '/home/some user/ods') 'status returns a byte digest and exact binding, including spaces'
+    Assert-Control ((@($status.plan.Keys) -join ',') -ceq 'ExecutablePath,Port,ModelsDir,ContextSize,GgufFile,WslDistro,WslInstallDir') 'status projects exactly the plan keys the WSL bridge accepts'
+    Assert-Control (-not ($script:queried | Where-Object { $_ -like 'ODSLemonadeRuntime*' })) 'the controller manages only the llama.cpp task, never a Lemonade-era name'
     $originalPlan = $status.plan | ConvertTo-Json | ConvertFrom-Json
     $originalDigest = $status.planDigest
     $bytesBefore = [IO.File]::ReadAllText($planPath)
@@ -179,13 +205,25 @@ try {
     $legacy = $originalPlan | Select-Object ExecutablePath, Port, ModelsDir, ContextSize, GgufFile
     Write-ODSPrivateEnvFile -Path $planPath -Content ($legacy | ConvertTo-Json -Compress)
     Assert-Control (-not (Invoke-ODSPortalModelControl (New-ControlRequest 'status')).managed) 'legacy unbound plan is read-only, never implicitly adopted'
+    $lemonadeExe = Join-Path $fixture 'LemonadeServer.exe'
+    [IO.File]::WriteAllText($lemonadeExe, 'fixture, never executed')
+    $lemonadePlan = $originalPlan | ConvertTo-Json | ConvertFrom-Json
+    $lemonadePlan.ExecutablePath = $lemonadeExe
+    Write-ODSPrivateEnvFile -Path $planPath -Content ($lemonadePlan | ConvertTo-Json -Compress)
+    Assert-Control (-not (Invoke-ODSPortalModelControl (New-ControlRequest 'status')).managed) 'a Lemonade plan is never managed by the llama.cpp controller'
     Write-ODSPrivateEnvFile -Path $planPath -Content $bytesBefore
+    $keyFile = Join-Path (Split-Path -Parent $planPath) 'api-key'
+    $keyBytes = [IO.File]::ReadAllBytes($keyFile)
+    Remove-Item -LiteralPath $keyFile
+    Assert-Control (-not (Invoke-ODSPortalModelControl (New-ControlRequest 'status')).managed) 'a runtime without its private API key file is unmanaged'
+    Write-ODSPrivateFileBytes -Path $keyFile -Bytes $keyBytes
     Assert-Control ($script:events.Count -eq 0) 'status checks never stop or start a runtime'
     $null = Assert-ControlError (New-ControlRequest 'activate' ('0' * 64)) 'plan_conflict'
-    foreach ($bad in @('../Small-0.6B.gguf', 'sub\Small-0.6B.gguf', 'C:Small.gguf', 'missing.gguf')) {
+    foreach ($bad in @('../Small-0.6B.gguf', 'sub\Small-0.6B.gguf', 'C:Small.gguf', 'missing.gguf', $unicodeModel)) {
         $request = New-ControlRequest 'activate' $originalDigest; $request.gguf = $bad
         $code = if ($bad -eq 'missing.gguf') { 'model_missing' } else { 'invalid_model' }
-        $null = Assert-ControlError $request $code
+        $failure = Assert-ControlError $request $code
+        if ($bad -eq $unicodeModel) { Assert-Control ($failure.Message -match 'ASCII') 'a non-ASCII GGUF name is refused with the llama.cpp reason before any stop' }
     }
     foreach ($context in @(4095, 262145, 1.5, '65536')) {
         $request = New-ControlRequest 'activate' $originalDigest; $request.contextSize = $context
@@ -194,14 +232,25 @@ try {
     Assert-Control ($script:events.Count -eq 0 -and [IO.File]::ReadAllText($planPath) -ceq $bytesBefore) 'invalid requests preserve the plan and running processes'
     $activated = Invoke-ODSPortalModelControl (New-ControlRequest 'activate' $originalDigest)
     Assert-Control ($activated.running -and $activated.observation.status -ceq 'verified' -and
-        $activated.observation.modelId -ceq 'Small-0.6B' -and $activated.plan.GgufFile -ceq 'Small-0.6B.gguf' -and
-        $activated.planDigest -cne $originalDigest -and ($script:events -join ',') -ceq 'stop,start,ready') 'activation atomically persists its model before starting and proving it'
+        $activated.observation.modelId -ceq 'Small-0.6B.gguf' -and $activated.observation.contextLength -eq 65536 -and
+        $activated.plan.GgufFile -ceq 'Small-0.6B.gguf' -and
+        $activated.planDigest -cne $originalDigest -and ($script:events -join ',') -ceq 'stop,start,ready') 'activation persists its model, restarts llama-server and proves the GGUF alias and context'
     Assert-ODSPortalPrivateControlFile $planPath
     Assert-Control ((Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json).GgufFile -ceq 'Small-0.6B.gguf') 'the next sign-in reads the newly selected model'
+    $script:contextOffset = 200
+    $aligned = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control ($aligned.running -and $aligned.observation.contextLength -eq 65536) 'llama.cpp alignment under 256 cells reports the requested context'
+    $script:contextOffset = -32768
+    $capped = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control ($capped.running -and $capped.observation.contextLength -eq 32768) 'a capped runtime context is reported as observed, never as requested'
+    $script:contextOffset = 256
+    $drift = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control ($drift.observation.contextLength -eq 65792) 'a full 256-cell drift reports the runtime n_ctx'
+    $script:contextOffset = 0
     $script:probeMutexDuringHealth = $true
     try { $concurrent = Invoke-ODSPortalModelControl (New-ControlRequest 'status') }
     finally { $script:probeMutexDuringHealth = $false }
-    Assert-Control ($concurrent.running -and $concurrent.observation.modelId -ceq 'Small-0.6B') 'concurrent status still proves the actual loaded model'
+    Assert-Control ($concurrent.running -and $concurrent.observation.modelId -ceq 'Small-0.6B.gguf') 'concurrent status still proves the actual loaded model'
     $activatedBytes = [IO.File]::ReadAllText($planPath)
     $script:replacePlanDuringHealth = $true
     try { $changed = Invoke-ODSPortalModelControl (New-ControlRequest 'status') }
@@ -209,7 +258,7 @@ try {
     Assert-Control ($changed.managed -and -not $changed.running -and $null -eq $changed.observation -and
         $changed.plan.GgufFile -ceq 'Original-9B.gguf' -and $changed.planDigest -ceq (Get-ODSPortalPlanDigest $planPath)) 'atomic plan replacement during a probe returns the new snapshot without stale model identity'
     Write-ODSPrivateEnvFile -Path $planPath -Content $activatedBytes
-    foreach ($damage in @('healthFailure', 'staleProcess', 'wrongModel', 'occupied')) {
+    foreach ($damage in @('healthFailure', 'staleProcess', 'wrongModel', 'occupied', 'wrongKey')) {
         Set-Variable -Name $damage -Value $true -Scope Script
         $observed = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
         Assert-Control ($observed.managed -and -not $observed.running -and $null -eq $observed.observation -and $observed.runtimeError) "$damage never reports stale model identity"
@@ -226,7 +275,7 @@ try {
     $request = New-ControlRequest 'restore' $started.planDigest; $request.plan = $originalPlan | ConvertTo-Json | ConvertFrom-Json
     $request.plan.WslDistro = $originalPlan.WslDistro.ToLowerInvariant()
     $restored = Invoke-ODSPortalModelControl $request
-    Assert-Control ($restored.running -and $restored.observation.modelId -ceq 'Original-9B' -and
+    Assert-Control ($restored.running -and $restored.observation.modelId -ceq 'Original-9B.gguf' -and
         $restored.plan.GgufFile -ceq 'Original-9B.gguf') 'rollback restores and proves the exact previous startup model'
     Assert-Control ($restored.plan.WslDistro -ceq $originalPlan.WslDistro) 'rollback accepts equivalent distro casing while retaining the registered spelling'
     $request = New-ControlRequest 'restore' $restored.planDigest; $request.plan = $originalPlan | ConvertTo-Json | ConvertFrom-Json
@@ -242,15 +291,7 @@ try {
     $script:failReady = $false
     $request = New-ControlRequest 'restore' $failed.Data['newPlanDigest']; $request.plan = $originalPlan
     $recovered = Invoke-ODSPortalModelControl $request
-    Assert-Control ($recovered.running -and $recovered.observation.modelId -ceq 'Original-9B') 'rollback can recover a failed activation without reusing its stale digest'
-    $request = New-ControlRequest 'activate' $recovered.planDigest; $request.gguf = $unicodeModel
-    $unicodeActive = Invoke-ODSPortalModelControl $request
-    Assert-Control ($unicodeActive.plan.GgufFile -ceq $unicodeModel -and $unicodeActive.running -and
-        $unicodeActive.observation.modelId -ceq [IO.Path]::GetFileNameWithoutExtension($unicodeModel) -and
-        $unicodeActive.plan.ModelsDir -ceq $models) 'UTF-8 filename, model identity and Windows path survive activation and readiness on this PowerShell version'
-    $request = New-ControlRequest 'restore' $unicodeActive.planDigest; $request.plan = $originalPlan
-    $recovered = Invoke-ODSPortalModelControl $request
-    Assert-Control ($recovered.running -and $recovered.observation.modelId -ceq 'Original-9B') 'a Unicode model can roll back through the same CAS and readiness proof'
+    Assert-Control ($recovered.running -and $recovered.observation.modelId -ceq 'Original-9B.gguf') 'rollback can recover a failed activation without reusing its stale digest'
     $script:mutateDuringStop = $true
     $null = Assert-ControlError (New-ControlRequest 'activate' $recovered.planDigest) 'plan_conflict'
     Assert-Control ((Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json).GgufFile -ceq 'Original-9B.gguf') 'concurrent plan edit during teardown is preserved'

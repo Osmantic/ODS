@@ -84,7 +84,7 @@ Use the release-grade gate after changes to:
 - core service manifests or ports;
 - dashboard-api behavior used by install, setup, model, extension, or service
   management flows;
-- Hermes, model routing, LiteLLM, Lemonade, or llama-server lifecycle;
+- Hermes, model routing, LiteLLM, or llama-server lifecycle;
 - GPU/runtime detection;
 - `ods-cli` lifecycle commands;
 - dependency/runtime wiring for installed services.

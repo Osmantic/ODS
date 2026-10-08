@@ -48,6 +48,18 @@ function succeededResponse(overrides = {}) {
   };
 }
 
+test('publication scopes storage guidance to the tested viewing mode', async()=>{
+  const tool=createWorkspacePreviewTool({request:async()=>succeededResponse()});
+  const result=await tool.execute('storage-expectations',{relativeDirectory:'demo-site'});
+  assert.equal(result.isError,undefined);
+  assert.match(result.content[0].text,/Inputs in the embedded preview may be lost on reload/);
+  assert.match(result.content[0].text,/Storage behavior can differ in a separate tab/);
+  assert.match(result.content[0].text,/Verify storage behavior at the exact URL and in the viewing mode/);
+  assert.doesNotMatch(result.content[0].text,/Opening the same preview in a new tab does not change this/);
+  assert.match(result.content[0].text,/try\/catch only keeps the app working when storage fails/);
+  assert.deepEqual(result.details,succeededResponse());
+});
+
 test('published feedback accepts literal framework route assets but rejects reserved routes',async()=>{
   for(const [path,accepted] of [['_next/static/app/[slug]/page.js',true],
     ['__ods_manifest__.json',false],['app/../file.js',false],['app/.env',false]]) {
@@ -127,7 +139,8 @@ test("exposes a publish-only schema with no creative generator input", () => {
   assert.match(tool.description, /localStorage\/sessionStorage property getters, reads and writes may throw/);
   assert.match(tool.description, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
   assert.match(tool.description, /Saving failure must not block startup, controls or continued work/);
-  assert.match(tool.description, /Never promise persistence or add allow-same-origin to bypass isolation/);
+  assert.match(tool.description, /Embedded previews have opaque origins; separate tabs may differ/);
+  assert.match(tool.description, /Verify persistence at the exact URL; never add allow-same-origin to bypass isolation/);
   assert.match(tool.description, /blocks alert\(\), confirm\(\) and prompt\(\); use inline DOM controls, including date inputs/);
   assert.match(tool.description, /remote scripts, styles, fonts, images and API requests are blocked/);
   assert.match(tool.description, /HTTP readback proves publication, not startup or interactions/);

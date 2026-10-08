@@ -53,7 +53,6 @@ _SERVICE_CAPABILITIES: dict[str, tuple[str, str]] = {
     "n8n": ("n8n", "visual no-code workflow + automation engine on port 5678. Operators wire scheduled jobs and integrations here"),
     "ape": ("APE", "agentic prompt engineering surface"),
     "opencode": ("OpenCode", "coding agent (an alternative to me for code work)"),
-    "openclaw": ("OpenClaw", "older Claude-style agent (being deprecated in favor of me)"),
     "privacy-shield": ("Privacy Shield", "PII scrubber that can sit in front of LLM calls"),
     "token-spy": ("Token Spy", "inference traffic introspection"),
     "tailscale": ("Tailscale", "mesh VPN — the operator can reach this whole stack remotely without exposing ports to the public internet"),
@@ -156,33 +155,28 @@ def _running_services(repo_root: Path) -> set[str]:
 
 
 def _loaded_model(llm_port: int = 8080) -> str | None:
-    """Best-effort: ask llama-server / Lemonade what's currently loaded.
-    Returns the model id, or None on any failure (network, no service)."""
-    # Try Lemonade health first — has structured per-model state
-    for path in ("/api/v1/health", "/v1/models"):
-        try:
-            import urllib.request
-            with urllib.request.urlopen(f"http://127.0.0.1:{llm_port}{path}", timeout=3) as resp:
-                data = json.load(resp)
-        except Exception:
-            continue
-        loaded = data.get("all_models_loaded") if isinstance(data, dict) else None
-        if isinstance(loaded, list) and loaded:
-            return loaded[0].get("model_name")
-        models = data.get("data") if isinstance(data, dict) else None
-        if isinstance(models, list) and models:
-            return models[0].get("id")
+    """Best-effort: ask llama-server what's currently loaded (/v1/models).
+    Returns the model id, or None when the server is not answering."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{llm_port}/v1/models", timeout=3) as resp:
+            data = json.load(resp)
+    except (OSError, ValueError):
+        # Not running, unreachable or not JSON: the context omits the model.
+        return None
+    models = data.get("data") if isinstance(data, dict) else None
+    if isinstance(models, list) and models and isinstance(models[0], dict):
+        return models[0].get("id")
     return None
 
 
 def _humanize_gpu(env: dict[str, str]) -> str:
     """One-line GPU/backend description from .env."""
     backend = (env.get("GPU_BACKEND") or "cpu").lower()
-    mode = env.get("ODS_MODE", "").lower()
+    if env.get("NATIVE_LLM_BASE_URL"):
+        return "Windows GPU (Vulkan via llama.cpp on the Windows host)"
     if backend == "amd":
-        if mode == "lemonade":
-            return "AMD GPU (ROCm/Vulkan via Lemonade)"
-        return "AMD GPU"
+        return "AMD GPU (Vulkan/ROCm via llama.cpp)"
     if backend == "nvidia":
         return "NVIDIA GPU (CUDA via llama.cpp)"
     if backend == "apple":

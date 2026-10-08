@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_VERSION="1"
-REDACTION_VERSION="1"
+REDACTION_VERSION="3"
 DEFAULT_LOG_TAIL=200
 MAX_LOG_CONTAINERS=25
 COMMAND_TIMEOUT="${ODS_SUPPORT_COMMAND_TIMEOUT:-60}"
@@ -119,6 +119,8 @@ mkdir -p \
     "$BUNDLE_DIR/manifest" \
     "$BUNDLE_DIR/system" \
     "$BUNDLE_DIR/validation"
+# Files are redacted after they are written; keep the bundle owner-only.
+chmod 700 "$BUNDLE_DIR"
 
 shell_quote() {
     printf "%q" "$1"
@@ -135,7 +137,7 @@ redact_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
 
-    "$PYTHON_CMD" - "$file" <<'PY'
+    "$PYTHON_CMD" - "$file" "$ROOT_DIR/.env" <<'PY'
 import re
 import sys
 from pathlib import Path
@@ -148,7 +150,55 @@ except OSError:
 
 secret_word = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)"
 
+# Credential formats that are recognizable without a key name.
+token_formats = [
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY-----|.*\Z)",
+    r"\b(?:sk|pk)-(?:ant-|proj-|lf-)?[A-Za-z0-9_-]{20,}",
+    r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}",
+    r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}",
+    r"\bgithub_pat_[A-Za-z0-9_]{40,}",
+    r"\bglpat-[A-Za-z0-9_-]{20,}",
+    r"\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+    r"\bAIza[0-9A-Za-z_-]{35}",
+    r"\bhf_[A-Za-z0-9]{30,}",
+    r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+    r"\b(?:gsk|npm)_[A-Za-z0-9]{36,}",
+    r"\br8_[A-Za-z0-9]{30,}",
+    r"\b(?:pplx|xai)-[A-Za-z0-9]{40,}",
+    r"\b[0-9]{8,10}:AA[A-Za-z0-9_-]{33}",
+    r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}",
+    r"\bpypi-AgE[A-Za-z0-9_-]{20,}",
+    r"\bdop_v1_[a-f0-9]{64}",
+    r"\btskey-[a-z]+-[A-Za-z0-9-]{10,}",
+    r"\bBSA[A-Za-z0-9_-]{20,}",
+]
+for token_format in token_formats:
+    text = re.sub(token_format, "[REDACTED]", text, flags=re.S)
+
+# This installation's own secrets, wherever a log or command echoes them.
+env_path = Path(sys.argv[2])
+known_secrets = set()
+try:
+    env_lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines()
+except OSError:
+    env_lines = []
+for line in env_lines:
+    key, separator, value = line.partition("=")
+    key = key.strip()
+    if key.startswith("export "):
+        key = key[7:].strip()
+    value = value.strip().strip("\"'")
+    if (separator and re.search(secret_word, key, re.I)
+            and len(value) >= 12 and not re.search(r"\s", value)):
+        known_secrets.add(value)
+for value in sorted(known_secrets, key=len, reverse=True):
+    text = text.replace(value, "[REDACTED]")
+
 patterns = [
+    # A LiteLLM proxy's refusal echoes the end of the key and the key's hash.
+    (re.compile(r"(?i)(Received API Key\s*=\s*)[^,\s\"]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(Key Hash \(Token\)\s*=\s*)[0-9a-f]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)((?:authorization|x-api-key|api-key|apikey)\s*[:=]\s*)([\"']?)[^\"'\s,}]+"), r"\1\2[REDACTED]"),
     # Database and broker connection strings carry credentials too (including
@@ -420,7 +470,8 @@ collect_compose_validation() {
     local tier
     local gpu_count
     local ods_mode
-    local lemonade_external
+    local native_llm_url
+    local amd_backend
     local amd_runtime
     local amd_managed
     local flags_file="$BUNDLE_DIR/validation/compose-flags.txt"
@@ -432,7 +483,8 @@ collect_compose_validation() {
     tier="$(read_env_value TIER 1)"
     gpu_count="$(read_env_value GPU_COUNT 1)"
     ods_mode="$(read_env_value ODS_MODE local)"
-    lemonade_external="$(read_env_value LEMONADE_EXTERNAL false)"
+    native_llm_url="$(read_env_value NATIVE_LLM_BASE_URL "")"
+    amd_backend="$(read_env_value AMD_INFERENCE_BACKEND "")"
     amd_runtime="$(read_env_value AMD_INFERENCE_RUNTIME "")"
     amd_managed="$(read_env_value AMD_INFERENCE_MANAGED "")"
 
@@ -445,9 +497,8 @@ collect_compose_validation() {
     set +e
     flags="$(
         cd "$ROOT_DIR" && \
-        LEMONADE_EXTERNAL="$lemonade_external" \
-        AMD_INFERENCE_RUNTIME="$amd_runtime" \
-        AMD_INFERENCE_MANAGED="$amd_managed" \
+        NATIVE_LLM_BASE_URL="$native_llm_url" \
+        AMD_INFERENCE_BACKEND="$amd_backend" \
         run_bounded "$BASH_CMD" scripts/resolve-compose-stack.sh \
             --script-dir "$ROOT_DIR" \
             --tier "$tier" \
@@ -465,7 +516,8 @@ collect_compose_validation() {
         printf 'TIER=%s\n' "$tier"
         printf 'GPU_COUNT=%s\n' "$gpu_count"
         printf 'ODS_MODE=%s\n' "$ods_mode"
-        printf 'LEMONADE_EXTERNAL=%s\n' "$lemonade_external"
+        printf 'NATIVE_LLM_BASE_URL=%s\n' "$native_llm_url"
+        printf 'AMD_INFERENCE_BACKEND=%s\n' "$amd_backend"
         printf 'AMD_INFERENCE_RUNTIME=%s\n' "$amd_runtime"
         printf 'AMD_INFERENCE_MANAGED=%s\n' "$amd_managed"
         printf 'COMPOSE_FLAGS=%s\n' "$flags"
@@ -743,7 +795,7 @@ config_hash_targets = [
     "config/ports.json",
     "config/golden-paths.json",
     "config/generated-config-contracts.json",
-    "config/litellm/lemonade.yaml",
+    "config/litellm/local.yaml",
     "extensions/services/hermes/cli-config.yaml.template",
 ]
 
@@ -815,7 +867,8 @@ collect_docker
 write_evidence
 write_manifest
 
-tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME"
+chmod -R go-rwx "$BUNDLE_DIR"
+(umask 077 && tar -czf "$ARCHIVE_PATH" -C "$OUTPUT_DIR" "$BUNDLE_NAME")
 
 if [[ "$JSON_OUTPUT" == "true" ]]; then
     write_summary_json

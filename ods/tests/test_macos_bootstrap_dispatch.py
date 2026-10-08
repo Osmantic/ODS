@@ -9,7 +9,7 @@ SOURCE = REPO_ROOT / "scripts" / "bootstrap-upgrade.sh"
 
 
 def _extract_dispatch():
-    text = SOURCE.read_text()
+    text = SOURCE.read_text(encoding='utf-8')
     marker = "promote_managed_macos_bootstrap() {"
     start = text.index(marker if marker in text else "# Download bytes stay outside the lifecycle lock.")
     end = text.index("# \u2500\u2500 Phase 5c:")
@@ -67,11 +67,12 @@ def _run(tmp_path, uname, rc, helper=True, symlink=False, docker=""):
     script = tmp_path / "harness.sh"
     body = HARNESS.replace("__DISPATCH__", _extract_dispatch())
     body = body.replace('DOCKER_CMD=""', 'DOCKER_CMD="%s"' % docker)
-    script.write_text(body)
+    with script.open('w', encoding='utf-8', newline='\n') as stream:
+        stream.write(body)
     env = dict(os.environ)
     env["PATH"] = "/usr/bin:/bin"
     proc = subprocess.run(
-        ["bash", str(script), str(install), uname, str(rc)],
+        [os.environ.get('ODS_TEST_BASH', 'bash'), script.as_posix(), install.as_posix(), uname, str(rc)],
         capture_output=True, text=True, env=env, timeout=15,
     )
     trace = (install / "trace").read_text() if (install / "trace").exists() else ""
@@ -88,7 +89,7 @@ def test_managed_darwin_success_cleans_bootstrap(tmp_path):
     assert (install / "models" / "full-model.gguf").exists()
     assert len(args) == 5
     assert args[0].endswith("macos-bootstrap-promote.py")
-    assert args[1] == str(install)
+    assert Path(args[1]) == install
     assert args[2] == "full-model.gguf"
     assert args[3] == "full-llm"
     assert args[4] == "131072"
@@ -99,7 +100,7 @@ def test_managed_darwin_install_path_with_spaces(tmp_path):
     spaced.mkdir()
     proc, trace, args, install = _run(spaced, "Darwin", 0)
     assert proc.returncode == 0, proc.stderr
-    assert args[1] == str(install)
+    assert Path(args[1]) == install
     assert " " in args[1]
 
 

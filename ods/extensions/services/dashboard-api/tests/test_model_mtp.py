@@ -6,13 +6,13 @@ import pytest
 from model_mtp import mtp_metadata, parse_runtime_capability, recommend_mtp, qualify_memory_fit
 
 
-@pytest.mark.parametrize('declared,expected,compatible', [
-    ('--load-mode MODE\n', ['--load-mode','mmap'], False),
-    ('--mmap, --no-mmap\n', ['--mmap'], True),
-    ('--load-mode MODE\n--mmap, --no-mmap\n', ['--load-mode','mmap'], True),
-    ('Description mentions --mmap and --no-mmap but neither is a flag.\n', [], False),
+@pytest.mark.parametrize('declared,expected', [
+    ('--load-mode MODE\n', ['--load-mode','mmap']),
+    ('--mmap, --no-mmap\n', ['--mmap']),
+    ('--load-mode MODE\n--mmap, --no-mmap\n', ['--load-mode','mmap']),
+    ('Description mentions --mmap and --no-mmap but neither is a flag.\n', []),
 ])
-def test_runtime_probe_distinguishes_modern_loading_from_router_compatibility(tmp_path, monkeypatch, declared, expected, compatible):
+def test_runtime_probe_reads_only_declared_load_mode_flags(tmp_path, monkeypatch, declared, expected):
     import model_mtp
     import subprocess
     runtime = tmp_path/'runtime'
@@ -25,7 +25,8 @@ def test_runtime_probe_distinguishes_modern_loading_from_router_compatibility(tm
     result = model_mtp.probe_runtime(runtime)
     assert result['mtp'] is True
     assert result['loadModeArguments'] == expected
-    assert result['lemonade10MmapCompatible'] is compatible
+    # No router compatibility verdict: ODS launches llama-server itself.
+    assert 'lemonade10MmapCompatible' not in result
     assert calls[0][0] == [str(runtime.resolve()), '--help']
     assert calls[0][1]['creationflags'] == getattr(subprocess,'CREATE_NO_WINDOW',0)
 
@@ -109,38 +110,49 @@ def test_catalog_mtp_contract_survives_model_payload(tmp_path):
     assert value["defaultEnabled"] is False
 
 
-def memory_evidence():
+def memory_evidence(launch_mode='native', gpu_layers='auto', isolation='isolatedFromRuntime'):
     profile = {'modelSha256':'a'*64,'runtimeSha256':'b'*64,'hardware':'AMD-Radeon-RX-9070-XT-Vulkan',
-        'context':16384,'draftTokens':2,'cacheType':'q4_0','parallel':1,'gpuLayers':'99','flashAttention':'on',
-        'launchMode':'lemonade','visionProjectorSha256':'c'*64}
+        'context':16384,'draftTokens':2,'cacheType':'q4_0','parallel':1,'gpuLayers':gpu_layers,'flashAttention':'on',
+        'launchMode':launch_mode,'visionProjectorSha256':'c'*64}
     signature = hashlib.sha256(json.dumps(profile,sort_keys=True).encode()).hexdigest()
     qualified = {'profile':profile,'signature':signature}
-    execution = {'qualificationSignature':signature,'runtimeMode':'lemonade','backend':'vulkan','gpuLayers':'99',
+    execution = {'qualificationSignature':signature,'runtimeMode':launch_mode,'backend':'vulkan','gpuLayers':gpu_layers,
         'context':16384,'draftTokens':2,'cacheType':'q4_0','visionProjectorSha256':'c'*64,'visionProjectorFile':'mmproj-F16.gguf'}
     execution['signature'] = hashlib.sha256(json.dumps(execution,sort_keys=True).encode()).hexdigest()
     hardware = {'name':'AMD Radeon RX 9070 XT','backend':'amd','memoryTotalMB':16188,'systemRamGB':61}
     measured = {**evidence(), 'signature':signature,'profile':profile,'status':'completed','execution':execution,
-        'conditions':{'isolatedFromLemonade':True,'visionProjectorLoaded':True},'hardware':hardware,
+        'conditions':{isolation:True,'visionProjectorLoaded':True},'hardware':hardware,
         'memorySnapshots':[{'mode':mode,**hardware,'memoryUsedMB':15000} for mode in ('baseline','mtp')]}
     return qualified, measured
 
 
-def test_only_actual_lemonade_memory_configuration_qualifies():
+def test_only_actual_native_memory_configuration_qualifies():
     qualified, measured = memory_evidence()
     fit = qualify_memory_fit(measured, qualified)
     assert fit['contextLength'] == 16384
     assert fit['observedGpuMemoryMB'] == 15000
     assert fit['runtimeBackend'] == 'vulkan'
-    for change in ('missing-projector','changed-hardware','failed','text-only','auto-fit','missing-drafts'):
+    assert fit['runtimeMode'] == 'native'
+    assert fit['gpuLayers'] == 'auto'
+    for change in ('missing-projector','changed-hardware','failed','text-only','other-offload','missing-drafts',
+                   'shared-runtime'):
         invalid = deepcopy(measured)
         if change == 'missing-projector': invalid['execution']['visionProjectorSha256'] = None
         if change == 'changed-hardware': invalid['hardware']['name'] = 'Unrelated GPU'
         if change == 'failed': invalid['status'] = 'failed'
         if change == 'text-only': invalid['conditions']['visionProjectorLoaded'] = False
-        if change == 'auto-fit': invalid['execution']['gpuLayers'] = 'auto'
+        if change == 'other-offload': invalid['execution']['gpuLayers'] = '99'
         if change == 'missing-drafts': invalid['mtp'][0]['acceptedDraftTokens'] = 0
+        if change == 'shared-runtime': invalid['conditions']['isolatedFromRuntime'] = False
         with pytest.raises(ValueError):
             qualify_memory_fit(invalid, qualified)
+
+
+def test_memory_evidence_from_the_lemonade_launch_never_qualifies():
+    """R6: a complete, self-consistent Lemonade-era record is refused."""
+    qualified, measured = memory_evidence(launch_mode='lemonade', gpu_layers='99', isolation='isolatedFromLemonade')
+    with pytest.raises(ValueError, match='native launch'):
+        qualify_memory_fit(measured, qualified)
 
 
 def test_verified_profile_exposes_separate_availability_without_claiming_gpu_fit(tmp_path, monkeypatch):
@@ -160,7 +172,8 @@ def test_verified_profile_exposes_separate_availability_without_claiming_gpu_fit
         'contextLength':16384,'draftTokens':2,'backend':'vulkan','mtp':True,'memoryQualification':fit}
     (data/'model-stores.json').write_text(json.dumps({'schemaVersion':1,'stores':[{'id':'ssd','hostPath':str(external),
         'containerPath':'/model-stores/ssd','profiles':{'model.gguf':profile}}]}))
-    env = 'LLM_BACKEND=lemonade\nAMD_INFERENCE_LOCATION=host\nAMD_INFERENCE_RUNTIME_MODE=windows-legacy-lemonade\nSYSTEM_RAM_GB=61\n'
+    env = ('LLM_BACKEND=llama-server\nAMD_INFERENCE_LOCATION=host\n'
+           'AMD_INFERENCE_RUNTIME_MODE=windows-native-llama-server\nSYSTEM_RAM_GB=61\n')
     (tmp_path/'.env').write_text(env)
     monkeypatch.setattr('performance_oracle.inspect_gguf', lambda path:{'readable':True,'metadata':{},'context_length':262144})
     gpu = GPUInfo(name='AMD Radeon RX 9070 XT',memory_total_mb=16188,memory_used_mb=1000,memory_percent=6,
@@ -175,7 +188,14 @@ def test_verified_profile_exposes_separate_availability_without_claiming_gpu_fit
     assert value['activationSupport']['contextLength'] == value['contextLength'] == 16384
     (tmp_path/'.env').write_text(env.replace('SYSTEM_RAM_GB=61','SYSTEM_RAM_GB=16'))
     assert result()['activationSupport'] is None
-    (tmp_path/'.env').write_text(env.replace('windows-legacy-lemonade','docker-lemonade'))
+    (tmp_path/'.env').write_text(env.replace('windows-native-llama-server','linux-container'))
+    assert result()['activationSupport'] is None
+    # The fit was measured with automatic offload; a pinned layer count is
+    # a different launch.
+    (tmp_path/'.env').write_text(env + 'N_GPU_LAYERS=99\n')
+    assert result()['activationSupport'] is None
+    # A Lemonade-era host never earns native activation support.
+    (tmp_path/'.env').write_text(env.replace('LLM_BACKEND=llama-server','LLM_BACKEND=lemonade'))
     assert result()['activationSupport'] is None
     (tmp_path/'.env').write_text(env)
     projector.write_bytes(b'different vision artifact')

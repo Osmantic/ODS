@@ -96,7 +96,7 @@ export const coreRoutes = [
   {
     id: 'remote-provider',
     path: '/remote-provider',
-    label: 'Remote GPU',
+    label: 'Remote model',
     icon: Cloud,
     component: RemoteProvider,
     getProps: () => ({}),

@@ -128,6 +128,30 @@ ods_gateway_assert_no_managed_inference() {
     return 0
 }
 
+# A host-native install (llama-server.exe on Windows, this stack in WSL) still
+# runs the ODS model-router for Pixel, but it must never pull or launch the
+# in-stack llama-server. Check the effective service set because inherited
+# profiles can override an overlay.
+ods_host_native_assert_no_managed_llama() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -qx 'llama-server' <<< "$services"; then
+        printf 'Host-native llama-server Compose also starts the in-stack llama-server. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}
+
+# Before image pulls, Pixel's ingress group has not been created yet. Supply
+# an ephemeral numeric GID only for Compose's read-only service selection.
+# Phase 11 still validates the installed identity and uses the strict helper.
+ods_host_native_assert_no_managed_llama_before_pixel_identity() (
+    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+        export PIXEL_INGRESS_GID=1
+    fi
+    ods_host_native_assert_no_managed_llama "$@"
+)
+
 # A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
 # service set before pulling or starting a Portal-only stack.
 ods_compose_assert_no_webui() {

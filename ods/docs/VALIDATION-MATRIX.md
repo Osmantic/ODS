@@ -28,7 +28,7 @@ behavior.
 | Test surface | OS family | Architecture | Accelerator path | Memory class | Fleet role |
 |---|---|---:|---|---:|---|
 | Linux NVIDIA workstation | Ubuntu 24.04 | x86_64 | High-memory CUDA GPUs | 90 GB+ VRAM per GPU | Primary CUDA install, dashboard, UI, and capability target |
-| Linux AMD unified-memory workstation | Ubuntu 24.04 | x86_64 | AMD Strix Halo / ROCm-Lemonade path | 120 GB+ unified | Primary AMD install/runtime validation target |
+| Linux AMD unified-memory workstation | Ubuntu 24.04 | x86_64 | AMD Strix Halo / llama.cpp path (Vulkan; ROCm optional) | 120 GB+ unified | Primary AMD install/runtime validation target |
 | Linux NVIDIA unified-memory appliance | NVIDIA Ubuntu derivative | aarch64 | Grace Blackwell / CUDA path | 120 GB+ unified | ARM Linux + NVIDIA appliance validation target |
 | macOS constrained Apple Silicon | macOS | arm64 | Native Metal inference + Docker services | 16 GB unified | Smoke gate and tight-memory macOS validation target |
 | macOS high-memory Apple Silicon | macOS | arm64 | Native Metal inference + Docker services | 120 GB+ unified | Large-model macOS validation target |

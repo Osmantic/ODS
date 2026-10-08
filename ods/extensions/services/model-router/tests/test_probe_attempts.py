@@ -53,9 +53,27 @@ def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
             return httpx.Response(200, content=(
                 'data: {"model":"Concrete.gguf","choices":[{"delta":{"content":"ok"}}]}\n\n'
                 'data: [DONE]\n\n'), headers={"content-type": "text/event-stream"})
+        if kind == "buffered-tool":
+            assert body["stream"] is True
+            assert body["stream_options"]["include_usage"] is True
+            frames = [
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {"role": "assistant", "content": "ok"},
+                    "finish_reason": None}]},
+                {"model": "Concrete.gguf", "choices": [{"index": 0,
+                    "delta": {}, "finish_reason": "stop"}]},
+            ]
+            sse = b"".join(b"data: " + json.dumps(frame).encode() + b"\n\n"
+                           for frame in frames) + b"data: [DONE]\n\n"
+            return httpx.Response(200, content=sse,
+                                  headers={"content-type": "text/event-stream"})
+        if body["stream"]:
+            assert kind == "repair"
+            return httpx.Response(500, json={"error": {
+                "message": "Invalid diff: now finding less tool calls!"}})
         assert body["stream"] is False
         text = ("<tool_call>\n<function=missing_tool>\n<parameter=key>\nx\n</parameter>\n</function>\n</tool_call>"
-                if kind == "repair" and len(sent) == 1 else "ok")
+                if kind == "repair" and len(sent) == 2 else "ok")
         return httpx.Response(200, json={"model": "Concrete.gguf", "choices": [
             {"message": {"role": "assistant", "content": text}, "finish_reason": "stop"}]})
 
@@ -64,13 +82,15 @@ def test_each_upstream_send_matches_wire_and_preserves_attempts(router, kind):
     response = client.post("/v1/chat/completions", json=payload(probe, True, kind != "stream"))
     assert response.status_code == 200
     rows = observed(client, probe)["attempts"]
-    assert len(rows) == len(sent) == (2 if kind == "repair" else 1)
+    assert len(rows) == len(sent) == (3 if kind == "repair" else 1)
     assert [r["attempt"] for r in rows] == list(range(1, len(rows) + 1))
     for row, raw in zip(rows, sent):
         assert row["requestId"] == response.headers["X-ODS-Request-Id"]
         assert row["fingerprints"]["bodyDigest"] == expected_digest(probe, raw)
         assert row["fingerprints"]["bodyBytes"] == len(raw)
-        assert row["status"] == "complete" and row["httpStatus"] == 200
+        expected_status = "stream-error" if kind == "repair" and row["attempt"] == 1 else "complete"
+        expected_http = 500 if kind == "repair" and row["attempt"] == 1 else 200
+        assert row["status"] == expected_status and row["httpStatus"] == expected_http
         assert row["elapsedMs"] >= 0 and row["capturePrepareMs"] >= 0
         actual = json.loads(raw)
         for name in ["messages", "tools"]:
@@ -164,6 +184,7 @@ def test_failed_sends_are_observable_without_retries_or_exception_text(router, f
     mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(fail))
     response = client.post("/v1/chat/completions", json=payload(probe))
     assert response.status_code in [502, 504] and len(sent) == 1
+    assert "private backend detail" not in response.text
     rows = observed(client, probe)["attempts"]
     assert len(rows) == 1 and rows[0]["status"] == failure
     assert "private backend detail" not in json.dumps(rows)

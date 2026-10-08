@@ -9,6 +9,23 @@ $fixture=Join-Path $PSScriptRoot ('.wsl-lifetime-test-'+[guid]::NewGuid().ToStri
 $ownedProcess=$null
 try {
     Check ($Distro -ceq 'Ubuntu-Scope-Test') 'dot-sourcing preserves the selected distribution'
+    foreach ($case in @(
+        @{name='networking';json='{"error":"networking"}';reason='networking'},
+        @{name='address';json='{"error":"address"}';reason='address'},
+        @{name='hyphenated';json='{"error":"docker-probe"}';reason='docker-probe'},
+        @{name='malformed';json='{broken';reason='unknown'},
+        @{name='missing';json='{"mode":"unmanaged"}';reason='unknown'},
+        @{name='empty';json='';reason='unknown'},
+        @{name='non-object';json='[ {"error":"address"} ]';reason='unknown'},
+        @{name='non-string';json='{"error":42}';reason='unknown'},
+        @{name='uppercase';json='{"error":"Address"}';reason='unknown'},
+        @{name='private-output';json='{"error":"/home/private/sentinel"}';reason='unknown'},
+        @{name='newline';json='{"error":"address\n"}';reason='unknown'},
+        @{name='long-code';json=('{"error":"'+('a'*33)+'"}');reason='unknown'},
+        @{name='oversized';json=(' ' * 2048 + '{"error":"address"}');reason='unknown'}
+    )) {
+        Check ((Get-ODSWslAgentAddressFailureReason $case.json) -ceq $case.reason) "address diagnostics validate $($case.name) without exposing raw helper output"
+    }
     $parseTokens=$null;$parseErrors=$null
     $installerAst=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path $PSScriptRoot '../../installers/windows.ps1')),[ref]$parseTokens,[ref]$parseErrors)
     $previewAssignment=$installerAst.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$lifetimeRequired'},$true)
@@ -153,6 +170,31 @@ try {
     Stop-ODSOwnedProcess $identity
     $ownedProcess.Refresh();Check $ownedProcess.HasExited 'exact owned process handle is released'
     $ownedProcess.Dispose();$ownedProcess=$null
+
+    # A controller can exit while the slower CIM lookup is in flight. Model
+    # that boundary without replacing the actual identity reader.
+    & {
+        $script:identityRace='live'
+        function Get-Process { param($Id,$ErrorAction)
+            $script:identityProcess=[pscustomobject]@{Handle=1;StartTime=[datetime]'2026-01-01T00:00:00Z';HasExited=$false;Disposed=$false}
+            $script:identityProcess|Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+            if ($script:identityRace -eq 'exited-before-read') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            $script:identityProcess
+        }
+        function Get-CimInstance { param($ClassName,$Filter)
+            if ($script:identityRace -eq 'exited-during-cim') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            [pscustomobject]@{ExecutablePath='fixture.exe';CommandLine='fixture'}
+        }
+        foreach ($scenario in @('exited-before-read','exited-during-cim')) {
+            $script:identityRace=$scenario
+            Check ($null -eq (Get-ODSProcessIdentity 123)) "process exit $scenario yields no identity instead of a shutdown error"
+            Check $script:identityProcess.Disposed 'identity reader releases the process handle after exit'
+        }
+        $script:identityRace='live'
+        $record=Get-ODSProcessIdentity 123
+        Check ($record.pid -eq 123 -and $record.commandLine -ceq 'fixture' -and $record.startTicks -ceq ([datetime]'2026-01-01T00:00:00Z').ToUniversalTime().Ticks.ToString()) 'live process retains its captured start time and command identity'
+        Check $script:identityProcess.Disposed 'identity reader releases the process handle after success'
+    }
 
     $script:running=@('docker-desktop','Unrelated-Ubuntu')
     $script:listCalls=0
@@ -337,3 +379,4 @@ try {
 
 # The relay has independent caller-lifetime and cancellation contracts.
 & (Join-Path $PSScriptRoot 'test-wsl-relay-lifetime.ps1')
+& (Join-Path $PSScriptRoot 'test-wsl-json-sharing.ps1')

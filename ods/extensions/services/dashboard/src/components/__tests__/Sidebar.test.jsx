@@ -152,35 +152,19 @@ describe('Sidebar', () => {
     expect(screen.queryByLabelText('Applications')).not.toBeInTheDocument()
   })
 
-  test.each([
-    ['https://ods.example.test/openclaw?view=chat#recent', 'https://ods.example.test/openclaw?view=chat&token=a%2Bb%2Fc%3F#recent'],
-    ['https://ods.example.test/openclaw?token=old&view=chat#recent', 'https://ods.example.test/openclaw?token=a%2Bb%2Fc%3F&view=chat#recent'],
-    ['/openclaw?view=chat#recent', `${window.location.origin}/openclaw?view=chat&token=a%2Bb%2Fc%3F#recent`],
-  ])('preserves OpenClaw URL state and encodes the token for %s', async (rawUrl, expected) => {
+  test('links applications to their own URL without requesting service tokens', async () => {
+    const url = 'https://ods.example.test/apps?view=chat#recent'
     getSidebarExternalLinks.mockReturnValue([
-      {
-        key: 'openclaw',
-        url: rawUrl,
-        icon: () => <span data-testid="openclaw-icon">OC</span>,
-        label: 'OpenClaw',
-        healthy: true,
-      },
+      {key: 'example', label: 'Agent workspace', url, healthy: true, icon: () => <span/>},
     ])
-    vi.stubGlobal('fetch', vi.fn((url) => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(
-        url === '/api/service-tokens' ? { openclaw: 'a+b/c?' } : [],
-      ),
-    })))
+    const fetchMock = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) }))
+    vi.stubGlobal('fetch', fetchMock)
 
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
 
-    const link = screen.getByText('OpenClaw').closest('a')
-    await waitFor(() => {
-      expect(link).toHaveAttribute(
-        'href',
-        expected,
-      )
-    })
+    expect(screen.getByText('Agent workspace').closest('a')).toHaveAttribute('href', url)
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/external-links'))
+    // The token endpoint served only the removed legacy OpenClaw extension.
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/service-tokens')
   })
 })

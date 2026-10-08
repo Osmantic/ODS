@@ -10,10 +10,10 @@ breaking unrelated install paths.
 The resolved stack is built from these layers:
 
 1. Base stack: common networks, volumes, and core services.
-2. Hardware overlays: NVIDIA, AMD/Lemonade, Apple Silicon, Intel Arc, CPU, or
-   other backend-specific runtime settings.
-3. Mode overlays: local, cloud, hybrid, external Lemonade, or other routing
-   modes.
+2. Hardware overlays: NVIDIA, AMD (Vulkan, or ROCm on request), Apple Silicon,
+   Intel Arc, CPU, or other backend-specific runtime settings.
+3. Mode overlays: local, cloud, hybrid, an external OpenAI-compatible server, a
+   host-native llama-server, or other routing modes.
 4. Extension fragments: enabled service `compose.yaml` files and optional GPU
    overlays.
 5. Operator overrides: local environment variables and supported flags.

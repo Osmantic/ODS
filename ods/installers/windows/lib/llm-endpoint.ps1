@@ -112,7 +112,6 @@ function Get-WindowsLocalLlmEndpoint {
         [hashtable]$EnvMap = $null,
         [string]$GpuBackend = "",
         [string]$NativeBackend = "",
-        [switch]$UseLemonade,
         [switch]$CloudMode
     )
 
@@ -156,7 +155,7 @@ function Get-WindowsLocalLlmEndpoint {
     }
 
     $defaultNativePort = "8080"
-    $configuredConstant = Get-Variable -Name LEMONADE_PORT -Scope Script -ErrorAction SilentlyContinue
+    $configuredConstant = Get-Variable -Name NATIVE_LLM_PORT -Scope Script -ErrorAction SilentlyContinue
     if ($configuredConstant -and [string]$configuredConstant.Value -match '^\d+$') {
         $defaultNativePort = [string]$configuredConstant.Value
     }
@@ -170,21 +169,9 @@ function Get-WindowsLocalLlmEndpoint {
         $nativePort = [string]$parsedNativePort
     }
 
-    if ($UseLemonade -or $resolvedNativeBackend -eq "lemonade" -or $llmBackend -eq "lemonade") {
-        return @{
-            Name = "LLM (Lemonade)"
-            Backend = "lemonade"
-            Port = $nativePort
-            ApiBasePath = "/api/v1"
-            HealthUrl = "http://127.0.0.1:${nativePort}/api/v1/health"
-            BaseUrl = "http://localhost:${nativePort}/api/v1"
-            ChatCompletionsUrl = "http://localhost:${nativePort}/api/v1/chat/completions"
-        }
-    }
-
     $usesNativeHostLlamaServer = (-not $CloudMode -and (
         $resolvedGpuBackend -eq "amd" -or
-        $amdInferenceRuntimeMode -eq "windows-llama-server-fallback" -or
+        $amdInferenceRuntimeMode -in @("windows-native-llama-server", "windows-llama-server-fallback") -or
         ($resolvedNativeBackend -eq "llama-server" -and
             $amdInferenceRuntime -eq "llama-server" -and
             $amdInferenceLocation -eq "host")
@@ -199,6 +186,8 @@ function Get-WindowsLocalLlmEndpoint {
             HealthUrl = "http://localhost:${nativePort}/health"
             BaseUrl = "http://localhost:${nativePort}/v1"
             ChatCompletionsUrl = "http://localhost:${nativePort}/v1/chat/completions"
+            # Sent as a header only; /health and /v1/models stay public.
+            ApiKey = (Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("LLAMA_SERVER_API_KEY") -Default "")
         }
     }
 
@@ -234,12 +223,13 @@ function Test-WindowsLlmModelReadiness {
     .SYNOPSIS
         Prove the local LLM can actually serve, not just that its process is alive.
     .DESCRIPTION
-        A healthy Lemonade/llama-server process is NOT proof the model works: if the
+        A healthy llama-server process is NOT proof the model works: if the
         GGUF backing file was never placed on disk, /v1/models still lists the model
         but every chat/completions returns 500. This gate proves two things before an
         install may report healthy:
           1. the GGUF backing file exists at the path the backend loads from, and
           2. a minimal completion actually succeeds (the real user path).
+        The native Windows llama-server requires the endpoint's API key.
         Returns a result hashtable; the caller decides fatality.
     .OUTPUTS
         @{ Ok; FileExists; ModelFile; ModelId; CompletionOk; Detail }
@@ -248,7 +238,6 @@ function Test-WindowsLlmModelReadiness {
         [Parameter(Mandatory = $true)] [hashtable]$Endpoint,
         [Parameter(Mandatory = $true)] [string]$InstallDir,
         [string]$GgufFile = "",
-        [string]$LemonadeModel = "",
         [int]$TimeoutSec = 120
     )
 
@@ -264,67 +253,10 @@ function Test-WindowsLlmModelReadiness {
         $result.FileExists = $true
     }
 
-    # 2. Resolve the served model id. Modern Lemonade derives IDs from its live
-    #    model catalog, while legacy releases use extra.<GGUF_FILE>. Key this off
-    #    the resolved endpoint, not the broader AMD GPU family, so a valid Vulkan
-    #    fallback install does not false-fail.
+    # 2. llama-server serves the GGUF file name as the model id (--alias).
     $modelId = $GgufFile
-    $isLemonadeEndpoint = $false
-    if ($Endpoint.ContainsKey("Backend")) {
-        $isLemonadeEndpoint = ([string]$Endpoint.Backend).ToLowerInvariant() -eq "lemonade"
-    } elseif ($Endpoint.ContainsKey("ApiBasePath")) {
-        $isLemonadeEndpoint = ([string]$Endpoint.ApiBasePath) -eq "/api/v1"
-    }
-    if (-not [string]::IsNullOrWhiteSpace($GgufFile) -and $isLemonadeEndpoint) {
-        $modelId = $LemonadeModel
-        if ([string]::IsNullOrWhiteSpace($modelId)) {
-            $envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
-            $modelId = Get-WindowsODSEnvValue `
-                -EnvMap $envMap -Keys @("LEMONADE_MODEL") `
-                -Default "extra.$GgufFile"
-        }
-
-        $resolver = Get-Command Resolve-ODSLemonadeModelId -ErrorAction SilentlyContinue
-        if ($resolver) {
-            $lemonadePort = 0
-            if ($Endpoint.ContainsKey("Port")) {
-                [void][int]::TryParse([string]$Endpoint.Port, [ref]$lemonadePort)
-            }
-            if ($lemonadePort -lt 1 -and $Endpoint.ContainsKey("ChatCompletionsUrl")) {
-                try { $lemonadePort = ([Uri]$Endpoint.ChatCompletionsUrl).Port } catch { }
-            }
-            if ($lemonadePort -gt 0) {
-                try {
-                    $liveModelId = Resolve-ODSLemonadeModelId `
-                        -Port $lemonadePort -GgufFile $GgufFile
-                    if (-not [string]::IsNullOrWhiteSpace($liveModelId)) {
-                        $modelId = $liveModelId
-                    }
-                } catch { }
-            }
-        }
-    }
     if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = "default" }
     $result.ModelId = $modelId
-
-    if ($isLemonadeEndpoint -and $result.FileExists) {
-        $envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
-        $managed = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("AMD_INFERENCE_MANAGED")
-        $external = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("LEMONADE_EXTERNAL")
-        $mode = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("AMD_INFERENCE_RUNTIME_MODE")
-        if ($managed -eq "true" -and $external -ne "true" -and $mode -ne "external-lemonade") {
-            try {
-                $contextSize = [int](Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("CTX_SIZE", "MAX_CONTEXT"))
-                $port = ([Uri]$Endpoint.ChatCompletionsUrl).Port
-                $key = Get-ODSLemonadeAdminApiKey -EnvPath (Join-Path $InstallDir ".env")
-                Set-ODSLemonadeLoadedModel -Port $port -ModelId $modelId `
-                    -ContextSize $contextSize -ApiKey $key -TimeoutSec $TimeoutSec
-            } catch {
-                $result.Detail = "managed Lemonade model/context load failed"
-                return $result
-            }
-        }
-    }
 
     # 3. A minimal completion must actually succeed -- this is the real user path that
     #    a "registered but missing file" install silently fails.
@@ -337,9 +269,13 @@ function Test-WindowsLlmModelReadiness {
         chat_template_kwargs = @{ enable_thinking = $false }
     } | ConvertTo-Json -Compress -Depth 5
 
+    $headers = @{}
+    if ($Endpoint.ContainsKey("ApiKey") -and -not [string]::IsNullOrWhiteSpace([string]$Endpoint.ApiKey)) {
+        $headers.Authorization = "Bearer " + [string]$Endpoint.ApiKey
+    }
     try {
         $resp = Invoke-WebRequest -Method POST -Uri $Endpoint.ChatCompletionsUrl `
-            -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec `
+            -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec `
             -UseBasicParsing -ErrorAction Stop
         if ([int]$resp.StatusCode -ge 200 -and [int]$resp.StatusCode -lt 300) {
             $result.CompletionOk = Test-ODSCompletionContent -Json $resp.Content

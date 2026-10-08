@@ -14,10 +14,12 @@ import platform
 import pwd
 import py_compile
 import re
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 BUILD_FILES = (
     "Dockerfile.inspection",
@@ -35,6 +37,28 @@ PROGRAM_ROOT = Path("/usr/local/libexec/ods-pixel-inspection")
 CONFIG = Path("/etc/ods-pixel-inspection.json")
 UNIT = Path("/etc/systemd/system/pixel-preview-inspection.service")
 IMAGE_PATTERN = r"sha256:[a-f0-9]{64}"
+OWNER_SOCKET = Path("/run/ods-pixel-inspection/control.sock")
+OWNER_SOCKET_WAIT_SECONDS = 30
+
+
+def wait_owner_socket():
+    """Wait for the broker to listen while retaining the install owner's UID."""
+    deadline = time.monotonic() + OWNER_SOCKET_WAIT_SECONDS
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(min(1, remaining))
+                client.connect(str(OWNER_SOCKET))
+            return
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(.1, remaining))
+    raise SystemExit(
+        "Pixel preview inspection socket did not become accessible to its owner "
+        f"within {OWNER_SOCKET_WAIT_SECONDS} seconds. Check "
+        "journalctl -u pixel-preview-inspection.service before rerunning setup."
+    )
 
 
 def source_bytes(path, owner_uid=None):
@@ -100,7 +124,20 @@ def docker_path(transport):
         )
         or not info.st_mode & 0o111
     ):
-        raise ValueError("unsafe-inspection-docker")
+        raise ValueError(
+            "unsafe-inspection-docker: "
+            + json.dumps({
+                "path": str(path), "resolved": str(resolved),
+                "mode": oct(stat.S_IMODE(info.st_mode)),
+                "uid": info.st_uid, "gid": info.st_gid, "links": info.st_nlink,
+                "transport": transport,
+            }, sort_keys=True)
+            + ". The inspector requires a root-owned executable that cannot be "
+            "modified by other users. The read-only Docker Desktop WSL CLI is "
+            "accepted only when its mount and parent directories verify. "
+            "Check the resolved file and its mount with stat and findmnt; "
+            "do not chmod the Docker Desktop mount or disable this check."
+        )
     return str(path)
 
 
@@ -285,21 +322,35 @@ def build_config(*, source, owner_uid, transport, docker_binary=None, docker_hos
         identity = root / "image.id"
         # A fresh private context contains exactly reviewed build inputs. No tag
         # or caller-supplied Docker arguments can select the runtime image.
-        subprocess.run(
-            [
-                *argv,
-                "build",
-                "--iidfile",
-                str(identity),
-                "--file",
-                str(context / "Dockerfile.inspection"),
-                str(context),
-            ],
-            check=True,
-            timeout=1800,
-            stdout=sys.stderr,
-            env=environment,
-        )
+        try:
+            subprocess.run(
+                [
+                    *argv,
+                    "build",
+                    "--iidfile",
+                    str(identity),
+                    "--file",
+                    str(context / "Dockerfile.inspection"),
+                    str(context),
+                ],
+                check=True,
+                timeout=1800,
+                stdout=sys.stderr,
+                env=environment,
+            )
+        except subprocess.CalledProcessError:
+            # Build output is streamed, not captured. Keep the original error
+            # and offer a conditional next step rather than inventing a cause.
+            print(
+                "Preview inspection image build failed. Check the build output above. "
+                "If it reports EAI_AGAIN, ENOTFOUND, or a name-resolution failure, "
+                "verify DNS in the selected container builder; host connectivity "
+                "does not verify build DNS. See "
+                "docs/INSTALL-TROUBLESHOOTING.md#container-build-dns. "
+                "The npm 'Exit handler never called' message alone does not establish DNS failure.",
+                file=sys.stderr,
+            )
+            raise
         image_id = identity.read_text().strip()
         if not re.fullmatch(IMAGE_PATTERN, image_id):
             raise ValueError("inspection-image-id-required")
@@ -488,6 +539,7 @@ def main():
     )
     install = sub.add_parser("install-linux")
     install.add_argument("--source", required=True)
+    sub.add_parser("wait-owner-socket")
     for name in ("validate-linux", "remove-linux"):
         cleanup = sub.add_parser(name)
         cleanup.add_argument("--source", required=True)
@@ -506,6 +558,8 @@ def main():
         )
     elif args.command == "install-linux":
         install_linux(source=args.source, config=json.load(sys.stdin))
+    elif args.command == "wait-owner-socket":
+        wait_owner_socket()
     else:
         print(
             linux_cleanup(

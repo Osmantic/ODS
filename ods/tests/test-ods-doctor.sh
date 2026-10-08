@@ -279,6 +279,8 @@ if command -v jq >/dev/null 2>&1; then
     cat << 'EOF' > "$TEST_TEMP_WORKSPACE/bin/curl"
 #!/bin/bash
 echo "$*" >> /tmp/curl_calls.log
+# A status probe (-w '%{http_code}') prints only the code, as real curl does.
+case " $* " in *"%{http_code}"*) printf '200'; exit 0 ;; esac
 # return a dummy JSON for success
 echo '{"status":"ok"}'
 exit 0

@@ -442,6 +442,21 @@ def test_cli_running_is_not_a_successful_one_shot_exit(monkeypatch):
     assert _mod._verify_one_shot_exit([], 'specific-cli', timeout=1)[0] is False
 
 
+class _FinishedPull:
+    """`docker compose pull` stand-in that has already exited with ``returncode``."""
+
+    def __init__(self, calls, command, returncode=0):
+        calls.append(list(command))
+        self.stdout = iter(())
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
 @pytest.mark.parametrize('build_exit', [0, 1])
 def test_install_prepares_only_dependency_images_and_surfaces_build_failure(monkeypatch, build_exit):
     monkeypatch.setenv('BUILD_TEST_TOKEN', 'private')
@@ -459,6 +474,7 @@ def test_install_prepares_only_dependency_images_and_surfaces_build_failure(monk
         return types.SimpleNamespace(returncode=build_exit if 'build' in command else 0,
                                      stdout=json.dumps(config), stderr='private build output')
     monkeypatch.setattr(_mod.subprocess, 'run', run)
+    monkeypatch.setattr(_mod.subprocess, 'Popen', lambda command, **kwargs: _FinishedPull(calls, command))
     monkeypatch.setattr(_mod, '_write_progress', lambda *args: progress.append(args))
     ok, error = _mod._prepare_install_images(['-p', 'ods'], 'demo')
     assert ok is (build_exit == 0)
@@ -469,7 +485,9 @@ def test_install_prepares_only_dependency_images_and_surfaces_build_failure(monk
         assert error.splitlines()[1] == 'Untrusted build diagnostic (tail):'
         assert error.endswith('\n[REDACTED] build output')
     base = ['docker', 'compose', '-p', 'ods']
-    assert calls == [base + ['config', '--format', 'json'], base + ['pull', 'demo-db'],
+    # The pull streams progress; the build keeps the plain Compose command.
+    assert calls == [base + ['config', '--format', 'json'],
+                     ['docker', 'compose', '--progress', 'plain', '-p', 'ods', 'pull', 'demo-db'],
                      base + ['build', '--build-arg', 'BUILDKIT_CONTEXT_KEEP_GIT_DIR=1', 'demo', 'demo-worker']]
     assert progress[-1][2] == 'Building images from source...'
 
@@ -636,12 +654,13 @@ def test_image_preparation_allows_cached_images_and_absent_optional_dependency(m
     config = {'services': {'demo': {'image': 'demo:1', 'depends_on': {'optional': {'required': False}}}}}
     def run(command, **kwargs):
         calls.append(command)
-        return types.SimpleNamespace(returncode=1 if 'pull' in command else 0,
-                                     stdout=json.dumps(config), stderr='')
+        return types.SimpleNamespace(returncode=0, stdout=json.dumps(config), stderr='')
     monkeypatch.setattr(_mod.subprocess, 'run', run)
+    # The download fails, but a cached image may still satisfy `up`.
+    monkeypatch.setattr(_mod.subprocess, 'Popen', lambda command, **kwargs: _FinishedPull(calls, command, 1))
     monkeypatch.setattr(_mod, '_write_progress', lambda *args: None)
     assert _mod._prepare_install_images([], 'demo') == (True, '')
-    assert calls[-1] == ['docker', 'compose', 'pull', 'demo']
+    assert calls[-1] == ['docker', 'compose', '--progress', 'plain', 'pull', 'demo']
 
 
 def test_extension_stop_includes_owned_companions_but_not_shared_services(tmp_path, monkeypatch):
@@ -725,7 +744,6 @@ _disable_conflicting_macos_bridge = _mod._disable_conflicting_macos_bridge
 resolve_compose_flags = _mod.resolve_compose_flags
 validate_core_recreate_ids = _mod.validate_core_recreate_ids
 invalidate_compose_cache = _mod.invalidate_compose_cache
-_post_install_core_recreate = _mod._post_install_core_recreate
 _split_nmcli_terse = _mod._split_nmcli_terse
 _request_server_shutdown = _mod._request_server_shutdown
 
@@ -759,96 +777,241 @@ def _isolate_opencode_config(monkeypatch, tmp_path):
     )
 
 
-def _backend_projection(url):
-    return {"status": "ok", "model_loaded": "selected", "all_models_loaded": [
-        {"model_name": "selected", "recipe": "llamacpp", "backend_url": url},
-    ]}
-
-
-@pytest.mark.parametrize("url", [
-    "http://example.com:8001/v1", "http://localhost:8001/v1",
-    "http://127.0.0.1:8001/other", "https://127.0.0.1:8001/v1",
-    "http://user:secret@127.0.0.1:8001/v1", "http://127.0.0.1/v1",
-    "http://127.0.0.1:8001/v1?key=secret", "http://127.0.0.1:8001/v1#fragment",
-    "http://127.0.0.1:99999/v1", "http://127.0.0.1:8001/\nv1", None,
-])
-def test_lemonade_backend_rejects_untrusted_endpoints(monkeypatch, url):
-    def unexpected(*args, **kwargs):
-        pytest.fail("Invalid backend metadata must not initiate network I/O")
-    monkeypatch.setattr(_mod.urllib_request, "build_opener", unexpected)
-    assert _mod._lemonade_backend_health(_backend_projection(url)) == "unavailable"
-
-
-def test_lemonade_backend_real_health_no_proxy_headers_or_redirect(monkeypatch):
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-    requests = []
-    mode = ["ok"]
-
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *_args):
-            pass
-
-        def do_GET(self):
-            requests.append((self.path, dict(self.headers)))
-            self.send_response(302 if mode[0] == "redirect" else 200)
-            if mode[0] == "redirect":
-                self.send_header("Location", "/redirect-target")
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": mode[0]}).encode())
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
-    worker.start()
-    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
-    monkeypatch.setenv("NO_PROXY", "")
-    monkeypatch.setenv("LEMONADE_API_KEY", "must-not-forward")
-    payload = _backend_projection(f"http://127.0.0.1:{server.server_port}/v1")
-    try:
-        assert _mod._lemonade_backend_health(payload) == "ok"
-        mode[0] = "loading"
-        assert _mod._lemonade_backend_health(payload) == "unavailable"
-        mode[0] = "redirect"
-        assert _mod._lemonade_backend_health(payload) == "unavailable"
-        assert [path for path, _ in requests] == ["/health"] * 3
-        assert all("Authorization" not in headers and "Cookie" not in headers
-                   for _, headers in requests)
-    finally:
-        server.shutdown()
-        server.server_close()
-        worker.join(timeout=2)
-    assert _mod._lemonade_backend_health(payload) == "unavailable"
-
-
-def test_windows_llm_dead_child_overrides_stale_health_and_stats(monkeypatch, tmp_path):
+def _host_llm_runtime_fixture(monkeypatch, tmp_path, responses):
+    """A Windows host llama-server whose HTTP answers come from ``responses``."""
     monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
     monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
-    monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
-    projection = _backend_projection("http://127.0.0.1:8001/v1")
+    monkeypatch.setattr(_mod, "_host_llm_status_cache", (0.0, None))
+    (tmp_path / ".env").write_text(
+        "GPU_BACKEND=amd\nAMD_INFERENCE_LOCATION=host\nAMD_INFERENCE_RUNTIME=llama-server\n"
+        "AMD_INFERENCE_RUNTIME_MODE=windows-native-llama-server\nAMD_INFERENCE_PORT=18080\n"
+        "LLAMA_SERVER_API_KEY=" + "5e" * 32 + "\n",
+        encoding="utf-8",
+    )
+    requested: list = []
 
-    class Response(io.BytesIO):
-        pass
+    def runtime_http(env, path, **_kwargs):
+        requested.append(path)
+        answer = responses[path]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer if isinstance(answer, str) else json.dumps(answer)
 
-    def fetch(request, timeout):
-        data = projection if request.full_url.endswith("/health") else {
-            "tokens_per_second": 100, "output_tokens": 20,
-        }
-        return Response(json.dumps(data).encode())
-
-    monkeypatch.setattr(_mod.urllib_request, "urlopen", fetch)
-    monkeypatch.setattr(_mod, "_lemonade_backend_health", lambda value: "unavailable")
-    result = _mod._windows_llm_status()
-    assert result["health"]["status"] == "error"
-    assert result["health"]["backend_status"] == "unavailable"
-    assert result["stats"] is None
-    assert "backend_url" not in json.dumps(result)
+    monkeypatch.setattr(_mod, "_runtime_http", runtime_http)
+    return requested
 
 
-def test_lemonade_backend_legacy_and_ambiguous_projection():
-    assert _mod._lemonade_backend_health({"status": "ok"}) is None
-    projection = _backend_projection("http://127.0.0.1:8001/v1")
-    projection["all_models_loaded"] *= 2
-    assert _mod._lemonade_backend_health(projection) == "unavailable"
+_LLAMA_METRICS = (
+    "# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.\n"
+    "# TYPE llamacpp:prompt_tokens_total counter\n"
+    "llamacpp:prompt_tokens_total 120\n"
+    "llamacpp:tokens_predicted_total 48\n"
+    "llamacpp:tokens_predicted_seconds_total 0.5\n"
+    "llamacpp:requests_processing 0\n"
+    "llamacpp:n_busy_slots_per_decode nan\n"
+)
+
+
+def test_host_llm_status_reads_health_model_context_and_counters(monkeypatch, tmp_path):
+    requested = _host_llm_runtime_fixture(monkeypatch, tmp_path, {
+        "/health": {"status": "ok"},
+        "/v1/models": {"object": "list", "data": [{"id": "model.gguf", "object": "model"}]},
+        "/props": {"model_path": r"C:\Users\private\models\model.gguf",
+                   "build_info": "b9014-3f0a4c2",
+                   "default_generation_settings": {"n_ctx": 65536}},
+        "/metrics": _LLAMA_METRICS,
+    })
+
+    payload = _mod._host_llm_status()
+
+    assert payload["schema_version"] == "ods.host-llm-status.v1"
+    assert payload["source"] == "windows-loopback"
+    assert payload["health"] == {
+        "status": "ok", "version": "b9014-3f0a4c2", "model_loaded": "model.gguf",
+        "context_length": 65536, "vision": None,
+    }
+    assert payload["metrics"] == {
+        "prompt_tokens_total": 120.0, "tokens_predicted_total": 48.0,
+        "tokens_predicted_seconds_total": 0.5, "requests_processing": 0.0,
+    }
+    # Latest-completion stats were a Lemonade API; llama.cpp has counters.
+    assert payload["stats"] is None
+    assert requested == ["/health", "/v1/models", "/props", "/metrics"]
+    assert "private" not in json.dumps(payload)
+
+
+def test_legacy_route_migration_moves_sharing_grants_with_the_model(monkeypatch, tmp_path):
+    # Inference-sharing grants pin the route's ids. The retired Lemonade id of
+    # the same GGUF becomes its llama-server alias, and the grants move too.
+    install = tmp_path / "ods"
+    (install / "data").mkdir(parents=True)
+    (install / ".env").write_text(
+        "ODS_MODE=local\nLLM_BACKEND=llama-server\nGGUF_FILE=Model.gguf\nLLM_MODEL=model-x\n"
+        "CTX_SIZE=32768\nMAX_CONTEXT=32768\n",
+        encoding="utf-8",
+    )
+    state = _mod._switchboard_state
+    state_path = install / "data" / "model-state.json"
+    state.record_verified_route(
+        state_path, catalog_id="model-x", runtime_model_id="Model.gguf", backend_kind="llama-server",
+        endpoint_id="llama-server-default", context_length=32768,
+        capabilities={"chat": True, "tools": False, "vision": False, "agentViable": False},
+        proof_identity="Model.gguf",
+    )
+    legacy = json.loads(state_path.read_text(encoding="utf-8"))
+    legacy["active"]["backend"] = {"kind": "lemonade", "endpointId": "lemonade-default",
+                                   "nativeRoute": "extra.Model.gguf"}
+    legacy["active"]["runtimeModelId"] = legacy["active"]["proof"]["identity"] = "extra.Model.gguf"
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+    monkeypatch.setattr(_mod, "DATA_DIR", install / "data")
+    monkeypatch.setattr(_mod, "_render_model_router_runtime_configs", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(_mod, "_catalog_model_for_current_env", lambda _env: ("model-x", {}))
+    (install / "data" / "pixel-inference").mkdir()
+    moves: list = []
+
+    class FakeSharingStore:
+        def __init__(self, directory):
+            assert directory == install / "data" / "pixel-inference"
+
+        def rebind_model(self, *identities):
+            moves.append(identities)
+            return 2
+
+    import pixel_provider.sharing
+    monkeypatch.setattr(pixel_provider.sharing, "SharingStore", FakeSharingStore)
+
+    assert _mod._migrate_legacy_switchboard_route("startup") is True
+
+    assert moves == [("model-x", "extra.Model.gguf", "model-x", "Model.gguf")]
+    active = state.read_state(state_path)[0]["active"]
+    assert (active["backend"]["kind"], active["runtimeModelId"]) == ("llama-server", "Model.gguf")
+
+
+def test_sharing_grants_stay_put_where_sharing_was_never_turned_on(monkeypatch, tmp_path):
+    import pixel_provider.sharing
+    monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(pixel_provider.sharing, "SharingStore",
+                        lambda _directory: pytest.fail("no sharing store exists here"))
+
+    _mod._rebind_pixel_sharing_grants(
+        {"catalogId": "model-x", "runtimeModelId": "extra.Model.gguf"}, "model-x", "Model.gguf",
+    )
+
+
+@pytest.mark.parametrize(("modalities", "vision"), [
+    ({"vision": True, "audio": False}, True),
+    ({"vision": False, "audio": False}, False),
+    ({"vision": "true"}, None),
+    (None, None),
+])
+def test_host_llm_status_reports_whether_a_vision_projector_is_loaded(monkeypatch, tmp_path, modalities, vision):
+    # ODS Talk sends images only to a model whose server loaded a projector;
+    # the dashboard cannot read the keyed server's /props itself.
+    props = {"default_generation_settings": {"n_ctx": 8192}}
+    if modalities is not None:
+        props["modalities"] = modalities
+    _host_llm_runtime_fixture(monkeypatch, tmp_path, {
+        "/health": {"status": "ok"},
+        "/v1/models": {"data": [{"id": "model.gguf"}]},
+        "/props": props,
+        "/metrics": "",
+    })
+
+    assert _mod._host_llm_status()["health"]["vision"] is vision
+
+
+def test_host_llm_status_redacts_a_path_shaped_model_id(monkeypatch, tmp_path):
+    _host_llm_runtime_fixture(monkeypatch, tmp_path, {
+        "/health": {"status": "ok"},
+        "/v1/models": {"data": [{"id": r"C:\Users\private\model.gguf"}]},
+        "/props": {"default_generation_settings": {"n_ctx": 4096}},
+        "/metrics": "",
+    })
+
+    payload = _mod._host_llm_status()
+
+    assert payload["health"]["model_loaded"] == "model.gguf"
+    assert payload["metrics"] is None
+    assert "private" not in json.dumps(payload)
+
+
+def test_host_llm_status_reports_loading_without_reading_telemetry(monkeypatch, tmp_path):
+    requested = _host_llm_runtime_fixture(monkeypatch, tmp_path, {
+        "/health": {"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}},
+    })
+
+    payload = _mod._host_llm_status()
+
+    assert payload["health"]["status"] == "loading"
+    assert payload["health"]["model_loaded"] is None
+    assert payload["metrics"] is None
+    assert requested == ["/health"]
+
+
+def test_host_llm_status_health_survives_a_telemetry_failure(monkeypatch, tmp_path):
+    _host_llm_runtime_fixture(monkeypatch, tmp_path, {
+        "/health": {"status": "ok"},
+        "/v1/models": {"data": [{"id": "model.gguf"}]},
+        "/props": {"default_generation_settings": {"n_ctx": 8192}},
+        "/metrics": OSError("llama-server /metrics is unreachable"),
+    })
+
+    payload = _mod._host_llm_status()
+
+    assert payload["health"]["status"] == "ok"
+    assert payload["health"]["model_loaded"] == "model.gguf"
+    assert payload["metrics"] is None
+
+
+def test_host_llm_status_is_unavailable_when_the_runtime_is_unreachable(monkeypatch, tmp_path):
+    _host_llm_runtime_fixture(monkeypatch, tmp_path, {
+        "/health": OSError("llama-server /health is unreachable (curl exit 7)"),
+    })
+    assert _mod._host_llm_status() is None
+
+
+def test_host_llm_status_is_unsupported_for_a_container_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+    (tmp_path / ".env").write_text("GPU_BACKEND=amd\nLLM_BACKEND=llama-server\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "_host_llm_status", lambda: pytest.fail("no host runtime to read"))
+    handler = _FakeHandler(b"")
+    handler.headers["Authorization"] = "Bearer test-key"
+    _mod.AgentHandler._handle_llm_status(handler)
+    assert handler.response_code == 501
+
+
+def test_host_llm_status_carries_the_runtime_key_only_through_the_transport(monkeypatch, tmp_path):
+    """The key reaches llama-server on curl's stdin, never in argv or the payload."""
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod, "_host_llm_status_cache", (0.0, None))
+    key = "5e" * 32
+    (tmp_path / ".env").write_text(
+        "GPU_BACKEND=amd\nAMD_INFERENCE_LOCATION=host\nAMD_INFERENCE_RUNTIME=llama-server\n"
+        "AMD_INFERENCE_PORT=18080\nLLAMA_SERVER_API_KEY=" + key + "\n",
+        encoding="utf-8",
+    )
+    calls: list = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd, kwargs.get("input")))
+        body = {"/health": {"status": "ok"}, "/v1/models": {"data": [{"id": "m.gguf"}]},
+                "/props": {"default_generation_settings": {"n_ctx": 4096}}}.get(
+            cmd[-1].removeprefix("http://127.0.0.1:18080"), "")
+        return subprocess.CompletedProcess(cmd, 0, stdout=body if isinstance(body, str) else json.dumps(body))
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    payload = _mod._host_llm_status()
+    assert payload["health"]["model_loaded"] == "m.gguf"
+    assert [cmd[-1] for cmd, _ in calls] == [
+        "http://127.0.0.1:18080/health", "http://127.0.0.1:18080/v1/models",
+        "http://127.0.0.1:18080/props", "http://127.0.0.1:18080/metrics",
+    ]
+    assert all(key not in " ".join(cmd) for cmd, _ in calls)
+    assert all(stdin == f"Authorization: Bearer {key}\n" for _, stdin in calls)
+    assert key not in json.dumps(payload)
 
 
 def can_create_symlinks(tmp_path: Path) -> bool:
@@ -1947,6 +2110,34 @@ class TestValidateCoreRecreateIds:
         ok, error = validate_core_recreate_ids(["dashboard-api"])
         assert ok is False
         assert "not eligible" in error.lower()
+
+
+class TestHandleCoreRecreate:
+
+    @pytest.mark.parametrize("service_ids", [
+        [1, "llama-server"],
+        [["llama-server"]],
+        [{"id": "llama-server"}],
+    ])
+    def test_malformed_service_ids_are_rejected_with_400(
+        self, monkeypatch, service_ids,
+    ):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "CORE_SERVICE_IDS", {"llama-server"})
+        compose_calls = []
+
+        def fake_recreate(service_ids):
+            compose_calls.append(service_ids)
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": service_ids}).encode())
+
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == 400
+        assert "Invalid service_id" in handler.parse_response()["error"]
+        assert compose_calls == []
 
 
 class TestResolveComposeFlagsCache:
@@ -3294,84 +3485,6 @@ class TestInstallStartCommandNoDeps:
             "docker_compose_recreate must keep --no-deps; "
             "core-service recreation (e.g. after a model swap) is intentionally "
             "scoped to the named services only."
-        )
-
-
-# --- _post_install_core_recreate ---
-#
-# openclaw's compose.yaml adds OPENAI_API_BASE_URLS to open-webui as an overlay;
-# `docker compose up -d openclaw` (used by _handle_install) won't pick up
-# overlay changes targeting already-running core services without
-# `--force-recreate`. Hence the post-install recreate of open-webui whenever
-# openclaw is installed.
-
-
-class TestPostInstallCoreRecreate:
-
-    def test_openclaw_triggers_open_webui_recreate(self, monkeypatch):
-        calls = []
-
-        def _fake_recreate(ids):
-            calls.append(list(ids))
-            return True, ""
-
-        monkeypatch.setattr(_mod, "docker_compose_recreate", _fake_recreate)
-        _post_install_core_recreate("openclaw")
-        assert calls == [["open-webui"]]
-
-    def test_non_openclaw_service_is_noop(self, monkeypatch):
-        calls = []
-
-        def _fake_recreate(ids):
-            calls.append(list(ids))
-            return True, ""
-
-        monkeypatch.setattr(_mod, "docker_compose_recreate", _fake_recreate)
-        for svc in ("litellm", "n8n", "perplexica", "whisper", "comfyui"):
-            _post_install_core_recreate(svc)
-        assert calls == []
-
-    def test_recreate_failure_is_swallowed(self, monkeypatch):
-        """Install must not fail if the post-install recreate errors — openclaw
-        is already running; the overlay just won't take effect until a manual
-        core restart."""
-
-        def _fake_recreate(_ids):
-            return False, "docker compose exploded"
-
-        monkeypatch.setattr(_mod, "docker_compose_recreate", _fake_recreate)
-        # Must not raise
-        _post_install_core_recreate("openclaw")
-
-
-class TestRunInstallCallsPostInstallRecreate:
-    """Source-level check that the install closure calls
-    _post_install_core_recreate after the "started" progress write.
-
-    The dynamic flow runs in a daemon thread + nested closure, which makes
-    runtime mocking fragile (see TestInstallHookEnvAllowlist for the same
-    reasoning). Source-level assertion is sufficient to lock the wiring."""
-
-    def _install_source(self):
-        import inspect
-        return inspect.getsource(_mod.AgentHandler._handle_install)
-
-    def test_install_calls_post_install_core_recreate(self):
-        src = self._install_source()
-        assert "_post_install_core_recreate(service_id)" in src, (
-            "_run_install must invoke _post_install_core_recreate(service_id) "
-            "after emitting the 'started' progress record"
-        )
-
-    def test_recreate_is_after_started_progress_write(self):
-        src = self._install_source()
-        started_idx = src.find('"started"')
-        recreate_idx = src.find("_post_install_core_recreate(")
-        assert started_idx != -1, "expected 'started' progress write in _handle_install"
-        assert recreate_idx != -1, "expected _post_install_core_recreate call in _handle_install"
-        assert started_idx < recreate_idx, (
-            "_post_install_core_recreate must run AFTER the 'started' progress "
-            "write so the client sees success even if the recreate fails"
         )
 
 
@@ -5277,6 +5390,59 @@ class TestHandleEnvUpdate:
             "ODS_AGENT_KEY=second\n"
         )
 
+    def test_backups_keep_only_the_newest_copies(self, env_update_env):
+        install_dir, data_dir = env_update_env
+        backups = data_dir / "config-backups"
+        backups.mkdir(parents=True)
+        old = [backups / f".env.backup.202601{day:02d}-120000.fixture{day}" for day in range(1, 26)]
+        for path in old:
+            path.write_text("OLD_SECRET=value\n", encoding="utf-8")
+        unrelated = [backups / "notes.txt", backups / ".env.backup.manual"]
+        for path in unrelated:
+            path.write_text("owner file\n", encoding="utf-8")
+
+        handler = _FakeHandler(_make_body("ODS_AGENT_KEY=newvalue\n"))
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        created = data_dir.parent / handler.parse_response()["backup_path"]
+        kept = sorted(path.name for path in backups.glob(".env.backup.2*"))
+        assert len(kept) == _mod.ENV_BACKUP_RETENTION
+        assert created.name in kept
+        # The 19 newest fixtures survive; the oldest six are pruned.
+        assert kept[:-1] == sorted(path.name for path in old[-(_mod.ENV_BACKUP_RETENTION - 1):])
+        assert all(path.exists() for path in unrelated)
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlink creation needs privileges on Windows")
+    def test_backup_pruning_ignores_links(self, env_update_env):
+        install_dir, data_dir = env_update_env
+        backups = data_dir / "config-backups"
+        backups.mkdir(parents=True)
+        target = data_dir / "outside.env"
+        target.write_text("KEEP=1\n", encoding="utf-8")
+        link = backups / ".env.backup.20200101-000000.link"
+        link.symlink_to(target)
+        for day in range(1, 26):
+            (backups / f".env.backup.202601{day:02d}-120000.fixture{day}").write_text("x\n", encoding="utf-8")
+
+        _mod.AgentHandler._handle_env_update(_FakeHandler(_make_body("ODS_AGENT_KEY=newvalue\n")))
+
+        assert link.is_symlink() and target.read_text(encoding="utf-8") == "KEEP=1\n"
+
+    def test_pruning_failure_keeps_the_save_successful(self, env_update_env, monkeypatch):
+        install_dir, data_dir = env_update_env
+
+        def fail(*_args, **_kwargs):
+            raise OSError("read-only backup directory")
+
+        monkeypatch.setattr(_mod, "_prune_env_backups", fail)
+        handler = _FakeHandler(_make_body("ODS_AGENT_KEY=newvalue\n"))
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        assert (data_dir.parent / handler.parse_response()["backup_path"]).exists()
+        assert "ODS_AGENT_KEY=newvalue" in (install_dir / ".env").read_text(encoding="utf-8")
+
     def test_proxy_enabled_forces_auth_and_reports_saved_value(self, env_update_env):
         install_dir, _ = env_update_env
         proxy_dir = _mod.EXTENSIONS_DIR / "ods-proxy"
@@ -5296,6 +5462,45 @@ class TestHandleEnvUpdate:
         response = handler.parse_response()
         assert response["enforced_values"] == {"WEBUI_AUTH": "true"}
         assert "raw_text" not in response
+
+    @pytest.mark.parametrize("bind", ["0.0.0.0", "192.168.1.20", '"0.0.0.0"'])
+    def test_network_bind_forces_auth_without_proxy(self, env_update_env, bind):
+        install_dir, _ = env_update_env
+        body = _make_body(f"ODS_AGENT_KEY=newvalue\nBIND_ADDRESS={bind}\nWEBUI_AUTH=false\n")
+        handler = _FakeHandler(body)
+
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        env_text = (install_dir / ".env").read_text(encoding="utf-8")
+        assert env_text.count("WEBUI_AUTH=true") == 1
+        assert "WEBUI_AUTH=false" not in env_text
+        assert handler.parse_response()["enforced_values"] == {"WEBUI_AUTH": "true"}
+
+    @pytest.mark.parametrize("bind", ["127.0.0.1", "::1", "localhost", ""])
+    def test_loopback_bind_keeps_local_auth_choice(self, env_update_env, bind):
+        install_dir, _ = env_update_env
+        body = _make_body(f"ODS_AGENT_KEY=newvalue\nBIND_ADDRESS={bind}\nWEBUI_AUTH=false\n")
+        handler = _FakeHandler(body)
+
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        assert "WEBUI_AUTH=false" in (install_dir / ".env").read_text(encoding="utf-8")
+        assert handler.parse_response()["enforced_values"] == {}
+
+    @pytest.mark.parametrize("payload", [b"[]", b'"KEY=value"', b"42", b"null"])
+    def test_non_object_json_is_rejected_without_writing(self, env_update_env, payload):
+        # read_json_body() rejects these; this handler parses its own body.
+        install_dir, _ = env_update_env
+        before = (install_dir / ".env").read_bytes()
+        handler = _FakeHandler(payload)
+
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 400
+        assert handler.parse_response()["error"] == "JSON body must be an object"
+        assert (install_dir / ".env").read_bytes() == before
 
     def test_413_oversize_body(self, env_update_env):
         # Construct headers claiming body is too large; rfile content is irrelevant.
@@ -5561,7 +5766,7 @@ class TestModelActivationOwnership:
         monkeypatch.setattr(
             _mod,
             "_active_remote_provider_pixel_runtime",
-            lambda: runtime,
+            lambda **_: runtime,
         )
 
         handler = _FakeHandler(b"")
@@ -5688,7 +5893,8 @@ class TestModelActivationOwnership:
         assert payload == {"status": "idle", "modelTransactionPending": False}
 
     @pytest.mark.parametrize("agent_viable", [True, False])
-    @pytest.mark.parametrize("backend", ["llama-server", "lemonade"])
+    @pytest.mark.parametrize("backend", ["llama-server"])
+    # ODS_MODE=lemonade stays a readable local alias for one release.
     @pytest.mark.parametrize("mode", ["local", "hybrid", "lemonade"])
     def test_model_status_projects_verified_local_identity_without_onboarding(
         self, tmp_path, monkeypatch, agent_viable, backend, mode,
@@ -5699,12 +5905,6 @@ class TestModelActivationOwnership:
             f"ODS_MODE={mode}\nGPU_BACKEND=cpu\nLLM_MODEL=same-model\n"
             "GGUF_FILE=same-model.gguf\nCTX_SIZE=65536\n"
         )
-        if backend == "lemonade":
-            env += (
-                "LEMONADE_MODEL=same-model.gguf\n"
-                "LEMONADE_BASE_URL=http://host.docker.internal:8080/api/v1\n"
-                "LLM_BACKEND=lemonade\n"
-            )
         (install_dir / ".env").write_text(env, encoding="utf-8")
         state_path = install_dir / "data" / "model-state.json"
         _mod._switchboard_state.record_verified_route(
@@ -5716,7 +5916,7 @@ class TestModelActivationOwnership:
             proof_identity="same-model.gguf",
         )
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
-        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda: None)
+        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda **_: None)
         payload = {"status": "idle"}
         _mod._project_switchboard_agent_viability(payload)
         assert payload["activeRuntime"] == {
@@ -5738,6 +5938,36 @@ class TestModelActivationOwnership:
         payload = {}
         _mod._project_switchboard_agent_viability(payload)
         assert "activeRuntime" not in payload
+
+    def test_model_status_never_projects_a_legacy_lemonade_route(self, tmp_path, monkeypatch):
+        install_dir = tmp_path / "ods"
+        install_dir.mkdir()
+        (install_dir / ".env").write_text(
+            "ODS_MODE=lemonade\nGPU_BACKEND=amd\nLLM_BACKEND=lemonade\nLLM_MODEL=same-model\n"
+            "GGUF_FILE=same-model.gguf\nLEMONADE_MODEL=extra.same-model.gguf\nCTX_SIZE=65536\n",
+            encoding="utf-8",
+        )
+        state_path = install_dir / "data" / "model-state.json"
+        doc = _mod._switchboard_state.record_verified_route(
+            state_path, catalog_id="same-model", runtime_model_id="same-model.gguf",
+            backend_kind="llama-server", endpoint_id="llama-server-default",
+            context_length=65536,
+            capabilities={"chat": True, "tools": False, "vision": False, "agentViable": True},
+            proof_identity="same-model.gguf",
+        )
+        # A record written before round F: verified, but for Lemonade's id.
+        doc["active"]["backend"] = {"kind": "lemonade", "endpointId": "lemonade-default",
+                                    "nativeRoute": "extra.same-model.gguf"}
+        doc["active"]["runtimeModelId"] = "extra.same-model.gguf"
+        doc["active"]["proof"]["identity"] = "extra.same-model.gguf"
+        state_path.write_text(json.dumps(doc), encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_active_remote_provider_pixel_runtime", lambda **_: None)
+
+        assert _mod._switchboard_state_needs_current_env_verification(state_path) is True
+        payload = {"status": "idle"}
+        _mod._project_switchboard_agent_viability(payload)
+        assert "activeRuntime" not in payload and "activeAgentViable" not in payload
 
     def test_non_activation_lock_owner_reports_unknown_target(self, monkeypatch):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
@@ -6064,6 +6294,10 @@ class TestModelActivationModeAndMacosBridge:
         def fake_run(cmd, **_kwargs):
             if cmd and cmd[0] == "curl":
                 events.append(("validate-runtime", cmd[-1]))
+                if str(cmd[-1]).endswith("/health"):
+                    return subprocess.CompletedProcess(
+                        cmd, 0, stdout=json.dumps({"status": "ok"}), stderr="",
+                    )
                 if str(cmd[-1]).endswith("/props"):
                     return subprocess.CompletedProcess(
                         cmd,
@@ -6119,7 +6353,11 @@ class TestModelActivationModeAndMacosBridge:
             ("stop-old-direct-listener", ".llama-server.pid"),
             ("recreate-loopback-bridge", "192.168.106.1"),
             ("launch-loopback-listener", "llama-server", ".llama-server.pid"),
+            ("validate-runtime", "http://127.0.0.1:9090/health"),
+        ]
+        assert events[5:7] == [
             ("validate-runtime", "http://127.0.0.1:9090/v1/models"),
+            ("validate-runtime", "http://127.0.0.1:9090/props"),
         ]
 
     def test_bridge_adapter_invokes_installed_shared_manager(self, tmp_path, monkeypatch):
@@ -6304,9 +6542,9 @@ class TestModelActivationModeAndMacosBridge:
         assert pid_file.read_text(encoding="utf-8").strip() == "4321"
 
 
-class TestModelActivationLemonadePersistence:
+class TestModelActivationRetiredKeys:
 
-    def test_activation_never_persists_blank_lemonade_model_during_restore(
+    def test_activation_never_rewrites_the_retired_lemonade_model_key(
         self,
         tmp_path,
         monkeypatch,
@@ -6353,11 +6591,6 @@ class TestModelActivationLemonadePersistence:
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
         monkeypatch.setattr(
-            _mod,
-            "_resolve_lemonade_model_id",
-            lambda _env, gguf_file, **_kwargs: f"extra.{gguf_file}",
-        )
-        monkeypatch.setattr(
             _mod, "_compose_restart_llama_server", fake_compose_restart
         )
         monkeypatch.setattr(
@@ -6390,50 +6623,29 @@ class TestModelActivationLemonadePersistence:
         assert observed_envs
         pending_env = observed_envs[0]
         assert pending_env["GGUF_FILE"] == "new-model.gguf"
-        assert pending_env["LEMONADE_MODEL"] == "extra.new-model.gguf"
+        # The installer migration owns retired keys; the agent never
+        # rewrites one or derives a route from it.
+        assert pending_env["LEMONADE_MODEL"] == "extra.old-model.gguf"
+        assert _mod.load_env(env_path)["GGUF_FILE"] == "old-model.gguf"
 
 
 class TestModelActivationRuntimeIdentity:
 
     @pytest.mark.parametrize(
-        ("loaded", "expected"),
+        ("body", "expected"),
         [
-            ("extra.target-model.gguf", True),
-            ("target-model.gguf", True),
-            ("extra.other-model.gguf", False),
-            (False, False),
-            ("", False),
-            (None, False),
+            ('{"status":"ok"}', "ok"),
+            ('{"error":{"code":503,"message":"Loading model","type":"unavailable_error"}}', "loading"),
+            ('{"error":{"code":500,"message":"crashed"}}', "error"),
+            ('{"status":"loading"}', "error"),
+            ("[]", "error"),
+            ("not json", "error"),
+            ("", "error"),
         ],
     )
-    def test_lemonade_requires_exact_nonempty_target(self, loaded, expected):
-        body = json.dumps({"status": "ok", "model_loaded": loaded})
-        assert _mod._check_lemonade_health(body, "target-model.gguf") is expected
-
-    def test_lemonade_rejects_target_when_health_is_not_ok(self):
-        body = json.dumps({
-            "status": "loading",
-            "model_loaded": "extra.target-model.gguf",
-        })
-        assert _mod._check_lemonade_health(body, "target-model.gguf") is False
-
-    @pytest.mark.parametrize(
-        ("loaded", "expected"),
-        [
-            ("extra.target-model.gguf", True),
-            (False, False),
-            ("", False),
-            (None, False),
-        ],
-    )
-    def test_generic_lemonade_health_rejects_false_and_empty_identity(
-        self,
-        loaded,
-        expected,
-    ):
-        assert _mod._check_lemonade_health(
-            json.dumps({"status": "ok", "model_loaded": loaded})
-        ) is expected
+    def test_runtime_health_maps_llama_server_states(self, monkeypatch, body, expected):
+        monkeypatch.setattr(_mod, "_runtime_http", lambda _env, path, **_kwargs: body)
+        assert _mod._runtime_health({}) == expected
 
     @pytest.mark.parametrize(
         ("runtime_id", "status", "expected"),
@@ -6835,6 +7047,41 @@ class TestPrecreateDataDirs:
         assert not (ext_dir / "named_vol").exists()
         assert not (install_dir / "named_vol").exists()
 
+    def test_creates_dirs_from_the_selected_gpu_overlays(self, tmp_path, monkeypatch):
+        """ComfyUI declares its mounts only in compose.<gpu>.yaml (Tower3 2026-10-04)."""
+        pytest.importorskip("yaml")
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        install_dir.mkdir()
+        ext_dir = builtin_root / "comfyui"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text(
+            "services:\n  comfyui:\n    image: test:latest\n", encoding="utf-8")
+        for name, mount in (("compose.nvidia.yaml", "./data/comfyui/models:/models"),
+                            ("compose.amd.yaml", "./data/comfyui/amd-only:/x"),
+                            ("compose.multigpu-nvidia.yaml", "./data/comfyui/multi:/y"),
+                            ("compose.local.yaml", "./data/comfyui/local:/z")):
+            (ext_dir / name).write_text(
+                f"services:\n  comfyui:\n    volumes:\n      - {mount}\n", encoding="utf-8")
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", tmp_path / "user")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+
+        _mod._precreate_data_dirs("comfyui")
+
+        data = install_dir / "data" / "comfyui"
+        assert (data / "models").is_dir()
+        assert (data / "local").is_dir()
+        assert not (data / "amd-only").exists()
+        assert not (data / "multi").exists()
+
+        monkeypatch.setattr(_mod, "GPU_COUNT", "2")
+        _mod._precreate_data_dirs("comfyui")
+        assert (data / "multi").is_dir()
+
 
 class TestRootlessDataOwnershipRepair:
     def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
@@ -6856,6 +7103,32 @@ class TestRootlessDataOwnershipRepair:
             "/bin/bash", "-c",
             'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
             "ods-whisper-cache", str(helper), str(tmp_path),
+        ]]
+
+    @pytest.mark.parametrize("service_id", ["ape", "token-spy"])
+    def test_fixed_uid_state_uses_rootful_or_rootless_preparation(
+        self, tmp_path, monkeypatch, service_id,
+    ):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+        _mod._repair_rootless_data_ownership(service_id)
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_service_state_ownership "$2" "$3"',
+            "ods-service-state", str(helper), str(tmp_path), service_id,
         ]]
 
     def test_runs_targeted_helper_for_builtin_linux_service(
@@ -8128,9 +8401,9 @@ class TestModelDeleteSafety:
         target.write_bytes(b'external model')
         (install / 'data/model-stores.json').write_text(json.dumps({'schemaVersion': 1, 'stores': [
             {'id': 'lm-studio', 'hostPath': str(external), 'containerPath': '/model-stores/lm-studio'}]}))
-        monkeypatch.setattr(_mod, '_managed_wsl_lemonade', lambda _env:
+        monkeypatch.setattr(_mod, '_managed_wsl_runtime', lambda _env:
                             {'managed': managed, 'plan': {'GgufFile': 'other.gguf'}})
-        monkeypatch.setattr(_mod._wsl_lemonade, 'model_store', lambda *_args: tmp_path / 'owned-windows-store')
+        monkeypatch.setattr(_mod._wsl_runtime, 'model_store', lambda *_args: tmp_path / 'owned-windows-store')
         monkeypatch.setattr(_mod, '_live_runtime_has_model',
                             lambda *_args: pytest.fail('ODS inactivity cannot authorize deleting an external library'))
         handler = _FakeHandler(json.dumps({'gguf_file': target.name}).encode())
@@ -8431,7 +8704,9 @@ class TestModelDownloadFileIntegrity:
         _mod.AgentHandler._handle_model_download(handler)
 
         assert handler.response_code == 200
-        assert handler.parse_response()["status"] == "already_downloaded"
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
         status = json.loads(status_path.read_text(encoding="utf-8"))
         assert status["status"] == "complete"
         assert status["model"] == "test-model.gguf"
@@ -9303,145 +9578,6 @@ class TestWindowsObservability:
         assert payload["memory_used_mb"] == 9 * 1024
         assert payload["gpus"][0]["memory_type"] == "unified"
 
-    def test_windows_llm_health_survives_optional_stats_failure(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
-        (tmp_path / ".env").write_text("AMD_INFERENCE_PORT=99999\n")
-        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
-        requested = []
-
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, _size=-1):
-                return b'{"status":"ok","model_loaded":"test"}'
-
-        def urlopen(url, timeout):
-            requested_url = url.full_url if hasattr(url, "full_url") else str(url)
-            requested.append(requested_url)
-            if requested_url.endswith("/stats"):
-                raise _mod.urllib_error.URLError("not supported")
-            return Response()
-
-        monkeypatch.setattr(_mod.urllib_request, "urlopen", urlopen)
-
-        payload = _mod._windows_llm_status()
-
-        assert payload["health"]["status"] == "ok"
-        assert payload["stats"] is None
-        assert requested[0] == "http://127.0.0.1:8080/api/v1/health"
-
-    def test_windows_llm_status_redacts_runtime_paths(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
-        (tmp_path / ".env").write_text(
-            "AMD_INFERENCE_PORT=8080\nLEMONADE_API_KEY=secret-key\n"
-        )
-        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
-        auth_headers = []
-
-        class Response:
-            def __init__(self, payload):
-                self.payload = payload
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, _size=-1):
-                return json.dumps(self.payload).encode("utf-8")
-
-        def urlopen(url, timeout):
-            requested_url = url.full_url if hasattr(url, "full_url") else str(url)
-            auth_headers.append(url.get_header("Authorization"))
-            if requested_url.endswith("/health"):
-                return Response({
-                    "status": "ok", "version": "10.0.0",
-                    "model_loaded": r"C:\Users\private\model.gguf",
-                    "all_models_loaded": [{"checkpoint": r"C:\Users\private\model.gguf", "last_use": 123}],
-                })
-            return Response({"output_tokens": 7, "tokens_per_second": 188.49})
-
-        monkeypatch.setattr(_mod.urllib_request, "urlopen", urlopen)
-
-        payload = _mod._windows_llm_status()
-
-        assert payload["health"] == {
-            "status": "ok", "version": "10.0.0", "model_loaded": "model.gguf",
-        }
-        assert set(payload["stats"]) == {
-            "time_to_first_token", "tokens_per_second", "input_tokens",
-            "output_tokens", "prompt_tokens",
-        }
-        assert "private" not in json.dumps(payload)
-        assert auth_headers == ["Bearer secret-key", "Bearer secret-key"]
-
-    def test_windows_llm_stats_exclude_unrelated_health_fields(
-        self, tmp_path, monkeypatch,
-    ):
-        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
-        (tmp_path / ".env").write_text("AMD_INFERENCE_PORT=8080\n")
-        health_counter = iter((1, 2))
-
-        class Response:
-            def __init__(self, payload):
-                self.payload = payload
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, _size=-1):
-                return json.dumps(self.payload).encode("utf-8")
-
-        def urlopen(url, timeout):
-            if url.full_url.endswith("/health"):
-                return Response({
-                    "status": "ok", "model_loaded": "model",
-                    "unrelated_health_counter": next(health_counter),
-                })
-            return Response({
-                "output_tokens": 7, "tokens_per_second": 42.0,
-                "last_use": "2026-07-20T22:00:00Z",
-            })
-
-        monkeypatch.setattr(_mod.urllib_request, "urlopen", urlopen)
-        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
-        first = _mod._windows_llm_status()
-        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
-        second = _mod._windows_llm_status()
-
-        assert first["stats"] == second["stats"]
-
-    def test_windows_llm_rejects_oversized_runtime_response(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
-        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
-        (tmp_path / ".env").write_text("AMD_INFERENCE_PORT=8080\n")
-        monkeypatch.setattr(_mod, "_windows_llm_status_cache", (0.0, None))
-
-        class Response:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, size=-1):
-                return b"x" * size
-
-        monkeypatch.setattr(_mod.urllib_request, "urlopen", lambda *args, **kwargs: Response())
-
-        assert _mod._windows_llm_status() is None
-
 
 class TestDockerServiceHealthSnapshot:
 
@@ -9474,6 +9610,91 @@ class TestDockerServiceHealthSnapshot:
         assert len(calls) == 2
 
 
+class TestModelConfig:
+
+    @pytest.mark.parametrize(("contents", "expected"), [
+        (None, "unknown"), ("", "unknown"), ("ODS_MODE=\n", "unknown"),
+        ("ODS_MODE=invalid\n", "unknown"),
+        ("ODS_MODE=local\n", "local"), ("ODS_MODE=hybrid\n", "hybrid"),
+        ('ODS_MODE="cloud"\n', "cloud"), ("ODS_MODE=lemonade\n", "local"),
+    ])
+    def test_uses_only_persisted_mode(self, tmp_path, monkeypatch, contents, expected):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "hybrid")
+        monkeypatch.setenv("ODS_MODE", "cloud")
+        if contents is not None:
+            text = contents + "HF_TOKEN=private-fixture\n" if contents else contents
+            (tmp_path / ".env").write_text(text, encoding="utf-8")
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"configuredMode": expected}
+        assert ("Cache-Control", "no-store") in handler.response_headers
+
+    @pytest.mark.parametrize("failure", [PermissionError, UnicodeError])
+    def test_unreadable_config_is_unknown(self, tmp_path, monkeypatch, failure):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "local")
+        monkeypatch.setenv("ODS_MODE", "local")
+
+        def denied(path):
+            assert path == tmp_path / ".env"
+            raise failure("private-fixture")
+
+        monkeypatch.setattr(_mod, "load_env", denied)
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.parse_response() == {"configuredMode": "unknown"}
+
+    def test_authenticated_fixed_route_reads_atomic_replacement(self, tmp_path, monkeypatch):
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "model-config-secret")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "hybrid")
+        monkeypatch.setenv("ODS_MODE", "hybrid")
+        (tmp_path / ".env").write_text("ODS_MODE=local\nHF_TOKEN=private-fixture\n", encoding="utf-8")
+        reads = []
+        load_env = _mod.load_env
+
+        def read(path):
+            reads.append(path)
+            return load_env(path)
+
+        monkeypatch.setattr(_mod, "load_env", read)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_port}/v1/model/config"
+        try:
+            for token, code in ((None, 401), ("wrong", 403)):
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                with pytest.raises(urllib.error.HTTPError) as denied:
+                    urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2)
+                assert denied.value.code == code
+                assert reads == []
+            headers = {"Authorization": "Bearer model-config-secret"}
+            for mode in ("local", "cloud"):
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
+                    assert json.load(response) == {"configuredMode": mode}
+                    assert response.headers["Cache-Control"] == "no-store"
+                if mode == "local":
+                    replacement = tmp_path / ".env-new"
+                    replacement.write_text("ODS_MODE=cloud\nHF_TOKEN=other-private-fixture\n", encoding="utf-8")
+                    os.replace(replacement, tmp_path / ".env")
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(urllib.request.Request(url + "?path=/other&keys=HF_TOKEN", headers=headers), timeout=2)
+            assert rejected.value.code == 404
+            assert reads == [tmp_path / ".env", tmp_path / ".env"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+
 class TestObservabilityWire:
 
     def test_read_only_endpoints_require_auth_and_return_versioned_contracts(
@@ -9490,7 +9711,8 @@ class TestObservabilityWire:
         monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: {
             "schema_version": "ods.host-system-metrics.v1", "platform": "Darwin",
         })
-        monkeypatch.setattr(_mod, "_windows_llm_status", lambda: {
+        monkeypatch.setattr(_mod, "_host_llm_runtime", lambda _env: "windows-loopback")
+        monkeypatch.setattr(_mod, "_host_llm_status", lambda: {
             "schema_version": "ods.host-llm-status.v1", "health": {"status": "ok"},
         })
         monkeypatch.setattr(_mod, "_docker_service_health_snapshot", lambda: {

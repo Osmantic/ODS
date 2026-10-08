@@ -550,34 +550,29 @@ async def test_status_projects_local_identity_even_for_adaptive_model(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_lemonade_model_drift_blocks_pixel_status_and_chat(monkeypatch):
-    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
+async def test_recorded_route_needs_no_live_identity_probe(monkeypatch):
+    # llama-server serves the one model it started with and the router proves
+    # every response's model; an unmigrated Lemonade .env changes nothing.
+    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF.gguf",
                "contextLength": 65536}
 
     async def recorded_status(*_args, **_kwargs):
         return {"status": "idle", "activeRuntime": runtime}
 
-    async def physical_model():
-        return "Qwen3.5-2B-Q4_K_M"
+    async def no_probe():
+        raise AssertionError("Pixel status must not probe the loaded model")
 
     monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
     monkeypatch.setattr(pixel, "read_live_env_value",
                         lambda key: "lemonade" if key == "LLM_BACKEND" else "")
-    monkeypatch.setattr(pixel, "get_loaded_model", physical_model)
+    monkeypatch.setattr(pixel, "get_loaded_model", no_probe)
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient",
-                      side_effect=AssertionError("stale route reached Pixel edge")):
+                      return_value=FakeClient(FakeResponse(chunks=[body]))):
         status = await pixel.pixel_status()
-        body = pixel.ChatStreamRequest(
-            chat_id="drift-test", messages=[{"role": "user", "content": "hello"}]
-        )
-        with pytest.raises(HTTPException) as raised:
-            await pixel.pixel_chat_stream(ConnectedRequest(), body)
-    assert status == {
-        "available": False, "model": None, "state": "model_unavailable",
-        "detail": pixel._MODEL_IDENTITY_DETAIL,
-    }
-    assert raised.value.status_code == 409
-    assert raised.value.detail == pixel._MODEL_IDENTITY_DETAIL
+    assert status["available"] is True
+    assert status["runtime"] == runtime
+    assert not hasattr(pixel, "_MODEL_IDENTITY_DETAIL")
 
 
 @pytest.mark.asyncio
@@ -602,27 +597,6 @@ async def test_matching_lemonade_model_keeps_pixel_available(monkeypatch, loaded
         status = await pixel.pixel_status()
     assert status["available"] is True
     assert status["runtime"] == runtime
-
-
-@pytest.mark.asyncio
-async def test_lemonade_probe_failure_fails_closed_without_logging_endpoint(monkeypatch, caplog):
-    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
-               "contextLength": 65536}
-
-    async def recorded_status(*_args, **_kwargs):
-        return {"status": "idle", "activeRuntime": runtime}
-
-    async def failed_probe():
-        raise RuntimeError("private Lemonade origin and token")
-
-    monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
-    monkeypatch.setattr(pixel, "read_live_env_value",
-                        lambda key: "lemonade" if key == "LLM_BACKEND" else "")
-    monkeypatch.setattr(pixel, "get_loaded_model", failed_probe)
-    result = await pixel.pixel_status()
-    assert result["available"] is False
-    assert result["state"] == "model_unavailable"
-    assert "private Lemonade" not in caplog.text
 
 
 @pytest.mark.asyncio

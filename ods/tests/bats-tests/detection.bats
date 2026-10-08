@@ -256,6 +256,7 @@ _setup_amd_sysfs() {
 
 @test "amd_gpu_runtime_devices_available: reports missing AMD device nodes" {
     export ODS_AMD_DEVICE_ROOT="$BATS_TEST_TMPDIR/dev"
+    export AMD_INFERENCE_BACKEND=rocm
     mkdir -p "$ODS_AMD_DEVICE_ROOT/dri"
 
     run amd_gpu_runtime_devices_available
@@ -265,6 +266,20 @@ _setup_amd_sysfs() {
     assert_success
     assert_output --partial "$ODS_AMD_DEVICE_ROOT/kfd"
     assert_output --partial "$ODS_AMD_DEVICE_ROOT/dri/renderD*"
+}
+
+@test "amd_gpu_runtime_devices_available: the Vulkan image needs no /dev/kfd" {
+    export ODS_AMD_DEVICE_ROOT="$BATS_TEST_TMPDIR/dev"
+    unset AMD_INFERENCE_BACKEND
+    mkdir -p "$ODS_AMD_DEVICE_ROOT/dri"
+    touch "$ODS_AMD_DEVICE_ROOT/dri/renderD128"
+
+    run amd_gpu_runtime_devices_available
+    assert_success
+
+    export AMD_INFERENCE_BACKEND=rocm
+    run amd_gpu_missing_devices_csv
+    assert_output --partial "$ODS_AMD_DEVICE_ROOT/kfd"
 }
 
 @test "apply_cpu_gpu_fallback: resets AMD capability state to CPU" {

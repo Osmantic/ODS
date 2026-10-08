@@ -1,6 +1,6 @@
 # Intel Arc GPU Guide
 
-*Last updated: 2026-03-17*
+*Last updated: 2026-10-04*
 
 ODS supports Intel Arc discrete GPUs via the **llama.cpp SYCL backend**
 (`docker-compose.arc.yml`). This guide covers supported hardware, driver setup,
@@ -15,7 +15,7 @@ known limitations, and performance expectations.
 | GPU | VRAM | Estimated tok/s | Concurrent users | Model |
 |-----|------|----------------|-----------------|-------|
 | Arc A770 | 16 GB | ~35 | 3–5 | Qwen3.5 9B Q4\_K\_M |
-| Arc B580 | 12 GB | ~30 | 2–4 | Qwen3.5 9B Q4\_K\_M |
+| Arc B580 (untested) | 12 GB | ~30 | 2–4 | Qwen3.5 9B Q4\_K\_M |
 
 ### Tier: ARC\_LITE  (< 12 GB VRAM)
 
@@ -31,11 +31,9 @@ known limitations, and performance expectations.
 
 ### Future / untested
 
-Intel Arc B-series (Battlemage) cards ≥ 12 GB will automatically map to the
-`ARC` tier. Cards < 12 GB will map to `ARC_LITE`.
-Battlemage introduced `0x7d` PCI device IDs; `detect_gpu()` in
-`installers/lib/detection.sh` may need an update when those cards become
-more widely available.
+Intel Arc B-series (Battlemage) cards are untested. Hardware detection does not
+map any Arc card to these tiers yet (see [Installation](#installation)), so pass
+`--tier ARC` for cards with 12 GB or more and `--tier ARC_LITE` below that.
 
 ---
 
@@ -100,15 +98,11 @@ sudo intel_gpu_top
 
 ## Installation
 
-The ODS installer auto-detects Intel Arc and selects the correct tier:
+Hardware detection does not identify Intel Arc yet, so pass the tier yourself:
 
 ```bash
-# Automatic (recommended)
-./install.sh
-
-# Force a specific tier manually
-./install.sh --tier ARC
-./install.sh --tier ARC_LITE
+./install.sh --tier ARC        # Arc cards with 12 GB or more (A770)
+./install.sh --tier ARC_LITE   # Arc cards under 12 GB (A750, A380)
 ```
 
 ### What the installer does for Intel Arc
@@ -163,17 +157,17 @@ CTX_SIZE=32768        # ARC tier default
 
 ## Known Limitations vs NVIDIA / AMD
 
-| Feature | NVIDIA (CUDA) | AMD (ROCm) | Intel Arc (SYCL) |
+| Feature | NVIDIA (CUDA) | AMD (Vulkan; ROCm optional) | Intel Arc (SYCL) |
 |---------|--------------|-----------|-----------------|
 | Installer maturity | Tier B | Tier A | **Tier C (experimental)** |
-| llama.cpp backend | CUDA (native) | HIP/ROCm (native) | SYCL (via oneAPI) |
+| llama.cpp backend | CUDA (native) | Vulkan (default) or HIP/ROCm | SYCL (via oneAPI) |
 | SYCL kernel cache | — | — | JIT compile on every container start (~30 s). ODS does not set `SYCL_CACHE_PERSISTENT`: with the oneAPI 2025.3 runtime in the b9014 image it crashes llama-server. |
-| Multi-GPU | ✅ (native) | ✅ (ROCm multi) | ❌ Not supported. SYCL backend targets a single Arc GPU. |
+| Multi-GPU | ✅ (native) | ✅ (layer split) | ❌ Not supported. SYCL backend targets a single Arc GPU. |
 | ComfyUI (image gen) | ✅ CUDA overlay | ✅ ROCm overlay | ⚠️ No dedicated overlay. ComfyUI will use CPU fallback. |
 | Whisper STT | ✅ CUDA overlay | ✅ ROCm overlay | ⚠️ Runs on CPU (no Arc-accelerated Whisper image). |
 | Flash attention | ✅ | ✅ | ❌ llama.cpp SYCL does not yet implement Flash Attention. |
 | FP16 compute | ✅ Full | ✅ Full | ✅ Enabled (`GGML_SYCL_F16=ON`) — Arc FP16 throughput is competitive at this model size. |
-| Docker image size | ~6 GB | ~8 GB | **~15 GB** (oneAPI Base Toolkit is large). |
+| Docker image size | ~6 GB | ~0.2 GB compressed (Vulkan); ~7 GB (ROCm) | **~15 GB** (oneAPI Base Toolkit is large). |
 | First-run build time | Pull only | Pull only | **~10–20 min** (compiles llama.cpp from source). |
 | Windows support | ✅ WSL2 | ✅ WSL2 | ⚠️ Experimental. Arc drivers for WSL2 are less mature than NVIDIA's. |
 

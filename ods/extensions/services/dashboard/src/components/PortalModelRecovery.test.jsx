@@ -38,6 +38,28 @@ it('keeps pending work and explains missing proof without claiming success',asyn
   expect(await screen.findByRole('alert')).toHaveTextContent('still needs repair')
   expect(recovered).not.toHaveBeenCalled()
   expect(screen.getByRole('button',{name:'Recover model switch'})).toBeEnabled()
+  expect(screen.queryByRole('button',{name:'Release without checking'})).toBeNull()
+  expect(screen.getByRole('link',{name:/Get help on Discord/})).toBeVisible()
+})
+
+it('offers a release without the live proof only when the switch changed nothing',async()=>{
+  // Fleet row 27: a cloud-default model can never be proven, so recovery waited forever.
+  const posts=[]
+  vi.stubGlobal('fetch',vi.fn(async(_,options)=>{
+    if(options?.method!=='POST')return reply(pending)
+    posts.push(options.body)
+    return posts.length===1
+      ? reply({...pending,reason:'model-recovery-proof-required',releasable:true},false)
+      : reply({...done,outcome:'rollback'})
+  }))
+  const recovered=vi.fn()
+  render(<PortalModelRecovery onRecovered={recovered}/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('could not confirm the model Portal used')
+  expect(screen.getByRole('link',{name:/Get help on Discord/})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Release without checking'}))
+  await waitFor(()=>expect(recovered).toHaveBeenCalledOnce())
+  expect(posts).toEqual(['{}','{"releaseUnverified":true}'])
 })
 
 it('a lost response does not replay the mutation or mark it complete',async()=>{

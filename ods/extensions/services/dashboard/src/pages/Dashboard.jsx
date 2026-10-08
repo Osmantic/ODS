@@ -235,6 +235,13 @@ function normalizeServiceKey(value) {
     .replace(/^-+|-+$/g, '')
 }
 
+// The chat feature's text comes from the local llama-server manifest; in API
+// or cloud mode chat runs on the API's model instead (fleet row 33).
+function featureDescription(feature, remoteInference, model) {
+  if (!remoteInference || normalizeServiceKey(feature?.id) !== 'chat') return feature?.description
+  return model ? `Chat with ${model} through your model API` : 'Chat through your model API'
+}
+
 function getServiceDescription(id, name) {
   const key = normalizeServiceKey(id || name)
   return SERVICE_DESCRIPTIONS[id] || SERVICE_DESCRIPTIONS[key] || 'ODS service'
@@ -910,7 +917,7 @@ export default function Dashboard({ status, loading, compact = false }) {
       <FeatureCard
         icon={MessageSquare}
         title={compactChatFeature.name}
-        description={compactChatFeature.description}
+        description={featureDescription(compactChatFeature, remoteInference, status?.currentModel)}
         href={compactChatHref}
         status={compactChatHref ? 'ready' : 'disabled'}
         hint={compactChatHref ? webuiHealthy ? 'Open WebUI chat' : 'Portal agent chat' : 'Chat unavailable'}
@@ -949,7 +956,7 @@ export default function Dashboard({ status, loading, compact = false }) {
               key={feature.id}
               icon={FEATURE_ICONS[feature.icon] || MessageSquare}
               title={feature.name}
-              description={feature.description}
+              description={featureDescription(feature, remoteInference, status?.currentModel)}
               href={pickFeatureLink(feature, status?.services, portalChatAvailable)}
               status={portalChat ? portalChatAvailable ? 'ready' : 'disabled' : normalizeFeatureStatus(feature.status)}
               hint={portalChat

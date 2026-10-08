@@ -7,7 +7,7 @@
 #
 # Expects: GPU_BACKEND, DRY_RUN, INSTALL_DIR, LOG_FILE, PKG_MANAGER,
 #           ai(), ai_ok(), ai_warn(), log()
-# Provides: System tuning applied (sysctl, modprobe, timers, tuned)
+# Provides: System tuning applied (sysctl, modprobe, tuned)
 #
 # Modder notes:
 #   Add new AMD-specific tuning parameters or kernel options here.
@@ -16,7 +16,6 @@
 ods_progress 70 "amd-tuning" "Tuning AMD GPU settings"
 if [[ "$GPU_BACKEND" == "amd" ]] && $DRY_RUN; then
     log "[DRY RUN] Would apply AMD APU system tuning:"
-    log "[DRY RUN]   - Install systemd user timers (session cleanup, memory shepherd)"
     log "[DRY RUN]   - Apply sysctl tuning (swappiness=10, vfs_cache_pressure=50)"
     log "[DRY RUN]   - Install amdgpu modprobe options"
     log "[DRY RUN]   - Install GTT memory optimization"
@@ -37,16 +36,22 @@ elif [[ "$GPU_BACKEND" == "amd" ]] && ! $DRY_RUN; then
             ai_warn "Could not add $USER to render/video groups. Run: sudo usermod -aG render,video $USER"
     fi
 
-    # Verify GPU compute devices exist — containers need /dev/kfd and /dev/dri
+    # Verify GPU devices. The default Vulkan llama-server needs only /dev/dri.
+    # /dev/kfd is the ROCm compute device: the ROCm llama-server image
+    # (AMD_INFERENCE_BACKEND=rocm) and ComfyUI's AMD image need it.
     if [[ ! -e /dev/kfd ]]; then
         ai "ROCm compute device /dev/kfd not found. Loading kernel module..."
+        # A failed modprobe is reported by the /dev/kfd check right below.
         _phase10_privileged modprobe amdkfd 2>/dev/null || true
         if [[ -e /dev/kfd ]]; then
             ai_ok "/dev/kfd loaded successfully"
-        else
+        elif [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
             ai_warn "/dev/kfd still not available after modprobe."
-            ai_warn "GPU containers (llama-server, comfyui) will fail without it."
-            ai_warn "Fix: reboot, or run: sudo modprobe amdkfd"
+            ai_warn "The ROCm llama-server (AMD_INFERENCE_BACKEND=rocm) and ComfyUI will fail without it."
+            ai_warn "Fix: reboot, or run: sudo modprobe amdkfd. The Vulkan image (AMD_INFERENCE_BACKEND=vulkan) does not need it."
+        else
+            ai_warn "/dev/kfd still not available after modprobe. The Vulkan llama-server does not need it; ComfyUI on AMD does."
+            ai_warn "Fix for ComfyUI: reboot, or run: sudo modprobe amdkfd"
         fi
     fi
 
@@ -56,54 +61,57 @@ elif [[ "$GPU_BACKEND" == "amd" ]] && ! $DRY_RUN; then
     elif [[ ! -e /dev/dri/renderD128 ]]; then
         ai_warn "/dev/dri exists but renderD128 is missing. GPU compute may not work."
         ai_warn "Check: ls -la /dev/dri/ — you need at least card0/card1 and renderD128."
-    else
+    elif [[ -e /dev/kfd ]]; then
         ai_ok "GPU devices verified (/dev/kfd, /dev/dri/renderD128)"
+    else
+        ai_ok "GPU render node verified (/dev/dri/renderD128)"
     fi
 
-    # Management scripts and Memory Shepherd already copied by rsync/cp block above
-    [[ -d "$INSTALL_DIR/memory-shepherd" ]] && ai_ok "Memory Shepherd installed"
-
-    # ── Install systemd user timers (session cleanup, session manager, memory shepherd) ──
-    ai "Installing maintenance timers..."
-    SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
-    mkdir -p "$SYSTEMD_USER_DIR"
-
-    # Ensure scripts are executable
-    chmod +x "$INSTALL_DIR/scripts/session-cleanup.sh" \
-             "$INSTALL_DIR/memory-shepherd/memory-shepherd.sh" 2>/dev/null || true
-
-    # Copy user-level systemd units/timers. Skip root/system units and units
-    # rendered with path substitutions (__INSTALL_DIR__ etc.) elsewhere.
-    if [[ -d "$INSTALL_DIR/scripts/systemd" ]]; then
-        for _unit in "$INSTALL_DIR/scripts/systemd"/*.service "$INSTALL_DIR/scripts/systemd"/*.timer; do
-            [[ -f "$_unit" ]] || continue
-            # Skip system-scope units: they carry __PLACEHOLDER__ tokens that
-            # phase 07 renders when installing to /etc/systemd/system
-            # (ods-host-agent, ods-ap-mode, ods-mdns). Copying them raw here
-            # drops an unrendered, non-functional unit into the user scope that
-            # also survives uninstall. Detect them by their placeholders rather
-            # than a name list, which previously missed ods-mdns.service.
-            if grep -q '__[A-Z0-9_]\{1,\}__' "$_unit"; then
-                continue
-            fi
-            cp "$_unit" "$SYSTEMD_USER_DIR/" 2>/dev/null || true
-        done
+    # This phase no longer installs user maintenance timers. They served only
+    # the removed legacy OpenClaw extension: its session-cleanup timer pruned
+    # that agent's sessions, and the memory-shepherd timers reset its
+    # workspace files. Memory Shepherd itself stays available under
+    # memory-shepherd/ (its install.sh schedules it for other agents).
+    #
+    # Retire the session-cleanup units an earlier install copied into the user
+    # scope; their script and unit files are no longer shipped. A unit is
+    # removed only while it still carries the shipped definition, because an
+    # owner may have reused the name. Existing memory-shepherd timers are left
+    # as configured, and data/openclaw stays.
+    _phase10_user_units="$HOME/.config/systemd/user"
+    _phase10_cleanup_timer="$_phase10_user_units/openclaw-session-cleanup.timer"
+    _phase10_cleanup_service="$_phase10_user_units/openclaw-session-cleanup.service"
+    _phase10_retired=false
+    if [[ -f "$_phase10_cleanup_timer" && ! -L "$_phase10_cleanup_timer" ]] \
+        && grep -qx 'Description=OpenClaw Session Cleanup Timer' "$_phase10_cleanup_timer"; then
+        # A user manager that is not running cannot stop the timer, but
+        # deleting the unit and its enablement link keeps it from starting.
+        ods_systemctl_user disable --now openclaw-session-cleanup.timer >> "$LOG_FILE" 2>&1 \
+            || log "Could not stop openclaw-session-cleanup.timer (non-fatal); removing its unit files"
+        rm -f "$_phase10_cleanup_timer" \
+            "$_phase10_user_units/timers.target.wants/openclaw-session-cleanup.timer"
+        _phase10_retired=true
     fi
+    if [[ -f "$_phase10_cleanup_service" && ! -L "$_phase10_cleanup_service" ]] \
+        && grep -qx 'Description=OpenClaw Session Cleanup' "$_phase10_cleanup_service" \
+        && grep -Eqx 'ExecStart=%h/(ods|dream-server)/scripts/session-cleanup\.sh' "$_phase10_cleanup_service"; then
+        rm -f "$_phase10_cleanup_service"
+        _phase10_retired=true
+    fi
+    if [[ "$_phase10_retired" == true ]]; then
+        ods_systemctl_user daemon-reload >> "$LOG_FILE" 2>&1 \
+            || log "Could not reload the user systemd manager (non-fatal)"
+        ai_ok "Retired the legacy OpenClaw session-cleanup timer"
+    fi
+    unset _phase10_user_units _phase10_cleanup_timer _phase10_cleanup_service _phase10_retired
 
-    # Create archive directories for memory shepherd
-    mkdir -p "$INSTALL_DIR/data/memory-archives/ods-agent"/{memory,agents,tools}
-
-    # Reload and enable all timers
-    ods_systemctl_user daemon-reload 2>/dev/null || true
-    for timer in openclaw-session-cleanup memory-shepherd-workspace memory-shepherd-memory; do
-        ods_systemctl_user enable --now "${timer}.timer" >> "$LOG_FILE" 2>&1 || true
-    done
-    ai_ok "Maintenance timers enabled (session cleanup, memory shepherd)"
-
-    # Enable lingering so user timers survive logout
+    # Keep the user manager running after logout: phase 11 starts the
+    # background full-model download as a transient user unit (systemd-run
+    # --user), which would otherwise stop when the installing session ends.
+    # Each attempt's error output is dropped because the next step covers it.
     loginctl enable-linger "$(whoami)" 2>/dev/null || \
         _phase10_privileged loginctl enable-linger "$(whoami)" 2>/dev/null || \
-        ai_warn "Could not enable linger. Timers may stop after logout. Run: loginctl enable-linger $(whoami)"
+        ai_warn "Could not enable linger. The background model download may stop after logout. Run: loginctl enable-linger $(whoami)"
 
     # Install sysctl tuning (vm.swappiness, vfs_cache_pressure)
     if [[ -f "$INSTALL_DIR/config/system-tuning/99-ods.conf" ]]; then
@@ -288,9 +296,6 @@ GTT_EOF
             ai "  sudo ${_inst_cmd[*]} tuned && sudo systemctl enable --now tuned && sudo tuned-adm profile accelerator-performance"
         fi
     fi
-
-    # LiteLLM config already copied by rsync/cp block above
-    [[ -f "$INSTALL_DIR/config/litellm/strix-halo-config.yaml" ]] && ai_ok "LiteLLM Strix Halo routing config installed"
 
     # Reboot notice if kernel-level changes were made
     if [[ "${_amd_needs_reboot:-}" == "true" ]]; then

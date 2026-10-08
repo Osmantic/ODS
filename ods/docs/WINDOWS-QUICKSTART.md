@@ -13,15 +13,19 @@ support an elevated UAC-disabled session; it requests elevation separately for
 Windows prerequisites.
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 Pixel uses source bundled in public Osmantic/ODS, not a private repository.
@@ -37,11 +41,27 @@ Every stage asks before changing anything. Answer `y` to continue.
 5. **Docker connection.** Setup starts Docker Desktop if needed and waits up to 10 minutes for its engine. It then waits up to a minute for `docker info` to work inside Ubuntu, because Docker Desktop connects to a distribution a few seconds after it starts. If it still does not, setup shows the exact steps (Docker Desktop > Settings > Resources > WSL integration > turn on the distribution > **Apply & restart**), brings Docker Desktop to the front and continues by itself as soon as Docker answers inside Ubuntu. Setup never edits Docker's settings or stops Docker Desktop. `docker compose version` must also work.
    For WSL NAT with Docker Desktop, setup prepares the current private Ubuntu address for the authenticated ODS host agent. Full `ods start` refreshes automatically managed addresses after WSL restarts. Explicit `ODS_AGENT_BIND` or `ODS_AGENT_HOST` settings are preserved on setup reruns.
    With an NVIDIA GPU, update the Windows driver to 570 or newer first. Setup checks that Ubuntu sees the GPU and that Docker Desktop exposes its NVIDIA runtime, and stops before any Linux changes if not. Never install NVIDIA drivers or the container toolkit inside Ubuntu; see the [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
-   With an AMD GPU (and no NVIDIA driver), the model runs in Lemonade Server on Windows, because Docker Desktop passes only NVIDIA GPUs into WSL containers. Setup reads the GPU and its memory in Windows, picks the model the native Windows installer would (for example `qwen3.5-9b` with 64K context on a 16 GB card), asks to install the pinned Lemonade Server for your Windows user, downloads the model once to `%LOCALAPPDATA%\ODS\lemonade\models` (checksum verified), and runs Lemonade on `127.0.0.1` through the `ODSLemonadeRuntime-<Windows SID>` scheduled task, which starts at sign-in. An existing Lemonade Server install is reused, including 10.7+ releases (configured through Lemonade's local API). Lemonade gets port 8080, or the first free one of 13305, 8000, 18080, 28080 when another program holds it; set `AMD_INFERENCE_PORT` to choose one. It loads the model on the GPU before Ubuntu is touched, then passes `--lemonade-url`, `--lemonade-model` and the GPU tier to the Linux installer; containers reach Lemonade at `host.docker.internal`. An AMD GPU with under 4 GB, or declining Lemonade, keeps the CPU route.
-6. **ODS.** The Linux installer runs with `--pixel --no-hermes --no-openclaw`. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
+   With an AMD GPU (and no NVIDIA driver), the model runs in llama.cpp's `llama-server.exe` (Vulkan) on Windows, because Docker Desktop passes only NVIDIA GPUs into WSL containers. Setup reads the GPU and its memory in Windows and picks the model the native Windows installer would. It asks to download the pinned llama.cpp Vulkan build from github.com/ggml-org into `%LOCALAPPDATA%\ODS\llama.cpp` (size and SHA-256 checked before extraction) and checks that it starts and sees the GPU (`--version`, `--list-devices`). It downloads the model once to `%LOCALAPPDATA%\ODS\lemonade\models` (checksum verified) and runs llama-server on `127.0.0.1`, with an API key, through the `ODSLlamaServerRuntime-<Windows SID>` scheduled task, which starts at sign-in. llama-server gets port 8080, or the first free one of 18080 and 28080 when another program holds it; set `AMD_INFERENCE_PORT` to choose one. Setup proves the model on the GPU before Ubuntu is touched, then passes the `--native-llm-*` options and the GPU tier to the Linux installer. The API key travels in an environment variable, never on a command line; containers reach the server at `host.docker.internal`. An AMD GPU without enough memory for a catalog model, declining the download, or no usable Vulkan device keeps the CPU route. An installation that ran Lemonade Server moves to llama.cpp on a rerun; see [AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
+6. **ODS.** A new installation runs the Linux installer with `--pixel --no-hermes`. A rerun (an update) leaves out `--no-hermes`, so a Hermes that you added from the Extensions Library stays on. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
 7. **Verification.** The wrapper verifies Pixel gateway/ingress services, private ingress health, the dashboard HTTP endpoint and the authenticated Portal availability API. A dashboard that opens while its agent is unavailable is a failed verification. On success it opens Portal and creates an **ODS Portal** desktop shortcut (not in `-NonInteractive` runs). Send a message in Portal to verify model generation too.
 
 `-NonInteractive` never installs prerequisites or changes Docker Desktop settings; it only checks them. Never send passwords through chat.
+
+### Docker Desktop is installed but setup cannot find it
+
+Setup checks Docker Desktop's per-user location (`%LOCALAPPDATA%\Programs\DockerDesktop`),
+its all-users location (`%ProgramFiles%\Docker\Docker`), and custom `InstallLocation`
+values registered by Docker Desktop under the current user or machine. It requires
+both `Docker Desktop.exe` and its bundled `resources\bin\docker.exe` in the same
+installation. A standalone Docker CLI on `PATH` is not enough.
+
+If winget says Docker Desktop is already installed or has no applicable update
+(for example exit `-1978335189`), setup rechecks those locations. A detected installation proceeds through the normal
+engine, Ubuntu integration and Compose checks without requesting another Windows
+restart. If it still cannot find the application and CLI, open Docker Desktop
+from Start and share its installation folder and the exact ODS error with support.
+Keep your Docker data and Ubuntu installation; a Windows restore point or deleting
+containers is not a remedy for this discovery error.
 
 ## Options and location
 
@@ -70,7 +90,8 @@ This does not move Ubuntu's virtual disk or Docker storage. Windows drive paths 
 - `-NoBootstrap`, `-Force`, `-Lan`: corresponding Linux options.
 - `-SummaryJsonPath <Linux path>`: Linux summary output location.
 - `-StateRoot <Windows path>`: optional private directory for the Windows WSL lifetime controller. Keep the same value for setup reruns and lifecycle commands. ODS enforces its owner ACLs. If a packaged terminal's scheduled process cannot see the default AppData controller, use a directory in Documents, for example `-StateRoot "$env:USERPROFILE\Documents\ODS-wsl-state"`; do not move an active controller's state without releasing it first.
-- `-NoHermes`: accepted for compatibility; Hermes is always disabled. `-Hermes` and deprecated `-OpenClaw` are rejected, and `-All` cannot enable them.
+- `-NoHermes`: turns Hermes off, also on a rerun. Without it, a new installation starts without Hermes and a rerun keeps the choice made in the Extensions Library. `-Hermes` is rejected, and `-All` cannot enable it (a rerun with `-All` turns it off).
+- `-OpenClaw`: accepted and ignored with a notice; the legacy OpenClaw extension was removed.
 
 ## Already inside Ubuntu?
 
@@ -79,7 +100,7 @@ With the same systemd/Docker prerequisites:
 ```bash
 git clone https://github.com/Osmantic/ODS.git
 cd ODS
-bash install.sh --pixel --no-hermes --no-openclaw
+bash install.sh --pixel --no-hermes
 ```
 
 Do not run the PowerShell block in Bash.
@@ -134,31 +155,35 @@ use **Resume model** there when needed.
 If stop reports that an earlier command is still draining, its stopped preference
 has already been saved; wait for that command to finish and retry stop. If the
 controller reports an unconfirmed Linux completion, it blocks further stack
-changes. Restart Windows using **Restart**, then retry the requested action. A
-new Windows boot proves that the old Linux command has ended; signing out is not
-enough. Do not delete `command-pending.json`. Ordinary completed command errors
-can be corrected and retried without restarting Windows.
+changes until a restart proves that the old Linux command has ended. Follow the
+remedy in the message. Usually that is `wsl --shutdown`, then retry the
+requested action: a new WSL VM boot is proof. Stop, release and uninstall never
+start a stopped distribution for this check, so open the distribution again
+before retrying them. A command recorded by an older ODS version needs a Windows
+restart using **Restart**; signing out is not enough. Do not delete
+`command-pending.json`. Ordinary completed command errors can be corrected and
+retried without restarting Windows.
 
 ## GPU placement
 
-Pixel is the agent, not the model server. NVIDIA runs the model inside WSL (Docker Desktop's NVIDIA runtime). AMD runs it in Lemonade Server on Windows (see step 5); ROCm is not used in WSL. Without a usable GPU the model runs on the CPU. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
+Pixel is the agent, not the model server. NVIDIA runs the model inside WSL (Docker Desktop's NVIDIA runtime). AMD runs it in `llama-server.exe` on Windows (see step 5); ROCm is not used in WSL. Without a usable GPU the model runs on the CPU. See [WSL2 GPU guide](WINDOWS-WSL2-GPU-GUIDE.md).
 
-For AMD, Windows setup automatically passes `--lemonade-host-transport model-router` to the Linux installer and saves `LEMONADE_HOST_TRANSPORT=model-router` in the runtime `.env`. Windows and Ubuntu can have different localhost listeners. The WSL host agent therefore checks the Windows model through this installation's running model-router container, using its configured `host.docker.internal` endpoint. Before sending a request, it checks the container's ODS labels, installation mounts and Lemonade endpoint. Missing or mismatched ownership keeps the route unverified; model identity, context and a successful completion are still required for readiness.
+For AMD, Windows setup automatically passes `--native-llm-host-transport model-router` to the Linux installer and saves `ODS_HOST_LLM_TRANSPORT=model-router` in the runtime `.env`. Windows and Ubuntu can have different localhost listeners. The WSL host agent therefore checks the Windows model through this installation's running model-router container, using its configured `host.docker.internal` endpoint. Before sending a request, it checks the container's ODS labels, installation mounts and llama-server endpoint. Missing or mismatched ownership keeps the route unverified; model identity, context and a successful completion are still required for readiness.
 
-Lemonade stays bound to Windows `127.0.0.1`; this transport does not enable LAN access or select cloud inference. The Linux setting `LEMONADE_EXTERNAL=true` describes where Lemonade runs, outside the Linux stack on the same Windows computer. Permission to manage it is verified separately against the ODS task and its installation binding. Other Lemonade installations use the default `--lemonade-host-transport direct`, which probes from the host agent's own network context.
+llama-server stays bound to Windows `127.0.0.1` and requires its API key; this transport does not enable LAN access or select cloud inference. Permission to manage the server is verified separately against the ODS task and its installation binding. Other installations use the default `--native-llm-host-transport direct`, which probes from the host agent's own network context.
 
-The `ODSLemonadeRuntime-<Windows SID>` task starts at Windows sign-in when its
-saved preference is running, restores the selected model and context, and
-verifies the loaded model before setup proceeds. Its launcher and configuration
+The `ODSLlamaServerRuntime-<Windows SID>` task starts at Windows sign-in when
+its saved preference is running, starts llama-server with the selected model and
+context, and proves both before it reports ready. Its launcher and configuration
 live in `%LOCALAPPDATA%\ODS\lemonade\portal-runtime`, so removing the temporary
 installer checkout does not break the next startup. Startup failures are recorded
-in `lemonade-launch.log` there, with three bounded Scheduler retries. After these
-retries expire, inspect that log and retry the existing task from normal
-PowerShell:
+in `native-llama-launch.log` there, and llama-server's own output in
+`llama-server.log`, with three bounded Scheduler retries. After these retries
+expire, inspect those logs and retry the existing task from normal PowerShell:
 
 ```powershell
 $odsSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-Start-ScheduledTask -TaskPath '\' -TaskName "ODSLemonadeRuntime-$odsSid"
+Start-ScheduledTask -TaskPath '\' -TaskName "ODSLlamaServerRuntime-$odsSid"
 ```
 
 This retries failed automatic startup. For a model deliberately unloaded in
@@ -167,7 +192,7 @@ Starting the WSL stack does not change the Windows model's stopped preference.
 
 After a Windows restart, sign in and let the startup coordinator connect Docker
 to Ubuntu, then check Portal availability and send a message again. A registered
-task or a healthy Lemonade API alone does not prove that model generation resumed
+task or a healthy llama-server alone does not prove that model generation resumed
 successfully.
 
 ## Manage AMD models from Portal
@@ -178,7 +203,7 @@ After a download is verified, use **Run** and choose its context. **Configure co
 
 **Unload model** stops the owned runtime to release GPU memory and keeps the saved model selection. Portal remains paused while inference is stopped. Use **Resume model** to restore the saved model and verify its route before changing models or context again.
 
-These controls appear only after ODS verifies the task, Windows account, WSL installation and registered model store. For an older ODS task created without this binding, rerun the current Windows installer for the same distribution and runtime directory. Do not create the binding by editing runtime files. An independent Lemonade service remains external: change its model in Lemonade, then use **Adopt loaded model** to update the ODS route. Adoption does not grant runtime control or change Lemonade's startup selection. See [Model Management](MODEL-MANAGEMENT.md#windows-amd-with-portal-in-wsl) for details.
+These controls appear only after ODS verifies the task, Windows account, WSL installation and registered model store. If they are missing, rerun the current Windows installer for the same distribution and runtime directory; it binds the task to that installation. Do not create the binding by editing runtime files. When ODS cannot prove that this installation manages the model server, **Models** says so and does not change its model. See [Model Management](MODEL-MANAGEMENT.md#windows-amd-with-portal-in-wsl) for details.
 
 ## Existing native Windows installations
 
@@ -226,6 +251,49 @@ cd $env:USERPROFILE\ods
 .\ods.ps1 uninstall --force
 ```
 
+## Retained Pixel sandbox after recreating Ubuntu
+
+Removing an Ubuntu distribution does not remove images from Docker Desktop.
+If Pixel reports `Shared live sandbox tag exists without an active Pixel release`,
+the shared `openclaw-sandbox:bookworm-slim` tag can still belong to the previous
+installation. For example, its sandbox can be built for UID 1000 while the new
+Ubuntu account is UID 1001. A matching Pixel version alone is insufficient.
+This is separate from the `unsafe-inspection-docker` executable-permissions error.
+
+In the new Ubuntu terminal, run this recovery helper from your installation
+folder (replace `~/ods` if you chose another folder):
+
+```bash
+bash ~/ods/scripts/recover-retired-pixel-sandbox.sh
+```
+
+The helper shows the Docker engine, exact image, Pixel version, old UID and
+current UID, then checks all containers using that image, including stopped
+containers. It refuses an active local Pixel release, invalid image labels,
+Docker failures, consumers, or changed identities. Run it as your Ubuntu
+account, without `sudo`.
+
+No listed containers does not prove that another WSL installation has stopped
+using this shared tag. Check those installations too. Type `RETIRED` only after
+you have confirmed that **all old installations using the tag are retired** and
+that no Docker/Pixel installation or recovery runs in parallel. Pressing Enter
+or providing no input stops without changing any tags. If another installation
+still uses the tag, retain it and use a separate Docker engine for the new
+deployment, or retire the old deployment through its own uninstall.
+
+After confirmation, the helper preserves the old image under
+`pixel-sandbox-retained:sha256-<complete-image-id>`, rechecks the engine, image,
+retention tag and consumers, and removes **only the old shared tag**. Docker
+has no atomic compare-and-remove operation for shared tags, so other
+installation work must remain stopped until the helper exits. It does not
+remove the image by ID, prune images/volumes, reset Docker Desktop, or retag
+Pixel's new candidate.
+
+When the helper reports success, rerun the same ODS installation command.
+Pixel validates and activates the new account's candidate itself. If recovery
+stops, read its reason and inspect the current state; do not retry with force
+or edit UID labels.
+
 ## Uninstall WSL ODS
 
 Inside Ubuntu, use your chosen runtime directory:
@@ -239,13 +307,13 @@ Do not unregister Ubuntu to remove only ODS.
 
 For a Windows-bound WSL installation, uninstall first validates its Windows
 startup ownership. Before removing Pixel, it disables and settles the matching
-WSL sign-in task and, on AMD, stops and disables only the Lemonade task bound to
+WSL sign-in task and, on AMD, stops and disables only the llama.cpp task bound to
 that installation. If Pixel cleanup then fails, the remaining installation is
 retained for recovery and Windows startup stays disabled. A busy or
 unverifiable controller stops removal with an error; resolve it and retry instead
-of bypassing the check. Another account's tasks and independent Lemonade services
-are preserved. The Lemonade application and downloaded Windows models remain
-available for reuse. Removing those separately through Windows Settings or
-deleting model files is an additional, explicit choice.
+of bypassing the check. Another account's tasks and model servers that ODS does
+not manage are preserved. The disabled task, the llama.cpp runtime in
+`%LOCALAPPDATA%\ODS\llama.cpp` and the downloaded Windows models remain on
+Windows. Deleting the task or those files is an additional, explicit choice.
 
 References: [Microsoft WSL commands](https://learn.microsoft.com/en-us/windows/wsl/basic-commands), [Docker WSL integration](https://docs.docker.com/desktop/features/wsl/).

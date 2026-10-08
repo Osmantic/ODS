@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The tree this resolver ships in; --script-dir may name another install.
+RESOLVER_ROOT="$SCRIPT_DIR"
 TIER="1"
 GPU_BACKEND="nvidia"
 PROFILE_OVERLAYS=""
@@ -10,6 +12,8 @@ SKIP_BROKEN="false"
 GPU_COUNT="1"
 ODS_MODE="${ODS_MODE:-local}"
 SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
+ASSUME_ENABLED=""
+NATIVE_RECOVERY="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -49,6 +53,18 @@ while [[ $# -gt 0 ]]; do
             SKIP_GPU_OVERLAYS="${2:-$SKIP_GPU_OVERLAYS}"
             shift 2
             ;;
+        --assume-enabled)
+            # Comma-separated bundled services resolved as if already selected,
+            # so the host agent can download their images before an enable.
+            ASSUME_ENABLED="${2:-}"
+            shift 2
+            ;;
+        --native-recovery)
+            # Read-only recipe resolution for a validated retained initial
+            # failure; protected proof still precedes recovery publication.
+            NATIVE_RECOVERY="true"
+            shift
+            ;;
         *)
             echo "Unknown argument: $1" >&2
             exit 1
@@ -73,7 +89,8 @@ if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
     exit 2
 fi
 
-"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" <<'PY'
+ODS_RESOLVE_ASSUME_ENABLED="$ASSUME_ENABLED" \
+"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" "$NATIVE_RECOVERY" <<'PY'
 import os
 import pathlib
 import platform
@@ -81,6 +98,9 @@ import sys
 import json
 
 script_dir = pathlib.Path(sys.argv[1])
+# The source tree of this resolver; --script-dir may name another directory.
+resolver_root = pathlib.Path(sys.argv[10])
+native_recovery = sys.argv[11] == 'true'
 tier = (sys.argv[2] or "1").upper()
 gpu_backend = (sys.argv[3] or "nvidia").lower()
 profile_overlays = [x.strip() for x in (sys.argv[4] or "").split(",") if x.strip()]
@@ -88,6 +108,10 @@ env_mode = (sys.argv[5] or "false").lower() == "true"
 skip_broken = (sys.argv[6] or "false").lower() == "true"
 gpu_count = int(sys.argv[7] or "1")
 ods_mode = (sys.argv[8] or os.environ.get("ODS_MODE", "local")).lower()
+# Compatibility read for one release: "lemonade" is the retired name of the
+# managed AMD local mode. Installer reruns and updates migrate it to "local".
+if ods_mode == "lemonade":
+    ods_mode = "local"
 skip_gpu_overlays = {
     x.strip().lower()
     for x in (sys.argv[9] or os.environ.get("ODS_SKIP_GPU_OVERLAYS", "")).split(",")
@@ -95,13 +119,38 @@ skip_gpu_overlays = {
 }
 if os.environ.get("WHISPER_ACCELERATION", "").strip().lower() == "cpu":
     skip_gpu_overlays.add("whisper")
-lemonade_external = (
-    os.environ.get("LEMONADE_EXTERNAL", "").lower() in {"1", "true", "yes", "on"}
-    or (
-        os.environ.get("AMD_INFERENCE_RUNTIME", "").lower() == "lemonade"
-        and os.environ.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
-    )
-)
+# Bundled services the caller is about to select. Only image preparation asks
+# for this; the selected stack never includes an unselected service.
+assume_enabled = {
+    x.strip() for x in os.environ.get("ODS_RESOLVE_ASSUME_ENABLED", "").split(",") if x.strip()
+}
+def _install_env_value(name):
+    """Return a selector from the caller, else from the installation's .env.
+
+    Installer phases export their current choice (an empty value included)
+    before .env is rewritten; ods-cli exports .env. The host agent passes only
+    a fixed selector list, so a selector missing from the environment is read
+    from the installed .env.
+    """
+    if name in os.environ:
+        return os.environ[name].strip()
+    env_path = script_dir / ".env"
+    if not env_path.is_file():
+        return ""
+    sys.path.insert(0, str(resolver_root / "extensions/services/dashboard-api"))
+    from env_values import parse_env_value
+    value = ""
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        key, separator, raw = line.partition("=")
+        if separator and key.strip() == name:
+            value = parse_env_value(raw).strip()
+    return value
+
+
+# An ODS-managed llama-server outside this stack (the Windows Portal runs
+# llama-server.exe while this stack runs in WSL). Its origin, not the
+# credential, selects the overlay.
+host_native = bool(_install_env_value("NATIVE_LLM_BASE_URL"))
 # The host agent passes only a presence marker, keeping an upstream URL that
 # may contain credentials out of the resolver child process. Installer calls
 # without the marker retain their existing EXTERNAL_LLM_URL behavior.
@@ -123,22 +172,17 @@ def existing(overlays):
 resolved = []
 primary = "docker-compose.yml"
 
-# An explicit external runtime owns inference selection, even when hardware
-# detection supplied a local CPU/AMD/NVIDIA profile to the installer.
-if lemonade_external and ods_mode == "lemonade":
-    # External Lemonade is still a local, switchable runtime. The cloud
-    # overlay profiles model-router out and can leave a stale router container
-    # serving Pixel after reinstall. The external overlay disables only the
-    # managed llama-server, preserving a freshly built model-router.
-    if existing(["docker-compose.base.yml", "docker-compose.lemonade-external.yml"]):
-        resolved = ["docker-compose.base.yml", "docker-compose.lemonade-external.yml"]
-        primary = "docker-compose.lemonade-external.yml"
-    elif existing(["docker-compose.base.yml", "docker-compose.cloud.yml"]):
-        resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml"]
-        primary = "docker-compose.cloud.yml"
-    elif existing(["docker-compose.base.yml"]):
-        resolved = ["docker-compose.base.yml"]
-        primary = "docker-compose.base.yml"
+# An ODS-managed host-native runtime owns inference selection, even when
+# hardware detection supplied a local CPU/AMD/NVIDIA profile to the installer.
+if host_native and ods_mode != "cloud" and not external_llm:
+    # The model stays local and switchable. The cloud overlay would profile
+    # model-router out and can leave a stale router container serving Pixel
+    # after reinstall; this overlay disables only the in-stack llama-server.
+    if not existing(["docker-compose.base.yml", "docker-compose.host-native-llm.yml"]):
+        print("ERROR: NATIVE_LLM_BASE_URL is set but docker-compose.host-native-llm.yml is missing", file=sys.stderr)
+        sys.exit(1)
+    resolved = ["docker-compose.base.yml", "docker-compose.host-native-llm.yml"]
+    primary = "docker-compose.host-native-llm.yml"
 elif profile_overlays and existing(profile_overlays):
     resolved = profile_overlays
     primary = profile_overlays[-1]
@@ -199,6 +243,20 @@ else:
 if not resolved:
     resolved = [primary]
 
+# The ROCm image replaces the Vulkan default when selected. It is layered after
+# docker-compose.amd.yml (also when a hardware profile chose that overlay) so
+# /dev/dri and the GPU groups still come from there.
+if "docker-compose.amd.yml" in resolved:
+    amd_inference_backend = _install_env_value("AMD_INFERENCE_BACKEND").lower() or "vulkan"
+    if amd_inference_backend not in {"vulkan", "rocm"}:
+        print(f"ERROR: AMD_INFERENCE_BACKEND must be vulkan or rocm, got {amd_inference_backend!r}", file=sys.stderr)
+        sys.exit(1)
+    if amd_inference_backend == "rocm" and "docker-compose.amd-rocm.yml" not in resolved:
+        if not (script_dir / "docker-compose.amd-rocm.yml").exists():
+            print("ERROR: AMD_INFERENCE_BACKEND=rocm but docker-compose.amd-rocm.yml is missing", file=sys.stderr)
+            sys.exit(1)
+        resolved.insert(resolved.index("docker-compose.amd.yml") + 1, "docker-compose.amd-rocm.yml")
+
 # A generated auth file is an override, never a primary/profile input. Remove
 # stale cached occurrences before extension discovery so it cannot make a
 # partial core service appear to exist or influence overlay eligibility.
@@ -247,7 +305,7 @@ except (OSError, ValueError):
     _CORE_SERVICE_IDS = {
         "ape", "comfyui", "dashboard", "dashboard-api",
         "embeddings", "langfuse", "litellm", "llama-server", "n8n",
-        "open-webui", "openclaw", "perplexica", "privacy-shield", "qdrant",
+        "open-webui", "perplexica", "privacy-shield", "qdrant",
         "remote-provider-egress", "remote-provider-ssh-tunnel",
         "searxng", "token-spy", "tts", "whisper",
     }
@@ -429,13 +487,15 @@ def _extension_build_context(compose_path, build):
 
 
 # The only extra_hosts entry a curated library recipe may declare. Mirrors
-# dashboard-api _scan_compose_content(allowed_trusted_extra_hosts): GAIA needs
-# it to reach a host-run Lemonade Server on Linux Docker.
+# dashboard-api _scan_compose_content(allowed_trusted_extra_hosts). No recipe
+# in the library declares it any more; the route stays for curated recipes
+# installed before GAIA left the library, which still do, so they keep
+# resolving.
 _TRUSTED_LIBRARY_EXTRA_HOSTS = {"host.docker.internal:host-gateway"}
 
 # Accelerator access a curated library recipe may request, only from its own
-# backend overlay and only in the shapes ODS core uses for GPU workloads:
-# docker-compose.amd.yml passes /dev/kfd and /dev/dri through unchanged, and
+# backend overlay and only in the shapes ODS core uses for GPU workloads: the
+# AMD overlays pass /dev/dri (and /dev/kfd for ROCm) through unchanged, and
 # docker-compose.nvidia.yml plus the comfyui/whisper overlays reserve driver
 # nvidia with capabilities [gpu] by count or device_ids. Mirrors dashboard-api
 # _TRUSTED_LIBRARY_AMD_DEVICES / _is_ods_nvidia_gpu_reservation.
@@ -482,11 +542,24 @@ def _is_ods_nvidia_gpu_reservation(entry):
 #     directory, which is the ODS install directory (the first -f file), not
 #     the extension's own directory: ./.env there is the owner's secrets and
 #     ./scripts is code the ods CLI runs on the host. An imported recipe may
-#     bind only its own ./data/<id> and ./config/<id>.
+#     bind only its own ./data/<id> and ./config/<id>, and never when <id>
+#     names a folder ODS keeps there itself (_COMPOSE_POLICY_RESERVED_NAMES).
 #   * PyYAML keeps the last of two duplicate keys and Compose refuses them;
 #     the loader refuses them too instead of judging a value Compose never
 #     sees.
 _COMPOSE_POLICY_FALSE = frozenset({"false", "no", "n", "off"})
+# Folders under ./data and ./config that belong to ODS itself, or to a
+# shipped extension whose folder differs from its id. No extension may use
+# one of these names as its id, because ./data/<id> and ./config/<id> are
+# where an extension's own files go.
+_COMPOSE_POLICY_RESERVED_NAMES = frozenset({
+    "auth", "backends", "backups", "config", "config-backups", "data",
+    "extension-progress", "extensions-library", "hermes-auth",
+    "installer-backups", "models", "openclaw", "paperless", "persona",
+    "piper", "pixel", "pixel-chat-results", "pixel-native",
+    "pixel-providers", "remote-provider", "state", "system-tuning",
+    "user-extensions",
+})
 # Top-level keys an extension compose file may declare (plus x-* fields).
 _COMPOSE_POLICY_TOP_LEVEL = frozenset({"services", "volumes", "networks", "version"})
 _COMPOSE_POLICY_TOP_LEVEL_REASONS = {
@@ -548,6 +621,11 @@ _COMPOSE_POLICY_ROOT_UID_RE = re.compile(r"[+-]?[0-9]+")
 _COMPOSE_POLICY_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:[\\/]|[\\/]{2}")
 _COMPOSE_POLICY_RESERVATION_KEYS = frozenset({"cpus", "memory", "devices"})
 _COMPOSE_POLICY_NETWORK_KEYS = frozenset({"external", "name", "internal", "labels"})
+# Networks docker-compose.base.yml declares for the remote-provider egress
+# boundary. Compose merges every -f file into one project, so an extension
+# that declared or referenced one of these keys would join it and reach the
+# egress or the SSH tunnel. Only built-in LiteLLM joins them.
+_COMPOSE_POLICY_CORE_NETWORKS = frozenset({"remote-provider", "remote-provider-outbound"})
 _COMPOSE_POLICY_VOLUME_KEYS = frozenset({"labels"})
 _COMPOSE_POLICY_MARKER_MAX_BYTES = 524288
 # A Compose file with every alias expanded; ODS's largest is a few hundred
@@ -700,6 +778,9 @@ def _compose_policy_volume_problems(name, volumes, *, builtin, namespace):
             if not parts or parts[0].startswith(".") or parts in (["data"], ["config"]):
                 problems.append(f"service '{name}' bind-mounts the ODS install directory or its "
                                 f"secrets ('{source}')")
+            elif namespace is not None and namespace in _COMPOSE_POLICY_RESERVED_NAMES:
+                problems.append(f"service '{name}' bind-mounts '{source}', but '{namespace}' "
+                                f"names a folder ODS keeps for itself")
             elif namespace is not None and (len(parts) < 2 or parts[0] not in ("data", "config")
                                             or parts[1] != namespace):
                 problems.append(f"service '{name}' bind-mounts '{source}' outside its own "
@@ -789,8 +870,14 @@ def _compose_policy_service_problems(name, service, *, own_services, accelerator
     return problems
 
 
-def _compose_policy_document_problems(data):
-    """Policy problems of the top level: keys, named networks and volumes."""
+def _compose_policy_document_problems(data, *, builtin=False):
+    """Policy problems of the top level: keys, named networks and volumes.
+
+    Also which networks each service joins: an extension may join only the
+    default network or one its own file declares, never an ODS core network.
+    ``builtin`` marks an extension shipped with ODS, which may join core
+    networks that docker-compose.base.yml declares.
+    """
     problems = []
     for key in data:
         if not isinstance(key, str) or not (key in _COMPOSE_POLICY_TOP_LEVEL or key.startswith("x-")):
@@ -799,7 +886,22 @@ def _compose_policy_document_problems(data):
     networks = data.get("networks")
     if networks is not None and not isinstance(networks, dict):
         problems.append("top-level networks must be a mapping")
+    declared = set(networks) if isinstance(networks, dict) else set()
+    services = data.get("services")
+    for name, service in (services.items() if isinstance(services, dict) else ()):
+        joined = service.get("networks") if isinstance(service, dict) else None
+        for key in (list(joined) if isinstance(joined, (dict, list)) else ()):
+            if not isinstance(key, str):
+                problems.append(f"service '{name}' lists an invalid network entry")
+            elif key in _COMPOSE_POLICY_CORE_NETWORKS:
+                if not builtin:
+                    problems.append(f"service '{name}' joins ODS core network '{key}'")
+            elif not builtin and key != "default" and key not in declared:
+                problems.append(f"service '{name}' joins network '{key}' that its file does not declare")
     for key, network in (networks.items() if isinstance(networks, dict) else ()):
+        if key in _COMPOSE_POLICY_CORE_NETWORKS:
+            problems.append(f"network '{key}' is reserved for ODS core")
+            continue
         if network is None:
             continue
         if not isinstance(network, dict) or set(network) - _COMPOSE_POLICY_NETWORK_KEYS:
@@ -942,6 +1044,14 @@ def _scan_user_compose_content(compose_path, trusted_library=False, accelerator=
         # dashboard-api install endpoint's skip_name_collision=False path.
         if svc_name in _CORE_SERVICE_IDS:
             reject(f"service '{svc_name}' collides with a built-in core service name")
+        # Docker DNS answers to container names too, so a container named
+        # after a core service would shadow it for every caller on ods-network.
+        container_name = svc_def.get("container_name")
+        if container_name is not None:
+            if not isinstance(container_name, str) or _compose_policy_interpolates(container_name):
+                reject(f"service '{svc_name}' container name must be a literal string")
+            elif container_name.lower() in _CORE_SERVICE_IDS | {f"ods-{sid}" for sid in _CORE_SERVICE_IDS}:
+                reject(f"container name '{container_name}' collides with a built-in core service name")
         for problem in _compose_policy_service_problems(
                 svc_name, svc_def, own_services=own_services, accelerator=accelerator,
                 namespace=namespace):
@@ -1052,8 +1162,12 @@ def _source_runtime_merge_problems(entries):
     return problems
 
 
-def _extension_base_path(service_dir, service, label):
-    """Return an enabled extension base path, or None when it is disabled."""
+def _extension_base_path(service_dir, service, label, assumed=frozenset()):
+    """Return an enabled extension base path, or None when it is disabled.
+
+    ``assumed`` names bundled services the caller is about to select; only
+    the bundled-service discovery passes it.
+    """
     compose_rel = service.get("compose_file", "compose.yaml")
     if not isinstance(compose_rel, str) or not compose_rel:
         print(f"WARNING: {label}: manifest has no usable compose_file, skipping overlays", file=sys.stderr)
@@ -1073,8 +1187,11 @@ def _extension_base_path(service_dir, service, label):
 
     if compose_path.exists():
         return compose_path
-    if (service_dir / f"{compose_rel}.disabled").exists():
-        return None
+    disabled_path = service_dir / f"{compose_rel}.disabled"
+    if disabled_path.exists():
+        # A bundled service about to be selected resolves with the file its
+        # selection will restore, so its images match what `up` will use.
+        return disabled_path if service_dir.name in assumed else None
 
     print(
         f"WARNING: {label}: compose_file '{compose_rel}' not found, skipping overlays",
@@ -1108,8 +1225,8 @@ def _compose_requires_local_inference(compose_path):
     Backend-named user overlays predate mode-specific overlays. Some of them
     use ``compose.nvidia.yaml`` or ``compose.cpu.yaml`` only to add a
     ``depends_on: llama-server`` readiness edge, not to request accelerator
-    access. Retaining that edge in cloud, external-LLM, or external Lemonade
-    mode makes the complete Compose project invalid because managed local
+    access. Retaining that edge in cloud, external-LLM, or host-native mode
+    makes the complete Compose project invalid because managed local
     inference is profiled out.
     """
     data = _load_compose_mapping(compose_path, f"Compose file {compose_path}")
@@ -1224,6 +1341,9 @@ if ext_dir.exists():
             if manifest.get("schema_version") != "ods.services.v1":
                 continue
             service = manifest.get("service", {})
+            if not isinstance(service, dict):
+                print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                continue
             # Check GPU backend compatibility
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
@@ -1231,7 +1351,7 @@ if ext_dir.exists():
                 continue
             compose_rel = service.get("compose_file")
             if compose_rel:
-                compose_path = _extension_base_path(service_dir, service, service_dir.name)
+                compose_path = _extension_base_path(service_dir, service, service_dir.name, assume_enabled)
                 if compose_path is None:
                     continue
                 resolved.append(str(compose_path.relative_to(script_dir)))
@@ -1254,11 +1374,11 @@ if ext_dir.exists():
             # service_healthy` inside compose.local.yaml overlays can never be
             # satisfied and deadlocks the stack. The real LLM-ready gate on macOS
             # is the `llama-server-ready` sidecar defined in the macOS overlay.
-            # External Lemonade is also a host process. Its stack layers the
-            # cloud overlay to profile out ODS's managed llama-server, so
-            # local-mode overlays that wait on `llama-server: service_healthy`
-            # would point at a disabled service and break lifecycle commands.
-            if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
+            # A host-native runtime is also a host process. Its overlay
+            # profiles out ODS's in-stack llama-server, so local-mode overlays
+            # that wait on `llama-server: service_healthy` would point at a
+            # disabled service and break lifecycle commands.
+            if ods_mode in ("local", "hybrid") and tier != "CLOUD" and gpu_backend != "apple" and not host_native and not external_llm:
                 local_mode_overlay = service_dir / "compose.local.yaml"
                 if local_mode_overlay.exists():
                     resolved.append(str(local_mode_overlay.relative_to(script_dir)))
@@ -1340,6 +1460,12 @@ if user_ext_dir.exists():
                     service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
                 else:
                     service = {}
+                # A manifest whose `service:` is a scalar or list must not crash
+                # the resolver: it runs on every `ods` invocation, and the
+                # AttributeError escapes the --skip-broken handler.
+                if not isinstance(service, dict):
+                    print(f"WARNING: manifest 'service' is not a mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                    continue
                 # Imported recipes without GPU metadata are unrestricted, as
                 # in the catalog. Explicit backend restrictions still apply.
                 # Gated on isinstance(manifest, dict) so the manifest-less compat
@@ -1387,7 +1513,7 @@ if user_ext_dir.exists():
                         managed_local_inference = (
                             ods_mode in ("local", "hybrid")
                             and tier != "CLOUD"
-                            and not lemonade_external
+                            and not host_native
                             and not external_llm
                         )
                         if (
@@ -1409,11 +1535,11 @@ if user_ext_dir.exists():
                 # service_healthy` inside compose.local.yaml overlays can never be
                 # satisfied and deadlocks the stack. The real LLM-ready gate on macOS
                 # is the `llama-server-ready` sidecar defined in the macOS overlay.
-                # External Lemonade likewise runs on the host and uses the cloud
-                # overlay to disable ODS's managed llama-server, so user-local
-                # overlays must not add local llama-server health dependencies.
-                # Mirrors the same guard in the built-in loop above (PR #1004).
-                if ods_mode in ("local", "hybrid", "lemonade") and tier != "CLOUD" and gpu_backend != "apple" and not lemonade_external and not external_llm:
+                # A host-native runtime likewise disables ODS's in-stack
+                # llama-server, so user-local overlays must not add local
+                # llama-server health dependencies. Mirrors the same guard in
+                # the built-in loop above (PR #1004).
+                if ods_mode in ("local", "hybrid") and tier != "CLOUD" and gpu_backend != "apple" and not host_native and not external_llm:
                     local_mode_overlay = service_dir / "compose.local.yaml"
                     if local_mode_overlay.exists():
                         # Same content scan as compose.yaml/gpu overlay above —
@@ -1506,6 +1632,16 @@ if model_stores_overlay.exists():
     if active_mount:
         resolved.append(str(active_mount.relative_to(script_dir)))
 
+# Tier 0 memory overlay for machines below 8GB RAM. compose-select.sh adds it
+# while the installer runs, but every later resolution goes through this
+# script (installer refresh, ods-cli enable/disable, host agent, ods-update),
+# and dropping it there leaves those machines on the base limits. Applied
+# before docker-compose.override.yml so operator overrides still win.
+if tier in ("0", "T0"):
+    tier0_overlay = script_dir / "docker-compose.tier0.yml"
+    if tier0_overlay.exists():
+        resolved.append("docker-compose.tier0.yml")
+
 # Include docker-compose.override.yml if it exists (user customizations).
 # Even though the operator placed this file themselves, the resolver runs
 # under installer/CI and may handle composes from sources the operator
@@ -1531,14 +1667,15 @@ if ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
 # generic extension discovery. Restore their explicit selection after cache
 # invalidation, with the same final override order as the macOS installer.
 native_activation = script_dir / 'data/pixel-native/preparation/activation.json'
-if os.path.lexists(native_activation):
+if native_recovery or os.path.lexists(native_activation):
     import importlib.util
     try:
         native_spec = importlib.util.spec_from_file_location('ods_native_stack',
-            script_dir / 'installers/macos/lib/pixel-native-stack.py')
+            (resolver_root if native_recovery else script_dir) / 'installers/macos/lib/pixel-native-stack.py')
         native_stack = importlib.util.module_from_spec(native_spec)
         native_spec.loader.exec_module(native_stack)
-        resolved = native_stack.resolve_files(script_dir, resolved)
+        resolved = (native_stack.resolve_files(script_dir, resolved, recovery=True) if native_recovery
+                    else native_stack.resolve_files(script_dir, resolved))
     except (ValueError, OSError, ImportError):
         print('ERROR: Native Pixel Compose selection needs recovery; retain its installation receipts.', file=sys.stderr)
         sys.exit(1)
@@ -1654,7 +1791,9 @@ for fragment in resolved:
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
-    projected.append(str(overlay.relative_to(script_dir)))
+    # Keep the fragment's own spelling: `path` is resolved, so it may sit
+    # outside script_dir when the install or data/ is reached via a symlink.
+    projected.append(str(pathlib.Path(fragment).with_name(overlay.name)))
 resolved = projected
 
 def to_flags(files):

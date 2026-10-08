@@ -129,9 +129,9 @@ it('confirms a context change when faster background reads overtake both nine-se
     const data=await snapshot('target').json()
     data.models=data.models.map(model=>({...model,contextLength}))
     data.modelLifecycle=null
-    data.odsMode=data.configuredMode='lemonade'
-    data.llmBackend='lemonade'
-    data.externalLemonade=true
+    data.odsMode=data.configuredMode='local'
+    data.llmBackend='llama-server'
+    data.hostRuntime=true
     data.modelManagement={managed:true,canActivate:true,canUnload:true,running:true}
     // Initial inventory is immediate. Confirmation reads start at 0s and 9s;
     // background reads start every 2s and publish newer matching snapshots.

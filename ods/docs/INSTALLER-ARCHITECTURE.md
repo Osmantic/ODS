@@ -89,9 +89,10 @@ behavior. In the default `auto` mode, `TERM=dumb`, `CI`, and redirected stdout
 also select plain behavior; `cinematic` is the explicit operator override for
 an interactive capture. Plain mode never clears the screen, rings the terminal
 bell, or emits cursor-motion animation. Detailed operational messages remain in
-the install log during cinematic runs; warnings and errors stay visible. The
-Tauri installer continues to consume only the structured `ODS_PROGRESS`
-protocol.
+the install log during cinematic runs; warnings and errors stay visible.
+`ODS_INSTALLER_GUI=1` also turns on the structured `ODS_PROGRESS` lines
+(`installers/lib/progress.sh`) for a graphical front end. None ships today:
+the unsupported Tauri desktop installer was removed.
 
 Long-wait lore and completion assurances must reflect the active runtime mode.
 Local mode may describe local inference; cloud and external-endpoint modes must
@@ -155,15 +156,16 @@ done. This is the most common way install-time surprises survive a patch.
 |----------------|--------------|--------------|----------------|------------------------|
 | `.env` and core ports/secrets | `phases/06-directories.sh` | `installers/macos/lib/env-generator.sh` | `installers/windows/lib/env-generator.ps1` | `ods config`, `ods update`, installer re-runs |
 | OpenCode config | `phases/07-devtools.sh` | `installers/macos/install-macos.sh` | `installers/windows/lib/opencode-config.ps1` | `scripts/update-windows-opencode-config.ps1`, `scripts/bootstrap-upgrade.sh` |
-| LiteLLM Lemonade config | `phases/06-directories.sh` | n/a | n/a | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py` |
+| LiteLLM config for a Windows `llama-server.exe` (`config/litellm/local.yaml`) | `phases/06-directories.sh` through `scripts/render-runtime-configs.py` (Portal) | n/a | `installers/windows/lib/env-generator.ps1` | `scripts/bootstrap-upgrade.sh` |
 | Perplexica config | `phases/12-health.sh`, `phases/13-summary.sh` | `installers/macos/lib/env-generator.sh`, `installers/macos/install-macos.sh` | `installers/windows/lib/env-generator.ps1`, `installers/windows/install-windows.ps1` | `scripts/bootstrap-upgrade.sh`, `scripts/repair/repair-perplexica.sh` |
 | Hermes config | `phases/11-services.sh`, `scripts/patch-hermes-config.py` | `installers/macos/install-macos.sh` | `installers/windows/phases/06-directories.ps1` | `scripts/bootstrap-upgrade.sh`, `bin/ods-host-agent.py` |
 | External text/chat route | `phases/02b-external-services.sh`, `phases/06-directories.sh` | Not installer-managed | Not installer-managed | Linux installer re-runs |
 
-Recent examples: OpenCode on Linux Lemonade mode must use `LITELLM_KEY` because
-LiteLLM enforces auth, while direct llama-server paths keep `no-key`; Lemonade
-`lemonade.yaml` must preserve `extra_body.chat_template_kwargs.enable_thinking:
-false` in install, bootstrap upgrade, and host-agent model activation paths;
+Recent examples: OpenCode must use `LITELLM_KEY` when it reaches the model
+through LiteLLM, which enforces auth, while direct llama-server paths keep
+`no-key`; the LiteLLM config for a Windows `llama-server.exe` must keep
+`extra_body.chat_template_kwargs.enable_thinking: false` and name the server
+key only by reference (`os.environ/LLAMA_SERVER_API_KEY`) in every writer;
 Perplexica's persisted `defaultChatModel` must be refreshed after bootstrap
 hot-swap.
 

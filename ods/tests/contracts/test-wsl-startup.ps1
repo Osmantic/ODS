@@ -1,6 +1,9 @@
 # Real private files/ACLs; all WSL, Docker, Scheduler and service boundaries are mocked.
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1')
+# The pending-record contract runs the real transport only up to its first
+# private write; two guards stop it before any wsl.exe launch.
+$realBoundedCommand=${function:Invoke-ODSWslBoundedCommand}
 $count=0
 function Check([bool]$Value,[string]$Message) { if(-not $Value){throw $Message};$script:count++;Write-Host "PASS $Message" }
 function Reject([scriptblock]$Call,[string]$Message) { $failed=$false;try{& $Call}catch{$failed=$true};Check $failed $Message }
@@ -18,6 +21,7 @@ function Get-ODSWslWindowsBootId { $script:bootId }
 function Get-ODSWslUtcNow { $script:now }
 function Start-Sleep { param($Seconds,$Milliseconds);$script:now=$script:now.AddSeconds([Math]::Max(1,$Seconds)) }
 function Start-Process { throw 'Unexpected real process launch in startup fixture' }
+function Get-ODSWslRunningDistributions { throw 'Unexpected WSL distribution listing in startup fixture' }
 function Start-ScheduledTask { throw 'Unexpected holder task launch in startup fixture' }
 function Stop-ScheduledTask { param($TaskName); if($TaskName -cne $identity.taskName){throw 'Wrong task stop'};$script:events+='stop-task' }
 function Disable-ScheduledTask {param($TaskName)
@@ -118,6 +122,19 @@ try {
     Set-ODSWslStartupIntent $identity $false
     Enable-ODSWslStartup $identity
     Check ($script:registrations -eq 1 -and -not (Get-ODSWslStartupIntent $identity).desiredRunning) 'rerun preserves explicit stop and never rewrites task registration'
+    # Uninstall retirement leaves desiredRunning=false and a disabled task in
+    # this per-root directory; only a new installation re-arms both.
+    $script:startupTask | Add-Member -NotePropertyName State -NotePropertyValue 'Disabled' -Force
+    $script:enabledTasks=@()
+    function Enable-ScheduledTask { param($TaskName); $script:enabledTasks+=$TaskName; $script:startupTask.State='Ready' }
+    Enable-ODSWslStartup $identity
+    Check (-not (Get-ODSWslStartupIntent $identity).desiredRunning -and $script:enabledTasks.Count -eq 0) 'installer rerun keeps the stop and leaves the disabled startup task alone'
+    Enable-ODSWslStartup $identity -NewInstallation
+    Check ((Get-ODSWslStartupIntent $identity).desiredRunning) 'new installation at a retired root re-arms sign-in recovery'
+    Check ($script:enabledTasks.Count -eq 1 -and $script:enabledTasks[0] -ceq ($identity.taskName+'-Startup') -and $script:registrations -eq 1) 'new installation re-enables the retired startup task without re-registering it'
+    Enable-ODSWslStartup $identity -NewInstallation
+    Check ($script:enabledTasks.Count -eq 1) 'an enabled startup task is not re-enabled'
+    Set-ODSWslStartupIntent $identity $false
     Invoke-ODSWslStartup $fixture
     Check ($script:events.Count -eq 0) 'disabled startup performs no Docker WSL or service operation'
     Check ((Read-ODSWslJson (Join-Path $fixture 'startup-status.json')).state -eq 'disabled') 'disabled startup is visible in status'
@@ -236,6 +253,111 @@ try {
     $disabled=Invoke-ODSWslLifecycle disable-startup $identity.distro $identity.installRoot
     Check ($disabled.state -eq 'disabled' -and ($script:events -join ',') -eq 'disable-startup') 'uninstall disables only the exact Windows startup task without WSL'
     Check ((Read-ODSWslJson (Join-Path $fixture 'command-pending.json')).state -eq 'completed') 'a later Windows boot safely retires an interrupted command without deleting metadata'
+    # A later WSL VM boot (wsl --shutdown) also retires a lost acknowledgement
+    # when the record holds the kernel boot id of the VM the command ran in.
+    # WSL stays mocked: the fixture fakes only that read and the running list.
+    & {
+        $pendingPath=Join-Path $fixture 'command-pending.json'
+        $oldVm='11111111-2222-4333-8444-555555555555'
+        $newVm='66666666-7777-4888-9999-aaaaaaaaaaaa'
+        $script:vmBoot=$oldVm;$script:vmReads=0;$script:runningDistros=@();$script:bootId='3000'
+        function Get-ODSWslRunningDistributions { $script:runningDistros }
+        function Invoke-ODSWslBoundedCommand { param($Identity,[string[]]$Arguments,[int]$Seconds,[switch]$AsRoot,[switch]$ListRunning,[switch]$Mutation)
+            if($Identity.id -cne $script:fixtureIdentity.id -or $AsRoot -or $ListRunning -or $Mutation){throw 'Unexpected WSL command authority'}
+            $command=$Arguments -join ' '
+            if($command -like '/usr/bin/env docker *'){$script:events+=$command;return 'fixture-ready'}
+            if($command -cne '/bin/cat /proc/sys/kernel/random/boot_id' -or $Seconds -le 0){throw 'Unexpected WSL command'}
+            $script:vmReads++
+            if($script:vmBoot -is [Exception]){throw $script:vmBoot}
+            $script:vmBoot+"`n"
+        }
+        function Resolve-ODSWslRegisteredDistro {param($Name);$Name}
+        function Stop-ODSWslLifetime {param($Identity);$script:events+='release';[pscustomobject]@{state='stopped'}}
+        function Write-PendingFixture([string]$LinuxBootId) {
+            $record=@{schemaVersion=1;state='pending';id=$identity.id;token=('d'*32);bootId=$script:bootId}
+            if($LinuxBootId){$record.linuxBootId=$LinuxBootId}
+            Write-ODSWslJson $pendingPath $record
+            $script:events=@();$script:vmReads=0
+            (Get-FileHash $pendingPath).Hash
+        }
+        function Invoke-Refused([string]$Action) {
+            $message='';try{$null=Invoke-ODSWslLifecycle $Action $identity.distro $identity.installRoot -ValidateOnly:($Action -eq 'disable-startup')}catch{$message=$_.Exception.Message}
+            $message
+        }
+        foreach($read in @($newVm,[IO.IOException]::new('fixture WSL relay lost'))){
+            Write-ODSWslJson $pendingPath @{schemaVersion=1;state='completed';id=$identity.id}
+            $script:vmBoot=$read
+            & {
+                $realWrite=${function:Write-ODSWslJson}
+                function Write-ODSWslJson {param($Path,$Value);& $realWrite $Path $Value;if($Value.state -ceq 'pending'){throw 'fixture stopped before wsl.exe'}}
+                function ConvertTo-ODSWindowsArgument {throw 'fixture guard: wsl.exe must not start'}
+                $stopped='';try{& $realBoundedCommand $identity @('/usr/bin/true') 15 -Mutation}catch{$stopped=$_.Exception.Message}
+                Check ($stopped -ceq 'fixture stopped before wsl.exe') 'the mutation fixture stops at its pending record, before wsl.exe'
+            }
+            $record=Read-ODSWslJson $pendingPath
+            if($read -is [string]){
+                Check ($record.state -eq 'pending' -and $record.bootId -ceq '3000' -and $record.linuxBootId -ceq $newVm) 'a stack mutation records the WSL VM boot id with its pending state'
+            } else {
+                Check ($record.state -eq 'pending' -and $record.bootId -ceq '3000' -and @($record.PSObject.Properties.Name) -notcontains 'linuxBootId') 'an unreadable WSL VM boot id leaves the Windows-boot-only pending record'
+            }
+        }
+        # Start and restart may boot the distribution to read the id; after
+        # wsl --shutdown nothing is running yet.
+        $hash=Write-PendingFixture $oldVm
+        $script:vmBoot=$oldVm
+        $message=Invoke-Refused restart
+        Check ($message.Contains('Run `wsl --shutdown` (or restart Windows), then retry') -and $message.Contains('do not delete command-pending.json') -and
+            $script:vmReads -eq 1 -and $script:events.Count -eq 0 -and (Get-FileHash $pendingPath).Hash -ceq $hash) 'restart in the same WSL VM still refuses the unconfirmed command and names wsl --shutdown'
+        foreach($read in @([IO.IOException]::new('fixture WSL relay lost'),[TimeoutException]::new('fixture read timed out'),'','fixture-ready',$newVm.ToUpperInvariant(),"$newVm`n$oldVm")){
+            $hash=Write-PendingFixture $oldVm
+            $script:vmBoot=$read
+            $message=Invoke-Refused restart
+            $label=if($read -is [Exception]){$read.GetType().Name}else{$read -replace "`n",'\n'}
+            Check ($message.Contains('Run `wsl --shutdown` (or restart Windows)') -and $script:vmReads -eq 1 -and $script:events.Count -eq 0 -and
+                (Get-FileHash $pendingPath).Hash -ceq $hash) "an unreadable WSL VM boot id keeps the command blocking [$label]"
+        }
+        $hash=Write-PendingFixture $oldVm
+        $script:vmBoot=[InvalidOperationException]::new('fixture programming error')
+        Check ((Invoke-Refused restart) -ceq 'fixture programming error' -and (Get-FileHash $pendingPath).Hash -ceq $hash) 'only WSL I/O failures count as an unreadable boot id; other errors still stop the action'
+        $null=Write-PendingFixture $oldVm
+        $script:vmBoot=$newVm
+        $null=Invoke-ODSWslLifecycle restart $identity.distro $identity.installRoot
+        $record=Read-ODSWslJson $pendingPath
+        Check ($record.state -eq 'completed' -and $record.reason -ceq 'WSL VM restarted' -and $script:vmReads -eq 1 -and ($script:events -join ',') -ceq 'release,hold,stack-start') 'restart after a WSL VM restart retires the unconfirmed command and proceeds'
+        $null=Write-PendingFixture $oldVm
+        Set-ODSWslStartupIntent $identity $true
+        Invoke-ODSWslStartup $fixture
+        Check ((Read-ODSWslJson (Join-Path $fixture 'startup-status.json')).state -eq 'started' -and (Read-ODSWslJson $pendingPath).reason -ceq 'WSL VM restarted' -and
+            (($script:events[-2..-1]) -join ',') -ceq 'hold,stack-start') 'sign-in startup after a WSL VM restart retires the unconfirmed command and starts the stack'
+        # Records written before linuxBootId existed keep the Windows boot rule.
+        $hash=Write-PendingFixture ''
+        $message=Invoke-Refused restart
+        Check ($message.Contains('Restart Windows (not just sign out), then retry') -and -not $message.Contains('wsl --shutdown') -and $script:vmReads -eq 0 -and
+            $script:events.Count -eq 0 -and (Get-FileHash $pendingPath).Hash -ceq $hash) 'a record without a WSL VM boot id is not retired by a VM restart'
+        $script:bootId='4000'
+        $null=Invoke-ODSWslLifecycle restart $identity.distro $identity.installRoot
+        Check ((Read-ODSWslJson $pendingPath).reason -ceq 'previous Windows boot ended' -and ($script:events -join ',') -ceq 'release,hold,stack-start') 'a record without a WSL VM boot id is still retired by a later Windows boot'
+        $script:bootId='3000'
+        # Booting a stopped distribution starts its enabled ODS units, so stop,
+        # release and uninstall read the id only from a running distribution.
+        $script:runningDistros=@('docker-desktop')
+        foreach($action in @('stop','release','disable-startup')){
+            $hash=Write-PendingFixture $oldVm
+            $message=Invoke-Refused $action
+            Check ($message.Contains('Run `wsl --shutdown` and open '+$identity.distro+' again (or restart Windows)') -and $script:vmReads -eq 0 -and
+                $script:events.Count -eq 0 -and (Get-FileHash $pendingPath).Hash -ceq $hash) "$action never starts a stopped distribution to read its WSL VM boot id"
+        }
+        $script:runningDistros=@('docker-desktop',$identity.distro)
+        $hash=Write-PendingFixture $oldVm
+        $validated=Invoke-ODSWslLifecycle disable-startup $identity.distro $identity.installRoot -ValidateOnly
+        Check ($validated.state -eq 'validated' -and $script:vmReads -eq 1 -and $script:events.Count -eq 0 -and (Get-FileHash $pendingPath).Hash -ceq $hash) 'uninstall precheck accepts a restarted WSL VM without writing'
+        $disabled=Invoke-ODSWslLifecycle disable-startup $identity.distro $identity.installRoot
+        Check ($disabled.state -eq 'disabled' -and (Read-ODSWslJson $pendingPath).reason -ceq 'WSL VM restarted') 'uninstall then retires the command that the restarted WSL VM proved ended'
+        $null=Write-PendingFixture $oldVm
+        $null=Invoke-ODSWslLifecycle stop $identity.distro $identity.installRoot
+        Check ((Read-ODSWslJson $pendingPath).reason -ceq 'WSL VM restarted' -and ($script:events -join ',') -ceq 'release') 'stop in a running distribution accepts a WSL VM restart and proceeds'
+        $script:bootId='2000'
+    }
     $script:startupTask=$null;$script:events=@()
     $disabled=Invoke-ODSWslLifecycle disable-startup $identity.distro $identity.installRoot
     Check ($disabled.state -eq 'disabled' -and $script:events.Count -eq 0) 'missing startup task remains idempotently disabled without registration'

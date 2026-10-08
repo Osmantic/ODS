@@ -1,0 +1,30 @@
+# Tests under ods/tests that no CI job runs, each with the reason.
+# Format: <path relative to ods/>  <reason>. Fix a test and move it to
+# ci-suite.txt (or a workflow step); delete one that is obsolete.
+# .github/scripts/list-unwired-tests.py --check keeps this list complete.
+
+# Live probes that need a running macOS host and arguments; run by the fleet harness.
+tests/test-macos-native-idle.py               live-probe: needs --url and a running native llama-server
+tests/test-macos-pixel-handover.py            live-probe: needs a running native Pixel install
+tests/test-macos-pixel-lifecycle.py           live-probe: needs a running native Pixel install
+
+# Needs live services or a PowerShell host.
+tests/test-dashboard-integration.sh           live: probes a running dashboard-api
+tests/test-windows-llm-endpoint.sh            windows: drives PowerShell scripts
+
+# Need a running ODS stack or a host CI does not have.
+tests/contracts/test-ods-doctor.sh            macos-only: its Darwin fixture skips on Linux
+tests/test-concurrency.sh                     live: needs a running ODS stack (run-m8-tests.sh)
+tests/test-embeddings-full.sh                 live: needs a running ODS stack (run-m8-tests.sh)
+tests/test-integration.sh                     live: probes the running dashboard and services
+tests/test-remote-provider-isolation-live.sh  live: inspects a running stack's networks; run by the fleet harness
+tests/test-n8n-owner-live.sh                  live: needs a running stack with n8n; run by the fleet harness
+tests/test-multi-distro.sh                    host: needs distrobox and distribution images
+tests/test-multi-turn.sh                      live: needs a running ODS stack (run-m8-tests.sh)
+tests/test-open-webui-live.sh                 live: needs a running stack with Open WebUI; run by the fleet harness
+tests/test-streaming.sh                       live: needs a running ODS stack (run-m8-tests.sh)
+tests/test-stt-full.sh                        live: needs a running Whisper service and ffmpeg (run-m8-tests.sh)
+tests/test-tts-full.sh                        live: needs a running ODS stack (run-m8-tests.sh)
+tests/test-windows-cli-model.sh               windows: drives powershell.exe
+
+# Rotted while unexecuted; the repairs are in #6567.

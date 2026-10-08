@@ -256,11 +256,6 @@ sr_resolve_ports() {
             SERVICE_PORTS[$_sid]="${!_port_env}"
         fi
     done
-
-    # Lemonade (AMD) serves health at /api/v1/health, not /health
-    if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
-        SERVICE_HEALTH[llama-server]="/api/v1/health"
-    fi
 }
 
 # Resolve a user-provided name to a compose service ID.

@@ -82,15 +82,17 @@ Set-ListenerStub -Conns @(New-StubConn 200) -Procs @(New-StubProc 200 'lemonade-
 Assert-Equal 'custom9500-preserved' (Resolve-WindowsWhisperHostPort -ConfiguredPort '9500') '9500'
 Assert-Equal 'custom9500-zero-probe-calls' $script:probeCalls 0
 
-# 9. Managed AMD default
+# 9. Native AMD (llama-server.exe) runs no Lemonade router, so a free 9000
+# stays 9000; a former managed Lemonade install keeps its persisted 9100,
+# which reaches this resolver as a non-default configured port.
 Set-ListenerStub -Conns @() -Procs @()
-Assert-Equal 'managed-amd-default-9100' `
-    (Resolve-WindowsWhisperHostPort -ConfiguredPort '9000' -GpuBackend 'amd' -AmdInferenceRuntime 'lemonade' -AmdInferenceLocation 'host') '9100'
+Assert-Equal 'native-amd-default-9000' (Resolve-WindowsWhisperHostPort -ConfiguredPort '9000') '9000'
+Assert-Equal 'migrated-amd-keeps-9100' (Resolve-WindowsWhisperHostPort -ConfiguredPort '9100') '9100'
+Assert-Equal 'no-runtime-special-case' (@((Get-Command Resolve-WindowsWhisperHostPort).Parameters.Keys | Where-Object { $_ -match 'Gpu|AmdInference' }).Count) 0
 
 # The resolver retains default 9000 when no Lemonade listener exists.
 Set-ListenerStub -Conns @() -Procs @()
-Assert-Equal 'nvidia-free-default9000' (Resolve-WindowsWhisperHostPort -GpuBackend 'nvidia') '9000'
-Assert-Equal 'amd-container-default9000' (Resolve-WindowsWhisperHostPort -GpuBackend 'amd' -AmdInferenceRuntime 'lemonade' -AmdInferenceLocation 'container') '9000'
+Assert-Equal 'free-default9000' (Resolve-WindowsWhisperHostPort) '9000'
 foreach ($name in @('LemonadeServer','LEMONADE-SERVER','lemonade-router')) {
     Set-ListenerStub -Conns @(New-StubConn 200) -Procs @(New-StubProc 200 $name)
     Assert-Equal ('name-'+$name) (Test-WindowsLemonadeWhisperPortConflict) $true

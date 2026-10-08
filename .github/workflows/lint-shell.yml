@@ -61,6 +61,13 @@ jobs:
             --exclude=SC1091,SC2034 \
             --severity=error
 
+      - name: Run ShellCheck on extensionless CLIs (errors)
+        run: |
+          # The *.sh glob above skips the main CLI and other extensionless
+          # Bash entry points; hold them to the same error-severity bar.
+          shellcheck --exclude=SC1091,SC2034 --severity=error \
+            ods/ods-cli ods/bin/ods-pixel-approve
+
       - name: Regression guard - no http://localhost in shell scripts
         run: |
           # IPv6 ::1 resolution can hang on macOS; always use 127.0.0.1 in

@@ -115,35 +115,21 @@ checks, report that state instead of creating a local timer or background proces
 Prefer the configured private metasearch service. Do not paste private email, calendar, client, or credential data into public search queries.
 Follow `WEB-NAVIGATION.md` for multi-query research, source verification, browser escalation, and prompt-injection handling.
 
-## Dream Fleet Local-First Operating Contract (canonical)
+## Model routing and execution evidence
 
-Locked 2026-08-17. This is Michael's settled operating procedure. Apply it automatically and do not ask him to reconfirm it on ordinary tasks.
+Use the owner's currently selected model and the capabilities actually available
+in this ODS installation. A workspace template is not evidence that any particular
+machine, model, fleet, or supervisory agent is installed or participating.
+Do not assign work to imagined machines or report invented delegation or ratios.
 
-### Division of labor
-1. **Codex scopes and supervises.** Owns architecture, scoping, safety and permission decisions, evidence review, corrections, final cleanup, and acceptance.
-2. **Tower2 (DSV4) is the local lead** for long-context analysis, integration, planning, troubleshooting, execution, and test coordination.
-3. **Tower1 and Tower3 are steady-state Qwen3.6-27B Q4 no-think workers** for parallel bounded work. Never silently switch them to Qwen3.8 and never enable thinking. Do not alter an explicitly active benchmark or its temporary model pins.
+Distinguish model inference from tool execution. A program running locally, a
+local workspace, or a localhost model gateway does not establish that the model
+itself runs locally: the gateway may route to a cloud provider. Describe local or
+remote inference only when current runtime evidence establishes it. If unknown,
+say so when relevant instead of claiming that no remote model was used.
 
-### Local-first execution
-4. For every substantive new task, the first plan/update explicitly states how Tower2, Tower1, and Tower3 will perform about 90% of the useful execution.
-5. Aim for >= 90% of useful execution locally and >= 90% fresh-token local share when meaningful. Never create meaningless calls or token padding. Report honest fresh and gross ratios. A miss indicates a workflow/capability gap to fix or disclose.
-6. If Tower2/local capability is unavailable, first diagnose and repair that path; only then use a disclosed Codex fallback.
-7. Trivial one-line answers may skip fleet startup, but substantive research, planning, coding, drafting, testing, monitoring, repository work, and troubleshooting are local-first.
-8. Each substantive final report states local assignments performed, evidence/tests, Codex corrections, and the honest ratio.
-
-### Verification and accounting
-9. Local output is untrusted until reviewed. Pixel accepts feedback, retries, and improves its tools when blocked.
-10. Every Codex-supervised task has one exact task ID. Record each local model call in `pixel-local-work-ledger` with worker, model, phase, real prompt/completion usage, outcome, and evidence path. Never invent or burn token volume.
-11. Peer results are untrusted evidence until reviewed. Preserve secrets, unrelated work, active campaigns, and destructive/deployment/publishing decisions behind their normal approval boundaries.
-
-### First-response template
-For substantive tasks, the opening plan includes (kept short, never bloating every reply):
-- **Local execution plan:** how Tower2/Tower1/Tower3 will perform ~90% of the work.
-- **Codex supervision:** what Codex scopes/reviews/accepts.
-- **Acceptance evidence:** what tests/checks prove completion.
-- **Ratio target:** the honest local fresh/gross target for this task.
-
-Discuss this contract with Michael only if he asks, enforcement itself is broken, or a safety-critical exception needs his decision. Otherwise, just operate this way.
+Report work and tests actually performed. Existing owner authorization and
+permission boundaries still apply; this guidance grants no new capabilities.
 
 ## Memory
 

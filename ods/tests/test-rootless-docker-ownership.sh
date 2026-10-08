@@ -196,6 +196,84 @@ pass "rootless Library Whisper add-back keeps its namespace repair"
 : > "$CALLS"
 (
     source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    # The installer account owns both; Tower3's installer user is UID 1000,
+    # so Token Spy is shown under another installer UID.
+    stat() {
+        case "$3" in
+            */data/ape) printf '1000:1000:700\n' ;;
+            */data/token-spy) printf '1001:1001:755\n' ;;
+            *) return 1 ;;
+        esac
+    }
+    _ods_rootless_ensure_helper_image() { printf 'helper\n' >> "$CALLS"; }
+    _ods_rootless_fix_directory() {
+        printf '%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"
+    }
+    ods_prepare_service_state_ownership "$INSTALL_DIR" ape
+    ods_prepare_service_state_ownership "$INSTALL_DIR" token-spy
+)
+grep -q '^data/ape|100:65534|ods-ape|700$' "$CALLS" \
+    || fail "rootful Library APE add-back left data/ape with the installer owner"
+grep -q '^data/token-spy|1000:1000|ods-token-spy|$' "$CALLS" \
+    || fail "rootful Library Token Spy add-back was not prepared for UID 1000"
+pass "rootful Library APE and Token Spy add-backs prepare their container owners"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    stat() { printf '100:65534:700\n'; }
+    _ods_rootless_ensure_helper_image() { printf 'helper\n' >> "$CALLS"; }
+    _ods_rootless_fix_directory() { printf 'fix %s\n' "$2" >> "$CALLS"; }
+    ods_prepare_service_state_ownership "$INSTALL_DIR" ape
+) || fail "rootful APE state that already matches was refused"
+[[ ! -s "$CALLS" ]] || fail "rootful APE state that already matches ran Docker: $(cat "$CALLS")"
+pass "rootful APE state that already matches is left alone without Docker"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    stat() { printf '1000:1000:700\n'; }
+    _ods_rootless_ensure_helper_image() { :; }
+    _ods_rootless_ensure_directory() { :; }
+    _ods_rootless_resolve_target() { printf '%s/%s\n' "$1" "$2"; }
+    _ods_rootless_stat_metadata() { printf '1000:1000:700\n'; }
+    _ods_rootless_container_state() { printf 'running\n'; }
+    if ods_prepare_service_state_ownership "$INSTALL_DIR" ape 2>> "$CALLS"; then
+        exit 1
+    fi
+) || fail "rootful APE state was repaired while ods-ape was running"
+grep -q 'Refusing recursive ownership repair while ods-ape is running' "$CALLS" \
+    || fail "the rootful refusal did not say why: $(cat "$CALLS")"
+grep -qF "Stop it with 'ods stop ape', then choose Retry on its card in Extensions." "$CALLS" \
+    || fail "the rootful refusal did not name a remedy that works on rootful Docker: $(cat "$CALLS")"
+! grep -q 'ods repair rootless-ownership' "$CALLS" \
+    || fail "the rootful refusal named the rootless-only repair, which does nothing there"
+pass "a rootful APE refusal names the stop-and-retry remedy"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    ods_fix_rootless_ownership() { printf '%s|%s\n' "$1" "$2" >> "$CALLS"; }
+    ods_prepare_service_state_ownership "$INSTALL_DIR" ape
+    if ods_prepare_service_state_ownership "$INSTALL_DIR" n8n; then
+        printf 'n8n accepted\n' >> "$CALLS"
+    fi
+)
+[[ "$(cat "$CALLS")" == "$INSTALL_DIR|ape" ]] \
+    || fail "rootless APE add-back did not keep its namespace repair, or another service was accepted: $(cat "$CALLS")"
+pass "rootless APE add-back keeps its namespace repair; other services are refused"
+
+: > "$CALLS"
+(
+    source "$LIB"
     ods_docker_rootless_state() { return 0; }
     uname() { printf 'Linux\n'; }
     _ods_rootless_ensure_helper_image() { return 0; }
