@@ -51,13 +51,13 @@ function Assert-Test {
     Write-Host "PASS $Message"
 }
 function New-AgentFixture {
-    param([string]$ScriptPath, [switch]$CommandString)
+    param([string]$ScriptPath, [switch]$CommandString, [string]$WorkingDirectory = $testRoot)
     if ($CommandString) {
         $argument = '-c "import time; p = r' + "'" + $ScriptPath + "'" + '; time.sleep(120)"'
     } else {
         $argument = '"' + $ScriptPath + '"'
     }
-    $process = Microsoft.PowerShell.Management\Start-Process -FilePath $script:python -ArgumentList $argument -WindowStyle Hidden -PassThru
+    $process = Microsoft.PowerShell.Management\Start-Process -FilePath $script:python -ArgumentList $argument -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
     $fixtures.Add($process)
     # Wait until CIM can inspect the actual launched Python command line.
     for ($attempt = 0; $attempt -lt 50; $attempt++) {
@@ -154,6 +154,23 @@ try {
     Set-Content -LiteralPath $script:ODS_AGENT_PID_FILE -Value $lookalike.Id
     Invoke-Agent stop
     Assert-Test (Test-FixtureAlive $lookalike) 'a python -c command merely containing the installed path is preserved'
+
+    # A target's relative script argument belongs to its own working directory,
+    # which process metadata does not provide. It must not resolve against ours.
+    $originalProcessDirectory = [Environment]::CurrentDirectory
+    try {
+        [Environment]::CurrentDirectory = $InstallDir
+        $relativeArguments = @('bin\ods-host-agent.py',
+            ([IO.Path]::GetPathRoot($InstallDir).Substring(0, 2) + 'bin\ods-host-agent.py'))
+        foreach ($relativeArgument in $relativeArguments) {
+            $relativeForeign = New-AgentFixture $relativeArgument -WorkingDirectory $foreignDir
+            Set-Content -LiteralPath $script:ODS_AGENT_PID_FILE -Value $relativeForeign.Id
+            Invoke-Agent stop
+            Assert-Test (Test-FixtureAlive $relativeForeign) "foreign script argument $relativeArgument is not resolved against the ODS working directory"
+        }
+    } finally {
+        [Environment]::CurrentDirectory = $originalProcessDirectory
+    }
 
     foreach ($invalid in @('not-a-pid', '-1', '2147483648')) {
         Set-Content -LiteralPath $script:ODS_AGENT_PID_FILE -Value $invalid

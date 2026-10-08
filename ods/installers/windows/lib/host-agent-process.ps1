@@ -22,7 +22,13 @@ function Stop-ODSHostAgentProcess {
         $arguments = [regex]::Match([string]$record.CommandLine,
             '^\s*(?:"[^"]+"|\S+)\s+(?:"(?<script>[^"]+)"|(?<script>\S+))(?:\s|$)')
         if (-not $arguments.Success) { return }
-        $actualScript = [IO.Path]::GetFullPath($arguments.Groups['script'].Value)
+        $scriptArgument = $arguments.Groups['script'].Value
+        # The shipped launcher uses an absolute script path. A relative or
+        # drive-relative argument belongs to the target process's working
+        # directory, which CIM does not expose; resolving it against ours
+        # could mistake another installation's process for this agent.
+        if ($scriptArgument -notmatch '^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+[\\/])') { return }
+        $actualScript = [IO.Path]::GetFullPath($scriptArgument)
         $expectedScript = [IO.Path]::GetFullPath($AgentScript)
         if (-not $actualScript.Equals($expectedScript, [StringComparison]::OrdinalIgnoreCase)) { return }
 
