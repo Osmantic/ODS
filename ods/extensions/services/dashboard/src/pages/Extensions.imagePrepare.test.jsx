@@ -115,5 +115,5 @@ it('downloads Open WebUI before adding it and keeps the Add button truthful', as
   expect(posted(calls, '/api/webui/selection')).toBe(false)
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
   expect(posted(calls, '/api/webui/selection')).toBe(true)
-  expect(screen.getByText('Open WebUI added. Existing chat data was preserved.')).toBeVisible()
+  expect(screen.getByText('Open WebUI selected. Waiting for its service to become ready.')).toBeVisible()
 })
