@@ -222,6 +222,7 @@ tests/test_bootstrap_pixel_transaction.py
 tests/test_bootstrap_status_checksum.py
 tests/test_build_installation_context_port.py
 tests/test_chromadb_healthcheck.py
+tests/test_cleanup_wsl_pixel_mounts.py
 tests/test_compose_failure_report_port_check.py
 tests/test_extension_audit_library.py
 tests/test_healthcheck_redirect_policy.py
