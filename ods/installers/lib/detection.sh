@@ -345,10 +345,16 @@ intel_card_vram_bytes() {
     fi
     # The BAR aperture is sized to the next power of two above real VRAM
     # (32 GiB BAR on a 24 GB Arc Pro B60, 16 GiB on a 12 GB B580). Scaling by
-    # 3/4 lands on the exact VRAM for every shipping BMG part and stays
-    # conservative — over-reporting VRAM makes model selection promise more
-    # than the card can hold.
-    echo $(( _bar_max * 3 / 4 ))
+    # 3/4 matches those cards, but B570 has only 10 GiB behind the same
+    # 16 GiB aperture as B580. Cap that known SKU so model placement cannot
+    # spend the extra 2 GiB of address space as physical memory.
+    bytes=$(( _bar_max * 3 / 4 ))
+    local device
+    device=$(cat "$card_dir/device" 2>/dev/null) || device=""
+    if [[ "$device" == "0xe20c" ]] && (( bytes > 10737418240 )); then
+        bytes=10737418240
+    fi
+    echo "$bytes"
 }
 
 # Discrete Intel Arc device-ID check. Alchemist/DG2: 0x56xx/0x569x;
@@ -553,7 +559,7 @@ detect_gpu() {
             fi
         done
         if [[ -z "$GPU_NAME" ]] && command -v lspci >/dev/null 2>&1; then
-            GPU_NAME=$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i 'intel' | sed 's/.*: //' | head -1)
+            GPU_NAME=$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i 'intel' | sed 's/.*: //' | head -1) || true
         fi
         [[ -z "$GPU_NAME" ]] && GPU_NAME="Intel Arc (${GPU_DEVICE_ID:-unknown})"
         if [[ $GPU_COUNT -gt 1 ]]; then

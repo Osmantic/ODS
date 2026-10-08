@@ -82,6 +82,36 @@ got="$(detect "$bmg_xe")"
     || fail "xe card without lmem must read VRAM from the largest BAR (scaled), got: $got"
 pass "xe fallback reads VRAM from the PCI BAR aperture"
 
+# B570 has 10 GiB, although its 16 GiB BAR is the same size as B580's.
+# Address-space padding must never become available model memory.
+b570="$tmp/b570/drm"
+make_intel_card "$b570" card0 0xe20c 0 "Intel Arc B570"
+printf '0x0000001000000000 0x00000013ffffffff 0x000000000014220c\n' > "$b570/card0/device/resource"
+got="$(detect "$b570")"
+[[ "$got" == "intel|1|Intel Arc B570|10240|discrete|0xe20c" ]] \
+    || fail "B570 BAR must not inflate 10 GiB VRAM, got: $got"
+portable="$(source "$ROOT/scripts/detect-hardware.sh"; detect_intel_sysfs "$b570")"
+IFS='|' read -r _name bytes count _driver _device <<< "$portable"
+[[ "$bytes" == 10737418240 && "$count" == 1 ]] \
+    || fail "portable detector must report the same B570 capacity, got: $portable"
+pass "both detectors cap B570 aperture padding at physical VRAM"
+
+# The installer calls detect_gpu directly with errexit. A substitution around
+# the function masks that behavior, so exercise it in a fresh strict shell.
+rm "$b570/card0/device/product_name"
+for lspci_status in 0 1; do
+    got="$(ODS_DRM_SYS="$b570" SCRIPT_DIR="$ROOT" LSPCI_STATUS="$lspci_status" \
+        bash -c 'set -euo pipefail
+            log(){ :; }; warn(){ :; }
+            nvidia-smi(){ return 1; }; lspci(){ return "$LSPCI_STATUS"; }
+            source "$SCRIPT_DIR/installers/lib/detection.sh"
+            detect_gpu >/dev/null
+            printf "%s|%s" "$GPU_BACKEND" "$GPU_NAME"')" \
+        || fail "optional lspci name lookup aborted strict-shell detection"
+    [[ "$got" == "intel|Intel Arc (0xe20c)" ]] || fail "ID fallback lost: $got"
+done
+pass "strict installer survives failed or empty lspci naming"
+
 # Battlemage with no VRAM evidence at all: still detects.
 bmg_novram="$tmp/bmg-novram/drm"
 make_intel_card "$bmg_novram" card0 0xe20b 0

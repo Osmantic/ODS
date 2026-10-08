@@ -294,7 +294,8 @@ detect_amd_sysfs() {
 # Output: gpu_name|vram_bytes_total|count|driver_loaded|device_id
 detect_intel_sysfs() {
     local count=0 total_vram=0 gpu_name="" first_dev="" driver_loaded="false"
-    for card_dir in /sys/class/drm/card*/device; do
+    local drm_root="${1:-/sys/class/drm}"
+    for card_dir in "$drm_root"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor device
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
@@ -314,8 +315,8 @@ detect_intel_sysfs() {
             # largest PCI BAR aperture is the local-memory window instead.
             # The BAR is sized to the next power of two above real VRAM
             # (32 GiB on a 24 GB Arc Pro B60, 16 GiB on a 12 GB B580), so
-            # scale by 3/4 — over-reporting VRAM makes model selection
-            # promise more than the card can hold.
+            # scale by 3/4, capped below for the 10 GiB B570, which shares
+            # B580's 16 GiB aperture without its 12 GiB physical memory.
             local _bar_start _bar_end _bar_max=0
             if [[ -f "$card_dir/resource" ]]; then
                 while read -r _bar_start _bar_end _; do
@@ -325,6 +326,9 @@ detect_intel_sysfs() {
                 done < "$card_dir/resource"
             fi
             vram=$(( _bar_max * 3 / 4 ))
+            if [[ "$device" == "0xe20c" ]] && (( vram > 10737418240 )); then
+                vram=10737418240
+            fi
         fi
         total_vram=$(( total_vram + vram ))
         if [[ -z "$gpu_name" && -f "$card_dir/product_name" ]]; then
