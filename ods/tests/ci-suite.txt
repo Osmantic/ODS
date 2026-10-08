@@ -21,6 +21,7 @@ tests/contracts/test-windows-strix-tier-map.sh
 tests/contracts/test-wsl-lifecycle.sh
 tests/pixel_settings/test_pixel_settings_store.py
 tests/pixel_settings/test_store_windows.py
+tests/test-agent-manager-failures.py
 tests/test-agent-restart-nonfatal.sh
 tests/test_flowise_setup.py
 tests/test-amd-igpu-dgpu-selection.sh
