@@ -31,7 +31,7 @@ const NOTE = '[ODS Pixel next step] Requested text not found: "Midnight sold-out
 const FAILURE = 'The published page does not contain text the owner requested: "Midnight sold-out concert". ' +
   'The preview is available, but that requirement is not met.\n\n' +
   'Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n' +
-  'Preview inputs are temporary and may be lost on reload. Opening the same preview in a new tab does not change this.\n\n' +
+  'Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.\n\n' +
   'Your preview is ready.\n\n[Open preview](http://site-877a095eea047108badd1b3b.localhost:9437/site-877a095eea047108badd1b3b/)\n\n' +
   'Published from your workspace.';
 // The closing provenance line depends on whether Tool Search's inner hook

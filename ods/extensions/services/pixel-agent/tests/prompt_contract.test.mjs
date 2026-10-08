@@ -57,7 +57,8 @@ test('full, lean and small-context routes teach the actual preview runtime bound
       assert.match(contract, /localStorage\/sessionStorage property getters, reads and writes may throw/);
       assert.match(contract, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
       assert.match(contract, /Saving failure must not block startup, controls or continued work/);
-      assert.match(contract, /Never promise persistence or add allow-same-origin to bypass isolation/);
+      assert.match(contract, /Embedded previews have opaque origins; separate tabs may differ/);
+      assert.match(contract, /Verify persistence at the exact URL; never add allow-same-origin to bypass isolation/);
     }
   }
   for (const topic of ['workspace', 'verification']) assert.ok(AGENT_SKILLS[topic].includes(PREVIEW_RUNTIME_CONTRACT));

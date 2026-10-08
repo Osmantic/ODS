@@ -64,8 +64,8 @@ describe('publication display text', () => {
   })
 })
 
-it('keeps host-authored temporary-input scope while removing the preview receipt', () => {
-  const storage='Preview inputs are temporary and may be lost on reload. Opening the same preview in a new tab does not change this.'
+it('keeps host-authored storage scope while removing the preview receipt', () => {
+  const storage='Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.'
   const model='For actual persistence, open it in your regular browser.'
   expect(publicationDisplayText(`${model}\n\n${storage}\n\n${receipt}`, publication)).toBe(`${model}\n\n${storage}`)
 })

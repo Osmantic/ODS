@@ -1,6 +1,6 @@
 // Read-only operating guides. The model chooses what to load; no prompt keyword
 // classifier, tool execution, permission grant, or recipe is hidden in this tool.
-export const PREVIEW_STORAGE_CONTRACT = "Published previews use opaque origins, even in a new tab. localStorage/sessionStorage property getters, reads and writes may throw. Keep state in memory; persistence is optional. Guard every storage access/operation with try/catch and an in-memory fallback. Saving failure must not block startup, controls or continued work. Never promise persistence or add allow-same-origin to bypass isolation. HTTP readback proves publication, not startup or interactions.";
+export const PREVIEW_STORAGE_CONTRACT = "Embedded previews have opaque origins; separate tabs may differ. localStorage/sessionStorage property getters, reads and writes may throw. Guard every storage access/operation with try/catch and an in-memory fallback. Saving failure must not block startup, controls or continued work. Verify persistence at the exact URL; never add allow-same-origin to bypass isolation. HTTP readback proves publication, not startup or interactions.";
 
 export const PREVIEW_RUNTIME_CONTRACT = PREVIEW_STORAGE_CONTRACT + " Preview sandbox blocks alert(), confirm() and prompt(); use inline DOM controls, including date inputs. Bundle relative assets: remote scripts, styles, fonts, images and API requests are blocked. Never weaken sandbox/CSP.";
 

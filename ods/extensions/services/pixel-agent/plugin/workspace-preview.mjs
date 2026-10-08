@@ -178,7 +178,7 @@ function publishedPathFeedback(response) {
 export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 bytes): ";
 
 // Displayed with host-authoritative publication evidence, independently of model prose.
-export const PREVIEW_STORAGE_DISCLOSURE = "Preview inputs are temporary and may be lost on reload. Opening the same preview in a new tab does not change this.";
+export const PREVIEW_STORAGE_DISCLOSURE = "Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.";
 
 function emptyPathFeedback(response) {
   const shown = response.publishedEmptyPaths ?? [];
@@ -338,7 +338,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
               publishedPathFeedback(response) +
               emptyPathFeedback(response) +
               "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works. " +
-              PREVIEW_STORAGE_DISCLOSURE + " The preview sandbox does not provide durable browser storage. Do not claim that localStorage or sessionStorage saves data across reloads; try/catch only keeps the app working when storage fails. Tell the owner that preview inputs are temporary. " +
+              PREVIEW_STORAGE_DISCLOSURE + " Verify storage behavior at the exact URL and in the viewing mode the owner will use before claiming persistence. A successful reload or new-tab check does not guarantee permanent storage; try/catch only keeps the app working when storage fails. Describe only the storage behavior actually verified. " +
               "If the owner requested derived source files or process logs, publication does not verify their correspondence to executed files or output. If that comparison is missing or fails, repair from the final executed bytes and republish before claiming completion.",
           }],
           details: response,
