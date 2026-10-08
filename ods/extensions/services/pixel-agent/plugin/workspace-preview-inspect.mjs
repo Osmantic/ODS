@@ -232,6 +232,7 @@ const INPUT_HINTS = new Map([
   ['invalid preview inspection snapshot binding','siteId does not match the snapshot sha256. Copy both from the same latest publication receipt; do not use entrySha256 or invent a digest.'],
   ['invalid preview inspection viewport','viewport must contain integer width and height from 240 to 1920.'],
   ['invalid preview inspection steps','Provide 1 to 12 supported steps per inspection.'],
+  ['unsupported inspection navigation','path is allowed only for a final download assertion. The inspector opens the published snapshot entry page and has no navigation or reload action. Verify supported in-page interactions and report cross-reload persistence as unverified; do not simulate a reload or use sibling test pages as persistence evidence.'],
   ['invalid inspection step','Each step needs action and locator; assert-text additionally requires expectedText (normalized visible text, 1 to 256 characters); select-option or fill requires value (exact option value or synthetic text, 0 to 256 printable characters); download must be last and requires path, expectedBytes and expectedSha256 for one existing snapshot PDF/ZIP up to 4 MiB.'],
   ['invalid CSS locator','Use one non-empty CSS selector of 1 to 256 printable characters, without Playwright engine prefixes or chaining.'],
   ['invalid semantic locator','Use a supported role, exact accessible name and exact:true, or a CSS selector.'],
@@ -245,6 +246,7 @@ const INPUT_HINTS = new Map([
 // This validates the same request; it never edits a plan or contacts Chromium.
 function inspectionStepProblem(step,index,count) {
   const problem=(reason,field='')=>({reason,hint:`Step ${index+1} (steps[${index}]${field?'.'+field:''}): ${INPUT_HINTS.get(reason)}`});
+  if(step && typeof step==='object' && !Array.isArray(step) && step.action!=='download' && Object.hasOwn(step,'path')) return problem('unsupported inspection navigation','path');
   if(!exact(step,['action','locator',...(step?.action==='assert-text'?['expectedText']:['select-option','fill'].includes(step?.action)?['value']:step?.action==='download'?downloadKeys:[])]) || !['assert-visible','assert-hidden','assert-text','click','select-option','fill','download'].includes(step.action)) return problem('invalid inspection step');
   if(step.action==='download' && (index!==count-1 || !downloadValid(step))) return problem('invalid inspection step');
   if(step.action==='assert-text' && (!printable(step.expectedText,256) || step.expectedText.replace(/\s+/g,' ').trim()!==step.expectedText)) return problem('invalid inspection step','expectedText');

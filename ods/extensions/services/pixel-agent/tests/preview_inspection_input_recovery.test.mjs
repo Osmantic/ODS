@@ -116,3 +116,29 @@ test('bounded step diagnostics identify fields without reflecting untrusted argu
   const sparse={...valid(),steps:Array(1)};
   assert.equal((await tool.execute('sparse',sparse)).details.errorCode,'invalid_request');
 });
+
+// A path on click/assert-visible attempted to navigate to a sibling test page.
+test('non-download paths explain navigation limits without transport or value disclosure',async()=>{
+  let calls=0;
+  const tool=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('must not execute');}});
+  const marker='PRIVATE_PATH_VALUE_DO_NOT_REPEAT';
+  const params={...valid(),steps:[
+    {action:'click',locator:{selector:'#go'},path:'sibling-test.html'},
+    {action:'assert-visible',locator:{selector:'#result'},path:marker},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('unsupported-navigation',params);
+  assert.equal(result.isError,true);
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.details.status,'failed');
+  assert.equal(result.details.receipt,undefined);
+  assert.equal(calls,0);
+  assert.match(result.content[0].text,/steps\[0\]\.path/);
+  assert.match(result.content[0].text,/steps\[1\]\.path/);
+  assert.match(result.content[0].text,/path is allowed only for a final download assertion/);
+  assert.match(result.content[0].text,/no navigation or reload action/);
+  assert.match(result.content[0].text,/cross-reload persistence as unverified/);
+  assert.ok(!result.content[0].text.includes(marker));
+  assert.ok(!result.content[0].text.includes('sibling-test.html'));
+  assert.deepEqual(params,before);
+});
