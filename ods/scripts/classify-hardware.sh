@@ -78,6 +78,8 @@ OVERLAY_MAP = {
     "amd":    ["docker-compose.base.yml", "docker-compose.amd.yml"],
     "nvidia": ["docker-compose.base.yml", "docker-compose.nvidia.yml"],
     "apple":  ["docker-compose.base.yml", "docker-compose.apple.yml"],
+    "intel":  ["docker-compose.base.yml", "docker-compose.intel.yml"],
+    "sycl":   ["docker-compose.base.yml", "docker-compose.intel.yml"],
     "cpu":    ["docker-compose.base.yml", "docker-compose.cpu.yml"],
 }
 
@@ -171,7 +173,7 @@ if bandwidth == 0 and gpu_name:
 
 if bandwidth == 0:
     # Fall back to default bandwidth
-    backend_key_map = {"nvidia": "cuda", "amd": "rocm", "apple": "metal"}
+    backend_key_map = {"nvidia": "cuda", "amd": "rocm", "apple": "metal", "intel": "sycl", "sycl": "sycl"}
     bk = backend_key_map.get(gpu_vendor, "cpu_x86")
     bandwidth = db.get("defaults", {}).get("bandwidth_gbps", {}).get(bk, 0)
 

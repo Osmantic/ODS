@@ -324,6 +324,82 @@ select_cpu_fallback_tier() {
     fi
 }
 
+# Per-card local-memory size in bytes for a discrete Intel GPU.
+# i915 exposes lmem_total_bytes; the newer xe driver (Battlemage's default)
+# does not — use the largest PCI BAR aperture, the local-memory window.
+# Echoes 0 when neither source exists.
+intel_card_vram_bytes() {
+    local card_dir="$1" bytes
+    bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || bytes=0
+    if [[ "$bytes" =~ ^[0-9]+$ ]] && (( bytes > 0 )); then
+        echo "$bytes"
+        return 0
+    fi
+    local _bar_start _bar_end _bar_max=0
+    if [[ -f "$card_dir/resource" ]]; then
+        while read -r _bar_start _bar_end _; do
+            [[ "$_bar_start" == 0x* && "$_bar_end" == 0x* && "$_bar_end" != "0x0000000000000000" ]] || continue
+            (( _bar_end > _bar_start )) || continue
+            (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
+        done < "$card_dir/resource"
+    fi
+    # The BAR aperture is sized to the next power of two above real VRAM
+    # (32 GiB BAR on a 24 GB Arc Pro B60, 16 GiB on a 12 GB B580). Scaling by
+    # 3/4 matches those cards, but B570 has only 10 GiB behind the same
+    # 16 GiB aperture as B580. Cap that known SKU so model placement cannot
+    # spend the extra 2 GiB of address space as physical memory.
+    bytes=$(( _bar_max * 3 / 4 ))
+    local device
+    device=$(cat "$card_dir/device" 2>/dev/null) || device=""
+    if [[ "$device" == "0xe20c" ]] && (( bytes > 10737418240 )); then
+        bytes=10737418240
+    fi
+    echo "$bytes"
+}
+
+# Discrete Intel Arc device-ID check. Alchemist/DG2: 0x56xx/0x569x;
+# Battlemage (BMG, B570/B580/Arc Pro B-series): 0xe2xx.
+intel_is_arc_device() {
+    [[ "$1" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2[0-9a-f]{2})$ ]]
+}
+
+# Emit a minimal topology JSON for multi-GPU Intel Arc systems so phase 03's
+# assign_gpus.py can place services. SYCL has no P2P fabric ranking — links
+# are empty; llama.cpp picks devices by ONEAPI_DEVICE_SELECTOR index anyway.
+detect_intel_topo() {
+    local _drm_sys="${ODS_DRM_SYS:-/sys/class/drm}"
+    local gpus_tsv="" idx=0
+    local card_dir
+    for card_dir in "$_drm_sys"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device=$(cat "$card_dir/device" 2>/dev/null) || continue
+        [[ "$vendor" == "0x8086" ]] && intel_is_arc_device "$device" || continue
+        local name vram_bytes vram_gb uuid
+        vram_bytes=$(intel_card_vram_bytes "$card_dir")
+        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN {
+            gb = bytes / 1073741824
+            if (gb == int(gb)) printf "%d", gb; else printf "%.1f", gb
+        }')
+        uuid=$(readlink -f "$card_dir" 2>/dev/null | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || uuid=""
+        [[ -z "$uuid" ]] && uuid="card${idx}"
+        name=$(cat "$card_dir/product_name" 2>/dev/null) || name=""
+        [[ -z "$name" ]] && name="Intel Arc ($device)"
+        gpus_tsv+="${idx}	${name}	${vram_gb}	${uuid}"$'\n'
+        idx=$((idx + 1))
+    done
+    (( idx > 0 )) || { echo "{}"; return 1; }
+    jq -n --argjson gpus "$(printf '%s' "$gpus_tsv" | jq -Rn '[inputs | split("\t") | {
+        index: (.[0] | tonumber),
+        name: .[1],
+        memory_gb: (.[2] | tonumber),
+        uuid: .[3],
+        memory_type: "discrete"
+    }]')" \
+        '{gpu_count: ($gpus | length), vendor: "intel", gpus: $gpus, links: []}'
+}
+
 detect_gpu() {
     GPU_BACKEND="cpu"  # default to CPU-only fallback
     GPU_MEMORY_TYPE="none"
@@ -448,34 +524,49 @@ detect_gpu() {
         fi
     fi
 
-    # Try Intel Arc via lspci + sysfs
-    if lspci 2>/dev/null | grep -qi 'VGA.*Intel.*Arc'; then
-        for card_dir in "$_drm_sys"/card*/device; do
-            [[ -d "$card_dir" ]] || continue
-            local vendor device
-            vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
-            device=$(cat "$card_dir/device" 2>/dev/null) || continue
-            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2)
-            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]; then
-                GPU_BACKEND="intel"
-                GPU_MEMORY_TYPE="discrete"
-                GPU_DEVICE_ID="$device"
-                GPU_COUNT=1
-                # Try to get VRAM size from sysfs (lmem_total_bytes on Arc)
-                local vram_bytes
-                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
-                GPU_VRAM=$(( vram_bytes / 1048576 ))  # in MB
-                # Try marketing name from sysfs or lspci
-                if [[ -f "$card_dir/product_name" ]]; then
-                    GPU_NAME=$(cat "$card_dir/product_name" 2>/dev/null) || GPU_NAME="Intel Arc"
-                else
-                    GPU_NAME=$(lspci | grep -i 'VGA.*Intel.*Arc' | sed 's/.*: //' | head -1)
-                    [[ -z "$GPU_NAME" ]] && GPU_NAME="Intel Arc ($GPU_DEVICE_ID)"
-                fi
-                log "GPU: $GPU_NAME (${GPU_VRAM}MB VRAM, Intel Arc)"
-                return 0
+    # Try Intel Arc via sysfs. Detection must not gate on an lspci marketing
+    # string: Battlemage enumerates as e.g. "Battlemage G31 [Intel Graphics]"
+    # (no "Arc" in the name), and lspci may not be installed at all.
+    local -a _intel_dirs=()
+    for card_dir in "$_drm_sys"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device=$(cat "$card_dir/device" 2>/dev/null) || continue
+        # Intel vendor ID: 0x8086; discrete Arc families only — see
+        # intel_is_arc_device(). Integrated Xe iGPUs share system RAM and are
+        # not inference targets.
+        if [[ "$vendor" == "0x8086" ]] && intel_is_arc_device "$device"; then
+            _intel_dirs+=("$card_dir")
+        fi
+    done
+
+    if [[ ${#_intel_dirs[@]} -gt 0 ]]; then
+        GPU_BACKEND="intel"
+        GPU_MEMORY_TYPE="discrete"
+        GPU_COUNT=${#_intel_dirs[@]}
+        GPU_VRAM=0
+        GPU_NAME=""
+        for card_dir in "${_intel_dirs[@]}"; do
+            device=$(cat "$card_dir/device" 2>/dev/null) || device=""
+            [[ -z "${GPU_DEVICE_ID:-}" ]] && GPU_DEVICE_ID="$device"
+            local vram_bytes
+            vram_bytes=$(intel_card_vram_bytes "$card_dir")
+            GPU_VRAM=$(( GPU_VRAM + vram_bytes / 1048576 ))  # in MB
+            # Marketing name from sysfs; only the first card names the set.
+            if [[ -z "$GPU_NAME" && -f "$card_dir/product_name" ]]; then
+                GPU_NAME=$(cat "$card_dir/product_name" 2>/dev/null) || GPU_NAME=""
             fi
         done
+        if [[ -z "$GPU_NAME" ]] && command -v lspci >/dev/null 2>&1; then
+            GPU_NAME=$(lspci 2>/dev/null | grep -iE 'VGA|3D|Display' | grep -i 'intel' | sed 's/.*: //' | head -1) || true
+        fi
+        [[ -z "$GPU_NAME" ]] && GPU_NAME="Intel Arc (${GPU_DEVICE_ID:-unknown})"
+        if [[ $GPU_COUNT -gt 1 ]]; then
+            GPU_NAME="${GPU_NAME} × ${GPU_COUNT}"
+        fi
+        log "GPU: $GPU_NAME (${GPU_VRAM}MB VRAM, Intel Arc)"
+        return 0
     fi
 
     # Try AMD GPUs (discrete RDNA + APU) via sysfs. An integrated GPU next to

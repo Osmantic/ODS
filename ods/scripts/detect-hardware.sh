@@ -290,6 +290,62 @@ detect_amd_sysfs() {
     return 1
 }
 
+# Detect Intel discrete Arc GPUs via sysfs
+# Output: gpu_name|vram_bytes_total|count|driver_loaded|device_id
+detect_intel_sysfs() {
+    local count=0 total_vram=0 gpu_name="" first_dev="" driver_loaded="false"
+    local drm_root="${1:-/sys/class/drm}"
+    for card_dir in "$drm_root"/card*/device; do
+        [[ -d "$card_dir" ]] || continue
+        local vendor device
+        vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+        device=$(cat "$card_dir/device" 2>/dev/null) || continue
+        # 0x8086 = Intel. Discrete Arc families only (integrated Xe iGPUs share
+        # system RAM and are not inference targets):
+        #   Alchemist / DG2: 0x56a0-0x56bf, 0x5690-0x569f
+        #   Battlemage (BMG, B570/B580/Arc Pro B-series): 0xe2xx
+        [[ "$vendor" == "0x8086" ]] || continue
+        [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2[0-9a-f]{2})$ ]] || continue
+        count=$(( count + 1 ))
+        [[ -z "$first_dev" ]] && first_dev="$device"
+        local vram
+        vram=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram=0
+        if [[ ! "$vram" =~ ^[0-9]+$ ]] || (( vram == 0 )); then
+            # xe (Battlemage's driver) does not expose lmem_total_bytes; the
+            # largest PCI BAR aperture is the local-memory window instead.
+            # The BAR is sized to the next power of two above real VRAM
+            # (32 GiB on a 24 GB Arc Pro B60, 16 GiB on a 12 GB B580), so
+            # scale by 3/4, capped below for the 10 GiB B570, which shares
+            # B580's 16 GiB aperture without its 12 GiB physical memory.
+            local _bar_start _bar_end _bar_max=0
+            if [[ -f "$card_dir/resource" ]]; then
+                while read -r _bar_start _bar_end _; do
+                    [[ "$_bar_start" == 0x* && "$_bar_end" == 0x* && "$_bar_end" != "0x0000000000000000" ]] || continue
+                    (( _bar_end > _bar_start )) || continue
+                    (( _bar_end - _bar_start + 1 > _bar_max )) && _bar_max=$(( _bar_end - _bar_start + 1 )) || true
+                done < "$card_dir/resource"
+            fi
+            vram=$(( _bar_max * 3 / 4 ))
+            if [[ "$device" == "0xe20c" ]] && (( vram > 10737418240 )); then
+                vram=10737418240
+            fi
+        fi
+        total_vram=$(( total_vram + vram ))
+        if [[ -z "$gpu_name" && -f "$card_dir/product_name" ]]; then
+            gpu_name=$(cat "$card_dir/product_name" 2>/dev/null) || gpu_name=""
+        fi
+    done
+    (( count > 0 )) || return 1
+    # xe drives Battlemage+; i915 drives Alchemist/DG2. /proc/modules is
+    # PATH-independent (lsmod lives in sbin, often missing from user PATHs).
+    if grep -qE '^(xe|i915) ' /proc/modules 2>/dev/null; then
+        driver_loaded="true"
+    fi
+    [[ -z "$gpu_name" ]] && gpu_name="Intel Arc ($first_dev)"
+    (( count > 1 )) && gpu_name="${gpu_name} × ${count}"
+    echo "${gpu_name}|${total_vram}|${count}|${driver_loaded}|${first_dev}"
+}
+
 # Count AMD GPUs via sysfs
 count_amd_gpus() {
     local count=0
@@ -496,6 +552,8 @@ tier_description() {
         AP_ULTRA)   echo "Apple Ultra (96GB+): high-end local profile via CPU inference in Docker" ;;
         AP_PRO)     echo "Apple Pro (36GB+): balanced local profile via CPU inference in Docker" ;;
         AP_BASE)    echo "Apple Base (<36GB): compact local profile via CPU inference in Docker" ;;
+        ARC)        echo "Intel Arc (10GB+): SYCL-accelerated local profile (B570/B580/A770/Arc Pro)" ;;
+        ARC_LITE)   echo "Intel Arc Lite (<10GB): SYCL-accelerated compact profile (A380/A750)" ;;
     esac
 }
 
@@ -526,6 +584,8 @@ tier_model() {
             AP_ULTRA)   echo "gemma-4-31b-it-Q4_K_M.gguf" ;;
             AP_PRO)     echo "gemma-4-e4b-it-Q4_K_M.gguf" ;;
             AP_BASE)    echo "gemma-4-e2b-it-Q4_K_M.gguf" ;;
+            ARC)        echo "gemma-4-e4b-it" ;;
+            ARC_LITE)   echo "gemma-4-e2b-it" ;;
         esac
         return
     fi
@@ -542,6 +602,8 @@ tier_model() {
         AP_ULTRA)   echo "qwen3-coder-next-Q4_K_M.gguf" ;;
         AP_PRO)     echo "qwen3.5-9b-Q4_K_M.gguf" ;;
         AP_BASE)    echo "qwen3.5-2b-Q4_K_M.gguf" ;;
+        ARC)        echo "qwen3.5-9b" ;;
+        ARC_LITE)   echo "qwen3.5-4b" ;;
     esac
 }
 
@@ -682,6 +744,23 @@ main() {
         fi
     fi
 
+    # Try Intel Arc (discrete) if no NVIDIA/AMD GPU matched
+    if [[ -z "$gpu_name" ]]; then
+        local intel_out=""
+        if intel_out=$(detect_intel_sysfs 2>/dev/null); then
+            local _intel_vram _intel_driver
+            IFS='|' read -r gpu_name _intel_vram gpu_count _intel_driver device_id <<< "$intel_out"
+            gpu_vram_mb=$(( $(as_int "$_intel_vram") / 1048576 ))
+            gpu_type="intel"
+            gpu_architecture="arc"
+            memory_type="discrete"
+            driver_loaded="$_intel_driver"
+            if command -v vulkaninfo &>/dev/null; then
+                vulkaninfo --summary 2>/dev/null | grep -qi intel && vulkan_available="true" || true
+            fi
+        fi
+    fi
+
     # Try Apple Silicon if macOS
     if [[ -z "$gpu_name" && "$os" == "macos" ]]; then
         local apple_out
@@ -711,6 +790,10 @@ main() {
         local unified_gb
         unified_gb=$((gpu_vram_mb / 1024))
         tier=$(get_apple_tier "$unified_gb")
+    elif [[ "$gpu_type" == "intel" ]]; then
+        # Discrete Arc: ARC for ≥10GB cards (B570/B580/A770, Arc Pro B-series),
+        # ARC_LITE for smaller cards (A380/A750). Mirrors tier-map.sh.
+        if (( gpu_vram_mb / 1024 >= 10 )); then tier="ARC"; else tier="ARC_LITE"; fi
     else
         tier=$(get_tier "$gpu_vram_mb")
     fi
