@@ -20,6 +20,36 @@
 #
 # ============================================================================
 
+# Recovery/progress need only the retained folder and Python. Enter them before
+# the Bash upgrade guard and runtime libraries, so progress never installs Bash,
+# asks Docker to start, or changes configuration just to display a status.
+case "${1:-}" in
+    recover|progress)
+        set -euo pipefail
+        _owner_command="$1"
+        shift
+        _owner_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        if [[ -f "${_owner_script_dir}/installers/lib/path-utils.sh" ]]; then
+            source "${_owner_script_dir}/installers/lib/path-utils.sh"
+            ODS_SCRIPT_HINT="$_owner_script_dir"
+            _owner_install_dir="$(resolve_install_dir)"
+            unset ODS_SCRIPT_HINT
+        else
+            _owner_install_dir="${INSTALL_DIR:-${ODS_HOME:-${ODS_INSTALL_DIR:-$_owner_script_dir}}}"
+        fi
+        if [[ ! -f "$_owner_install_dir/docker-compose.base.yml" && ! -f "$_owner_install_dir/docker-compose.yml" ]]; then
+            echo "ODS installation not found at $_owner_install_dir." >&2
+            exit 1
+        fi
+        if [[ "$_owner_command" == recover ]]; then
+            exec python3 -E "$_owner_install_dir/installers/macos/lib/pixel-native-resume.py" \
+                --install-dir "$_owner_install_dir" --ods-source "$_owner_install_dir" "$@"
+        fi
+        exec python3 -E "$_owner_install_dir/installers/macos/lib/pixel-native-progress.py" \
+            --install-dir "$_owner_install_dir" "$@"
+        ;;
+esac
+
 # Guard: macOS ships Bash 3.2 (GPL). ods-cli and our libs need Bash 4+.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
   # Default candidate paths cover standard Apple Silicon and Intel Homebrew
@@ -1271,11 +1301,15 @@ show_help() {
     echo -e "  ${GRN}  chat \"message\"${NC}      ${DGRN}Quick chat via API${NC}"
     echo -e "  ${GRN}  update${NC}              ${DGRN}Pull latest images and restart${NC}"
     echo -e "  ${GRN}  update-pixel${NC}        ${DGRN}Update the native Pixel runtime and services${NC}"
+    echo -e "  ${GRN}  recover [options]${NC}   ${DGRN}Continue retained native Pixel setup and follow the model${NC}"
+    echo -e "  ${GRN}  progress [--watch]${NC}  ${DGRN}Show full-model download and activation progress${NC}"
     echo -e "  ${GRN}  version${NC}             ${DGRN}Show version${NC}"
     echo -e "  ${GRN}  help${NC}                ${DGRN}Show this help${NC}"
     echo ""
     echo -e "  ${WHT}EXAMPLES${NC}"
     echo -e "  ${DGRN}  ./ods-macos.sh status${NC}"
+    echo -e "  ${DGRN}  ./ods-macos.sh recover${NC}"
+    echo -e "  ${DGRN}  ./ods-macos.sh progress --watch${NC}"
     echo -e "  ${DGRN}  ./ods-macos.sh logs llama-server 50${NC}"
     echo -e "  ${DGRN}  ./ods-macos.sh restart open-webui${NC}"
     echo -e "  ${DGRN}  ./ods-macos.sh chat \"What is quantum computing?\"${NC}"

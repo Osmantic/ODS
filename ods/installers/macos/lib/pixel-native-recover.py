@@ -20,6 +20,15 @@ import tempfile
 
 HERE = Path(__file__).resolve().parent
 GUIDANCE = {
+    'duplicate-recovery-python-setting': 'The saved installer Python is duplicated. Review ODS_PYTHON_CMD in the private .env; do not share that file.',
+    'saved-recovery-python-invalid': 'The saved installer Python must be an executable, owner/root-owned Python without group or world write access. Preserve the installation and repair that interpreter.',
+    'saved-recovery-python-unavailable': 'The saved installer Python no longer exists. Restore that interpreter before continuing; do not reinstall ODS or remove its receipts.',
+    'recovery-python-dependency-unavailable': 'The saved installer Python cannot import PyYAML. Repair that Python environment before continuing; no services were changed.',
+    'private-owner-environment-required': 'The retained .env must be a private, regular file owned by the signed-in user. Preserve it and review its ownership and permissions.',
+    'duplicate-compose-selection': 'The saved Compose selection contains duplicate settings. Review the private .env without sharing it.',
+    'saved-compose-selection-required': 'The retained Compose settings are incomplete or invalid. Preserve the installation and review its saved selection.',
+    'native-compose-configuration-invalid': 'Docker Compose could not validate the retained stack. Keep Docker running and review the saved Compose selection before retrying.',
+    'persisted-native-compose-environment-mismatch': 'The retained Compose bindings no longer match the prepared native runtime. Preserve both for review; recovery did not replace them.',
     'native-macos-owner-required': 'Run as the signed-in macOS owner; the proof requests sudo itself.',
     'retained-final-health-failure-required': 'Only an initial installation stopped after protected activation can use this recovery.',
     'retained-native-selection-mismatch': 'The preparation and activation identities disagree.',
@@ -61,6 +70,48 @@ def helper(name):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def failure_detail(error):
+    """Keep failures actionable without printing commands, paths or secrets."""
+    code = str(error) if isinstance(error, ValueError) else None
+    if code in GUIDANCE:
+        return '[' + code + '] ' + GUIDANCE[code]
+    health = helper('pixel-native-compose').health_diagnostic(error)
+    if health:
+        return health
+    location = 'recovery'
+    traceback = error.__traceback__
+    while traceback is not None:
+        path = Path(traceback.tb_frame.f_code.co_filename)
+        if path.parent == HERE and path.name.startswith('pixel-') and path.suffix == '.py':
+            location = path.name + ':' + str(traceback.tb_lineno)
+        traceback = traceback.tb_next
+    if isinstance(error, subprocess.CalledProcessError):
+        status = str(error.returncode) if type(error.returncode) is int else 'unknown'
+        reason = 'a required command exited with status ' + status
+    elif isinstance(error, subprocess.TimeoutExpired):
+        reason = 'a required command timed out'
+    elif isinstance(error, PermissionError):
+        reason = 'a required file or command is not accessible to the signed-in owner'
+    elif isinstance(error, FileNotFoundError):
+        reason = 'a required file or command is missing'
+    elif isinstance(error, OSError):
+        reason = 'an operating-system operation failed'
+        if type(error.errno) is int:
+            reason += ' (errno ' + str(error.errno) + ')'
+    elif isinstance(error, KeyError):
+        reason = 'a required retained configuration field is missing'
+    else:
+        reason = 'a retained configuration or custody check failed'
+    return ('[native-recovery-check-failed] ' + location + ': ' + reason
+            + '. Share this diagnostic with the maintainers; do not share .env or private receipts.')
+
+
+def prepare_python(install_dir):
+    if sys.platform != 'darwin' or os.geteuid() == 0:
+        raise ValueError('native-macos-owner-required')
+    return helper('pixel-native-recovery-python').relaunch(install_dir, HERE / 'pixel-native-recover.py', sys.argv[1:])
 
 
 def selection(receipt, activation):
@@ -228,6 +279,9 @@ def main():
     if args.opencode_choice is not None and not (args.inspect_continuation or args.restore_optional_tools):
         parser.error('--opencode-choice requires --inspect-continuation or --restore-optional-tools')
     try:
+        relaunched = prepare_python(args.install_dir)
+        if relaunched is not None:
+            return relaunched
         path = recover(args.install_dir, args.ods_source,
             **({'restore_host_agent': True} if args.restore_host_agent else {}),
             **({'resume_model': True} if args.resume_model else {}),
@@ -236,10 +290,7 @@ def main():
             **({'opencode_choice': args.opencode_choice}
                if args.inspect_continuation or args.restore_optional_tools else {}))
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-        detail = helper('pixel-native-compose').health_diagnostic(error)
-        code = str(error) if isinstance(error, ValueError) else None
-        if code in GUIDANCE:
-            detail = '[' + code + '] ' + GUIDANCE[code]
+        detail = failure_detail(error)
         print('Native Pixel recovery stopped. Keep the original receipts and services intact.'
               + (' ' + detail if detail else ''), file=sys.stderr)
         return 1

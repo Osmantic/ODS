@@ -26,12 +26,15 @@ def test_pixel_diagnostic_reaches_install_log_without_hiding_failure(tmp_path, c
     helper = tmp_path / 'pixel-native-install.py'
     helper.write_text('import sys\nprint("public-health-diagnostic", file=sys.stderr)\nsys.exit(' + str(code) + ')\n')
     log = tmp_path / 'install.log'
-    shell = 'set -euo pipefail\nai_err() { printf "%s\\n" "$*"; }\n_pixel_install_args=(--fixture)\n' + command
+    shell = 'set -euo pipefail\nai_err() { printf "%s\\n" "$*"; }\nai() { printf "%s\\n" "$*"; }\n_pixel_install_args=(--fixture)\n' + command
     result = subprocess.run(['/bin/bash', '-c', shell], text=True, capture_output=True,
-        env={**os.environ, 'LIB_DIR': str(tmp_path), 'ODS_LOG_FILE': str(log)})
+        env={**os.environ, 'LIB_DIR': str(tmp_path), 'INSTALL_DIR': str(tmp_path), 'ODS_LOG_FILE': str(log)})
     assert result.returncode == code
     assert 'public-health-diagnostic' in result.stdout
     assert log.read_text() == 'public-health-diagnostic\n'
+    if code:
+        assert 'https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh' in result.stdout
+        assert 'bash -s -- --recover' in result.stdout
 
 
 @pytest.mark.parametrize('code,detail', [

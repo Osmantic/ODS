@@ -4,8 +4,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
+import venv
 
 import pytest
 
@@ -101,6 +103,41 @@ def test_default_resolvers_still_refuse_failed_selection(retained):
     assert result.returncode != 0
     assert 'Native Pixel Compose selection needs recovery' in result.stderr
     assert not result.stdout.strip()
+
+
+def test_fresh_terminal_recovers_with_retained_installer_venv(retained):
+    # Match the reported Mac: only the installer venv can import PyYAML; a new
+    # terminal has neither that PATH nor the old installer's exported setting.
+    runtime = retained / '.venv/installer-python'
+    venv.EnvBuilder(system_site_packages=True).create(runtime)
+    python = runtime / 'bin/python'
+    environment_file = retained / '.env'
+    environment_file.write_text(environment_file.read_text() + 'ODS_PYTHON_CMD="' + str(python) + '"\n')
+    (retained / 'lib').mkdir()
+    shutil.copyfile(ROOT / 'lib/python-cmd.sh', retained / 'lib/python-cmd.sh')
+    binaries = retained / 'terminal-bin'
+    binaries.mkdir()
+    for name in ('python3', 'python'):
+        wrapper = binaries / name
+        wrapper.write_text('#!/bin/sh\ncase "$*" in *yaml*) exit 1;; esac\nexec '
+            + shlex.quote(sys.executable) + ' "$@"\n')
+        wrapper.chmod(0o700)
+    process_env = {**os.environ, 'PATH': str(binaries) + ':' + os.environ['PATH']}
+    process_env.pop('ODS_PYTHON_CMD', None)
+    before = snapshot(retained)
+    flags = finalize.compose_flags(retained, process_env, recovery=True)
+    assert flags[1::2][-len(stack.installer.FRAGMENTS):] == list(stack.installer.FRAGMENTS)
+    assert snapshot(retained) == before
+    assert 'ODS_PYTHON_CMD' not in process_env
+
+
+def test_recovery_does_not_fall_back_from_missing_saved_python(retained):
+    environment_file = retained / '.env'
+    environment_file.write_text(environment_file.read_text() + 'ODS_PYTHON_CMD=/missing/installer/bin/python\n')
+    before = snapshot(retained)
+    with pytest.raises(ValueError, match='saved-recovery-python-unavailable'):
+        finalize.compose_flags(retained, environment(), recovery=True)
+    assert snapshot(retained) == before
 
 
 @pytest.mark.parametrize('fault', ['digest', 'status', 'phase', 'private-mode', 'directory-mode',
