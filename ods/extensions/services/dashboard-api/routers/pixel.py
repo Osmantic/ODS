@@ -612,15 +612,16 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             identity = await _current_runtime_identity(edge_url, key)
         result["runtimeIdentity"] = identity
         result["runtimeMatchesRelease"] = identity["runtimeMatchesRelease"]
-        result["readiness"] = project_readiness(available, access, identity, access_issue)
+        readiness = project_readiness(available, access, identity, access_issue)
+        result["readiness"] = readiness
         if available:
             result["detail"] = "Owner agent available; " + ("runtime files changed since initialization" if identity["state"] == "mismatch"
                                                          else "release identity is not fully verified")
-            if result["readiness"]["accessState"] == "failed":
+            if readiness["accessState"] == "failed":
                 result["detail"] = "Owner agent available; host access verification failed; effective access and release readiness are unverified"
-            elif result["readiness"]["accessState"] == "transitioning":
+            elif readiness["accessState"] == "transitioning":
                 result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
-                                    if result["readiness"]["reasonCode"] == "model-transition-recovery-required" else
+                                    if readiness["reasonCode"] == "model-transition-recovery-required" else
                                     "Owner agent available; access transition is unfinished; release readiness is unverified")
         return result
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:

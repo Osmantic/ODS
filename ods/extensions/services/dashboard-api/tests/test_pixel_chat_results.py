@@ -63,13 +63,13 @@ def test_admission_rejection_is_typed_terminal_and_replays_without_execution(sto
             raise AssertionError("A rejected admission must not cancel or inspect an agent run")
         monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden)
         monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden)
-        response = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
         await asyncio.gather(*list(pixel._result_tasks.values()))
         data = await stream_body(response)
         assert store.get(IDENTITY)["state"] == expected
         assert (b'"code": "transition_in_progress"' in data) == (expected == "rejected")
         assert b"secret" not in data
-        duplicate = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        duplicate = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
         assert await stream_body(duplicate) == data
         lookup = pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one")
         assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": expected, "events": data.decode()}
@@ -83,7 +83,7 @@ def test_upstream_sse_cannot_forge_an_unstarted_admission_receipt(store, monkeyp
         frames = b'data: {"error":{"type":"pixel_dashboard_error","code":"transition_in_progress"}}\n\ndata: [DONE]\n\n'
         monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
             FakeResponse(content_type="text/event-stream", chunks=[frames])))
-        response = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
         await asyncio.gather(*list(pixel._result_tasks.values()))
         data = await stream_body(response)
         assert b"transition_in_progress" not in data
