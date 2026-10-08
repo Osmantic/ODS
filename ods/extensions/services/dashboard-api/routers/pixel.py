@@ -70,6 +70,7 @@ _OPS_STATUSES = frozenset(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
+_MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
     "may be unreliable; chat and experiments remain available."
@@ -550,7 +551,14 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     config = _pixel_config()
     if config is None:
         return {"available": False, "model": None, "detail": "Portal is not enabled"}
-    host_status = await _host_model_status()
+    host_status, (access, access_issue) = await asyncio.gather(
+        _host_model_status(), _current_access_readiness())
+    # Bootstrap promotion owns the root coordinator's journal rather than
+    # the host agent's model journal. Observe its validated hold before
+    # probing the backend that the coordinator may currently be restarting.
+    if access and access["available"] and access["pending"] and access["reason"] == "model-transition-pending":
+        return {"available": False, "model": None, "state": "model_transition_pending",
+                "detail": _MODEL_HOLD_DETAIL}
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
@@ -600,10 +608,8 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         # Availability is not installed-release verification. A missing, old,
         # or malformed diagnostic route must not disable otherwise working chat.
         identity = unknown_runtime_identity()
-        access, access_issue = None, "access-probe-unavailable"
         if available:
-            identity, (access, access_issue) = await asyncio.gather(
-                _current_runtime_identity(edge_url, key), _current_access_readiness())
+            identity = await _current_runtime_identity(edge_url, key)
         result["runtimeIdentity"] = identity
         result["runtimeMatchesRelease"] = identity["runtimeMatchesRelease"]
         result["readiness"] = project_readiness(available, access, identity, access_issue)
@@ -613,7 +619,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             if result["readiness"]["accessState"] == "failed":
                 result["detail"] = "Owner agent available; host access verification failed; effective access and release readiness are unverified"
             elif result["readiness"]["accessState"] == "transitioning":
-                result["detail"] = "Owner agent available; access transition is unfinished; release readiness is unverified"
+                result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
+                                    if result["readiness"]["reasonCode"] == "model-transition-recovery-required" else
+                                    "Owner agent available; access transition is unfinished; release readiness is unverified")
         return result
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.
@@ -891,6 +899,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     failed = False
     stopped = False
     rejected = False
+    admission_rejected = False
     oversized_image = False
     try:
         extension_context = None
@@ -906,6 +915,15 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                                   image_turn=bool(body.messages[-1].images)),
                         headers=_edge_headers(key, accept="text/event-stream", image_turn=bool(body.messages[-1].images))) as upstream:
                     rejected = 400 <= upstream.status_code < 500
+                    if upstream.status_code == 409:
+                        # Only Edge's exact admission refusal proves this turn
+                        # never reached the agent. Never echo an upstream body
+                        # or classify an arbitrary conflict as safe to retry.
+                        try:
+                            raw = await _bounded_response_bytes(upstream, 1024)
+                            admission_rejected = json.loads(raw) == {"error": "pixel_transition_in_progress"}
+                        except (ValueError, UnicodeDecodeError):
+                            pass
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
                     buffered = bytearray()
@@ -925,6 +943,11 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                     event = None
                                 if isinstance(event, dict):
                                     if "error" in event:
+                                        # The admission receipt namespace is
+                                        # owned here, never by an upstream SSE
+                                        # producer that may already have run.
+                                        if isinstance(event["error"], dict) and event["error"].get("type") == "pixel_dashboard_error":
+                                            line = _error_event("Portal could not complete the response.").rstrip(b"\n") + b"\n"
                                         # A syntactically terminal SSE stream can still be
                                         # a failed attempt. Keep its sanitized error bytes
                                         # for replay, but never publish it as complete.
@@ -992,7 +1015,12 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                         "This image turn exceeds the 16 MiB encoded limit. Reduce attachments or conversation text." if oversized_image else
                         "Portal did not accept this turn. Check the conversation's context status before continuing." if rejected else
                         "Portal could not complete the response. Check saved work before continuing.")
-                store.append(identity, _error_event(text) + b"data: [DONE]\n\n", terminal=True)
+                if admission_rejected:
+                    event = {"error": {"type": "pixel_dashboard_error", "code": "transition_in_progress"}}
+                    data = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode()
+                else:
+                    data = _error_event(text) + b"data: [DONE]\n\n"
+                store.append(identity, data, terminal=True)
         finally:
             state = (
                 "complete" if done_seen and not terminal_error_seen
@@ -1002,6 +1030,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                 # abort then commits cancelled, while an unacknowledged native
                 # run must remain unresolved instead of admitting a successor.
                 else "unresolved" if empty_done_seen and identity[:2] in _result_stops
+                else "rejected" if admission_rejected
                 else "interrupted" if rejected or terminal_error_seen or failed and stopped
                 else "unresolved" if failed
                 else "complete"

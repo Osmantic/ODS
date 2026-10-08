@@ -147,7 +147,7 @@ class ChatResultStore:
                             (len(data), *key))
 
     def finish(self, key, state):
-        if state not in {"complete", "interrupted", "cancelled", "unresolved"}:
+        if state not in {"complete", "interrupted", "cancelled", "unresolved", "rejected"}:
             raise ValueError("Invalid receipt state")
         with self.db:
             self.db.execute("UPDATE attempts SET state=? WHERE owner=? AND chat=? AND attempt=? AND state IN ('active','unresolved')", (state, *key))

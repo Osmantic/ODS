@@ -6,6 +6,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -132,6 +133,55 @@ def model_journal(phase="held"):
 
 
 class ModelTransitionTests(unittest.TestCase):
+    def test_public_model_hold_does_not_claim_access_recovery_or_release_gates(self):
+        with tempfile.TemporaryDirectory() as root:
+            bridge = FakeBridge(root)
+            bridge.model_begin()
+            original_calls = list(bridge.calls)
+            for phase in ("acquiring", "draining", "held", "finishing", "releasing", "native-released"):
+                journal = bridge.pending()
+                journal["phase"] = phase
+                (bridge.state / "transition.json").write_text(json.dumps(journal))
+                self.assertEqual(bridge.pending_reason(journal), "model-transition-pending")
+                with patch.object(bridge, "inspect", side_effect=AccessError("gateway-process-mismatch")):
+                    status = bridge.status()
+                self.assertFalse(status["available"])
+                self.assertFalse(status["runtime_verified"])
+                self.assertTrue(status["pending"])
+                self.assertEqual(status["reason"], "gateway-process-mismatch")
+            journal["phase"] = "error"
+            (bridge.state / "transition.json").write_text(json.dumps(journal))
+            self.assertEqual(bridge.pending_reason(journal), "model-transition-recovery-required")
+            self.assertEqual(bridge.pending_reason({"kind":"access"}), "transition-recovery-required")
+            journal.pop("token")
+            (bridge.state / "transition.json").write_text(json.dumps(journal))
+            self.assertEqual(bridge.pending_reason(journal), "transition-recovery-required")
+            self.assertEqual(bridge.calls, original_calls)
+
+    def test_abandoned_valid_journal_identifies_only_a_hold_and_preserves_inspection_failures(self):
+        with tempfile.TemporaryDirectory() as root:
+            bridge = FakeBridge(root)
+            bridge.surface = "linux-systemd"
+            bridge.gateway_service = SimpleNamespace(pid=lambda: 123)
+            bridge.native_state["phase"] = bridge.edge_state["phase"] = "held"
+            (bridge.state / "transition.json").write_text(json.dumps(model_journal()))
+            # A journal left after its coordinator dies has no liveness proof.
+            with patch.object(bridge, "inspect", side_effect=lambda: SystemdAccessBridge.inspect(bridge)):
+                status = bridge.status()
+            self.assertTrue(status["available"])
+            self.assertTrue(status["pending"])
+            self.assertFalse(status["busy"])
+            self.assertFalse(status["runtime_verified"])
+            self.assertEqual(status["reason"], "model-transition-pending")
+            self.assertEqual(bridge.pending()["phase"], "held")
+            for reason in ("unsafe-host-lock", "gateway-process-mismatch", "admission-gate-unavailable"):
+                with patch.object(bridge, "inspect", side_effect=AccessError(reason)):
+                    failed = bridge.status()
+                self.assertFalse(failed["available"])
+                self.assertIsNone(failed["revision"])
+                self.assertEqual(failed["reason"], reason)
+            self.assertFalse(any(call in bridge.calls for call in ("edge:release", "native:release")))
+
     def setUp(self):
         def portable_atomic(path, value):
             pathlib.Path(path).write_text(json.dumps(value), encoding="utf-8")

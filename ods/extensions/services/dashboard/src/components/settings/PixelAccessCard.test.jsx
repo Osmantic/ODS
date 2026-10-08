@@ -6,6 +6,22 @@ const safe = {available: true, surface: 'linux-systemd', configured_mode: 'sandb
   runtime_verified: false, revision: 'a'.repeat(64), busy: false, pending: false, reason: 'runtime-proof-required'}
 afterEach(() => vi.unstubAllGlobals())
 
+it('identifies a model hold without assuming its coordinator is alive or blocking recovery', async () => {
+  let reason = 'model-transition-pending'
+  const fetch = vi.fn(async () => ({ok:true,json:async()=>({...safe,pending:true,reason})}))
+  vi.stubGlobal('fetch', fetch)
+  render(<PixelAccessCard />)
+  expect(await screen.findByText(/A model transition is holding new messages/)).toBeVisible()
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled()
+  expect(screen.getByRole('button',{name:'Enable Full Access'})).toBeDisabled()
+  reason = 'model-transition-recovery-required'
+  fireEvent.click(screen.getByRole('button',{name:'Refresh status'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('The model update needs recovery')
+  expect(screen.getByRole('button',{name:'Restore Sandbox'})).toBeEnabled()
+  expect(fetch.mock.calls.every(([,options])=>options?.method !== 'POST')).toBe(true)
+})
+
 it('explains incomplete installation without enabling access changes', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, json: async () => ({
     ...safe, available: false, revision: null, reason: 'managed-installation-incomplete',

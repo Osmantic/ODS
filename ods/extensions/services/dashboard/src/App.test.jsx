@@ -146,6 +146,10 @@ describe('App', () => {
     render(<App />)
     expect(screen.getByText(title)).toBeInTheDocument()
     expect(screen.getByText(detail)).toBeInTheDocument()
+    if (phase === 'swapping') {
+      expect(screen.queryByText(/Chat now with lightweight model/)).toBeNull()
+      expect(screen.getByText(/Chat pauses during activation/)).toBeVisible()
+    } else expect(screen.getByText(/Chat now with lightweight model/)).toBeVisible()
     expect(screen.queryByText(/ETA:/)).toBeNull()
     expect(screen.queryByText('25.0 MB/s')).toBeNull()
     if (phase !== 'starting') expect(screen.getByText('Download 100%')).toBeInTheDocument()
