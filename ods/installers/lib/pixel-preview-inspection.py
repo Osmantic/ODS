@@ -14,10 +14,12 @@ import platform
 import pwd
 import py_compile
 import re
+import socket
 import stat
 import subprocess
 import sys
 import tempfile
+import time
 
 BUILD_FILES = (
     "Dockerfile.inspection",
@@ -35,6 +37,28 @@ PROGRAM_ROOT = Path("/usr/local/libexec/ods-pixel-inspection")
 CONFIG = Path("/etc/ods-pixel-inspection.json")
 UNIT = Path("/etc/systemd/system/pixel-preview-inspection.service")
 IMAGE_PATTERN = r"sha256:[a-f0-9]{64}"
+OWNER_SOCKET = Path("/run/ods-pixel-inspection/control.sock")
+OWNER_SOCKET_WAIT_SECONDS = 30
+
+
+def wait_owner_socket():
+    """Wait for the broker to listen while retaining the install owner's UID."""
+    deadline = time.monotonic() + OWNER_SOCKET_WAIT_SECONDS
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(min(1, remaining))
+                client.connect(str(OWNER_SOCKET))
+            return
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(.1, remaining))
+    raise SystemExit(
+        "Pixel preview inspection socket did not become accessible to its owner "
+        f"within {OWNER_SOCKET_WAIT_SECONDS} seconds. Check "
+        "journalctl -u pixel-preview-inspection.service before rerunning setup."
+    )
 
 
 def source_bytes(path, owner_uid=None):
@@ -515,6 +539,7 @@ def main():
     )
     install = sub.add_parser("install-linux")
     install.add_argument("--source", required=True)
+    sub.add_parser("wait-owner-socket")
     for name in ("validate-linux", "remove-linux"):
         cleanup = sub.add_parser(name)
         cleanup.add_argument("--source", required=True)
@@ -533,6 +558,8 @@ def main():
         )
     elif args.command == "install-linux":
         install_linux(source=args.source, config=json.load(sys.stdin))
+    elif args.command == "wait-owner-socket":
+        wait_owner_socket()
     else:
         print(
             linux_cleanup(

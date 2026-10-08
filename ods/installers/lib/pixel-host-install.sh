@@ -5008,19 +5008,10 @@ _ods_pixel_install_preview_inspection() {
     ods_sudo systemctl enable pixel-preview-inspection.service || return 1
     ods_sudo systemctl restart pixel-preview-inspection.service || return 1
     ods_sudo systemctl is-active --quiet pixel-preview-inspection.service || return 1
-    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - <<'PY' || return 1
-import socket, time
-for attempt in range(50):
-    try:
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(1)
-            client.connect('/run/ods-pixel-inspection/control.sock')
-        break
-    except OSError:
-        if attempt == 49:
-            raise SystemExit('Pixel preview inspection socket is not ready for its owner')
-        time.sleep(.1)
-PY
+    # Type=simple becomes active before Python imports finish and the broker
+    # binds its socket. Slow WSL startup can exceed the former five-second wait.
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" wait-owner-socket \
+        || return 1
     ods_sudo /usr/bin/python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
