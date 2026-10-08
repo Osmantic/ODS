@@ -18,7 +18,7 @@ FAILED = dict(ACCESS, available=False, configured_mode="unknown", effective_mode
               revision=None, reason="inspection-failed")
 
 
-async def status_for(monkeypatch, access=ACCESS, identity=None):
+async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False):
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
     calls = []
@@ -40,11 +40,16 @@ async def status_for(monkeypatch, access=ACCESS, identity=None):
 
     class Client(FakeClient):
         def stream(self, method, url, **kwargs):
+            assert not held, "A verified model hold must not probe the restarting backend"
             self.response = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]} if url.endswith("/v1/models") else value).encode()])
             return super().stream(method, url, **kwargs)
 
     with patch.object(pixel.httpx, "AsyncClient", side_effect=lambda **_kwargs: Client(None)):
         result = await pixel.pixel_status()
+    if held:
+        assert result == {"available": False, "model": None, "state": "model_transition_pending", "detail": pixel._MODEL_HOLD_DETAIL}
+        assert all(method == "GET" for method, _path, _kwargs in calls)
+        return result
     assert result["available"] is True
     assert result["runtime"] == {"source": "local-switchboard", "model": "fixture-model", "contextLength": 65536}
     assert result["runtimeMatchesRelease"] is (False if value.get("state") == "mismatch" else None)
@@ -87,6 +92,23 @@ async def test_pending_access_and_runtime_disk_mismatch_are_conspicuous(monkeypa
     assert result["readiness"]["state"] == "attention"
     assert result["readiness"]["releaseState"] == "mismatch"
     assert result["readiness"]["reasonCode"] == "runtime-files-changed"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_root_model_hold_does_not_claim_live_activation_or_require_access_recovery(monkeypatch):
+    pending = {**ACCESS, "pending": True, "runtime_verified": False, "effective_mode": "unknown",
+               "reason": "model-transition-pending", "token": "private-secret"}
+    await status_for(monkeypatch, pending, held=True)
+    result = await status_for(monkeypatch, {**pending, "reason": "model-transition-recovery-required"})
+    assert result["readiness"]["state"] == "attention"
+    assert result["readiness"]["reasonCode"] == "model-transition-recovery-required"
+    assert "model transition needs recovery" in result["detail"]
+    assert "private-secret" not in json.dumps(result)
+    result = await status_for(monkeypatch, {**pending, "available": False, "revision": None,
+                                           "reason": "gateway-process-mismatch"})
+    assert "state" not in result
+    assert result["readiness"]["state"] == "attention"
+    assert result["readiness"]["reasonCode"] == "access-transition-pending"
 
 
 @pytest.mark.asyncio

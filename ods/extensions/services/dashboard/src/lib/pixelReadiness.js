@@ -8,6 +8,7 @@ const reasons = {
   'access-inspection-failed': 'The host access inspection failed. Effective permissions are unverified. Review Access settings.',
   'access-verification-failed': 'The host could not verify its access boundary. Effective permissions are unverified. Review Access settings.',
   'access-transition-pending': 'An access transition is unfinished. Review the existing Access recovery controls.',
+  'model-transition-recovery-required': 'A model update needs recovery. Review the existing recovery controls before continuing.',
   'release-binding-unavailable': 'Host access is verified; installed-release readiness remains unverified.',
   'runtime-files-changed': 'Runtime files changed since initialization. Installed-release readiness is not verified.',
   'model-route-unavailable': 'The model route is unavailable.',
@@ -28,7 +29,7 @@ export function readPixelReadiness(value, routeAvailable, now = Date.now()) {
   const state = !routeAvailable ? 'unavailable' : attention ? 'attention' : 'unverified'
   const expectedReasons = !routeAvailable ? ['model-route-unavailable']
     : value.accessState === 'failed' ? ['access-inspection-failed', 'access-verification-failed']
-      : value.accessState === 'transitioning' ? ['access-transition-pending']
+      : value.accessState === 'transitioning' ? ['access-transition-pending', 'model-transition-recovery-required']
         : value.releaseState === 'mismatch' ? ['runtime-files-changed']
           : value.accessState === 'verified' ? ['release-binding-unavailable']
             : ['access-proof-unverified', 'access-probe-timeout', 'access-probe-unavailable', 'access-probe-invalid']
