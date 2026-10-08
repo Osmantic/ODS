@@ -372,7 +372,10 @@ detect_intel_topo() {
         [[ "$vendor" == "0x8086" ]] && intel_is_arc_device "$device" || continue
         local name vram_bytes vram_gb uuid
         vram_bytes=$(intel_card_vram_bytes "$card_dir")
-        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN { printf "%.1f", bytes / 1073741824 }')
+        vram_gb=$(LC_ALL=C awk -v bytes="$vram_bytes" 'BEGIN {
+            gb = bytes / 1073741824
+            if (gb == int(gb)) printf "%d", gb; else printf "%.1f", gb
+        }')
         uuid=$(readlink -f "$card_dir" 2>/dev/null | grep -oP '[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9]' | tail -1) || uuid=""
         [[ -z "$uuid" ]] && uuid="card${idx}"
         name=$(cat "$card_dir/product_name" 2>/dev/null) || name=""
