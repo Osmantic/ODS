@@ -18,24 +18,33 @@ LABELS = {'starting': 'Preparing the full model', 'downloading': 'Downloading th
           'verifying': 'Verifying the download', 'swapping': 'Activating the full model',
           'failed': 'Model upgrade stopped', 'complete': 'Model worker finished'}
 ERRORS = frozenset(('model-progress-too-large', 'invalid-model-progress',
-    'unsafe-model-progress',
+    'unsafe-model-progress', 'model-progress-changing',
     'invalid-model-progress-state', 'invalid-model-progress-number',
     'model-worker-observation-failed', 'duplicate-dashboard-port', 'invalid-dashboard-port'))
 
 
 def read_record(path):
     """Read bounded worker metadata, never environment contents or raw logs."""
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        return None
-    with os.fdopen(descriptor, 'rb') as stream:
-        info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
-            raise ValueError('unsafe-model-progress')
-        if info.st_size > 65536:
-            raise ValueError('model-progress-too-large')
-        body = stream.read(65537)
+    for _attempt in range(3):
+        try:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink not in (0, 1):
+                raise ValueError('unsafe-model-progress')
+            if info.st_nlink == 0:
+                # The worker may atomically replace the opened inode before
+                # fstat. Reopen the current path and validate its custody;
+                # never use the detached record as a completion receipt.
+                continue
+            if info.st_size > 65536:
+                raise ValueError('model-progress-too-large')
+            body = stream.read(65537)
+        break
+    else:
+        raise ValueError('model-progress-changing')
     if len(body) > 65536:
         raise ValueError('model-progress-too-large')
     value = json.loads(body)

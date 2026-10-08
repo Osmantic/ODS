@@ -81,6 +81,50 @@ def test_progress_rejects_unsafe_files_without_waiting(tmp_path, kind):
         module.progress(tmp_path)
 
 
+@pytest.mark.skipif(os.name != 'posix', reason='Atomic replacement of an opened POSIX file')
+@pytest.mark.parametrize('replacement', ['ordinary', 'hardlink', 'missing', 'continuous'])
+def test_progress_reopens_atomically_replaced_record_without_relaxing_custody(tmp_path, monkeypatch, replacement):
+    path = write_status(tmp_path, status='failed')
+    original_open = os.open
+    opened = []
+
+    def replacing_open(filename, flags, *args, **kwargs):
+        descriptor = original_open(filename, flags, *args, **kwargs)
+        if Path(filename) == path:
+            opened.append(descriptor)
+            if len(opened) == 1 or replacement == 'continuous':
+                if replacement == 'missing':
+                    path.unlink()
+                else:
+                    temporary = tmp_path / 'next-status.json'
+                    temporary.write_text(json.dumps(dict(status='downloading', percent=25)))
+                    if replacement == 'hardlink':
+                        path.unlink()
+                        os.link(temporary, path)
+                    else:
+                        os.replace(temporary, path)
+                # This is the actual inode state caused by an atomic publisher,
+                # not a fabricated fstat result or a timing-dependent race.
+                assert os.fstat(descriptor).st_nlink == 0
+        return descriptor
+
+    monkeypatch.setattr(module.os, 'open', replacing_open)
+    if replacement == 'ordinary':
+        assert module.progress(tmp_path)['status'] == 'downloading'
+        assert len(opened) == 2
+    elif replacement == 'missing':
+        assert module.progress(tmp_path) == {'status': 'not-recorded'}
+        assert len(opened) == 1
+    else:
+        expected = 'unsafe-model-progress' if replacement == 'hardlink' else 'model-progress-changing'
+        with pytest.raises(ValueError, match=expected):
+            module.progress(tmp_path)
+        assert len(opened) == (2 if replacement == 'hardlink' else 3)
+    for descriptor in opened:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
 def test_watch_follows_download_verification_activation_then_completion(capsys):
     records = iter([dict(status=state, percent=percent) for state, percent in
         [('starting', None), ('downloading', 25), ('verifying', 100),
