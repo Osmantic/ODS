@@ -2855,6 +2855,10 @@ for service in (data.get("services") or {}).values():
             fi
         done
     } > "$_compose_launch_record"
+    # Save the stack before starting it. ods-uninstall.sh reads this file first,
+    # and a later failure (including a partial compose up) must not leave it
+    # naming an older run's stack whose volumes no longer match.
+    echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
     ai "Running: docker compose ${COMPOSE_FLAGS[*]} ${_macos_compose_up_args[*]}"
     set +o pipefail  # pipefail would abort on compose exit before PIPESTATUS is read; capture it first
     docker compose "${COMPOSE_FLAGS[@]}" "${_macos_compose_up_args[@]}" 2>&1 | tee -a "$_compose_up_log" | while IFS= read -r line; do
@@ -2982,16 +2986,24 @@ for service in (data.get("services") or {}).values():
             [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }
             _pixel_install_args+=(--compose-file "$INSTALL_DIR/${COMPOSE_FLAGS[_pixel_i+1]}")
         done
-        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}" \
-            2>&1 | tee -a "$ODS_LOG_FILE"; then
-            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
-            exit 1
-        fi
-        COMPOSE_FLAGS+=(
+        _pixel_compose_fragments=(
             -f extensions/services/pixel-model-relay/compose.yaml.disabled
             -f extensions/services/pixel-edge/compose.yaml.disabled
             -f installers/macos/pixel-native.compose.yaml.disabled
         )
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}" \
+            2>&1 | tee -a "$ODS_LOG_FILE"; then
+            # Activation journals an attempt only after these fragments render
+            # and before it starts their containers. Record them for the
+            # uninstaller then; without the journal no Pixel container exists
+            # and its .env bindings may be missing, so leave them out.
+            if [[ -f "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" ]]; then
+                echo "${COMPOSE_FLAGS[*]} ${_pixel_compose_fragments[*]}" > "${INSTALL_DIR}/.compose-flags"
+            fi
+            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
+            exit 1
+        fi
+        COMPOSE_FLAGS+=("${_pixel_compose_fragments[@]}")
         ai_ok "Native Pixel activated for Dashboard/Portal"
     fi
 

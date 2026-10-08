@@ -434,11 +434,52 @@ def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persiste
     assert script.index('--preflight-only') < script.index('# PHASE 1')
     launch = script.index('"$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}"')
     assert script.index('compose_exit="${PIPESTATUS[0]}"') < launch
-    assert launch < script.index('echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"')
+    save = 'echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"'
+    # The base stack is saved before it starts; Pixel's fragments only after it.
+    assert script.index(save) < script.index(
+        'docker compose "${COMPOSE_FLAGS[@]}" "${_macos_compose_up_args[@]}"')
+    assert launch < script.rindex(save)
     shared = (ROOT / 'installers/phases/06-directories.sh').read_text()
     source_contract = (ROOT / 'installers/lib/pixel-integration.sh').read_text()
     assert 'ODS_PIXEL_BUNDLED_REF' in shared
     assert module.DEFAULT_REF in source_contract
+
+
+@pytest.mark.parametrize('outcome', ['activated', 'failed-before-activation', 'failed-during-activation'])
+def test_saved_compose_flags_cover_pixel_containers_after_a_failed_step(tmp_path, outcome):
+    script = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    start = script.index('    if $ENABLE_PIXEL; then\n        ai "Preparing native Pixel')
+    stop = script.index('\n', script.index('    echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"', start))
+    block = script[start:stop].replace('/usr/bin/python3', 'fixture_python')
+    base = '-f docker-compose.base.yml -f installers/macos/docker-compose.macos.yml'
+    (tmp_path / '.compose-flags').write_text(base + '\n')
+    shell = f'''set -euo pipefail
+INSTALL_DIR={tmp_path}; LIB_DIR=/fixture; ENABLE_PIXEL=true
+ODS_LOG_FILE="$INSTALL_DIR/install.log"
+COMPOSE_FLAGS=({base}); _pixel_install_args=(--install-dir "$INSTALL_DIR")
+ai() {{ :; }}; ai_ok() {{ :; }}; ai_err() {{ :; }}
+fixture_python() {{
+    printf 'native activation {outcome}\\n'
+    case {outcome} in
+        activated) return 0 ;;
+        failed-before-activation) return 1 ;;
+        failed-during-activation)
+            mkdir -p "$INSTALL_DIR/data/pixel-native/preparation"
+            printf '{{"status":"error"}}\\n' > "$INSTALL_DIR/data/pixel-native/preparation/activation.json"
+            return 1 ;;
+    esac
+}}
+''' + block + '\n'
+    result = subprocess.run(['bash'], input=shell, text=True, capture_output=True)
+    assert result.returncode == (0 if outcome == 'activated' else 1), result.stderr
+    assert (tmp_path / 'install.log').read_text() == f'native activation {outcome}\n'
+    fragments = ('-f extensions/services/pixel-model-relay/compose.yaml.disabled'
+        ' -f extensions/services/pixel-edge/compose.yaml.disabled'
+        ' -f installers/macos/pixel-native.compose.yaml.disabled')
+    saved = (tmp_path / '.compose-flags').read_text().strip()
+    # Without an activation journal no Pixel container was started and its
+    # .env bindings may be missing, so the fragments must not be recorded.
+    assert saved == (base if outcome == 'failed-before-activation' else base + ' ' + fragments)
 
 
 @pytest.mark.parametrize('pixel', ['true', 'false'])
