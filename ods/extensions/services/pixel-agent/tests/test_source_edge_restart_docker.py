@@ -102,6 +102,10 @@ def test_real_stopped_edge_restarts_with_same_gate_and_never_reopens_a_hold(tmp_
         assert stopped["State"]["ExitCode"] == 0
         offline = adapter._source_edge_idle_state(original_id)
         assert offline["revision"] == initial["revision"]
+        inspected = adapter._source_edge_container()
+        # Record field names only, never credential-bearing inspect values.
+        print("Stopped Docker metadata changed by inspection:",
+              sorted(key for key in stopped if stopped[key] != inspected.get(key)))
         commands = []
         original_command = adapter.command
         def command(args, **kwargs):

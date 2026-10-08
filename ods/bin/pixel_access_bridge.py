@@ -1401,7 +1401,15 @@ class SystemdAccessBridge:
                 or state.get('Error') != ''):
             raise AccessError('source-edge-clean-stop-required')
         idle = self._source_edge_idle_state(item['Id'])
-        if (self._source_edge_container() != item
+        identity_keys = ('Id', 'Name', 'Image', 'Config', 'HostConfig', 'Mounts')
+        lifecycle_keys = ('Status', 'Running', 'Paused', 'Restarting', 'Dead',
+                          'OOMKilled', 'ExitCode', 'Error', 'StartedAt', 'FinishedAt')
+        current = self._source_edge_container()
+        # Docker can retire old exec/health metadata while a stopped container
+        # is inspected. Compare custody and exact lifecycle evidence, not those
+        # incidental counters; a stop/start race still changes its timestamps.
+        if (any(current.get(key) != item.get(key) for key in identity_keys)
+                or any(current.get('State', {}).get(key) != state.get(key) for key in lifecycle_keys)
                 or self._source_edge_restart_proof() != proof
                 or self._source_edge_idle_state(item['Id']) != idle):
             raise AccessError('source-edge-restart-state-changed')
@@ -1414,7 +1422,7 @@ class SystemdAccessBridge:
         deadline = time.monotonic() + remaining(45)
         while True:
             current = self._source_edge_container()
-            if any(current.get(key) != item.get(key) for key in ('Id', 'Name', 'Image', 'Config', 'HostConfig', 'Mounts')):
+            if any(current.get(key) != item.get(key) for key in identity_keys):
                 raise AccessError('source-edge-restart-state-changed')
             state = current.get('State', {})
             if (state.get('Running') is not True or state.get('Paused') is not False
