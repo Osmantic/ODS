@@ -77,6 +77,91 @@ def test_pre_submission_rejection_is_terminal_and_frees_conversation(store, tmp_
         other.close()
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX storage custody")
+@pytest.mark.parametrize("failed_check", [1, 2, 3])
+def test_custody_rejection_is_503_without_native_submission_or_automatic_replay(
+    store, tmp_path, monkeypatch, caplog, failed_check,
+):
+    from pixel_image_store import ImageStore
+    from routers import pixel_images
+    from security import verify_api_key
+    import httpx
+
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path / "private-storage"))
+    directory = tmp_path / "private-storage" / "pixel-images"
+    ImageStore(directory).close()
+    database = directory / "images.sqlite3"
+    before = database.stat()
+    real_lstat = Path.lstat
+    checks = 0
+
+    def foreign_owner(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if path == database:
+            fields = list(info)
+            fields[4] = info.st_uid + 1
+            return os.stat_result(fields)
+        return info
+
+    def open_store(path):
+        nonlocal checks
+        checks += 1
+        with monkeypatch.context() as scoped:
+            if checks == failed_check:
+                scoped.setattr(Path, "lstat", foreign_owner)
+            return ImageStore(path)
+
+    def forbidden_native(*args, **kwargs):
+        pytest.fail("Rejected admission must not submit native work")
+
+    monkeypatch.setattr(pixel_images, "ImageStore", open_store)
+    monkeypatch.setattr(pixel, "_produce_retained_result", forbidden_native)
+    app = FastAPI()
+    app.include_router(pixel.router)
+    app.dependency_overrides[verify_api_key] = lambda: OWNER
+    async def run():
+        # Keep the durable receipt connection on its owning event-loop thread.
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://test") as client:
+            response = await client.post("/api/pixel/chat/stream", json=body().model_dump())
+            assert response.status_code == 503
+            assert response.json() == {"detail": "Portal conversation storage is unavailable. Please try again."}
+            assert "expected_uid" not in response.text
+            if failed_check == 3:
+                assert store.get(IDENTITY)["state"] == "interrupted"
+                replay = await client.post("/api/pixel/chat/stream", json=body().model_dump())
+                assert replay.status_code == 200
+                assert "conversation storage is unavailable" in replay.text
+                assert "Restore its connection" not in replay.text
+                assert replay.content == b"".join(row["data"] for row in store.chunks(IDENTITY))
+                assert not store.has_pending(IDENTITY[:2])
+            else:
+                assert store.get(IDENTITY) is None
+    asyncio.run(run())
+    assert not pixel._result_tasks
+    assert f"custody=database_owner; stage=existing_file; expected_uid={os.geteuid()}; actual_uid={before.st_uid + 1}" in caplog.text
+    assert f"device={before.st_dev}; inode={before.st_ino}" in caplog.text
+    assert str(tmp_path) not in caplog.text
+    after = database.stat()
+    assert (after.st_uid, after.st_mode, after.st_ino) == (before.st_uid, before.st_mode, before.st_ino)
+
+
+def test_unrelated_503_is_not_reclassified_as_local_storage_failure(store, monkeypatch):
+    async def unrelated(*args, **kwargs):
+        raise HTTPException(503, "storage unavailable /private/credential")
+    monkeypatch.setattr(pixel_chat_identity, "async_request_json", unrelated)
+
+    async def run():
+        with pytest.raises(HTTPException) as caught:
+            await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        assert caught.value.status_code == 503
+        events = b"".join(row["data"] for row in store.chunks(IDENTITY))
+        assert b"Restore its connection" in events
+        assert b"conversation storage is unavailable" not in events
+        assert b"/private/credential" not in events
+        assert not pixel._result_tasks
+    asyncio.run(run())
+
+
 def test_stop_during_preflight_does_not_cancel_an_unrelated_native_run(store, monkeypatch):
     async def run():
         entered = asyncio.Event()
