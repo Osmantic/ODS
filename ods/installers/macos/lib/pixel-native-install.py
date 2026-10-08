@@ -55,7 +55,14 @@ ERROR_GUIDANCE = {
         'The shared Compose policy could not be loaded. Check the installed '
         'scripts/compose-cache-policy.py and the private activation receipt. Keep Pixel '
         'state intact; do not reset receipts or repeat activation automatically.',
+    'retained-pixel-identity-rejected':
+        'The retained _ods_pixel_ops account did not pass the identity-only check; the reason is shown above. '
+        'For operations-identity-process-active or operations-home-not-empty-or-owned, macOS per-user agents '
+        'for that account are usually running and writing Library/ into its home: stop them with '
+        'sudo launchctl bootout user/$(id -u _ods_pixel_ops). Its home /private/var/lib/pixel-ops-broker '
+        'must be empty for an identity-only reinstall. Keep other Pixel state intact.',
 }
+REJECTION_PREFIX = 'Native Pixel Operations identity verification rejected'
 
 
 def helper(name):
@@ -104,6 +111,12 @@ def retained_identity_only(*, empty_home=False, prompt_for_sudo=False):
     except (OSError, subprocess.SubprocessError) as error:
         raise ValueError('native-identity-verification-unavailable') from error
     if result.returncode == os.EX_DATAERR:
+        # An interactive run already showed the helper's stderr; otherwise
+        # relay its one-line rejection so the reason code is not lost.
+        if result.stderr:
+            for line in result.stderr.decode('utf-8', 'replace').splitlines():
+                if line.startswith(REJECTION_PREFIX):
+                    print(line, file=sys.stderr)
         return False
     if result.returncode:
         raise ValueError('native-identity-authorization-required')
@@ -130,7 +143,7 @@ def preflight(install_dir, *, prompt_for_sudo=False):
         raise ValueError('existing-native-pixel-requires-migration-or-recovery')
     if retained_identity and not retained_identity_only(
             empty_home=retained_home, prompt_for_sudo=prompt_for_sudo):
-        raise ValueError('existing-native-pixel-requires-migration-or-recovery')
+        raise ValueError('retained-pixel-identity-rejected')
     return install_dir
 
 
