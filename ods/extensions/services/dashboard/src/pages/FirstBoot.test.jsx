@@ -43,7 +43,7 @@ describe('FirstBoot', () => {
     globalThis.localStorage.removeItem('ods-firstboot-progress')
   })
 
-  test.each(['http', 'network'])('retains the issued owner card across %s completion failure and retries only completion', async (failure) => {
+  test.each([['http', false], ['network', false], ['http', true], ['network', true]])('retains the issued owner card across %s completion failure with saved selection %s and retries only completion', async (failure, savedSelection) => {
     let completeCalls = 0
     const card = {url:'http://auth.ods.local/magic-link/retained-fixture', target_username:'sam', scope:'hermes', reusable:true, token_type:'owner', expires_at:null}
     const fetchMock = vi.fn(async (url) => {
@@ -63,8 +63,8 @@ describe('FirstBoot', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const onComplete = vi.fn()
-    render(<FirstBoot onComplete={onComplete}/>)
-    await finishWizard('Chat \\+ Agents')
+    render(<FirstBoot onComplete={onComplete} installation={savedSelection ? {selection_saved: true} : undefined}/>)
+    await finishWizard(savedSelection ? null : 'Chat \\+ Agents')
     const retained = await screen.findByRole('textbox', {name:'Generated owner link'})
     expect(retained).toHaveValue(card.url)
     expect(retained).toHaveAttribute('readonly')
@@ -75,7 +75,7 @@ describe('FirstBoot', () => {
     fireEvent.click(screen.getByRole('button', {name:'Finish'}))
     await screen.findByRole('heading', {name:/you're set/i})
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/auth/magic-link/generate')).toHaveLength(1)
-    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(savedSelection ? 0 : 1)
     expect(completeCalls).toBe(2)
     expect(globalThis.localStorage.getItem('ods-firstboot-progress')).toBeNull()
   })
