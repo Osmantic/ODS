@@ -184,6 +184,7 @@ tests/test-service-registry-encoding.py
 tests/test-simulate-installers-exit-codes.sh
 tests/test-templates.sh
 tests/test-tier-map-parity.sh
+tests/test-tier0-memory-overlay.sh
 tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
