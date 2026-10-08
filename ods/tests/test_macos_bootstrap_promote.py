@@ -479,12 +479,12 @@ def test_runtime_model_must_be_exact_gguf_or_canonical(mod, tmp_path, monkeypatc
             {'pending': False},
             {'status': 'idle', 'modelTransactionPending': False,
              'activeAgentViable': True,
-             'activeRuntime': {'model': '/etc/passwd', 'contextLength': 32768}},
+             'activeRuntime': {'source': 'local-switchboard', 'model': '/etc/passwd', 'contextLength': 32768}},
         ])
     _write_env(env_path, _base_env(install, GGUF_FILE='model-9b.gguf',
                                    LLM_MODEL='qwen3.5-9b',
                                    MAX_CONTEXT='32768', CTX_SIZE='32768'))
-    with pytest.raises(mod.AmbiguousActivation):
+    with pytest.raises(mod.AmbiguousActivation, match='active-runtime-model-mismatch'):
         _run(mod, install, env_path)
 
 
