@@ -37,8 +37,8 @@ def test_waits_for_real_socket_beyond_old_five_second_window(tmp_path, monkeypat
             errors.append(error)
 
     thread = threading.Thread(target=server)
-    thread.start()
     started = time.monotonic()
+    thread.start()
     try:
         module.wait_owner_socket()
         assert time.monotonic() - started >= delay
