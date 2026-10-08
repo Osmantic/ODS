@@ -33,12 +33,16 @@
       "pixel_ods_workspace_artifact",
       "pixel_ods_workspace_preview_inspect",
       "pixel_ods_research",
+      "pixel_ods_laya",
+      "pixel_ods_laya_batch",
       "pixel_ods_extension_request_advance",
       "pixel_ods_extension_request_retry",
       "pixel_ods_skill"
     ]
   },
   "toolMetadata": {
+    "pixel_ods_laya": {"replaySafe": true},
+    "pixel_ods_laya_batch": {"replaySafe": false},
     "pixel_ods_workspace_artifact": {"replaySafe": false},
     "pixel_ods_project_build": {
       "replaySafe": false

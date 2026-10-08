@@ -7765,7 +7765,7 @@ export function createToolLoopGuard({
     if (state?.managedTeamWorker && ['task','hub','sessions_spawn','sessions_send','subagents'].includes(delegatedName)) {
       return {block:true,blockReason:'This team is already managed by the owner. Do your assigned work in this session; creating or steering more agents is disabled for team workers.'};
     }
-    if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','pixel_ods_skill','session_status','memory_search','memory_get'].includes(delegatedName)) {
+    if (state?.managedTeamReadOnly && !['tool_search','read','web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_laya','pixel_ods_ask_user','pixel_ods_goal','pixel_ods_activity','pixel_ods_history','pixel_ods_skill','session_status','memory_search','memory_get'].includes(delegatedName)) {
       return {block:true,blockReason:'Your team role is read-only. Do not create, edit, execute commands, publish, or operate services. Review the supplied evidence using read/search tools if needed, then return your findings as text. The Builder owns implementation and test execution.'};
     }
     if (state?.ownerQuestions) return {block:true, blockReason:'Waiting for the owner to answer the clarification questions. End this turn without further tools; never choose answers for the owner.'};

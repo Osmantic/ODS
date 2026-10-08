@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!requirements.lock
+!requirements-torch.lock
+!requirements-cuda.lock
+!server.py
+!health.py
+!runtime.py

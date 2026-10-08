@@ -1,5 +1,8 @@
 import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {createLayaRuntime} from './laya-runtime.mjs';
+import {createLayaBatchTool,createLayaBatchAdmission,LAYA_BATCH_TOOL} from './laya-batch.mjs';
+import {createLayaBatchExecution} from './laya-batch-execution.mjs';
 import {registerProjectBuild} from './project-registration.mjs';
 import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
@@ -112,6 +115,8 @@ let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
+const layaRuntime = createLayaRuntime();
+const layaBatchAdmission = createLayaBatchAdmission();
 const bundleAdmission = createWorkspaceBundleAdmission();
 const artifactAdmission = createWorkspaceArtifactAdmission();
 
@@ -373,6 +378,12 @@ export default definePluginEntry({
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl,
     });
+    const layaBatchExecution = createLayaBatchExecution({
+      readConfig: () => api.runtime?.config?.current?.() ?? api.config,
+      createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
+      execControl: () => execCancellationControl,
+      onToolResult: observeToolResult,
+    });
     const delegationDelivery = subagentDeliveryFor(toolLoopGuard, {
       agentId:AGENT_ID,
       finalText:extractAssistantVisibleText,
@@ -428,7 +439,8 @@ export default definePluginEntry({
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
       const deliveryContext = delegationDelivery.promptContext(context);
-      const prependContext = [contract?.prependContext,cancelContext,deliveryContext].filter(Boolean).join('\n\n');
+      const layaContext = contract ? layaRuntime.promptHint() : '';
+      const prependContext = [contract?.prependContext,cancelContext,deliveryContext,layaContext].filter(Boolean).join('\n\n');
       return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
@@ -486,14 +498,16 @@ export default definePluginEntry({
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       artifactAdmission.before(event, context, decision);
+      layaBatchAdmission.before(event, context, decision);
       projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
-    api.on("after_tool_call", (event, context) => {
+    function observeToolResult(event, context) {
       delegationDelivery.after(event,context);
       bundleAdmission.after(event, context);
       artifactAdmission.after(event, context);
+      layaBatchAdmission.after(event, context);
       projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
@@ -501,7 +515,8 @@ export default definePluginEntry({
         taskActivity.after(event, context);
         return toolLoopGuard.afterToolCall(event, context, AGENT_ID);
       }
-    });
+    }
+    api.on("after_tool_call", observeToolResult);
     api.registerHttpRoute({path: '/pixel-ods/runtime-identity', auth: 'gateway', match: 'exact',
       handler: async (req, res) => {
         if (req.url !== '/pixel-ods/runtime-identity') { sendJson(res, 400, {error: 'invalid request'}); return true; }
@@ -824,6 +839,15 @@ export default definePluginEntry({
       }),
       { names: ["pixel_ods_web_extract"] }
     );
+
+    // Discovery records the schema without depending on service availability.
+    // Cached Laya descriptors recheck owner activation at execution time.
+    api.registerTool(onlyPixel(() => api.registrationMode === 'discovery'
+      ? layaRuntime.tool : layaRuntime.offered()), {names: ['pixel_ods_laya']});
+    api.registerTool(onlyPixel(context => api.registrationMode === 'discovery' || layaRuntime.client()
+      ? createLayaBatchTool(context,{resolveClient:layaRuntime.client,admission:layaBatchAdmission,execution:layaBatchExecution,
+        invalidatePreview:scope=>toolLoopGuard.invalidateWorkspaceBundle(scope)})
+      : null), {names: [LAYA_BATCH_TOOL]});
 
     // Offered only while the owner's Perplexica answers /api/config with chat
     // and embedding defaults (OpenClaw keeps listing it from its descriptor

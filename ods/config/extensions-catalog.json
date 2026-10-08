@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-06T14:59:46Z",
+  "generated_at": "2026-10-07T18:06:30Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -5151,6 +5151,67 @@
       ],
       "startup_check": true,
       "startup_timeout": 180,
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
+      "id": "laya",
+      "name": "Laya",
+      "description": "Local classification and scoring used by the selected Portal model during a task.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8000,
+      "external_port_default": 8017,
+      "health_endpoint": "/ready",
+      "env_vars": [
+        {
+          "key": "LAYA_ACCELERATION",
+          "description": "Acceleration (auto uses NVIDIA when memory is available; cpu keeps it on CPU)",
+          "default": "auto",
+          "pattern": "^(auto|cpu|cuda)$",
+          "format_description": "auto, cpu or cuda",
+          "required": false
+        },
+        {
+          "key": "LAYA_PORT",
+          "description": "Local connection port",
+          "default": "8017",
+          "format": "integer",
+          "required": false
+        }
+      ],
+      "tags": [
+        "portal",
+        "classification",
+        "local",
+        "multilingual"
+      ],
+      "features": [
+        {
+          "id": "laya-portal",
+          "name": "Laya for Portal",
+          "description": "Classify and score text directly within Portal conversations.",
+          "icon": "Workflow",
+          "category": "ai",
+          "requirements": {
+            "services": [
+              "laya"
+            ],
+            "vram_gb": 0
+          },
+          "enabled_services_all": [
+            "laya"
+          ],
+          "setup_time": "First setup downloads the decision models",
+          "priority": 50,
+          "launch": {
+            "type": "none"
+          }
+        }
+      ],
       "configuration_scope": "declared-environment-keys"
     },
     {

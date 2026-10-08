@@ -1,3 +1,4 @@
+import {LAYA_GUIDE} from './laya-tool.mjs';
 // Read-only operating guides. The model chooses what to load; no prompt keyword
 // classifier, tool execution, permission grant, or recipe is hidden in this tool.
 export const PREVIEW_STORAGE_CONTRACT = "Embedded previews have opaque origins; separate tabs may differ. localStorage/sessionStorage property getters, reads and writes may throw. Guard every storage access/operation with try/catch and an in-memory fallback. Saving failure must not block startup, controls or continued work. Verify persistence at the exact URL; never add allow-same-origin to bypass isolation. HTTP readback proves publication, not startup or interactions.";
@@ -18,6 +19,7 @@ export const DERIVED_FILE_CONTRACT = "Files that copy or aggregate existing file
 export const NAMED_ITEM_CONTRACT = "When the owner names items (cards, sections, pages, buttons), use each name verbatim as that item's heading or label; put extra detail in body text, not in the heading.";
 
 export const AGENT_SKILLS = Object.freeze({
+  laya: LAYA_GUIDE,
   extensions: `ODS extension work
 Choose an approach from repository evidence and the owner's actual request. Read upstream installation/build requirements, supported platforms and verification instructions; inspect files or experiment in the isolated workspace when useful. A URL, README claim or sandbox pip installation is not a registered ODS extension.
 For a catalog extension, pixel_ods_extensions can discover its exact registered ID, configuration and observed status. Reuse that integration. For GitHub, the request-scoped proposal/status/prepare/advance tools resolve identity from the current session; do not invent IDs. A Python library proposal captures its researched commit, supported Python version and import checks. Other projects need an appropriate source or candidate recipe supported by the proposal schema. Do not force every repository into a Python or static-site recipe.
@@ -50,12 +52,12 @@ Test startup and pointer/keyboard controls at the exact published URL, including
 export function createAgentSkillTool() {
   return {
     name: 'pixel_ods_skill', label: 'Read ODS operating guide',
-    description: 'Load an ODS operating guide when needed: extensions, workspace, research, or verification. Read-only; no installation, execution or authorization. Choose the relevant topic rather than loading all guides.',
+    description: 'Load an ODS operating guide when needed: extensions, workspace, research, verification, or laya. Read-only; no installation, execution or authorization. Choose the relevant topic rather than loading all guides.',
     parameters: {type: 'object', additionalProperties: false, required: ['topic'],
       properties: {topic: {type: 'string', enum: Object.keys(AGENT_SKILLS)}}},
     async execute(_callId, args) {
       if (!args || Object.keys(args).length !== 1 || typeof args.topic !== 'string' || !Object.hasOwn(AGENT_SKILLS, args.topic)) {
-        return {isError: true, content: [{type: 'text', text: 'Choose one operating-guide topic: extensions, workspace, research, verification.'}]};
+        return {isError: true, content: [{type: 'text', text: 'Choose one operating-guide topic: extensions, workspace, research, verification, laya.'}]};
       }
       return {content: [{type: 'text', text: AGENT_SKILLS[args.topic]}],
         details: {kind: 'ods-operating-guide', topic: args.topic, readOnly: true}};

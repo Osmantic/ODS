@@ -30,17 +30,17 @@ function compileSchema(schema) {
 }
 
 test('grammar inventory captures every actual Pixel registration', () => {
-  assert.equal(registered.length, 28);
+  assert.equal(registered.length, 30);
   for (const name of ['pixel_ods_image_read', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle', 'pixel_ods_workspace_artifact', 'pixel_ods_source_proposal',
     'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_retry', 'pixel_ods_workspace_preview_inspect',
-    'pixel_ods_project_build']) {
+    'pixel_ods_project_build', 'pixel_ods_laya', 'pixel_ods_laya_batch']) {
     assert.ok(registered.some(tool => tool.name === name), name);
   }
 });
 
 test('legacy configuration does not expose an unavailable inspector', async () => {
   const legacy = await registeredPixelTools({inspection:false, project:false});
-  assert.equal(legacy.length,26);
+  assert.equal(legacy.length,28);
   assert.equal(legacy.some(tool => tool.name === 'pixel_ods_workspace_preview_inspect'),false);
   assert.equal(legacy.some(tool => tool.name === 'pixel_ods_project_build'),false);
 });

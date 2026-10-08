@@ -1,0 +1,61 @@
+services:
+  laya:
+    # Separate tags make backend changes visible to Compose even when an
+    # older engine does not recreate a container after rebuilding one tag.
+    image: ods/laya:0.3.28-cpu-v1
+    # Rebuild changed sources/targets on update; an existing CPU image must
+    # not be reused when the selected overlay switches to CUDA.
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ods-laya
+    user: "${ODS_UID:-1000}:${ODS_GID:-1000}"
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    ports:
+      - "127.0.0.1:${LAYA_PORT:-8017}:8000"
+    volumes:
+      - laya-cache:/cache:rw
+      - ./config/laya/api-key:/run/ods-laya/api-key:ro
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    environment:
+      HF_HOME: /cache/huggingface-${ODS_UID:-1000}
+      LAYA_ACCELERATION: ${LAYA_ACCELERATION:-auto}
+      LAYA_REVISION: reviewed
+      LAYA_MODELS: english,multilingual,typed-decisions
+      LAYA_PRELOAD: '1'
+      LAYA_MAX_LOADED: '3'
+      LAYA_MAX_CONCURRENT: '1'
+      LAYA_MAX_BATCH_TOKENS: '16384'
+      LAYA_MAX_TOKEN_BUDGET: '8192'
+      LAYA_THREADS: '2'
+      LAYA_IDLE_UNLOAD_SECONDS: '300'
+      OMP_NUM_THREADS: '2'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    healthcheck:
+      test: [CMD, python, /opt/ods-laya/health.py]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10m
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 8G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks: [ods-network]
+networks:
+  ods-network:
+    external: true
+volumes:
+  laya-cache: {}
