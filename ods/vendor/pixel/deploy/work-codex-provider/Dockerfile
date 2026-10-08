@@ -35,7 +35,7 @@ RUN echo 'd0fb28935106a51515a8690b4f54af95592d53ec9f85d5068788cb0149e71079  /opt
     && find /opt/pixel -type f -exec chmod 0444 {} +
 
 LABEL org.opencontainers.image.title="Pixel isolated Codex advisory runner" \
-      org.opencontainers.image.version="4.3.29" \
+      org.opencontainers.image.version="4.3.30" \
       org.opencontainers.image.base.name="debian:bookworm-slim" \
       org.osmantic.pixel.node-runtime="22.23.1" \
       org.osmantic.pixel.codex-version="0.147.0" \

@@ -2,7 +2,7 @@
   "id": "pixel-operations-broker",
   "name": "Pixel Operations Broker",
   "description": "Typed fleet jobs through an isolated policy and execution broker.",
-  "version": "4.3.29",
+  "version": "4.3.30",
   "contracts": {
     "tools": [
       "pixel_ops_inventory",
