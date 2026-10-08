@@ -901,13 +901,16 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     stopped = False
     rejected = False
     admission_rejected = False
+    routing_rollback_failed = False
+    extension_preparation: dict = {}
     oversized_image = False
     try:
         extension_context = None
         if owner is not None and body.messages and body.messages[-1].role == 'user':
             from routers.extensions import chat_extension_request_context
             extension_context = await chat_extension_request_context(
-                owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True)
+                owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True,
+                preparation=extension_preparation)
         timeout = httpx.Timeout(connect=5.0, read=_CHAT_STREAM_TIMEOUT_SECONDS, write=30.0, pool=5.0)
         async with async_timeout(_CHAT_STREAM_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
@@ -1003,6 +1006,17 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
         failed = True
         logger.warning("Pixel retained stream failed (%s)", type(exc).__name__)
     finally:
+        if admission_rejected and extension_preparation:
+            try:
+                from routers.extensions import rollback_chat_extension_request
+                await rollback_chat_extension_request(owner, body.chat_id, body.request_id, extension_preparation)
+            except (Exception, asyncio.CancelledError) as exc:
+                # A safe-to-resend receipt also promises that this turn left no
+                # new actionable routing. Reserve the attempt if that cannot
+                # be persisted; never fabricate a successful rollback.
+                admission_rejected = False
+                routing_rollback_failed = True
+                logger.warning("Pixel admission routing rollback failed (%s)", type(exc).__name__)
         # Keep this conversation reserved until cancellation has finished. A late
         # native cancellation must never target the next attempt in this chat.
         if not done_seen and not cancelled and not rejected:
@@ -1024,7 +1038,8 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                 store.append(identity, data, terminal=True)
         finally:
             state = (
-                "complete" if done_seen and not terminal_error_seen
+                "unresolved" if routing_rollback_failed
+                else "complete" if done_seen and not terminal_error_seen
                 else "cancelled" if cancelled
                 # A DONE-only frame can overtake the Edge Stop acknowledgment.
                 # Keep the attempt reserved until Stop resolves; an acknowledged
