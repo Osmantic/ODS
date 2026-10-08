@@ -91,11 +91,44 @@ function Assert-ODSPortalHostCapacity([bool]$WslReady) {
 
 # --------------------------------------------------------------- Docker Desktop
 
+function Get-ODSPortalDockerDesktopRoots {
+    # Desktop supports per-user, all-user and custom InstallLocation paths.
+    # Inspect only its fixed uninstall keys; never execute UninstallString or
+    # mistake an unrelated Docker CLI on PATH for a Desktop installation.
+    $roots = @()
+    foreach ($key in @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop')) {
+        # Each registration is optional; most hosts have only one of these keys.
+        $registration = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+        if ($registration -and $registration.InstallLocation) { $roots += [string]$registration.InstallLocation }
+    }
+    if ($env:LOCALAPPDATA) { $roots += Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop' }
+    if ($env:ProgramW6432) { $roots += Join-Path $env:ProgramW6432 'Docker\Docker' }
+    if ($env:ProgramFiles) { $roots += Join-Path $env:ProgramFiles 'Docker\Docker' }
+    return @($roots | Where-Object {
+        # Do not resolve relative paths or contact a remote share during discovery.
+        if ([IO.Path]::DirectorySeparatorChar -eq '\') { $_ -match '^[A-Za-z]:[\\/]' }
+        else { [IO.Path]::IsPathRooted($_) -and $_ -notmatch '^[\\/]{2}' }
+    } | Select-Object -Unique)
+}
+
 function Get-ODSPortalDockerDesktop {
-    $root = Join-Path $env:ProgramFiles 'Docker\Docker'
-    $exe = Join-Path $root 'Docker Desktop.exe'
-    $cli = Join-Path $root 'resources\bin\docker.exe'
-    return [pscustomobject]@{ Installed = (Test-Path -LiteralPath $exe); Exe = $exe; Cli = $cli }
+    $partial = @()
+    foreach ($root in @(Get-ODSPortalDockerDesktopRoots)) {
+        $exe = Join-Path $root 'Docker Desktop.exe'
+        $cli = Join-Path $root 'resources\bin\docker.exe'
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+        if (Test-Path -LiteralPath $cli -PathType Leaf) {
+            return [pscustomobject]@{ Installed = $true; Exe = $exe; Cli = $cli }
+        }
+        $partial += $root
+    }
+    if ($partial.Count -gt 0) {
+        throw "Docker Desktop installation is incomplete: the bundled Docker CLI is missing under $($partial -join ', '). Repair that Docker Desktop installation, then rerun ODS setup."
+    }
+    return [pscustomobject]@{ Installed = $false; Exe = ''; Cli = '' }
 }
 
 function Invoke-ODSPortalDockerCli([string]$Cli, [string[]]$Arguments) {
@@ -128,9 +161,21 @@ function Install-ODSPortalDockerDesktop {
         & $winget.Source @arguments | Out-Host
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previousPreference }
-    if ($code -ne 0 -or -not (Get-ODSPortalDockerDesktop).Installed) {
+    # 0x8A15002B is APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE. winget
+    # install can return it when the package is already installed/current.
+    # Do not classify localized console text or ignore other installation errors.
+    $alreadyInstalled = $code -eq -1978335189
+    if ($code -ne 0 -and -not $alreadyInstalled) {
         throw "Docker Desktop installation did not finish (winget exit $code). Install it from https://docs.docker.com/desktop/setup/install/windows-install/ , restart Windows, then rerun this command."
     }
+    $desktop = Get-ODSPortalDockerDesktop
+    if (-not $desktop.Installed) {
+        if ($alreadyInstalled) {
+            throw 'winget reports Docker Desktop is already installed with no applicable update, but ODS could not locate its application and bundled CLI. Open Docker Desktop from Start and share its installation folder with ODS support. Keep your existing Docker data.'
+        }
+        throw 'winget finished, but ODS could not locate the Docker Desktop application and bundled CLI. Open Docker Desktop from Start and check its installation folder before rerunning ODS setup.'
+    }
+    return [pscustomobject]@{ AlreadyInstalled = $alreadyInstalled; Desktop = $desktop }
 }
 
 function Wait-ODSPortalDockerEngine($Desktop) {

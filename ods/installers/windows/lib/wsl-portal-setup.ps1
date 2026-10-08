@@ -301,7 +301,7 @@ function Install-ODSPortalDockerBeforeRestart([bool]$NonInteractive) {
     # Docker Desktop also needs a restart after installing, so share the one
     # restart WSL already requires.
     if ((Get-ODSPortalDockerDesktop).Installed) { return }
-    if (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive) { Install-ODSPortalDockerDesktop }
+    if (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive) { $null = Install-ODSPortalDockerDesktop }
 }
 
 function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
@@ -358,8 +358,13 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
     $desktop = Get-ODSPortalDockerDesktop
     if (-not $desktop.Installed) {
         if (-not (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive)) { return 1 }
-        Install-ODSPortalDockerDesktop
-        return (Request-ODSPortalRestart $InstallerRoot $Options 'Docker Desktop was installed and needs a Windows restart before its first start.')
+        $installation = Install-ODSPortalDockerDesktop
+        if (-not $installation.AlreadyInstalled) {
+            return (Request-ODSPortalRestart $InstallerRoot $Options 'Docker Desktop was installed and needs a Windows restart before its first start.')
+        }
+        # A verified current installation still needs the normal engine and
+        # distro integration checks, not another install or mandatory restart.
+        $desktop = $installation.Desktop
     }
     if (-not (Test-ODSPortalDockerEngine $desktop)) { Start-ODSPortalDockerDesktop $desktop }
     # Setup never edits Docker's settings or restarts Docker: its own
