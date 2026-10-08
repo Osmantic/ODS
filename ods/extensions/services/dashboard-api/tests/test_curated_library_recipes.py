@@ -168,7 +168,7 @@ def _accelerator(compose_name):
 
 # Curated recipes whose backend overlay reserves the accelerator. The resolver
 # used to drop exactly these overlays, so the services started without a GPU.
-NVIDIA_GPU_RECIPES = ["audiocraft", "bark", "forge", "frigate", "invokeai", "ollama",
+NVIDIA_GPU_RECIPES = ["audiocraft", "bark", "forge", "frigate", "invokeai", "laya", "ollama",
                       "rvc", "text-generation-webui", "xtts"]
 AMD_GPU_RECIPES = ["invokeai", "ollama", "rvc", "text-generation-webui", "xtts"]
 

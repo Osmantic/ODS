@@ -1,0 +1,5 @@
+# Official CPU wheels for Linux AMD64/ARM64, Python 3.11.
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.14.0+cpu \
+    --hash=sha256:08894195f84541edcbd09072e6c53b791d4cdd09f650b05473f35718a848fd7b \
+    --hash=sha256:673dbf5c9bbadfffab7a386b6dd7a0c219f1408a328b7b4e86d0ae551cdafa42

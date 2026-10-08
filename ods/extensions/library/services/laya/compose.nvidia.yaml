@@ -1,0 +1,17 @@
+services:
+  laya:
+    image: ods/laya:0.3.28-cuda130-v1
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: nvidia
+    # One visible GPU; the process enforces its own bounded allocator and
+    # checks free memory before choosing CUDA. CPU remains an owner option.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

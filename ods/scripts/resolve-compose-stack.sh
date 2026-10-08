@@ -147,6 +147,11 @@ def _install_env_value(name):
     return value
 
 
+# An owner opting out of auxiliary GPU work must also avoid the CUDA image
+# and Docker device reservation, not merely run a GPU-enabled image on CPU.
+if _install_env_value("LAYA_ACCELERATION") == "cpu":
+    skip_gpu_overlays.add("laya")
+
 # An ODS-managed llama-server outside this stack (the Windows Portal runs
 # llama-server.exe while this stack runs in WSL). Its origin, not the
 # credential, selects the overlay.
