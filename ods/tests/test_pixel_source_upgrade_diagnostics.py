@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import stat
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -19,6 +21,101 @@ upgrade = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(upgrade)
 ENTRY = compile(ast.Module(body=[ast.parse(MODULE.read_text()).body[-1]], type_ignores=[]),
                 str(MODULE), 'exec')
+
+
+def shell_function(path, name):
+    return re.search(r'(?ms)^' + re.escape(name) + r'\(\) \{.*?^}', path.read_text()).group()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='Exercises the non-root installer sudo path')
+@pytest.mark.parametrize('action', ['stage', 'hold', 'copy', 'status', 'finish', 'rollback', 'downstream'])
+def test_source_upgrade_never_succeeds_by_skipping_sudo(tmp_path, action):
+    root = MODULE.parents[1]
+    source = tmp_path / 'source'
+    (source / 'bin').mkdir(parents=True)
+    marker = tmp_path / 'executed'
+    (source / 'bin/pixel_source_upgrade.py').write_text(
+        'from pathlib import Path\nPath(' + repr(str(marker)) + ').touch()\n')
+    script = shell_function(root / 'installers/lib/sudo.sh', 'ods_sudo') + '\n'
+    script += shell_function(root / 'installers/lib/pixel-host-install.sh', '_ods_pixel_source_upgrade')
+    script += '\n_ods_pixel_source_upgrade "$1" fixture\n'
+    result = subprocess.run(['/bin/bash', '-c', script, 'fixture', action],
+        env={**os.environ, 'ODS_SUDO_AVAILABLE': 'false', 'INTERACTIVE': 'false',
+             'SCRIPT_DIR': str(source), 'INSTALL_DIR': str(tmp_path / 'installed')},
+        text=True, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert result.stdout == ''
+    assert 'source-upgrade-sudo-required' in result.stderr
+    assert str(tmp_path) not in result.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize('reply', ['', 'private-fixture-value', 'a' * 64 + '\nprivate-fixture-value'])
+def test_invalid_hold_reply_has_its_own_public_reason_and_never_copies(reply):
+    source = (MODULE.parents[1] / 'installers/phases/06-directories.sh').read_text()
+    start = source.index('                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold')
+    end = source.index('                export ODS_PIXEL_SOURCE_TRANSACTION', start)
+    fragment = source[start:end]
+    harness = r'''
+error() { printf '%s\n' "$*" >&2; }
+_phase06_source_failed() { error "unexpected generic failure"; return 1; }
+_ods_pixel_source_upgrade() { printf '%s' "$REPLY"; }
+_phase06_pixel_owner=fixture
+exercise() {
+'''
+    result = subprocess.run(['/bin/bash', '-c', harness + fragment + '\nprintf COPY_REACHED\n}\nexercise'],
+        env={**os.environ, 'REPLY': reply}, text=True, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert result.stdout == ''
+    assert 'source-hold-response-invalid' in result.stderr
+    assert 'private-fixture-value' not in result.stderr
+    assert 'printed above' not in result.stderr
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason='Exercises the non-root installer sudo path')
+def test_source_upgrade_phase_stops_before_owner_or_transition_when_sudo_unavailable(tmp_path):
+    source = (MODULE.parents[1] / 'installers/phases/06-directories.sh').read_text()
+    start = source.index('    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true"',
+                         source.index('    _phase06_pixel_marker='))
+    end = source.index('    unset _phase06_pixel_marker', start)
+    marker = tmp_path / 'pixel-managed.json'
+    marker.write_text('{}')
+    harness = r'''
+error() { printf '%s\n' "$*" >&2; }
+ods_pixel_install_owner() { printf 'OWNER_REACHED\n' >&2; return 1; }
+exercise() {
+'''
+    result = subprocess.run(['/bin/bash', '-c', harness + source[start:end] + '\n}\nexercise'],
+        env={**os.environ, 'ENABLE_PIXEL_RUNTIME': 'true', 'ODS_SUDO_AVAILABLE': 'false',
+             '_phase06_pixel_marker': str(marker)}, text=True, capture_output=True, timeout=5)
+    assert result.returncode != 0
+    assert 'source-upgrade-sudo-required' in result.stderr
+    assert 'OWNER_REACHED' not in result.stderr
+    assert marker.read_text() == '{}'
+
+
+@pytest.mark.parametrize('helper_exists', [False, True])
+def test_source_upgrade_wrapper_preserves_success_and_reports_missing_helper(tmp_path, helper_exists):
+    source = tmp_path / 'source'
+    (source / 'bin').mkdir(parents=True)
+    if helper_exists:
+        (source / 'bin/pixel_source_upgrade.py').write_text('print("a" * 64)\n')
+    # Simulate only elevation; run the wrapper and fixture helper for real.
+    script = 'ods_sudo() { "$@"; }\n'
+    script += shell_function(MODULE.parents[1] / 'installers/lib/pixel-host-install.sh',
+                             '_ods_pixel_source_upgrade')
+    script += '\n_ods_pixel_source_upgrade hold fixture\n'
+    result = subprocess.run(['/bin/bash', '-c', script],
+        env={**os.environ, 'ODS_SUDO_AVAILABLE': 'true', 'SCRIPT_DIR': str(source),
+             'INSTALL_DIR': str(tmp_path / 'installed')}, text=True, capture_output=True, timeout=5)
+    if helper_exists:
+        assert result.returncode == 0
+        assert result.stdout == 'a' * 64 + '\n'
+        assert result.stderr == ''
+    else:
+        assert result.returncode != 0
+        assert result.stdout == ''
+        assert 'source-upgrade-helper-unavailable' in result.stderr
 
 
 def refuse(*args, **kwargs):

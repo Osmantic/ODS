@@ -26,9 +26,21 @@ def helper(filename):
     return module
 
 
-def activate(*, preparation, install_dir, ods_source, compose_files, configure_stack=False):
+def activate(*, preparation, install_dir, ods_source, compose_files, configure_stack=False,
+             resume_final_health=False, restore_host_agent=False, resume_model=False,
+             inspect_continuation=False, opencode_choice=None, restore_optional_tools=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
+    if restore_host_agent and not resume_final_health:
+        raise ValueError('host-agent-continuation-requires-recovery')
+    if resume_model and not resume_final_health:
+        raise ValueError('model-continuation-requires-recovery')
+    if restore_optional_tools and not resume_final_health:
+        raise ValueError('optional-tools-continuation-requires-recovery')
+    if inspect_continuation and (not resume_final_health or configure_stack or restore_host_agent or resume_model or restore_optional_tools):
+        raise ValueError('continuation-inspection-cannot-mutate')
+    if opencode_choice is not None and not (inspect_continuation or restore_optional_tools):
+        raise ValueError('opencode-choice-requires-optional-operation')
     config = helper('pixel-native-config.py')
     installer = helper('pixel-macos-access-install.py')
     compose = helper('pixel-native-compose.py')
@@ -74,8 +86,12 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
             or not all(path in paths for path in required) or paths.index(required[1]) > paths.index(required[2])):
         raise ValueError('complete-ordered-native-compose-stack-required')
     journal = preparation / 'activation.json'
-    if os.path.lexists(journal):
+    if os.path.lexists(journal) and not resume_final_health:
         raise ValueError('native-activation-journal-requires-review')
+    if resume_final_health and (configure_stack or not os.path.lexists(journal)
+            or preparation != install_dir / 'data/pixel-native/preparation'
+            or home != install_dir / 'data/pixel-native/home'):
+        raise ValueError('retained-initial-native-installation-required')
     compose.validate_stack(install_dir, paths)
     if configure_stack:
         bindings = {**expected,
@@ -106,6 +122,47 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
     selected_services = json.loads(selected_stack.stdout).get('services', {})
     if not isinstance(selected_services, dict):
         raise ValueError('native-compose-services-invalid')
+    if inspect_continuation:
+        return helper('pixel-native-continuation.py').inspect_remaining_setup(
+            install_dir, selected_services, opencode_choice=opencode_choice)
+    protected = ['/usr/bin/sudo', '/usr/bin/python3', str(HERE / 'pixel-macos-access-install.py'),
+        '--source', str(ods_source), '--install-dir', str(install_dir), '--owner', owner.pw_name,
+        '--gateway-plist', str(template), '--openclaw-bin', str(home / 'openclaw'),
+        '--gateway-port', str(document['gateway']['port']), '--access-port', str(plan['access_port']),
+        '--runtime-bundle', str(preparation / 'runtime'), '--bundle-digest', receipt['runtimeDigest'],
+        '--services-bundle', str(preparation / 'services'), '--services-digest', receipt['serviceDigest'],
+        '--pixel-source-ref', receipt['pixelSourceRef'], '--initial-install']
+    if resume_final_health:
+        def verify_selection(unchanged):
+            unchanged()
+            current = run('config', '--format', 'json')
+            if current.returncode or json.loads(current.stdout).get('services') != selected_services:
+                raise ValueError('native-recovery-compose-selection-changed')
+        def verify():
+            result = subprocess.run([*protected, '--verify-initial'], cwd='/',
+                stdout=subprocess.PIPE, text=True, timeout=300, check=False)
+            if result.returncode or len(result.stdout) > 4096:
+                raise ValueError('native-initial-recovery-proof-failed')
+            return json.loads(result.stdout)
+        continuation = {}
+        if restore_host_agent:
+            continuation['restore_host_agent'] = lambda: helper('pixel-native-continuation.py').restore_host_agent(
+                install_dir, process_env)
+        if restore_optional_tools:
+            optional, optional_snapshot = helper('pixel-native-continuation.py').optional_setup_selection(
+                install_dir, selected_services, opencode_choice=opencode_choice)
+            if optional['opencode']['selected'] is None:
+                raise ValueError('retained-opencode-choice-required')
+            continuation['restore_optional_tools'] = lambda unchanged: helper('pixel-native-continuation.py').restore_optional_tools(
+                install_dir, selected_services, process_env, opencode_choice=opencode_choice,
+                verify_selection=lambda: verify_selection(unchanged), expected_snapshot=optional_snapshot)
+        if resume_model:
+            def continue_model(unchanged):
+                return helper('pixel-native-continuation.py').resume_model_upgrade(
+                    install_dir, paths, process_env, verify_selection=lambda: verify_selection(unchanged))
+            continuation['resume_model'] = continue_model
+        return helper('pixel-native-recover.py').finish(preparation=preparation, receipt=receipt,
+            run=run, verify=verify, compose=compose, selected_services=selected_services, **continuation)
     record = {'schemaVersion': 1, 'phase': 'infrastructure', 'status': 'activating',
         'runtimeDigest': receipt['runtimeDigest'], 'serviceDigest': receipt['serviceDigest']}
     def checkpoint():
@@ -125,13 +182,7 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         compose.start_infrastructure(run, dashboard_key=keys[0])
         record['phase'] = 'protected-activation'
         checkpoint()
-        result = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(HERE / 'pixel-macos-access-install.py'),
-            '--source', str(ods_source), '--install-dir', str(install_dir), '--owner', owner.pw_name,
-            '--gateway-plist', str(template), '--openclaw-bin', str(home / 'openclaw'),
-            '--gateway-port', str(document['gateway']['port']), '--access-port', str(plan['access_port']),
-            '--runtime-bundle', str(preparation / 'runtime'), '--bundle-digest', receipt['runtimeDigest'],
-            '--services-bundle', str(preparation / 'services'), '--services-digest', receipt['serviceDigest'],
-            '--pixel-source-ref', receipt['pixelSourceRef'], '--initial-install', '--install'],
+        result = subprocess.run([*protected, '--install'],
             cwd='/', timeout=900, check=False)
         if result.returncode:
             raise ValueError('native-protected-activation-failed')

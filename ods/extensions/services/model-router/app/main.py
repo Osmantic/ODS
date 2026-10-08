@@ -231,6 +231,48 @@ def _native_tool_repair_feedback(
     )
 
 
+def _complete_structured_tool_decision(completion: dict[str, Any]) -> bool:
+    """Only a completed assistant call is eligible for protocol repair."""
+    choices = completion.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1:
+        return False
+    choice = choices[0]
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "tool_calls":
+        return False
+    if choice.get("index", 0) != 0:
+        return False
+    message = choice.get("message")
+    if (not isinstance(message, dict) or message.get("role") != "assistant"
+            or message.get("refusal")):
+        return False
+    calls = message.get("tool_calls")
+    if not isinstance(calls, list) or not calls:
+        return False
+    # A malformed transport envelope is not a model decision to retry.
+    for call in calls:
+        if (not isinstance(call, dict) or call.get("type") != "function"
+                or not isinstance(call.get("id"), str) or not call["id"]):
+            return False
+        function = call.get("function")
+        if (not isinstance(function, dict)
+                or not isinstance(function.get("name"), str) or not function["name"]
+                or not isinstance(function.get("arguments"), str)):
+            return False
+    return True
+
+
+def _structured_tool_repair_feedback() -> str:
+    # Do not promote rejected model names or arguments into instructions.
+    # The unchanged request carries the authoritative tool schemas and policy.
+    return (
+        "Tool protocol error: your previous completion was discarded before any tool ran. "
+        "Return a valid function call through the API tool-call channel using exactly "
+        "the provided tools and their JSON parameter schemas. Respect tool_choice "
+        "and parallel_tool_calls. If tool_choice permits it and no tool is appropriate, "
+        "answer normally."
+    )
+
+
 def _repaired_tool_decision_invalid(
     completion: dict[str, Any], payload: dict[str, Any],
 ) -> bool:
@@ -1821,7 +1863,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         )
                     else:
                         invalid = _repaired_tool_decision_invalid(complete, payload)
-                        if invalid and _complete_native_envelope_names(complete) is None:
+                        if (invalid and _complete_native_envelope_names(complete) is None
+                                and not _complete_structured_tool_decision(complete)):
                             _finish_probe_attempt(attempt_handle, "stream-error",
                                                   streaming_upstream.status_code)
                             return JSONResponse({"error": {
@@ -1829,8 +1872,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                                 "type": "tool_protocol_invalid", "code": "502",
                             }}, status_code=502, headers=ods_headers), False
                         if invalid:
-                            # Preserve the existing single native-markup
-                            # repair. This may use a nonstreaming retry.
+                            # A complete rejected decision can use the single
+                            # shared repair before any call reaches the agent.
                             ods_headers["X-ODS-Tool-Stream-Repair"] = "true"
                         decoded_headers["content-type"] = "application/json"
                         upstream = httpx.Response(
@@ -1997,10 +2040,14 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
             initial_decision = None
         if isinstance(initial_decision, dict):
             native_names = _complete_native_envelope_names(initial_decision)
-            if native_names is not None and not _normalize_native_tool_markup(
+            native_invalid = native_names is not None and not _normalize_native_tool_markup(
                 initial_decision, payload,
-            ):
-                if (pinned_route and initial_decision.get("model")
+            )
+            structured_invalid = (native_names is None
+                and _complete_structured_tool_decision(initial_decision)
+                and _repaired_tool_decision_invalid(initial_decision, payload))
+            if native_invalid or structured_invalid:
+                if ((pinned_route or structured_invalid) and initial_decision.get("model")
                         != route["runtimeModelId"]):
                     return JSONResponse({'error': {'message': 'Backend response identity changed',
                         'type': 'response_identity_mismatch', 'code': '502'}},
@@ -2013,7 +2060,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     }}, status_code=504, headers=ods_headers), False
                 repair_payload = {**payload, "stream": False,
                     "messages": [*payload["messages"], {"role": "user",
-                        "content": _native_tool_repair_feedback(native_names, payload)}]}
+                        "content": (_structured_tool_repair_feedback() if structured_invalid
+                                    else _native_tool_repair_feedback(native_names, payload))}]}
                 repair_payload.pop("stream_options", None)
                 repair_handle = None
                 try:
@@ -2047,6 +2095,12 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                         repaired = json.loads(upstream.content.decode("utf-8"))
                     except (ValueError, UnicodeDecodeError):
                         repaired = None
+                    if (structured_invalid and isinstance(repaired, dict)
+                            and repaired.get("model") != route["runtimeModelId"]):
+                        return JSONResponse({"error": {
+                            "message": "Backend response identity changed",
+                            "type": "response_identity_mismatch", "code": "502",
+                        }}, status_code=502, headers=ods_headers), False
                     if (not isinstance(repaired, dict)
                             or _repaired_tool_decision_invalid(repaired, payload)):
                         return JSONResponse({"error": {

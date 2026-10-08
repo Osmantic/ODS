@@ -211,6 +211,7 @@ import {
   userMessageRequestsWorkspaceTools,
   userMessageRequestsWorkspaceMutation,
   userMessageRequestsWorkspacePreview,
+  userMessageRequiresWorkspacePreviewAuthorship,
   userMessageRequestsWorkspacePreviewInspection,
   workspacePreviewMode,
   userMessageWorkspaceContinuationPath,
@@ -11522,6 +11523,39 @@ test("literal file contents and quoted examples do not require a website preview
     "Publish 'demo/index.html'.",
     "Create an animated SVG and publish its browser preview.",
   ]) assert.equal(userMessageRequestsWorkspacePreview([], request), true, request);
+});
+
+test("unquoted file payloads without a colon do not request website delivery", () => {
+  for (const request of [
+    "Create fleet-webui-check.txt in your workspace with the text WEBUI-PORTAL-OK. Then read it back and tell me the content.",
+    "Create note.txt containing PORTAL-OK.",
+    "Write note.txt containing exactly Build a website. Read it back.",
+    "Create note.txt with content a dashboard. Read it back.",
+    "Write note.txt with the contents exactly a browser app; then read it.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], request), false, request);
+    assert.equal(userMessageRequiresWorkspacePreviewAuthorship([], request), false, request);
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: 'pixel', runId: 'literal-payload'}, 'pixel', {prompt: request});
+    assert.notEqual(guard.verificationForRun('literal-payload')?.status, 'failed', request);
+  }
+  for (const request of [
+    "Create a customer portal with the text Welcome.",
+    "Build a website containing a dashboard.",
+    "Create note.txt containing PORTAL-OK. Then build a website.",
+    "Create note.txt containing Hello and build a website.",
+    "Create note.txt with the text Hello then create a customer portal.",
+    "Create note.txt containing Hello and then create and publish demo/index.html.",
+    "Create note.txt with the text Hello; then create and publish demo/index.html.",
+    'Create note.txt containing "Build a website." Then create a customer portal.',
+    "Create demo/index.html with the text Hello. Publish it.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], request), true, request);
+    assert.equal(userMessageRequiresWorkspacePreviewAuthorship([], request), true, request);
+    const guard = createToolLoopGuard();
+    guard.observeRun({agentId: 'pixel', runId: 'real-preview'}, 'pixel', {prompt: request});
+    assert.equal(guard.verificationForRun('real-preview')?.status, 'failed', request);
+  }
 });
 
 test("wrapped private denial allows public extraction and workspace recovery", () => {

@@ -3186,8 +3186,8 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 19
-assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "hook-provenance", "run-id-redaction"}.issubset(managed)
+assert len(set(managed)) == len(managed) == 20
+assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "subagent-admission", "hook-provenance", "run-id-redaction"}.issubset(managed)
 assert "command-attempt-warning" in managed
 assert "--command-attempt-warning" in installer
 assert "host/openclaw-command-attempt-warning.json" in installer

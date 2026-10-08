@@ -310,6 +310,12 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
     row = _result_state(store, key)
     if row is None:
         return {"state": "unknown", "events": ""}
+    if (key[:2] in _result_stops and store.is_latest(key)
+            and row["state"] in {"active", "unresolved", "interrupted"}):
+        # The producer can finish before native Stop acknowledges its outcome.
+        # Do not let a subscriber finalize that provisional failure and forget
+        # the request identity while its exact cancellation is still pending.
+        return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
         activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
         if activity["state"] == "terminal":
@@ -751,7 +757,10 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
                 entry = store.get(identity)
                 if entry is None or entry["state"] == "complete":
                     return {"aborted": False}
-                if recovering_interrupted:
+                # Native cancellation may end the producer with an upstream
+                # error before its acknowledgement returns. Use the fresh row:
+                # finish() deliberately cannot rewrite an interrupted receipt.
+                if entry["state"] == "interrupted":
                     return {"aborted": store.confirm_interrupted_cancel(identity)}
                 store.finish(identity, "cancelled")
             return {"aborted": aborted}

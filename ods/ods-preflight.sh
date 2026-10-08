@@ -34,6 +34,14 @@ CURL_HEALTH_FLAGS=(--connect-timeout 3 --max-time 10)
 # Priority: .env setting → nvidia-smi → AMD sysfs (any card).
 # On dual-GPU systems (AMD iGPU + NVIDIA dGPU) we must prefer
 # NVIDIA when present, since it is always the inference target.
+
+# WSL2 keeps the Microsoft kernel release string; ODS_PROC_VERSION_FILE is a
+# test hook, matching scripts/detect-hardware.sh.
+is_wsl() {
+    local version_file="${ODS_PROC_VERSION_FILE:-/proc/version}"
+    [[ -f "$version_file" ]] && grep -qi microsoft "$version_file" 2>/dev/null
+}
+
 detect_backend() {
     # 1. Trust .env if the installer already wrote it.
     if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
@@ -52,6 +60,17 @@ detect_backend() {
     for _v in /sys/class/drm/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # WSL2 passes the host GPU through its paravirtualized nvidia-smi bridge and
+    # normally exposes no matching /sys/class/drm vendor node, so a successful,
+    # non-empty query is the hardware witness there. This is the same rule
+    # installers/lib/detection.sh, scripts/detect-hardware.sh and the bootstrap
+    # preliminary check already apply.
+    if ! $_nvidia_hw && is_wsl && command -v nvidia-smi &> /dev/null; then
+        local _wsl_gpu_name=""
+        _wsl_gpu_name=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null) \
+            || _wsl_gpu_name=""
+        [[ -n "$_wsl_gpu_name" ]] && _nvidia_hw=true
+    fi
     if $_nvidia_hw && command -v nvidia-smi &> /dev/null; then
         if nvidia-smi --query-gpu=name --format=csv,noheader &> /dev/null; then
             echo "nvidia"

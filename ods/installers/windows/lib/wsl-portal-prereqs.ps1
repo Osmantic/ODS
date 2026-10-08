@@ -249,11 +249,13 @@ function Invoke-ODSPortalWslInput([string]$Distro, [string[]]$Command, [string]$
 function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
     $exists = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', 'id', '-u', $Account.Name)
     if ($exists.Code -ne 0) {
-        $created = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', 'useradd', '--create-home', '--shell', '/bin/bash', '--groups', 'sudo', '--', $Account.Name)
+        # --exec bypasses the login shell; its PATH need not include /usr/sbin.
+        # Ubuntu's account tools must also work before the first interactive boot.
+        $created = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', '/usr/sbin/useradd', '--create-home', '--shell', '/bin/bash', '--groups', 'sudo', '--', $Account.Name)
         if ($created.Code -ne 0) { throw "Could not create the Ubuntu user $($Account.Name): $($created.Output) $($created.Error)" }
     }
     # The password travels only on chpasswd's stdin, never in arguments or logs.
-    $password = Invoke-ODSPortalWslInput $Distro @('chpasswd') ($Account.Name + ':' + $Account.Password)
+    $password = Invoke-ODSPortalWslInput $Distro @('/usr/sbin/chpasswd') ($Account.Name + ':' + $Account.Password)
     if ($password.Code -ne 0) { throw "Could not set the Ubuntu password for $($Account.Name). Open $Distro, run: sudo passwd $($Account.Name), then rerun this command." }
     $written = Set-ODSPortalWslConf $Distro @('user', 'default', $Account.Name, 'boot', 'systemd', 'true')
     if ($written.Code -ne 0) { throw "Could not make $($Account.Name) the default Ubuntu user: $($written.Output)" }

@@ -19,6 +19,7 @@ on:
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
@@ -48,6 +49,7 @@ on:
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
+      - 'ods/tests/test_macos_pixel_native_recover.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
@@ -92,6 +94,7 @@ jobs:
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py
           ods/tests/test_macos_pixel_native_finalize.py
+          ods/tests/test_macos_pixel_native_recover.py
           ods/tests/test_macos_pixel_access_install.py
           ods/tests/test_macos_pixel_runtime_upgrade.py
           ods/tests/test_pixel_startup_reproof.py

@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`f2d71d31e8cebac691d109de994c1b4636504cd3`, and its SHA-256 is
-`5fa764dd1b11e71eebaae193a6bba22cb9743bf6e854dbd9c7e7dd63b2ec6163`.
+`2ef78e7067211a198748c5499ed5a0261f4b48b6`, and its SHA-256 is
+`cc4c5944a6a09a4f1132abef8811bdabf64384a8e8ee67fb3581f0071e4435b9`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -160,3 +160,36 @@ verified every blob and Git executable mode against the public source. No
 release signature was generated and no private repository was accessed. Clients
 prepared with the 4.3.28 bundle remain readable through their exact retained
 receipt identity.
+
+## ODS-maintained 4.3.30 Operations startup candidate
+
+This candidate waits for the Operations Broker inventory before applying
+the existing reader ACL checks. A real WSL clean install exposed the
+missing projection; a controlled delayed-file test reproduces the old
+failure and accepts the new wait. `pixel/ODS-QUALIFICATION-4.3.30.md`
+records the evidence and remaining live qualification. The version
+advance preserves the existing strictly increasing source-upgrade gate.
+
+The public vendor tree is `b4a2db3cfc6d3d6388c57f94dc6befaf2ed5a292`. Two independent empty bare
+repositories used the same alternates-based procedure documented above
+with the retained synthetic identity, timestamp and root message. The
+two bundles were byte-identical. Only the single public root is advertised;
+no private history or signing credentials were accessed. Runtime and
+dependency versions, image digests, policies and trust anchors are unchanged.
+Current source/bundle pins above identify this candidate; prior release
+sections remain historical evidence.
+
+## ODS-maintained 4.3.31 Operations executable-start candidate
+
+This candidate separates systemd filesystem-isolation setup from Operations
+inventory readiness. Type=exec and a bounded 180-second startup window preserve
+every existing isolation setting. The existing inventory and private-state
+checks remain required. See `pixel/ODS-QUALIFICATION-4.3.31.md` for measured
+WSL behavior and the boundary between fixture and fleet acceptance.
+
+The public vendor tree is `3c8abd7b0f95ffdb72d0f97685d89ef81b927eb1`. Two independent empty bare
+repositories produced byte-identical bundles using the documented synthetic
+identity, timestamp and message. Only one public root is advertised. Runtime
+and dependency versions, image pins, policies and trust anchors are unchanged.
+Current source/bundle pins above identify this candidate; prior sections remain
+historical evidence. No private source history or signing credentials were used.

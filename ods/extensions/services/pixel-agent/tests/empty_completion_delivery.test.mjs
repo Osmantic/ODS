@@ -8,8 +8,9 @@ import { createIngressServer } from '../host/pixel_ingress.mjs';
 const RUN_ID = 'chatcmpl_e5261a35-a837-4170-b2a1-0023b46e312c';
 const CHAT_ID = 'ods-tower3-missing-preview-8860-20260923b';
 const PROMPT = `The directory Playground/${CHAT_ID} intentionally does not exist. Try to publish a workspace preview of that exact directory only. Do not create any files or directories, do not use shell commands, and do not contact external sites. If it cannot be published, tell me the actual reason plainly and do not invent a preview URL.`;
+const SIDE_EFFECTS_WARNING = "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.";
 const SILENT = ['', ' \n\t ', 'NO_REPLY', 'No response from OpenClaw.',
-  "⚠️ Agent couldn't generate a response. Please try again."];
+  "⚠️ Agent couldn't generate a response. Please try again.", SIDE_EFFECTS_WARNING];
 const TASK = { schemaVersion: 1, runId: RUN_ID, startedAt: '2026-09-23T12:00:00.000Z',
   finishedAt: '2026-09-23T12:00:01.000Z', state: 'completed', calls: 0, failures: 0,
   blocked: 0, truncated: false, activities: [] };
@@ -32,7 +33,7 @@ async function close(server) {
 }
 async function fixture(t, { content = '', verification = { status: 'none', task: TASK },
   completion, holdCompletion = false, holdVerification = false } = {}) {
-  const observed = { submissions: [], verificationReads: 0, aborts: 0 };
+  const observed = { submissions: [], verificationReads: 0, aborts: 0, continuationReads: 0 };
   let onSubmitted, onVerification;
   const submitted = new Promise(resolve => { onSubmitted = resolve; });
   const verificationStarted = new Promise(resolve => { onVerification = resolve; });
@@ -60,9 +61,11 @@ async function fixture(t, { content = '', verification = { status: 'none', task:
         result={schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'};
         break;
       case '/pixel-ods/read-only-extension-continuation':
+        observed.continuationReads++;
         result = { schemaVersion: 1, kind: 'ods-extension-read-only-continuation', eligible: false };
         break;
       case '/pixel-ods/unfinished-extension-decision':
+        observed.continuationReads++;
         result = { schemaVersion: 1, kind: 'ods-extension-unfinished-decision', eligible: false };
         break;
       case '/pixel-ods/activity': result = { task: null }; break;
@@ -132,6 +135,21 @@ test('missing answer preserves real effects and failure counters without inventi
   assert.match(result.text, /check its receipts before repeating any action/);
   assert.doesNotMatch(result.text, /no tools ran|no specific tool.*failure|missing directory/i);
   assertOneUnchangedRequest(f);
+});
+
+test('side-effects warning keeps the real write receipt without querying continuation or replaying work', async t => {
+  const task = { ...TASK, calls: 1, activities: [
+    { kind: 'edit', calls: 1, failures: 0, blocked: 0 },
+  ] };
+  const f = await fixture(t, { content: SIDE_EFFECTS_WARNING, verification: { status: 'none', task } });
+  const result = await complete(f);
+  assert.match(result.text, /request is incomplete/);
+  assert.match(result.text, /check its receipts before repeating any action/);
+  assert.doesNotMatch(result.text, /couldn't generate|some tool actions may have already been executed/);
+  assert.deepEqual(result.terminal.pixel_task, task);
+  assert.deepEqual(result.terminal.pixel_outcome, { schemaVersion: 1, status: 'failed' });
+  assertOneUnchangedRequest(f);
+  assert.equal(f.observed.continuationReads, 0);
 });
 
 for (const content of SILENT) {

@@ -285,9 +285,9 @@ assert_grep "installers/phases/07-devtools.sh" '_opencode_url="http://127\.0\.0\
     "Linux OpenCode generic external config routes through LiteLLM"
 assert_grep "installers/phases/07-devtools.sh" 'OpenCode config updated \(model, API key, and URL refreshed\)' \
     "Linux OpenCode reinstall migrates stale model route"
-assert_grep "installers/macos/install-macos.sh" '_opencode_switchboard_mode=.*ODS_MODEL_SWITCHBOARD' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" '_opencode_switchboard_mode=.*ODS_MODEL_SWITCHBOARD' \
     "macOS OpenCode config reads switchboard mode"
-assert_grep "installers/macos/install-macos.sh" '_opencode_model="ods/current"' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" '_opencode_model="ods/current"' \
     "macOS OpenCode config uses stable switchboard alias"
 assert_grep "installers/macos/lib/env-generator.sh" 'ODS_MODEL_SWITCHBOARD=\$\{switchboard_mode\}' \
     "macOS .env generation persists switchboard mode"
@@ -299,9 +299,9 @@ assert_grep "installers/macos/docker-compose.macos.yml" 'OPENAI_API_KEY: "\$\{OP
     "macOS Open WebUI compose route carries switchboard API key"
 assert_grep "installers/macos/install-macos.sh" 'render-runtime-configs\.py' \
     "macOS installer renders model-router runtime configs"
-assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_MODEL="ods/current"' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" 'PERPLEXICA_MODEL="ods/current"' \
     "macOS Perplexica config uses stable switchboard alias"
-assert_grep "installers/macos/install-macos.sh" 'PERPLEXICA_BASE_URL="http://litellm:4000"' \
+assert_grep "installers/macos/lib/post-pixel-install.sh" 'PERPLEXICA_BASE_URL="http://litellm:4000"' \
     "macOS Perplexica config routes switchboard mode through LiteLLM"
 assert_grep "installers/phases/12-health.sh" 'ODS_MODEL_SWITCHBOARD' \
     "Linux Perplexica config reads switchboard mode"
@@ -444,7 +444,7 @@ assert_grep "installers/windows/lib/opencode-config.ps1" \
     'WriteAllText\(\$_ocCompatConfigFile' \
     "Windows OpenCode writer syncs config.json"
 
-assert_grep "installers/macos/install-macos.sh" \
+assert_grep "installers/macos/lib/post-pixel-install.sh" \
     'compat_path="\$\(dirname "\$config_path"\)/config\.json"' \
     "macOS OpenCode writer syncs config.json"
 
@@ -457,7 +457,7 @@ if [[ -n "$python_cmd" ]]; then
     opencode_writer="$tmp_opencode_dir/writer.sh"
     awk '/^_write_macos_opencode_config\(\) \{$/ {inside=1}
          inside {print}
-         inside && /^\}$/ {exit}' installers/macos/install-macos.sh \
+         inside && /^\}$/ {exit}' installers/macos/lib/post-pixel-install.sh \
         | sed "s#/usr/bin/python3#$python_cmd#" > "$opencode_writer"
 
     [[ -s "$opencode_writer" ]] || fail "could not extract _write_macos_opencode_config"

@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { render } from '../test/test-utils'
 import Extensions from './Extensions' // eslint-disable-line no-unused-vars
@@ -17,11 +17,15 @@ async function show(ext, progress, { prepareStatus = 202, webuiSelection = { sup
   vi.useFakeTimers()
   const calls = []
   const records = [...progress]
+  const actionId = ext.id === 'hermes' ? 'hermes-proxy' : ext.id
+  const actionQuery = ext.id === 'hermes' ? '?auto_enable_deps=true' : ''
+  const extensions = ext.id === 'hermes'
+    ? [ext, { ...ext, id: 'hermes-proxy', name: 'Hermes Auth Proxy' }] : [ext]
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
     const target = String(url)
     calls.push([target, options.method || 'GET'])
     if (target === '/api/extensions/catalog') {
-      return response({ agent_available: true, extensions: [ext], summary: { total: 1 } })
+      return response({ agent_available: true, extensions, summary: { total: extensions.length } })
     }
     if (target === '/api/templates') return response({ templates: [] })
     if (target === '/api/webui/selection' && options.method === 'POST') {
@@ -29,15 +33,15 @@ async function show(ext, progress, { prepareStatus = 202, webuiSelection = { sup
       return response({ enabled: true, action: 'enabled' })
     }
     if (target === '/api/webui/selection') return response(webuiSelection)
-    if (target === `/api/extensions/${ext.id}/prepare`) {
-      return response({ status: prepareStatus === 202 ? 'accepted' : 'ready', service_ids: [ext.id] }, prepareStatus)
+    if (target === `/api/extensions/${actionId}/prepare${actionQuery}`) {
+      return response({ status: prepareStatus === 202 ? 'accepted' : 'ready', service_ids: extensions.map(e => e.id) }, prepareStatus)
     }
-    if (target === `/api/extensions/${ext.id}/progress`) {
+    if (target === `/api/extensions/${actionId}/progress`) {
       return response(records.length > 1 ? records.shift() : records[0])
     }
-    if (target === `/api/extensions/${ext.id}/enable`) {
-      Object.assign(ext, { status: 'enabled', library_selected: true })
-      return response({ enabled_services: [ext.id], failed_services: [] })
+    if (target === `/api/extensions/${actionId}/enable${actionQuery}`) {
+      extensions.forEach(entry => Object.assign(entry, { status: 'enabled', library_selected: true }))
+      return response({ enabled_services: extensions.map(e => e.id), failed_services: [] })
     }
     throw new Error(`Unexpected request: ${target}`)
   }))
@@ -59,40 +63,41 @@ afterEach(() => {
 
 it('shows the image download on the card and enables only after it finishes', async () => {
   const calls = await show(hermes(), [
-    { service_id: 'hermes', status: 'pulling', phase_label: DOWNLOADING },
-    { service_id: 'hermes', status: 'prepared', phase_label: 'Images downloaded' },
+    { service_id: 'hermes-proxy', status: 'pulling', phase_label: DOWNLOADING },
+    { service_id: 'hermes-proxy', status: 'prepared', phase_label: 'Images downloaded' },
   ])
-  fireEvent.click(screen.getByRole('button', { name: 'Add Hermes Agent' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add Hermes with web access' }))
   fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
 
-  expect(screen.getByText(DOWNLOADING)).toBeVisible()
-  expect(posted(calls, '/api/extensions/hermes/prepare')).toBe(true)
-  expect(posted(calls, '/api/extensions/hermes/enable')).toBe(false)
+  const agentCard = within(screen.getByRole('heading', { name: 'Hermes Agent' }).closest('article'))
+  expect(agentCard.getByText(DOWNLOADING)).toBeVisible()
+  expect(posted(calls, '/api/extensions/hermes-proxy/prepare?auto_enable_deps=true')).toBe(true)
+  expect(posted(calls, '/api/extensions/hermes-proxy/enable?auto_enable_deps=true')).toBe(false)
 
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
-  expect(posted(calls, '/api/extensions/hermes/enable')).toBe(true)
+  expect(posted(calls, '/api/extensions/hermes-proxy/enable?auto_enable_deps=true')).toBe(true)
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
   expect(screen.queryByText(DOWNLOADING)).toBeNull()
   expect(screen.getByText('Extension installed and started.')).toBeVisible()
 })
 
 it('enables at once when the images are already here', async () => {
-  const calls = await show(hermes(), [{ service_id: 'hermes', status: 'idle' }], { prepareStatus: 200 })
-  fireEvent.click(screen.getByRole('button', { name: 'Add Hermes Agent' }))
+  const calls = await show(hermes(), [{ service_id: 'hermes-proxy', status: 'idle' }], { prepareStatus: 200 })
+  fireEvent.click(screen.getByRole('button', { name: 'Add Hermes with web access' }))
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Enable' })) })
-  expect(posted(calls, '/api/extensions/hermes/enable')).toBe(true)
+  expect(posted(calls, '/api/extensions/hermes-proxy/enable?auto_enable_deps=true')).toBe(true)
 })
 
 it('reports a failed download and never enables', async () => {
   const calls = await show(hermes(), [
-    { service_id: 'hermes', status: 'error', error: 'Image download made no progress for 15 minutes.' },
+    { service_id: 'hermes-proxy', status: 'error', error: 'Image download made no progress for 15 minutes.' },
   ])
-  fireEvent.click(screen.getByRole('button', { name: 'Add Hermes Agent' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Add Hermes with web access' }))
   fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
   await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
   expect(screen.getByText('Image download made no progress for 15 minutes.')).toBeVisible()
-  expect(posted(calls, '/api/extensions/hermes/enable')).toBe(false)
+  expect(posted(calls, '/api/extensions/hermes-proxy/enable?auto_enable_deps=true')).toBe(false)
 })
 
 it('downloads Open WebUI before adding it and keeps the Add button truthful', async () => {

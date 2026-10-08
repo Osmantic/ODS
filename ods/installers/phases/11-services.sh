@@ -182,6 +182,14 @@ except Exception:
                 tail -n 120 "$build_log" 2>/dev/null || true
             } >> "$LOG_FILE"
             ai "Build log: $build_log"
+            # The host curl preflight does not exercise the build network.
+            # Diagnose only failed builds with name-resolution error evidence;
+            # npm's generic "Exit handler never called" is not DNS evidence.
+            if grep -Eqi '(^|[^[:alnum:]_])(EAI_AGAIN|ENOTFOUND)([^[:alnum:]_]|$)|Temporary failure (in name resolution|resolving)|Could not resolve (host|proxy)|Name or service not known|no such host' "$build_log"; then
+                ai_warn "Build log contains a name-resolution error; check DNS in the selected container builder. Host network checks alone do not verify build DNS."
+                ai "On systemd-resolved hosts, check the real uplink resolvers as well as the 127.0.0.53 stub. The stub alone does not prove a fault. Use resolvers reachable from this build network; preserve existing daemon settings."
+                ai "See docs/INSTALL-TROUBLESHOOTING.md#container-build-dns for checks and operator-managed recovery. ODS has not changed DNS settings or restarted Docker for this diagnostic."
+            fi
             failed_build_services+=("$svc")
         else
             ui_status_line ok "$svc built"

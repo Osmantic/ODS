@@ -397,11 +397,17 @@ _sync_extension_compose() {
 # Held transactions already projected exact counterpart removals; no late code
 # renames are allowed to invalidate their after-inventory.
 _ods_apply_deferred_feature_state() {
-    local i svc flag candidate installed temporary owner
+    local i svc flag candidate installed temporary owner suffix counterpart candidate_counterpart
+    local initial_copy=false requested_ref="${1:-}"
     local -a selection=("${_ODS_DEFERRED_FEATURE_SELECTION[@]}")
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         owner="$(ods_pixel_install_owner)" || return 1
         _ods_pixel_check_source_transaction "$owner" || return 1
+    elif _ods_feature_source_managed && [[ -n "$requested_ref" ]]; then
+        owner="$(ods_pixel_install_owner)" || return 1
+        if _ods_pixel_initial_source_copy_allowed "$owner" "$HOME" "$requested_ref"; then
+            initial_copy=true
+        fi
     fi
     for ((i=0; i<${#selection[@]}; i+=2)); do
         svc="${selection[i]}"
@@ -410,6 +416,26 @@ _ods_apply_deferred_feature_state() {
         installed="$INSTALL_DIR/extensions/services/$svc/compose.yaml"
         [[ -e "$candidate" || -e "${candidate}.disabled" ]] || continue
         if _ods_feature_source_managed || [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+            if [[ "$initial_copy" == true ]]; then
+                # An inert bootstrap uses the ordinary source copy, which
+                # retains the old opposite filename. Retire only that exact
+                # counterpart after the selected candidate bytes were copied.
+                suffix=.disabled; counterpart="$installed"; candidate_counterpart="$candidate"
+                if [[ "$flag" == true ]]; then
+                    suffix=""; counterpart="${installed}.disabled"; candidate_counterpart="${candidate}.disabled"
+                fi
+                if [[ ! -L "$SCRIPT_DIR/extensions" && ! -L "$SCRIPT_DIR/extensions/services" \
+                    && ! -L "$SCRIPT_DIR/extensions/services/$svc" \
+                    && ! -L "$INSTALL_DIR/extensions" && ! -L "$INSTALL_DIR/extensions/services" \
+                    && ! -L "$INSTALL_DIR/extensions/services/$svc" \
+                    && ! -L "$candidate$suffix" && ! -L "$installed$suffix" \
+                    && ! -e "$candidate_counterpart" && ! -L "$candidate_counterpart" \
+                    && -f "$candidate$suffix" && -f "$installed$suffix" \
+                    && ! -L "$counterpart" && -f "$counterpart" ]] \
+                    && cmp -s -- "$candidate$suffix" "$installed$suffix"; then
+                    rm -f -- "$counterpart" || return 1
+                fi
+            fi
             _ods_feature_pair_equal "$candidate" "$installed" || {
                 error "Feature source was not reconciled by the held source transaction."
                 return 1
@@ -419,7 +445,9 @@ _ods_apply_deferred_feature_state() {
         fi
     done
     if [[ -n "${_ODS_DEFERRED_GPU_TOPOLOGY:-}" ]]; then
-        if _ods_feature_source_managed && [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        # The same rechecked inert bootstrap authority covers its generated
+        # topology; deployed runtimes still require the authenticated hold.
+        if _ods_feature_source_managed && [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" && "$initial_copy" != true ]]; then
             error "GPU topology changes require the authenticated source transaction."
             return 1
         fi

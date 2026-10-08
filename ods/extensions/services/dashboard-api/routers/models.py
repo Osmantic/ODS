@@ -185,7 +185,20 @@ def _annotate_model_lifecycle(payload: dict[str, Any], lifecycle: Optional[dict[
 
 def _configured_ods_mode() -> str:
     """Return the current persisted mode without treating process env as config."""
-    return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR))
+    try:
+        return normalize_ods_mode(read_env_file_value("ODS_MODE", INSTALL_DIR, raise_on_error=True))
+    except PermissionError:
+        # The private .env can belong to a different host UID than this API.
+        # Ask its owner-side agent for only the persisted mode, never secrets
+        # or the process environment. Read freshly before every activation.
+        try:
+            snapshot = request_agent_json("GET", "/v1/model/config", timeout=5)
+        except AgentClientError:
+            return "unknown"
+        mode = snapshot.get("configuredMode") if isinstance(snapshot, dict) else None
+        return mode if isinstance(mode, str) and mode in {"local", "cloud", "hybrid"} else "unknown"
+    except (OSError, UnicodeError):
+        return "unknown"
 
 
 def _model_activation_mode_denial(
@@ -1489,7 +1502,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
             flags=signature.get("flags"),
         )
     payload["odsMode"] = ODS_MODE_EFFECTIVE
-    payload["configuredMode"] = _configured_ods_mode()
+    payload["configuredMode"] = await asyncio.to_thread(_configured_ods_mode)
     payload["llmBackend"] = LLM_BACKEND or "unknown"
     if LLM_BACKEND == "external":
         # API mode: name the model and the API's host so the page can say

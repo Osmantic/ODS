@@ -15,7 +15,7 @@ src="$tmp/src"
 mkdir -p "$src/config/litellm"
 printf 'bundled-template\n' > "$src/config/litellm/cloud.yaml"
 printf 'source-canary\n' > "$src/canary"
-touch "$src/.gitignore" "$src/.dockerignore"
+touch "$src/.gitignore" "$src/.dockerignore" "$src/.env.example" "$src/.env.schema.json"
 setup() { inst="$tmp/$1"; mkdir -p "$inst/config/litellm"; }
 copy() { ods_copy_install_source "$src" "$inst" "$tmp/log"; }
 setup fresh
@@ -60,8 +60,10 @@ setup fresh-fallback
 copy
 cmp "$src/config/litellm/cloud.yaml" "$inst/config/litellm/cloud.yaml" || fail 'fresh fallback template absent'
 pass 'fresh fallback copies the template'
-[[ -f "$inst/.dockerignore" ]] || fail 'fresh fallback dropped the root .dockerignore'
-pass 'fresh fallback copies the root .dockerignore'
+for dotfile in .dockerignore .env.example .env.schema.json; do
+    [[ -f "$inst/$dotfile" ]] || fail "fresh fallback dropped the root $dotfile"
+    pass "fresh fallback copies the root $dotfile"
+done
 unset -f command
 
 # Exercise the actual Phase 06 normalization after a copy from a checkout

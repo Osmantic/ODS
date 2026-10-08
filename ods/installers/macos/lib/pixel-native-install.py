@@ -12,7 +12,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REF = 'f2d71d31e8cebac691d109de994c1b4636504cd3'
+DEFAULT_REF = '2ef78e7067211a198748c5499ed5a0261f4b48b6'
 INGRESS_IMAGE = 'node:24-bookworm-slim'
 FRAGMENTS = ('extensions/services/pixel-model-relay/compose.yaml.disabled',
     'extensions/services/pixel-edge/compose.yaml.disabled',
@@ -46,6 +46,15 @@ ERROR_GUIDANCE = {
         'Could not authorize the retained Pixel identity check. Run sudo -v and rerun this installer in the same terminal, or use the interactive installer in a terminal. Keep Pixel state intact.',
     'native-identity-verification-unavailable':
         'Could not complete the privileged Pixel identity check. Check sudo and system Python availability, then retry. Keep Pixel state intact.',
+    'native-compose-health-timeout':
+        'The native Docker services did not all become healthy: pixel-native-ingress, '
+        'pixel-workspace-preview, pixel-edge. Check their State/Health and the private '
+        'activation receipt. A ready gateway alone is not sufficient. Keep Pixel state '
+        'intact; do not reset receipts or repeat activation automatically.',
+    'compose-security-policy-missing':
+        'The shared Compose policy could not be loaded. Check the installed '
+        'scripts/compose-cache-policy.py and the private activation receipt. Keep Pixel '
+        'state intact; do not reset receipts or repeat activation automatically.',
 }
 
 
@@ -248,9 +257,17 @@ def main():
             install(install_dir=args.install_dir, ods_source=args.ods_source, compose_files=args.compose_file,
                 ref=args.ref, prompt_for_sudo=args.prompt_for_sudo)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
-        # Error codes contain no captured subprocess output, environment or keys.
-        guidance = ERROR_GUIDANCE.get(str(error),
+        # Only exact, static allowlist entries may cross this diagnostic boundary.
+        # Unknown exception details may contain subprocess arguments or credentials.
+        code = str(error) if isinstance(error, ValueError) else None
+        guidance = ERROR_GUIDANCE.get(code,
             'Check prerequisites and private preparation/activation receipts; do not reset them.')
+        if code in ERROR_GUIDANCE:
+            guidance = '[' + code + '] ' + guidance
+        if code == 'native-compose-health-timeout':
+            detail = helper('compose').health_diagnostic(error)
+            if detail:
+                guidance += ' ' + detail
         print('Native Pixel installation stopped (' + type(error).__name__ + '). ' + guidance, file=sys.stderr)
         return 1
     return 0

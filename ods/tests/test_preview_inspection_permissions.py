@@ -24,15 +24,19 @@ protocol = importlib.import_module('preview_inspection_protocol')
 
 def test_capsule_copy_permissions_are_explicit():
     dockerfile = (HOST / 'Dockerfile.inspection').read_text()
-    assert 'COPY --chmod=0444 preview-inspection.requirements.lock /source/requirements.lock' in dockerfile
-    assert 'COPY --chmod=0444 preview_inspection_protocol.py preview_inspection_capsule.py /source/' in dockerfile
+    assert 'COPY preview-inspection.requirements.lock /source/requirements.lock' in dockerfile
+    assert 'COPY preview_inspection_protocol.py preview_inspection_capsule.py /source/' in dockerfile
+    assert 'chmod 0444 /source/requirements.lock' in dockerfile
+    assert 'chmod 0444 /source/preview_inspection_protocol.py /source/preview_inspection_capsule.py' in dockerfile
+    assert '--chmod=' not in dockerfile
     assert 'USER 65534:65534' in dockerfile
 
 
 @pytest.mark.skipif(os.environ.get('ODS_INSPECTION_BUILD_TESTS') != '1',
                     reason='actual installer Docker build is opt in')
-def test_private_installer_context_runs_as_nonroot():
-    """No mocked build: record modes, then run the actual fixed installer command."""
+@pytest.mark.parametrize('buildkit', ['0', '1'])
+def test_private_installer_context_runs_as_nonroot(buildkit):
+    """Run the installer command with each real Docker build backend."""
     if sys.platform != 'linux' or os.getuid() == 0:
         pytest.skip('exercise as an ordinary Linux/WSL install owner')
     real_run = subprocess.run
@@ -43,6 +47,9 @@ def test_private_installer_context_runs_as_nonroot():
             context = Path(argv[-1])
             assert context.stat().st_mode & 0o777 == 0o700
             staged_modes.extend((p.name, p.stat().st_mode & 0o777) for p in context.iterdir())
+            # Production deliberately supplies a minimal environment. Select
+            # the backend here; setting pytest's environment would be ignored.
+            kwargs['env'] = {**kwargs['env'], 'DOCKER_BUILDKIT': buildkit}
         return real_run(argv, **kwargs)
 
     old_umask = os.umask(0o077)

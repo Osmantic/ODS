@@ -1971,6 +1971,10 @@ async def extensions_catalog(
         if llm_contract is not None:
             enriched["llm"] = llm_contract
         service_config = user_svc_configs.get(ext_id, SERVICES.get(ext_id, {}))
+        if "ui_path" in service_config:
+            enriched["ui_path"] = service_config["ui_path"]
+        if "external_port" in service_config:
+            enriched["external_port"] = service_config["external_port"]
         if service_config.get("public_url"):
             enriched["public_url"] = service_config["public_url"]
         # Surface install-failure reason inline. The progress file already
@@ -3430,6 +3434,8 @@ async def extension_detail(
         **_qualified_builtin_selection(service_id),
         "llm": llm_contract,
         "public_url": public_url,
+        "ui_path": service_config.get("ui_path", ext.get("ui_path", "/")),
+        "external_port": service_config.get("external_port", ext.get("external_port_default", ext.get("port"))),
         "integration": integration,
         "manifest": manifest,
         "env_vars": ext.get("env_vars", []),

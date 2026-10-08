@@ -1488,8 +1488,10 @@ cmd_status() {
 
     echo ""
 
-    # GPU status if available
-    if command -v nvidia-smi &> /dev/null; then
+    # Select GPU tooling by backend, not by installed vendor utilities.
+    if [[ "${GPU_BACKEND:-}" == "amd" || "${GPU_BACKEND:-}" == "apple" ]]; then
+        ( _gpu_status )
+    elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &> /dev/null; then
         echo -e "${BLUE}━━━ GPU Status ━━━${NC}"
         nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits | \
             awk -F', ' '{printf "  %s: %s%% GPU | %sMB/%sMB VRAM | %s°C\n", $1, $2, $3, $4, $5}' \
@@ -1609,7 +1611,7 @@ cmd_status_json() {
             --argjson unified_memory_gb "$_total_mem_gb" \
             --argjson gpu_cores "$([[ "$_gpu_cores" =~ ^[0-9]+$ ]] && printf '%s' "$_gpu_cores" || printf 'null')" \
             '{backend: $backend, chip: $chip, unified_memory_gb: $unified_memory_gb, gpu_cores: $gpu_cores}')
-    elif command -v nvidia-smi >/dev/null 2>&1; then
+    elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi >/dev/null 2>&1; then
         # Represent each GPU line as raw strings in an array
         gpu_summary_json=$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
             --format=csv,noheader,nounits 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))')
@@ -2809,8 +2811,12 @@ checks = [
     ('Docker Daemon', runtime.get('docker_daemon', False)),
     ('Docker Compose', runtime.get('compose_cli', False)),
     ('Dashboard HTTP', runtime.get('dashboard_http', False)),
-    ('WebUI HTTP', runtime.get('webui_http', False)),
 ]
+
+# Reports without an enablement field retain the legacy required check.
+webui_disabled = runtime.get('webui_enabled') is False
+if not webui_disabled:
+    checks.append(('WebUI HTTP', runtime.get('webui_http', False)))
 
 has_failures = False
 for name, status in checks:
@@ -2819,6 +2825,9 @@ for name, status in checks:
     else:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
+
+if webui_disabled:
+    print(f"  {CYAN}ℹ{NC} WebUI HTTP (not installed)")
 
 llm_backend = runtime.get('llm_backend', {})
 if llm_backend:
@@ -5354,8 +5363,12 @@ cmd_agent() {
                         success "Agent started (LaunchAgent)" || warn "Agent start failed"
                     ;;
                 systemd)
-                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
-                        success "Agent started (systemd)" || warn "Agent start failed"
+                    if sudo systemctl start ods-host-agent.service 2>/dev/null; then
+                        success "Agent started (systemd)"
+                    else
+                        log_error "Agent start failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -5412,8 +5425,12 @@ cmd_agent() {
                         success "Agent stopped" || warn "Agent not running"
                     ;;
                 systemd)
-                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if sudo systemctl stop ods-host-agent.service 2>/dev/null; then
+                        success "Agent stopped"
+                    else
+                        log_error "Agent stop failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
@@ -5465,8 +5482,18 @@ _gpu_status() {
         echo -e "${BLUE}━━━ GPU Status (1 integrated GPU) ━━━${NC}"
         echo ""
     else
-        local gpu_count
-        gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        local gpu_count=0
+        if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+            local card_dir vendor
+            for card_dir in /sys/class/drm/card*/device; do
+                [[ -r "$card_dir/vendor" ]] || continue
+                # A device may disappear during enumeration; skip unreadable vendors.
+                vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+                [[ "$vendor" == "0x1002" ]] && gpu_count=$((gpu_count + 1))
+            done
+        elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+            gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        fi
         echo -e "${BLUE}━━━ GPU Status (${gpu_count} GPU$([ "$gpu_count" -ne 1 ] && echo s)) ━━━${NC}"
         echo ""
     fi
@@ -5555,7 +5582,7 @@ _gpu_status() {
         for card_dir in /sys/class/drm/card*/device; do
             [[ -f "$card_dir/vendor" ]] || continue
             local vendor
-            vendor=$(cat "$card_dir/vendor" 2>/dev/null)
+            vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
             [[ "$vendor" == "0x1002" ]] || continue
             local name vram_total vram_used busy temp_c pw_w
             name=$(cat "$card_dir/product_name" 2>/dev/null || echo "AMD Radeon")
@@ -5571,7 +5598,7 @@ _gpu_status() {
                 for label_file in "$hwmon_dir"/temp*_label; do
                     [[ -f "$label_file" ]] || continue
                     local label_val
-                    label_val=$(cat "$label_file" 2>/dev/null)
+                    label_val=$(cat "$label_file" 2>/dev/null) || continue
                     if [[ "$label_val" == "junction" || "$label_val" == "edge" ]]; then
                         local input_file="${label_file/_label/_input}"
                         if [[ -f "$input_file" ]]; then
@@ -5666,7 +5693,8 @@ _gpu_status() {
         _total_mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
         if command -v jq >/dev/null 2>&1; then
             _gpu_cores=$(system_profiler SPDisplaysDataType -json 2>/dev/null \
-                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null)
+                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null) || _gpu_cores="?"
+            [[ -n "$_gpu_cores" ]] || _gpu_cores="?"
         else
             _gpu_cores="?"
         fi

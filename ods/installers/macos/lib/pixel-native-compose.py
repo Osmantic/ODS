@@ -16,6 +16,49 @@ SERVICES = ('pixel-native-ingress', 'pixel-workspace-preview', 'pixel-edge')
 INGRESS_NAME = 'ods-pixel-native-ingress'
 EDGE_NAME = 'ods-pixel-edge'
 PREVIEW_NAME = 'ods-pixel-workspace-preview'
+CONTAINER_STATES = frozenset(('created', 'running', 'paused', 'restarting', 'removing', 'exited', 'dead',
+                              'missing', 'duplicate', 'unknown'))
+HEALTH_STATES = frozenset(('healthy', 'unhealthy', 'starting', 'none', 'unknown'))
+
+
+class NativeHealthTimeout(ValueError):
+    """Keep the stable failure code and a bounded, credential-free observation."""
+    def __init__(self, states):
+        super().__init__('native-compose-health-timeout')
+        self.service_states = states
+
+
+def health_diagnostic(error):
+    # Helpers are imported under several module names. Validate the payload,
+    # rather than trusting exception text or a cross-module class identity.
+    states = getattr(error, 'service_states', None)
+    if (str(error) != 'native-compose-health-timeout' or type(states) is not dict
+            or set(states) != set(SERVICES)):
+        return ''
+    for value in states.values():
+        if (type(value) is not dict or set(value) != {'state', 'health'}
+                or type(value['state']) is not str or value['state'] not in CONTAINER_STATES
+                or type(value['health']) is not str or value['health'] not in HEALTH_STATES):
+            return ''
+    return 'Last health observation: ' + '; '.join(
+        name + '=' + states[name]['state'] + '/' + states[name]['health'] for name in SERVICES) + '.'
+
+
+def _health_states(rows, services):
+    result = {}
+    for name in services:
+        matches = [row for row in rows if type(row) is dict and row.get('Service') == name]
+        if len(matches) != 1:
+            result[name] = {'state': 'missing' if not matches else 'duplicate', 'health': 'unknown'}
+            continue
+        state, health = matches[0].get('State'), matches[0].get('Health')
+        result[name] = {
+            'state': state if type(state) is str and state in CONTAINER_STATES else 'unknown',
+            'health': health if type(health) is str and health in HEALTH_STATES else 'unknown',
+        }
+    return result
+
+
 TRANSITION_PROBE = '''import json,sys,urllib.request
 payload=json.load(sys.stdin)
 binding=payload.get('binding')
@@ -78,12 +121,14 @@ def start_infrastructure(run, *, dashboard_key, admission=None):
 def wait_ready(run, *, services=SERVICES):
     """Require all native Docker services healthy after protected activation."""
     deadline = time.monotonic() + 90
+    states = {name: {'state': 'unknown', 'health': 'unknown'} for name in services}
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
         try:
-            result = run('ps', '--format', 'json', *services, timeout=min(10, remaining))
+            states = {name: {'state': 'unknown', 'health': 'unknown'} for name in services}
+            result = run('ps', '--all', '--format', 'json', *services, timeout=min(10, remaining))
         except subprocess.TimeoutExpired:
             now = time.monotonic()
             if now < deadline:
@@ -98,6 +143,8 @@ def wait_ready(run, *, services=SERVICES):
                     raise ValueError()
                 body = result.stdout.strip()
                 rows = json.loads(body) if body.startswith('[') else [json.loads(line) for line in body.splitlines()]
+                if type(rows) is list:
+                    states = _health_states(rows, services)
                 if (type(rows) is list and len(rows) == len(services)
                         and all(type(row) is dict for row in rows)
                         and {row.get('Service') for row in rows} == set(services)
@@ -107,7 +154,7 @@ def wait_ready(run, *, services=SERVICES):
             except (ValueError, TypeError):
                 pass
         time.sleep(min(1, max(0, deadline - time.monotonic())))
-    raise ValueError('native-compose-health-timeout')
+    raise NativeHealthTimeout(states)
 
 
 def _docker(run, *args):

@@ -344,8 +344,8 @@ export default function Extensions({ compact = false }) {
     }
   }
 
-  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false } = {}) => {
-    setMutating(serviceId)
+  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false, displayServiceId = serviceId } = {}) => {
+    setMutating(displayServiceId)
     setConfirm(null)
     setDepConfirm(null)
     try {
@@ -482,10 +482,15 @@ export default function Extensions({ compact = false }) {
   }
 
   const requestAction = (ext, action) => {
+    // Hermes is internal-only; add its browser proxy and required services together.
+    const addHermesWeb = action === 'enable' && ext.id === 'hermes'
+      && ext.library_selected === false && ext.status === 'disabled'
     const messages = {
       'add-webui': 'Add Open WebUI? ODS will download and start its chat service. Any existing Open WebUI chats and settings will be reused.',
       install: `Install ${ext.name}? This will download and start the service.`,
-      enable: `Enable ${ext.name}? The service will be started.`,
+      enable: addHermesWeb
+        ? 'Add Hermes Agent and its browser access? ODS will start Hermes, Hermes Auth Proxy, and required services including SearXNG.'
+        : `Enable ${ext.name}? The service will be started.`,
       disable: `Disable ${ext.name}? The service will be stopped.`,
       // A failed extension still has an enabled definition; the API stops
       // whatever the failed attempt left running before removing it.
@@ -506,6 +511,7 @@ export default function Extensions({ compact = false }) {
     // the install plan), before any request that copies or starts anything.
     openDialog({
       action, ext, message: messages[action],
+      ...(addHermesWeb ? { targetServiceId: 'hermes-proxy', autoEnableDeps: true } : {}),
       ...(action === 'install'
         ? { settings: { serviceId: ext.id, fields: [], loading: true, error: '' } } : {}),
     })
@@ -514,8 +520,9 @@ export default function Extensions({ compact = false }) {
   const confirmAction = async () => {
     const current = confirm
     if (!current || settingsBusy || current.settings?.loading) return
-    const run = () => current.action === 'add-webui' ? handleWebuiAdd() : handleMutation(current.ext.id, current.action, {
+    const run = () => current.action === 'add-webui' ? handleWebuiAdd() : handleMutation(current.targetServiceId || current.ext.id, current.action, {
       autoEnableDeps: current.autoEnableDeps === true,
+      displayServiceId: current.ext.id,
       force: current.action === 'update' && (
         current.ext.locally_modified || ['untracked', 'unknown'].includes(current.ext.update_status)
       ),
@@ -721,6 +728,7 @@ export default function Extensions({ compact = false }) {
             <ExtensionCard
               key={ext.id}
               ext={ext}
+              hermesProxy={ext.id === 'hermes' ? extensions.find(e => e.id === 'hermes-proxy') : null}
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
               onDetails={() => setExpanded(ext.id)}
@@ -728,7 +736,7 @@ export default function Extensions({ compact = false }) {
               onAction={requestAction}
               webuiSelection={webuiSelection}
               mutating={mutating}
-              progressData={progressMap[ext.id]}
+              progressData={progressMap[ext.id] || (ext.id === 'hermes' ? progressMap['hermes-proxy'] : null)}
             />
           ))}
         </div>
@@ -886,7 +894,7 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
+function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
@@ -919,8 +927,9 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
     ext.update_available || ext.locally_modified || ['untracked', 'unknown'].includes(ext.update_status)
   )
   const showRollback = isUserExt && ext.rollback_available
-  const launchUrl = serviceUrl(ext)
-  const launchPort = ext.external_port ?? ext.external_port_default ?? ext.port
+  const launchService = ext.id === 'hermes' && hermesProxy?.status === 'enabled' ? hermesProxy : ext
+  const launchUrl = serviceUrl(launchService)
+  const launchPort = launchService.external_port ?? launchService.external_port_default ?? launchService.port
 
   return (
     <article className="extension-entry">
@@ -1028,7 +1037,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               onClick={() => onAction(ext, 'enable')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
-              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd && ext.id === 'hermes' ? 'Add Hermes with web access' : showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
             </button>
           )}
           {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false && (

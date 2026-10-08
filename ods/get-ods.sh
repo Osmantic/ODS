@@ -451,7 +451,19 @@ fi
 
 # GPU check (early info — real detection happens in the installer)
 _gpu_found=false
+# WSL may expose no DRM cards, or only Microsoft's virtual device. A
+# successful query is the hardware witness here, as in the main installer.
+# Capture the entire response before selecting a line to avoid SIGPIPE.
+if [[ "$OS" == "wsl" ]] && command -v nvidia-smi &> /dev/null; then
+    _info=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) || _info=""
+    _info=${_info%%$'\n'*}
+    if [[ -n "$_info" ]]; then
+        success "NVIDIA GPU detected: $_info"
+        _gpu_found=true
+    fi
+fi
 for _v in /sys/class/drm/card*/device/vendor; do
+    $_gpu_found && break
     case "$(cat "$_v" 2>/dev/null)" in
         0x10de) # NVIDIA
             if command -v nvidia-smi &> /dev/null; then
@@ -478,7 +490,7 @@ for _v in /sys/class/drm/card*/device/vendor; do
     $_gpu_found && break
 done
 if [[ "$OS" != "macos" ]] && ! $_gpu_found; then
-    warn "No GPU detected — CPU-only mode will be used (slow but functional)"
+    warn "No GPU detected by this preliminary check — the installer will check again"
 fi
 
 # git

@@ -29,7 +29,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
-  for(const [name,module] of [['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
+  for(const [name,module] of [['subagent-admission','subagent-announce-origin-XoBlouka.js'],['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
     ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
     const target=join(pkg,'dist',module);let text=readFileSync(target,'utf8');
@@ -71,6 +71,22 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     }
     assert.notEqual(field('apiKey',collisionRun),collisionRun,'sensitive field intent still masks UUID-shaped values');
     assert.notEqual(redactor.c(collisionRun,{mode:'tools',patterns:[collisionRun]}),collisionRun,'custom owner redaction still applies');
+  }
+  // Force late native announcements to arrive while the next owner response
+  // is streaming. Without this barrier fast Linux runs can miss the Mac race.
+  const followupActiveFile=join(root,'followup-active');
+  if(interim==='cancel') {
+    const announcePath=join(pkg,'dist','subagent-announce-origin-XoBlouka.js');
+    const signature='async function deliverSubagentAnnouncement(params) {';
+    const source=readFileSync(announcePath,'utf8');
+    assert.equal(source.split(signature).length,2);
+    const gate=`${signature}
+      const fixtureFs=await import('node:fs');
+      for(let attempt=0;attempt<400&&!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)});attempt++)
+        await new Promise(resolve=>setTimeout(resolve,10));
+      if(!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)}))throw new Error('owner followup did not start');
+    `;
+    writeFileSync(announcePath,source.replace(signature,gate));
   }
   mkdirSync(workspace);mkdirSync(plugin);
   const eventsFile=join(root,'hooks.jsonl');
@@ -174,6 +190,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       trace.branch='warmup';delta={role:'assistant',content:'READY'};
     } else if(userMessages.includes('RECOVER_AFTER_STOP')) {
       trace.branch='recovery';delta={role:'assistant',content:'19'};
+      if(interim==='cancel')writeFileSync(followupActiveFile,'active');
     } else if(userMessages.includes('HELLO_FIXTURE')) {
       trace.branch='greeting';delta={role:'assistant',content:'HELLO_VERIFIED'};
     } else if(userMessages.includes('CHILD_FIXTURE_TASK')&&!userMessages.includes('Internal task completion event')) {
@@ -213,6 +230,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     }
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason:null}]})+'\n\n');
+    if(interim==='cancel'&&trace.branch==='recovery'&&!trace.announcement)await delay(1200);
     res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:finish}],usage:{prompt_tokens:500,completion_tokens:30,total_tokens:530}})+'\n\ndata: [DONE]\n\n');
   });
   await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));

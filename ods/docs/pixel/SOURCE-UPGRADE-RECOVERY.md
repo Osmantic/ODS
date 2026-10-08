@@ -56,15 +56,33 @@ authentication requirements.
 
 ## Interrupted installation
 
-Re-run the **same reviewed installer and candidate source**. The installer
-recognizes its retained source transaction and resumes it rather than
-uninstalling the previous runtime. Changed source bytes, a different owner,
+Once a source hold has been acquired, re-run the **same reviewed installer and
+candidate source**. The installer recognizes its retained source transaction
+and resumes it rather than uninstalling the previous runtime. Changed source bytes, a different owner,
 foreign hold, a changed permission receipt during a held transaction, symlink,
 or ambiguous custody stop the upgrade. If the owner changes the preference
 before any hold or source copy, re-running the same candidate can record that
 current preference under the coordinator lock; it never restores the previous
 permission receipt. Do not delete access journals or copy old proof files to
 recover.
+
+If the attempt stopped while the plan was still `staged`, before any hold or
+source copy, a new installer download may refresh that unused plan automatically.
+This handles the README's Windows download of `main` changing between attempts.
+The requested Pixel commit and managed marker must still match, the installed
+source must be byte-for-byte unchanged (including modes), no transition or
+downstream record may exist, and the private staging buffer must be valid and
+empty. Any protected coordinator files already replaced by the first attempt
+must still match their recorded before/after states. The prior plan and mirror
+evidence remain retained; refresh itself neither copies source nor changes the
+coordinator, services or access preference. The normal installer then journals
+its coordinator writes and acquires a fresh verified hold before copying.
+
+This does not automatically repair a stopped Edge container, a changed managed
+marker, an altered installation or a held/partially applied update. A healthy
+runtime remains necessary for acquiring the hold. Preserve the diagnostic and
+the existing state when any of these checks refuses an update; deleting journals
+is not a supported recovery path.
 
 Before the ordinary directory, environment, Compose and native-service phases
 begin, the staged source can be restored under the same hold. This is a
