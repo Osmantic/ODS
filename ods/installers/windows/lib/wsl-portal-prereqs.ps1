@@ -102,7 +102,9 @@ function Get-ODSPortalDockerDesktopRoots {
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop')) {
         # Each registration is optional; most hosts have only one of these keys.
         $registration = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
-        if ($registration -and $registration.InstallLocation) { $roots += [string]$registration.InstallLocation }
+        # Some registrations quote the value or keep surrounding spaces.
+        $location = if ($registration) { ([string]$registration.InstallLocation).Trim().Trim('"') } else { '' }
+        if ($location) { $roots += $location }
     }
     if ($env:LOCALAPPDATA) { $roots += Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop' }
     if ($env:ProgramW6432) { $roots += Join-Path $env:ProgramW6432 'Docker\Docker' }
@@ -161,17 +163,24 @@ function Install-ODSPortalDockerDesktop {
         & $winget.Source @arguments | Out-Host
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previousPreference }
-    # 0x8A15002B is APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE. winget
-    # install can return it when the package is already installed/current.
-    # Do not classify localized console text or ignore other installation errors.
-    $alreadyInstalled = $code -eq -1978335189
-    if ($code -ne 0 -and -not $alreadyInstalled) {
+    # winget return codes that mean Docker Desktop is already present. Each is
+    # trusted only after the complete rediscovery below. Do not classify
+    # localized console text or ignore any other installation error.
+    $alreadyInstalled = $code -in @(
+        -1978335189,  # 0x8A15002B UPDATE_NOT_APPLICABLE (install upgrades by default)
+        -1978335135,  # 0x8A150061 PACKAGE_ALREADY_INSTALLED
+        -1978334963,  # 0x8A15010D INSTALL_ALREADY_INSTALLED
+        -1978334962)  # 0x8A15010E INSTALL_DOWNGRADE (a newer version is installed)
+    # 0x8A150109 INSTALL_REBOOT_REQUIRED_TO_FINISH: installed; it finishes with
+    # the Windows restart setup already requests for a new Desktop.
+    $restartPending = $code -eq -1978334967
+    if ($code -ne 0 -and -not $alreadyInstalled -and -not $restartPending) {
         throw "Docker Desktop installation did not finish (winget exit $code). Install it from https://docs.docker.com/desktop/setup/install/windows-install/ , restart Windows, then rerun this command."
     }
     $desktop = Get-ODSPortalDockerDesktop
     if (-not $desktop.Installed) {
         if ($alreadyInstalled) {
-            throw 'winget reports Docker Desktop is already installed with no applicable update, but ODS could not locate its application and bundled CLI. Open Docker Desktop from Start and share its installation folder with ODS support. Keep your existing Docker data.'
+            throw "winget reports Docker Desktop is already installed (exit $code), but ODS could not locate its application and bundled CLI. Open Docker Desktop from Start and share its installation folder with ODS support. Keep your existing Docker data."
         }
         throw 'winget finished, but ODS could not locate the Docker Desktop application and bundled CLI. Open Docker Desktop from Start and check its installation folder before rerunning ODS setup.'
     }
