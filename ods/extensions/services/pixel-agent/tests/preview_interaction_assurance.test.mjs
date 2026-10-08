@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
+import {readFileSync} from 'node:fs';
 import {createToolLoopGuard, userMessageRequestsWorkspaceVerificationContinuation, WORKSPACE_PREVIEW_COMPLETE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL, PAGE_ERROR_REPAIR_INSTRUCTION, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection,
   boundStaticPreviewInspection} from '../plugin/preview-interaction-assurance.mjs';
-import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
+import {INSPECTION_KIND, INSPECTION_SCOPE, BEHAVIOR_UNTESTED, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams,
+  createWorkspacePreviewInspectTool, previewBehaviorPlanIssue, validateIncompleteInspectionReceipt} from '../plugin/workspace-preview-inspect.mjs';
 
 import {PREVIEW_STORAGE_DISCLOSURE} from '../plugin/workspace-preview.mjs';
 
@@ -822,6 +824,146 @@ test('a different run and session cannot inherit the behavior obligation',()=>{
 });
 
 // --- Pure helper tests for attemptedPreviewBehavior/boundPreviewBehavior ---
+
+// Mac ab277929: the capsule passed every submitted step, but an empty Add
+// click followed immediately by fill did not establish a postcondition. The
+// tool said "passed" while completion correctly withheld interaction proof.
+// Keep the recorded browser receipt distinct from synthetic guard fixtures.
+const macReading = JSON.parse(readFileSync(new URL('./fixtures/mac-reading-interaction-2026-10-08.json', import.meta.url), 'utf8'));
+
+test('recorded Mac browser pass explains its missing postcondition without changing the receipt', async () => {
+  const original = structuredClone(macReading);
+  const tool = createWorkspacePreviewInspectTool({request: async () => structuredClone(macReading.receipt),
+    behaviorRequirement: () => true});
+  const result = await tool.execute('recorded-mac', macReading.params);
+  assert.equal(result.isError, true);
+  assert.equal(result.details.status, 'incomplete');
+  assert.equal(result.details.errorCode, BEHAVIOR_UNTESTED);
+  assert.deepEqual(result.details.receipt, original.receipt);
+  assert.deepEqual(macReading, original, 'no edits to the submitted plan or original browser evidence');
+  assert.deepEqual(validateIncompleteInspectionReceipt(result.details, normalizeWorkspacePreviewInspectionParams(macReading.params)), original.receipt);
+  assert.match(result.content[0].text, /Step 5 \(click\) has no result assertion before step 6 \(fill\)/);
+  assert.match(result.content[0].text, /same published snapshot/);
+  assert.match(result.content[0].text, /Do not change the site just to satisfy a mistaken test plan/);
+  assert.match(result.content[0].text, /Evidence: .*"status":"incomplete"/);
+  assert.doesNotMatch(result.content[0].text, /^Preview inspection passed\./);
+  assert.equal(boundPreviewBehavior(macReading.params, result, macReading.params, {requiresInteraction:true}), undefined);
+  // A forged outer success cannot turn the incomplete envelope into proof.
+  assert.equal(boundPreviewBehavior(macReading.params, {...result, isError:false}, macReading.params, {requiresInteraction:true}), undefined);
+  assert.throws(() => validateIncompleteInspectionReceipt({...result.details, errorCode:'unknown'}, normalizeWorkspacePreviewInspectionParams(macReading.params)));
+});
+
+async function executeBehaviorInspection(guard, params, {transport='direct', id, evidence=behaviorReceipt(params)} = {}) {
+  const wrapped = transport !== 'direct';
+  const outer = behaviorInspection(guard, params, {wrapped, id});
+  const childId = wrapped ? `tool_search_code:${id}:${PREVIEW_INSPECTION_TOOL}:1` : id;
+  const child = transport === 'nested' ? call(guard, PREVIEW_INSPECTION_TOOL, params, childId) : undefined;
+  const result = await createWorkspacePreviewInspectTool({request: async () => structuredClone(evidence),
+    transitionRequirement: (id, args) => guard.previewInspectionTransition(id, args),
+    behaviorRequirement: (id, args) => guard.previewInspectionBehavior(id, args)}).execute(childId, params);
+  if (child) guard.afterToolCall({...child.event, result}, child.ctx);
+  const envelope = wrapped ? {...outer.result, details:{...outer.result.details, result}} : result;
+  guard.afterToolCall({...outer.event, result:envelope}, outer.ctx);
+  return result;
+}
+
+for (const transport of ['direct', 'deferred', 'nested']) test(`tool-time interaction feedback and corrected same-snapshot evidence (${transport})`, async () => {
+  const {guard, preview} = setup({prompt:packingPrompt});
+  // Synthetic receipt at this fixture's published snapshot, with the exact
+  // recorded action order. This is protocol/guard proof, not a browser rerun.
+  const params = {...macReading.params, siteId:preview.siteId, sha256:preview.sha256};
+  const first = await executeBehaviorInspection(guard, params, {transport, id:'bad-order'});
+  assert.equal(first.details.errorCode, BEHAVIOR_UNTESTED);
+  assert.match(first.content[0].text, /Step 5 \(click\).*step 6 \(fill\)/);
+  assert.equal(guard.verificationForRun('run').status, 'failed');
+  const staticPlan = {...params, steps:[{action:'assert-visible', locator:{selector:'h1'}}]};
+  const staticResult = await executeBehaviorInspection(guard, staticPlan, {transport, id:'static-too-early'});
+  assert.equal(staticResult.details.errorCode, BEHAVIOR_UNTESTED);
+  assert.match(staticResult.content[0].text, /contains no interaction/);
+  assert.equal(guard.verificationForRun('run').status, 'failed');
+  // Keep all submitted interactions and expected results. Add a check that
+  // the empty Add click leaves the count alone, before filling the input.
+  const corrected = {...params, steps:[...params.steps.slice(0,5),
+    {action:'assert-text', locator:{selector:'#total-count'}, expectedText:'1'}, ...params.steps.slice(5)]};
+  const passed = await executeBehaviorInspection(guard, corrected, {transport, id:'corrected-order'});
+  assert.equal(passed.isError, undefined);
+  assert.equal(passed.details.status, 'passed');
+  assert.equal(guard.verificationForRun('run').status, 'passed');
+  const laterStatic = await executeBehaviorInspection(guard, staticPlan, {transport, id:'static-after-proof'});
+  assert.equal(laterStatic.details.status, 'passed', 'static checks retain existing current-snapshot interaction proof');
+  assert.equal(guard.verificationForRun('run').status, 'passed');
+});
+
+test('behavior feedback requires an exact pending call in the current run and session', () => {
+  const {guard, preview} = setup({prompt:packingPrompt});
+  const params = packingPlan(preview);
+  assert.equal(guard.previewInspectionBehavior('unbound', params), undefined);
+  const started = behaviorInspection(guard, params, {id:'pending'});
+  assert.equal(guard.previewInspectionBehavior('pending', params), true);
+  assert.equal(guard.previewInspectionBehavior('other', params), undefined);
+  assert.equal(guard.previewInspectionBehavior('pending', {...params, viewport:{width:900,height:600}}), undefined);
+  assert.equal(guard.previewInspectionBehavior('tool_search_code:other:pixel_ods_workspace_preview_inspect:1', params), undefined);
+  guard.afterToolCall({...started.event, result:started.result}, started.ctx);
+  guard.toolResultPersist({toolName:PREVIEW_INSPECTION_TOOL, toolCallId:'pending',
+    message:{role:'toolResult', toolName:PREVIEW_INSPECTION_TOOL, toolCallId:'pending', ...started.result}}, started.ctx);
+  assert.equal(guard.previewInspectionBehavior('pending', params), undefined, 'consumed call cannot demand another check');
+  behaviorInspection(guard, params, {id:'old-session'});
+  guard.observeRun({...context, runId:'new-run'}, 'pixel', {prompt:packingPrompt});
+  assert.equal(guard.previewInspectionBehavior('old-session', params), undefined, 'new active run revokes old call context');
+});
+
+test('static-only work and explicit show/hide duties do not gain generic behavior requirements', async () => {
+  const {guard, preview} = setup({prompt:packingPrompt});
+  const staticResult = await executeBehaviorInspection(guard,
+    {...packingPlan(preview), steps:[{action:'assert-visible', locator:{selector:'h1'}}]}, {id:'only-static'});
+  assert.equal(staticResult.details.status, 'passed');
+  const visibility = setup();
+  const extraActions = {...plan(visibility.preview), steps:[...plan(visibility.preview).steps,
+    {action:'click', locator:{selector:'#extra'}}, {action:'fill', locator:{selector:'#input'}, value:'x'}]};
+  assert.ok(previewBehaviorPlanIssue(extraActions));
+  const passed = await executeBehaviorInspection(visibility.guard, extraActions, {id:'visibility-with-exploration'});
+  assert.equal(passed.details.status, 'passed');
+  assert.equal(visibility.guard.verificationForRun('run').status, 'passed', 'exploration does not expand the explicit owner-bound transition duty');
+});
+
+for (const fault of ['browser-failure', 'page-errors', 'receipt-mismatch']) test(`behavior feedback preserves ${fault}`, async () => {
+  const {guard, preview} = setup({prompt:packingPrompt});
+  const params = {...packingPlan(preview), steps:packingPlan(preview).steps.slice(0,2)};
+  const evidence = behaviorReceipt(params);
+  if (fault === 'browser-failure') {
+    evidence.status = 'failed';
+    evidence.steps = [{...evidence.steps[0], status:'failed', errorCode:'no_match', before:{count:0}}];
+    delete evidence.steps[0].after;
+  } else if (fault === 'page-errors') evidence.pageErrors = {count:1, messages:['script threw']};
+  else evidence.planSha256 = 'b'.repeat(64);
+  const result = await executeBehaviorInspection(guard, params, {id:fault, evidence});
+  assert.notEqual(result.details.errorCode, BEHAVIOR_UNTESTED);
+  assert.doesNotMatch(result.content[0].text, /listed browser steps passed/);
+  assert.equal(guard.verificationForRun('run').status, 'failed');
+  if (fault === 'browser-failure') assert.equal(result.details.steps[0].errorCode, 'no_match');
+  if (fault === 'page-errors') assert.match(result.content[0].text, /uncaught script error/);
+});
+
+test('shared plan predicate preserves the existing action/postcondition evidence floor', () => {
+  const action = name => ({action:name});
+  for (const [names, reason, index, nextIndex] of [
+    [['assert-visible'], 'no_interaction'],
+    [['download'], 'download'],
+    [['click','assert-text'], undefined],
+    [['fill','fill','click','assert-visible'], undefined],
+    [['select-option','assert-visible'], undefined],
+    [['click','fill','assert-text'], 'missing_postcondition', 0, 1],
+    [['click','click','assert-text'], 'missing_postcondition', 0, 1],
+    [['fill'], 'missing_postcondition', 0],
+    [['assert-visible','click'], 'missing_postcondition', 1],
+  ]) {
+    const issue = previewBehaviorPlanIssue({steps:names.map(action)});
+    assert.equal(issue?.reason, reason, names.join(','));
+    assert.equal(issue?.index, index);
+    assert.equal(issue?.nextIndex, nextIndex);
+  }
+});
+
 import {FILL_INSPECTION_SCOPE} from '../plugin/workspace-preview-inspect.mjs';
 import {attemptedPreviewBehavior, boundPreviewBehavior} from '../plugin/preview-interaction-assurance.mjs';
 

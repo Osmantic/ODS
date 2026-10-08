@@ -7286,6 +7286,28 @@ export function createToolLoopGuard({
       ...(intent?.control ? {control: intent.control} : {}), initiallyHidden: intent?.initiallyHidden !== false});
   }
 
+  // Tell this exact pending tool call why its browser pass cannot satisfy the
+  // remembered interaction duty. This only withholds a pass; it grants no proof.
+  function previewInspectionBehavior(toolCallId, params) {
+    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return undefined;
+    const parent = toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
+        toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1] : undefined;
+    const bound = [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
+      isDeepStrictEqual(run.selectedParams, params));
+    const runId = bound[0]?.runId, state = runs.get(runId);
+    if (!state || state.workspaceVisibilityInteractionRequired || !workspaceBehaviorAttempt(state) ||
+        bound.some(run => run.runId !== runId || run.inspectionSessionId !== state.currentSessionId ||
+          run.inspectionSessionKey !== state.currentSessionKey) ||
+        (state.currentSessionId && sessionRuns.get(state.currentSessionId) !== runId)) return undefined;
+    // A later static check may retain an earlier valid interaction receipt,
+    // exactly as afterToolCall already does; it need not repeat the interaction.
+    if (Array.isArray(params.steps) && params.steps.every(step => !['click','fill','select-option','download'].includes(step.action)) &&
+        bound.some(({priorBehaviorInspection: prior}) => prior?.siteId === params.siteId && prior.sha256 === params.sha256 &&
+          prior.sessionId === state.currentSessionId && prior.sessionKey === state.currentSessionKey)) return undefined;
+    return true;
+  }
+
   function rememberToolRun(
     toolCallId,
     runId,
@@ -13009,6 +13031,7 @@ export function createToolLoopGuard({
     },
     afterToolCall,
     previewInspectionTransition,
+    previewInspectionBehavior,
     toolResultPersist,
     beforeAgentFinalize,
     recoverWorkspacePreview,

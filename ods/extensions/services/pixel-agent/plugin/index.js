@@ -872,8 +872,9 @@ export default definePluginEntry({
       registerTool(api, createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
         // Finalize-time revisions do not reach the model after a plugin tool
-        // call; an untested requested show/hide change is reported here.
+        // call; an untested show/hide or attempted interaction is reported here.
         transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
+        behaviorRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionBehavior(toolCallId, params),
       }), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 
