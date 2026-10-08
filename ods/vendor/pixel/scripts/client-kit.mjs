@@ -68,7 +68,7 @@ function draft(clientId, profile) {
     $schema: "./schemas/client-overlay-v1.schema.json",
     schemaVersion: 1,
     clientId,
-    core: { pixel: "4.3.30", modificationAllowed: false, privateStateOutsideCore: true },
+    core: { pixel: "4.3.31", modificationAllowed: false, privateStateOutsideCore: true },
     capabilityProfile: profile,
     frontier: {
       defaultRoute: "local-first", advertisedAuthModes: ["chatgpt"],

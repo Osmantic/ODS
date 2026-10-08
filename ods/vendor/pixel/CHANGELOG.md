@@ -1,5 +1,11 @@
 # Changelog
 
+## 4.3.31 - ODS-maintained candidate
+
+- Wait for Operations Broker executable startup before the inventory deadline
+  begins. Filesystem isolation setup has its own bounded startup window.
+- Preserve every existing sandbox, credential and reader-access boundary.
+
 ## 4.3.30 - ODS-maintained candidate
 
 - Wait for an active Operations Broker to publish its inventory before applying

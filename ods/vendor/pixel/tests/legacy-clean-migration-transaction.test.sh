@@ -24,7 +24,7 @@ tar --exclude=.git --exclude=.env --exclude=.generated --exclude=.runtime --excl
 mkdir -p "$tmp/install" "$tmp/openclaw"
 cat > "$repo/.env" <<ENV
 PIXEL_INSTALL_DIR=$tmp/install
-PIXEL_RELEASE_VERSION=4.3.30
+PIXEL_RELEASE_VERSION=4.3.31
 OPENCLAW_HOME=$tmp/openclaw
 OPENCLAW_BIN=$tmp/openclaw-bin
 ENV
@@ -157,7 +157,7 @@ journal_json() { # committed cleanup rolledBack finalization dest old new had_ol
   local committed=$1 cleanup=$2 rolledBack=$3 finalization=$4 dest=$5 old=$6 new=$7 had=$8
   local old_ev='null'
   if [[ $had == 1 && -e "$old" ]]; then old_ev=$(ev "$old"); fi
-  printf '{"schemaVersion":1,"kind":"pixel-restore-migration-journal","backupSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sourcePixel":"3.2.2","targetPixel":"4.3.30","committed":%s,"cleanup":"%s","rolledBack":%s,"finalization":"%s","contractRoots":["%s"],"destinations":["%s"],"oldPaths":["%s"],"temporaryPaths":["%s"],"hadOld":[%s],"units":["openclaw-gateway.service"],"rollbackProgress":["pending"],"oldEvidence":[%s]}' \
+  printf '{"schemaVersion":1,"kind":"pixel-restore-migration-journal","backupSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","sourcePixel":"3.2.2","targetPixel":"4.3.31","committed":%s,"cleanup":"%s","rolledBack":%s,"finalization":"%s","contractRoots":["%s"],"destinations":["%s"],"oldPaths":["%s"],"temporaryPaths":["%s"],"hadOld":[%s],"units":["openclaw-gateway.service"],"rollbackProgress":["pending"],"oldEvidence":[%s]}' \
     "$committed" "$cleanup" "$rolledBack" "$finalization" "$dest" "$dest" "$old" "$new" "$had" "$old_ev"
 }
 
@@ -237,7 +237,7 @@ run_verb --migration-commit "$journal"
 grep -Fq "transaction sibling" <<<"$stderr" || fail "arbitrary old path was not rejected by sibling derivation"
 
 # 4b: a destination outside the trusted contract (destinations != contractRoots).
-write_journal "$journal" "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-journal\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.30\",\"committed\":false,\"cleanup\":\"armed\",\"rolledBack\":false,\"finalization\":\"armed\",\"contractRoots\":[\"$dest\"],\"destinations\":[\"$sentinel\"],\"oldPaths\":[\"$state/.pixel-restore-sentinel.txt-999-0.old\"],\"temporaryPaths\":[\"$state/.pixel-restore-sentinel.txt-999-0.new\"],\"hadOld\":[1],\"units\":[\"openclaw-gateway.service\"],\"rollbackProgress\":[\"pending\"],\"oldEvidence\":[$(ev "$sentinel")]}"
+write_journal "$journal" "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-journal\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.31\",\"committed\":false,\"cleanup\":\"armed\",\"rolledBack\":false,\"finalization\":\"armed\",\"contractRoots\":[\"$dest\"],\"destinations\":[\"$sentinel\"],\"oldPaths\":[\"$state/.pixel-restore-sentinel.txt-999-0.old\"],\"temporaryPaths\":[\"$state/.pixel-restore-sentinel.txt-999-0.new\"],\"hadOld\":[1],\"units\":[\"openclaw-gateway.service\"],\"rollbackProgress\":[\"pending\"],\"oldEvidence\":[$(ev "$sentinel")]}"
 run_verb --migration-rollback "$journal"
 [[ $rc -ne 0 ]] || fail "rollback accepted a destination outside the trusted contract"
 [[ -e "$sentinel" ]] || fail "contract-mismatched rollback deleted the sentinel"
@@ -373,7 +373,7 @@ destA="$rootA/data"; oldA="$rootA/.pixel-restore-data-999-0.old"; newA="$rootA/.
 destB="$rootB/data"; oldB="$rootB/.pixel-restore-data-999-1.old"; newB="$rootB/.pixel-restore-data-999-1.new"
 printf 'PRE-A\n' > "$oldA"; printf 'NEW-A\n' > "$destA"
 printf 'PRE-B\n' > "$oldB"; printf 'NEW-B\n' > "$destB"
-write_journal "$journal" "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-journal\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.30\",\"committed\":false,\"cleanup\":\"armed\",\"rolledBack\":false,\"finalization\":\"armed\",\"contractRoots\":[\"$destA\",\"$destB\"],\"destinations\":[\"$destA\",\"$destB\"],\"oldPaths\":[\"$oldA\",\"$oldB\"],\"temporaryPaths\":[\"$newA\",\"$newB\"],\"hadOld\":[1,1],\"units\":[\"openclaw-gateway.service\"],\"rollbackProgress\":[\"pending\",\"pending\"],\"oldEvidence\":[$(ev "$oldA"),$(ev "$oldB")]}"
+write_journal "$journal" "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-journal\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.31\",\"committed\":false,\"cleanup\":\"armed\",\"rolledBack\":false,\"finalization\":\"armed\",\"contractRoots\":[\"$destA\",\"$destB\"],\"destinations\":[\"$destA\",\"$destB\"],\"oldPaths\":[\"$oldA\",\"$oldB\"],\"temporaryPaths\":[\"$newA\",\"$newB\"],\"hadOld\":[1,1],\"units\":[\"openclaw-gateway.service\"],\"rollbackProgress\":[\"pending\",\"pending\"],\"oldEvidence\":[$(ev "$oldA"),$(ev "$oldB")]}"
 # Rollback processes root index 1 (destB) first, then root index 0 (destA); inject a
 # failure on destA's removal so root 1 is already restored when root 0 fails.
 PIXEL_MIGRATION_TEST_RM_FAIL="$destA" run_verb --migration-rollback "$journal"
@@ -396,7 +396,7 @@ grep -Eq '"rolledBack":[[:space:]]*true' "$journal" || fail "two-root rollback d
 # is never erased or treated as an armed transaction.
 # --------------------------------------------------------------------------- #
 reserved="$custody/txn-reserved.json"
-printf '%s\n' "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-reserved\",\"reservationToken\":\"$(python3 -c 'import secrets;print(secrets.token_hex(16))')\",\"contractSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.30\"}" > "$reserved"
+printf '%s\n' "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-reserved\",\"reservationToken\":\"$(python3 -c 'import secrets;print(secrets.token_hex(16))')\",\"contractSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.31\"}" > "$reserved"
 chmod 600 "$reserved"
 run_verb --migration-commit "$reserved"
 [[ $rc -ne 0 ]] || fail "commit accepted a reserved (not-yet-armed) journal"
@@ -626,7 +626,7 @@ grep -Fq "prepared temporary path is unsafe" "$tmp/fcerr-fifo-dest" || fail "arm
 # progress, so unit A is never left down by a failure on unit B.
 # --------------------------------------------------------------------------- #
 rm -f "$dest" "$old"; printf 'NEW-LIVE-STATE\n' > "$dest"; printf 'PRE-MIGRATION-OLD\n' > "$old"
-write_journal "$journal" "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-journal\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.30\",\"committed\":false,\"cleanup\":\"armed\",\"rolledBack\":false,\"finalization\":\"armed\",\"contractRoots\":[\"$dest\"],\"destinations\":[\"$dest\"],\"oldPaths\":[\"$old\"],\"temporaryPaths\":[\"$new\"],\"hadOld\":[1],\"units\":[\"openclaw-gateway.service\",\"pixel-source-broker.timer\"],\"rollbackProgress\":[\"pending\"],\"oldEvidence\":[$(ev "$old")]}"
+write_journal "$journal" "{\"schemaVersion\":1,\"kind\":\"pixel-restore-migration-journal\",\"backupSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sourcePixel\":\"3.2.2\",\"targetPixel\":\"4.3.31\",\"committed\":false,\"cleanup\":\"armed\",\"rolledBack\":false,\"finalization\":\"armed\",\"contractRoots\":[\"$dest\"],\"destinations\":[\"$dest\"],\"oldPaths\":[\"$old\"],\"temporaryPaths\":[\"$new\"],\"hadOld\":[1],\"units\":[\"openclaw-gateway.service\",\"pixel-source-broker.timer\"],\"rollbackProgress\":[\"pending\"],\"oldEvidence\":[$(ev "$old")]}"
 : > "$PIXEL_MIGRATION_TEST_SYSTEMCTL_LOG"
 printf '%s\n' "openclaw-gateway.service" "pixel-source-broker.timer" > "$PIXEL_MIGRATION_TEST_SYSTEMCTL_STATE"
 PIXEL_MIGRATION_TEST_SYSTEMCTL_FAIL="stop pixel-source-broker.timer" run_verb --migration-rollback "$journal"

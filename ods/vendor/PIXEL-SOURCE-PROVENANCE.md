@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`655a5b0205a92afce33d45cad1d05d48b661b996`, and its SHA-256 is
-`63dd4ad238c65f072d523c89ab54b04dd6f200b1066ecfcbfca1340fafaeac81`.
+`2ef78e7067211a198748c5499ed5a0261f4b48b6`, and its SHA-256 is
+`cc4c5944a6a09a4f1132abef8811bdabf64384a8e8ee67fb3581f0071e4435b9`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -178,3 +178,18 @@ no private history or signing credentials were accessed. Runtime and
 dependency versions, image digests, policies and trust anchors are unchanged.
 Current source/bundle pins above identify this candidate; prior release
 sections remain historical evidence.
+
+## ODS-maintained 4.3.31 Operations executable-start candidate
+
+This candidate separates systemd filesystem-isolation setup from Operations
+inventory readiness. Type=exec and a bounded 180-second startup window preserve
+every existing isolation setting. The existing inventory and private-state
+checks remain required. See `pixel/ODS-QUALIFICATION-4.3.31.md` for measured
+WSL behavior and the boundary between fixture and fleet acceptance.
+
+The public vendor tree is `3c8abd7b0f95ffdb72d0f97685d89ef81b927eb1`. Two independent empty bare
+repositories produced byte-identical bundles using the documented synthetic
+identity, timestamp and message. Only one public root is advertised. Runtime
+and dependency versions, image pins, policies and trust anchors are unchanged.
+Current source/bundle pins above identify this candidate; prior sections remain
+historical evidence. No private source history or signing credentials were used.

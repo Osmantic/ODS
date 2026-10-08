@@ -34,7 +34,7 @@ def test_public_ods_bundle_acquires_without_private_repository(tmp_path, monkeyp
     else:
         assert bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
             destination=destination, source_url=str(bundle)) == destination
-        assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.30'
+        assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.31'
 
 
 def test_standalone_acquisition_defaults_to_ods_bundle(tmp_path, monkeypatch):
@@ -58,7 +58,7 @@ def test_standalone_acquisition_defaults_to_ods_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap, 'command', audited_command)
     destination = tmp_path / 'source'
     assert bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF, destination=destination) == destination
-    assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.30'
+    assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.31'
     assert len(local_git_calls) == 2
 
 

@@ -12,7 +12,7 @@ expected_other="$tmp/other-install"
 mkdir -p "$configured" "$expected_other"
 cat > "$repo/.env" <<ENV
 PIXEL_INSTALL_DIR=$configured
-PIXEL_RELEASE_VERSION=4.3.30
+PIXEL_RELEASE_VERSION=4.3.31
 OPENCLAW_HOME=$tmp/openclaw
 OPENCLAW_BIN=$tmp/openclaw-bin
 ENV
