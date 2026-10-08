@@ -186,7 +186,7 @@ if ($IsLinux) {
     $registrations = @{}
     function Get-ItemProperty([string]$LiteralPath, [string]$ErrorAction) { return $registrations[$LiteralPath] }
     try {
-        foreach ($case in @('user', 'machine', 'machine64', 'registry-user', 'registry-machine', 'registry-wow', 'stale-registry', 'empty-registry', 'partial-registry', 'none', 'cli-only', 'partial', 'split-installation', 'directory-exe', 'relative-registry', 'drive-relative-registry', 'root-relative-registry', 'remote-registry')) {
+        foreach ($case in @('user', 'machine', 'machine64', 'registry-user', 'registry-machine', 'registry-wow', 'quoted-registry', 'stale-registry', 'empty-registry', 'partial-registry', 'none', 'cli-only', 'partial', 'split-installation', 'directory-exe', 'relative-registry', 'drive-relative-registry', 'root-relative-registry', 'remote-registry')) {
             $caseRoot = Join-Path $fixture $case
             $env:LOCALAPPDATA = Join-Path $caseRoot 'User [QA]'
             $env:ProgramFiles = Join-Path $caseRoot 'Program Files'
@@ -202,6 +202,11 @@ if ($IsLinux) {
                 $expected = Join-Path $caseRoot 'Custom [Docker] Location'
                 $key = switch ($case) { 'registry-user' { $userKey }; 'registry-machine' { $machineKey }; 'registry-wow' { $wowKey } }
                 $registrations[$key] = [pscustomobject]@{ InstallLocation = $expected }
+            }
+            if ($case -eq 'quoted-registry') {
+                # Some uninstall registrations quote the location or keep padding.
+                $expected = Join-Path $caseRoot 'Quoted [Docker] Location'
+                $registrations[$userKey] = [pscustomobject]@{ InstallLocation = ' "' + $expected + '" ' }
             }
             if ($case -eq 'stale-registry') { $registrations[$userKey] = [pscustomobject]@{ InstallLocation = (Join-Path $caseRoot 'removed') } }
             if ($case -eq 'empty-registry') { $registrations[$userKey] = [pscustomobject]@{ DisplayName = 'Docker Desktop' } }
@@ -265,6 +270,13 @@ if ($IsLinux) {
         @{ code=-1978335189; present=$true; ok=$true; existing=$true },
         @{ code=-1978335189; present=$false; ok=$false; existing=$false },
         @{ code=0; present=$false; ok=$false; existing=$false },
+        @{ code=-1978335135; present=$true; ok=$true; existing=$true },
+        @{ code=-1978334963; present=$true; ok=$true; existing=$true },
+        @{ code=-1978334962; present=$true; ok=$true; existing=$true },
+        @{ code=-1978334962; present=$false; ok=$false; existing=$false },
+        @{ code=-1978334967; present=$true; ok=$true; existing=$false },
+        @{ code=-1978334967; present=$false; ok=$false; existing=$false },
+        @{ code=-1978334966; present=$true; ok=$false; existing=$false },
         @{ code=1603; present=$true; ok=$false; existing=$false },
         @{ code=1603; present=$false; ok=$false; existing=$false })) {
         $desktopPresent = $case.present; $wingetCode = $case.code
@@ -273,7 +285,7 @@ if ($IsLinux) {
         Check (($failure -eq '') -eq $case.ok) "winget exit $wingetCode / Desktop $desktopPresent has the correct outcome"
         if ($case.ok) {
             Check ($result.AlreadyInstalled -eq $case.existing -and $result.Desktop.Installed) 'only a verified no-update result reuses the existing Desktop'
-        } elseif ($wingetCode -eq -1978335189) {
+        } elseif ($wingetCode -in @(-1978335189, -1978335135, -1978334963, -1978334962)) {
             Check ($failure -match 'already installed' -and $failure -match 'locate') 'unresolved registered Desktop gets a discovery diagnostic'
         }
     }
