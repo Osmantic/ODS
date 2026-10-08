@@ -10,6 +10,8 @@ serves only those immutable snapshots with browser-hardening headers.
 from __future__ import annotations
 
 import hashlib
+import errno
+from contextlib import contextmanager
 import fcntl
 import importlib.util
 import itertools
@@ -106,6 +108,40 @@ CSP = (
 
 class PreviewError(Exception):
     """A generic fail-closed preview error."""
+
+
+STARTUP_STAGES = frozenset(('configuration', 'owner', 'workspace-root', 'previews-root', 'control-socket-cleanup',
+                            'http-socket-cleanup', 'http-listener', 'unix-http-listener', 'control-listener'))
+STARTUP_REASONS = {
+    'unsafe preview root': 'unsafe-root',
+    'unsafe existing preview socket': 'unsafe-control-socket',
+    'unsafe existing preview HTTP socket': 'unsafe-http-socket',
+    'preview must run as its configured owner': 'owner-mismatch',
+    'invalid preview service configuration': 'invalid-configuration',
+    'container preview requires numeric non-root owner': 'invalid-owner',
+}
+
+
+class PreviewStartupError(PreviewError):
+    def __init__(self, stage, error):
+        super().__init__('preview startup failed')
+        self.stage = stage if stage in STARTUP_STAGES else 'unknown'
+        if isinstance(error, OSError):
+            self.reason = errno.errorcode.get(error.errno, 'OS_ERROR')
+        elif isinstance(error, PreviewError):
+            self.reason = STARTUP_REASONS.get(str(error), 'validation-failed')
+        else:
+            self.reason = 'invalid-configuration'
+
+
+@contextmanager
+def _startup_phase(stage):
+    try:
+        yield
+    except (PreviewError, OSError, ValueError, KeyError) as error:
+        # OS exception text can include paths, and arbitrary validation errors
+        # can contain configuration values. Export only static stage/categories.
+        raise PreviewStartupError(stage, error) from None
 
 
 class JsonArtifactError(PreviewError):
@@ -1339,34 +1375,42 @@ def serve(
         or type(port) is not int or not 1 <= port <= 65535
         or listen_host not in ("127.0.0.1", "0.0.0.0")
     ):
-        raise PreviewError("invalid preview service configuration")
-    owner_uid = preview_owner_uid(owner)
-    _safe_root(workspace, owner_uid)
-    previews.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _safe_root(previews, owner_uid)
-    if socket_path.exists() or socket_path.is_symlink():
-        info = socket_path.lstat()
-        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != owner_uid:
-            raise PreviewError("unsafe existing preview socket")
-        socket_path.unlink()
-    if HTTP_SOCKET_PATH.exists() or HTTP_SOCKET_PATH.is_symlink():
-        info = HTTP_SOCKET_PATH.lstat()
-        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != owner_uid:
-            raise PreviewError("unsafe existing preview HTTP socket")
-        HTTP_SOCKET_PATH.unlink()
+        raise PreviewStartupError('configuration', PreviewError("invalid preview service configuration"))
+    with _startup_phase('owner'):
+        owner_uid = preview_owner_uid(owner)
+    with _startup_phase('workspace-root'):
+        _safe_root(workspace, owner_uid)
+    with _startup_phase('previews-root'):
+        previews.mkdir(mode=0o700, parents=True, exist_ok=True)
+        _safe_root(previews, owner_uid)
+    with _startup_phase('control-socket-cleanup'):
+        if socket_path.exists() or socket_path.is_symlink():
+            info = socket_path.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != owner_uid:
+                raise PreviewError("unsafe existing preview socket")
+            socket_path.unlink()
+    with _startup_phase('http-socket-cleanup'):
+        if HTTP_SOCKET_PATH.exists() or HTTP_SOCKET_PATH.is_symlink():
+            info = HTTP_SOCKET_PATH.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != owner_uid:
+                raise PreviewError("unsafe existing preview HTTP socket")
+            HTTP_SOCKET_PATH.unlink()
 
-    httpd = PreviewHTTPServer((listen_host, port), previews)
+    with _startup_phase('http-listener'):
+        httpd = PreviewHTTPServer((listen_host, port), previews)
     http_thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     http_thread.start()
-    unix_httpd = PreviewUnixHTTPServer(str(HTTP_SOCKET_PATH), previews, port)
-    os.chmod(HTTP_SOCKET_PATH, 0o660)
+    with _startup_phase('unix-http-listener'):
+        unix_httpd = PreviewUnixHTTPServer(str(HTTP_SOCKET_PATH), previews, port)
+        os.chmod(HTTP_SOCKET_PATH, 0o660)
     unix_http_thread = threading.Thread(target=unix_httpd.serve_forever, daemon=True)
     unix_http_thread.start()
     listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        listener.bind(str(socket_path))
-        os.chmod(socket_path, 0o600)
-        listener.listen(4)
+        with _startup_phase('control-listener'):
+            listener.bind(str(socket_path))
+            os.chmod(socket_path, 0o600)
+            listener.listen(4)
         while True:
             connection, _address = listener.accept()
             with connection:
@@ -1419,14 +1463,17 @@ def main(argv: list[str]) -> int:
     try:
         if len(argv) == 7 and argv[1] in ("serve", "serve-container"):
             container = argv[1] == "serve-container"
-            if container and (not argv[5].isdecimal() or preview_owner_uid(argv[5]) == 0):
-                raise PreviewError("container preview requires numeric non-root owner")
+            with _startup_phase('owner'):
+                if container and (not argv[5].isdecimal() or preview_owner_uid(argv[5]) == 0):
+                    raise PreviewError("container preview requires numeric non-root owner")
+            with _startup_phase('configuration'):
+                port = int(argv[6])
             return serve(
                 pathlib.Path(argv[2]),
                 pathlib.Path(argv[3]),
                 pathlib.Path(argv[4]),
                 argv[5],
-                int(argv[6]),
+                port,
                 listen_host="0.0.0.0" if container else "127.0.0.1",
             )
         if len(argv) == 2 and argv[1] == "request":
@@ -1451,6 +1498,9 @@ def main(argv: list[str]) -> int:
             sys.stdout.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
             return 0
         raise PreviewError("invalid preview command")
+    except PreviewStartupError as error:
+        sys.stderr.write(f"ODS workspace preview failed [stage={error.stage}, reason={error.reason}]\n")
+        return 1
     except (PreviewError, OSError, ValueError, KeyError, json.JSONDecodeError):
         sys.stderr.write("ODS workspace preview failed\n")
         return 1

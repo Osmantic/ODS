@@ -3,6 +3,8 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shlex
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,23 @@ SPEC = importlib.util.spec_from_file_location('native_install',
     ROOT / 'installers/macos/lib/pixel-native-install.py')
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+
+
+@pytest.mark.parametrize('code', [0, 1])
+def test_pixel_diagnostic_reaches_install_log_without_hiding_failure(tmp_path, code):
+    script = (ROOT / 'installers/macos/install-macos.sh').read_text()
+    start = script.index('        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py"')
+    end = script.index('\n        fi', start) + len('\n        fi')
+    command = script[start:end].replace('/usr/bin/python3', shlex.quote(sys.executable))
+    helper = tmp_path / 'pixel-native-install.py'
+    helper.write_text('import sys\nprint("public-health-diagnostic", file=sys.stderr)\nsys.exit(' + str(code) + ')\n')
+    log = tmp_path / 'install.log'
+    shell = 'set -euo pipefail\nai_err() { printf "%s\\n" "$*"; }\n_pixel_install_args=(--fixture)\n' + command
+    result = subprocess.run(['/bin/bash', '-c', shell], text=True, capture_output=True,
+        env={**os.environ, 'LIB_DIR': str(tmp_path), 'ODS_LOG_FILE': str(log)})
+    assert result.returncode == code
+    assert 'public-health-diagnostic' in result.stdout
+    assert log.read_text() == 'public-health-diagnostic\n'
 
 
 @pytest.mark.parametrize('code,detail', [
@@ -32,6 +51,23 @@ def test_main_reports_allowlisted_activation_failures(monkeypatch, capsys, code,
     assert '[' + code + ']' in captured.err
     assert detail in captured.err
     assert 'do not reset receipts or repeat activation automatically' in captured.err
+
+
+def test_main_reports_individual_health_without_docker_output(monkeypatch, capsys):
+    compose = module.helper('compose')
+    states = {name: {'state': 'running', 'health': 'healthy'} for name in compose.SERVICES}
+    states['pixel-workspace-preview'] = {'state': 'restarting', 'health': 'unhealthy'}
+    def fail(**kwargs):
+        raise compose.NativeHealthTimeout(states)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert 'pixel-workspace-preview=restarting/unhealthy' in output.err
+    assert 'pixel-native-ingress=running/healthy' in output.err
+    assert 'pixel-edge=running/healthy' in output.err
 
 
 @pytest.mark.parametrize('error', [

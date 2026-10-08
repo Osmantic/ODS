@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pixel": "4.3.29",
+  "pixel": "4.3.31",
   "node": ">=22",
   "nodeRuntime": {
     "version": "22.23.1",

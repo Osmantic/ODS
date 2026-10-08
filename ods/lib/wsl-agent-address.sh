@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Prepare only the WSL NAT/Desktop route; explicit operator routes stay intact.
 ods_prepare_wsl_agent_address() {
-    local root="$1" restart="${2:-false}" result changed
+    local root="$1" restart="${2:-false}" result changed reason
     [[ "$(uname -s)" == Linux ]] || return 0
     [[ -f "$root/lib/wsl-agent-address.py" ]] || return 0
     result=$(python3 "$root/lib/wsl-agent-address.py" "$root") || {
-        printf '%s\n' 'Could not prepare the WSL host-agent address. Check WSL networking and private .env ownership.' >&2
+        # The helper reports a machine-readable reason. Name it, so a failed
+        # networking probe is not sent to the same .env-ownership hint as an
+        # unrelated failure. Any non-JSON or unexpected payload stays "unknown".
+        reason=$(python3 -c 'import json,sys; v=json.load(sys.stdin).get("error"); print(v if isinstance(v,str) else "")' <<< "$result" 2>/dev/null) || reason=""
+        [[ "$reason" =~ ^[a-z][a-z-]{0,31}$ ]] || reason="unknown"
+        printf '%s\n' "Could not prepare the WSL host-agent address (reason: ${reason}). Check WSL networking and private .env ownership." >&2
         return 1
     }
     changed=$(python3 -c 'import json,sys; print(str(json.load(sys.stdin)["changed"]).lower())' <<< "$result") || return 1

@@ -10,7 +10,8 @@
 # Provides:
 #   test_install_dir_filesystem() -- sets INSTALL_FS_TYPE, INSTALL_FS_FATAL,
 #                                    INSTALL_FS_NETWORKED
-#   test_docker_desktop_sharing() -- sets DOCKER_SHARE_OK, DOCKER_SHARE_ERR
+#   test_docker_desktop_sharing() -- sets DOCKER_SHARE_OK, DOCKER_SHARE_ERR,
+#                                    DOCKER_SHARE_REASON
 #
 # shellcheck disable=SC2034  # vars are read by install-macos.sh after sourcing
 #
@@ -98,13 +99,16 @@ test_install_dir_filesystem() {
 # Smoke-test Docker Desktop's file-sharing allowlist by trying to bind-mount
 # the install dir into a throwaway alpine container. Docker Desktop responds
 # with a recognisable error when the path is not in the shared list.
+# REASON is ok, cli_missing, denied (recognized sharing error), or probe_failed.
+# All nonzero Docker exits fail closed; callers receive only bounded diagnostics.
 test_docker_desktop_sharing() {
     local install_dir="${1:-$INSTALL_DIR}"
-    DOCKER_SHARE_OK=true
+    DOCKER_SHARE_OK=false
     DOCKER_SHARE_ERR=""
+    DOCKER_SHARE_REASON="probe_failed"
 
     if ! command -v docker >/dev/null 2>&1; then
-        DOCKER_SHARE_OK=false
+        DOCKER_SHARE_REASON="cli_missing"
         DOCKER_SHARE_ERR="docker CLI not found"
         return
     fi
@@ -112,11 +116,22 @@ test_docker_desktop_sharing() {
     local probe
     probe="$(_resolve_existing_parent "$install_dir")"
 
-    local out=""
-    out=$(docker run --rm -v "${probe}:/check:ro" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 true 2>&1) || true
+    local out="" probe_status=0
+    # Keep the failure status under errexit; text alone cannot prove success.
+    if out=$(docker run --rm -v "${probe}:/check:ro" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 true 2>&1); then
+        DOCKER_SHARE_OK=true
+        DOCKER_SHARE_REASON="ok"
+        return
+    else
+        probe_status=$?
+    fi
 
-    if echo "$out" | grep -qiE "not shared from the host|Mounts denied|file sharing|filesharing"; then
-        DOCKER_SHARE_OK=false
-        DOCKER_SHARE_ERR="$out"
+    # Return bounded diagnostics, never raw Docker output (which may contain
+    # private paths, registry credentials, or terminal control characters).
+    if grep -qiE "not shared from the host|Mounts denied|file sharing|filesharing" <<< "$out"; then
+        DOCKER_SHARE_REASON="denied"
+        DOCKER_SHARE_ERR="Docker Desktop reported a File Sharing denial for the bind-mount probe."
+    else
+        DOCKER_SHARE_ERR="Docker bind-mount probe failed (exit ${probe_status}). Check Docker Desktop, the selected Docker context, and access to the probe image, then retry."
     fi
 }

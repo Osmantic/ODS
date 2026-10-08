@@ -13,6 +13,7 @@ GPU_COUNT="1"
 ODS_MODE="${ODS_MODE:-local}"
 SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
 ASSUME_ENABLED=""
+NATIVE_RECOVERY="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -58,6 +59,12 @@ while [[ $# -gt 0 ]]; do
             ASSUME_ENABLED="${2:-}"
             shift 2
             ;;
+        --native-recovery)
+            # Read-only recipe resolution for a validated retained initial
+            # failure; protected proof still precedes recovery publication.
+            NATIVE_RECOVERY="true"
+            shift
+            ;;
         *)
             echo "Unknown argument: $1" >&2
             exit 1
@@ -83,7 +90,7 @@ if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
 fi
 
 ODS_RESOLVE_ASSUME_ENABLED="$ASSUME_ENABLED" \
-"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" <<'PY'
+"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" "$NATIVE_RECOVERY" <<'PY'
 import os
 import pathlib
 import platform
@@ -93,6 +100,7 @@ import json
 script_dir = pathlib.Path(sys.argv[1])
 # The source tree of this resolver; --script-dir may name another directory.
 resolver_root = pathlib.Path(sys.argv[10])
+native_recovery = sys.argv[11] == 'true'
 tier = (sys.argv[2] or "1").upper()
 gpu_backend = (sys.argv[3] or "nvidia").lower()
 profile_overlays = [x.strip() for x in (sys.argv[4] or "").split(",") if x.strip()]
@@ -1624,6 +1632,16 @@ if model_stores_overlay.exists():
     if active_mount:
         resolved.append(str(active_mount.relative_to(script_dir)))
 
+# Tier 0 memory overlay for machines below 8GB RAM. compose-select.sh adds it
+# while the installer runs, but every later resolution goes through this
+# script (installer refresh, ods-cli enable/disable, host agent, ods-update),
+# and dropping it there leaves those machines on the base limits. Applied
+# before docker-compose.override.yml so operator overrides still win.
+if tier in ("0", "T0"):
+    tier0_overlay = script_dir / "docker-compose.tier0.yml"
+    if tier0_overlay.exists():
+        resolved.append("docker-compose.tier0.yml")
+
 # Include docker-compose.override.yml if it exists (user customizations).
 # Even though the operator placed this file themselves, the resolver runs
 # under installer/CI and may handle composes from sources the operator
@@ -1649,14 +1667,15 @@ if ods_mode == "cloud" and gpu_backend == "apple" and macos_cloud_auth.exists():
 # generic extension discovery. Restore their explicit selection after cache
 # invalidation, with the same final override order as the macOS installer.
 native_activation = script_dir / 'data/pixel-native/preparation/activation.json'
-if os.path.lexists(native_activation):
+if native_recovery or os.path.lexists(native_activation):
     import importlib.util
     try:
         native_spec = importlib.util.spec_from_file_location('ods_native_stack',
-            script_dir / 'installers/macos/lib/pixel-native-stack.py')
+            (resolver_root if native_recovery else script_dir) / 'installers/macos/lib/pixel-native-stack.py')
         native_stack = importlib.util.module_from_spec(native_spec)
         native_spec.loader.exec_module(native_stack)
-        resolved = native_stack.resolve_files(script_dir, resolved)
+        resolved = (native_stack.resolve_files(script_dir, resolved, recovery=True) if native_recovery
+                    else native_stack.resolve_files(script_dir, resolved))
     except (ValueError, OSError, ImportError):
         print('ERROR: Native Pixel Compose selection needs recovery; retain its installation receipts.', file=sys.stderr)
         sys.exit(1)

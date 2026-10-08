@@ -1838,15 +1838,28 @@ def _verify_model_artifact(
     path: Path,
     artifact: dict,
     cancel_event: threading.Event | None = None,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[bool, str]:
     """Verify one model artifact against exact catalog integrity metadata."""
+    def verification_error(reason: str) -> tuple[bool, str]:
+        # A failed inspection is not proof of corrupt content. Callers that
+        # replace existing artifacts must stop without deleting those files.
+        if raise_on_error:
+            raise RuntimeError(reason)
+        return False, reason
+
     try:
-        if not path.is_file():
-            return False, "file is missing"
+        # is_file() suppresses inspection errors on Python 3.14. Only a
+        # successful stat can distinguish content from an unreadable artifact.
         initial_stat = path.stat()
+        if not stat_mod.S_ISREG(initial_stat.st_mode):
+            return False, "file is missing"
         actual_size = initial_stat.st_size
+    except (FileNotFoundError, NotADirectoryError):
+        return False, "file is missing"
     except OSError as exc:
-        return False, f"file could not be inspected: {exc}"
+        return verification_error(f"file could not be inspected: {exc}")
     if actual_size <= 0:
         return False, "file is empty"
 
@@ -1857,11 +1870,11 @@ def _verify_model_artifact(
     expected_sha = str(artifact.get("sha256") or "").strip().lower()
     if expected_sha:
         if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
-            return False, "catalog SHA256 is malformed"
+            return verification_error("catalog SHA256 is malformed")
         try:
             resolved_path = str(path.resolve(strict=True))
         except (OSError, RuntimeError) as exc:
-            return False, f"file could not be resolved: {exc}"
+            return verification_error(f"file could not be resolved: {exc}")
         verification_signature = (
             initial_stat.st_dev,
             initial_stat.st_ino,
@@ -1907,11 +1920,11 @@ def _verify_model_artifact(
                         return False, "verification cancelled"
                     digest.update(chunk)
         except OSError as exc:
-            return False, f"file could not be hashed: {exc}"
+            return verification_error(f"file could not be hashed: {exc}")
         try:
             final_stat = path.stat()
         except OSError as exc:
-            return False, f"file could not be inspected after hashing: {exc}"
+            return verification_error(f"file could not be inspected after hashing: {exc}")
         final_signature = (
             final_stat.st_dev,
             final_stat.st_ino,
@@ -1924,7 +1937,7 @@ def _verify_model_artifact(
         if final_signature != verification_signature:
             with _model_artifact_verification_cache_lock:
                 _model_artifact_verification_cache.pop(resolved_path, None)
-            return False, "file changed during verification"
+            return verification_error("file changed during verification")
         actual_sha = digest.hexdigest()
         if actual_sha != expected_sha:
             with _model_artifact_verification_cache_lock:
@@ -1939,7 +1952,7 @@ def _verify_model_artifact(
             )
             sampled_stat = path.stat()
         except OSError as exc:
-            return False, f"file could not be sampled after hashing: {exc}"
+            return verification_error(f"file could not be sampled after hashing: {exc}")
         sampled_signature = (
             sampled_stat.st_dev,
             sampled_stat.st_ino,
@@ -1950,14 +1963,14 @@ def _verify_model_artifact(
             expected_sha,
         )
         if sampled_signature != verification_signature:
-            return False, "file changed after verification"
+            return verification_error("file changed after verification")
         with _model_artifact_verification_cache_lock:
             _model_artifact_verification_cache[resolved_path] = (
                 verification_signature,
                 sampled_digest,
             )
     elif expected_size is None:
-        return False, "catalog has no exact size or SHA256"
+        return verification_error("catalog has no exact size or SHA256")
 
     if cancel_event is not None and cancel_event.is_set():
         return False, "verification cancelled"
@@ -3406,7 +3419,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "f2d71d31e8cebac691d109de994c1b4636504cd3"
+    bundled_ref = "2ef78e7067211a198748c5499ed5a0261f4b48b6"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
@@ -9461,6 +9474,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_service_stats()
         elif path == "/v1/model/list":
             self._handle_model_list()
+        elif path == "/v1/model/config" and not parsed.query:
+            self._handle_model_config()
         elif path == "/v1/model/status":
             self._handle_model_status()
         elif path == "/v1/model/management":
@@ -11470,6 +11485,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             logger.warning("env_update rejected: invalid JSON from %s: %s", client_ip, exc)
             json_response(self, 400, {"error": f"Invalid JSON: {exc}"})
             return
+        # read_json_body() rejects non-object JSON; this handler bypasses it
+        # for the larger size limit, so apply the same check here.
+        if not isinstance(body, dict):
+            logger.warning("env_update rejected: JSON body is not an object from %s", client_ip)
+            json_response(self, 400, {"error": "JSON body must be an object"})
+            return
 
         raw_text = body.get("raw_text")
         if not isinstance(raw_text, str) or not raw_text.strip():
@@ -11570,11 +11591,14 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         requested = body.get("service_ids", [])
-        unique_service_ids = sorted(set(requested)) if isinstance(requested, list) else requested
-        ok, error = validate_core_recreate_ids(unique_service_ids)
+        # Validate before deduplicating: set() and sorted() raise on
+        # unhashable or mixed-type elements, which drops the connection
+        # instead of answering 400.
+        ok, error = validate_core_recreate_ids(requested)
         if not ok:
             json_response(self, 400, {"error": error})
             return
+        unique_service_ids = sorted(set(requested))
 
         locks = []
         try:
@@ -12625,6 +12649,16 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             json_response(self, 500, {"error": f"Failed to list models: {exc}"})
 
+    def _handle_model_config(self):
+        """Expose only the fresh persisted mode, never private .env values."""
+        if not check_auth(self):
+            return
+        try:
+            mode = _normalize_ods_mode(load_env(INSTALL_DIR / ".env").get("ODS_MODE"))
+        except (OSError, UnicodeError):
+            mode = "unknown"
+        json_response(self, 200, {"configuredMode": mode}, no_store=True)
+
     def _handle_model_status(self):
         """Return current model download progress."""
         if not check_auth(self):
@@ -12764,49 +12798,6 @@ class AgentHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Existing files are reusable only after exact catalog verification.
-        # This intentionally hashes them before returning already_downloaded;
-        # non-empty alone is not evidence that a prior transfer completed.
-        valid_preexisting_files = set()
-        invalid_existing_files = {}
-        try:
-            for filename, target in artifact_paths.items():
-                valid, reason = _verify_model_artifact(target, artifact_by_file[filename])
-                if valid:
-                    valid_preexisting_files.add(filename)
-                elif target.exists():
-                    invalid_existing_files[filename] = reason
-        except Exception:
-            _end_model_lifecycle("model_download")
-            raise
-
-        if len(valid_preexisting_files) == len(download_plan):
-            # A previous process can leave stale "downloading" status after the
-            # final file is already on disk. Normalize that here so the
-            # dashboard stops showing phantom progress.
-            _write_model_status(status_path, "complete", gguf_file, 0, 0)
-            _end_model_lifecycle("model_download")
-            json_response(self, 200, {"status": "already_downloaded"})
-            return
-
-        for filename, reason in invalid_existing_files.items():
-            logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
-            try:
-                artifact_paths[filename].unlink(missing_ok=True)
-            except OSError as exc:
-                _end_model_lifecycle("model_download")
-                json_response(
-                    self,
-                    500,
-                    {"error": f"Invalid model artifact could not be replaced: {filename}: {exc}"},
-                )
-                return
-        pending_download_plan = [
-            (idx, fn, url)
-            for idx, (fn, url) in enumerate(download_plan, 1)
-            if fn not in valid_preexisting_files
-        ]
-
         # Check for concurrent download
         with _model_download_lock:
             if _model_download_thread is not None and _model_download_thread.is_alive():
@@ -12873,6 +12864,36 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 try:
                     models_dir.mkdir(parents=True, exist_ok=True)
+                    # Reverification can hash many gigabytes after an agent
+                    # restart. Own it in the acknowledged, cancellable worker,
+                    # just like verification of newly downloaded artifacts.
+                    valid_preexisting_files = set()
+                    invalid_existing_files = {}
+                    for filename, target in artifact_paths.items():
+                        if target.exists():
+                            _write_model_status(status_path, "verifying", filename, 0, target.stat().st_size)
+                        valid, reason = _verify_model_artifact(
+                            target, artifact_by_file[filename], _model_download_cancel,
+                            raise_on_error=True,
+                        )
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        if valid:
+                            valid_preexisting_files.add(filename)
+                        elif target.exists():
+                            invalid_existing_files[filename] = reason
+                    for filename, reason in invalid_existing_files.items():
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
+                        artifact_paths[filename].unlink(missing_ok=True)
+                    pending_download_plan = [
+                        (idx, fn, url)
+                        for idx, (fn, url) in enumerate(download_plan, 1)
+                        if fn not in valid_preexisting_files
+                    ]
                     for _part_idx, part_file_name, part_url in pending_download_plan:
                         url_error = _model_download_url_error(part_url)
                         if url_error:
@@ -12887,7 +12908,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                             )
                             return
                     label = gguf_file if len(download_plan) == 1 else f"{gguf_file} ({len(download_plan)} parts)"
-                    _write_model_status(status_path, "downloading", label, 0, 0)
+                    if pending_download_plan:
+                        _write_model_status(status_path, "downloading", label, 0, 0)
 
                     for part_idx, part_file_name, part_url in pending_download_plan:
                         if _model_download_cancel.is_set():

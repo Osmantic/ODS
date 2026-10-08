@@ -21,6 +21,7 @@ import {
   ODS_WORKSPACE_NEW_STATIC_CONTRACT,
   ODS_WORKSPACE_PREVIEW_CONTRACT,
   ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT,
+  ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT,
   githubSourceContract,
   needsLoopRecovery,
   operationsRequestContract,
@@ -56,7 +57,8 @@ test('full, lean and small-context routes teach the actual preview runtime bound
       assert.match(contract, /localStorage\/sessionStorage property getters, reads and writes may throw/);
       assert.match(contract, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
       assert.match(contract, /Saving failure must not block startup, controls or continued work/);
-      assert.match(contract, /Never promise persistence or add allow-same-origin to bypass isolation/);
+      assert.match(contract, /Embedded previews have opaque origins; separate tabs may differ/);
+      assert.match(contract, /Verify persistence at the exact URL; never add allow-same-origin to bypass isolation/);
     }
   }
   for (const topic of ['workspace', 'verification']) assert.ok(AGENT_SKILLS[topic].includes(PREVIEW_RUNTIME_CONTRACT));
@@ -908,4 +910,19 @@ test("document route preserves ordinary, remote, informational and forbidden-too
   const messages = [{role:'user',content:'Download report.pdf.'}, {role:'assistant',content:'Attach the file.'}, {role:'user',content:'Thanks.'}];
   assert.equal(selects(messages), false);
   assert.equal(selects([{role:'assistant',content:'Download report.pdf.'}]), false);
+});
+
+
+test("verification follow-up guidance permits unchanged republication without a dummy edit", () => {
+  const prompt = "Please finish verifying the preview: add an item, mark it packed, and check that the progress counter updates correctly. Fix anything that fails.";
+  for (const request of [prompt, "Verify the current preview."]) {
+  const result = promptContractForAgent(
+    { agentId: "pixel", contextTokenBudget: 16384 }, "pixel", { prompt: request },
+    { configuredLeanPrompt: true }
+  );
+  assert.ok(result.appendSystemContext.includes(ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT));
+  assert.ok(!result.appendSystemContext.includes(ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT));
+  assert.match(result.appendSystemContext, /do not make a dummy edit/);
+  assert.match(result.appendSystemContext, /exact new siteId and full sha256/);
+  }
 });

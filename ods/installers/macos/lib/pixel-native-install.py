@@ -12,7 +12,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REF = 'f2d71d31e8cebac691d109de994c1b4636504cd3'
+DEFAULT_REF = '2ef78e7067211a198748c5499ed5a0261f4b48b6'
 INGRESS_IMAGE = 'node:24-bookworm-slim'
 FRAGMENTS = ('extensions/services/pixel-model-relay/compose.yaml.disabled',
     'extensions/services/pixel-edge/compose.yaml.disabled',
@@ -264,6 +264,10 @@ def main():
             'Check prerequisites and private preparation/activation receipts; do not reset them.')
         if code in ERROR_GUIDANCE:
             guidance = '[' + code + '] ' + guidance
+        if code == 'native-compose-health-timeout':
+            detail = helper('compose').health_diagnostic(error)
+            if detail:
+                guidance += ' ' + detail
         print('Native Pixel installation stopped (' + type(error).__name__ + '). ' + guidance, file=sys.stderr)
         return 1
     return 0

@@ -382,6 +382,12 @@ else
     _phase06_prune_ready=true
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
+        # Fail before source restoration, pruning or staging. Rootless fallback
+        # is supported for optional extras, not an existing Pixel deployment.
+        if [[ ${EUID:-$(id -u)} -ne 0 && "${ODS_SUDO_AVAILABLE:-true}" == false ]]; then
+            error "source-upgrade-sudo-required: Updating the existing Pixel installation requires sudo. Preserve the installation and any pending upgrade state."
+            return 1
+        fi
         _phase06_pixel_owner="$(ods_pixel_install_owner)" || {
             error "Could not identify the ODS owner for a Pixel source transition."
             return 1
@@ -390,11 +396,10 @@ else
             error "Could not resolve the ODS owner home for a Pixel source transition."
             return 1
         }
-        # A failed source-update step prints its own reason (fixed text, never
-        # paths) above; name the step too, so the install never stops without
-        # a cause (fleet: a laptop stopped in phase 06 with none).
+        # Name the failed step even if the child was interrupted before it
+        # could emit a diagnostic. Do not promise a reason was printed.
         _phase06_source_failed() {
-            error "The Pixel source update stopped at its '$1' step; the reason is printed above."
+            error "The Pixel source update stopped at its '$1' step. Preserve the installation and any pending upgrade state."
             return 1
         }
         _ods_pixel_source_transition_required \
@@ -457,7 +462,10 @@ else
                 unset _phase06_source_status
                 ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" \
                     || _phase06_source_failed hold || return 1
-                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || _phase06_source_failed hold || return 1
+                if [[ ! "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]]; then
+                    error "source-hold-response-invalid: The Pixel source hold did not return a valid transaction identifier. Preserve any existing admission hold and upgrade state; no source copy was started."
+                    return 1
+                fi
                 export ODS_PIXEL_SOURCE_TRANSACTION
                 _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || _phase06_source_failed copy || return 1
                 # Everything after this boundary can update Compose/env/data
@@ -619,8 +627,9 @@ else
     if ! $_phase06_rootless; then
         for _data_dir in "$INSTALL_DIR"/data/*/; do
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
-            # Private retained chat results belong to Dashboard UID 1000.
+            # Private chat results and image history belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-images/" ]] && continue
             # Token Spy's persistent directory intentionally belongs to its
             # container UID 1000; phase 06 verifies that identity below.
             [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
@@ -648,6 +657,7 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/pixel-images/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/ape/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
@@ -686,7 +696,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     if declare -F _ods_apply_deferred_feature_state >/dev/null; then
-        _ods_apply_deferred_feature_state || {
+        _ods_apply_deferred_feature_state "$_phase06_requested_pixel_ref" || {
             error "Deferred feature reconciliation failed; resume the same installer candidate."
             return 1
         }
@@ -1461,6 +1471,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # subsequent phases — later mkdirs create container-bind-mount dirs that
     # need world-traverse (e.g. SearXNG runs as uid 977).
     # The chmod 600 below is belt-and-braces.
+    # The template only knows ODS's own keys. Snapshot the previous .env so the
+    # settings bundled and installed extensions own can be carried over after
+    # the rewrite.
+    _phase06_previous_env=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        _phase06_previous_env="$(mktemp)" || return 1
+        cp "$INSTALL_DIR/.env" "$_phase06_previous_env" || return 1
+    fi
     (
         umask 077
         cat > "$INSTALL_DIR/.env" << ENV_EOF
@@ -1768,6 +1786,14 @@ ENV_EOF
     )
 
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
+    if [[ -n "$_phase06_previous_env" ]]; then
+        # shellcheck source=../lib/extension-env-carry.sh
+        . "$SCRIPT_DIR/installers/lib/extension-env-carry.sh"
+        ods_carry_extension_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" \
+            "$SCRIPT_DIR/extensions/services" "$INSTALL_DIR/data/user-extensions"
+        rm -f "$_phase06_previous_env"
+    fi
+    unset _phase06_previous_env
     # Docker Desktop's daemon is outside the installing WSL namespace.
     # Prepare its authenticated control address before phase 07 starts the
     # host agent and before Compose inherits dashboard-api's environment.

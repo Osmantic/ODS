@@ -51,6 +51,7 @@ ALLOWED = {
     "installers/lib/lemonade-migration.sh": "runs the Lemonade-era settings migration",
     "installers/lib/native-llm.sh": "accepts the retired flags' /api/v1 suffix",
     "installers/lib/retired-lemonade-files.sha256": "lists the files upgrades delete",
+    "installers/macos/lib/pixel-native-continuation.py": "refuses a retained legacy external route before resuming a native model download",
     "installers/phases/02-detection.sh": "resolves a retired --lemonade-model id",
     "installers/phases/06-directories.sh": "deletes unchanged retired files on upgrade",
     "migrations/migrate-v3.1.0.sh": "the settings migration for source updates",

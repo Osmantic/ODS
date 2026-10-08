@@ -1,7 +1,7 @@
 import {LAYA_GUIDE} from './laya-tool.mjs';
 // Read-only operating guides. The model chooses what to load; no prompt keyword
 // classifier, tool execution, permission grant, or recipe is hidden in this tool.
-export const PREVIEW_STORAGE_CONTRACT = "Dashboard previews use opaque origins. localStorage/sessionStorage property getters, reads and writes may throw. Keep state in memory; persistence is optional. Guard every storage access/operation with try/catch and an in-memory fallback. Saving failure must not block startup, controls or continued work. Never promise persistence or add allow-same-origin to bypass isolation. HTTP readback proves publication, not startup or interactions.";
+export const PREVIEW_STORAGE_CONTRACT = "Embedded previews have opaque origins; separate tabs may differ. localStorage/sessionStorage property getters, reads and writes may throw. Guard every storage access/operation with try/catch and an in-memory fallback. Saving failure must not block startup, controls or continued work. Verify persistence at the exact URL; never add allow-same-origin to bypass isolation. HTTP readback proves publication, not startup or interactions.";
 
 export const PREVIEW_RUNTIME_CONTRACT = PREVIEW_STORAGE_CONTRACT + " Preview sandbox blocks alert(), confirm() and prompt(); use inline DOM controls, including date inputs. Bundle relative assets: remote scripts, styles, fonts, images and API requests are blocked. Never weaken sandbox/CSP.";
 
@@ -43,10 +43,10 @@ Public web tools cannot access private/loopback hosts; use a configured private-
 Use mktemp -d or tempfile.mkdtemp in the project; preserve scratch files unless cleanup is authorized. Never delete a fixed shared path. Regenerate derived text, hashes and archives after source edits; verify archived bytes against that same source version.
 Derive checks from the owner's requirements, including inputs, outputs, paths, side effects and failure behavior. A self-authored green test suite alone is not completion evidence. Respect requested test runners and dependency constraints. Never weaken checks, add skips or expectedFailure merely to claim success.
 Inspect real command exit status and relevant output. A missing case, early abort, expected failure or unexpected success must not be reported as clean verification. Investigate the exact failure, repair its cause and run the relevant check again. Do not repeat an unchanged passing suite without new uncertainty.
-Preserve completed work across compacted history or interrupted observation. Recover earlier requirements with pixel_ods_history and current processes/operations through their status tools. Historical prose does not establish current runtime state. No response or failed lookup means unknown, not absent or failed installation. Never repeat a write whose outcome is uncertain before reconciling its receipt.
-Report what the evidence proves and its limits: compilation, imports, HTTP readback and project-specific behavior are different checks. State untested OS/GPU/model combinations. Do not claim completion from a plan, submitted job or model narrative.
+Preserve work across compaction/interruption. Recover requirements via pixel_ods_history and live operations via status tools. Historical prose is not current state. A failed lookup means unknown, not absent or failed installation. Reconcile uncertain write receipts before retrying.
+Report evidence limits: compilation, imports, HTTP readback and project behavior are distinct checks. State untested OS/GPU/model combinations; plans, submitted jobs and model narrative do not prove completion.
 ${PREVIEW_RUNTIME_CONTRACT}
-For a browser artifact, exercise startup and the requested pointer/keyboard controls at the exact published URL, including saving when storage is unavailable. Inspect browser errors and verify continued work after a failed save; HTTP 200 or a test outside the preview sandbox cannot establish this. Report unavailable browser verification honestly.`,
+Test startup and pointer/keyboard controls at the exact published URL, including saving when storage is unavailable. Inspect browser errors and continued work after failed saves; HTTP 200 or a test outside the preview sandbox cannot establish this. Report unavailable verification. The inspector starts at the entry page with no navigation/reload; report cross-reload persistence unverified. Simulated reloads and sibling pages are not persistence evidence.`,
 });
 
 export function createAgentSkillTool() {

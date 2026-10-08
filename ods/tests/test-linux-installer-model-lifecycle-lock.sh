@@ -115,6 +115,32 @@ export ODS_TEST_LOCK_LIB="$LOCK_LIB"
 export ODS_TEST_INSTALL_DIR="$install_dir"
 export ODS_TEST_EVENTS="$tmp/events"
 
+# The existing-install migration acquires/releases this lock before Phase 06.
+# Closing its fd must not discard stderr from every later installer command.
+for mode in release failed-acquire; do
+    ODS_TEST_LOCK_MODE="$mode" bash -c '
+        set -euo pipefail
+        . "$ODS_TEST_LOCK_LIB"
+        if [[ "$ODS_TEST_LOCK_MODE" == failed-acquire ]]; then
+            flock() { return 1; }
+            if ods_model_lifecycle_lock_acquire "$ODS_TEST_INSTALL_DIR" "refused lock"; then
+                exit 91
+            fi
+        else
+            ods_model_lifecycle_lock_acquire "$ODS_TEST_INSTALL_DIR" "diagnostic test"
+            ods_model_lifecycle_lock_release
+        fi
+        [[ -z "$ODS_MODEL_LIFECYCLE_LOCK_FD" ]]
+        printf "parent-diagnostic\n" >&2
+        bash -c '\''printf "child-diagnostic\\n" >&2'\''
+    ' >"$tmp/$mode.stdout" 2>"$tmp/$mode.stderr"
+    grep -qx parent-diagnostic "$tmp/$mode.stderr" \
+        || fail "$mode discarded the parent installer diagnostics"
+    grep -qx child-diagnostic "$tmp/$mode.stderr" \
+        || fail "$mode discarded later helper diagnostics"
+done
+pass "lock release and acquisition failure preserve parent and child stderr"
+
 bash -c '
     set -euo pipefail
     . "$ODS_TEST_LOCK_LIB"

@@ -23,6 +23,7 @@ import {
   userMessageRequestsExtensionInventory,
   userMessageRequestsPrivateUrl,
   userMessageRequestsWorkspaceVisualContinuation,
+  userMessageRequestsWorkspaceVerificationContinuation,
   userMessageRequestsWorkspacePreview,
   userMessageRequestsWorkspaceTools,
   userMessageRequestsNewPlaygroundProject,
@@ -213,6 +214,9 @@ export const ODS_WORKSPACE_NEW_STATIC_CONTRACT =
 export const ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT =
   "The owner is naturally continuing the most recently readback-verified visual artifact in this same Pixel chat. In the first tool step call tool_call with id read and args path index.html; the ODS guard binds that basename to the exact verified artifact directory. Then use only a focused edit on the returned path to make the requested change, and call pixel_ods_workspace_preview with that same directory. Do not call write, apply_patch, exec, process, mkdir, start a server, create another directory, or use a generated scaffold. The new preview receipt proves publication and static readback only; never claim an interaction was exercised without interaction-capable evidence.";
 
+export const ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT =
+  "The owner wants to verify the existing preview in this same chat. First read its index.html; the guard binds that basename to the verified project when available. If no verified project is available, locate the existing project before reading; do not guess a path or create a replacement. Publish the directory returned by that read through pixel_ods_workspace_preview, then use its exact new siteId and full sha256 for browser inspection of the requested interactions and visible results. Unchanged files may be republished for verification; do not make a dummy edit. If a check reveals an actual source defect, make a focused repair and republish before inspecting again. A previous snapshot does not prove the current files, and publication alone does not prove behavior. Report only observed results.";
+
 export function operationsRequestContract(messages, prompt = undefined) {
   const requirements = userMessageOperationsRequirements(messages, prompt);
   if (
@@ -388,12 +392,17 @@ export function promptContractForAgent(
   const workspaceDownload = !exactDownload && (repositoryAcquisition ||
     userMessageRequestsWorkspaceDownloadContinuation(event?.messages, event?.prompt))
     ? ` ${ODS_PUBLIC_DOWNLOAD_WORKSPACE_CONTRACT}` : "";
+  const workspaceVerificationContinuation = userMessageRequestsWorkspaceVerificationContinuation(
+    event?.messages, event?.prompt
+  );
   const workspaceVisualContinuation =
-    userMessageRequestsWorkspaceVisualContinuation(
+    (workspaceVerificationContinuation || userMessageRequestsWorkspaceVisualContinuation(
       event?.messages,
       event?.prompt
-    )
-      ? ` ${ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT}`
+    ))
+      ? ` ${workspaceVerificationContinuation
+        ? ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT
+        : ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT}`
       : "";
   const previewMode = workspacePreviewMode(event?.messages, event?.prompt);
   const workspacePreview = workspaceVisualContinuation ||

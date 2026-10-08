@@ -21,7 +21,9 @@ tests/contracts/test-windows-strix-tier-map.sh
 tests/contracts/test-wsl-lifecycle.sh
 tests/pixel_settings/test_pixel_settings_store.py
 tests/pixel_settings/test_store_windows.py
+tests/test-agent-manager-failures.py
 tests/test-agent-restart-nonfatal.sh
+tests/test_flowise_setup.py
 tests/test-amd-igpu-dgpu-selection.sh
 tests/test-amd-topo-locale.sh
 tests/test-amd-topo.sh
@@ -59,6 +61,7 @@ tests/test-embeddings-prefetch-service-cache.sh
 tests/test-enable-gpu-validation.sh
 tests/test-env-example-inline-comments.sh
 tests/test-env-set-literal-key.sh
+tests/test-extension-env-carry.sh
 tests/test-extension-integration.sh
 tests/test-external-llm-auth.sh
 tests/test-external-llm-switchboard-env.sh
@@ -127,6 +130,7 @@ tests/test-ods-config-secret-mask.sh
 tests/test-ods-doctor-bash32-guard.sh
 tests/test-ods-doctor-disk-source.sh
 tests/test-ods-doctor-env-reader.sh
+tests/test-doctor-optional-webui.py
 tests/test-ods-doctor-host-native-llm.sh
 tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh
@@ -182,6 +186,7 @@ tests/test-service-registry-encoding.py
 tests/test-simulate-installers-exit-codes.sh
 tests/test-templates.sh
 tests/test-tier-map-parity.sh
+tests/test-tier0-memory-overlay.sh
 tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
@@ -204,6 +209,7 @@ tests/test-windows-phase-abort.sh
 tests/test-windows-port-preflight.sh
 tests/test-windows-stop-native-helpers.sh
 tests/test-windows-whisper-compose-fallback.sh
+tests/test-wsl-agent-address-reason.sh
 tests/test-wsl-bind-recovery-live.py
 tests/test-wsl-docker-desktop-nvidia.sh
 tests/test-wsl-hardware-display.sh
@@ -216,6 +222,7 @@ tests/test_bootstrap_pixel_transaction.py
 tests/test_bootstrap_status_checksum.py
 tests/test_build_installation_context_port.py
 tests/test_chromadb_healthcheck.py
+tests/test_cleanup_wsl_pixel_mounts.py
 tests/test_compose_failure_report_port_check.py
 tests/test_extension_audit_library.py
 tests/test_healthcheck_redirect_policy.py
