@@ -173,7 +173,7 @@ def test_unclean_or_other_lifecycle_state_is_not_restarted(adapter, key, value):
     assert starts(adapter) == []
 
 
-@pytest.mark.parametrize("change", ["native-proof", "gate-revision", "container-id", "lifecycle-time"])
+@pytest.mark.parametrize("change", ["native-proof", "gate-revision", "container-id", "lifecycle-time", "restart-count"])
 def test_changed_evidence_between_checks_never_starts(adapter, change):
     if change == "native-proof":
         adapter._source_edge_restart_proof.side_effect = [HASH, "f" * 64]
@@ -188,6 +188,8 @@ def test_changed_evidence_between_checks_never_starts(adapter, change):
             if len(calls) == 2:
                 if change == "container-id":
                     result["Id"] = "f" * 64
+                elif change == "restart-count":
+                    result["RestartCount"] = 1
                 else:
                     result["State"]["StartedAt"] = "a newer start"
             return result
@@ -208,6 +210,32 @@ def test_retired_exec_metadata_does_not_invalidate_same_stopped_container(adapte
     adapter._source_edge_container = inspect
     adapter.restart_stopped_source_edge()
     assert starts(adapter) == [["docker", "start", IDENTITY]]
+
+
+def test_docker_mount_order_is_not_mount_identity(adapter):
+    original = adapter.command
+    def command(args, **kwargs):
+        if args[:2] == ["docker", "inspect"]:
+            adapter.item["Mounts"].reverse()
+        return original(args, **kwargs)
+    adapter.command = command
+    adapter.restart_stopped_source_edge()
+    assert starts(adapter) == [["docker", "start", IDENTITY]]
+
+
+def test_changed_mount_source_is_still_refused(adapter):
+    original = adapter._source_edge_container
+    calls = []
+    def inspect():
+        item = original()
+        calls.append(1)
+        if len(calls) == 2:
+            next(mount for mount in item["Mounts"] if mount["Destination"] == "/pixel-runtime")["Source"] = "/foreign"
+        return item
+    adapter._source_edge_container = inspect
+    with pytest.raises(bridge.AccessError, match="source-edge-restart-state-changed"):
+        adapter.restart_stopped_source_edge()
+    assert starts(adapter) == []
 
 
 def test_start_failure_is_not_replayed_and_does_not_disclose_daemon_text(adapter):

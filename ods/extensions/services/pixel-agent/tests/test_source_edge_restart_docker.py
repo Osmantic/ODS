@@ -7,6 +7,7 @@ Run only on an isolated runner with ODS_TEST_SOURCE_EDGE_DOCKER=1, as root.
 """
 import copy
 import http.server
+import json
 import os
 from pathlib import Path
 import secrets
@@ -100,12 +101,16 @@ def test_real_stopped_edge_restarts_with_same_gate_and_never_reopens_a_hold(tmp_
         run(["docker", "stop", original_id])
         stopped = adapter._source_edge_container()
         assert stopped["State"]["ExitCode"] == 0
+        raw_before = json.loads(run(["docker", "inspect", original_id, "--format", "{{json .}} "]))
         offline = adapter._source_edge_idle_state(original_id)
         assert offline["revision"] == initial["revision"]
-        inspected = adapter._source_edge_container()
+        raw_after = json.loads(run(["docker", "inspect", original_id, "--format", "{{json .}} "]))
         # Record field names only, never credential-bearing inspect values.
         print("Stopped Docker metadata changed by inspection:",
-              sorted(key for key in stopped if stopped[key] != inspected.get(key)))
+              sorted(key for key in raw_before if raw_before[key] != raw_after.get(key)))
+        assert {mount["Destination"]: mount for mount in raw_before["Mounts"]} == {
+            mount["Destination"]: mount for mount in raw_after["Mounts"]}
+        print("Destination-keyed mount metadata: unchanged")
         commands = []
         original_command = adapter.command
         def command(args, **kwargs):

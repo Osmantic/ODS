@@ -1311,6 +1311,9 @@ class SystemdAccessBridge:
                                       '--filter', 'volume=' + name]).split()
             if consumers != [item['Id']]:
                 raise ValueError()
+            # Docker's mount array is not ordered. Preserve every field while
+            # comparing by the unique destination already validated above.
+            item['Mounts'] = [mounts[target] for target in sorted(mounts)]
             return item
         except (KeyError, TypeError, ValueError, AttributeError):
             raise AccessError('source-edge-ownership-unverified') from None
@@ -1409,6 +1412,7 @@ class SystemdAccessBridge:
         # is inspected. Compare custody and exact lifecycle evidence, not those
         # incidental counters; a stop/start race still changes its timestamps.
         if (any(current.get(key) != item.get(key) for key in identity_keys)
+                or current.get('RestartCount') != item.get('RestartCount')
                 or any(current.get('State', {}).get(key) != state.get(key) for key in lifecycle_keys)
                 or self._source_edge_restart_proof() != proof
                 or self._source_edge_idle_state(item['Id']) != idle):
