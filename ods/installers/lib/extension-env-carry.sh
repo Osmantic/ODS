@@ -61,3 +61,28 @@ ods_carry_extension_env_keys() {
         done
     done
 }
+
+# Append to NEW_ENV every public URL the owner set (KEY_PUBLIC_URL or
+# KEY_PUBLIC_URLS, see docs/ODS-PROXY.md) that NEW_ENV lacks and PREVIOUS_ENV
+# has. The template never writes these; dropping them on a rerun sends magic
+# links and service links back to LAN addresses. The last assignment wins, as
+# it does when .env is read.
+# Usage: ods_carry_public_url_env_keys PREVIOUS_ENV NEW_ENV
+ods_carry_public_url_env_keys() {
+    local previous_env="$1" new_env="$2" line header_written=false
+    [[ -f "$previous_env" && -f "$new_env" ]] || return 0
+    while IFS= read -r line; do
+        grep -q "^${line%%=*}=" "$new_env" && continue
+        if [[ "$header_written" != true ]]; then
+            printf '\n#=== Public URLs (kept from the previous .env) ===\n' >> "$new_env"
+            header_written=true
+        fi
+        printf '%s\n' "$line" >> "$new_env"
+    done < <(awk '
+        /^[A-Z][A-Z0-9_]*_PUBLIC_URLS?=/ {
+            key = substr($0, 1, index($0, "=") - 1)
+            if (!(key in last)) order[++n] = key
+            last[key] = $0
+        }
+        END { for (i = 1; i <= n; i++) print last[order[i]] }' "$previous_env")
+}
