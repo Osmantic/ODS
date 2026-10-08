@@ -59,6 +59,40 @@ test('cancelled native announcements are denied before prompt registration and i
   assert.equal(f.registry.admission({...continuation,sessionId:'other-native-session',sessionKey:'agent:pixel:main'}),undefined,'unrelated native sessions unchanged');
 });
 
+const resumedChild={...owner,sessionId:'child-session',sessionKey:child,
+  runId:'77777777-2222-4333-8444-555555555555',
+  inputProvenance:{kind:'inter_session',sourceTool:'subagent_interrupted_resume',sourceSessionKey:owner.sessionKey}};
+
+for(const provisional of [false,true])test(`native orphan resume keeps the child-session cancellation fence (provisional=${provisional})`,async()=>{
+  const f=fixture();
+  if(provisional) {
+    f.registry.before({params:{runtime:'subagent',mode:'run'}},{...owner,toolName:'sessions_spawn',toolCallId:'pending-spawn'});
+    f.registry.nativeSpawn({runId:childRun,childSessionKey:child},{runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+  } else {f.spawn();f.yieldTurn();}
+  assert.equal(f.registry.admission(resumedChild),undefined,'a known live native child remains admitted');
+  assert.equal(f.registry.blocked({...resumedChild,toolName:'exec'}),undefined);
+  await f.registry.cancel(user);
+  const next={...owner,runId:'chatcmpl_99999999-2222-4333-8444-555555555555'};
+  assert.equal(f.registry.admission(next),undefined);
+  f.registry.observe({},next);
+  for(const ctx of [resumedChild,{...resumedChild,inputProvenance:undefined}]) {
+    assert.equal(f.registry.admission(ctx)?.outcome,'block','a new run UUID cannot release the same cancelled child');
+    assert.equal(f.registry.blocked({...ctx,toolName:'exec'})?.block,true);
+  }
+  assert.equal(f.registry.admission({...resumedChild,sessionKey:child.replace('22222222','88888888'),
+    inputProvenance:{...resumedChild.inputProvenance,sourceSessionKey:'agent:pixel:main'}}),undefined,'unrelated native recovery is unchanged');
+});
+
+for(const loss of ['expiry','restart','access','owner-identity'])test(`Portal orphan resume requires retained live custody after ${loss}`,()=>{
+  const f=fixture(loss==='owner-identity'?{resolveOwnerSession:()=>({sessionId:'different-owner'})}:{});
+  f.spawn();f.yieldTurn();
+  if(loss==='expiry')f.tick();
+  if(loss==='access')f.revoke();
+  const registry=loss==='restart'?createSubagentDelivery():f.registry;
+  assert.equal(registry.admission(resumedChild)?.outcome,'block');
+  assert.equal(registry.blocked({...resumedChild,toolName:'exec'})?.block,true);
+});
+
 test('announcement admission requires exact live owner child run and current custody',()=>{
   const f=fixture();f.spawn();f.yieldTurn();
   for(const changed of [{sessionId:'foreign'}, {runId:continuation.runId+'extra'},
