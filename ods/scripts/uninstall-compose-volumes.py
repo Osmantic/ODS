@@ -2,7 +2,7 @@
 """Account for Compose-owned volumes before removing an ODS installation.
 
 Compose only knows the currently selected files. This helper accounts for
-selected and disabled-extension volumes before removing any of them.
+selected and unselected-extension volumes before removing any of them.
 """
 
 from __future__ import annotations
@@ -125,15 +125,28 @@ def trusted_plain_volume_keys(root: Path, disabled_only: bool = False,
     return {key for key, values in states.items() if values == {"owned"}}
 
 
-def disabled_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+def unselected_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+    """Bind leftover mounts to installed recipes even when selection failed.
+
+    A failed native activation can leave an enabled extension running while
+    uninstall falls back to base Compose files. Its recipe path and service
+    must still match the mounted container, just as for disabled extensions.
+    """
     found: dict[str, set[tuple[str, str]]] = {}
+    enabled_keys = trusted_plain_volume_keys(root)
+    trusted_enabled_keys = trusted_plain_volume_keys(trusted_root)
     for directory in ("extensions/services", "extensions/library/services"):
-        for suffix in ("*.yaml.disabled", "*.yml.disabled"):
+        for suffix in ("*.yaml.disabled", "*.yml.disabled", "*.yaml", "*.yml"):
             for path in (root / directory).glob(f"*/compose{suffix}"):
                 enabled_name = path.name.removesuffix(".disabled")
                 enabled_path = path.with_name(enabled_name)
                 candidate_path = trusted_root / path.relative_to(root).with_name(enabled_name)
                 for key in trusted_plain_volume_keys(root, only_file=path):
+                    if (not path.name.endswith(".disabled") and
+                            (key not in enabled_keys or key not in trusted_enabled_keys)):
+                        # An enabled override declaring this key external or
+                        # custom-named must not be bypassed by the base recipe.
+                        continue
                     if (trusted_root != root and
                             key not in trusted_plain_volume_keys(
                                 trusted_root, only_file=candidate_path)):
@@ -190,8 +203,8 @@ def native_stack_volume_provenance(root: Path, trusted_root: Path) -> dict[str, 
     return found
 
 
-def disabled_volume_keys(root: Path, trusted_root: Path) -> set[str]:
-    return set(disabled_volume_provenance(root, trusted_root))
+def unselected_volume_keys(root: Path, trusted_root: Path) -> set[str]:
+    return set(unselected_volume_provenance(root, trusted_root))
 
 
 def retired_volume_keys(root: Path) -> set[str]:
@@ -404,7 +417,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         return
     volumes = project_volumes(root, project)
     resumed, resumed_anonymous = resume_record(root, project)
-    disabled = disabled_volume_provenance(root, trusted_root)
+    unselected = unselected_volume_provenance(root, trusted_root)
     expected_names = set(selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
     } | {
@@ -451,15 +464,15 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
                 "uninstall may have removed that proof. Rerun with --keep-data to keep the "
                 "volumes and remove the rest of the installation"
             )
-        disabled_owned = (
-            name in mounted and key in disabled and
+        unselected_owned = (
+            name in mounted and key in unselected and
             name == f"{project}_{key}" and
-            bool(mount_provenance.get(name, set()) & disabled[key])
+            bool(mount_provenance.get(name, set()) & unselected[key])
         )
         retired_owned = key in retired and name == f"{project}_{key}"
-        if name in selected or disabled_owned or retired_owned:
+        if name in selected or unselected_owned or retired_owned:
             owned[name] = fingerprint(row)
-            if name not in selected and disabled_owned:
+            if name not in selected and unselected_owned:
                 trusted_used.add(key)
         elif key in RETIRED_VOLUME_KEYS and name == f"{project}_{key}":
             raise ValueError(
@@ -553,7 +566,7 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
             current_selected != record.get("selected") or
             current_external != record.get("external") or
             not set(record.get("trustedUsed", [])).issubset(
-                disabled_volume_keys(root, trusted_root))):
+                unselected_volume_keys(root, trusted_root))):
         raise ValueError("Compose ownership changed during uninstall; installation retained")
     current_expected = set(current_selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
