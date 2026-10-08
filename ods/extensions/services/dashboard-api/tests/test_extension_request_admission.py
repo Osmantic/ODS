@@ -10,9 +10,11 @@ from fastapi import Request
 import extension_requests as routing
 from routers import extensions, pixel
 from test_pixel import FakeClient, FakeResponse, stream_body
-from test_pixel_chat_results import FINAL, IDENTITY, OWNER, body, store  # noqa: F401
+from test_pixel_chat_results import FINAL, IDENTITY, OWNER, body
+import test_pixel_chat_results as result_tests
 
 
+store = result_tests.store
 COMMAND = '/extensions inspect https://github.com/owner/repo'
 REJECTION = {'error': 'pixel_transition_in_progress'}
 
