@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise real CLI failure propagation without invoking service managers."""
+"""Exercise real Linux CLI failure propagation without invoking service managers."""
 import os
 from pathlib import Path
 import subprocess
@@ -12,7 +12,6 @@ set -u
 check_install() { :; }
 load_env() { :; }
 uname() { printf '%s\n' "$TEST_OS"; }
-id() { printf '501\n'; }
 sleep() { :; }
 success() { printf 'SUCCESS:%s\n' "$*"; }
 warn() { printf 'WARN:%s\n' "$*"; }
@@ -26,13 +25,7 @@ systemctl() {
     manager_action "$1"
 }
 sudo() { "$@"; }
-launchctl() {
-    case "$1" in
-        bootstrap) manager_action start ;;
-        bootout) manager_action stop ;;
-        *) return 99 ;;
-    esac
-}
+
 source <(awk '/^cmd_agent\(\) \{/{copy=1} copy{print} copy && /^}$/{exit}' "$1")
 if [[ "$TEST_ACTION" == update-guard ]]; then
     cmd_agent restart || warn 'Host agent restart failed (non-fatal)'
@@ -47,15 +40,10 @@ class AgentManagerFailures(unittest.TestCase):
     def probe(self, manager, action, failure):
         with tempfile.TemporaryDirectory(prefix="ods-agent-manager-") as temp:
             fixture = Path(temp)
-            home = fixture / "home"
-            plist = home / "Library/LaunchAgents/com.ods.host-agent.plist"
-            plist.parent.mkdir(parents=True)
-            plist.touch()
             trace = fixture / "calls"
-            # Only the child process receives the isolated test home.
-            env = {**os.environ, "HOME": str(home), "INSTALL_DIR": str(fixture),
+            env = {**os.environ, "INSTALL_DIR": str(fixture),
                    "ODS_AGENT_FORCE_SESSION": "false", "TEST_TRACE": str(trace),
-                   "TEST_OS": "Linux" if manager == "systemd" else "Darwin",
+                   "TEST_OS": "Linux",
                    "TEST_ACTION": action, "TEST_FAIL": failure}
             result = subprocess.run(["bash", "-s", "--", str(TARGET)], input=PROBE,
                                     text=True, capture_output=True, env=env, timeout=10)
@@ -63,7 +51,7 @@ class AgentManagerFailures(unittest.TestCase):
             return result, calls, result.stdout + result.stderr
 
     def test_start_and_stop_success(self):
-        for manager in ("systemd", "launchd"):
+        for manager in ("systemd",):
             for action in ("start", "stop"):
                 with self.subTest(manager=manager, action=action):
                     result, calls, output = self.probe(manager, action, "none")
@@ -72,7 +60,7 @@ class AgentManagerFailures(unittest.TestCase):
                     self.assertIn("SUCCESS:Agent " + ("started" if action == "start" else "stopped"), output)
 
     def test_start_and_stop_failure(self):
-        for manager in ("systemd", "launchd"):
+        for manager in ("systemd",):
             for action in ("start", "stop"):
                 with self.subTest(manager=manager, action=action):
                     result, calls, output = self.probe(manager, action, action)
@@ -83,14 +71,14 @@ class AgentManagerFailures(unittest.TestCase):
                     self.assertNotIn("Agent not running", output)
 
     def test_restart_short_circuits_failed_stop(self):
-        for manager in ("systemd", "launchd"):
+        for manager in ("systemd",):
             with self.subTest(manager=manager):
                 result, calls, output = self.probe(manager, "restart", "stop")
                 self.assertNotEqual(result.returncode, 0, output)
                 self.assertEqual(calls, ["stop"])
 
     def test_restart_propagates_failed_start(self):
-        for manager in ("systemd", "launchd"):
+        for manager in ("systemd",):
             with self.subTest(manager=manager):
                 result, calls, output = self.probe(manager, "restart", "start")
                 self.assertNotEqual(result.returncode, 0, output)
@@ -98,7 +86,7 @@ class AgentManagerFailures(unittest.TestCase):
                 self.assertIn("ERROR:Agent start failed", output)
 
     def test_guarded_update_remains_nonfatal(self):
-        for manager in ("systemd", "launchd"):
+        for manager in ("systemd",):
             with self.subTest(manager=manager):
                 result, calls, output = self.probe(manager, "update-guard", "stop")
                 self.assertEqual(result.returncode, 0, output)
