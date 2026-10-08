@@ -86,6 +86,21 @@ def test_missing_saved_interpreter_is_not_replaced_by_path_python(tmp_path, monk
         module.selected_python(tmp_path)
 
 
+def test_no_saved_interpreter_still_checks_the_current_pythons_custody(tmp_path, monkeypatch):
+    current = str(tmp_path / 'python3')
+    monkeypatch.setattr(module, 'saved_python', lambda root: None)
+    monkeypatch.setattr(module.sys, 'executable', current)
+    monkeypatch.setattr(module.os, 'getuid', lambda: 501, raising=False)
+    monkeypatch.setattr(module.os, 'access', lambda *a: True)
+    monkeypatch.setattr(module.Path, 'stat', lambda *a, **kw:
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o775, st_uid=501))
+    with pytest.raises(ValueError, match='saved-recovery-python-invalid'):
+        module.selected_python(tmp_path)
+    monkeypatch.setattr(module.Path, 'stat', lambda *a, **kw:
+        SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=501))
+    assert module.selected_python(tmp_path) == current
+
+
 def test_probe_reuses_saved_interpreter_and_strips_foreign_python_environment(tmp_path, monkeypatch):
     selected = str(tmp_path / 'installer venv/bin/python')
     monkeypatch.setattr(module, 'selected_python', lambda root: selected)
