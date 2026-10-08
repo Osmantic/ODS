@@ -537,7 +537,9 @@ def test_real_model_handoff_tracks_worker_and_refuses_duplicate(model_handoff, m
     installed, files, environment = model_handoff
     script = installed / 'scripts/bootstrap-upgrade.sh'
     script.write_text('''#!/bin/bash
-printf '%s\\n' "$@" > "$1/data/observed.args"
+# Publish only after printf has finished; existence is the reader's signal.
+printf '%s\\n' "$@" > "$1/data/observed.args.tmp" &&
+    mv "$1/data/observed.args.tmp" "$1/data/observed.args"
 while [[ ! -f "$1/data/release-fixture" ]]; do sleep 0.05; done
 ''')
     children = []
@@ -553,6 +555,7 @@ while [[ ! -f "$1/data/release-fixture" ]]; do sleep 0.05; done
         deadline = time.monotonic() + 5
         while not (installed / 'data/observed.args').exists() and time.monotonic() < deadline:
             time.sleep(0.01)
+        assert (installed / 'data/observed.args').exists(), 'fixture arguments were not published'
         observed = (installed / 'data/observed.args').read_text().splitlines()
         assert observed[0] == str(installed)
         assert observed[1:] == (installed / 'data/bootstrap-upgrade.args').read_text().splitlines()
