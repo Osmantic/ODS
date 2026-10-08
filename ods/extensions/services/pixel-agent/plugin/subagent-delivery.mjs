@@ -303,6 +303,19 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   }
   function blocked(context, event, beforeObserve=false) {
     if (context?.agentId !== agentId) return;
+    const provenance=context.inputProvenance;
+    if (provenance?.kind==='inter_session' && provenance.sourceTool==='subagent_interrupted_resume'
+        && typeof provenance.sourceSessionKey==='string' && provenance.sourceSessionKey.startsWith(prefix)) {
+      // Native orphan recovery replaces the run UUID, not the child session.
+      // A retained Portal owner/spawn binding can authorize a live child; an
+      // expired or restarted registry cannot reconstruct that authority.
+      const record=spawned.get(context.sessionKey);
+      const matches=[...roots.values()].filter(chain=>chain.sessionKey===provenance.sourceSessionKey
+        && (chain.children.has(context.sessionKey) || record?.chainId===chain.id) && valid(chain));
+      if (!childKey(context.sessionKey) || !UUID.test(context.runId ?? '') || record?.denied
+          || record?.parent!==provenance.sourceSessionKey || matches.length!==1
+          || !ownerMatches(matches[0],provenance.sourceSessionKey.slice(prefix.length))) return {block:true,blockReason:FAILED};
+    }
     // After restart/expiry there is no trusted owner request to continue. A
     // native announcement may still arrive, but cannot resume its mutations
     // solely because it carries an old session key. Other native chats retain
@@ -311,14 +324,14 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
         && typeof context.sessionKey==='string' && context.sessionKey.startsWith(prefix)
         && !beforeObserve && !runs.has(context.runId)) return {block:true,blockReason:FAILED};
     const provisional=spawned.get(context.sessionKey);
-    if (provisional?.denied && provisional.runId===context.runId) return {block:true,blockReason:FAILED};
-    if (provisional?.chainId && provisional.runId===context.runId) {
+    if (provisional?.denied) return {block:true,blockReason:FAILED};
+    if (provisional?.chainId) {
       const chain=roots.get(provisional.chainId);
       if (!chain || !valid(chain)) return {block:true,blockReason:FAILED};
     }
     for (const chain of roots.values()) {
       const child=chain.children.get(context.sessionKey);
-      const related=child?.runId===context.runId || context.sessionId===chain.sessionId &&
+      const related=Boolean(child) || context.sessionId===chain.sessionId &&
         (context.runId===chain.id || [...chain.children].some(([key,value])=>context.runId===`announce:v1:${key}:${value.runId}`));
       if (related && !valid(chain)) return {block:true,blockReason:FAILED};
     }

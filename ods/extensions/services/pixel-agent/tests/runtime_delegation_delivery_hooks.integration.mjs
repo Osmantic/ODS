@@ -87,6 +87,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       if(!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)}))throw new Error('owner followup did not start');
     `;
     writeFileSync(announcePath,source.replace(signature,gate));
+    // Expose the pinned native resume helper only in this private package.
+    // Invoke it after Stop deterministically instead of waiting for the native
+    // startup orphan scanner to happen to overlap cancellation on a slow host.
+    const recoveryPath=join(pkg,'dist','subagent-orphan-recovery-D8V30dko.js');
+    const recoverySource=readFileSync(recoveryPath,'utf8');
+    assert.equal(recoverySource.split('async function resumeOrphanedSession(params) {').length,2);
+    writeFileSync(recoveryPath,recoverySource+'\nexport { resumeOrphanedSession as fixtureResumeOrphanedSession };\n');
   }
   mkdirSync(workspace);mkdirSync(plugin);
   const eventsFile=join(root,'hooks.jsonl');
@@ -139,6 +146,16 @@ test(`real gateway deferred delegation waits for two children and a verified rev
           return !resolveActiveEmbeddedRunSessionId(sessionKey);
         },
         resolveOwnerSession:sessionKey=>getSessionEntry({sessionKey,storePath:resolveStorePath(api.config?.session?.store,{agentId:'pixel'})})});
+      if(${JSON.stringify(interim)}==='cancel')api.registerHttpRoute({path:'/pixel-ods/fixture-resume',auth:'gateway',match:'exact',handler:async(_req,res)=>{
+        const {H:nativeRuns}=await import(${JSON.stringify(pathToFileURL(join(pkg,'dist','subagent-registry-state-D0TtGqOr.js')).href)});
+        const {fixtureResumeOrphanedSession}=await import(${JSON.stringify(pathToFileURL(join(pkg,'dist','subagent-orphan-recovery-D8V30dko.js')).href)});
+        const original=nativeRuns.get(${JSON.stringify(collisionRun)});
+        if(!original)throw new Error('native child run receipt missing');
+        const result=await fixtureResumeOrphanedSession({sessionKey:original.childSessionKey,task:original.task,
+          originalRunId:${JSON.stringify(collisionRun)},originalRun:original});
+        record('fixture-native-resume',{}, {},{result});
+        res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));return true;
+      }});
       api.on('before_prompt_build',(event,ctx)=>{
         if(registry.admission?.(ctx)){record('prompt-denied',event,ctx);return;}
         registry.observe(event,ctx);if(${JSON.stringify(interim)}==='cancel')sharedGuard.observeRun(ctx,'pixel');
@@ -286,6 +303,21 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       const blockedChildren=new Set(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&events.some(end=>end.hook==='end'&&end.runId===e.runId)).map(e=>e.provenance.sourceSessionKey));
       assert.equal(blockedChildren.size,2,JSON.stringify({events,log}));
       for(const key of blockedChildren)assert.ok(events.some(e=>e.hook==='end'&&e.sessionKey===key&&e.lastStopReason==='aborted'&&e.success===false),'both native child runs confirm abortion');
+      const resumed=await fetch(`http://127.0.0.1:${port}/pixel-ods/fixture-resume`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef'},signal:AbortSignal.timeout(15000)});
+      assert.equal(resumed.status,200);
+      assert.equal((await resumed.json()).resumed,true,'native helper submits its real internal gateway request');
+      let resumeAdmission;
+      for(let i=0;i<200;i++) {
+        events=readEvents();
+        resumeAdmission=events.find(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_interrupted_resume');
+        if(resumeAdmission&&events.some(e=>e.hook==='end'&&e.runId===resumeAdmission.runId))break;
+        await delay(50);
+      }
+      assert.ok(resumeAdmission,'pinned runtime supplies orphan-resume provenance');
+      assert.notEqual(resumeAdmission.runId,collisionRun,'native recovery replaces the child run UUID');
+      assert.equal(resumeAdmission.decision?.outcome,'block','Stop fences the same child before resumed inference');
+      assert.ok(events.some(e=>e.hook==='end'&&e.runId===resumeAdmission.runId&&e.success===false),'resumed child reaches a blocked terminal event');
+      assert.ok(!events.some(e=>e.hook==='before-tool'&&e.runId===resumeAdmission.runId),'resumed child executes no tools');
       assert.equal(providerTrace.filter(e=>e.announcement).length,0,'after both late announcements, no announcement reached the model');
       assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'after draining both late announcements, only the actual owner followup generated');
       assert.equal(requests,6,'warmup + owner spawn/yield + two children + owner followup only');
