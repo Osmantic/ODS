@@ -279,6 +279,44 @@ def test_missing_cache_resolves_saved_selection_fail_closed(tmp_path, monkeypatc
     if fault == 'corrupt-cache': assert cache.read_text() == '--bad'
 
 
+@pytest.mark.parametrize('saved,expected', [
+    ('false', 'false'), ('true', 'true'), ('"false"', 'false'),
+    (' FALSE ', 'false'), (None, 'true'), ('', None), ('maybe', None),
+    ('false\nENABLE_OPEN_WEBUI=true', None),
+])
+def test_uncached_selection_retains_webui_choice(tmp_path, monkeypatch, saved, expected):
+    env_file = tmp_path / '.env'
+    body = 'GPU_BACKEND=apple\nTIER=1\n'
+    if saved is not None:
+        body += 'ENABLE_OPEN_WEBUI=' + saved + '\n'
+    env_file.write_text(body)
+    env_file.chmod(0o600)
+    resolver = tmp_path / 'scripts/resolve-compose-stack.sh'
+    resolver.parent.mkdir()
+    resolver.write_text('# test resolver')
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs['env']['ENABLE_OPEN_WEBUI'] == expected
+        return SimpleNamespace(stdout='-f base.yaml' +
+            (' -f docker-compose.gateway-only.yml' if expected == 'false' else ''))
+
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    # A stale caller must not reverse either the saved Core or Full selection.
+    process_env = {'ENABLE_OPEN_WEBUI': 'true' if expected == 'false' else 'false'}
+    if expected is None:
+        with pytest.raises(ValueError):
+            module.compose_flags(tmp_path, process_env)
+        assert not calls
+    else:
+        flags = module.compose_flags(tmp_path, process_env)
+        assert ('docker-compose.gateway-only.yml' in flags) == (expected == 'false')
+        assert len(calls) == 1
+    assert env_file.read_text() == body
+    assert not (tmp_path / '.compose-flags').exists()
+
+
 @pytest.mark.parametrize('fault', [None, 'runtime', 'services', 'storage', 'install', 'pending', 'inactive'])
 def test_selection_binds_corrected_services_to_completed_docker_handover(fault):
     prepared = dict(kind='legacy-native', status='prepared', phase='awaiting-joint-activation',

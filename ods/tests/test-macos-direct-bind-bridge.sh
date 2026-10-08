@@ -364,7 +364,7 @@ pass "cloud transition and forced fresh install disable stale bootstrap workers"
 # The authenticated readiness helper must reject both absent and crashed core
 # containers before probing, and must fail a running container whose bearer
 # request never succeeds. No UI/log message may contain the key.
-eval "$(extract_installer_function _verify_macos_dashboard_host_agent)"
+source "$ROOT_DIR/installers/macos/lib/host-agent-install.sh"
 (
     readiness_mode="missing"
     readiness_key="agent-readiness-secret"
@@ -447,7 +447,7 @@ eval "$(extract_installer_function _verify_macos_dashboard_host_agent)"
     fi
     [[ ! -s "$probe_errors" ]] || fail "$(sort -u "$probe_errors" | paste -sd ';' -)"
 )
-grep -Fq 'if ! _verify_macos_dashboard_host_agent "$INSTALL_DIR/.env"; then' "$INSTALLER" \
+grep -Fq 'if ! _verify_macos_dashboard_host_agent "$INSTALL_DIR/.env"; then' "$ROOT_DIR/installers/macos/lib/host-agent-install.sh" \
     || fail "installer does not require authenticated dashboard-api readiness"
 grep -Fq '[DRY RUN] Would install, configure, and verify the authenticated dashboard host-agent path' "$INSTALLER" \
     || fail "macOS dry-run does not skip live dashboard host-agent verification"
@@ -491,11 +491,11 @@ pass "dashboard-api readiness fails closed and never logs the host-agent key"
         || fail "macOS CLI does not use the shared LLM bridge manager"
     grep -Fq 'macos_bind_uses_direct_gateway "$bind_address" "$listen_host"' "$BRIDGE_MANAGER" \
         || fail "shared LLM bridge manager does not use the direct-bind decision"
-    grep -Fq 'macos_bind_uses_direct_gateway "$agent_bind" "$listen_host"' "$INSTALLER" \
+    grep -Fq 'macos_bind_uses_direct_gateway "$agent_bind" "$listen_host"' "$ROOT_DIR/installers/macos/lib/host-agent-install.sh" \
         || fail "installer host-agent bridge does not use the shared direct-bind decision"
     grep -Fq 'upsert_env_value "$env_file" "ODS_MACOS_LLM_BRIDGE_ENABLED" "$enabled"' "$BRIDGE_MANAGER" \
         || fail "shared LLM bridge manager does not persist its decision"
-    grep -Fq 'upsert_env_value "$env_file" "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED" "false"' "$INSTALLER" \
+    grep -Fq 'upsert_env_value "$env_file" "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED" "false"' "$ROOT_DIR/installers/macos/lib/host-agent-install.sh" \
         || fail "installer does not persist the disabled host-agent bridge state"
     pass "installer bridge configuration uses and persists the shared decision"
 

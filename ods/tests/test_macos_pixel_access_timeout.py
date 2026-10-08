@@ -77,14 +77,14 @@ def readiness(monkeypatch):
 
 def test_transient_busy_then_ready(readiness):
     readiness.replies = [frame(BUSY), frame(READY)]
-    installer._ready_access(readiness.service)
+    assert installer._ready_access(readiness.service) == READY['body']
     assert readiness.attempts == 2
 
 
 @pytest.mark.parametrize('error', [TimeoutError(), ConnectionRefusedError()])
 def test_transport_retry_then_ready(readiness, error):
     readiness.replies = [error, frame(READY)]
-    installer._ready_access(readiness.service)
+    assert installer._ready_access(readiness.service) == READY['body']
     assert readiness.attempts == 2
 
 

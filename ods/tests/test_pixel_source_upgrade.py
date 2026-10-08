@@ -717,6 +717,152 @@ def test_unheld_permission_restage_cannot_change_candidate_or_marker(mirrored):
     assert manager.journal()['identity'] == identity
 
 
+def test_new_download_refreshes_unheld_plan_without_copying_or_losing_mirror(mirrored):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    original_source = upgrade.inventory(old, os.getuid())
+    mirror_name = manager._mirror_name()
+    mirror_bytes = (manager.state / mirror_name).read_bytes()
+    protected_bytes = {path.name: path.read_bytes() for path in mirror.iterdir()}
+    (new / 'bin/a.py').write_text('new main download')
+    refreshed = manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert refreshed['phase'] == 'staged' and refreshed['hold'] is None
+    assert refreshed['before'] == prior['before'] == original_source
+    assert refreshed['candidate'] == upgrade.inventory(new, os.getuid(), candidate=True)
+    assert (manager.state / upgrade.sha(upgrade.encoded(prior))).read_bytes() == upgrade.encoded(prior)
+    assert (manager.state / mirror_name).read_bytes() == mirror_bytes
+    assert {path.name: path.read_bytes() for path in mirror.iterdir()} == protected_bytes
+    assert upgrade.inventory(old, os.getuid()) == original_source
+    # The normal protected installer writer can now journal the refreshed
+    # coordinator, then acquire its own hold and apply the selected candidate.
+    for path in mirror.iterdir():
+        manager.record_mirror_write(path, path.read_bytes(), 0o644, os.getuid(), os.getgid())
+    manager.bind('d' * 64, lambda _: None)
+    manager.publish(lambda _: None)
+    assert (old / 'bin/a.py').read_text() == 'new main download'
+    manager.finish(lambda *_: None)
+    manager.verify_mirror()
+
+
+def test_stage_cli_selects_guarded_refresh_for_a_new_download(mirrored, monkeypatch):
+    manager, old, new, identity, mirror = mirrored
+    for service in ('pixel-edge', 'litellm'):
+        path = new / f'extensions/services/{service}/compose.yaml'
+        path.parent.mkdir(parents=True)
+        path.write_text('services: {}')
+    marker = dict(schema_version=2, manager='ods', install_dir=str(old),
+                  initial_active_state='absent', state='ready', pixel_source_ref=identity['beforeRef'])
+    monkeypatch.setattr(upgrade, '_protected_json', lambda *a, **kw: (marker, identity['markerSha256']))
+    monkeypatch.setattr(upgrade, 'owner_baseline', lambda *a: {
+        'configSha256': identity['configSha256'], 'receiptSha256': identity['receiptSha256']})
+    account = SimpleNamespace(pw_dir=str(old.parent / 'owner'), pw_uid=os.getuid())
+    upgrade._stage(manager, account, new, identity['afterRef'])
+    assert manager.journal()['candidate'] == upgrade.inventory(new, os.getuid(), candidate=True)
+    assert manager.journal()['hold'] is None
+    assert (old / 'bin/a.py').read_text() == 'old'
+
+
+@pytest.mark.parametrize('boundary', ['before-journal', 'after-journal'])
+def test_unheld_refresh_replays_interrupted_journal_publication(mirrored, monkeypatch, boundary):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    (new / 'bin/a.py').write_text('new main download')
+    save = manager._save
+    def interrupted(value):
+        if boundary == 'after-journal':
+            save(value)
+        raise RuntimeError('interrupted refresh')
+    monkeypatch.setattr(manager, '_save', interrupted)
+    with pytest.raises(RuntimeError, match='interrupted refresh'):
+        manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    monkeypatch.setattr(manager, '_save', save)
+    if boundary == 'before-journal':
+        assert manager.journal() == prior
+    result = manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert result['candidate'] == upgrade.inventory(new, os.getuid(), candidate=True)
+    assert result['phase'] == 'staged' and result['hold'] is None
+    assert upgrade.inventory(old, os.getuid()) == prior['before']
+
+
+def test_unheld_refresh_rejournals_a_partially_installed_changed_coordinator(mirrored):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    # A bootstrap interruption left this file at the recorded before bytes.
+    (mirror / 'pixel_source_upgrade.py').write_bytes(b'old-pixel_source_upgrade.py')
+    (new / 'bin/pixel_access_bridge.py').write_bytes(b'corrected controller')
+    manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    for path in mirror.iterdir():
+        rel = ('extensions/services/pixel-agent/host/' if path.name == 'access_mode_server.py' else 'bin/') + path.name
+        raw = (new / rel).read_bytes()
+        manager.record_mirror_write(path, raw, 0o644, os.getuid(), os.getgid())
+        path.write_bytes(raw)
+    manager.verify_mirror()
+    assert upgrade.inventory(old, os.getuid()) == prior['before']
+    assert manager.journal()['hold'] is None
+
+
+def test_unheld_refresh_rechecks_live_source_before_publishing(mirrored, monkeypatch):
+    manager, old, new, identity, mirror = mirrored
+    prior = manager.journal()
+    (new / 'bin/a.py').write_text('new main download')
+    inventory = upgrade.inventory
+    calls = 0
+    def racing_inventory(path, uid, **kwargs):
+        nonlocal calls
+        if path == old:
+            calls += 1
+            if calls == 2:
+                (old / 'bin/a.py').write_text('concurrent owner edit')
+        return inventory(path, uid, **kwargs)
+    monkeypatch.setattr(upgrade, 'inventory', racing_inventory)
+    with pytest.raises(upgrade.UpgradeError, match='source-live-drift'):
+        manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert manager.journal() == prior
+    assert (old / 'bin/a.py').read_text() == 'concurrent owner edit'
+
+
+@pytest.mark.parametrize('condition', [
+    'hold', 'applying', 'applied', 'restoring', 'restored', 'complete',
+    'pending', 'downstream', 'live-bytes', 'live-mode', 'mirror', 'scratch',
+    'marker', 'before-ref', 'after-ref',
+])
+def test_unheld_refresh_refuses_ambiguous_state_without_replacing_plan(mirrored, condition):
+    manager, old, new, identity, mirror = mirrored
+    if condition == 'hold':
+        manager.bind('d' * 64, lambda _: None)
+    elif condition in ('applying', 'applied', 'restoring', 'restored', 'complete'):
+        value = manager.journal()
+        value['phase'] = condition
+        manager._save(value)
+    elif condition == 'pending':
+        (manager.state.parent / 'transition.json').write_text('{}')
+    elif condition == 'downstream':
+        manager._write(manager.downstream_name(), b'{}')
+    elif condition == 'live-bytes':
+        (old / 'bin/a.py').write_text('owner edit')
+    elif condition == 'live-mode':
+        (old / 'bin/a.py').chmod(0o600)
+    elif condition == 'mirror':
+        (mirror / 'pixel_access_bridge.py').write_text('unrecognized controller')
+    elif condition == 'scratch':
+        record = json.loads((manager.state / 'source-scratch.json').read_text())
+        (old / record['name'] / 'payload').write_text('interrupted write')
+    else:
+        key = {'marker': 'markerSha256', 'before-ref': 'beforeRef', 'after-ref': 'afterRef'}[condition]
+        identity = {**identity, key: 'f' * len(identity[key])}
+    (new / 'bin/a.py').write_text('new main download')
+    prior = manager.journal()
+    source = upgrade.inventory(old, os.getuid())
+    records = {p.name: p.read_bytes() for p in manager.state.iterdir() if p.is_file()}
+    protected = {p.name: p.read_bytes() for p in mirror.iterdir()}
+    with pytest.raises(upgrade.UpgradeError):
+        manager.stage(new, os.getuid(), identity, refresh_unheld=True)
+    assert manager.journal() == prior
+    assert upgrade.inventory(old, os.getuid()) == source
+    assert {p.name: p.read_bytes() for p in manager.state.iterdir() if p.is_file()} == records
+    assert {p.name: p.read_bytes() for p in mirror.iterdir()} == protected
+
+
 @pytest.mark.parametrize('mutation', ['extra', 'symlink', 'blob', 'pending', 'mirror'])
 def test_completed_uninstall_inventory_rejects_unknown_or_changed_state(mirrored, mutation):
     manager, old, new, identity, mirror = mirrored

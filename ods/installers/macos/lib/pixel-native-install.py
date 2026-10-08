@@ -264,6 +264,10 @@ def main():
             'Check prerequisites and private preparation/activation receipts; do not reset them.')
         if code in ERROR_GUIDANCE:
             guidance = '[' + code + '] ' + guidance
+        if code == 'native-compose-health-timeout':
+            detail = helper('compose').health_diagnostic(error)
+            if detail:
+                guidance += ' ' + detail
         print('Native Pixel installation stopped (' + type(error).__name__ + '). ' + guidance, file=sys.stderr)
         return 1
     return 0

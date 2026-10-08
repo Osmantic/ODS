@@ -388,8 +388,18 @@ _ods_pixel_source_transition_required() {
 _ods_pixel_source_upgrade() {
     local action="$1" owner="$2"
     shift 2
+    # These custody operations are mandatory. ods_sudo intentionally returns
+    # success when skipping optional privileged tasks; that is not a valid
+    # stage/status/hold response and must never authorize an upgrade step.
+    if [[ ${EUID:-$(id -u)} -ne 0 && "${ODS_SUDO_AVAILABLE:-true}" == false ]]; then
+        printf '%s\n' 'error: source-upgrade-sudo-required: Pixel source upgrade requires sudo. Preserve the existing installation and any pending upgrade state.' >&2
+        return 1
+    fi
     local helper="${SCRIPT_DIR:?}/bin/pixel_source_upgrade.py"
-    [[ -f "$helper" && ! -L "$helper" ]] || return 1
+    if [[ ! -f "$helper" || -L "$helper" ]]; then
+        printf '%s\n' 'error: source-upgrade-helper-unavailable: The reviewed Pixel source upgrade helper is missing or unsafe.' >&2
+        return 1
+    fi
     ods_sudo python3 -I "$helper" "$action" "${INSTALL_DIR:?}" "$owner" "$@"
 }
 

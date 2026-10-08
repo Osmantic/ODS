@@ -191,7 +191,7 @@ class DashboardDataPermissions(unittest.TestCase):
                       'error() { echo "$*" >&2; return 1; }\nwarn() { echo "$*" >&2; }\n' + boundary)
             environment = dict(os.environ, SCRIPT_DIR=str(ROOT), INSTALL_DIR=str(install))
             probe = '''
-import os, pathlib, tempfile
+import os, pathlib, sqlite3, tempfile
 data = pathlib.Path(os.environ["INSTALL_DIR"]) / "data"
 os.setgroups([])
 os.setgid(1000)
@@ -203,6 +203,16 @@ with os.fdopen(fd, "w") as stream:
     stream.write("retained-private-password")
 os.replace(path, data / "dashboard-password.json")
 (receipt / "turn.json").write_text("retained-chat-result")
+images = data / "pixel-images"
+images.mkdir(mode=0o700, exist_ok=True)
+database = images / "images.sqlite3"
+if not database.exists():
+    os.close(os.open(database, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+with sqlite3.connect(database) as db:
+    db.execute("CREATE TABLE IF NOT EXISTS retained_image (data BLOB)")
+    if not db.execute("SELECT COUNT(*) FROM retained_image").fetchone()[0]:
+        db.execute("INSERT INTO retained_image VALUES (?)", (b"private-image",))
+    assert db.execute("SELECT data FROM retained_image").fetchall() == [(b"private-image",)]
 '''
             denied = subprocess.run(["python3", "-c", probe], env=environment, capture_output=True, text=True, check=False)
             self.assertNotEqual(denied.returncode, 0)
@@ -227,22 +237,79 @@ os.replace(path, data / "dashboard-password.json")
                 self.assertEqual(private.stat().st_mode & 0o777, 0o700)
                 self.assertEqual((data / "dashboard-password.json").stat().st_mode & 0o777, 0o600)
                 self.assertEqual((data / "pixel-chat-results/turn.json").read_text(), "retained-chat-result")
+                self.assertEqual((data / "pixel-images").stat().st_uid, 1000)
+                self.assertEqual((data / "pixel-images").stat().st_mode & 0o777, 0o700)
+                self.assertEqual((data / "pixel-images/images.sqlite3").stat().st_uid, 1000)
+                self.assertEqual((data / "pixel-images/images.sqlite3").stat().st_mode & 0o777, 0o600)
             # Recover a private result tree already transferred by an older
             # reinstall, without destroying its receipt or changing modes.
             os.chown(data / "pixel-chat-results", 1001, 2001)
             os.chown(data / "pixel-chat-results/turn.json", 1001, 2001)
+            images = data / "pixel-images"
+            database = images / "images.sqlite3"
+            retained_database = database.read_bytes()
+            os.chown(images, 1001, 2001)
+            os.chown(database, 1001, 2001)
             outside = install / "outside-private-state"
             outside.write_text("untouched")
             os.chown(outside, 2001, 2001)
             (data / "pixel-chat-results/external").symlink_to(outside)
+            (images / "external").symlink_to(outside)
             subprocess.run(["bash", "-c", script], env=environment, check=True)
             self.assertEqual((data / "pixel-chat-results").stat().st_uid, 1000)
             self.assertEqual((data / "pixel-chat-results").stat().st_mode & 0o777, 0o700)
             self.assertEqual((data / "pixel-chat-results/turn.json").stat().st_uid, 1000)
             self.assertEqual((data / "pixel-chat-results/turn.json").read_text(), "retained-chat-result")
+            self.assertEqual((images.stat().st_uid, images.stat().st_gid, images.stat().st_mode & 0o777),
+                             (1000, 1000, 0o700))
+            self.assertEqual((database.stat().st_uid, database.stat().st_gid, database.stat().st_mode & 0o777),
+                             (1000, 1000, 0o600))
+            self.assertEqual(database.read_bytes(), retained_database)
+            subprocess.run(["python3", "-c", probe], env=environment, check=True)
             self.assertEqual(outside.stat().st_uid, 2001)
             self.assertEqual(outside.read_text(), "untouched")
 
+
+    def test_private_images_select_namespace_repair_without_sudo(self):
+        # Execute the exact helper shell payload with real numeric ownership.
+        # Docker's namespace mapping itself belongs to the runtime smoke test.
+        for rootless in ("false", "true"):
+            with self.subTest(rootless=rootless), tempfile.TemporaryDirectory() as temporary:
+                install = Path(temporary)
+                data = install / "data"
+                data.mkdir(mode=0o770)
+                os.chown(data, 1001, 1000)
+                images = data / "pixel-images"
+                images.mkdir(mode=0o700)
+                saved = images / "images.sqlite3"
+                saved.write_bytes(b"retained-private-image-database")
+                saved.chmod(0o600)
+                os.chown(images, 1001, 2001)
+                os.chown(saved, 1001, 2001)
+                script = ('set -euo pipefail\n'
+                          + (ROOT / "installers/lib/dashboard-data.sh").read_text() + r'''
+ods_sudo_available() { return 1; }
+_ods_rootless_ensure_helper_image() { :; }
+ODS_ROOTLESS_HELPER_IMAGE=fixture-pinned-helper
+docker_run() {
+    [[ "$*" == *"--network none --user 0:0"* ]]
+    [[ "$*" == *"src=$INSTALL_DIR/data,dst=/data"* ]]
+    touch "$INSTALL_DIR/helper-used"
+    local payload="${!#}"
+    payload="${payload//\/data/$INSTALL_DIR\/data}"
+    bash -ec "$payload"
+}
+ods_prepare_dashboard_data "$INSTALL_DIR" "$ROOTLESS"
+''')
+                subprocess.run(["bash", "-c", script], check=True,
+                               env=dict(os.environ, INSTALL_DIR=str(install), ROOTLESS=rootless))
+                self.assertTrue((install / "helper-used").exists())
+                self.assertEqual((data.stat().st_uid, data.stat().st_gid), (1001, 1000))
+                self.assertEqual((images.stat().st_uid, images.stat().st_gid, images.stat().st_mode & 0o777),
+                                 (1000, 1000, 0o700))
+                self.assertEqual((saved.stat().st_uid, saved.stat().st_gid, saved.stat().st_mode & 0o777),
+                                 (1000, 1000, 0o600))
+                self.assertEqual(saved.read_bytes(), b"retained-private-image-database")
 
     def test_no_sudo_uses_actual_owner_authority(self):
         for uid, succeeds in ((1000, True), (1001, False)):

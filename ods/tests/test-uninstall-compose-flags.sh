@@ -392,7 +392,20 @@ EOF
     make_install "$install_keep"
     mkdir -p "$home_keep/.local/bin"
     ln -s "$install_keep/ods-cli" "$home_keep/.local/bin/ods"
+    # The owner's backups (ods-backup.sh writes to .backups/ by default),
+    # presets and update snapshots are user data too.
+    mkdir -p "$install_keep/.backups/backup-1" "$install_keep/presets/work" "$home_keep/.ods/backups/pre-update-1"
+    printf '{}\n' > "$install_keep/.backups/backup-1/manifest.json"
+    printf 'name=work\n' > "$install_keep/presets/work/meta.txt"
+    printf 'snapshot\n' > "$home_keep/.ods/backups/pre-update-1/.env"
+    printf 'chats\n' > "$install_keep/data/owner.txt"
     DOCKER_LOG="$log_keep" SUDO_LOG="$sudo_log" run_uninstall "$install_keep" "$home_keep" "$stub_dir" --keep-data
+    [[ -f "$install_keep/data/owner.txt" ]] || fail "--keep-data must keep data/"
+    [[ -f "$install_keep/.backups/backup-1/manifest.json" ]] || fail "--keep-data must keep the owner's backups in .backups/"
+    [[ -f "$install_keep/presets/work/meta.txt" ]] || fail "--keep-data must keep saved presets"
+    [[ -f "$home_keep/.ods/backups/pre-update-1/.env" ]] || fail "--keep-data must keep update snapshots in ~/.ods"
+    [[ ! -e "$install_keep/ods-cli" ]] || fail "--keep-data must still remove the installation files"
+    pass "--keep-data keeps data/, backups, presets and update snapshots"
 
     grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_keep" \
         || fail "uninstall must use saved .compose-flags for docker compose down"
@@ -400,6 +413,21 @@ EOF
         fail "--keep-data must not remove compose volumes with -v"
     fi
     pass "uninstall uses saved compose flags and preserves volumes with --keep-data"
+
+    local install_full="$TMP_DIR/install-full" home_full="$TMP_DIR/home-full"
+    make_install "$install_full"
+    mkdir -p "$install_full/.backups/backup-1" "$home_full/.ods/backups/pre-update-1"
+    printf '{}\n' > "$install_full/.backups/backup-1/manifest.json"
+    printf 'snapshot\n' > "$home_full/.ods/backups/pre-update-1/.env"
+    HOME="$home_full" INSTALL_DIR="$install_full" PATH="$stub_dir:$PATH" \
+        DOCKER_LOG="$TMP_DIR/docker-full.log" SUDO_LOG="$sudo_log" \
+        ODS_UNINSTALL_SYSTEMD_DIR="$install_full/systemd" \
+        bash "$install_full/ods-uninstall.sh" --force > "$TMP_DIR/full.out" 2>&1
+    [[ ! -e "$install_full/.backups" && ! -e "$home_full/.ods" ]] \
+        || fail "a full uninstall removes backups and update snapshots"
+    grep -qF 'This also deletes 2 backup(s)' "$TMP_DIR/full.out" \
+        || fail "a full uninstall must say it deletes the owner's backups"
+    pass "a full uninstall names the backups it deletes"
     assert_no_name_cleanup "$log_keep"
     [[ ! -L "$home_keep/.local/bin/ods" ]] \
         || fail "uninstall must remove the user-level ods CLI symlink"
