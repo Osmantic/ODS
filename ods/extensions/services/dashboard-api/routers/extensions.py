@@ -1773,6 +1773,54 @@ def _serialize_extension_operation(func):
     return wrapped
 
 
+def _serialize_extension_group_operation(*, include_dependencies: bool):
+    """Own every service an enable/disable may affect, in template lock order."""
+    def decorate(func):
+        @wraps(func)
+        def wrapped(service_id: str, *args, **kwargs):
+            if not _SERVICE_ID_RE.match(service_id):
+                return func(service_id, *args, **kwargs)
+
+            def operation_ids():
+                with _extensions_lock():
+                    pending = [service_id]
+                    try:
+                        pending.extend(_feature_companions(service_id))
+                    except HTTPException:
+                        # The endpoint retains its normal validation response.
+                        pass
+                    visited = set()
+                    while pending:
+                        target = pending.pop()
+                        if target in visited:
+                            continue
+                        visited.add(target)
+                        if include_dependencies:
+                            try:
+                                pending.extend(_read_direct_deps(target))
+                            except HTTPException:
+                                pass
+                    return sorted(visited)
+
+            for _ in range(3):
+                planned = operation_ids()
+                # Never wait on operation locks while holding the graph lock,
+                # or acquire a dependency after holding its unsorted root.
+                with contextlib.ExitStack() as locks:
+                    for target in planned:
+                        locks.enter_context(_extension_operation_lock(target))
+                    if operation_ids() != planned:
+                        continue
+                    return func(service_id, *args, **kwargs)
+            raise HTTPException(
+                status_code=409,
+                detail="Extension dependencies changed; retry the operation",
+            )
+
+        return wrapped
+    return decorate
+
+
 def _extensions_lock_path() -> Path:
     """Use the same canonical lock file as the host selection helper.
 
@@ -4712,7 +4760,7 @@ def prepare_extension_images(
 
 
 @router.post("/api/extensions/{service_id}/enable")
-@_serialize_extension_operation
+@_serialize_extension_group_operation(include_dependencies=True)
 def enable_extension(
     service_id: str,
     auto_enable_deps: bool = Query(False),
@@ -5067,7 +5115,7 @@ def _enabled_dependents(service_id: str) -> list[str]:
 
 
 @router.post("/api/extensions/{service_id}/disable")
-@_serialize_extension_operation
+@_serialize_extension_group_operation(include_dependencies=False)
 def disable_extension(service_id: str, include_data_info: bool = Query(True), api_key: str = Depends(verify_api_key)):
     """Disable an enabled extension."""
     _validate_service_id(service_id)
