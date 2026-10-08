@@ -459,9 +459,8 @@ async def _stream_speech(text: str) -> AsyncIterator[bytes]:
     nearly-instant playback for the operator on ODS Talk.
 
     On a mid-stream Kokoro error we log + end the response cleanly. The
-    browser then hears truncated audio (half a sentence) rather than
-    silence — strictly better UX than the previous buffer-then-503
-    failure mode, which the SPA had to silently swallow.
+    browser may hear truncated audio. The route checks for the first chunk
+    before committing HTTP 200 so a zero-audio failure becomes HTTP 503.
     """
     payload = {
         "model": _tts_model(),
@@ -1049,8 +1048,25 @@ async def talk_speak(request: Request, text: str = Form(...)) -> StreamingRespon
         raise HTTPException(status_code=422, detail="Text is required.")
     if len(clean) > MAX_MESSAGE_CHARS:
         raise HTTPException(status_code=413, detail="Text is too long.")
+    stream = _stream_speech(clean)
+    try:
+        while not (first_chunk := await stream.__anext__()):
+            pass
+    except StopAsyncIteration as exc:
+        # StreamingResponse commits HTTP 200 before iterating its body. A
+        # failed first Kokoro request must reach the browser as a failure.
+        raise HTTPException(status_code=503, detail="Speech audio is unavailable right now.") from exc
+
+    async def stream_with_first_chunk() -> AsyncIterator[bytes]:
+        try:
+            yield first_chunk
+            async for chunk in stream:
+                yield chunk
+        finally:
+            await stream.aclose()
+
     return StreamingResponse(
-        _stream_speech(clean),
+        stream_with_first_chunk(),
         media_type="audio/mpeg",
         # X-Accel-Buffering: no tells nginx (and similar reverse proxies)
         # NOT to buffer the audio stream — otherwise our streaming work
