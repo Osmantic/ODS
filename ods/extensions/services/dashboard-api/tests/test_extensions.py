@@ -4902,6 +4902,33 @@ def test_production_core_service_ids_include_hermes_services():
 class TestCallAgentErrorNarrowing:
     """_call_agent swallows network errors but not programmer errors."""
 
+    def test_action_result_keeps_failure_reason_local(self, monkeypatch):
+        from host_agent_client import AgentHTTPError
+        from routers import extensions as ext_module
+
+        def refuse(*_args, **_kwargs):
+            raise AgentHTTPError(500, "compose resolver failed: PyYAML is required")
+
+        monkeypatch.setattr(ext_module, "request_agent_json", refuse)
+        monkeypatch.setattr(ext_module, "_agent_refusals", {"hermes": "another request"})
+        assert ext_module._call_agent_result("start", "hermes") == (
+            False, "compose resolver failed: PyYAML is required",
+        )
+        assert ext_module._agent_refusals == {"hermes": "another request"}
+
+    def test_action_result_does_not_expose_transport_internals(self, monkeypatch):
+        from host_agent_client import AgentUnavailable
+        from routers import extensions as ext_module
+
+        def unavailable(*_args, **_kwargs):
+            raise AgentUnavailable("private transport detail")
+
+        monkeypatch.setattr(ext_module, "request_agent_json", unavailable)
+        success, reason = ext_module._call_agent_result("start", "hermes")
+        assert success is False
+        assert "private transport detail" not in reason
+        assert "Host agent could not be reached" in reason
+
     def test_call_agent_returns_false_on_transport_error(self, monkeypatch, caplog):
         """Network failures produce (False, warning) — callers rely on this."""
         import logging

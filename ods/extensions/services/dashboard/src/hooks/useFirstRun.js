@@ -23,6 +23,7 @@ export function useFirstRun() {
   const [firstRun, setFirstRun] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [installation, setInstallation] = useState(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -31,11 +32,13 @@ export function useFirstRun() {
       if (!resp.ok) throw new Error(`setup-status returned ${resp.status}`)
       const data = await resp.json()
       setFirstRun(!!data.first_run)
+      setInstallation(data.installation || null)
       setError(null)
     } catch (err) {
       // See the failure-mode comment above. We mark loading=false so the
       // UI proceeds normally; the wizard is hidden until the next refresh.
       setFirstRun(false)
+      setInstallation(null)
       setError(err.message)
     } finally {
       setLoading(false)
@@ -44,5 +47,5 @@ export function useFirstRun() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  return { firstRun, loading, error, refresh }
+  return { firstRun, installation, loading, error, refresh }
 }

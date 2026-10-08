@@ -23,12 +23,19 @@ import {
 } from 'lucide-react'
 
 const PROGRESS_KEY = 'ods-firstboot-progress'
+const KEEP_CURRENT = {
+  id: 'current',
+  title: 'Keep current installation',
+  blurb: 'Keep the services selected in the installer. Add more later from Extensions.',
+  templateId: null,
+  Icon: Check,
+}
 
 const STACK_OPTIONS = [
   {
     id: 'chat',
     title: 'Chat only',
-    blurb: 'Just the chat surface. This is what runs out of the box.',
+    blurb: 'Continue without adding services. Existing services stay enabled.',
     templateId: null,
     Icon: MessageSquare,
   },
@@ -75,14 +82,25 @@ function clearProgress() {
   }
 }
 
-export default function FirstBoot({ onComplete }) {
+export default function FirstBoot({ onComplete, installation }) {
   const initial = useMemo(() => readProgress() || {}, [])
+  const hasSavedSelection = installation?.selection_saved === true
+  const stackOptions = hasSavedSelection
+    ? [KEEP_CURRENT, ...STACK_OPTIONS.filter(option => option.id !== 'chat')]
+    : STACK_OPTIONS
   const [step, setStep] = useState(initial.step || 1)
   const [deviceName, setDeviceName] = useState(initial.deviceName || 'ods')
   const [username, setUsername] = useState(initial.username || '')
-  const [stack, setStack] = useState(initial.stack || 'chat')
+  const [stack, setStack] = useState(() => {
+    // Preserve an explicitly selected add-on bundle across a page refresh.
+    // Older "chat" progress meant no changes, even on a full installation.
+    if (STACK_OPTIONS.some(option => option.id === initial.stack && option.templateId)) return initial.stack
+    return hasSavedSelection ? 'current' : 'chat'
+  })
   const [finishing, setFinishing] = useState(false)
   const [finishError, setFinishError] = useState(null)
+  const [finishDetails, setFinishDetails] = useState([])
+  const [partialBundle, setPartialBundle] = useState(null)
   const [invite, setInvite] = useState(null)
   const [ownerCardStatus, setOwnerCardStatus] = useState(null)
 
@@ -93,6 +111,12 @@ export default function FirstBoot({ onComplete }) {
 
   const next = () => setStep(s => Math.min(s + 1, TOTAL_STEPS))
   const prev = () => setStep(s => Math.max(s - 1, 1))
+  const chooseStack = value => {
+    if (value === stack) return
+    setStack(value)
+    setFinishError(null)
+    setFinishDetails([])
+  }
   const ownerCardStatusLoading = ownerCardStatus === null
   const ownerCardUnavailable = ownerCardStatus?.ready === false
   const ownerCardUnavailableReason = ownerCardStatus?.reason || 'Enable ODS proxy before generating owner cards.'
@@ -128,13 +152,14 @@ export default function FirstBoot({ onComplete }) {
 
   const finish = async () => {
     setFinishError(null)
+    setFinishDetails([])
     if (ownerCardStatusLoading) {
       setFinishError('Checking owner-card readiness. Try again in a moment.')
       return
     }
     setFinishing(true)
     try {
-      const selectedStack = STACK_OPTIONS.find(option => option.id === stack)
+      const selectedStack = stackOptions.find(option => option.id === stack)
       if (!selectedStack) {
         throw new Error('The selected stack is no longer available. Go back and choose another option.')
       }
@@ -163,15 +188,16 @@ export default function FirstBoot({ onComplete }) {
         }
         const incompleteStart = startedCount < enabledCount
         if (failed.length > 0 || skipped.length > 0 || incompleteStart) {
+          setPartialBundle({ id: stack, title: selectedStack.title })
           const details = [
             failed.length > 0 ? `failed to start: ${failed.join(', ')}` : null,
             skipped.length > 0 ? `not compatible or unavailable: ${skipped.join(', ')}` : null,
             incompleteStart ? `started ${startedCount} of ${enabledCount} enabled services` : null,
           ].filter(Boolean).join('; ')
-          const recovery = applyResult.restart_required
-            ? ' Run ods restart, then retry Finish.'
-            : ' Go back and choose another stack, or resolve the listed services and retry.'
-          throw new Error(`${selectedStack.title} was only partially configured (${details}).${recovery}`)
+          setFinishDetails(Array.isArray(applyResult.warnings)
+            ? applyResult.warnings.filter(warning => typeof warning === 'string')
+            : [])
+          throw new Error(`${selectedStack.title} was only partially configured (${details}). Resolve the reported issue and retry Finish, or go back and continue without adding services. Services already enabled will remain enabled.`)
         }
       }
 
@@ -287,7 +313,9 @@ export default function FirstBoot({ onComplete }) {
               {step === 3 && (
                 <StackStep
                   stack={stack}
-                  setStack={setStack}
+                  setStack={chooseStack}
+                  options={stackOptions}
+                  hasSavedSelection={hasSavedSelection}
                   onNext={next}
                   onBack={prev}
                 />
@@ -297,10 +325,13 @@ export default function FirstBoot({ onComplete }) {
                   deviceName={deviceName}
                   username={username}
                   stack={stack}
+                  options={stackOptions}
                   onBack={prev}
                   onFinish={finish}
                   finishing={finishing}
                   error={finishError}
+                  details={finishDetails}
+                  partialBundle={partialBundle}
                   ownerCardStatus={ownerCardStatus}
                   ownerCardStatusLoading={ownerCardStatusLoading}
                 />
@@ -447,19 +478,21 @@ function UserStep({ username, setUsername, onNext, onBack }) {
 // Step 3 - Stack picker
 // ---------------------------------------------------------------------------
 
-function StackStep({ stack, setStack, onNext, onBack }) {
+function StackStep({ stack, setStack, options, hasSavedSelection, onNext, onBack }) {
   return (
     <div>
       <div className="w-16 h-16 rounded-2xl bg-theme-accent/15 text-theme-accent flex items-center justify-center mb-6">
         <Layers size={32} />
       </div>
-      <h1 className="text-3xl font-bold text-theme-text mb-3">Pick your stack.</h1>
+      <h1 className="text-3xl font-bold text-theme-text mb-3">{hasSavedSelection ? 'Keep your installation.' : 'Pick your stack.'}</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        You can change this later. Start small if you want and add things as you go.
+        {hasSavedSelection
+          ? 'Your installer settings are already saved. Finish browser setup with your current services, or choose an optional bundle to add. Models and service readiness are checked separately in the dashboard.'
+          : 'These bundles add services to your current installation. You can also add services later from Extensions.'}
       </p>
 
       <div className="space-y-3 mb-8">
-        {STACK_OPTIONS.map(opt => {
+        {options.map(opt => {
           const Icon = opt.Icon
           const selected = stack === opt.id
           return (
@@ -518,26 +551,31 @@ function ConfirmStep({
   deviceName,
   username,
   stack,
+  options,
   onBack,
   onFinish,
   finishing,
   error,
+  details,
+  partialBundle,
   ownerCardStatus,
   ownerCardStatusLoading,
 }) {
-  const stackTitle = STACK_OPTIONS.find(s => s.id === stack)?.title || stack
+  const selectedStack = options.find(s => s.id === stack)
+  const stackTitle = selectedStack?.title || stack
   const ownerCardUnavailable = ownerCardStatus?.ready === false
   return (
     <div>
       <h1 className="text-3xl font-bold text-theme-text mb-6">Ready?</h1>
       <p className="text-theme-text-muted mb-6 leading-relaxed">
-        Tap Finish and we&apos;ll generate the owner QR for ODS Talk.
+        Finish browser setup to open Portal. Then check Models and Extensions for download progress and service health.
+        {!ownerCardUnavailable && ' We will also generate the owner QR for ODS Talk.'}
       </p>
 
       <dl className="bg-theme-card border border-theme-border rounded-xl divide-y divide-theme-border mb-8">
         <Row label="Setup label" value={deviceName.trim() || 'ods'} hint="owner-card audit note" />
         <Row label="First user" value={username.trim()} />
-        <Row label="Stack" value={stackTitle} hint="services start in the background — verify on the dashboard after setup" />
+        <Row label="Stack" value={stackTitle} hint={selectedStack?.templateId ? 'adds services — verify their health on the dashboard' : 'no service changes — verify model and service readiness on the dashboard'} />
       </dl>
 
       {ownerCardStatusLoading && (
@@ -560,8 +598,18 @@ function ConfirmStep({
       {error && (
         <div className="mb-6 p-4 bg-red-500/10 border border-red-500/30 rounded-xl text-red-400 text-sm flex items-start gap-2">
           <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
-          <span>{error}</span>
+          <div role="alert">
+            <p>{error}</p>
+            {details.length > 0 && <ul className="mt-3 list-disc pl-4 space-y-2 break-words">{details.map((detail, index) => <li key={index}>{detail}</li>)}</ul>}
+          </div>
         </div>
+      )}
+
+      {partialBundle && partialBundle.id !== stack && (
+        <p className="mb-6 p-4 border border-theme-border rounded-xl text-theme-text-muted text-sm">
+          The earlier {partialBundle.title} attempt left some services incomplete. Finishing browser setup
+          keeps those services in place; check their status in Extensions. Changing this choice does not repair them.
+        </p>
       )}
 
       <div className="flex gap-3">

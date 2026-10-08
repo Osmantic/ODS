@@ -312,10 +312,10 @@ export function TemplatePreview({ template, onClose, onApplied }) {
             )}
             {applied === 'restart_required' && (
               <>
-                <p className="text-sm text-green-400 mb-3">Template applied successfully</p>
+                <p className="text-sm text-theme-text-secondary mb-3">Template enabled; service startup still needs attention</p>
                 <div className="p-3 rounded-lg bg-theme-text-secondary/10 border border-theme-border text-left">
-                  <p className="text-sm text-theme-text-secondary font-medium mb-1">Restart required</p>
-                  <p className="text-xs text-theme-text-secondary/80">Run <code className="px-1.5 py-0.5 rounded bg-theme-card text-theme-text-secondary">ods restart</code> in your terminal to start the newly enabled services.</p>
+                  <p className="text-sm text-theme-text-secondary font-medium mb-1">Service startup incomplete</p>
+                  <p className="text-xs text-theme-text-secondary/80">Check the affected extension cards, resolve any reported issue, then retry starting those services.</p>
                 </div>
               </>
             )}
@@ -325,7 +325,7 @@ export function TemplatePreview({ template, onClose, onApplied }) {
                 {applyResult?.failed_services?.length > 0 && (
                   <p className="text-xs text-theme-text-secondary/80">
                     Failed to start: {applyResult.failed_services.join(', ')}.
-                    {applyResult.restart_required ? ' Run ods restart to retry.' : ''}
+                    {' '}Resolve the reported issue, then retry from the affected extension cards.
                   </p>
                 )}
                 {applyResult?.skipped_services?.length > 0 && (
