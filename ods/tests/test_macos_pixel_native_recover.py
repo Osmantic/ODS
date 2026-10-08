@@ -324,7 +324,8 @@ def test_host_setup_uses_bound_transport_and_private_logs(tmp_path, monkeypatch,
         assert command[:2] == ['/bin/bash', '-c']
         assert 'ods_macos_install_host_agent' in command[2]
         assert kwargs['env']['DOCKER_HOST'] == 'unix:///verified.sock'
-        assert set(kwargs['env']) == {'HOME', 'PATH', 'DOCKER_HOST', 'DOCKER_CONFIG', 'ODS_CONTINUATION_LOG_FD'}
+        assert set(kwargs['env']) == {'HOME', 'PATH', 'DOCKER_HOST', 'DOCKER_CONFIG', 'ODS_CONTINUATION_LOG_FD', 'ODS_PYTHON_CMD'}
+        assert kwargs['env']['ODS_PYTHON_CMD'] == '/retained/python'
         assert kwargs['cwd'] == tmp_path and kwargs['close_fds'] is True
         assert kwargs['stdin'] == subprocess.DEVNULL and kwargs['stderr'] == subprocess.STDOUT
         fd = kwargs['stdout'].fileno()
@@ -334,7 +335,8 @@ def test_host_setup_uses_bound_transport_and_private_logs(tmp_path, monkeypatch,
         return SimpleNamespace(returncode=int(fault == 'process'))
     monkeypatch.setattr(continuation.subprocess, 'run', run)
     environment = dict(HOME=str(tmp_path), PATH='/usr/bin:/bin', DOCKER_HOST='unix:///verified.sock',
-        DOCKER_CONFIG=str(tmp_path / 'docker'), BASH_ENV='must-not-run', ODS_AGENT_KEY='must-not-forward')
+        DOCKER_CONFIG=str(tmp_path / 'docker'), ODS_PYTHON_CMD='/retained/python',
+        BASH_ENV='must-not-run', ODS_AGENT_KEY='must-not-forward')
     if fault:
         with pytest.raises((ValueError, OSError)) as error:
             continuation.restore_host_agent(tmp_path, environment)
@@ -348,6 +350,7 @@ def test_host_setup_uses_bound_transport_and_private_logs(tmp_path, monkeypatch,
 
 @pytest.mark.parametrize('requested', [False, True])
 def test_cli_host_agent_success_does_not_claim_complete_install(monkeypatch, capsys, requested):
+    monkeypatch.setattr(module, 'prepare_python', lambda path: None)
     def recover(install_dir, ods_source, **kwargs):
         assert kwargs == ({'restore_host_agent': True} if requested else {})
         return Path('/fixture/selection-update.json')
@@ -363,7 +366,8 @@ def test_cli_host_agent_success_does_not_claim_complete_install(monkeypatch, cap
 
 
 @pytest.mark.parametrize('authenticated', [True, False])
-def test_real_host_setup_subprocess_uses_shared_library_in_isolated_home(tmp_path, monkeypatch, authenticated):
+@pytest.mark.parametrize('transport', [True, False])
+def test_real_host_setup_subprocess_uses_shared_library_in_isolated_home(tmp_path, monkeypatch, authenticated, transport):
     installed = tmp_path / 'retained ods'
     preparation = installed / 'data/pixel-native/preparation'
     preparation.mkdir(parents=True, mode=0o700)
@@ -411,8 +415,7 @@ case "$1" in
         IFS= read -r header
         test "$header" = 'Authorization: Bearer fixture-private-key' || exit 2
         printf '%s\\n' "$*" >> "$HOME/docker.calls"
-        test "$DOCKER_HOST" = 'unix:///verified.sock' || exit 3
-        """ + ('exit 0' if authenticated else 'exit 1') + """
+        """ + "test \"$DOCKER_HOST\" = " + shlex.quote('unix:///verified.sock' if transport else '') + " || exit 3\n" + ('exit 0' if authenticated else 'exit 1') + """
         ;;
     *) exit 4 ;;
 esac
@@ -424,7 +427,7 @@ esac
         path.chmod(0o700)
     monkeypatch.setattr(continuation, 'HERE', library)
     environment = dict(HOME=str(home), PATH=str(binaries) + ':/usr/bin:/bin',
-        DOCKER_HOST='unix:///verified.sock', DOCKER_CONFIG=str(home / 'docker-config'))
+        DOCKER_HOST='unix:///verified.sock' if transport else '', DOCKER_CONFIG=str(home / 'docker-config'))
     if authenticated:
         continuation.restore_host_agent(installed, environment)
     else:
@@ -434,9 +437,10 @@ esac
     plist = plistlib.loads(plist_path.read_bytes())
     assert plist['ProgramArguments'][-2:] == ['--install-dir', str(installed)]
     assert plist['ProgramArguments'][0] == str(runtime)
-    assert plist['EnvironmentVariables']['DOCKER_HOST'] == 'unix:///verified.sock'
-    assert plist['EnvironmentVariables']['DOCKER_CONFIG'] == str(home / 'docker-config')
-    assert plist['EnvironmentVariables']['DOCKER_CONTEXT'] == ''
+    assert plist['EnvironmentVariables']['ODS_PYTHON_CMD'] == str(runtime)
+    assert plist['EnvironmentVariables'].get('DOCKER_HOST') == ('unix:///verified.sock' if transport else None)
+    assert plist['EnvironmentVariables'].get('DOCKER_CONFIG') == (str(home / 'docker-config') if transport else None)
+    assert plist['EnvironmentVariables'].get('DOCKER_CONTEXT') == ('' if transport else None)
     calls = (home / 'docker.calls').read_text()
     assert 'fixture-private-key' not in calls
     assert len(calls.splitlines()) == (1 if authenticated else 20)
@@ -472,6 +476,7 @@ def model_handoff(tmp_path, recommended_model):
     'environment', 'selection', 'spawn', 'metadata', 'pid-publish', 'cache-link', 'args-link', 'pid-link', 'log-link'])
 def test_model_handoff_preserves_selection_and_refuses_unsafe_retries(model_handoff, monkeypatch, fault):
     installed, files, environment = model_handoff
+    environment['ODS_PYTHON_CMD'] = '/retained/python'
     before = (installed / '.env').read_bytes()
     target = installed / 'untouched'
     target.write_text('untouched')
@@ -494,6 +499,7 @@ def test_model_handoff_preserves_selection_and_refuses_unsafe_retries(model_hand
         assert argv[:3] == ['/bin/bash', str(installed / 'scripts/bootstrap-upgrade.sh'), str(installed)]
         assert kwargs['cwd'] == installed and kwargs['start_new_session'] and kwargs['close_fds']
         assert kwargs['env']['DOCKER_HOST'] == environment['DOCKER_HOST']
+        assert kwargs['env']['ODS_PYTHON_CMD'] == environment['ODS_PYTHON_CMD']
         assert (installed / 'data/bootstrap-upgrade.args').read_text().splitlines() == argv[3:]
         assert (installed / '.compose-flags').read_text() == '-f docker-compose.yml\n'
         if fault == 'spawn': raise OSError('fixture launch failure')
@@ -602,6 +608,7 @@ def test_selected_model_still_publishes_missing_compose_cache_without_spawning(m
 
 
 def test_cli_reports_model_handoff_but_not_installer_completion(monkeypatch, capsys):
+    monkeypatch.setattr(module, 'prepare_python', lambda path: None)
     def recover(install_dir, ods_source, **kwargs):
         assert kwargs == {'restore_host_agent': True, 'resume_model': True}
         return {'selection': '/fixture/selection-update.json',
@@ -707,6 +714,7 @@ def test_installer_persists_opencode_before_pixel_can_fail(tmp_path, choice):
 
 
 def test_inspection_cli_never_reports_recovery_success(monkeypatch, capsys):
+    monkeypatch.setattr(module, 'prepare_python', lambda path: None)
     def recover(install_dir, ods_source, **kwargs):
         assert kwargs == {'inspect_continuation': True, 'opencode_choice': 'disabled'}
         return {'status': 'continuation-inspection', 'installerComplete': False,
@@ -812,6 +820,7 @@ def test_optional_setup_preserves_bound_environment_and_never_claims_partial_suc
 
 
 def test_cli_combined_setup_keeps_completion_pending(monkeypatch, capsys):
+    monkeypatch.setattr(module, 'prepare_python', lambda path: None)
     def recover(install_dir, ods_source, **kwargs):
         assert kwargs == {'restore_host_agent': True, 'resume_model': True,
             'restore_optional_tools': True, 'opencode_choice': 'disabled'}
@@ -826,6 +835,56 @@ def test_cli_combined_setup_keeps_completion_pending(monkeypatch, capsys):
     assert result['hostAgentReady'] is True and result['installerComplete'] is False
     assert result['optionalTools']['status'] == 'not-selected'
     assert 'final service/Portal checks' in output.err
+
+
+@pytest.mark.parametrize('error,expected', [
+    (ValueError('private-token-value'), 'configuration or custody check failed'),
+    (KeyError('private-config-key'), 'configuration field is missing'),
+    (FileNotFoundError(2, 'private-path'), 'file or command is missing'),
+    (PermissionError(13, 'private-path'), 'not accessible to the signed-in owner'),
+    (OSError(5, 'private-path'), 'errno 5'),
+    (subprocess.CalledProcessError(23, ['private-command', 'private-key'],
+        output='private-output', stderr='private-error'), 'exited with status 23'),
+    (subprocess.TimeoutExpired(['private-command', 'private-key'], 30,
+        output='private-output', stderr='private-error'), 'command timed out'),
+])
+def test_recovery_failure_diagnostics_expose_category_without_private_text(error, expected):
+    detail = module.failure_detail(error)
+    assert expected in detail and '[native-recovery-check-failed]' in detail
+    assert 'private-' not in detail
+
+
+def test_recovery_failure_identifies_trusted_helper_line_without_source_or_locals():
+    namespace = {}
+    code = compile('def fail():\n    token = "do-not-print"\n    raise ValueError(token)\n',
+        str(module.HERE / 'pixel-native-activate.py'), 'exec')
+    exec(code, namespace)
+    with pytest.raises(ValueError) as error:
+        namespace['fail']()
+    detail = module.failure_detail(error.value)
+    assert 'pixel-native-activate.py:3' in detail
+    assert 'do-not-print' not in detail and str(module.HERE) not in detail
+
+
+def test_recovery_cli_stops_before_mutations_when_saved_python_fails(monkeypatch, capsys):
+    def prepare(path):
+        raise ValueError('recovery-python-dependency-unavailable')
+    monkeypatch.setattr(module, 'prepare_python', prepare)
+    monkeypatch.setattr(module, 'recover', lambda *a, **kw: pytest.fail('unsafe continuation'))
+    monkeypatch.setattr(module.sys, 'argv', ['recover', '--install-dir', '/fixture'])
+    assert module.main() == 1
+    output = capsys.readouterr()
+    assert not output.out
+    assert '[recovery-python-dependency-unavailable]' in output.err
+    assert 'cannot import PyYAML' in output.err
+
+
+def test_recovery_cli_returns_selected_interpreters_exit_without_duplicate_work(monkeypatch, capsys):
+    monkeypatch.setattr(module, 'prepare_python', lambda path: 19)
+    monkeypatch.setattr(module, 'recover', lambda *a, **kw: pytest.fail('duplicate recovery'))
+    monkeypatch.setattr(module.sys, 'argv', ['recover', '--install-dir', '/fixture'])
+    assert module.main() == 19
+    assert not capsys.readouterr().out
 
 
 @pytest.mark.parametrize('fault', [None, 'download', 'foreign', 'launch', 'health', 'voice',

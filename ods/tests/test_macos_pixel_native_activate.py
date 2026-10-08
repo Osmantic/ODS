@@ -105,6 +105,7 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         event('bind')
         assert p is plan and kw['source_ref'] == receipt['pixelSourceRef']
     modules = {
+        'pixel-native-recovery-python.py': SimpleNamespace(selected_python=lambda path: '/saved/python'),
         'pixel-native-config.py': SimpleNamespace(private_json=lambda path: json.loads(Path(path).read_text())),
         'pixel-macos-access-install.py': SimpleNamespace(make_plan=make_plan, bind_initial_services=bind,
             _env_file=lambda path: env),
@@ -133,7 +134,8 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         def restore(path, environment):
             assert path == install_dir
             assert environment == dict(HOME=str(tmp_path), PATH='/usr/bin:/bin',
-                DOCKER_HOST='unix:///socket', DOCKER_CONFIG=str(home / 'docker-config'))
+                DOCKER_HOST='unix:///socket', DOCKER_CONFIG=str(home / 'docker-config'),
+                ODS_PYTHON_CMD='/saved/python')
             events.append('host-agent')
         def resume_model(path, selected_files, environment, *, verify_selection):
             assert path == install_dir and selected_files == files

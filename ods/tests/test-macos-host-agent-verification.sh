@@ -95,6 +95,7 @@ trap 'rm -rf "$TMP"' EXIT
     ODS_AGENT_PLIST_LABEL="com.ods.host-agent"
     ODS_AGENT_PLIST="$HOME/Library/LaunchAgents/$ODS_AGENT_PLIST_LABEL.plist"
     calls="$TMP/calls"
+    fixture_python="$(command -v python3)"
     mkdir -p "$INSTALL_DIR/bin"
     touch "$INSTALL_DIR/bin/ods-host-agent.py"
     source "$TARGET"
@@ -117,6 +118,9 @@ trap 'rm -rf "$TMP"' EXIT
         printf 'runtime\n' >> "$calls"
         [[ "$mode" != runtime-fails ]] || return 1
         AGENT_PYTHON="$INSTALL_DIR/.venv/host-agent/bin/python"
+        mkdir -p "$(dirname "$AGENT_PYTHON")"
+        printf '#!/bin/bash\nexec %q "$@"\n' "$fixture_python" > "$AGENT_PYTHON"
+        chmod 700 "$AGENT_PYTHON"
     }
     macos_retire_owned_host_agent_listener() {
         printf 'retire-owned\n' >> "$calls"
@@ -158,6 +162,7 @@ assert value["ProgramArguments"] == [
 ]
 assert value["RunAtLoad"] is True
 assert value["KeepAlive"] == {"SuccessfulExit": False}
+assert value["EnvironmentVariables"]["ODS_PYTHON_CMD"] == value["ProgramArguments"][0]
 PY
     for mode in runtime-fails foreign-listener bootstrap-fails health-fails bridge-fails auth-fails; do
         : > "$calls"

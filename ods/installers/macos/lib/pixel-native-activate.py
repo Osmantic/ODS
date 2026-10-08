@@ -108,6 +108,8 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         command.extend(['-f', str(path)])
     process_env = {'HOME': owner.pw_dir, 'PATH': source_env['PATH'],
         'DOCKER_HOST': source_env['DOCKER_HOST'], 'DOCKER_CONFIG': source_env['DOCKER_CONFIG']}
+    if resume_final_health:
+        process_env['ODS_PYTHON_CMD'] = helper('pixel-native-recovery-python.py').selected_python(install_dir)
     def run(*args, timeout=60, input=None):
         compose.validate_stack(install_dir, compose_files)
         compose.validate_stack(install_dir, paths)
