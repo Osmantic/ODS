@@ -91,6 +91,9 @@ using the intended data-retention options, followed by a fresh install.
   plist move. A reviewed retry of `--prepare-stopped-recovery` can continue a
   partial staging operation against identical authority. Some jobs may already
   be unloaded. Do not restore plists, create a witness or delete the archive.
+- After each bootout, preparation allows up to 30 seconds for launchd to remove
+  the job. A still-present or uninspectable job remains a refusal, never proof
+  of shutdown. All six jobs are checked again before publishing readiness.
 - If the Mac restarted during incomplete staging, finishing preparation requires
   another restart. An incomplete journal is not evidence of a reboot barrier.
 - Repeating successful preparation in the same boot does not repeat stop

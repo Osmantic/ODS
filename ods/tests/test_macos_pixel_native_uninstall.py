@@ -451,13 +451,38 @@ class RetirementReboot(unittest.TestCase):
         self.verify('33333333-3333-4333-8333-333333333333')
 
     def test_bootout_failure_never_publishes_awaiting_reboot(self):
-        with patch.object(self.recovery, 'command', return_value=SimpleNamespace(returncode=1)):
+        with patch.object(self.recovery, 'command', return_value=SimpleNamespace(returncode=1)), \
+                patch.object(self.module.time, 'monotonic', side_effect=[0, 31]):
             with self.assertRaisesRegex(ValueError, 'recovery-stop-failed'): self.prepare()
         self.assertEqual(self.recovery.document['phase'], 'staging')
         self.assertTrue(all((self.recovery.archive / path.name).exists() for path in self.plists))
         self.recovery = self.load()
         self.prepare()
         self.verify()
+
+    def test_delayed_launchd_removal_waits_without_repeating_bootout(self):
+        def stop_later(args):
+            self.calls.append(args)
+            return SimpleNamespace(returncode=0)
+        def finish_stop(_delay):
+            self.loaded.discard(self.calls[-1][2])
+        with patch.object(self.recovery, 'command', side_effect=stop_later), \
+                patch.object(self.module.time, 'sleep', side_effect=finish_stop) as sleep:
+            self.prepare()
+        self.assertEqual(sleep.call_count, 6)
+        self.assertEqual(len(self.calls), 6)
+        self.assertEqual(self.recovery.document['phase'], 'awaiting-reboot')
+        self.verify()
+
+    def test_job_reappearing_during_later_stops_keeps_staging(self):
+        def stop(args):
+            result = self.command(args)
+            if args[2] == self.targets[-1]:
+                self.loaded.add(self.targets[0])
+            return result
+        with patch.object(self.recovery, 'command', side_effect=stop):
+            with self.assertRaisesRegex(ValueError, 'job-reappeared'): self.prepare()
+        self.assertEqual(self.recovery.document['phase'], 'staging')
 
     def test_changed_receipt_is_not_overwritten(self):
         self.prepare()

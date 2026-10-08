@@ -7,6 +7,7 @@ a later boot before the existing retirement code can archive the deployment.
 import json
 import os
 from pathlib import Path
+import time
 import uuid
 
 
@@ -103,8 +104,14 @@ class Recovery:
         for target in self.targets:
             if not self.absent(target):
                 self.command(['/bin/launchctl', 'bootout', target])
-            if not self.absent(target):
-                raise ValueError('native-retirement-recovery-stop-failed')
+            # launchd can retain the job briefly after bootout returns.
+            deadline = time.monotonic() + 30
+            while not self.absent(target):
+                if time.monotonic() >= deadline:
+                    raise ValueError('native-retirement-recovery-stop-failed')
+                time.sleep(0.1)
+        if not all(self.absent(target) for target in self.targets):
+            raise ValueError('native-retirement-job-reappeared')
         self.unchanged(snapshots)
         self.document = dict(self.document, phase='awaiting-reboot')
         self.save(self.receipt, self.document)
