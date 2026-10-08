@@ -89,8 +89,8 @@ def plan(rows, base=None, wsl=None):
     roots = {str((base / name).relative_to(wsl)): str(base / name)
              for name in ('ingress', 'preview')}
     roots = {'/' + root: source for root, source in roots.items()}
-    device = os.stat(wsl).st_dev
-    device = f'{os.major(device)}:{os.minor(device)}'
+    device_number = os.stat(wsl).st_dev
+    device = f'{os.major(device_number)}:{os.minor(device_number)}'
     parents = [row for row in rows if row['target'] == str(wsl)]
     if (len(parents) != 1 or parents[0]['fs'] != 'tmpfs'
             or parents[0]['device'] != device or parents[0]['root'] != '/'):

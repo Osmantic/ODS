@@ -50,7 +50,8 @@ class PlanTests(unittest.TestCase):
             self.assertEqual(len(M.plan(mounts())), 2)
 
     def test_foreign_source_layer(self):
-        rows = mounts(); rows[1]['device'] = '8:1'
+        rows = mounts()
+        rows[1]['device'] = '8:1'
         with self.assertRaises(M.Refusal): M.plan(rows)
 
     def test_foreign_proxy_layer(self):
@@ -70,7 +71,8 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(M.Refusal): M.plan(rows)
 
     def test_different_shared_group(self):
-        rows = mounts(); rows[2]['propagation'] = ['shared:9']
+        rows = mounts()
+        rows[2]['propagation'] = ['shared:9']
         with self.assertRaises(M.Refusal): M.plan(rows)
 
     def test_wrong_source_inode(self):
@@ -83,12 +85,16 @@ class PlanTests(unittest.TestCase):
 class DirectoryTests(unittest.TestCase):
     def test_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); (root / 'real').mkdir(); (root / 'link').symlink_to(root / 'real')
+            root = Path(tmp)
+            (root / 'real').mkdir()
+            (root / 'link').symlink_to(root / 'real')
             with self.assertRaises(M.Refusal): M.directory(root / 'link')
 
     def test_nonempty_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); root.chmod(0o755); (root / 'socket-or-file').write_text('keep')
+            root = Path(tmp)
+            root.chmod(0o755)
+            (root / 'socket-or-file').write_text('keep')
             info = types.SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
             with patch.object(Path, 'lstat', return_value=info):
                 with self.assertRaises(M.Refusal): M.directory(root, empty=True)
