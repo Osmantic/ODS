@@ -532,6 +532,21 @@ if $DOCKER_CLEANUP; then
         log_error "Docker container cleanup is incomplete after Pixel or host-service retirement; installation files and data retained for recovery."
         exit 1
     fi
+    # Docker Desktop's shared WSL bind projections can outlive their containers.
+    # Retire only the verified empty Pixel projections, after all owned
+    # containers and the host socket services have stopped. Keeping thousands
+    # of stacked mounts makes the next install's systemd isolation time out.
+    if [[ "$(uname -s)" == Linux ]] && grep -qi microsoft /proc/sys/kernel/osrelease \
+        && [[ -e /mnt/wsl/ods-portal-runtime || -L /mnt/wsl/ods-portal-runtime ]]; then
+        if ! _ods_cleanup_engine="$(docker info --format '{{.ID}}')" \
+            || [[ -z "$_ods_cleanup_engine" ]] \
+            || ! run_sudo /usr/bin/python3 -I "$SCRIPT_DIR/scripts/cleanup-wsl-pixel-mounts.py" \
+                --engine-id "$_ods_cleanup_engine" --apply; then
+            log_error "Pixel WSL runtime mount cleanup failed; installation files and data retained for recovery."
+            exit 1
+        fi
+        unset _ods_cleanup_engine
+    fi
     if [[ "$KEEP_DATA" != "true" ]] &&
         ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
             "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
