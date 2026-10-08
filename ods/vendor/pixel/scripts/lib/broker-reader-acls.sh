@@ -24,8 +24,8 @@ pixel_broker_acl_file() {
 }
 
 pixel_wait_ops_inventory() {
-  # Type=simple becomes active before Python imports and initial inventory
-  # publication finish. Keep that startup wait separate from ACL validation.
+  # Type=exec waits for the executable, not Python imports or initial inventory
+  # publication. Keep application readiness separate from ACL validation.
   local timeout=${1:-60} deadline
   [[ "$timeout" =~ ^[1-9][0-9]{0,2}$ ]] && ((timeout <= 120)) || return 2
   deadline=$((SECONDS + timeout))
