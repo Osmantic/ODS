@@ -112,11 +112,15 @@ test_docker_desktop_sharing() {
     local probe
     probe="$(_resolve_existing_parent "$install_dir")"
 
-    local out=""
-    out=$(docker run --rm -v "${probe}:/check:ro" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 true 2>&1) || true
-
-    if echo "$out" | grep -qiE "not shared from the host|Mounts denied|file sharing|filesharing"; then
-        DOCKER_SHARE_OK=false
-        DOCKER_SHARE_ERR="$out"
+    if ! out=$(docker run --rm -v "${probe}:/check:ro" alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 true 2>&1); then
+        if echo "$out" | grep -qiE "not shared from the host|Mounts denied|file sharing|filesharing"; then
+            DOCKER_SHARE_OK=false
+            DOCKER_SHARE_ERR="$out"
+        else
+            # A pull failure (e.g. no internet) or a daemon hang. 
+            # We must fail the check so the user sees the real error instead of assuming file sharing is fine.
+            DOCKER_SHARE_OK=false
+            DOCKER_SHARE_ERR="Docker probe failed unexpectedly:\n$out"
+        fi
     fi
 }
