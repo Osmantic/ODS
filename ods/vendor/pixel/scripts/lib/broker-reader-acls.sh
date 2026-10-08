@@ -23,6 +23,25 @@ pixel_broker_acl_file() {
   fi
 }
 
+pixel_wait_ops_inventory() {
+  # Type=simple becomes active before Python imports and initial inventory
+  # publication finish. Keep that startup wait separate from ACL validation.
+  local timeout=${1:-60} deadline
+  [[ "$timeout" =~ ^[1-9][0-9]{0,2}$ ]] && ((timeout <= 120)) || return 2
+  deadline=$((SECONDS + timeout))
+  while ((SECONDS < deadline)); do
+    if sudo systemctl is-active --quiet "$PIXEL_OPS_BROKER_UNIT" \
+        && sudo test -f "$PIXEL_OPS_INVENTORY_PATH"; then
+      return 0
+    fi
+    if sudo systemctl is-failed --quiet "$PIXEL_OPS_BROKER_UNIT"; then
+      return 1
+    fi
+    sleep 0.25
+  done
+  return 1
+}
+
 pixel_apply_ops_reader_acls() {
   [[ ${PIXEL_OPS_BROKER_ENABLED:-0} == 1 ]] || return 0
   pixel_require_command setfacl
