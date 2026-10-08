@@ -33,6 +33,59 @@ sudo -v
 
 ## Docker Issues
 
+### Container build DNS
+
+If dashboard, dashboard-api, or Pixel preview-inspection image builds fail with
+`EAI_AGAIN`, `ENOTFOUND`, `Temporary failure resolving`, or `Temporary failure in
+name resolution`, inspect DNS in the **selected build environment**. The host
+connectivity preflight and a successful image pull do not prove that a build's
+`RUN npm ci`, `apt-get`, or `pip` step can resolve names. npm's `Exit handler never
+called!` message alone does not establish a DNS problem.
+
+ODS keeps the per-service Compose build log beside the install log and prints
+its path on failure. Pixel's image build streams its output above the error.
+Retain the first name-resolution error and its hostname; a later package error
+can hide the cause. Remove credentials and private URLs before sharing logs.
+
+1. Record the client/server versions (`docker version`), selected context
+   (`docker context show`), builder (`docker buildx ls`, if available), and any
+   `DOCKER_HOST` or `DOCKER_BUILDKIT` override. Check the daemon host, which may
+   differ from the machine running the installer.
+2. On a native Linux daemon host, inspect `/etc/resolv.conf`,
+   `/run/systemd/resolve/resolv.conf`, and `resolvectl dns` when available. A
+   `127.0.0.53` stub is normal on systemd-resolved hosts. Docker can select the
+   real uplink resolver file; the stub's presence alone is not a fault.
+3. Using an already cached image that includes `nslookup`, compare resolution
+   of the **failing hostname** in a temporary container and a fresh `RUN` layer
+   using the same builder and network as the failed build. For example, replace
+   both placeholders before running:
+
+   ```bash
+   docker run --rm --pull=never <cached-image> nslookup <failing-hostname>
+   ```
+
+   This does not pull a diagnostic image. A missing image or lookup utility is
+   not a DNS result. A successful container lookup does not prove BuildKit or a
+   custom build network works. Check the resolver file inside the failing build
+   environment and verify that its upstream addresses are reachable there.
+
+If the selected native Linux Docker daemon uses an unreachable resolver, an
+operator can add or edit its `dns` list in the daemon configuration (usually
+`/etc/docker/daemon.json`), **preserving all other keys**, with resolver IPs
+approved for and reachable from that network. Do not copy another host's LAN
+address or assume a public resolver is permitted. For systemd-resolved, inspect
+the real uplink settings instead of copying the loopback stub. Docker Desktop,
+rootless Docker, remote daemons, and separate BuildKit builders have different
+configuration locations; changing the installer's local file may do nothing.
+
+Validate the configuration and schedule any required daemon restart with the
+operator: a restart can interrupt other containers. Then repeat the failed
+lookup/build and rerun the install. The installer guidance does not change DNS,
+restart Docker, or certify recovery; the original build must succeed.
+
+See Docker's [DNS resolver troubleshooting](https://docs.docker.com/engine/daemon/troubleshoot/#dns-resolver-issues)
+and [BuildKit configuration](https://docs.docker.com/build/buildkit/configure/).
+
 ### Problem: Docker Not Installed
 **Solution:** Install Docker by following the official [Docker installation guide](https://docs.docker.com/get-docker/).
 

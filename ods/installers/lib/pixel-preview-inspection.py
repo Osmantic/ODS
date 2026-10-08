@@ -298,21 +298,35 @@ def build_config(*, source, owner_uid, transport, docker_binary=None, docker_hos
         identity = root / "image.id"
         # A fresh private context contains exactly reviewed build inputs. No tag
         # or caller-supplied Docker arguments can select the runtime image.
-        subprocess.run(
-            [
-                *argv,
-                "build",
-                "--iidfile",
-                str(identity),
-                "--file",
-                str(context / "Dockerfile.inspection"),
-                str(context),
-            ],
-            check=True,
-            timeout=1800,
-            stdout=sys.stderr,
-            env=environment,
-        )
+        try:
+            subprocess.run(
+                [
+                    *argv,
+                    "build",
+                    "--iidfile",
+                    str(identity),
+                    "--file",
+                    str(context / "Dockerfile.inspection"),
+                    str(context),
+                ],
+                check=True,
+                timeout=1800,
+                stdout=sys.stderr,
+                env=environment,
+            )
+        except subprocess.CalledProcessError:
+            # Build output is streamed, not captured. Keep the original error
+            # and offer a conditional next step rather than inventing a cause.
+            print(
+                "Preview inspection image build failed. Check the build output above. "
+                "If it reports EAI_AGAIN, ENOTFOUND, or a name-resolution failure, "
+                "verify DNS in the selected container builder; host connectivity "
+                "does not verify build DNS. See "
+                "docs/INSTALL-TROUBLESHOOTING.md#container-build-dns. "
+                "The npm 'Exit handler never called' message alone does not establish DNS failure.",
+                file=sys.stderr,
+            )
+            raise
         image_id = identity.read_text().strip()
         if not re.fullmatch(IMAGE_PATTERN, image_id):
             raise ValueError("inspection-image-id-required")

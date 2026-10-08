@@ -576,6 +576,7 @@ jobs:
         run: |
           python3 -m pytest -q tests/test_cloud_installer_messages.py
           bash tests/test-preflight-network-check.sh
+          bash tests/test-phase11-local-build-failure.sh
           bash tests/test-phase03-no-gpu-assignment-message.sh
           bash tests/test-preflight-external-gpu.sh
           bash tests/test-linux-install-preflight.sh

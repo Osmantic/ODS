@@ -43,6 +43,7 @@ case "$args" in
         fi
         count=$((count + 1))
         printf '%s\n' "$count" > "$MOCK_COMFYUI_BUILD_COUNT"
+        printf '%s\n' "${MOCK_BUILD_OUTPUT:-}"
         if [[ "${MOCK_COMFYUI_ALWAYS_FAIL:-false}" == "true" ]]; then
             exit 2
         fi
@@ -181,3 +182,41 @@ grep -q 'sudo systemctl start docker' "$LOG_FILE" \
 ! grep -q 'Required local image build(s) failed' "$LOG_FILE" \
     || fail "a stopped Docker was reported as a failed build"
 pass "phase 11 names a stopped Docker instead of a failed build"
+
+# A container-only DNS failure passes the host curl preflight. Feed actual
+# package-manager error shapes through the build path without a Docker daemon.
+for diagnostic in \
+    'npm error code EAI_AGAIN' \
+    "Temporary failure resolving 'deb.debian.org'" \
+    'pip: Temporary failure in name resolution' \
+    'curl: (6) Could not resolve host: registry.npmjs.org'; do
+    : > "$LOG_FILE"
+    : > "$CALL_LOG"
+    rm -f "$MOCK_COMFYUI_BUILD_COUNT"
+    export MOCK_COMFYUI_ALWAYS_FAIL=true MOCK_BUILD_OUTPUT="$diagnostic"
+    export ODS_DOCKER_BUILD_MAX_ATTEMPTS=2
+    if _phase11_build_local_images comfyui; then
+        fail "DNS build failure was reported as success"
+    fi
+    [[ "$(cat "$MOCK_COMFYUI_BUILD_COUNT")" == 2 ]] || fail "DNS hint changed retries"
+    grep -q 'Build log contains a name-resolution error' "$LOG_FILE" || fail "DNS diagnostic missing: $diagnostic"
+    grep -q '127.0.0.53' "$LOG_FILE" || fail "stub diagnostic missing"
+    grep -q 'INSTALL-TROUBLESHOOTING.md#container-build-dns' "$LOG_FILE" || fail "DNS recovery guide missing"
+    ! grep -Eq ' run |--dns|--network|systemctl|daemon.json' "$CALL_LOG" || fail "diagnostic mutated runtime or ran a probe"
+done
+pass "DNS build errors get guidance without changing retries or runtime"
+
+for diagnostic in 'npm error Exit handler never called!' 'npm error code ERESOLVE' 'getaddrinfo example in source code'; do
+    : > "$LOG_FILE"
+    export MOCK_BUILD_OUTPUT="$diagnostic"
+    if _phase11_build_local_images comfyui; then fail "unrelated build failure passed"; fi
+    ! grep -q 'Build log contains a name-resolution error' "$LOG_FILE" || fail "unrelated error called DNS: $diagnostic"
+done
+pass "generic npm and unrelated errors are not classified as DNS"
+
+: > "$LOG_FILE"
+unset MOCK_COMFYUI_ALWAYS_FAIL
+export MOCK_BUILD_OUTPUT='npm error code EAI_AGAIN'
+if ! _phase11_build_local_images comfyui; then fail "successful build failed"; fi
+! grep -q 'Build log contains a name-resolution error' "$LOG_FILE" || fail "successful build got failure guidance"
+pass "successful builds are unaffected by diagnostic-looking output"
