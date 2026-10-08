@@ -59,6 +59,63 @@ upsert_env_value "{env_file}" "FOO_BAR" "updated|pipe&amp"
         assert "PIPE_VAR=http://host|auth&token" in content
 
 
+def test_ods_macos_upsert_env_value_handles_delimiters_and_literal_keys():
+    """ods-macos.sh carries its own copy of upsert_env_value; it must be
+    literal-key and delimiter-safe, matching the hardened env-generator.sh copy.
+
+    Failure modes on the unpatched implementation:
+      1. grep -qE "^${key}=" treats the key as an ERE pattern, so a dot in the
+         key name matches any character and silently destroys a sibling key.
+      2. sed "s|^${key}=.*|${key}=${value}|" uses | as the delimiter, so a
+         value containing | or & corrupts the substitution command.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    ods_macos = repo_root / "installers/macos/ods-macos.sh"
+    helper_code = extract_helper_func(ods_macos)
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        env_file = root / ".env"
+        env_file.write_text("FOO_BAR=original\n")
+
+        runner = root / "run_macos_test.sh"
+        runner.write_text(f"""#!/usr/bin/env bash
+set -euo pipefail
+{helper_code}
+
+# Case 1: a key with a regex metacharacter must not clobber a sibling key.
+# On the buggy impl grep -qE "^FOO.BAR=" matches "FOO_BAR=original" (dot is
+# a wildcard), so the sed rewrites FOO_BAR and FOO.BAR is never appended.
+upsert_env_value "{env_file}" "FOO.BAR" "dotval"
+grep -q "FOO_BAR=original" "{env_file}" || {{ echo "FAIL: FOO_BAR was clobbered by FOO.BAR"; exit 2; }}
+grep -q "FOO.BAR=dotval" "{env_file}" || {{ echo "FAIL: FOO.BAR was not written"; exit 2; }}
+
+# Case 2: a value containing the sed delimiter | must not corrupt the update.
+# On the buggy impl sed "s|^URL=.*|URL=http://host|auth&tok|" produces
+# "bad flag in substitute command" and leaves the value unchanged.
+upsert_env_value "{env_file}" "URL" "http://host|auth&tok"
+grep -qF "URL=http://host|auth&tok" "{env_file}" || {{ echo "FAIL: URL value was corrupted or missing"; exit 2; }}
+
+# Case 3: in-place update of an existing key with delimiter characters.
+upsert_env_value "{env_file}" "FOO_BAR" "new|val&x"
+grep -qF "FOO_BAR=new|val&x" "{env_file}" || {{ echo "FAIL: FOO_BAR in-place update corrupted"; exit 2; }}
+""")
+        runner.chmod(0o755)
+
+        result = subprocess.run(["bash", str(runner)], capture_output=True, text=True, check=False)
+        assert result.returncode == 0, (
+            f"ods-macos.sh upsert_env_value failed.\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+        content = env_file.read_text()
+        assert "FOO.BAR=dotval" in content
+        assert "URL=http://host|auth&tok" in content
+        assert "FOO_BAR=new|val&x" in content
+
+
 if __name__ == "__main__":
     test_upsert_env_value_handles_delimiters_and_literal_keys()
-    print("test_macos_upsert_env_value passed.")
+    print("env-generator.sh: passed.")
+    test_ods_macos_upsert_env_value_handles_delimiters_and_literal_keys()
+    print("ods-macos.sh: passed.")
