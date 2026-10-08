@@ -186,3 +186,7 @@ jobs:
         run: python -m pytest -q ods/extensions/services/pixel-agent/tests
       - name: Edge contracts
         run: python -m pytest -q ods/extensions/services/pixel-edge/tests
+      - name: Qualify retained Edge restart with the real image and private volume
+        # This runner is isolated. The test refuses any pre-existing Edge,
+        # starts no daemon, and removes only its own generated Compose project.
+        run: sudo env ODS_TEST_SOURCE_EDGE_DOCKER=1 "$(command -v python)" -m pytest -q ods/extensions/services/pixel-agent/tests/test_source_edge_restart_docker.py

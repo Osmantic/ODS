@@ -1622,6 +1622,21 @@ def _failure_message(error):
     # the update. Any other text, which could carry a path, stays out.
     code = str(error) if isinstance(error, (UpgradeError, RuntimeError)) else ""
     detail = f" (reason: {code})" if re.fullmatch(r"[a-z][a-z0-9-]{0,95}", code) else ""
+    edge_reason = {
+        "source-edge-ownership-unverified": "The stopped Pixel Edge could not be bound to this installation and its original private volume.",
+        "source-edge-clean-stop-required": "Pixel Edge is not a cleanly exited container; automatic restart was refused.",
+        "source-edge-admission-unverified": "The retained Edge admission state is missing, held, interrupted or unverified; automatic restart was refused.",
+        "source-edge-unheld-plan-required": "The source plan is no longer an unchanged, unheld staged upgrade; automatic restart was refused.",
+        "source-edge-runtime-proof-required": "The active gateway does not prove the saved access mode; automatic Edge restart was refused.",
+        "source-edge-restart-state-changed": "The Edge identity or verified installation state changed during recovery.",
+        "source-edge-start-failed": "The single attempt to restart the verified Edge did not confirm a running container.",
+        "source-edge-readiness-unconfirmed": "The restarted Edge did not become healthy within the startup check.",
+        "source-edge-admission-changed": "The restarted Edge did not confirm its retained idle admission state.",
+    }.get(code)
+    if edge_reason:
+        return (f"{edge_reason} Pixel source upgrade stopped before acquiring a new hold{detail}. "
+                "Source snapshots, existing holds and the selected access mode were preserved. "
+                "Keep the first reported reason for diagnosis; do not delete the retained state.")
     return (f"Pixel source upgrade is incomplete{detail}. Preserve any existing admission hold and protected "
             "source snapshots; recover the verified installation state before retrying.")
 

@@ -1118,7 +1118,17 @@ class SystemdAccessBridge:
                 if installer_source:
                     return self.resume_source_begin()
                 raise AccessError("transition-recovery-required")
-            snapshot = self.inspect(allow_installing=True)
+            try:
+                snapshot = self.inspect(allow_installing=True)
+            except AccessError as error:
+                # Phase 06 must acquire this hold before Compose can repair
+                # services. A cleanly stopped, already owned Edge otherwise
+                # deadlocks the installer on its own later startup phase.
+                # Ordinary status/model requests never gain start authority.
+                if not installer_source or error.code != 'edge-container-unavailable':
+                    raise
+                self.restart_stopped_source_edge()
+                snapshot = self.inspect(allow_installing=True)
             source_plan = None
             if installer_source or (platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade')):
                 if platform.system() != 'Linux' or (installer_source and os.geteuid() != 0):
@@ -1218,6 +1228,208 @@ class SystemdAccessBridge:
                 self.model_error(pending, error)
                 if isinstance(error, AccessError): raise
                 raise AccessError("model-transition-failed") from None
+
+    def _source_edge_container(self):
+        """Read a fixed existing container; names alone never prove ownership."""
+        try:
+            raw = self.command(['docker', 'inspect', 'ods-pixel-edge', '--format', '{{json .}}'])
+            if len(raw) > 512 * 1024:
+                raise ValueError()
+            item = _edge_json(raw)
+            config, host, labels = item['Config'], item['HostConfig'], item['Config']['Labels']
+            if any(not isinstance(value, dict) for value in (config, host, labels)):
+                raise ValueError()
+            values = {}
+            if not isinstance(config['Env'], list) or any(not isinstance(value, str) for value in config['Env']):
+                raise ValueError()
+            for assignment in config['Env']:
+                key, separator, value = assignment.partition('=')
+                if not separator or key in values:
+                    raise ValueError()
+                values[key] = value
+            files = labels['com.docker.compose.project.config_files'].split(',')
+            required_files = {str(self.install / 'docker-compose.base.yml'),
+                              str(self.install / 'extensions/services/pixel-edge/compose.yaml')}
+            project = labels['com.docker.compose.project']
+            if (not isinstance(item['Id'], str) or not HEX.fullmatch(item['Id'])
+                    or item['Name'] != '/ods-pixel-edge'
+                    or not re.fullmatch(r'sha256:[a-f0-9]{64}', item['Image'])
+                    or config['Image'] != 'ods-pixel-edge:local'
+                    or labels['com.docker.compose.service'] != 'pixel-edge'
+                    or labels['com.docker.compose.project.working_dir'] != str(self.install)
+                    or not required_files.issubset(files)
+                    or not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', project)
+                    or values.get('PIXEL_PREVIEW_PROXY_KEY') != self.edge_key
+                    or not HEX.fullmatch(self.edge_key)
+                    or values.get('PIXEL_OPENWEBUI_KEY') == self.edge_key
+                    or values.get('PIXEL_EDGE_PORT_INTERNAL') != '9595'
+                    or values.get('PIXEL_TRANSITION_STATE_DIR') != '/pixel-transition-state'
+                    or values.get('PIXEL_INGRESS_SOCKET') != '/pixel-runtime/pixel-ingress.sock'
+                    or values.get('PIXEL_PREVIEW_SOCKET') != '/pixel-preview-runtime/http.sock'
+                    or config.get('User') not in ('pixel', '1000', '1000:1000')
+                    or config.get('Cmd') != ['python3', 'edge_entrypoint.py']
+                    or config.get('Entrypoint') not in (None, [])
+                    or host.get('ReadonlyRootfs') is not True or host.get('Privileged') is not False
+                    or host.get('PortBindings') not in ({}, None)
+                    or host.get('NetworkMode') in ('host', 'none')
+                    or host.get('PidMode') not in ('', None)
+                    or host.get('IpcMode') not in ('private', '')
+                    or set(host.get('CapDrop') or ()) != {'ALL'}
+                    or host.get('CapAdd') not in ([], None)
+                    or set(host.get('SecurityOpt') or ()) not in
+                       ({'no-new-privileges'}, {'no-new-privileges:true'})):
+                raise ValueError()
+            mounts = {mount['Destination']: mount for mount in item['Mounts']}
+            # The durable gate must be the original project volume, never a
+            # missing/new store that the entrypoint could initialize to idle.
+            expected = {'/pixel-runtime', '/pixel-preview-runtime', '/pixel-transition-state'}
+            if (len(mounts) != len(item['Mounts']) or not expected.issubset(mounts)
+                    or set(mounts) - expected - {'/tmp'}
+                    or set(host.get('Tmpfs') or {}) != {'/tmp'}):
+                raise ValueError()
+            for target in ('/pixel-runtime', '/pixel-preview-runtime'):
+                # Docker Desktop may translate these host paths. The existing
+                # immutable container, Compose installation identity, distinct
+                # protected owner key and original gate volume bind ownership;
+                # a Linux-only spelling of the source path is not authoritative.
+                if mounts[target]['Type'] != 'bind' or mounts[target]['RW'] is not False:
+                    raise ValueError()
+            mount = mounts['/pixel-transition-state']
+            name = mount['Name']
+            if (mount['Type'] != 'volume' or mount['RW'] is not True
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name)
+                    or '/tmp' in mounts and mounts['/tmp']['Type'] != 'tmpfs'):
+                raise ValueError()
+            volume = _edge_json(self.command(['docker', 'volume', 'inspect', name, '--format', '{{json .}}']))
+            if (volume['Name'] != name or volume['Driver'] != 'local'
+                    or volume.get('Options') not in ({}, None)
+                    or volume['Mountpoint'] != mount['Source']
+                    or volume['Labels']['com.docker.compose.project'] != project
+                    or volume['Labels']['com.docker.compose.volume'] != 'pixel-transition-state'):
+                raise ValueError()
+            consumers = self.command(['docker', 'ps', '--all', '--quiet', '--no-trunc',
+                                      '--filter', 'volume=' + name]).split()
+            if consumers != [item['Id']]:
+                raise ValueError()
+            return item
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise AccessError('source-edge-ownership-unverified') from None
+
+    def _source_edge_idle_state(self, container):
+        """Inspect stopped admission state without executing or changing it."""
+        try:
+            with tempfile.TemporaryDirectory(prefix='ods-source-edge-') as folder:
+                path = Path(folder) / 'transition.json'
+                self.command(['docker', 'cp', container + ':/pixel-transition-state/transition.json', str(path)])
+                fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1
+                            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 2048):
+                        raise ValueError()
+                    state = _edge_json(stream.read(2049))
+            if (set(state) != {'version', 'phase', 'revision', 'token_hash', 'released'}
+                    or type(state['version']) is not int or state['version'] != 1
+                    or state['phase'] != 'idle' or state['token_hash'] is not None
+                    or not isinstance(state['revision'], str) or not HEX.fullmatch(state['revision'])):
+                raise ValueError()
+            released = state['released']
+            if released is not None and (not isinstance(released, dict)
+                    or set(released) != {'revision', 'token_hash'}
+                    or any(not isinstance(value, str) or not HEX.fullmatch(value) for value in released.values())):
+                raise ValueError()
+            return state
+        except (OSError, ValueError, TypeError, AccessError):
+            raise AccessError('source-edge-admission-unverified') from None
+
+    def _source_edge_restart_proof(self):
+        """Require the same live verified mode before reopening stopped Edge."""
+        if platform.system() != 'Linux' or os.geteuid() != 0:
+            raise AccessError('source-installer-root-required')
+        if self.pending() is not None:
+            raise AccessError('transition-recovery-required')
+        self.discover(allow_installing=True)
+        from pixel_source_upgrade import begin_plan, inventory, UpgradeError
+        try:
+            manager = begin_plan(self.state, self.install, self.owner, installer=True)
+            plan = manager.journal()
+            if (plan['phase'] != 'staged' or plan['hold'] is not None
+                    or os.path.lexists(manager.state / manager.downstream_name())
+                    or inventory(self.install, self.owner.pw_uid) != plan['before']):
+                raise AccessError('source-edge-unheld-plan-required')
+            manager.verify_mirror()
+        except UpgradeError as error:
+            raise AccessError(str(error)) from None
+        config, native = self.worker(), self.native()
+        pid = self.gateway_service.pid(require_running=True)
+        boundary = self.unit_boundary()
+        try:
+            verified = private_json(self.state / 'verified.json', 0, 8192)
+        except (OSError, ValueError):
+            raise AccessError('source-edge-runtime-proof-required') from None
+        proof = native.get('proof')
+        mode = config.get('configured_status')
+        if (mode not in ('sandboxed', 'full-access')
+                or config.get('config_sha256') != plan['identity']['configSha256']
+                or native.get('available') is not True or native.get('phase') != 'idle'
+                or type(native.get('active')) is not int or native['active'] != 0 or native.get('stopped')
+                or native.get('pid') != pid or not isinstance(proof, dict)
+                or proof.get('executed') is not True or proof.get('mode') != mode or proof.get('pid') != pid
+                or verified.get('pid') != pid or verified.get('proof') != proof
+                or verified.get('config_sha256') != config.get('config_sha256')
+                or verified.get('boundary') != boundary):
+            raise AccessError('source-edge-runtime-proof-required')
+        # Compare the admission revision and custody evidence, not unrelated
+        # observational fields that a later runtime could add to its status.
+        return digest([plan, config.get('config_sha256'), mode,
+                       native.get('revision'), pid, proof, boundary, verified])
+
+    def restart_stopped_source_edge(self):
+        """One root installer-only start of an unchanged, cleanly stopped Edge.
+
+        Called with the coordinator lock held and before any source hold/copy.
+        Every proof precedes Docker start; no recovery journal is cleared and
+        no image, container, volume, access choice or source file is replaced.
+        """
+        proof = self._source_edge_restart_proof()
+        item = self._source_edge_container()
+        state = item.get('State', {})
+        if (state.get('Status') != 'exited' or state.get('Running') is not False
+                or state.get('Paused') is not False or state.get('Restarting') is not False
+                or state.get('Dead') is not False or state.get('OOMKilled') is not False
+                or type(state.get('ExitCode')) is not int or state['ExitCode'] != 0
+                or state.get('Error') != ''):
+            raise AccessError('source-edge-clean-stop-required')
+        idle = self._source_edge_idle_state(item['Id'])
+        if (self._source_edge_container() != item
+                or self._source_edge_restart_proof() != proof
+                or self._source_edge_idle_state(item['Id']) != idle):
+            raise AccessError('source-edge-restart-state-changed')
+        try:
+            self.command(['docker', 'start', item['Id']], timeout=30)
+        except AccessError:
+            raise AccessError('source-edge-start-failed') from None
+        # Observe startup, never retry the mutation. Docker's running flag
+        # precedes the HTTP listener; the existing healthcheck establishes it.
+        deadline = time.monotonic() + remaining(45)
+        while True:
+            current = self._source_edge_container()
+            if any(current.get(key) != item.get(key) for key in ('Id', 'Name', 'Image', 'Config', 'HostConfig', 'Mounts')):
+                raise AccessError('source-edge-restart-state-changed')
+            state = current.get('State', {})
+            if (state.get('Running') is not True or state.get('Paused') is not False
+                    or state.get('Restarting') is not False or state.get('Dead') is not False):
+                raise AccessError('source-edge-start-failed')
+            health = state.get('Health', {}).get('Status')
+            if health == 'healthy':
+                break
+            if health != 'starting' or time.monotonic() >= deadline:
+                raise AccessError('source-edge-readiness-unconfirmed')
+            time.sleep(min(1, max(0, deadline - time.monotonic())))
+        edge = self.edge()
+        if (edge.get('capability') != 'available' or edge.get('phase') != 'idle'
+                or edge.get('streams') != 0 or edge.get('revision') != idle['revision']):
+            raise AccessError('source-edge-admission-changed')
 
     def resume_source_begin(self):
         """Recover only an exact source acquisition interrupted before copying.

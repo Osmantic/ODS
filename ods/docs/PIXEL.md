@@ -877,6 +877,34 @@ source checkout. If that checkout is missing or changed, the upgrade stops
 before retirement or source copy; restore the checkout from a local backup and
 retry. Custom remote source settings are not silently migrated.
 
+On Linux/WSL2, a retained-source retry can restart its existing Pixel Edge if
+it stopped cleanly before the installer could acquire the source-upgrade
+hold. This runs only through the root installer operation: ordinary status
+polling and model requests do not restart containers. The active gateway must
+still prove the same configured access mode, the source plan must remain
+staged and unheld, and the original private Edge gate must be idle. The
+coordinator verifies the container's installation identity, protected owner
+credential, restrictions and unshared Compose volume before starting that
+immutable container ID once. It then verifies health and the unchanged gate
+before acquiring the usual durable source hold. The already-running path is
+unchanged.
+
+Paused/restarting containers, nonzero exits, OOM termination, foreign or
+changed containers, missing/held/interrupted gate state, stale runtime proof
+and existing transitions are not silently repaired. A bounded `source-edge-*`
+reason identifies a refusal without exposing credentials. A failed check
+preserves source snapshots, admission holds and the selected access mode; it
+does not recreate a container or volume. This recovery addresses a cleanly
+stopped retained Edge, not the underlying reason it stopped.
+
+The focused `test_source_edge_restart.py` suite covers custody, race and
+transition refusals. Portal runtime CI additionally runs
+`test_source_edge_restart_docker.py` on an isolated Linux Docker runner using
+the production image and Compose fragment. That test exercises stopped-volume
+inspection, immutable-ID start, readiness and preservation of an existing
+hold; host gateway/source proofs use fixtures, so it is not a full WSL or
+model-install qualification.
+
 ## Configuration reference
 
 | Variable | Default / owner | Meaning |
