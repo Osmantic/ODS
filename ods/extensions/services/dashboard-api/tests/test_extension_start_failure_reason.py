@@ -22,6 +22,7 @@ PORT_REASON = (
     "Error response from daemon: ports are not available: exposing port TCP 127.0.0.1:9000 "
     "-> 127.0.0.1:0: /forwards/expose returned unexpected status: 500")
 HERMES_REASON = "Could not read or write Hermes route files; check installation permissions"
+UNREACHABLE_REASON = "Host agent could not be reached. Check that ODS and Docker are running, then retry."
 
 
 @pytest.fixture
@@ -92,14 +93,16 @@ def test_card_shows_the_host_agents_reason(test_client, installation, monkeypatc
 
 
 @pytest.mark.parametrize("selected", [False, True], ids=["added", "retried"])
-def test_unreachable_host_agent_keeps_the_generic_message(test_client, installation,
-                                                          monkeypatch, selected):
+def test_unreachable_host_agent_has_safe_platform_neutral_guidance(test_client, installation,
+                                                                  monkeypatch, selected):
     _host_answers(monkeypatch, AgentUnavailable("Host agent POST /v1/extension/start is unreachable"))
 
     progress = _enable(test_client, installation, "whisper", selected=selected)
 
     assert progress["status"] == "error"
-    assert progress["error"].startswith("Host agent failed to start extension.")
+    assert progress["error"] == UNREACHABLE_REASON
+    assert "/v1/extension/start" not in progress["error"]
+    assert "ods restart" not in progress["error"]
 
 
 def test_an_earlier_refusal_is_not_shown_for_a_later_start(test_client, installation, monkeypatch):
@@ -111,4 +114,5 @@ def test_an_earlier_refusal_is_not_shown_for_a_later_start(test_client, installa
 
     progress = _enable(test_client, installation, "whisper", selected=True)
 
-    assert progress["error"] == "Host agent failed to start extension. Run 'ods restart' to recover."
+    assert progress["error"] == UNREACHABLE_REASON
+    assert "Container stop timed out" not in progress["error"]

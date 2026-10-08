@@ -243,7 +243,7 @@ def _healthy_template_definition(service_id):
 
 def _apply_template_services(template, service_list):
     from routers.extensions import (
-        _activate_service, _extensions_lock, _call_agent, _call_agent_hook,
+        _activate_service, _extensions_lock, _call_agent_result, _call_agent_hook,
         _get_missing_deps_transitive, _read_direct_deps, _validate_service_id,
         _install_from_library, _is_installable,
         _call_agent_invalidate_compose_cache,
@@ -475,13 +475,14 @@ def _apply_template_services(template, service_list):
             warnings.append(f"{svc_id}: pre_start hook failed; service was not started")
             continue
 
-        start_ok = _call_agent("start", svc_id)
+        start_ok, reason = _call_agent_result("start", svc_id)
         if not start_ok:
             if svc_id in library_installed:
                 results[svc_id] = "library_installed_but_start_failed"
             else:
                 results[svc_id] = "enabled_but_start_failed"
             failed_services.append(svc_id)
+            warnings.append(f"{svc_id}: {reason or 'Host agent did not confirm startup; retry after checking the service.'}")
             continue
 
         post_start_ok = _call_agent_hook(svc_id, "post_start")

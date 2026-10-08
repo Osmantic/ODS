@@ -1488,6 +1488,14 @@ def _call_agent(action: str, service_id: str) -> bool:
     the eventual outcome). Mirrors _call_agent_install's contract.
     """
     _agent_refusals.pop(service_id, None)
+    success, reason = _call_agent_result(action, service_id)
+    if not success:
+        _agent_refusals[service_id] = reason
+    return success
+
+
+def _call_agent_result(action: str, service_id: str) -> tuple[bool, str]:
+    """Keep a lifecycle result and its redacted reason in the same request."""
     try:
         request_agent_json(
             "POST",
@@ -1495,21 +1503,20 @@ def _call_agent(action: str, service_id: str) -> bool:
             payload={"service_id": service_id},
             timeout=_AGENT_TIMEOUT,
         )
-        return True
+        return True, ""
     except AgentHTTPError as exc:
         # The host agent redacts this reason before it answers.
-        _agent_refusals[service_id] = exc.detail[:2000]
         logger.warning(
             "Host agent could not %s %s (HTTP %d): %s",
             action, service_id, exc.status_code, exc.detail,
         )
-        return False
+        return False, exc.detail[:2000]
     except AgentClientError as exc:
         logger.warning(
             "Host agent unreachable at %s â€” fallback to restart_required: %s",
             "shared transport", exc,
         )
-        return False
+        return False, "Host agent could not be reached. Check that ODS and Docker are running, then retry."
 
 
 def _agent_start_failure(service_id: str, fallback: str) -> str:

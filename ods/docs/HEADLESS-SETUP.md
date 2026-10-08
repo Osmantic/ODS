@@ -44,6 +44,33 @@ Wi-Fi chipsets, AP-mode behavior, and client devices vary. In particular:
    portal backed by Hermes. Power users can still open the dashboard and the
    advanced Hermes surface for model, service, and diagnostics controls.
 
+## Existing installations and interrupted setup
+
+Browser onboarding is separate from installation and runtime readiness. A
+missing `data/config/setup-complete.json` can mean that the installer stopped
+before browser setup was recorded; it does not mean the saved service selection
+should be replaced. The authenticated setup status includes an allowlisted
+summary of the host's saved tier, GPU backend and runtime mode. It does not
+include credentials or certify service health.
+
+When that selection is present, the wizard defaults to **Keep current
+installation**. Finishing records browser onboarding without applying another
+service template. An explicitly selected add-on bundle remains selected across
+a refresh. Models, downloads and service health still require verification in
+the dashboard. Owner QR generation remains optional when LAN access is absent.
+
+The agent and full-stack choices are additive bundles, not a way to reselect
+the original installer profile. Failed starts show the host agent's redacted
+reason and block completion for that selected bundle. Choosing to continue
+without additional services clears the obsolete bundle error but reports that
+the earlier partial changes remain; it does not repair or remove those services.
+
+On macOS, extension activation retains the host agent's private Python when
+resolving Compose after a selection change. This avoids depending on launchd's
+system Python for PyYAML. Operators can retry the affected extension after
+resolving a reported issue; browser onboarding does not require a global `ods`
+command to be installed.
+
 ## Main Components
 
 | Component | Code | Tests / Docs | Purpose |

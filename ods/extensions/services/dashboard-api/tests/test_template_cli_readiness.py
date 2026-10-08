@@ -71,9 +71,9 @@ def cli_template(tmp_path, monkeypatch):
         return {"action": "enabled", "service_ids": payload["service_ids"]}
 
     monkeypatch.setattr(extensions, "request_agent_json", selection_transport)
-    agent = MagicMock(return_value=True)
+    agent = MagicMock(return_value=(True, ""))
     hook = MagicMock(return_value=True)
-    monkeypatch.setattr(extensions, "_call_agent", agent)
+    monkeypatch.setattr(extensions, "_call_agent_result", agent)
     monkeypatch.setattr(extensions, "_call_agent_hook", hook)
     app = FastAPI()
     app.include_router(templates.router)

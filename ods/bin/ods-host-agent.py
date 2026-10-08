@@ -3112,6 +3112,23 @@ def _read_setup_json(path: Path) -> tuple[bool, dict | None]:
     return True, payload
 
 
+def _setup_installation_selection() -> dict:
+    """Describe saved configuration, never infer installation or runtime health."""
+    env = load_env(INSTALL_DIR / ".env")
+    allowed = {
+        "tier": ("TIER", {"0", "1", "2", "3", "4", "CLOUD", "ARC", "ARC_LITE", "SH_LARGE", "SH_COMPACT", "NV_ULTRA"}),
+        "gpu_backend": ("GPU_BACKEND", {"apple", "amd", "nvidia", "intel", "sycl", "jetson", "cpu"}),
+        "mode": ("ODS_MODE", {"local", "cloud", "hybrid", "lemonade"}),
+    }
+    selection = {
+        name: env.get(key) if env.get(key) in values else None
+        for name, (key, values) in allowed.items()
+    }
+    # The macOS generator persists mode/backend but not TIER. Do not invent a
+    # tier or treat the installation as unconfigured because it is absent.
+    return {"selection_saved": bool(selection["gpu_backend"] and selection["mode"]), **selection}
+
+
 def _setup_state_payload() -> dict:
     """Return the persisted setup state from the host-owned data directory."""
     state_dir = DATA_DIR / "config"
@@ -3131,6 +3148,7 @@ def _setup_state_payload() -> dict:
         "step": step,
         "persona": persona,
         "persona_data": persona_data,
+        "installation": _setup_installation_selection(),
     }
 
 
@@ -5980,6 +5998,10 @@ def _run_compose_resolver(*, assume_enabled: tuple[str, ...] = (),
     if platform.system() == "Windows":
         _ensure_windows_resolver_pyyaml(sys.executable)
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
+    elif platform.system() == "Darwin":
+        # launchd's PATH need not include the private host-agent venv, whose
+        # interpreter already has the resolver's PyYAML dependency installed.
+        env["ODS_PYTHON_CMD"] = sys.executable
     install_env = load_env(INSTALL_DIR / ".env")
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
     # The host agent can outlive an installer rerun or an owner WebUI toggle.
