@@ -129,6 +129,7 @@ tests/test-ods-config-secret-mask.sh
 tests/test-ods-doctor-bash32-guard.sh
 tests/test-ods-doctor-disk-source.sh
 tests/test-ods-doctor-env-reader.sh
+tests/test-doctor-optional-webui.py
 tests/test-ods-doctor-host-native-llm.sh
 tests/test-ods-doctor-external-llm.sh
 tests/test-ods-doctor-install-diagnoses.sh

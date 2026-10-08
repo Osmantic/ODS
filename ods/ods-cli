@@ -2811,8 +2811,12 @@ checks = [
     ('Docker Daemon', runtime.get('docker_daemon', False)),
     ('Docker Compose', runtime.get('compose_cli', False)),
     ('Dashboard HTTP', runtime.get('dashboard_http', False)),
-    ('WebUI HTTP', runtime.get('webui_http', False)),
 ]
+
+# Reports without an enablement field retain the legacy required check.
+webui_disabled = runtime.get('webui_enabled') is False
+if not webui_disabled:
+    checks.append(('WebUI HTTP', runtime.get('webui_http', False)))
 
 has_failures = False
 for name, status in checks:
@@ -2821,6 +2825,9 @@ for name, status in checks:
     else:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
+
+if webui_disabled:
+    print(f"  {CYAN}ℹ{NC} WebUI HTTP (not installed)")
 
 llm_backend = runtime.get('llm_backend', {})
 if llm_backend:
