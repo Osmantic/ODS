@@ -558,6 +558,7 @@ jobs:
         run: |
           bash tests/test-pixel-integration.sh
           bash tests/test-pixel-host-install.sh
+          bash tests/test-pixel-owner-docker-preflight.sh
           bash tests/test-pixel-same-pin-upgrade.sh
           python3 -m unittest -v tests/test_pixel_model_transition.py
           python3 -m unittest -v tests/test_pixel_native_search.py

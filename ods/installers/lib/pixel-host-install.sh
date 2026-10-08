@@ -163,6 +163,32 @@ PY
     fi
 }
 
+ods_pixel_check_owner_docker() {
+    local owner home status
+    owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || {
+        ai_bad "Could not determine the Pixel install owner for the Docker check."
+        return 1
+    }
+    home="$(ods_pixel_owner_home "$owner")" || {
+        ai_bad "Could not resolve the home directory for Pixel owner '$owner'."
+        return 1
+    }
+    ai "Checking Docker access as Pixel owner '$owner'..."
+    # Pixel bootstrap uses plain Docker as this owner, even when the ODS core
+    # can proceed via sudo docker. Reuse its group refresh and environment.
+    # Discard info's potentially sensitive stdout, but keep the actual error
+    # visible rather than interpreting every failure as a socket permission.
+    if ods_pixel_run_as_owner "$owner" "$home" docker info >/dev/null; then
+        return 0
+    else
+        status=$?
+    fi
+    ai_bad "Pixel's Docker access check failed for '$owner' (exit $status); see the error above."
+    ai_warn "As '$owner', run 'docker info >/dev/null' without sudo and resolve the reported error before retrying with the same install options."
+    ai_warn "Recovery: https://github.com/Osmantic/ODS/blob/main/ods/docs/TROUBLESHOOTING.md#pixel-cannot-access-docker"
+    return "$status"
+}
+
 # Resolve Pixel search before phase 03 chooses Compose services. Use the same
 # owner-private onboarding selector as phase 11, and the explicit > installed
 # .env precedence that phase 06 applies. Never source .env as shell code.
