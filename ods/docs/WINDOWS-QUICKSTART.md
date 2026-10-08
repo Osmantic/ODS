@@ -55,8 +55,8 @@ values registered by Docker Desktop under the current user or machine. It requir
 both `Docker Desktop.exe` and its bundled `resources\bin\docker.exe` in the same
 installation. A standalone Docker CLI on `PATH` is not enough.
 
-If winget says no applicable update is available (exit `-1978335189`), setup
-rechecks those locations. A detected installation proceeds through the normal
+If winget says Docker Desktop is already installed or has no applicable update
+(for example exit `-1978335189`), setup rechecks those locations. A detected installation proceeds through the normal
 engine, Ubuntu integration and Compose checks without requesting another Windows
 restart. If it still cannot find the application and CLI, open Docker Desktop
 from Start and share its installation folder and the exact ODS error with support.
