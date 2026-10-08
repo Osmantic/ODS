@@ -1,5 +1,6 @@
 """Connect the macOS installer's resolved base stack to initial native Pixel setup."""
 import argparse
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -63,6 +64,34 @@ ERROR_GUIDANCE = {
         'must be empty for an identity-only reinstall. Keep other Pixel state intact.',
 }
 REJECTION_PREFIX = 'Native Pixel Operations identity verification rejected'
+
+# These labels and instructions are static. Exception messages, paths and
+# subprocess output remain private, including failures before receipts exist.
+INSTALL_PHASE_GUIDANCE = {
+    'installation-inputs': 'Check the selected installation and Compose files.',
+    'docker-context': 'Check that the selected local Docker CLI and context are available.',
+    'base-compose-config': 'Check that Docker Compose can resolve the selected base stack.',
+    'native-node-tools': 'Check native Node.js, npm and Homebrew availability.',
+    'ingress-image-download': 'Check Docker image-download connectivity and available disk space.',
+    'ingress-image-inspect': 'Check that the downloaded ingress image is available for Linux ARM64.',
+    'ingress-runtime-probe': 'Check that Docker can run the downloaded ingress image.',
+    'native-preparation': 'Keep any native Pixel state and preparation receipts that were created.',
+    'native-activation': 'Keep native Pixel state and its preparation/activation receipts intact.',
+}
+PREPARATION_PHASES = frozenset(('native-preparation', 'native-activation'))
+
+
+@contextmanager
+def installation_phase(name):
+    if name not in INSTALL_PHASE_GUIDANCE:
+        raise ValueError('unknown-native-installation-phase')
+    try:
+        yield
+    except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
+        # Retain the original exception, including typed health diagnostics.
+        # Only the exact static phase label can cross main's output boundary.
+        setattr(error, '_ods_install_phase', name)
+        raise
 
 
 def helper(name):
@@ -208,29 +237,31 @@ def native_docker_binary(binary):
 
 
 def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_for_sudo=False):
-    install_dir = preflight(install_dir, prompt_for_sudo=prompt_for_sudo).resolve(strict=True)
-    if not re.fullmatch('[a-f0-9]{40}', ref):
-        raise ValueError('exact-pixel-source-ref-required')
-    paths = [Path(path).resolve(strict=True) for path in compose_files]
-    if not paths or len(paths) != len(set(paths)):
-        raise ValueError('resolved-base-compose-stack-required')
-    for path in paths:
-        if not path.is_file() or install_dir not in path.parents:
-            raise ValueError('installed-compose-file-required')
-    fragments = [install_dir / fragment for fragment in FRAGMENTS]
-    if any(not path.is_file() or path in paths for path in fragments):
-        raise ValueError('new-native-compose-fragments-required')
-    docker = shutil.which('docker')
-    if not docker:
-        raise ValueError('docker-required')
-    docker = native_docker_binary(docker)
-    endpoint = os.environ.get('DOCKER_HOST')
-    if not endpoint:
-        context = json.loads(command([docker, 'context', 'inspect']))
-        endpoint = context[0]['Endpoints']['docker']['Host']
-    if not endpoint.startswith('unix:///'):
-        raise ValueError('local-docker-socket-required')
-    socket = Path(endpoint[len('unix://'):]).resolve(strict=True)
+    with installation_phase('installation-inputs'):
+        install_dir = preflight(install_dir, prompt_for_sudo=prompt_for_sudo).resolve(strict=True)
+        if not re.fullmatch('[a-f0-9]{40}', ref):
+            raise ValueError('exact-pixel-source-ref-required')
+        paths = [Path(path).resolve(strict=True) for path in compose_files]
+        if not paths or len(paths) != len(set(paths)):
+            raise ValueError('resolved-base-compose-stack-required')
+        for path in paths:
+            if not path.is_file() or install_dir not in path.parents:
+                raise ValueError('installed-compose-file-required')
+        fragments = [install_dir / fragment for fragment in FRAGMENTS]
+        if any(not path.is_file() or path in paths for path in fragments):
+            raise ValueError('new-native-compose-fragments-required')
+    with installation_phase('docker-context'):
+        docker = shutil.which('docker')
+        if not docker:
+            raise ValueError('docker-required')
+        docker = native_docker_binary(docker)
+        endpoint = os.environ.get('DOCKER_HOST')
+        if not endpoint:
+            context = json.loads(command([docker, 'context', 'inspect']))
+            endpoint = context[0]['Endpoints']['docker']['Host']
+        if not endpoint.startswith('unix:///'):
+            raise ValueError('local-docker-socket-required')
+        socket = Path(endpoint[len('unix://'):]).resolve(strict=True)
     env = {**os.environ, 'DOCKER_HOST': 'unix://' + str(socket)}
     # DOCKER_CONTEXT takes precedence over DOCKER_HOST. Once the local socket
     # is selected, inherited context/TLS overrides must not redirect commands.
@@ -239,33 +270,40 @@ def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_f
     base = [docker, 'compose', '--project-directory', str(install_dir), '--env-file', str(install_dir / '.env')]
     for path in paths:
         base.extend(['-f', str(path)])
-    stack = json.loads(command([*base, 'config', '--format', 'json'], env=env))
-    project = stack.get('name', '')
-    if not re.fullmatch('[a-z0-9][a-z0-9_-]{0,127}', project):
-        raise ValueError('resolved-compose-project-required')
-    if not {'dashboard-api', 'model-router'} <= set(stack.get('services', {})):
-        raise ValueError('native-base-services-required')
-    node, npm = node_tools()
-    command([docker, 'pull', '--platform', 'linux/arm64', INGRESS_IMAGE], env=env, timeout=600)
-    images = json.loads(command([docker, 'image', 'inspect', INGRESS_IMAGE], env=env))
-    if len(images) != 1 or images[0].get('Architecture') != 'arm64' or images[0].get('Os') != 'linux':
-        raise ValueError('native-ingress-image-platform-mismatch')
-    image = images[0]['Id']
-    if not re.fullmatch('sha256:[a-f0-9]{64}', image):
-        raise ValueError('native-ingress-image-id-required')
-    command([docker, 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges:true', '--user', str(os.getuid()) + ':' + str(os.getgid()),
-        '--entrypoint', 'node', image, '-e',
-        'if(process.platform!=="linux"||process.arch!=="arm64"||Number(process.versions.node.split(".")[0])<22)process.exit(1)'], env=env)
-    root = install_dir / 'data/pixel-native'
-    root.mkdir(mode=0o700)
-    prepared = root / 'preparation'
-    helper('prepare').prepare(ref=ref, node=node, npm=npm, destination=prepared,
-        docker=docker, docker_socket=socket, ods_source=ods_source, ingress_image=image,
-        compose_project=project, ingress_gid=os.getgid(),
-        install_dir=install_dir, native_home=root / 'home')
-    helper('activate').activate(preparation=prepared, install_dir=install_dir, ods_source=ods_source,
-        compose_files=[*paths, *fragments], configure_stack=True)
+    with installation_phase('base-compose-config'):
+        stack = json.loads(command([*base, 'config', '--format', 'json'], env=env))
+        project = stack.get('name', '')
+        if not re.fullmatch('[a-z0-9][a-z0-9_-]{0,127}', project):
+            raise ValueError('resolved-compose-project-required')
+        if not {'dashboard-api', 'model-router'} <= set(stack.get('services', {})):
+            raise ValueError('native-base-services-required')
+    with installation_phase('native-node-tools'):
+        node, npm = node_tools()
+    with installation_phase('ingress-image-download'):
+        command([docker, 'pull', '--platform', 'linux/arm64', INGRESS_IMAGE], env=env, timeout=600)
+    with installation_phase('ingress-image-inspect'):
+        images = json.loads(command([docker, 'image', 'inspect', INGRESS_IMAGE], env=env))
+        if len(images) != 1 or images[0].get('Architecture') != 'arm64' or images[0].get('Os') != 'linux':
+            raise ValueError('native-ingress-image-platform-mismatch')
+        image = images[0]['Id']
+        if not re.fullmatch('sha256:[a-f0-9]{64}', image):
+            raise ValueError('native-ingress-image-id-required')
+    with installation_phase('ingress-runtime-probe'):
+        command([docker, 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+            '--security-opt', 'no-new-privileges:true', '--user', str(os.getuid()) + ':' + str(os.getgid()),
+            '--entrypoint', 'node', image, '-e',
+            'if(process.platform!=="linux"||process.arch!=="arm64"||Number(process.versions.node.split(".")[0])<22)process.exit(1)'], env=env)
+    with installation_phase('native-preparation'):
+        root = install_dir / 'data/pixel-native'
+        root.mkdir(mode=0o700)
+        prepared = root / 'preparation'
+        helper('prepare').prepare(ref=ref, node=node, npm=npm, destination=prepared,
+            docker=docker, docker_socket=socket, ods_source=ods_source, ingress_image=image,
+            compose_project=project, ingress_gid=os.getgid(),
+            install_dir=install_dir, native_home=root / 'home')
+    with installation_phase('native-activation'):
+        helper('activate').activate(preparation=prepared, install_dir=install_dir, ods_source=ods_source,
+            compose_files=[*paths, *fragments], configure_stack=True)
     return prepared
 
 
@@ -295,6 +333,13 @@ def main():
             'Check prerequisites and private preparation/activation receipts; do not reset them.')
         if code in ERROR_GUIDANCE:
             guidance = '[' + code + '] ' + guidance
+        phase = getattr(error, '_ods_install_phase', None)
+        if isinstance(phase, str) and phase in INSTALL_PHASE_GUIDANCE:
+            if code not in ERROR_GUIDANCE:
+                guidance = INSTALL_PHASE_GUIDANCE[phase]
+            guidance = '[phase:' + phase + '] ' + guidance
+            if phase not in PREPARATION_PHASES:
+                guidance += ' Native Pixel preparation has not started; its receipts may not exist yet.'
         if code == 'native-compose-health-timeout':
             detail = helper('compose').health_diagnostic(error)
             if detail:
