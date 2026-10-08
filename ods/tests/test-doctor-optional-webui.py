@@ -373,6 +373,13 @@ class CliDisplayTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("✗ WebUI HTTP", result.stdout)
 
+    def test_null_core_status_is_still_a_failure(self):
+        report = _base_report(webui_enabled=False, webui_http=False)
+        report["runtime"]["docker_daemon"] = None
+        result = _run_cli_display(report)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("✗ Docker Daemon", result.stdout)
+
     def test_other_failure_still_exits_one(self):
         # A different failure (LLM down) must still exit 1 even with WebUI
         # disabled, so the fix does not mask unrelated problems.
