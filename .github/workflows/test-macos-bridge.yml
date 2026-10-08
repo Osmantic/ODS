@@ -89,16 +89,6 @@ jobs:
           python-version: '3.12'
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7'
-      - name: Record test interpreter custody
-        run: |
-          python - <<'PY'
-          import json, os, stat, sys
-          info = os.stat(sys.executable)
-          print(json.dumps({"ownerUid": os.getuid(), "pythonUid": info.st_uid,
-                            "pythonMode": oct(stat.S_IMODE(info.st_mode)),
-                            "regular": stat.S_ISREG(info.st_mode),
-                            "executable": os.access(sys.executable, os.X_OK)}))
-          PY
       - name: Verify the one-line bootstrap runs under the system Bash
         run: python -m pytest -q ods/tests/test_bootstrap_system_bash.py ods/tests/test_macos_recovery_entrypoints.py
       - name: Verify native retirement precedes destructive uninstall
