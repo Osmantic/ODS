@@ -264,3 +264,4 @@ tests/test_todo_fixes.py
 tests/test-linux-service-port-rerun.py
 tests/test-migrate-shield-key.sh
 tests/test-ods-cli-update-shield-key.sh
+tests/test-backup-publication.sh

@@ -135,7 +135,7 @@ list_backups() {
     local backups=()
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 ! -name '.partial-*' \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 
     if [[ ${#backups[@]} -eq 0 ]]; then
         log_error "No backups found in: $BACKUP_ROOT"
@@ -199,7 +199,7 @@ select_backup() {
     local backups=()
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 ! -name '.partial-*' \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 
     local index=$((selection - 1))
     if [[ $index -lt 0 || $index -ge ${#backups[@]} ]]; then
