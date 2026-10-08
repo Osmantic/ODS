@@ -30,12 +30,19 @@ come from `scripts/generate-release-files.mjs`.
   live service acceptance.
 - The delayed case publishes after twelve seconds, outside the old nominal
   ten-second wait window.
+- A controlled test of the real WSL Operations Broker injected a fifteen-second
+  delay before its executable started. The old installer wait failed after
+  10.703 seconds. The candidate then succeeded after 21.639 seconds, including
+  the existing reader ACL and private-state checks. The original service unit
+  was restored byte-for-byte and the policy remained unchanged. This exercised
+  the candidate library packaged at ODS commit `422abd22b9bda0c903478e0d14935df890f8a9cc`;
+  it is not clean-install acceptance.
 - Generated release files match the release manifest.
 
 ## Pending qualification
 
-Keep status `candidate` until the packaged source passes its exact-head checks
-and a controlled live delayed-start test. Clean Linux/WSL installation, the
+Keep status `candidate` until the packaged source passes its exact-head checks.
+Clean Linux/WSL installation, the
 held source upgrade with access-mode custody, and the macOS native path must
 be verified separately before claiming fleet readiness. Existing failed-install
 receipts remain failures even when a later broker starts successfully.

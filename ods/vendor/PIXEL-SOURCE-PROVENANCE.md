@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`308ceeee9a3c53466aff3905ef7fc0e0ad6163b0`, and its SHA-256 is
-`101281a9972a7b6fb65622b2cbafe3907adadb5b4ed9bed7dbe7b693d2e62ff3`.
+`655a5b0205a92afce33d45cad1d05d48b661b996`, and its SHA-256 is
+`63dd4ad238c65f072d523c89ab54b04dd6f200b1066ecfcbfca1340fafaeac81`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -170,7 +170,7 @@ failure and accepts the new wait. `pixel/ODS-QUALIFICATION-4.3.30.md`
 records the evidence and remaining live qualification. The version
 advance preserves the existing strictly increasing source-upgrade gate.
 
-The public vendor tree is `4199870a91472cdba7c023fd36aba6a4bac05688`. Two independent empty bare
+The public vendor tree is `b4a2db3cfc6d3d6388c57f94dc6befaf2ed5a292`. Two independent empty bare
 repositories used the same alternates-based procedure documented above
 with the retained synthetic identity, timestamp and root message. The
 two bundles were byte-identical. Only the single public root is advertised;
