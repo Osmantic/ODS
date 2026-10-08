@@ -1302,13 +1302,12 @@ fi
 # message before any compose work starts.
 test_docker_desktop_sharing "$INSTALL_DIR"
 if ! $DOCKER_SHARE_OK; then
-    ai_err "Docker Desktop cannot bind-mount ${INSTALL_DIR}."
-    ai_err "Add the path to Docker Desktop > Settings > Resources > File Sharing,"
-    ai_err "apply, then re-run this installer."
-    if [[ -n "$DOCKER_SHARE_ERR" ]]; then
-        ai "Probe output:"
-        printf '%s\n' "$DOCKER_SHARE_ERR" | sed 's/^/    /'
+    if [[ "$DOCKER_SHARE_REASON" == "denied" ]]; then
+        ai_err "Docker Desktop cannot bind-mount ${INSTALL_DIR}."
+        ai_err "Add the path to Docker Desktop > Settings > Resources > File Sharing,"
+        ai_err "apply, then re-run this installer."
     fi
+    ai_err "$DOCKER_SHARE_ERR"
     exit 1
 fi
 ai_ok "Docker Desktop file sharing OK"

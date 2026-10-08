@@ -696,7 +696,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     if declare -F _ods_apply_deferred_feature_state >/dev/null; then
-        _ods_apply_deferred_feature_state || {
+        _ods_apply_deferred_feature_state "$_phase06_requested_pixel_ref" || {
             error "Deferred feature reconciliation failed; resume the same installer candidate."
             return 1
         }

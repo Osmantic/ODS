@@ -337,6 +337,21 @@ print(f"{state}|{source_ref}")
 PY
 }
 
+# An exact inert initial bootstrap has no deployed authority baseline to hold.
+# Recheck the same evidence before reconciling its ordinary source copy.
+_ods_pixel_initial_source_copy_allowed() {
+    local owner="$1" home="$2" requested_ref="$3" transition
+    transition="$(_ods_pixel_source_transition_state "$owner" "$home" "$requested_ref")" || return 1
+    [[ "$transition" == "installing|$requested_ref" \
+        && ! -e /var/lib/ods-pixel-access && ! -L /var/lib/ods-pixel-access \
+        && ! -e /etc/ods/pixel-access.json && ! -L /etc/ods/pixel-access.json \
+        && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
+        && ! -e /etc/systemd/system/openclaw-gateway.service \
+        && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
+        && PIXEL_SOURCE_REF="$requested_ref" _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
+            "$INSTALL_DIR/data/pixel/source-$requested_ref"
+}
+
 # Return 0 when an exact ODS-managed Pixel deployment needs a held transaction
 # before the installer copies source over its installed ownership evidence.
 # Return 1 when no transition is needed, and 2 for unsafe or ambiguous state.
@@ -350,14 +365,8 @@ _ods_pixel_source_transition_required() {
     # An interrupted bootstrap has not installed a release or access
     # coordinator yet. There is no authority baseline to migrate. Keep the
     # ordinary source-copy path only for the exact inert initial state.
-    if [[ "$state" == installing \
-        && ! -e /var/lib/ods-pixel-access && ! -L /var/lib/ods-pixel-access \
-        && ! -e /etc/ods/pixel-access.json && ! -L /etc/ods/pixel-access.json \
-        && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
-        && ! -e /etc/systemd/system/openclaw-gateway.service \
-        && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
-        && PIXEL_SOURCE_REF="$requested_ref" _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
-            "$INSTALL_DIR/data/pixel/source-$source_ref"; then
+    if [[ "$state" == installing ]] \
+        && _ods_pixel_initial_source_copy_allowed "$owner" "$home" "$requested_ref"; then
         return 1
     fi
     # The Pixel pin alone does not identify the ODS host integration. Preserve

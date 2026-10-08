@@ -133,6 +133,12 @@ or disabling it; use the managed native update/migration path and preserve
 `data/pixel-native` and its receipts. Do not delete protected state or use force
 to work around that guard. See [MACOS-QUICKSTART.md](MACOS-QUICKSTART.md).
 
+If native retirement reports `native-retirement-stopped-job-needs-witness`, do
+not remove more files or fabricate a shutdown receipt. See the explicit,
+maintainer-assisted [stopped-service retirement recovery](MACOS_PIXEL_RETIREMENT_RECOVERY.md).
+It preserves verified autostart definitions and requires a Mac restart before
+retiring a deployment that lacks a live process-tree witness.
+
 ### Retained initial installation stopped at final health
 
 A healthy gateway alone does not complete initial activation. The installer
