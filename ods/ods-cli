@@ -5351,13 +5351,21 @@ cmd_agent() {
         start)
             case "$daemon_type" in
                 launchd)
-                    launchctl bootstrap "gui/$(id -u)" \
-                        "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" 2>/dev/null && \
-                        success "Agent started (LaunchAgent)" || warn "Agent start failed"
+                    if launchctl bootstrap "gui/$(id -u)" \
+                        "$HOME/Library/LaunchAgents/com.ods.host-agent.plist" 2>/dev/null; then
+                        success "Agent started (LaunchAgent)"
+                    else
+                        log_error "Agent start failed"
+                        return 1
+                    fi
                     ;;
                 systemd)
-                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
-                        success "Agent started (systemd)" || warn "Agent start failed"
+                    if sudo systemctl start ods-host-agent.service 2>/dev/null; then
+                        success "Agent started (systemd)"
+                    else
+                        log_error "Agent start failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -5410,12 +5418,20 @@ cmd_agent() {
         stop)
             case "$daemon_type" in
                 launchd)
-                    launchctl bootout "gui/$(id -u)/com.ods.host-agent" 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if launchctl bootout "gui/$(id -u)/com.ods.host-agent" 2>/dev/null; then
+                        success "Agent stopped"
+                    else
+                        log_error "Agent stop failed"
+                        return 1
+                    fi
                     ;;
                 systemd)
-                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if sudo systemctl stop ods-host-agent.service 2>/dev/null; then
+                        success "Agent stopped"
+                    else
+                        log_error "Agent stop failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
