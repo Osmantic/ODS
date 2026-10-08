@@ -177,6 +177,9 @@ function publishedPathFeedback(response) {
 // Informational only: empty files can be legitimate, so publication stands.
 export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 bytes): ";
 
+// Displayed with host-authoritative publication evidence, independently of model prose.
+export const PREVIEW_STORAGE_DISCLOSURE = "Preview inputs are temporary and may be lost on reload. Opening the same preview in a new tab does not change this.";
+
 function emptyPathFeedback(response) {
   const shown = response.publishedEmptyPaths ?? [];
   const omitted = response.publishedEmptyPathsOmitted ?? 0;
@@ -335,7 +338,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
               publishedPathFeedback(response) +
               emptyPathFeedback(response) +
               "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works. " +
-              "Preview inputs are temporary and may be lost on reload. The preview sandbox does not provide durable browser storage. Do not claim that localStorage or sessionStorage saves data across reloads; try/catch only keeps the app working when storage fails. Tell the owner that preview inputs are temporary. " +
+              PREVIEW_STORAGE_DISCLOSURE + " The preview sandbox does not provide durable browser storage. Do not claim that localStorage or sessionStorage saves data across reloads; try/catch only keeps the app working when storage fails. Tell the owner that preview inputs are temporary. " +
               "If the owner requested derived source files or process logs, publication does not verify their correspondence to executed files or output. If that comparison is missing or fails, repair from the final executed bytes and republish before claiming completion.",
           }],
           details: response,

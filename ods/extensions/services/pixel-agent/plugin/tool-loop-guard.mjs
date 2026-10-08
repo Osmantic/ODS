@@ -11,7 +11,7 @@ import {validDeliveredArtifact} from './workspace-artifact.mjs';
 // OpenClaw's public harness runtime.
 
 import { createHash, randomBytes } from "node:crypto";
-import { validSourceReview, normalizeWorkspacePreviewParams } from './workspace-preview.mjs';
+import { validSourceReview, normalizeWorkspacePreviewParams, PREVIEW_STORAGE_DISCLOSURE } from './workspace-preview.mjs';
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -12606,6 +12606,7 @@ export function createToolLoopGuard({
             ? "Browser inspection passed for the submitted interaction checks only; this does not verify all requested behavior.\n\n" : "") +
           (state.workspaceVisibilityInteractionRequired && !interactionUnverified
             ? "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n" : "") +
+          `${PREVIEW_STORAGE_DISCLOSURE}\n\n` +
           `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
           `[Open preview](${state.workspacePreview.url})\n\n` +
           (state.workspacePreviewModelAuthored

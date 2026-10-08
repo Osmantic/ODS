@@ -6,6 +6,8 @@ import {PREVIEW_INSPECTION_TOOL, PAGE_ERROR_REPAIR_INSTRUCTION, requestsVisibili
   boundStaticPreviewInspection} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, inspectionPlanHash, normalizeWorkspacePreviewInspectionParams, createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
 
+import {PREVIEW_STORAGE_DISCLOSURE} from '../plugin/workspace-preview.mjs';
+
 const owner='Create and publish a website in a new workspace directory site. Add a button that toggles hidden details.';
 const context={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'opaque-key'};
 test('bundle output mutation invalidates publication and interaction until fresh verification',()=>{
@@ -1140,4 +1142,26 @@ test('verification after gateway restart requires fresh publication and browser 
   guard.afterToolCall({...fresh.event,result:fresh.result},fresh.ctx);
   assert.equal(guard.verificationForRun(next.runId).status,'passed');
   assert.equal(guard.beforeAgentFinalize({},next),undefined);
+});
+
+test('verified preview delivery retains storage scope beside contradictory model prose',()=>{
+  const {guard,preview}=setup();
+  const observed=inspection(guard,plan(preview));
+  guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+  assert.equal(guard.verificationForRun('run').status,'passed');
+  const modelText='For actual persistence, open it in your regular browser.';
+  const event={runId:'run',kind:'final',payload:{text:modelText}};
+  const delivered=guard.replyPayloadSending(event).payload;
+  assert.ok(delivered.text.startsWith(modelText));
+  assert.ok(delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
+  assert.ok(delivered.text.includes(preview.url));
+  assert.equal(guard.replyPayloadSending({...event,payload:delivered}).payload.text,delivered.text);
+});
+
+test('published but unverified interactions still disclose temporary preview input',()=>{
+  const {guard}=setup();
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  const delivered=guard.replyPayloadSending({runId:'run',kind:'final',payload:{text:'Everything persists.'}}).payload;
+  assert.ok(delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
+  assert.doesNotMatch(delivered.text,/Everything persists/);
 });
