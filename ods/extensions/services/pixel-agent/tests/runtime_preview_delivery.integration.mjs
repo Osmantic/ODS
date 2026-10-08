@@ -126,8 +126,9 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
     assert.equal(verdicts.at(-1).verification.deliveryMode,'append');
     assert.equal(verdicts.at(-1).verification.preview.kind,'ods-pixel-workspace-preview');
     assert.match(body,/Open preview/);
-    assert.match(body,/Preview inputs are temporary and may be lost on reload/);
-    assert.match(body,/Opening the same preview in a new tab does not change this/);
+    assert.match(body,/Inputs in the embedded preview may be lost on reload/);
+    assert.match(body,/Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data/);
+    assert.doesNotMatch(body,/Opening the same preview in a new tab does not change this/);
     assert.equal(frames.at(-1).pixel.preview.kind,'ods-pixel-workspace-preview');
     assert.doesNotMatch(log,/revision after potential side effects/);
   } finally {
