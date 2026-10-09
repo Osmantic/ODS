@@ -11876,6 +11876,69 @@ test("recognizes explicit SVG preview publication without widening nonvisual int
   }
 });
 
+const MAC_COUNTER_REPAIR = "The counter is visible but both buttons do nothing. The browser reports SecurityError when the page reads localStorage inside the sandbox. Please fix only Playground/mac-main-d48-counter/index.html: keep the count in memory, remove all storage access, start at 3 on every reload, and keep Increase and Reset usable by keyboard. Republish the corrected preview. No installs, web requests, or other file changes.";
+
+test("named HTML repair recognizes the actual counter correction without promoting quoted or read-only requests", () => {
+  for (const prompt of [
+    MAC_COUNTER_REPAIR,
+    "Please repair log-viewer-lab/index.html and republish the corrected preview.",
+    "Correct `log-viewer-lab/index.html` and show the repaired preview.",
+    "Fix only /workspace/log-viewer-lab/index.html and republish it.",
+    "Fix the preview's broken button.",
+    "Repair the existing page.",
+  ]) assert.equal(userMessageRequestsWorkspaceVisualContinuation([], prompt), true, prompt);
+  for (const prompt of [
+    "Read log-viewer-lab/index.html and explain how to fix it. Do not edit files.",
+    "Explain why we should repair log-viewer-lab/index.html.",
+    'Explain "Please fix log-viewer-lab/index.html and republish the corrected preview."',
+    "> Fix log-viewer-lab/index.html and republish the corrected preview.",
+    "```\nFix log-viewer-lab/index.html and republish the corrected preview.\n```",
+    "Do not fix log-viewer-lab/index.html. Show it unchanged.",
+    "Show the corrected preview without changing it.",
+    "Republish log-viewer-lab/index.html unchanged.",
+    "Republish the corrected preview unchanged.",
+    "Do not repair the existing page.",
+    "Create a new page, then repair the preview.",
+    "Fix log-viewer-lab/index.html. Do not edit any files.",
+    "Fix ../other-lab/index.html.",
+  ]) assert.equal(userMessageRequestsWorkspaceVisualContinuation([], prompt), false, prompt);
+});
+
+test("named HTML repair binds read-edit-publish to its own trusted session and rejects the unchanged snapshot", () => {
+  const guard = createToolLoopGuard();
+  const {write, params, details} = seedNamedPreview(guard);
+  const context = {agentId:'pixel',runId:'named-repair',sessionId:'session-1'};
+  guard.observeRun(context,'pixel',{prompt:MAC_COUNTER_REPAIR.replaceAll('Playground/mac-main-d48-counter','log-viewer-lab')});
+  const read = {path:write.path};
+  call(guard,'read',{context,event:{runId:context.runId,toolCallId:'repair-read',params:read}});
+  afterCall(guard,'read',{context,event:{runId:context.runId,toolCallId:'repair-read',params:read,result:{content:[{type:'text',text:write.content}]}}});
+  const guidance = guard.toolResultPersist({toolName:'read',toolCallId:'repair-read',message:{role:'toolResult',toolName:'read',toolCallId:'repair-read',content:[{type:'text',text:write.content}]}},context,'pixel');
+  assert.equal(guidance.message.content.at(-1).text, `[ODS Pixel next step] ${WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON}`);
+  assert.equal(call(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params}})?.blockReason, WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON);
+  assert.equal(guard.beforeAgentFinalize({},context)?.retry?.idempotencyKey,'pixel-ods-workspace-visual-continuation-edit');
+  // Even a forged successful publication receipt cannot settle the old bytes.
+  afterCall(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params,result:{details}}});
+  assert.notEqual(guard.verificationForRun(context.runId).status,'passed');
+  const changed = {path:write.path,content:write.content.replace('logs','corrected counter')};
+  assert.notEqual(call(guard,'write',{context,event:{runId:context.runId,params:changed}})?.block,true);
+  afterCall(guard,'write',{context,event:{runId:context.runId,params:changed,result:{details:{status:'completed'}}}});
+  assert.notEqual(call(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params}})?.block,true);
+  const snapshot=workspacePreviewSnapshot(params.relativeDirectory,[changed]);
+  afterCall(guard,'pixel_ods_workspace_preview',{context,event:{runId:context.runId,params,result:{details:{...details,...snapshot,url:`http://${snapshot.siteId}.localhost:9437/${snapshot.siteId}/`}}}});
+  assert.equal(guard.verificationForRun(context.runId).preview.sha256,snapshot.sha256);
+});
+
+test("named HTML repair never borrows another project or session's preview custody", () => {
+  for (const [path,sessionId] of [['other-lab/index.html','session-1'],['log-viewer-lab/index.html','different-session']]) {
+    const guard=createToolLoopGuard(); seedNamedPreview(guard);
+    const context={agentId:'pixel',runId:'other-repair',sessionId};
+    guard.observeRun(context,'pixel',{prompt:`Please fix only ${path}. Republish the corrected preview.`});
+    const args={path};
+    assert.notEqual(call(guard,'read',{context,event:{runId:context.runId,params:args}})?.block,true,'Do not redirect or scope the explicitly named file to a different historical project');
+    assert.notEqual(guard.beforeAgentFinalize({},context)?.retry?.idempotencyKey,'pixel-ods-workspace-visual-continuation-read');
+  }
+});
+
 test("recognizes only affirmative natural visual follow-ups", () => {
   const exactWrappedRepair =
     "[Chat messages since your last reply - for context]\n" +
