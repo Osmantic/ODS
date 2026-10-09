@@ -147,6 +147,52 @@ describe('Pixel', () => {
     expect(screen.getByText('Your local ODS owner agent')).toBeVisible()
   })
 
+  it('keeps explicitly selected Chat only on the model route without launching agent commands', async () => {
+    globalThis.fetch.mockResolvedValueOnce(response({available:true,model:'pixel/default',runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'1827'}}]}), '[DONE]',
+    ]))
+    const mounted = render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Chat only'}))
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.queryByText('Permissions')).toBeNull()
+    expect(screen.getByText(/no agent tools/i)).toBeVisible()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'/goal Calculate 63 × 29'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('1827')
+    const posts=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(posts).toHaveLength(1)
+    const sent=JSON.parse(posts[0][1].body)
+    expect(sent.mode).toBe('chat')
+    expect(sent.history_snapshot).toBeUndefined()
+    expect(sent.messages.at(-1)).toEqual({role:'user',content:'/goal Calculate 63 × 29'})
+    expect(globalThis.fetch.mock.calls.some(([url])=>String(url).includes('/api/pixel/teams/'))).toBe(false)
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatMode).toBe('chat'))
+    mounted.unmount()
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default',runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}}))
+    render(<Pixel />)
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+  })
+
+  it.each([undefined,
+    {source:'remote-provider',model:'private-leader',contextLength:32768,maxTokens:2048,reasoning:false},
+    {source:'external-host',model:'external-model',contextLength:32768},
+  ])('does not silently reroute a restored Chat only conversation for runtime %j', async runtime => {
+    localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'chat-route-test',chatMode:'chat',messages:[],draft:'Preserve this question'}))
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default',runtime}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    expect(screen.getByRole('button',{name:'Chat only'})).toBeDisabled()
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByText('Chat only requires a verified local model. Use Agent for the current provider route.')).toBeVisible()
+    expect(screen.getByTitle('Send')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'Agent'}))
+    expect(screen.getByRole('button',{name:'Agent'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Preserve this question')
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+  })
+
   it('keeps prompts clean without copy/reuse controls or inline tool-call summaries',async()=>{
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'clean-chat',messages:[
       {role:'user',content:'A clean prompt'},
