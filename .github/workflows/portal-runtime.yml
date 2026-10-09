@@ -50,6 +50,9 @@ jobs:
         with:
           node-version: '24'
       - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
+      - name: Verify native process admission custody
+        if: runner.os != 'Windows'
+        run: node --test ods/extensions/services/pixel-agent/tests/access_runtime.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/tool_result_projection.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs

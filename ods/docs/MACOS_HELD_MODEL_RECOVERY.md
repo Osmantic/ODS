@@ -76,5 +76,32 @@ same transaction in 24.16 seconds with no tracked host configuration changes.
 A real Portal message then finished in 2m30s with the exact requested answer,
 and the composer returned to Available. This qualifies recovery from that
 interruption, not the unknown original trigger on Iwan's M1. Post-reboot
-validation remains pending; it must not be inferred from unit tests or a host
-agent restart.
+validation found the same completed transaction and 9B contract intact, but a
+separate admission startup defect required intervention: macOS reused the old
+gateway PID for another service. After restarting the identified colliding
+service and gateway, live inference passed and Portal returned the requested
+answer in 2m37s. That was not an unattended successful boot.
+
+## Darwin process ownership
+
+This change also keeps Darwin's existing exclusive kernel claim open for the
+gateway's lifetime, instead of releasing it after registration. An atomically
+saved private witness binds the exact claim inode and process record incarnation
+(device, inode, birth time and change time). Only acquisition of that same
+kernel claim with a matching witness proves the previous owner gone when its
+PID has been recycled. Held/interrupted admission state is never cleared.
+
+The process record itself remains the legacy `{pid}` format so older runtime
+rollback remains readable. An older runtime rewrites that record, invalidating
+the witness; a stale witness cannot bypass a live legacy owner. Linux/WSL keeps
+its existing boot/start identity checks. Native Mac and Linux tests cover
+ownership, process death, concurrent claimants, malformed/stale witnesses and
+preservation of held state. A second full-machine reboot of the patched runtime
+has not yet been performed; process-death tests are not represented as that.
+
+The plugin must be deployed through the native runtime updater; updating only
+the host Python script does not replace the protected gateway bundle. First
+repair a held model transaction; do not start a runtime update while it remains
+pending. An already-blocked legacy PID record without a matching witness still
+requires diagnosis. Do not delete its process/claim files, stop an unidentified
+PID or bypass admission checks to install this fix.
