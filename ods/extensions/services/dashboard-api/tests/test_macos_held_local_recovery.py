@@ -63,9 +63,14 @@ def test_repair_endpoint_cannot_interrupt_an_existing_lifecycle(monkeypatch):
     monkeypatch.setattr(host, '_begin_model_lifecycle', lambda _: (False, {'operation': 'model_activation'}))
     monkeypatch.setattr(host, '_end_model_lifecycle', lambda _: pytest.fail('released another owner'))
     monkeypatch.setattr(host, '_repair_held_pixel_local_route', lambda *_args, **_kwargs: pytest.fail('repair dispatched'))
+    from threading import Event
+    cancellation = Event()
+    monkeypatch.setattr(host, '_switchboard_initial_verify_cancel', cancellation)
     handler = fixtures._ResponseHandler()
     host.AgentHandler._handle_model_repair_current_local(handler)
     assert handler.response_code == 409
+    assert handler.parse_response() == {'error': 'Model lifecycle is busy', 'code': 'model_lifecycle_busy'}
+    assert not cancellation.is_set()
 
 
 @pytest.mark.parametrize('failure', [OSError, ValueError, RuntimeError, TypeError])
@@ -110,6 +115,9 @@ def test_repair_endpoint_owns_lifecycle_and_releases_it_on_failure(monkeypatch, 
     handler = fixtures._ResponseHandler()
     host.AgentHandler._handle_model_repair_current_local(handler)
     assert handler.response_code == (409 if fail else 200)
+    if fail:
+        assert handler.parse_response() == {'pending': True, 'phase': 'unavailable',
+                                           'reason': 'current-local-model-repair-unconfirmed'}
     assert actions == ['begin', 'repair', 'end']
     assert host._switchboard_initial_verify_cancel.is_set()
 
@@ -160,6 +168,28 @@ def test_failed_post_apply_proof_keeps_gates_and_can_be_recovered(split_route, m
     monkeypatch.setattr(host, '_prove_pixel_model_contract', lambda *_: True)
     assert host._repair_held_pixel_local_route(env, transaction_id=tx.id)['pending'] is False
     assert calls.count('model-apply') == 1 and calls.count('model-finish') == 1
+
+
+def test_endpoint_post_apply_failure_is_unconfirmed_not_busy(split_route, monkeypatch):
+    _, tx, _, state, calls, _ = split_route
+    monkeypatch.setattr(host, 'check_auth', lambda _: True)
+    monkeypatch.setattr(host, 'read_json_body', lambda _: {'transactionId': tx.id})
+    monkeypatch.setattr(host, '_begin_model_lifecycle', lambda _: (True, None))
+    ended = []
+    monkeypatch.setattr(host, '_end_model_lifecycle', ended.append)
+    proofs = iter([True, False])
+    monkeypatch.setattr(host, '_prove_pixel_model_contract', lambda *_: next(proofs))
+    handler = fixtures._ResponseHandler()
+
+    host.AgentHandler._handle_model_repair_current_local(handler)
+
+    assert handler.response_code == 409
+    assert handler.parse_response() == {'pending': True, 'phase': 'unavailable',
+                                       'reason': 'current-local-model-repair-unconfirmed'}
+    assert state['pending'] is True and state['contract'] == NEW
+    assert host._read_pixel_model_journal()['phase'] == 'applied'
+    assert calls.count('model-apply') == 1 and 'model-finish' not in calls
+    assert ended == ['model_recovery']
 
 
 def test_explicit_repair_proves_current_route_then_completes_same_transaction(split_route):
