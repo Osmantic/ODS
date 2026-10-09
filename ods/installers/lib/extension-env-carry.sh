@@ -86,3 +86,40 @@ ods_carry_public_url_env_keys() {
         }
         END { for (i = 1; i <= n; i++) print last[order[i]] }' "$previous_env")
 }
+
+# Settings ODS tells the owner to put in .env that no installer writes: the
+# dashboard's n8n API key (routers/workflows.py), the Hugging Face token for
+# gated downloads (routers/models.py), the Intel Arc image override
+# (docker-compose.arc.yml) and Open WebUI's speech settings (tts/README.md).
+# Installer-managed keys must not be listed: an old value would override the
+# installer's new choice.
+# shellcheck disable=SC2034  # read by installers/phases/06-directories.sh
+ODS_OWNER_ENV_KEYS=(
+    N8N_API_KEY
+    HF_TOKEN
+    LLAMA_ARC_IMAGE
+    AUDIO_TTS_ENGINE
+    AUDIO_TTS_MODEL
+    AUDIO_TTS_VOICE
+    AUDIO_TTS_OPENAI_API_BASE_URL
+    AUDIO_TTS_OPENAI_API_KEY
+)
+
+# Append to NEW_ENV each named KEY that NEW_ENV lacks and PREVIOUS_ENV has,
+# keeping its last assignment, as it is when .env is read.
+# Usage: ods_carry_named_env_keys PREVIOUS_ENV NEW_ENV KEY...
+ods_carry_named_env_keys() {
+    local previous_env="$1" new_env="$2" key line header_written=false
+    shift 2
+    [[ -f "$previous_env" && -f "$new_env" ]] || return 0
+    for key in "$@"; do
+        grep -q "^${key}=" "$new_env" && continue
+        line="$(awk -v key="$key" 'index($0, key "=") == 1 { last = $0 } END { if (last != "") print last }' "$previous_env")"
+        [[ -n "$line" ]] || continue
+        if [[ "$header_written" != true ]]; then
+            printf '\n#=== Owner settings (kept from the previous .env) ===\n' >> "$new_env"
+            header_written=true
+        fi
+        printf '%s\n' "$line" >> "$new_env"
+    done
+}

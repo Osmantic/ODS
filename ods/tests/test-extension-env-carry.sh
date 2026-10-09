@@ -196,5 +196,46 @@ else
     fail "phase 06 does not carry public URLs across its .env rewrite"
 fi
 
+# Settings ODS tells the owner to set in .env, which no installer writes.
+cat > "$tmp/owner-old.env" <<'ENV'
+N8N_API_KEY=n8n-api-first
+N8N_API_KEY=n8n-api-current
+HF_TOKEN='hf_owner token'
+LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc
+AUDIO_TTS_VOICE=af_bella
+HF_TOKEN_EXTRA=not-listed
+LLAMA_ARG_N_CPU_MOE=99
+ENV
+printf 'WEBUI_SECRET=current\nAUDIO_TTS_VOICE=from-template\n' > "$tmp/owner-new.env"
+ods_carry_named_env_keys "$tmp/owner-old.env" "$tmp/owner-new.env" "${ODS_OWNER_ENV_KEYS[@]}"
+for line in N8N_API_KEY=n8n-api-current "HF_TOKEN='hf_owner token'" LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc; do
+    if [[ "$(grep -cxF "$line" "$tmp/owner-new.env")" == 1 ]]; then
+        pass "owner setting carried: ${line%%=*}"
+    else
+        fail "owner setting not carried exactly once: ${line%%=*}"
+    fi
+done
+[[ "$(grep -c '^N8N_API_KEY=' "$tmp/owner-new.env")" == 1 ]] \
+    && pass "the last assignment of an owner setting wins" || fail "an owner setting was carried twice"
+grep -qx 'AUDIO_TTS_VOICE=from-template' "$tmp/owner-new.env" && [[ "$(grep -c '^AUDIO_TTS_VOICE=' "$tmp/owner-new.env")" == 1 ]] \
+    && pass "an owner setting the template wrote is not overridden" || fail "template owner setting was overridden or duplicated"
+grep -Eq '^(HF_TOKEN_EXTRA|LLAMA_ARG_N_CPU_MOE)=' "$tmp/owner-new.env" \
+    && fail "unlisted or installer-managed keys were carried" || pass "only the listed owner settings are carried"
+# A listed key the installer starts writing would let an old value override
+# the installer's choice; it must then leave the list.
+managed=""
+for key in "${ODS_OWNER_ENV_KEYS[@]}"; do
+    grep -qw "$key" "$ROOT_DIR/installers/phases/06-directories.sh" "$ROOT_DIR/installers/lib/tier-map.sh" \
+        "$ROOT_DIR/install-core.sh" && managed="$managed $key"
+done
+[[ -z "$managed" ]] && pass "no listed owner setting is installer-managed" \
+    || fail "listed owner settings are written by the installer:$managed"
+owner="$(line_of 'ods_carry_named_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" "${ODS_OWNER_ENV_KEYS[@]}"')"
+if [[ -n "$owner" && -n "$rewrite" && "$rewrite" -lt "$owner" ]]; then
+    pass "phase 06 carries owner settings after its rewrite"
+else
+    fail "phase 06 does not carry owner settings across its .env rewrite"
+fi
+
 [[ $FAILED -eq 0 ]] || { echo "$FAILED check(s) failed" >&2; exit 1; }
 echo "All extension .env carry-over checks passed"
