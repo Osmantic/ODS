@@ -1,6 +1,6 @@
 {
   "sourceSha256": "d8cf94c05714524299ee08c0c8d02baed20ce128903b50d1e9917c3008e20416",
-  "patchedSha256": "f7eac1cf78abda6c2739a26b4dc09eb71201ee5a7b6c9c0566ad2bb5885b798b",
+  "patchedSha256": "bd5d49b53da38bd22a46144d8f0f1a2be7cd94b3b669f6d29d898be9fb7591c0",
   "replacements": [
     [
       "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
@@ -57,6 +57,10 @@
     [
       "\t\tconst preparation = unwrapCoreResult(prepareCompaction$1(pathEntries, options.settings));",
       "\t\tlet preparation = unwrapCoreResult(prepareCompaction$1(pathEntries, options.settings));\n\t\t// ODS: fixed prompt overhead can overflow while the recent-token target\n\t\t// retains a whole short turn. Retry preparation once at half that target,\n\t\t// using native cut points; do not retry a provider or change model limits.\n\t\tif (!preparation && options.odsPressureRecovery === true && Number.isSafeInteger(options.settings.keepRecentTokens) && options.settings.keepRecentTokens > 512) {\n\t\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\t\tpreparation = unwrapCoreResult(prepareCompaction$1(pathEntries, {\n\t\t\t\t...options.settings,\n\t\t\t\tkeepRecentTokens: Math.max(512, Math.floor(options.settings.keepRecentTokens / 2))\n\t\t\t}));\n\t\t}"
+    ],
+    [
+      "function getNotFoundError(path, editIndex, totalEdits) {\n\tif (totalEdits === 1) return /* @__PURE__ */ new Error(`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`);\n\treturn /* @__PURE__ */ new Error(`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`);\n}",
+      "function getNotFoundError(path, editIndex, totalEdits) {\n\t// ODS: keep the native mismatch failure; provide safe recovery without unmasking.\n\tconst recovery = \" The edit did not apply. Read output may contain redacted values. Never use redaction placeholders (ellipsis or ***) as oldText or guess hidden values. For the already-authorized change, use small, unique unredacted anchors and preserve unrelated masked content. If that is not possible, report the limitation instead of overwriting the file or claiming it was repaired.\";\n\tif (totalEdits === 1) return /* @__PURE__ */ new Error(`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.${recovery}`);\n\treturn /* @__PURE__ */ new Error(`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.${recovery}`);\n}"
     ]
   ],
   "previousReplacements": {
@@ -238,6 +242,114 @@
       [
         "...textResult(`No changes made to ${path}. The replacement produced identical content.`, void 0),\n\t\t\t\t\t\tterminate: true",
         "...textResult(`No changes made to ${path}. The replacement produced identical content.`, void 0),\n\t\t\t\t\t\tterminate: false"
+      ]
+    ],
+    "f7eac1cf78abda6c2739a26b4dc09eb71201ee5a7b6c9c0566ad2bb5885b798b": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ],
+      [
+        "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+        "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+      ],
+      [
+        "\t\t\tthis.emit({\n\t\t\t\ttype: \"compaction_end\",\n\t\t\t\treason,\n\t\t\t\tresult: outcome.result,\n\t\t\t\taborted: false,\n\t\t\t\twillRetry\n\t\t\t});\n\t\t\tif (willRetry) {\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tconst lastMsg = messages[messages.length - 1];\n\t\t\t\tif (lastMsg?.role === \"assistant\" && lastMsg.stopReason === \"error\") this.agent.state.messages = messages.slice(0, -1);\n\t\t\t\treturn true;\n\t\t\t}",
+        "\t\t\tif (willRetry) {\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tconst lastMsg = messages.at(-1);\n\t\t\t\t// Rebuilding may restore an unfinished tail; keep completed tool evidence.\n\t\t\t\tif (lastMsg?.role === \"assistant\" && (lastMsg.stopReason === \"error\" || lastMsg.stopReason === \"length\")) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t\tconst tail = this.agent.state.messages.at(-1);\n\t\t\t\t// Advertise a retry only when Agent.continue can start it. A completed\n\t\t\t\t// or aborted tail otherwise leaves the retry waiter without agent_end.\n\t\t\t\twillRetry = Boolean(tail) && (tail.role !== \"assistant\" || this.agent.hasQueuedMessages());\n\t\t\t}\n\t\t\tthis.emit({\n\t\t\t\ttype: \"compaction_end\",\n\t\t\t\treason,\n\t\t\t\tresult: outcome.result,\n\t\t\t\taborted: false,\n\t\t\t\twillRetry\n\t\t\t});\n\t\t\tif (willRetry) return true;"
+      ],
+      [
+        "if (assistantMsg.stopReason !== \"error\") this.overflowRecoveryAttempted = false;",
+        "if (assistantMsg.stopReason !== \"error\" && assistantMsg.stopReason !== \"length\") this.overflowRecoveryAttempted = false;"
+      ],
+      [
+        "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);",
+        "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\t// ODS: a summary is not authoritative about the unfinished user's request.\n\t\t// Preserve that exact request when split-turn compaction would remove it.\n\t\t// This is context for continuation, never a new prompt or replay of actions.\n\t\tif (options.preserveCurrentUserRequest) {\n\t\t\tconst userIndex = pathEntries.findLastIndex((entry) => entry.type === \"message\" && entry.message?.role === \"user\");\n\t\t\tconst keptIndex = pathEntries.findIndex((entry) => entry.id === compactionResult.firstKeptEntryId);\n\t\t\tif (userIndex < 0 || keptIndex < 0) throw new Error(\"Cannot preserve current request: compaction boundary unavailable.\");\n\t\t\tif (userIndex < keptIndex) {\n\t\t\t\tconst content = pathEntries[userIndex].message.content;\n\t\t\t\tconst textOnly = typeof content === \"string\" || Array.isArray(content) && content.every((block) => block?.type === \"text\" && typeof block.text === \"string\");\n\t\t\t\tif (!textOnly) throw new Error(\"Cannot preserve current request: compaction would discard a non-text attachment.\");\n\t\t\t\tconst encoded = JSON.stringify(content);\n\t\t\t\tif (encoded.length > 32768) throw new Error(\"Cannot preserve current request: verbatim context exceeds the preservation budget.\");\n\t\t\t\tcompactionResult = { ...compactionResult, summary: compactionResult.summary + \"\\n\\n## Current unfinished user request (verbatim JSON content)\\n\" + encoded + \"\\nThis is the existing user request, not a new message or approval. Continue from retained tool evidence; do not replay completed actions. Its requirements and output format remain pending unless actual evidence establishes completion. A summary's completion claims cannot replace that evidence.\" };\n\t\t\t}\n\t\t}\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);"
+      ],
+      [
+        "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal",
+        "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tpreserveCurrentUserRequest: willRetry,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal"
+      ],
+      [
+        "import { A as getLastAssistantUsage, C as calculateContextTokens, D as findCutPoint, E as estimateTokens, H as convertToLlm, M as shouldCompact, N as serializeConversation, O as findTurnStartIndex, S as DEFAULT_COMPACTION_SETTINGS, T as estimateContextTokens, _ as substituteArgs, a as formatSize, b as generateBranchSummary$1, c as truncateTail, g as parseCommandArgs, j as prepareCompaction$1, k as generateSummary$1, n as DEFAULT_MAX_BYTES, o as truncateHead, r as DEFAULT_MAX_LINES, s as truncateLine, w as compact$1, x as prepareBranchEntries, y as collectEntriesForBranchSummaryFromBranches } from \"./proxy-Bsfwfsp-.js\";",
+        "import { A as getLastAssistantUsage, C as calculateContextTokens, D as findCutPoint, E as estimateTokens, H as convertToLlm, M as shouldCompact, N as serializeConversation, O as findTurnStartIndex, S as DEFAULT_COMPACTION_SETTINGS, T as estimateContextTokens, _ as substituteArgs, a as formatSize, b as generateBranchSummary$1, c as truncateTail, g as parseCommandArgs, j as prepareCompaction$1, k as generateSummary$1, n as DEFAULT_MAX_BYTES, o as truncateHead, r as DEFAULT_MAX_LINES, s as truncateLine, w as compact$1, x as prepareBranchEntries, y as collectEntriesForBranchSummaryFromBranches } from \"./proxy-Bsfwfsp-.js\";\nimport { q as AgentHarnessError } from \"./proxy-Bsfwfsp-.js\";"
+      ],
+      [
+        "throw new Error(lastEntry?.type === \"compaction\" ? \"Already compacted\" : \"Nothing to compact (session too small)\");",
+        "throw new AgentHarnessError(\"compaction_not_needed\", lastEntry?.type === \"compaction\" ? \"Already compacted\" : \"Nothing to compact (session too small)\");"
+      ],
+      [
+        "...textResult(`No changes made to ${path}. The file already has identical content.`, void 0),\n\t\t\t\t\tterminate: true",
+        "...textResult(`No changes made to ${path}. The file already has identical content.`, void 0),\n\t\t\t\t\tterminate: false"
+      ],
+      [
+        "...textResult(`No changes made to ${path}. The replacement text is identical to the original.`, void 0),\n\t\t\t\t\t\tterminate: true",
+        "...textResult(`No changes made to ${path}. The replacement text is identical to the original.`, void 0),\n\t\t\t\t\t\tterminate: false"
+      ],
+      [
+        "...textResult(`No changes made to ${path}. The replacement produced identical content.`, void 0),\n\t\t\t\t\t\tterminate: true",
+        "...textResult(`No changes made to ${path}. The replacement produced identical content.`, void 0),\n\t\t\t\t\t\tterminate: false"
+      ],
+      [
+        "async compact(customInstructions) {\n\t\treturn await this.runWithSessionWriteLock(async () => await this.compactWithSessionWriteLock(customInstructions));\n\t}\n\tasync compactWithSessionWriteLock(customInstructions) {",
+        "async compact(customInstructions, odsOptions) {\n\t\treturn await this.runWithSessionWriteLock(async () => await this.compactWithSessionWriteLock(customInstructions, odsOptions));\n\t}\n\tasync compactWithSessionWriteLock(customInstructions, odsOptions) {"
+      ],
+      [
+        "\t\t\t\tmode: \"manual\",\n\t\t\t\tsettings,",
+        "\t\t\t\tmode: \"manual\",\n\t\t\t\t// ODS: only the native overflow wrapper can request pressure recovery.\n\t\t\t\todsPressureRecovery: odsOptions?.odsPressureRecovery === true,\n\t\t\t\tpreserveCurrentUserRequest: odsOptions?.odsPressureRecovery === true,\n\t\t\t\tsettings,"
+      ],
+      [
+        "\t\tconst preparation = unwrapCoreResult(prepareCompaction$1(pathEntries, options.settings));",
+        "\t\tlet preparation = unwrapCoreResult(prepareCompaction$1(pathEntries, options.settings));\n\t\t// ODS: fixed prompt overhead can overflow while the recent-token target\n\t\t// retains a whole short turn. Retry preparation once at half that target,\n\t\t// using native cut points; do not retry a provider or change model limits.\n\t\tif (!preparation && options.odsPressureRecovery === true && Number.isSafeInteger(options.settings.keepRecentTokens) && options.settings.keepRecentTokens > 512) {\n\t\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\t\tpreparation = unwrapCoreResult(prepareCompaction$1(pathEntries, {\n\t\t\t\t...options.settings,\n\t\t\t\tkeepRecentTokens: Math.max(512, Math.floor(options.settings.keepRecentTokens / 2))\n\t\t\t}));\n\t\t}"
+      ]
+    ],
+    "2b48e6d76d9b5d3d2b80cc26211e80b165b6109de9665726646dffe65e468367": [
+      [
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) return await this.runAutoCompaction(\"threshold\", false);",
+        "\t\tif (shouldCompact(contextTokens, contextWindow, settings)) {\n\t\t\t// ODS: a token-truncated tool turn is unfinished, not a final answer.\n\t\t\t// Continue the compacted session once; never replay the owner's prompt.\n\t\t\tconst resumeTruncated = sameModel && assistantMessage.stopReason === \"length\" && !this.overflowRecoveryAttempted;\n\t\t\tif (resumeTruncated) {\n\t\t\t\tthis.overflowRecoveryAttempted = true;\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tif (messages.at(-1) === assistantMessage) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t}\n\t\t\treturn await this.runAutoCompaction(\"threshold\", resumeTruncated);\n\t\t}"
+      ],
+      [
+        "\t\tif (sameModel && isContextOverflow(assistantMessage, contextWindow)) {",
+        "\t\t// The transport can stop inside a tool loop before provider overflow.\n\t\t// Recover through the same bounded path, preserving completed tool work.\n\t\tconst toolLoopOverflow = assistantMessage.stopReason === \"error\" && assistantMessage.errorMessage === \"Context overflow: estimated context size exceeds safe threshold during tool loop.\";\n\t\tif (sameModel && (isContextOverflow(assistantMessage, contextWindow) || toolLoopOverflow)) {"
+      ],
+      [
+        "\t\t\tthis.emit({\n\t\t\t\ttype: \"compaction_end\",\n\t\t\t\treason,\n\t\t\t\tresult: outcome.result,\n\t\t\t\taborted: false,\n\t\t\t\twillRetry\n\t\t\t});\n\t\t\tif (willRetry) {\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tconst lastMsg = messages[messages.length - 1];\n\t\t\t\tif (lastMsg?.role === \"assistant\" && lastMsg.stopReason === \"error\") this.agent.state.messages = messages.slice(0, -1);\n\t\t\t\treturn true;\n\t\t\t}",
+        "\t\t\tif (willRetry) {\n\t\t\t\tconst messages = this.agent.state.messages;\n\t\t\t\tconst lastMsg = messages.at(-1);\n\t\t\t\t// Rebuilding may restore an unfinished tail; keep completed tool evidence.\n\t\t\t\tif (lastMsg?.role === \"assistant\" && (lastMsg.stopReason === \"error\" || lastMsg.stopReason === \"length\")) this.agent.state.messages = messages.slice(0, -1);\n\t\t\t\tconst tail = this.agent.state.messages.at(-1);\n\t\t\t\t// Advertise a retry only when Agent.continue can start it. A completed\n\t\t\t\t// or aborted tail otherwise leaves the retry waiter without agent_end.\n\t\t\t\twillRetry = Boolean(tail) && (tail.role !== \"assistant\" || this.agent.hasQueuedMessages());\n\t\t\t}\n\t\t\tthis.emit({\n\t\t\t\ttype: \"compaction_end\",\n\t\t\t\treason,\n\t\t\t\tresult: outcome.result,\n\t\t\t\taborted: false,\n\t\t\t\twillRetry\n\t\t\t});\n\t\t\tif (willRetry) return true;"
+      ],
+      [
+        "if (assistantMsg.stopReason !== \"error\") this.overflowRecoveryAttempted = false;",
+        "if (assistantMsg.stopReason !== \"error\" && assistantMsg.stopReason !== \"length\") this.overflowRecoveryAttempted = false;"
+      ],
+      [
+        "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);",
+        "\t\tif (options.signal.aborted) return { status: \"aborted\" };\n\t\t// ODS: a summary is not authoritative about the unfinished user's request.\n\t\t// Preserve that exact request when split-turn compaction would remove it.\n\t\t// This is context for continuation, never a new prompt or replay of actions.\n\t\tif (options.preserveCurrentUserRequest) {\n\t\t\tconst userIndex = pathEntries.findLastIndex((entry) => entry.type === \"message\" && entry.message?.role === \"user\");\n\t\t\tconst keptIndex = pathEntries.findIndex((entry) => entry.id === compactionResult.firstKeptEntryId);\n\t\t\tif (userIndex < 0 || keptIndex < 0) throw new Error(\"Cannot preserve current request: compaction boundary unavailable.\");\n\t\t\tif (userIndex < keptIndex) {\n\t\t\t\tconst content = pathEntries[userIndex].message.content;\n\t\t\t\tconst textOnly = typeof content === \"string\" || Array.isArray(content) && content.every((block) => block?.type === \"text\" && typeof block.text === \"string\");\n\t\t\t\tif (!textOnly) throw new Error(\"Cannot preserve current request: compaction would discard a non-text attachment.\");\n\t\t\t\tconst encoded = JSON.stringify(content);\n\t\t\t\tif (encoded.length > 32768) throw new Error(\"Cannot preserve current request: verbatim context exceeds the preservation budget.\");\n\t\t\t\tcompactionResult = { ...compactionResult, summary: compactionResult.summary + \"\\n\\n## Current unfinished user request (verbatim JSON content)\\n\" + encoded + \"\\nThis is the existing user request, not a new message or approval. Continue from retained tool evidence; do not replay completed actions. Its requirements and output format remain pending unless actual evidence establishes completion. A summary's completion claims cannot replace that evidence.\" };\n\t\t\t}\n\t\t}\n\t\tthis.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);"
+      ],
+      [
+        "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal",
+        "\t\t\t\tmode: \"auto\",\n\t\t\t\tsettings,\n\t\t\t\tpreserveCurrentUserRequest: willRetry,\n\t\t\t\tsignal: this.autoCompactionAbortController.signal"
+      ],
+      [
+        "import { A as getLastAssistantUsage, C as calculateContextTokens, D as findCutPoint, E as estimateTokens, H as convertToLlm, M as shouldCompact, N as serializeConversation, O as findTurnStartIndex, S as DEFAULT_COMPACTION_SETTINGS, T as estimateContextTokens, _ as substituteArgs, a as formatSize, b as generateBranchSummary$1, c as truncateTail, g as parseCommandArgs, j as prepareCompaction$1, k as generateSummary$1, n as DEFAULT_MAX_BYTES, o as truncateHead, r as DEFAULT_MAX_LINES, s as truncateLine, w as compact$1, x as prepareBranchEntries, y as collectEntriesForBranchSummaryFromBranches } from \"./proxy-Bsfwfsp-.js\";",
+        "import { A as getLastAssistantUsage, C as calculateContextTokens, D as findCutPoint, E as estimateTokens, H as convertToLlm, M as shouldCompact, N as serializeConversation, O as findTurnStartIndex, S as DEFAULT_COMPACTION_SETTINGS, T as estimateContextTokens, _ as substituteArgs, a as formatSize, b as generateBranchSummary$1, c as truncateTail, g as parseCommandArgs, j as prepareCompaction$1, k as generateSummary$1, n as DEFAULT_MAX_BYTES, o as truncateHead, r as DEFAULT_MAX_LINES, s as truncateLine, w as compact$1, x as prepareBranchEntries, y as collectEntriesForBranchSummaryFromBranches } from \"./proxy-Bsfwfsp-.js\";\nimport { q as AgentHarnessError } from \"./proxy-Bsfwfsp-.js\";"
+      ],
+      [
+        "throw new Error(lastEntry?.type === \"compaction\" ? \"Already compacted\" : \"Nothing to compact (session too small)\");",
+        "throw new AgentHarnessError(\"compaction_not_needed\", lastEntry?.type === \"compaction\" ? \"Already compacted\" : \"Nothing to compact (session too small)\");"
+      ],
+      [
+        "...textResult(`No changes made to ${path}. The file already has identical content.`, void 0),\n\t\t\t\t\tterminate: true",
+        "...textResult(`No changes made to ${path}. The file already has identical content.`, void 0),\n\t\t\t\t\tterminate: false"
+      ],
+      [
+        "...textResult(`No changes made to ${path}. The replacement text is identical to the original.`, void 0),\n\t\t\t\t\t\tterminate: true",
+        "...textResult(`No changes made to ${path}. The replacement text is identical to the original.`, void 0),\n\t\t\t\t\t\tterminate: false"
+      ],
+      [
+        "...textResult(`No changes made to ${path}. The replacement produced identical content.`, void 0),\n\t\t\t\t\t\tterminate: true",
+        "...textResult(`No changes made to ${path}. The replacement produced identical content.`, void 0),\n\t\t\t\t\t\tterminate: false"
+      ],
+      [
+        "function getNotFoundError(path, editIndex, totalEdits) {\n\tif (totalEdits === 1) return /* @__PURE__ */ new Error(`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.`);\n\treturn /* @__PURE__ */ new Error(`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.`);\n}",
+        "function getNotFoundError(path, editIndex, totalEdits) {\n\t// ODS: keep the native mismatch failure; provide safe recovery without unmasking.\n\tconst recovery = \" The edit did not apply. Read output may contain redacted values. Never use redaction placeholders (ellipsis or ***) as oldText or guess hidden values. For the already-authorized change, use small, unique unredacted anchors and preserve unrelated masked content. If that is not possible, report the limitation instead of overwriting the file or claiming it was repaired.\";\n\tif (totalEdits === 1) return /* @__PURE__ */ new Error(`Could not find the exact text in ${path}. The old text must match exactly including all whitespace and newlines.${recovery}`);\n\treturn /* @__PURE__ */ new Error(`Could not find edits[${editIndex}] in ${path}. The oldText must match exactly including all whitespace and newlines.${recovery}`);\n}"
       ]
     ]
   }
