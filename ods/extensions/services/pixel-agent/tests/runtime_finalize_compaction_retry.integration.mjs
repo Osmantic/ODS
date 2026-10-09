@@ -32,10 +32,11 @@ for(const [name,module] of [
     assert.equal(source.split(after).length,2);source=source.replace(after,before);
   }
   assert.equal(sha(source),recipe.sourceSha256,'reject unknown native bytes');
-  const baseline=process.env.ODS_FINALIZE_RETRY_BASELINE==='1'&&name==='yield-usage';
-  const replacements=baseline?recipe.previousReplacements['d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8']:recipe.replacements;
+  const baseline=name==='yield-usage'?(process.env.ODS_FINALIZE_RETRY_BASELINE==='1'?'d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8'
+    :process.env.ODS_FINALIZE_RETRY_BASELINE==='initial-only'?'71eefa582f753745f85f6f853900bb661a96ff8a31db107ed8b890c07c2b4fdc':null):null;
+  const replacements=baseline?recipe.previousReplacements[baseline]:recipe.replacements;
   for(const [before,after] of replacements){assert.equal(source.split(before).length,2);source=source.replace(before,after);}
-  assert.equal(sha(source),baseline?'d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8':recipe.patchedSha256);
+  assert.equal(sha(source),baseline??recipe.patchedSha256);
   sources.set(pathToFileURL(filename).href,source);
 }
 const loader=registerHooks({load(url,context,next){return sources.has(url)
@@ -65,10 +66,12 @@ fs.writeFileSync(path.join(plugin,'fixture.mjs'),`
       if(!state){state={assurance:createCompletionAssurance(),revised:false,pressure:false};runs.set(ctx.runId,state);state.assurance.begin(event.prompt,event);}
       record('prompt',ctx,{prompt:event.prompt});
       if(state.revised&&!state.pressure){state.pressure=true;return {appendSystemContext:'PUBLIC_OFFLINE_PRESSURE_TOKEN '.repeat(1000)};}
+      if(state.revised&&ctx.runId.endsWith('mid-turn')&&!state.read) return {appendSystemContext:'PUBLIC_OFFLINE_PRESSURE_TOKEN '.repeat(1000)};
     });
     api.on('after_tool_call',(event,ctx)=>{
       const name={web_search:'web_search',web_fetch:'web_fetch'}[event.toolName];
       if(name)runs.get(ctx.runId).assurance.observe(name,event);
+      if(name==='web_fetch')runs.get(ctx.runId).read=true;
       record('tool',ctx,{name:event.toolName});
     });
     api.on('before_agent_finalize',(event,ctx)=>{
@@ -80,13 +83,13 @@ fs.writeFileSync(path.join(plugin,'fixture.mjs'),`
     api.registerTool({name:'web_search',description:'Search the offline documentation index.',parameters:{type:'object',properties:{query:{type:'string'}},required:['query']},
       async execute(){const results=[{url:${JSON.stringify(DOC_URL)},title:'Official pathlib documentation'}];
         return {content:[{type:'text',text:JSON.stringify({results})}],details:{results}};}});
-    api.registerTool({name:'web_fetch',description:'Read the offline documentation page.',parameters:{type:'object',properties:{url:{type:'string'}},required:['url']},
-      async execute(id,args){return {content:[{type:'text',text:'Path.is_file() returns whether the path is a regular file.'}],
+    api.registerTool({name:'web_fetch',description:'Read the offline documentation page.',parameters:{type:'object',properties:{url:{type:'string'},fixtureLong:{type:'boolean'}},required:['url']},
+      async execute(id,args){return {content:[{type:'text',text:args.fixtureLong?'Documented regular-file behavior. '.repeat(5000):'Path.is_file() returns whether the path is a regular file.'}],
         details:{status:200,url:args.url,text:'Path.is_file() returns whether the path is a regular file.'}};}});
   }};
 `);
 
-for(const mode of ['revised','message-id','ignored','compaction-error','abort'])
+for(const mode of ['revised','message-id','ignored','compaction-error','abort','provider-overflow','tool-overflow','mid-turn'])
 test(`citation revision survives native precheck and compaction: ${mode}`,{timeout:60000},async t=>{
   const runId='finalize-'+mode,sessionId=randomUUID(),sessionFile=path.join(root,sessionId+'.jsonl');
   const now=Date.now(),rows=[{type:'session',version:3,id:sessionId,timestamp:new Date(now).toISOString(),cwd:workspace}];
@@ -97,7 +100,7 @@ test(`citation revision survives native precheck and compaction: ${mode}`,{timeo
       {role:'user',content:'Keep the existing project evidence. '.repeat(100),timestamp:now-1000+i}});
   fs.writeFileSync(sessionFile,rows.map(JSON.stringify).join('\n')+'\n');
   const controller=new AbortController(),requests=[];
-  let normalCalls=0,compactionCalls=0;
+  let normalCalls=0,compactionCalls=0,readIssued=false;
   const upstream=http.createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     const body=JSON.parse(Buffer.concat(chunks));requests.push(body);
@@ -106,13 +109,17 @@ test(`citation revision survives native precheck and compaction: ${mode}`,{timeo
       compactionCalls++;
       if(mode==='abort'){controller.abort(new Error('fixture owner Stop'));return;}
       if(mode==='compaction-error'){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'fixture compaction refused',type:'invalid_request_error'}}));return;}
-    }else normalCalls++;
+    }else{
+      normalCalls++;
+      if((mode==='provider-overflow'&&normalCalls===3)||(mode==='tool-overflow'&&normalCalls===4)){res.writeHead(400,{'Content-Type':'application/json'});
+        res.end(JSON.stringify({error:{message:'Context overflow: prompt too large for the model.',type:'invalid_request_error',code:'context_length_exceeded'}}));return;}
+    }
     const last=body.messages.at(-1);
     const hasRevision=JSON.stringify(body.messages).includes('Cited pages lack current-turn read receipts.');
     let delta={content:compact?'Retain the owner request and completed search evidence. No page read has happened.':ANSWER},finish='stop';
     const call=(name,args)=>{delta={tool_calls:[{index:0,id:'fixture-'+normalCalls,type:'function',function:{name,arguments:JSON.stringify(args)}}]};finish='tool_calls';};
     if(!compact&&normalCalls===1)call('web_search',{query:'Python pathlib official documentation'});
-    else if(!compact&&hasRevision&&mode!=='ignored'&&last?.role!=='tool')call('web_fetch',{url:DOC_URL});
+    else if(!compact&&hasRevision&&mode!=='ignored'&&last?.role!=='tool'&&!readIssued){readIssued=true;call('web_fetch',{url:DOC_URL,...mode==='mid-turn'?{fixtureLong:true}:{}});}
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',...delta},finish_reason:null}]})+'\n\n');
     res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:finish}],
@@ -121,7 +128,7 @@ test(`citation revision survives native precheck and compaction: ${mode}`,{timeo
   upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
   t.after(async()=>{upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));});
   const config={agents:{defaults:{workspace,skipBootstrap:true,model:'fixture/model',contextTokens:32768,
-    compaction:{reserveTokens:13108,reserveTokensFloor:0,keepRecentTokens:2048},heartbeat:{every:'0m'}},list:[{id:'pixel',default:true,workspace,agentDir}]},
+    compaction:{reserveTokens:13108,reserveTokensFloor:0,keepRecentTokens:2048,midTurnPrecheck:{enabled:mode==='mid-turn'}},heartbeat:{every:'0m'}},list:[{id:'pixel',default:true,workspace,agentDir}]},
     // Disable network-backed built-ins; only the two offline read-only tools
     // above can run. Native replay and revision safety remain in force.
     tools:{web:{search:{enabled:false},fetch:{enabled:false}},allow:['web_search','web_fetch']},plugins:{allow:['finalize-fixture'],load:{paths:[plugin]},entries:{'finalize-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}},
@@ -142,8 +149,9 @@ test(`citation revision survives native precheck and compaction: ${mode}`,{timeo
   if(process.env.ODS_FINALIZE_RETRY_RECEIPTS){fs.mkdirSync(process.env.ODS_FINALIZE_RETRY_RECEIPTS,{recursive:true});
     fs.writeFileSync(path.join(process.env.ODS_FINALIZE_RETRY_RECEIPTS,mode+'.json'),JSON.stringify(summary,null,2));}
   const trace=JSON.stringify(summary);
-  assert.ok(compactionCalls>=1&&compactionCalls<=2,'bounded native chunk/summary calls\n'+trace);
-  assert.equal(prechecks.length,1,'actual compiled attempt must fail before provider\n'+trace);
+  const secondOverflow=['provider-overflow','tool-overflow','mid-turn'].includes(mode);
+  assert.ok(compactionCalls>=1&&compactionCalls<=(secondOverflow?4:2),'bounded native chunk/summary calls\n'+trace);
+  assert.equal(prechecks.length,mode==='mid-turn'?2:1,'actual compiled attempt must fail before provider\n'+trace);
   const revision=events.find(e=>e.type==='finalize'&&e.decision?.action==='revise')?.decision;
   assert.ok(revision?.retry?.instruction.includes(DOC_URL),'production citation guard names the unread URL');
   assert.equal(events.filter(e=>e.type==='tool'&&e.name==='web_search').length,1,'no repeated search');
@@ -154,12 +162,32 @@ test(`citation revision survives native precheck and compaction: ${mode}`,{timeo
     if(mode==='abort')assert.equal(controller.signal.aborted,true);
     return;
   }
-  assert.equal(stored.filter(e=>e.type==='compaction').length,1,'actual compacted checkpoint');
-  assert.equal(compiled.length,3,trace);
+  assert.equal(stored.filter(e=>e.type==='compaction').length,secondOverflow?2:1,'actual compacted checkpoint');
+  assert.equal(compiled.length,secondOverflow?4:3,trace);
   const before=compiled[1].data.prompt,after=compiled[2].data.prompt;
   assert.equal(after,before,'the exact compiled revision must survive recovery without replaying the original prompt');
   assert.equal(after.split(revision.retry.instruction).length-1,1,'actionable revision occurs exactly once');
-  assert.equal(submitted.length,2,'precheck never submits its blocked attempt');
+  if(mode==='provider-overflow')assert.equal(compiled[3].data.prompt,before,'provider rejection before work preserves exact revision once again');
+  if(mode==='provider-overflow'||mode==='tool-overflow'||mode==='mid-turn'){
+    const indices=events.map((event,index)=>event.type==='prompt'?index:-1).filter(index=>index>=0);
+    const workBeforeRejection=events.slice(indices[2]+1,indices[3]).filter(event=>event.type==='tool').map(event=>event.name);
+    assert.deepEqual(workBeforeRejection,mode==='provider-overflow'?[]:['web_fetch'],'actual failed provider attempt tool evidence');
+    if(mode!=='mid-turn')assert.ok(trajectory.some(event=>event.type==='model.completed'&&JSON.stringify(event).includes('400 Context overflow')),'native classified an actual provider400');
+  }
+  if(mode==='tool-overflow'||mode==='mid-turn'){
+    assert.match(compiled[3].data.prompt,/Continue from the current transcript after the latest tool result\./);
+    assert.equal(compiled[3].data.prompt.includes(revision.retry.instruction),false,'completed read must not replay the revision');
+    assert.equal(compiled[3].data.prompt.includes(OWNER),false,'completed work must not replay the owner request');
+  }
+  // Native trajectory normalizes both precheck error strings. Distinguish the
+  // real paths by order: initial failure precedes submission; the second
+  // follows submission and the completed page tool, without a provider400.
+  if(mode==='mid-turn'){
+    assert.ok(trajectory.indexOf(prechecks[0])<trajectory.indexOf(submitted[1]));
+    assert.ok(trajectory.indexOf(prechecks[1])>trajectory.indexOf(submitted[1]));
+    assert.equal(normalCalls,4,'mid-turn precheck prevents a provider request until recovery');
+  }
+  assert.equal(submitted.length,secondOverflow?3:2,'precheck never submits its blocked attempt');
   assert.ok(JSON.stringify(compiled[2].data.messages).includes(OWNER),'original owner remains bound through compaction');
   const ownerMessages=stored.filter(e=>e.type==='message'&&e.message?.role==='user').map(e=>typeof e.message.content==='string'
     ?e.message.content:e.message.content.filter(c=>c.type==='text').map(c=>c.text).join(''));
