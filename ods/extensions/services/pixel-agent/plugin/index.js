@@ -609,9 +609,10 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
-        const [delegated,parentAborted]=await Promise.all([delegatedPending,parentPending]);
-        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
+        const [delegated,parentAborted,compactionAborted]=await Promise.all([delegatedPending,parentPending,compactionPending]);
+        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted || compactionAborted });
         return true;
       },
     });

@@ -271,7 +271,7 @@ test('a model change between input and output cannot relabel usage',t=>{
 });
 
 test('native RPC explicit busy refusal releases admission without falsely reporting compaction',async t=>{
-  const f=fixture(t);await f.runtime.compact(user,'rpc-race');await tick();
+  const f=fixture(t,{busyRetryLimit:1});await f.runtime.compact(user,'rpc-race');await tick();
   f.result.reject(Object.assign(new Error('Session is active; retry compaction after the current run finishes.'),{name:'GatewayClientRequestError',gatewayCode:'UNAVAILABLE'}));await tick();
   assert.equal(f.runtime.context(user).compaction.status,'failed');assert.equal(f.runtime.context(user).compaction.reason,'runtime-busy');assert.equal(f.phase,'idle');
 });
@@ -383,4 +383,118 @@ test('startup recovery releases only exact historical maintenance custody, never
   const owned=createContextCompaction({...f.args,instanceId:'new-gateway'});
   assert.equal(f.phase,'idle');assert.equal(owned.context(other).status,'ready');assert.equal(f.releases.length,1);
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.directory,`${user}.json`))).maintenance,undefined);
+});
+
+const busyRefusal = () => Object.assign(new Error('Session is active; retry compaction after the current run finishes.'),
+  {name:'GatewayClientRequestError',gatewayCode:'UNAVAILABLE'});
+async function settled(runtime) {
+  for (let attempt=0;attempt<100;attempt++) {
+    const value=runtime.context(user);
+    if(value.compaction.status!=='running')return value;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  assert.fail('compaction did not settle');
+}
+
+test('post-Stop tracked activity drains under the same lease before one actual compaction',async t=>{
+  const f=fixture(t,{busyRetryDelayMs:10});let calls=0,actions=0,closes=0;
+  f.args.prepareModel=async()=>({close:async()=>{closes++;}});
+  f.args.callGateway=async()=>{
+    calls++;assert.equal(f.phase,'held');
+    if(calls===1)throw busyRefusal();
+    actions++;return {key:sessionKey,ok:true,compacted:true,result:{tokensAfter:1200}};
+  };
+  const runtime=createContextCompaction(f.args);
+  await runtime.compact(user,'post-stop');await tick();
+  assert.equal(runtime.context(user).compaction.status,'running');
+  assert.equal((await runtime.compact(user,'post-stop')).compaction.status,'running');
+  assert.equal((await runtime.compact(other,'other')).status,'busy');
+  assert.equal(f.phase,'held');assert.equal(f.releases.length,0);
+  const result=await settled(runtime);
+  assert.equal(result.compaction.status,'completed');assert.equal(calls,2);assert.equal(actions,1);
+  assert.equal(closes,1);assert.equal(f.releases.length,1);assert.equal(f.phase,'idle');
+  assert.equal((await runtime.compact(user,'post-stop')).compaction.status,'completed');assert.equal(calls,2);
+});
+
+test('persistent exact native busy refusal stays failed and bounded without transcript work',async t=>{
+  const f=fixture(t,{busyRetryDelayMs:1,busyRetryLimit:3});let calls=0;
+  f.args.callGateway=async()=>{calls++;throw busyRefusal();};
+  const runtime=createContextCompaction(f.args);await runtime.compact(user,'busy-limit');
+  const result=await settled(runtime);
+  assert.equal(result.compaction.status,'failed');assert.equal(result.compaction.reason,'runtime-busy');
+  assert.equal(calls,3);assert.equal(f.phase,'idle');
+  await runtime.compact(user,'busy-limit');assert.equal(calls,3,'a terminal operation is not restarted');
+});
+
+test('busy retry obeys the original deadline even when retry capacity remains',async t=>{
+  const f=fixture(t,{timeoutMs:15,busyRetryDelayMs:250});let calls=0;
+  f.args.callGateway=async()=>{calls++;await new Promise(resolve=>setTimeout(resolve,25));throw busyRefusal();};
+  const runtime=createContextCompaction(f.args);await runtime.compact(user,'busy-deadline');
+  await new Promise(resolve=>setTimeout(resolve,40));
+  const result=await settled(runtime);
+  assert.equal(result.compaction.status,'failed');assert.equal(result.compaction.reason,'runtime-busy');
+  assert.equal(calls,1);assert.equal(f.phase,'idle');
+});
+
+for(const change of ['rotated-session','active-session','lost-lease']) {
+  test(`busy retry refuses changed custody: ${change}`,async t=>{
+    const f=fixture(t,{busyRetryDelayMs:5});let calls=0;
+    f.args.callGateway=async()=>{
+      calls++;
+      if(change==='rotated-session')f.entry={...f.entry,sessionId:'replacement'};
+      if(change==='active-session')f.active=true;
+      if(change==='lost-lease')f.admission.owns=()=>false;
+      throw busyRefusal();
+    };
+    const runtime=createContextCompaction(f.args);await runtime.compact(user,'custody-change');
+    const result=await settled(runtime);
+    assert.equal(result.compaction.status,'failed');assert.equal(calls,1);
+    assert.equal(result.compaction.reason,'coordination-failed');
+    if(change==='lost-lease')assert.equal(f.releases.length,0,'never release a superseding lease');
+  });
+}
+
+for(const wrong of ['error-name','error-code','error-message','transport']) {
+  test(`a busy-looking but unconfirmed failure is never retried: ${wrong}`,async t=>{
+    const f=fixture(t,{busyRetryDelayMs:1});let calls=0;
+    f.args.callGateway=async()=>{
+      calls++;const error=busyRefusal();
+      if(wrong==='error-name')error.name='Error';
+      if(wrong==='error-code')error.gatewayCode='INTERNAL';
+      if(wrong==='error-message')error.message+=' later';
+      if(wrong==='transport')throw new Error('transport disconnected');
+      throw error;
+    };
+    const runtime=createContextCompaction(f.args);await runtime.compact(user,'uncertain');
+    const result=await settled(runtime);
+    assert.equal(result.compaction.status,'unknown');assert.equal(calls,1);assert.equal(f.phase,'held');
+    await runtime.compact(user,'uncertain');assert.equal(calls,1);
+    assert.equal(await runtime.cancelPending(user),false,'unknown custody cannot be released by Stop');
+  });
+}
+
+test('Stop during the proven pre-dispatch retry wait prevents any later dispatch',async t=>{
+  const f=fixture(t,{busyRetryDelayMs:30});let calls=0;
+  f.args.callGateway=async()=>{calls++;throw busyRefusal();};
+  const runtime=createContextCompaction(f.args);await runtime.compact(user,'stop-wait');await tick();
+  assert.equal(await runtime.cancelPending(other),false,'another owner cannot cancel the wait');
+  assert.equal(await runtime.cancelPending(user),true);
+  assert.equal(calls,1);assert.equal(runtime.context(user).compaction.status,'failed');assert.equal(f.phase,'idle');
+  await runtime.compact(user,'stop-wait');assert.equal(calls,1);
+});
+
+test('Stop while an RPC is pending cannot claim cancellation but prevents retry after known refusal',async t=>{
+  const f=fixture(t,{busyRetryDelayMs:1});await f.runtime.compact(user,'stop-rpc');await tick();
+  assert.equal(await f.runtime.cancelPending(user),false);
+  assert.equal(f.phase,'held');assert.equal(f.calls.length,1);
+  f.result.reject(busyRefusal());const result=await settled(f.runtime);
+  assert.equal(result.compaction.status,'failed');assert.equal(f.calls.length,1);assert.equal(f.phase,'idle');
+});
+
+test('Stop cannot cancel or replay a compaction that actually executes',async t=>{
+  const f=fixture(t,{busyRetryDelayMs:1});await f.runtime.compact(user,'dispatched');await tick();
+  assert.equal(await f.runtime.cancelPending(user),false);
+  f.result.resolve({key:sessionKey,ok:true,compacted:true,result:{tokensAfter:1200}});
+  const result=await settled(f.runtime);
+  assert.equal(result.compaction.status,'completed');assert.equal(f.calls.length,1);assert.equal(f.phase,'idle');
 });
