@@ -180,11 +180,13 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 20
+    assert len(repairs) == 21
     assert {item["manifest"] for item in repairs}.issuperset({
         "openclaw-context-usage.json", "openclaw-yield-usage.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json", "openclaw-subagent-admission.json"})
     assert any(item['module'] == 'payloads-CC0zlj7W.js'
                and item['manifest'] == 'openclaw-command-attempt-warning.json' for item in repairs)
+    assert any(item['module'] == 'agent-Dme3RrGI.js'
+               and item['manifest'] == 'openclaw-subagent-session.json' for item in repairs)
     for receipt, (name, module) in zip(repairs, bundle.SHARED_REPAIRS):
         assert receipt['manifestSha256'] == hashlib.sha256((shared_repairs / name).read_bytes()).hexdigest()
         expected = stream['patchedSha256'] if module == bundle.SHARED_REPAIRS[-1][1] else receipt['patchedSha256']

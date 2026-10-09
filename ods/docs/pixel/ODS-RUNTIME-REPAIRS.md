@@ -336,6 +336,28 @@ The transformation includes a small portion of OpenClaw's MIT-licensed
 diagnostic events runtime, Copyright (c) 2026 OpenClaw Foundation; see the
 [upstream MIT notice](upstream/THIRD_PARTY_NOTICES.md).
 
+## Delegated completion across an automatic session reset
+
+OpenClaw 2026.6.33 applies its daily/idle session policy when a native child
+completion resumes its parent. A request crossing the default 04:00 reset
+boundary could therefore replace the parent session before ODS checks the
+child's admission proof, interrupting an otherwise valid delegated response.
+
+`openclaw-subagent-session.json` binds the repair to exact `agent-Dme3RrGI.js`
+bytes. Only backend handoffs with the native ODS owner, child and announcement
+run formats preserve the current session across automatic expiration. ODS still
+requires the original exact owner/session/spawn receipt before inference or
+tools. Explicit owner resets and new owner requests retain the native policy;
+a late completion cannot adopt the replacement owner session.
+
+Linux/WSL apply the reviewed recipe with `--subagent-session`; macOS composes
+the same recipe into its verified runtime bundle. The existing private backup,
+receipt and guarded `--restore` contract applies. The real-gateway fixture
+crosses 03:59:59 to 04:00:01 inside its disposable gateway process only, verifies
+both child results and the revised final response, and separately exercises
+native owner reset with a queued late announcement. It never changes the host
+clock or the installed package.
+
 ## Runtime patches from another ODS build
 
 A different ODS build, such as a newer candidate or a downgrade source, can

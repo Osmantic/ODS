@@ -5,7 +5,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {spawn} from 'node:child_process';
+import {spawn,execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {cpSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -17,19 +18,34 @@ import {setTimeout as delay} from 'node:timers/promises';
 const installed=process.env.OPENCLAW_PACKAGE_DIR;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-for(const interim of ['final','silent','waiting','extra-yield','cancel'])
+for(const interim of ['final','silent','waiting','extra-yield','cancel','daily-reset','reset'])
 test(`real gateway deferred delegation waits for two children and a verified revised terminal answer: interim=${interim}`,
   {skip:!installed || process.platform==='win32',timeout:120000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'ods-delegation-hooks-'));
   const pkg=join(root,'package'), workspace=join(root,'workspace'), plugin=join(root,'plugin');
   let child, ingress, log='', revision=false, requests=0, askedFinalYield=false;
   const heldChildren=[];
+  let firstChildResponse;
   const prior=[{role:'user',content:'WARMUP_FIXTURE'},{role:'assistant',content:'READY'}];
   const childTexts=['CHILD_VERIFIED_0: ORIGINAL_CART_EVIDENCE_914','CHILD_VERIFIED_1: ORIGINAL_ACCESSIBILITY_EVIDENCE_731'];
+  const clockFile=join(root,'fixture-clock.json'),clockLoader=join(root,'fixture-clock.mjs');
+  if(interim==='daily-reset'){
+    // Cross the real default 04:00 UTC reset boundary only after the parent
+    // has yielded. Timers remain real; only this disposable gateway's wall
+    // clock changes, by two seconds, when the first child finishes.
+    writeFileSync(clockFile,JSON.stringify({now:Date.parse('2026-10-09T03:59:59Z')}));
+    writeFileSync(clockLoader,`import {readFileSync} from 'node:fs';
+      const NativeDate=Date;
+      globalThis.Date=class extends NativeDate {
+        constructor(...args){super(...args.length?args:[Date.now()]);}
+        static now(){const c=JSON.parse(readFileSync(${JSON.stringify(clockFile)},'utf8'));
+          return c.now+(c.started===undefined?0:NativeDate.now()-c.started);}
+      };`);
+  }
   const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
-  for(const [name,module] of [['subagent-admission','subagent-announce-origin-XoBlouka.js'],['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
+  for(const [name,module] of [['subagent-admission','subagent-announce-origin-XoBlouka.js'],['subagent-session','agent-Dme3RrGI.js'],['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
     ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
     const target=join(pkg,'dist',module);let text=readFileSync(target,'utf8');
@@ -75,14 +91,16 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   // Force late native announcements to arrive while the next owner response
   // is streaming. Without this barrier fast Linux runs can miss the Mac race.
   const followupActiveFile=join(root,'followup-active');
-  if(interim==='cancel') {
+  const announcementEnteredFile=join(root,'announcement-entered');
+  if(['cancel','reset'].includes(interim)) {
     const announcePath=join(pkg,'dist','subagent-announce-origin-XoBlouka.js');
     const signature='async function deliverSubagentAnnouncement(params) {';
     const source=readFileSync(announcePath,'utf8');
     assert.equal(source.split(signature).length,2);
     const gate=`${signature}
       const fixtureFs=await import('node:fs');
-      for(let attempt=0;attempt<400&&!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)});attempt++)
+      ${interim==='reset'?`fixtureFs.writeFileSync(${JSON.stringify(announcementEnteredFile)},'entered');`:''}
+      for(let attempt=0;attempt<${interim==='reset'?2000:400}&&!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)});attempt++)
         await new Promise(resolve=>setTimeout(resolve,10));
       if(!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)}))throw new Error('owner followup did not start');
     `;
@@ -188,14 +206,15 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       res.end(JSON.stringify({error:{message:'offline fixture provider refusal',type:'invalid_request_error'}}));return;
     } else if(currentUser.includes('WARMUP_FIXTURE')&&!currentUser.includes('Delegate two')&&!userMessages.includes('RECOVER_AFTER_STOP')&&!userMessages.includes('CHILD_FIXTURE_TASK')) {
       trace.branch='warmup';delta={role:'assistant',content:'READY'};
-    } else if(userMessages.includes('RECOVER_AFTER_STOP')) {
+    } else if(userMessages.includes('RECOVER_AFTER_STOP')||userMessages.includes('RESET_FOLLOWUP_FIXTURE')) {
       trace.branch='recovery';delta={role:'assistant',content:'19'};
-      if(interim==='cancel')writeFileSync(followupActiveFile,'active');
+      if(['cancel','reset'].includes(interim))writeFileSync(followupActiveFile,'active');
     } else if(userMessages.includes('HELLO_FIXTURE')) {
       trace.branch='greeting';delta={role:'assistant',content:'HELLO_VERIFIED'};
     } else if(userMessages.includes('CHILD_FIXTURE_TASK')&&!userMessages.includes('Internal task completion event')) {
       trace.branch='child';
-      if(interim==='cancel'){
+      if(['cancel','reset'].includes(interim)){
+        if(userMessages.includes('CHILD_FIXTURE_TASK 0'))firstChildResponse=res;
         heldChildren.push(res);res.writeHead(200,{'Content-Type':'text/event-stream'});
         res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:'CHILD_REVIEW_IN_PROGRESS'},finish_reason:null}]})+'\n\n');return;
       }
@@ -209,7 +228,20 @@ test(`real gateway deferred delegation waits for two children and a verified rev
           if(firstEnded)break;await delay(50);
         }
         assert.ok(firstEnded,'first parent announcement must finish while the second child is pending');
-      } else await delay(300);
+      } else {
+        await delay(300);
+        if(interim==='daily-reset'){
+          let yielded=false;
+          for(let i=0;i<250;i++){
+            const events=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+            yielded=events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield')
+              && events.some(e=>e.hook==='end'&&e.runId?.startsWith('chatcmpl_'));
+            if(yielded)break;await delay(20);
+          }
+          assert.ok(yielded,'cross the reset boundary only after the owner has yielded');
+          writeFileSync(clockFile,JSON.stringify({now:Date.parse('2026-10-09T04:00:01Z'),started:Date.now()}));
+        }
+      }
       delta={role:'assistant',content:childTexts[userMessages.includes('CHILD_FIXTURE_TASK 1')?1:0]};
     } else if(userMessages.includes('Internal task completion event') || userMessages.includes('CONSOLIDATED_REVIEW') || revision) {
       trace.branch='parent-announcement';
@@ -243,7 +275,8 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   writeFileSync(join(root,'openclaw.json'),JSON.stringify(config));
   try {
     child=spawn(process.execPath,[join(pkg,'openclaw.mjs'),'gateway','run'],{cwd:root,detached:true,
-      env:{PATH:process.env.PATH,HOME:root,TMPDIR:root,OPENCLAW_STATE_DIR:join(root,'state'),OPENCLAW_CONFIG_PATH:join(root,'openclaw.json'),OPENCLAW_SKIP_CHANNELS:'1'},stdio:['ignore','pipe','pipe']});
+      env:{PATH:process.env.PATH,HOME:root,TMPDIR:root,OPENCLAW_STATE_DIR:join(root,'state'),OPENCLAW_CONFIG_PATH:join(root,'openclaw.json'),OPENCLAW_SKIP_CHANNELS:'1',
+        ...interim==='daily-reset'?{TZ:'UTC',NODE_OPTIONS:'--import='+pathToFileURL(clockLoader).href}:{}},stdio:['ignore','pipe','pipe']});
     child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x);
     let ready=false;
     for(let i=0;i<250;i++){try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);}
@@ -256,6 +289,52 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       assert.ok((await warmup.text()).includes('READY'));
     }
     const responsePromise=fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}],...interim==='cancel'?{request_id:'cancel-original',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}]}}:{}}),signal:AbortSignal.timeout(45000)});
+    if(interim==='reset'){
+      const initialBody=responsePromise.then(response=>response.text()).catch(error=>{assert.ok(['terminated','AbortError'].includes(error.message)||error.name==='AbortError');return '';});
+      const readEvents=()=>existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+      let events=[];
+      for(let i=0;i<250;i++){
+        events=readEvents();
+        if(heldChildren.length===2&&events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield'))break;
+        await delay(50);
+      }
+      assert.equal(heldChildren.length,2);
+      assert.ok(events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield'));
+      const original=events.find(e=>e.hook==='prompt'&&e.runId?.startsWith('chatcmpl_'));
+      const completedChild=events.find(e=>e.hook==='spawned'&&e.event.label==='fixture-review-0');
+      assert.ok(firstChildResponse&&completedChild);
+      firstChildResponse.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{content:childTexts[0]},finish_reason:'stop'}]})+'\n\ndata: [DONE]\n\n');
+      for(let i=0;i<250&&!existsSync(announcementEnteredFile);i++)await delay(40);
+      assert.ok(existsSync(announcementEnteredFile),'one real completed child announcement is queued before the owner reset');
+      // The real explicit owner reset, using only this fixture's URL/token/state.
+      const result=await promisify(execFile)(process.execPath,[join(pkg,'openclaw.mjs'),'gateway','call','sessions.reset',
+        '--url',`ws://127.0.0.1:${port}`,'--token','fixture-only-0123456789abcdef','--json',
+        '--params',JSON.stringify({key:original.sessionKey,reason:'reset'})],
+        {cwd:root,timeout:20000,env:{PATH:process.env.PATH,HOME:root,TMPDIR:root,
+          OPENCLAW_STATE_DIR:join(root,'state'),OPENCLAW_CONFIG_PATH:join(root,'openclaw.json'),OPENCLAW_SKIP_CHANNELS:'1'}});
+      const reset=JSON.parse(result.stdout);assert.equal(reset.ok,true);
+      assert.notEqual(reset.entry.sessionId,original.sessionId);
+      const followup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',
+        headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},
+        body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'RESET_FOLLOWUP_FIXTURE: answer only 17 + 2.'}]}),signal:AbortSignal.timeout(30000)});
+      const visible=await followup.text();assert.equal(followup.status,200,visible);
+      const chunks=visible.split('\n').filter(x=>x.startsWith('data: ')&&x!=='data: [DONE]').map(x=>JSON.parse(x.slice(6)));
+      assert.equal(chunks.flatMap(c=>c.choices??[]).map(c=>c.delta?.content??'').join(''),'19',visible);
+      for(let i=0;i<250;i++){
+        events=readEvents();
+        if(events.some(e=>e.hook==='admission'&&e.provenance?.sourceSessionKey===completedChild.event.childSessionKey&&e.decision?.outcome==='block'))break;
+        await delay(40);
+      }
+      assert.ok(events.some(e=>e.hook==='admission'&&e.provenance?.sourceSessionKey===completedChild.event.childSessionKey&&e.decision?.outcome==='block'),
+        'the real late completed child is denied after an explicit owner reset');
+      assert.ok(events.some(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&e.lastStopReason==='aborted'),
+        'the still-running sibling is aborted by the native owner reset');
+      assert.equal(providerTrace.filter(e=>e.announcement).length,0,'old children never reach the provider after an owner reset');
+      assert.equal(events.filter(e=>e.hook==='prompt'&&e.runId?.startsWith('chatcmpl_')).at(-1).sessionId,reset.entry.sessionId);
+      assert.ok(!(await initialBody).includes('CONSOLIDATED'));
+      if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.reset',JSON.stringify({events,providerTrace,reset},null,2));
+      return;
+    }
     if(interim==='cancel') {
       const initialBody=responsePromise.then(response=>response.text()).catch(error=>{assert.ok(['terminated','AbortError'].includes(error.message)||error.name==='AbortError');return '';});
       const readEvents=()=>existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
@@ -384,6 +463,15 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     const mirrors=transcript.filter(e=>e.message?.api==='cli').map(e=>e.message);
     assert.ok(mirrors.length>0);
     assert.ok(mirrors.every(message=>message.usage?.totalTokens===530),JSON.stringify(mirrors.map(message=>message.usage)));
+    if(interim==='daily-reset'){
+      const next=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',
+        headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},
+        body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'HELLO_FIXTURE: a new ordinary owner request after the reset boundary.'}]}),signal:AbortSignal.timeout(30000)});
+      const visible=await next.text();assert.ok(visible.includes('HELLO_VERIFIED'),visible);
+      events=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      const newOwner=events.filter(e=>e.hook==='prompt'&&e.runId?.startsWith('chatcmpl_')&&e.sessionKey===original.sessionKey).at(-1);
+      assert.notEqual(newOwner.sessionId,original.sessionId,'an ordinary new owner request retains the native daily-reset policy');
+    }
     if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({requests,body,events,providerTrace,consolidatedRequests},null,2));
   } finally {
     if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'.debug',JSON.stringify({log:log.slice(-131072),events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8').slice(-524288):'',providerTrace,consolidatedRequests},null,2));
