@@ -25,6 +25,7 @@ import { captureNativeWebSearchResult, projectNativeWebSearchResult, projectWebR
 import { SEARCH_PACING_STREAK, SEARCH_PACING_REASON, searchTerms, nearDuplicateSearch, searchLeadUrls,
   duplicateSearchReason, ownerResearchDate, staleSearchDate, staleSearchDateGuidance } from "./research-pacing.mjs";
 import { createCompletionAssurance } from "./completion-assurance.mjs";
+import {requestsNativeDelegation} from './native-delegation-claims.mjs';
 import { researchRequestProblem } from "./perplexica-research.mjs";
 import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
@@ -13024,6 +13025,9 @@ export function createToolLoopGuard({
     ownerIntentEventForRun(runId, event) {
       const ownerIntent = runs.get(runId)?.subagentOwnerIntent;
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
+    },
+    nativeDelegationRequestedForRun(runId) {
+      return requestsNativeDelegation(runs.get(runId)?.ownerRequestText);
     },
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
