@@ -290,6 +290,88 @@ else
 fi
 
 # ============================================================================
+# Test 14: compare_versions handles prerelease suffixes and zero-padded parts
+# ============================================================================
+cmp_subshell() {
+    local v1="$1"
+    local v2="$2"
+    (
+        source "$MIGRATE_CONFIG_SCRIPT" help >/dev/null 2>&1
+        compare_versions "$v1" "$v2"
+    )
+}
+
+cmp_code=0
+cmp_subshell "v2.5.0-rc1" "2.5.0" || cmp_code=$?
+if [[ $cmp_code -eq 0 ]]; then
+    pass "compare_versions: v2.5.0-rc1 equals 2.5.0"
+else
+    fail "compare_versions: v2.5.0-rc1 vs 2.5.0 exited $cmp_code"
+fi
+
+cmp_code=0
+cmp_subshell "v2.5.0-12-g975fd429b" "2.5.0" || cmp_code=$?
+if [[ $cmp_code -eq 0 ]]; then
+    pass "compare_versions: git describe version equals base release"
+else
+    fail "compare_versions: v2.5.0-12-g975fd429b vs 2.5.0 exited $cmp_code"
+fi
+
+cmp_code=0
+cmp_subshell "v2.5.0+build5" "2.5.0" || cmp_code=$?
+if [[ $cmp_code -eq 0 ]]; then
+    pass "compare_versions: build metadata suffix equals base release"
+else
+    fail "compare_versions: v2.5.0+build5 vs 2.5.0 exited $cmp_code"
+fi
+
+cmp_code=0
+cmp_subshell "2.08.0" "2.4.0" || cmp_code=$?
+if [[ $cmp_code -eq 1 ]]; then
+    pass "compare_versions: leading zero 2.08.0 > 2.4.0 without octal error"
+else
+    fail "compare_versions: 2.08.0 vs 2.4.0 exited $cmp_code"
+fi
+
+cmp_code=0
+cmp_subshell "2.08.0" "2.8.0" || cmp_code=$?
+if [[ $cmp_code -eq 0 ]]; then
+    pass "compare_versions: leading zero 2.08.0 equals 2.8.0"
+else
+    fail "compare_versions: 2.08.0 vs 2.8.0 exited $cmp_code"
+fi
+
+cmp_code=0
+cmp_subshell "unknown" "2.4.0" || cmp_code=$?
+if [[ $cmp_code -eq 2 ]]; then
+    pass "compare_versions: non-numeric string compares less than real version"
+else
+    fail "compare_versions: unknown vs 2.4.0 exited $cmp_code"
+fi
+
+# ============================================================================
+# Test 15: Behavioral check with suffixed .version file
+# ============================================================================
+echo "v2.5.0-12-g975fd429b" > "$INSTALL_DIR/.version"
+echo "2.4.1" > "$DATA_DIR/.migration-state"
+check_exit=0
+check_output=$(bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check_exit=$?
+if [[ $check_exit -eq 2 ]] && echo "$check_output" | grep -q "Migration needed"; then
+    pass "Behavioral test: check detects pending migration with git describe version"
+else
+    fail "Behavioral test: check failed with git describe version (exit $check_exit): $check_output"
+fi
+
+echo "2.5.0" > "$DATA_DIR/.migration-state"
+check_exit=0
+check_output=$(bash "$MIGRATE_CONFIG_SCRIPT" check 2>&1) || check_exit=$?
+if [[ $check_exit -eq 0 ]] && echo "$check_output" | grep -q "No migration needed"; then
+    pass "Behavioral test: check reports up-to-date with git describe version"
+else
+    fail "Behavioral test: check failed when up-to-date with git describe version (exit $check_exit): $check_output"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""
