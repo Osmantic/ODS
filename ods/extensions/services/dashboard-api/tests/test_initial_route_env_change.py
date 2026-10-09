@@ -1,6 +1,8 @@
 """Installer route changes must end obsolete observational model waits."""
 import subprocess
+import sys
 import threading
+from pathlib import Path
 
 import pytest
 import test_model_activate as tma
@@ -204,3 +206,83 @@ def test_completed_background_transaction_allows_new_observation(route):
     tma._mod._atomic_write_json(tma._mod._pixel_model_journal_path(), current, 0o600)
     assert tma._mod._prepare_initial_switchboard_verification()
     assert tma._mod._initial_switchboard_route_env_matches(tma._mod.load_env(env_path))
+
+
+def _separate_host(install, action):
+    # A fresh interpreter (not fork) cannot inherit the parent's Python lock.
+    code = '''
+import functools, json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import test_model_activate as tma
+host = tma._mod
+host.INSTALL_DIR = Path(sys.argv[2])
+host._switchboard_state.write_transaction = functools.partial(
+    host._switchboard_state.write_transaction, timeout=.1)
+host._wait_for_model_readiness = lambda *a, **k: dict(
+    identity='old-model.gguf', contextLength=65536, contextVerified=True)
+host._load_model_library_records = lambda: []
+try:
+    if sys.argv[3] == 'hold':
+        tx = host._PixelModelTransaction({})
+        tx.previous = dict(model='old-model.gguf', contextLength=65536,
+                           maxTokens=8192, reasoning=False)
+        tx._save('held')
+        print(json.dumps({'held': True, 'before': tx.journal['before']}))
+    else:
+        print(json.dumps({'published': host._publish_verified_initial_switchboard_route(reason='test')}))
+except host._switchboard_state.StateError as exc:
+    assert str(exc) == 'model state write lock is busy'
+    print(json.dumps({'blocked': True}))
+'''
+    import json
+    result = subprocess.run([sys.executable, '-c', code, str(Path(__file__).parent),
+                             str(install), action], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_background_hold_after_identity_validation_prevents_publication(route, monkeypatch):
+    _, state_path = route
+    before = state_path.read_bytes()
+    monkeypatch.setattr(tma._mod, '_wait_for_model_readiness',
+        lambda *_a, **_k: dict(identity='old-model.gguf', contextLength=65536, contextVerified=True))
+    def identity(*_args, **_kwargs):
+        assert _separate_host(state_path.parent.parent, 'hold')['held']
+        return True
+    monkeypatch.setattr(tma._mod, '_runtime_model_identity_matches', identity)
+    assert not tma._mod._publish_verified_initial_switchboard_route(reason='status')
+    assert state_path.read_bytes() == before
+
+
+def test_observer_publication_precedes_background_snapshot_across_processes(route, monkeypatch):
+    import hashlib
+    _, state_path = route
+    original = sb.record_verified_route
+    monkeypatch.setattr(tma._mod, '_wait_for_model_readiness',
+        lambda *_a, **_k: dict(identity='old-model.gguf', contextLength=65536, contextVerified=True))
+    def publish(*args, **kwargs):
+        assert _separate_host(state_path.parent.parent, 'hold') == {'blocked': True}
+        assert not tma._mod._pixel_model_journal_path().exists()
+        # Reentry into the same writer must not deadlock or unlock the outer guard.
+        result = original(*args, **kwargs)
+        assert _separate_host(state_path.parent.parent, 'hold') == {'blocked': True}
+        return result
+    monkeypatch.setattr(sb, 'record_verified_route', publish)
+    assert tma._mod._publish_verified_initial_switchboard_route(reason='status')
+    result = _separate_host(state_path.parent.parent, 'hold')
+    assert result['held']
+    assert result['before']['data/model-state.json'] == hashlib.sha256(state_path.read_bytes()).hexdigest()
+
+
+def test_background_snapshot_and_prepared_journal_exclude_observer(route, monkeypatch):
+    _, state_path = route
+    before = state_path.read_bytes()
+    original = tma._mod._atomic_write_json
+    def save(path, value, *args):
+        assert _separate_host(state_path.parent.parent, 'observe') == {'blocked': True}
+        return original(path, value, *args)
+    monkeypatch.setattr(tma._mod, '_atomic_write_json', save)
+    hold_background_transaction()
+    assert _separate_host(state_path.parent.parent, 'observe') == {'published': False}
+    assert state_path.read_bytes() == before
