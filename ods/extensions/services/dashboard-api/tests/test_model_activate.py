@@ -32,6 +32,8 @@ _is_windows_host_llama_server = _mod._is_windows_host_llama_server
 _restart_windows_native_llama_server = _mod._restart_windows_native_llama_server
 _write_host_native_litellm_config = _mod._write_host_native_litellm_config
 _wait_for_container_health = _mod._wait_for_container_health
+_capture_container_state = _mod._capture_container_state
+_container_exists = _mod._container_exists
 
 
 def _llama_runtime_run(
@@ -3776,6 +3778,81 @@ def test_pixel_reasoning_capability_follows_model_family_and_runtime_mode(
 
 
 class TestModelActivateRollback:
+
+    @pytest.mark.parametrize("inspection", ["existence", "running"])
+    def test_preflight_inspection_timeout_is_safe_and_releases_lifecycle(
+        self, tmp_path, monkeypatch, caplog, inspection,
+    ):
+        install, env_path, original, models_ini, original_ini, *_ = _write_model_activation_fixture(tmp_path)
+        inspections = []
+
+        def inspect(command, **kwargs):
+            if command[:2] == ["docker", "inspect"] and command[-1] == "ods-litellm":
+                inspections.append(command)
+                assert kwargs["timeout"] == 15
+                if inspection == "existence" or "{{.State.Running}}" in command:
+                    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+                return subprocess.CompletedProcess(command, 0, "fixture-container-id\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-agent-key")
+        monkeypatch.setattr(_mod, "_container_exists", _container_exists)
+        monkeypatch.setattr(_mod, "_capture_container_state", _capture_container_state)
+        monkeypatch.setattr(_mod.subprocess, "run", inspect)
+        monkeypatch.setattr(_mod, "_begin_pixel_model_transaction", lambda *_: pytest.fail("no transaction may start"))
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda *_: pytest.fail("no runtime may restart"))
+        handler = _ResponseHandler(request_body={"model_id": "target-model"})
+        monkeypatch.setattr(
+            handler, "_do_model_activate",
+            lambda *args, **kwargs: _mod.AgentHandler._do_model_activate(handler, *args, **kwargs),
+            raising=False,
+        )
+
+        _mod.AgentHandler._handle_model_activate(handler)
+
+        result = handler.parse_response()
+        assert handler.response_code == 500
+        assert result["code"] == "model_preflight_inspection_timeout"
+        assert "did not start this model switch" in result["error"]
+        assert "Wait until Models shows no operation in progress" in result["error"]
+        assert "refresh model status, then try again" in result["error"]
+        assert set(result) == {"code", "error"}
+        assert "ods-litellm" not in result["error"]
+        assert "--format" not in result["error"]
+        assert "ods-litellm" in caplog.text and "TimeoutExpired" in caplog.text
+        assert len(inspections) == (1 if inspection == "existence" else 2)
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        assert _mod._model_lifecycle_status().get("activationResult") is None
+        assert env_path.read_text() == original
+        assert models_ini.read_text() == original_ini
+
+    def test_post_mutation_inspection_timeout_still_rolls_back(self, tmp_path, monkeypatch):
+        install, env_path, original, models_ini, original_ini, *_ = _write_model_activation_fixture(tmp_path)
+        restarts = []
+
+        def restart(env):
+            restarts.append(env["GGUF_FILE"])
+            if len(restarts) == 1:
+                raise getattr(_mod, "ContainerInspectionTimeout", RuntimeError)("private inspection diagnostic")
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", restart)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_staged_llama_load_failure_probe", lambda *_: None)
+        monkeypatch.setattr(_mod, "_failed_llama_server_log_excerpt", lambda *_: "")
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        result = handler.parse_response()
+        assert handler.response_code == 500
+        assert result.get("code") != "model_preflight_inspection_timeout"
+        assert "did not start" not in result["error"]
+        assert result["rolled_back"] is True
+        assert restarts == ["new-model.gguf", "old-model.gguf"]
+        assert env_path.read_text() == original
+        assert models_ini.read_text() == original_ini
 
     @pytest.fixture(autouse=True)
     def _successful_meaningful_completion(self, monkeypatch):
@@ -7536,3 +7613,30 @@ def test_router_publication_rejects_unverified_context(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="unverified"):
         _mod._publish_activation_route({}, "target", {"identity": "target", "contextVerified": False}, {})
     assert not (tmp_path / "data/model-state.json").exists()
+
+
+@pytest.mark.parametrize("failure", ["missing", "permission", "os-error", "invalid-running"])
+def test_container_inspection_preserves_non_timeout_outcomes(monkeypatch, failure):
+    calls = []
+
+    def inspect(command, **kwargs):
+        calls.append(command)
+        assert kwargs["timeout"] == 15
+        if failure == "os-error":
+            raise OSError("docker unavailable")
+        if failure == "missing":
+            return subprocess.CompletedProcess(command, 1, "", "No such container")
+        if failure == "permission":
+            return subprocess.CompletedProcess(command, 1, "", "permission denied")
+        return subprocess.CompletedProcess(command, 0, "fixture-id" if len(calls) == 1 else "invalid", "")
+
+    monkeypatch.setattr(_mod, "_container_exists", _container_exists)
+    monkeypatch.setattr(_mod.subprocess, "run", inspect)
+    if failure == "missing":
+        assert _capture_container_state("ods-litellm") == {"exists": False, "running": False}
+        assert len(calls) == 1
+    else:
+        with pytest.raises(RuntimeError) as error:
+            _capture_container_state("ods-litellm")
+        assert type(error.value).__name__ != "ContainerInspectionTimeout"
+        assert len(calls) == (2 if failure == "invalid-running" else 1)

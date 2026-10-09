@@ -14946,6 +14946,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if rolled_back:
                     _record_model_activation_result('rolled_back', _model_activation_public_failure(readiness_diagnosis, healthy))
             logger.exception("Model activation failed")
+            if (isinstance(exc, ContainerInspectionTimeout)
+                    and not committed and not mutation_started and pixel_transaction is None):
+                json_response(self, 500, {
+                    "code": "model_preflight_inspection_timeout",
+                    "error": _MODEL_PREFLIGHT_INSPECTION_TIMEOUT_MESSAGE,
+                })
+                return
             error = f"Model activation failed: {exc}"
             if rollback_error:
                 error += f"; rollback could not be proved: {rollback_error}"
@@ -16624,6 +16631,17 @@ def _patch_hermes_model_config(
         return False
 
 
+class ContainerInspectionTimeout(RuntimeError):
+    """Docker did not establish optional-container state before its deadline."""
+
+
+_MODEL_PREFLIGHT_INSPECTION_TIMEOUT_MESSAGE = (
+    "ODS could not verify Docker service state, so it did not start this model switch. "
+    "Wait until Models shows no operation in progress, refresh model status, then try again. "
+    "If this repeats, check that Docker is responding."
+)
+
+
 def _container_exists(container: str) -> bool:
     try:
         result = subprocess.run(
@@ -16632,7 +16650,9 @@ def _container_exists(container: str) -> bool:
             text=True,
             timeout=15,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise ContainerInspectionTimeout(f"Could not inspect optional container {container}: {exc}") from exc
+    except OSError as exc:
         raise RuntimeError(f"Could not inspect optional container {container}: {exc}") from exc
     if result.returncode == 0:
         return bool(result.stdout.strip())
@@ -16672,7 +16692,9 @@ def _capture_container_state(container: str) -> dict[str, bool]:
             text=True,
             timeout=15,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise ContainerInspectionTimeout(f"Could not capture runtime state for {container}: {exc}") from exc
+    except OSError as exc:
         raise RuntimeError(f"Could not capture runtime state for {container}: {exc}") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
