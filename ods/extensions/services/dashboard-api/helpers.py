@@ -1135,6 +1135,7 @@ async def get_all_services() -> list[ServiceStatus]:
             if isinstance(item, dict) and item.get("container_name")
         }
     except (AgentClientError, ValueError):
+        containers = []
         by_service = {}
         by_name = {}
 
@@ -1143,6 +1144,7 @@ async def get_all_services() -> list[ServiceStatus]:
         config = service_configs.get(status.id, {})
         item = by_service.get(status.id) or by_name.get(str(config.get("container_name") or ""))
         replacement = status.status
+        startup_pending = False
         if item and config.get("type", "docker") == "docker":
             health = str(item.get("health") or "none").casefold()
             state = str(item.get("state") or "unknown").casefold()
@@ -1153,12 +1155,21 @@ async def get_all_services() -> list[ServiceStatus]:
                 replacement = "healthy"
             elif health == "unhealthy":
                 replacement = "unhealthy"
-            elif health == "starting" and status.status in {"down", "degraded"}:
+            elif state == "running" and health == "starting" and status.status in {"down", "degraded"}:
                 replacement = "degraded"
+                # Do not turn a timeout into startup guidance without one
+                # unambiguous running container's declared health state.
+                matches = [row for row in containers if isinstance(row, dict) and (
+                    row.get("service_id") == status.id or (
+                        config.get("container_name") and
+                        row.get("container_name") == config["container_name"]
+                    )
+                )]
+                startup_pending = len(matches) == 1
             elif state in {"exited", "dead", "removing"}:
                 replacement = "down"
-        if replacement != status.status:
-            status = status.model_copy(update={"status": replacement})
+        if replacement != status.status or startup_pending != status.startup_pending:
+            status = status.model_copy(update={"status": replacement, "startup_pending": startup_pending})
         reconciled.append(status)
 
     if _host_native_llm():
