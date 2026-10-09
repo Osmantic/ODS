@@ -289,7 +289,7 @@ function New-ODSEnv {
     $previousEnvLines = @()
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path $envPath) {
-        $previousEnvLines = @(Get-Content $envPath)
+        $previousEnvLines = @(Get-Content $envPath -Encoding UTF8)
         $previousEnvLines | ForEach-Object {
             if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $existingEnv[$Matches[1]] = $Matches[2]

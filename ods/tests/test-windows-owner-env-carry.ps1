@@ -17,7 +17,7 @@ function Assert-True([bool]$Condition, [string]$Message) {
     $script:checks++
 }
 function Get-Assignments([string]$Path, [string]$Key) {
-    @(Get-Content -LiteralPath $Path | Where-Object { $_.StartsWith("$Key=", [StringComparison]::Ordinal) })
+    @(Get-Content -LiteralPath $Path -Encoding UTF8 | Where-Object { $_.StartsWith("$Key=", [StringComparison]::Ordinal) })
 }
 
 # Both installers must carry the same keys.
@@ -77,6 +77,18 @@ try {
         Assert-True ((Get-Assignments $envPath 'HF_TOKEN_EXTRA').Count -eq 0) "rerun ${run}: an unlisted key was carried"
         Assert-True (@(Get-Content -LiteralPath $envPath | Where-Object { $_ -ceq '#=== Owner settings (kept from the previous .env) ===' }).Count -eq 1) `
             "rerun ${run}: owner settings header is missing or repeated"
+    }
+    # The private writer emits UTF-8 without a BOM. PS5.1 otherwise reads it as
+    # the Windows ANSI codepage, corrupting non-ASCII owner settings on rerun.
+    # Construct codepoints so this test's own script encoding is irrelevant.
+    $voice = 'voice-' + [char]0x58F0 + [char]0x97F3
+    $expectedVoice = "AUDIO_TTS_VOICE=$voice"
+    [IO.File]::AppendAllText($envPath, "`n$expectedVoice`n", [Text.UTF8Encoding]::new($false))
+    foreach ($run in 1..2) {
+        $null = New-ODSEnv -InstallDir $tempRoot -TierConfig $tier -Tier '1' -GpuBackend 'none' -SystemRamGB 8
+        $found = @(Get-Assignments $envPath 'AUDIO_TTS_VOICE')
+        Assert-True (($found.Count -eq 1) -and ($found[0] -ceq $expectedVoice)) `
+            "UTF-8 voice changed on rerun $run"
     }
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force
