@@ -668,7 +668,9 @@ def _record_model_activation_result(outcome: str, failure_code: str | None = Non
         raise ValueError('Invalid model activation outcome')
     global _model_activation_result
     with _model_lifecycle_state_lock:
-        if _model_lifecycle_operation == 'model_activation':
+        # A lost response after proof cannot undo the observed runtime outcome.
+        # Only the next lifecycle claim may invalidate this terminal evidence.
+        if _model_lifecycle_operation == 'model_activation' and _model_activation_result is None:
             _model_activation_result = {'outcome': outcome, 'failureCode': failure_code}
 
 

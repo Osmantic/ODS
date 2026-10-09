@@ -3787,7 +3787,7 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
         monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
 
-    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved', 'runtime_load_failed', 'timeout', 'identity_mismatch'])
+    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved', 'runtime_load_failed', 'timeout', 'identity_mismatch', 'commit-response-write', 'rollback-response-write'])
     def test_native_controller_holds_before_model_mutation_and_finishes_only_after_proof(self,tmp_path,monkeypatch,failure):
         install,env_path,original,*_=_write_model_activation_fixture(tmp_path)
         original=original.replace('CTX_SIZE=2048','CTX_SIZE=65536')+'PIXEL_OPENWEBUI_KEY=configured\n'
@@ -3828,7 +3828,7 @@ class TestModelActivateRollback:
         def readiness(*args,**kwargs):
             identity=kwargs.get('gguf_file')
             proofs.append(identity)
-            if failure in {'runtime_load_failed','timeout','identity_mismatch'} and identity=='new-model.gguf':
+            if failure in {'runtime_load_failed','timeout','identity_mismatch','rollback-response-write'} and identity=='new-model.gguf':
                 kwargs['diagnosis']['code']=failure
                 return False
             if failure=='rollback-unproved' and identity=='old-model.gguf':return False
@@ -3841,8 +3841,22 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod,'_runtime_model_control',control)
         monkeypatch.setattr(_mod,'_compose_restart_llama_server',lambda env:restarts.append(env['GGUF_FILE']))
         monkeypatch.setattr(_mod,'_wait_for_model_readiness',readiness)
+        monkeypatch.setattr(_mod,'_staged_llama_load_failure_probe',lambda *_args:None)
+        monkeypatch.setattr(_mod,'_failed_llama_server_log_excerpt',lambda *_args:'')
         monkeypatch.setattr(_mod,'_atomic_write_json',write)
         monkeypatch.setattr(_mod,'_reconcile_ods_managed_pixel_model',lambda *a,**kw:pytest.fail('must use coordinated native apply'))
+        real_response=_mod.json_response
+        response_failed=False
+        def response(handler,code,body,**kwargs):
+            nonlocal response_failed
+            if not response_failed and (
+                (failure=='commit-response-write' and code==200)
+                or (failure=='rollback-response-write' and body.get('rolled_back') is True)
+            ):
+                response_failed=True
+                raise BrokenPipeError('client disconnected after completed proof')
+            return real_response(handler,code,body,**kwargs)
+        monkeypatch.setattr(_mod,'json_response',response)
         handler=_ResponseHandler()
         monkeypatch.setattr(_mod,'_model_activation_result',None)
         assert _mod._begin_model_activation('target-model')[0]
@@ -3855,6 +3869,15 @@ class TestModelActivateRollback:
         result=_mod._model_lifecycle_status().get('activationResult')
         payload=handler.parse_response()
         assert calls.count('model-begin')<=1 and calls.count('model-apply')<=1 and calls.count('model-finish')<=1
+        if failure in {'commit-response-write','rollback-response-write'}:
+            assert response_failed
+            committed=failure=='commit-response-write'
+            assert state['status']=='completed' and state['pending'] is False
+            assert state['outcome']==('commit' if committed else 'rollback')
+            assert result=={'outcome':'activated' if committed else 'rolled_back',
+                            'failureCode':None if committed else 'runtime_readiness_failed'}
+            assert restarts==(['new-model.gguf'] if committed else ['new-model.gguf','old-model.gguf'])
+            return
         if failure in {None,'lost-apply-ack'}:
             assert handler.response_code==200,payload
             assert state['status']=='completed' and state['outcome']=='commit'
