@@ -1352,14 +1352,14 @@ function DetailModal({ ext, gpuBackend, onClose }) {
             </div>
           )}
 
-          {/* CLI Commands */}
-          <div>
+          {/* The CLI refuses selection changes for category=core services. */}
+          {ext.category !== 'core' && <div>
             <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-2">CLI Commands</h4>
             <div className="space-y-1">
               <CopyableCommand command={`ods enable ${ext.id}`} />
               <CopyableCommand command={`ods disable ${ext.id}`} />
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     </div>
