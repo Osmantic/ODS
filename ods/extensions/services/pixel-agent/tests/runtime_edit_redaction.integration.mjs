@@ -72,7 +72,7 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
   const file = join(workspace, 'counter.html');
   const resetFile = (content = originalPage) => writeFileSync(file, content, {mode: 0o600});
   const suggestions = error => {
-    const match = error.message.match(/retry edit with this edits array: (\{"edits":.*\})\. This is a partial retry:/);
+    const match = error.message.match(/retry edit with this edits array: (\{"edits":.*\})\./);
     return match ? JSON.parse(match[1]).edits : null;
   };
   async function rejectedEdit(content, oldText, newText) {
@@ -159,16 +159,16 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
       assert.equal(redact(source, {}), source);
   });
 
-  await t.test('failed whole-block repair offers only exact safe requested hunks for explicit retry', async () => {
+  await t.test('whole-block repair offers a retry only when every changed block is included', async () => {
     resetFile();
     const visible=redact(textOf(await invoke(native.H(workspace),{path:'counter.html'})),{});
-    const requested=visible.replace(/const STORAGE_KEY = '[^']*';\n/, '')
-      .replace('parseInt(localStorage.getItem(STORAGE_KEY)) || DEFAULT_VALUE','DEFAULT_VALUE')
+    const requested=visible.replace('parseInt(localStorage.getItem(STORAGE_KEY)) || DEFAULT_VALUE','DEFAULT_VALUE')
       .replace('function update() { localStorage.setItem(STORAGE_KEY, count.toString()); }','function update() {}');
     const failure=await rejectedEdit(originalPage,visible,requested);
     const edits=suggestions(failure);
     assert.equal(edits?.length,1,'adjacent changed lines form one exact hunk');
-    assert.match(failure.message,/partial retry: 1 changed block\(s\) were omitted/);
+    assert.match(failure.message,/Every changed block in this submitted edit is included/);
+    assert.match(failure.message,/text matching only, not program correctness or task completion/);
     assert.doesNotMatch(JSON.stringify(edits),/harbor|\u2026|\*{3}|const STORAGE_KEY/);
     assert.equal(redact(JSON.stringify(edits),{}),JSON.stringify(edits),'public redaction leaves retry anchors exact');
     await invoke(native.X(workspace),{path:'counter.html',edits});
@@ -178,6 +178,37 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
     const controls=pageControls(repaired);
     assert.equal(controls.value(),3);controls.increase();assert.equal(controls.value(),4);
     controls.reset();assert.equal(controls.value(),3);assert.equal(pageControls(repaired).value(),3);
+  });
+
+  await t.test('coupled declaration changes suppress every retry hunk when any block is omitted', async () => {
+    const source=originalPage.replace('let count', '\nlet count');
+    const visible=redact(source,{});
+    const desired=visible.replace(/const STORAGE_KEY = '[^']*';\nconst DEFAULT_VALUE = 3;\n/, 'let count = 3;\n')
+      .replace('let count = parseInt(localStorage.getItem(STORAGE_KEY)) || DEFAULT_VALUE;\n','')
+      .replace('function update() { localStorage.setItem(STORAGE_KEY, count.toString()); }','function update() {}')
+      .replace('count = DEFAULT_VALUE;','count = 3;');
+    const failure=await rejectedEdit(source,visible,desired);
+    assert.equal(suggestions(failure),null,'never offer a subset that removes the count declaration while omitting its replacement');
+    assert.match(failure.message,/No retry batch was generated/);
+    assert.match(failure.message,/smaller independent complete edit/);
+    assert.match(failure.message,/Preserve masked values; never guess or overwrite them/);
+    assert.match(failure.message,/Verify the entire task before reporting success/);
+    assert.equal(readFileSync(file,'utf8'),source);
+  });
+
+  await t.test('one omitted insertion-only, ambiguous or masked change suppresses otherwise valid changes', async () => {
+    const source=originalPage+'// repeat\n// repeat\n';
+    const visible=redact(source,{}), changed=visible.replace('count++;','count += 2;');
+    for(const desired of [
+      changed.replace('const DEFAULT_VALUE', '// inserted\nconst DEFAULT_VALUE'),
+      changed.replace('const STORAGE_KEY = ', 'const API_KEY = '),
+      changed.replace('// repeat\n','// modified\n'),
+    ]) {
+      const failure=await rejectedEdit(source,visible,desired);
+      assert.equal(suggestions(failure),null);
+      assert.match(failure.message,/No retry batch was generated/);
+      assert.equal(readFileSync(file,'utf8'),source);
+    }
   });
 
   await t.test('real STORAGE_KEY and API credentials stay masked and byte-preserved through suggested edits', async () => {
@@ -262,15 +293,22 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
     assert.equal(readFileSync(file,'utf8'),source.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 4;'));
   });
 
-  await t.test('exact retained Mac counter edit yields two safe requested edits with no source disclosure', {skip:!process.env.ODS_OWNED_EDIT_FIXTURE}, async () => {
+  await t.test('retained Mac request with omitted declaration yields no batch; an independent complete edit remains possible', {skip:!process.env.ODS_OWNED_EDIT_FIXTURE}, async () => {
     const fixture=JSON.parse(readFileSync(process.env.ODS_OWNED_EDIT_FIXTURE,'utf8'));
     const source=readFileSync(process.env.ODS_OWNED_COUNTER_HTML,'utf8');
     assert.equal(sha(source),'3ef54a3392affb6e03cea4169a61124117d8e2afe20101b36c7e26214ef4b803');
     assert.equal(sha(fixture.edits[0].oldText),'79407337398943c4349b5fe3f828cf0c095253e048445a3cdcafff426102c789');
     assert.equal(sha(fixture.edits[0].newText),'3a2634c33907eb7410c932a044a1e1523f69bfe79c9d21b171f3da762ff20048');
     const {oldText,newText}=fixture.edits[0];
-    const failure=await rejectedEdit(source,oldText,newText),edits=suggestions(failure);
-    assert.equal(edits?.length,2);assert.match(failure.message,/partial retry: 1 changed block/);
+    const failure=await rejectedEdit(source,oldText,newText);
+    assert.equal(suggestions(failure),null);
+    assert.match(failure.message,/No retry batch was generated/);
+    assert.equal(readFileSync(file,'utf8'),source);
+    const completeOld=redact(source,{});
+    const completeNew=completeOld.replace('let count = parseInt(localStorage.getItem(STORAGE_KEY)) || DEFAULT_VALUE;','let count = DEFAULT_VALUE;')
+      .replace('        localStorage.setItem(STORAGE_KEY, count.toString());\n','');
+    const completeFailure=await rejectedEdit(source,completeOld,completeNew),edits=suggestions(completeFailure);
+    assert.equal(edits?.length,2);
     assert.doesNotMatch(JSON.stringify(edits),/harbor|const STORAGE_KEY|\*{3}/);
     await invoke(native.X(workspace),{path:'counter.html',edits});
     const result=readFileSync(file,'utf8');
