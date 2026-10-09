@@ -6398,12 +6398,32 @@ function freshWorkspaceCreationRequested(text) {
   );
 }
 
+function workspaceVisualRepairIntent(text) {
+  const owner = ownerLaneText(text);
+  // Read-only explanations and quoted instructions cannot require an edit.
+  if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:edit|modify|change|write|overwrite)\s+(?:any\s+)?(?:files?|anything|source)\b|\bno\s+(?:file|source)\s+changes\b/i.test(owner)) return undefined;
+  const commands = owner.matchAll(
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:fix|repair|correct)\s+(?:only\s+)?([^!?;\n]{1,512})/gi
+  );
+  const paths = new Set();
+  let visual = false;
+  for (const command of commands) {
+    const target = command[1];
+    const file = /^(?:the\s+)?[`"']?(?:\/workspace\/)?([A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?)[`"']?(?=$|[\s:,.!?;])/i.exec(target);
+    if (file && file[1].split('/').every(part => WORKSPACE_PATH_COMPONENT.test(part))) paths.add(file[1]);
+    if (/^(?:(?:the|this|that|existing|previous|current)\s+)+(?:corrected\s+|repaired\s+|fixed\s+)?(?:app|page|preview|site|website)\b/i.test(target)) visual = true;
+  }
+  if (paths.size > 1) return undefined;
+  return paths.size === 1 ? {path:[...paths][0]} : visual ? {} : undefined;
+}
+
 export function userMessageRequestsWorkspaceVisualContinuation(
   messages,
   prompt = undefined
 ) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return false;
+  if (workspaceVisualRepairIntent(text) && !freshWorkspaceCreationRequested(text)) return true;
   if (userMessageRequestsWorkspaceContinuation([], text)) return false;
   // Keeping an app as-is is preservation, not a request to edit a prior preview.
   // Other change verbs in the same request still identify a visual revision.
@@ -9799,13 +9819,19 @@ export function createToolLoopGuard({
         const verificationContinuationRequested = userMessageRequestsWorkspaceVerificationContinuation(
           event?.messages, event?.prompt
         );
+        const repairPath = workspaceVisualRepairIntent(ownerIntent)?.path;
+        // A named repair inherits only the verified project it actually names.
+        // Unrelated files remain on the ordinary workspace path, not redirected
+        // into the last preview merely because this session has one.
+        const repairMatchesPreview = !repairPath ||
+          repairPath.startsWith(`${previousPreview?.relativeDirectory}/`);
         // Verification intent survives a gateway restart; it requires fresh
         // evidence but cannot confer a previous project's continuation scope.
         // A host-authored delivery retry in this same run must not erase the
         // original owner's verification obligation.
         state.workspacePreviewVerificationRequested ||= verificationContinuationRequested;
         const trustedSessionPreview =
-          (visualContinuationRequested || verificationContinuationRequested) && typeof sessionId === "string" && sessionId
+          (visualContinuationRequested || verificationContinuationRequested) && repairMatchesPreview && typeof sessionId === "string" && sessionId
             ? sessionPreviews.get(sessionId)
             : undefined;
         const previewRequested = namedPreviewRequested || userMessageRequestsWorkspacePreview(
