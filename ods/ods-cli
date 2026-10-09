@@ -6090,7 +6090,7 @@ _gpu_reassign() {
         topo_detect_fn="detect_nvidia_topo"
         if ! command -v nvidia-smi &>/dev/null; then
             warn "nvidia-smi not found — GPU reassignment unavailable"
-            return
+            return 1
         fi
     fi
 
