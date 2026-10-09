@@ -42,7 +42,7 @@ globalThis.controls = {value: () => count, increase, reset};
 </script>\n`;
 function pageControls(page) {
   const context = {localStorage: new Proxy({}, {get() { throw new Error('SecurityError fixture'); }})};
-  vm.runInNewContext(page.match(/<script>([\s\S]*?)<\/script>/)[1], context, {timeout: 1000});
+  vm.runInNewContext(page.match(/<script>([\s\S]*?)<\/script>/i)[1], context, {timeout: 1000});
   return context.controls;
 }
 
@@ -119,6 +119,10 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
     assert.ok(repaired.includes("const STORAGE_KEY = 'harborCounterValue';"));
     assert.doesNotMatch(repaired, /localStorage|sessionStorage/);
     assert.throws(() => pageControls(originalPage), /SecurityError/);
+    const uppercase = repaired.replace('<script>', '<SCRIPT>').replace('</script>', '</SCRIPT>');
+    const mixedCase = repaired.replace('<script>', '<ScRiPt>').replace('</script>', '</sCrIpT>');
+    assert.equal(pageControls(uppercase).value(), 3);
+    assert.equal(pageControls(mixedCase).value(), 3);
     const controls = pageControls(repaired);
     assert.equal(controls.value(), 3); controls.increase(); assert.equal(controls.value(), 4);
     controls.reset(); assert.equal(controls.value(), 3); assert.equal(pageControls(repaired).value(), 3);
