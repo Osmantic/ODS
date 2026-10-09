@@ -229,6 +229,7 @@ tests/test_extension_audit_library.py
 tests/test_healthcheck_redirect_policy.py
 tests/test_hf_download_helper.py
 tests/test_macos_launchd_stop_live.py
+tests/test_macos_recover_local_model.py
 tests/test_macos_snapshot_definition.py
 tests/test_matrix_zypper_transport.py
 tests/test_model_library_native_context.py
