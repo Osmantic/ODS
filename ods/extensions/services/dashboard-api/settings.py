@@ -529,6 +529,10 @@ def _compute_env_apply_plan(
     for key in changed_keys:
         if key in _LIVE_READ_ENV_KEYS or key in _RETIRED_ENV_KEYS:
             continue
+        if key in _TOKEN_SPY_APPLY_KEYS:
+            # dashboard-api and model-router also capture these values at
+            # startup. Recreating Token Spy alone cannot update its clients.
+            manual_keys.append(key)
         if key == "EMBEDDING_MODEL":
             schedule("embeddings")
             if open_webui_inherits_embedding_model:
@@ -563,7 +567,7 @@ def _compute_env_apply_plan(
     services_list = sorted(services)
     inactive_list = sorted(inactive_services)
     manual_list = sorted(set(manual_keys))
-    if not changed_keys or (not services_list and not manual_list):
+    if not changed_keys or (not services_list and not manual_list and not inactive_list):
         status = "none"
     elif services_list and (manual_list or inactive_list):
         status = "partial"
