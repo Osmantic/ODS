@@ -174,6 +174,10 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       const previous = run.chain.children.get(result.childSessionKey);
       if (previous && previous.runId !== result.runId) {fail(run.chain); return;}
       if (!previous) run.chain.children.set(result.childSessionKey,{runId:result.runId,announced:false});
+      // A confirmed native child already owns work, even if the parent ends
+      // with a waiting message instead of calling sessions_yield. Keep the
+      // owner's response behind the same result/error/cancellation barrier.
+      run.chain.delegated = true;
     }
     if (name === 'sessions_yield' && result?.status === 'yielded') {
       run.yielded = true; run.candidate = null; run.chain.delegated = true;

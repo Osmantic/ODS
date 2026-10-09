@@ -260,6 +260,64 @@ test('owner yield never seals introduction; exact announced parent final becomes
   assert.deepEqual(f.registry.read(user,id),{schemaVersion:1,kind:'ods-subagent-delivery',runId:id,status:'ready',text:'Consolidated',verification:{status:'passed',text:'Verified'}});
 });
 
+for (const count of [1,2]) test(`accepted native spawns without yield retain ${count} child result barriers`,()=>{
+  const f=fixture(),children=[];
+  for(let i=0;i<count;i++) {
+    const key=child.replace('22222222',String(i+2).repeat(8)),run=childRun.replace('33333333',String(i+3).repeat(8));
+    f.spawn(key,run);children.push({...continuation,runId:`announce:v1:${key}:${run}`,
+      inputProvenance:{...continuation.inputProvenance,sourceSessionKey:key}});
+  }
+  f.final('Both subagents spawned; I am waiting for results.',owner);
+  assert.equal(f.registry.read(user,id).status,'waiting');
+  for(const [i,ctx] of children.entries()) {
+    f.registry.observe({prompt:`Actual child result ${i+1}`},ctx);
+    f.final(i===count-1?'All registered reviews consolidated':'First review only',ctx);
+    const result=f.registry.read(user,id);
+    assert.equal(result.status,i===count-1?'ready':'waiting');
+    if(i<count-1)assert.ok(!('text' in result));
+  }
+  assert.equal(f.registry.read(user,id).text,'All registered reviews consolidated');
+});
+
+for(const fault of ['overflow','child-error','stop','expiry','superseded'])
+test(`accepted spawn without yield exposes ${fault} without publishing or replaying the introduction`,async()=>{
+  const f=fixture();f.spawn();f.final('Waiting for the delegated review.',owner);
+  assert.equal(f.registry.read(user,id).status,'waiting');
+  if(fault==='overflow') {
+    f.registry.observe({prompt:'Completed child result'},continuation);
+    f.registry.end({success:true,messages:[{role:'assistant',stopReason:'error',content:[
+      {type:'text',text:'Context overflow: prompt too large for the model.'}]}]},continuation);
+  } else if(fault==='child-error') {
+    f.registry.observe({prompt:'Child failed to complete its task.'},continuation);
+    f.registry.end({success:false,error:'provider failure'},continuation);
+  } else if(fault==='stop') await f.registry.cancel(user);
+  else if(fault==='expiry')f.tick();
+  else f.registry.observe({}, {...owner,runId:id.replace('11111111','aaaaaaaa')});
+  assert.equal(f.registry.read(user,id).status,'interrupted');
+  assert.ok(!('text' in f.registry.read(user,id)));
+  assert.equal(f.registry.admission(continuation).outcome,'block');
+  const next={...owner,runId:id.replace('11111111','bbbbbbbb')};
+  f.registry.observe({},next);
+  assert.equal(f.registry.admission(next),undefined);
+  assert.equal(f.registry.read(user,next.runId).status,'not-delegated');
+});
+
+for(const result of [{error:'spawn rejected'}, {result:{isError:true}}, {result:{details:{status:'rejected'}}}])
+test(`failed spawn never creates a waiting barrier: ${JSON.stringify(result)}`,()=>{
+  const f=fixture(),ctx={...owner,toolName:'sessions_spawn',toolCallId:'failed-spawn'};
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},ctx);f.registry.after(result,ctx);
+  f.final('No subagent was started.',owner);
+  assert.equal(f.registry.read(user,id).status,'not-delegated');
+});
+
+test('literal delegation echoes and ordinary direct answers do not create child delivery custody',()=>{
+  const f=fixture(),ctx={...owner,toolName:'exec',toolCallId:'echo'};
+  f.registry.before({params:{command:"echo '[Subagent Task] Review the file'"}},ctx);
+  f.registry.after({result:{content:[{type:'text',text:'[Subagent Task] Review the file'}]}},ctx);
+  f.final('This is only a direct answer.',owner);
+  assert.equal(f.registry.read(user,id).status,'not-delegated');
+});
+
 test('plain greeting with sparse key binds through exact native session ID only',()=>{
   const f=fixture();
   const sparse={...owner,runId:id.replace('11111111','aaaaaaaa')};delete sparse.sessionKey;
