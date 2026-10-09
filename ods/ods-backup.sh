@@ -253,29 +253,15 @@ delete_backup() {
         return 1
     fi
 
-    local target="$BACKUP_ROOT/$backup_id"
-
-    # Compressed backups are .tar.gz files, not directories; also accept the
-    # bare ID for an archive-only backup.
-    if [[ ! -e "$target" && -f "$target.tar.gz" ]]; then
-        target="$target.tar.gz"
-    fi
-
-    if [[ ! -e "$target" ]]; then
-        log_error "Backup not found: $backup_id"
+    # This command owns only the timestamped IDs produced by ODS backups.
+    if [[ ! "$backup_id" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]]; then
+        log_error "Not an ODS backup ID: $backup_id"
         return 1
     fi
 
-    read -rp "Are you sure you want to delete backup $(basename "$target")? [y/N] " confirm || confirm=""
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        if ! rm -rf -- "$target"; then
-            log_error "Failed to delete backup: $(basename "$target")"
-            return 1
-        fi
-        log_success "Deleted backup: $(basename "$target")"
-    else
-        log_info "Deletion cancelled"
-    fi
+    # The helper holds the inspected inode through confirmation and atomically
+    # retires it before removal, so a replacement at this name is preserved.
+    python3 "$SCRIPT_DIR/scripts/delete-backup.py" "$BACKUP_ROOT" "$backup_id"
 }
 
 # Create backup manifest
