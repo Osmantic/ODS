@@ -232,8 +232,9 @@ export default function Models({ compact = false }) {
     await deleteModel(modelId)
   }
 
+  const activationBusy = Boolean(activationLoading || runtimeActionLoading || modelLifecycle?.active || modelRecoveryPending)
   const handleConfirmActivation = async (contextLength) => {
-    if (!activationConfigModel?.id) return
+    if (!activationConfigModel?.id || activationBusy) return
     const modelId = activationConfigModel.id
     setActivationConfigModel(null)
     await loadModel(modelId, { contextLength })
@@ -263,9 +264,9 @@ export default function Models({ compact = false }) {
     canActivateModels={canActivateModels} activationModeError={activationModeError} apiMode={llmBackend === 'external'}
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
-    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading || runtimeActionLoading || modelLifecycle?.active)}
+    loadBusy={pendingModelActions.length > 0} activationBusy={activationBusy}
     downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
-    onDownload={() => handleDownload(model.id)} onLoad={() => { if (canActivateModels && !runtimeActionLoading) setActivationConfigModel(model) }}
+    onDownload={() => handleDownload(model.id)} onLoad={() => { if (canActivateModels && !activationBusy) setActivationConfigModel(model) }}
     onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
 
   if (loading) {
@@ -495,7 +496,7 @@ export default function Models({ compact = false }) {
           pixelMinimumContext={pixelMinimumContext}
           hermesMinimumContext={hermesMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
-          canActivate={canActivateModels && !runtimeActionLoading}
+          canActivate={canActivateModels && !activationBusy}
           activationModeError={activationModeError}
           onCancel={() => setActivationConfigModel(null)}
           onConfirm={handleConfirmActivation}

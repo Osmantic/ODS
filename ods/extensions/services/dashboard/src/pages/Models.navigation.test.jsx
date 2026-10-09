@@ -78,7 +78,37 @@ it('offers the existing guarded recovery only after an authoritative pending rea
   await openModels()
   expect(screen.getByRole('alert',{name:'Model activation'})).toHaveTextContent('Model recovery needs attention')
   expect(screen.getByRole('button',{name:'Recover model switch'})).toBeEnabled()
+  expect(screen.getByRole('button',{name:'Run'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Run'}))
+  expect(screen.queryByRole('button',{name:'Run model'})).toBeNull()
   expect(posts()).toHaveLength(0)
+})
+
+it('blocks an open activation dialog while recovery is pending and unlocks only after recovery readback',async()=>{
+  let pending=false
+  vi.stubGlobal('fetch',vi.fn(async (url,options)=>{
+    if(url==='/api/models/recovery'){
+      if(options?.method==='POST')pending=false
+      return {ok:true,json:async()=>({pending,phase:pending?'held':'completed',transactionId:'a'.repeat(64)})}
+    }
+    const payload=await response(false).json()
+    return {ok:true,json:async()=>({...payload,modelRecoveryPending:pending})}
+  }))
+  await openModels()
+  fireEvent.click(screen.getByRole('button',{name:'Run'}))
+  expect(screen.getByRole('button',{name:'Run model'})).toBeEnabled()
+  pending=true
+  fireEvent.click(screen.getByTitle('Refresh models'))
+  await act(async()=>{})
+  expect(screen.getByRole('button',{name:'Run model'})).toBeDisabled()
+  fireEvent.click(screen.getByRole('button',{name:'Run model'}))
+  expect(posts()).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+  fireEvent.click(screen.getByRole('button',{name:'Recover model switch'}))
+  await act(async()=>{})
+  expect(posts().map(([url])=>url)).toEqual(['/api/models/recovery'])
+  expect(screen.getByRole('button',{name:'Run'})).toBeEnabled()
+  expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
 })
 
 it('stops all activation polling after leaving Models between polls', async () => {
