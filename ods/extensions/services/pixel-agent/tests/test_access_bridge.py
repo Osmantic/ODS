@@ -766,6 +766,52 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaises(bridge.AccessError): self.runtime.change(request)
         self.assertEqual(self.runtime.log, [])
 
+    def test_new_access_change_refuses_quiet_foreign_admission_before_any_write(self):
+        for native_phase, edge_phase in (("held", "idle"), ("idle", "held"), ("held", "held")):
+            with self.subTest(native=native_phase, edge=edge_phase):
+                self.runtime.native_phase, self.runtime.edge_phase = native_phase, edge_phase
+                request = self.request()
+                self.assertFalse(self.runtime.status()["pending"])
+                with self.assertRaisesRegex(bridge.AccessError, "runtime-busy"):
+                    self.runtime.change(request)
+                self.assertTrue(self.runtime.status()["busy"])
+                self.assertEqual(self.runtime.log, [])
+                self.assertEqual(list(self.runtime.state.iterdir()), [])
+                self.assertEqual(self.runtime.mode, "sandboxed")
+
+    def test_new_access_change_defers_while_edge_admission_is_closing(self):
+        original = self.runtime.edge
+        with patch.object(self.runtime, "edge", side_effect=lambda *args, **kwargs: {
+                **original(*args, **kwargs), "admission_blocked": True}):
+            request = self.request()
+            with self.assertRaisesRegex(bridge.AccessError, "runtime-busy"):
+                self.runtime.change(request)
+            self.assertTrue(self.runtime.status()["busy"])
+        self.assertEqual(self.runtime.log, [])
+        self.assertEqual(list(self.runtime.state.iterdir()), [])
+
+    def test_pending_owned_access_recovery_remains_available_with_both_gates_held(self):
+        self.runtime.fail = "probe"
+        with self.assertRaises(bridge.AccessError):
+            self.runtime.change(self.request("sandboxed"))
+        pending = self.runtime.pending()
+        self.assertEqual((self.runtime.native_phase, self.runtime.edge_phase), ("held", "held"))
+        self.assertFalse(self.runtime.status()["busy"])
+        self.runtime.fail = None
+        original_native, original_edge = self.runtime.native, self.runtime.edge
+        def native(operation=None, token=None, **kwargs):
+            if operation:
+                self.assertEqual(token, pending["token"])
+            return original_native(operation, token, **kwargs)
+        def edge(operation=None, token=None, revision=None):
+            if operation:
+                self.assertEqual(token, pending["token"])
+            return original_edge(operation, token, revision)
+        with patch.object(self.runtime, "native", side_effect=native), patch.object(self.runtime, "edge", side_effect=edge):
+            result = self.runtime.change(self.request("sandboxed"))
+        self.assertEqual(result["effective_mode"], "sandboxed")
+        self.assertFalse(result["pending"])
+
     def test_access_restore_cannot_consume_settings_or_unknown_root_journal(self):
         for kind in ("settings", "unknown"):
             with self.subTest(kind=kind):

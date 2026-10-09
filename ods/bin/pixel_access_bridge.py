@@ -900,9 +900,17 @@ class SystemdAccessBridge:
                     and verified.get("pid") == pid and verified.get("config_sha256") == config.get("config_sha256")
                     and verified.get("proof") == proof) else "unknown"
         if effective != config.get("configured_status") or pending or verified.get("boundary") != self.unit_boundary(): effective = "unknown"
+        # A quiet held gate is not available to a new access transaction. Without
+        # a journal, neither hold belongs to this coordinator; maintenance may
+        # own admission even when there are no active requests. Existing journal
+        # recovery still uses the token-checked acquire/recover operations below.
+        admission_held_elsewhere = not pending and (
+            native.get("phase") != "idle" or edge.get("phase") != "idle"
+            or edge.get("admission_blocked") is True
+        )
         return {"available": True, "surface": self.surface, "configured_mode": config.get("configured_status", "unknown"),
                 "effective_mode": effective, "runtime_verified": effective != "unknown", "revision": revision,
-                "busy": bool(native.get("active") or edge.get("streams")), "pending": pending is not None,
+                "busy": bool(native.get("active") or edge.get("streams") or admission_held_elsewhere), "pending": pending is not None,
                 "reason": "transition-recovery-required" if pending else ("runtime-proof-required" if effective == "unknown" else None),
                 "scope": "owner-host", "_config": config, "_native": native, "_edge": edge}
 
