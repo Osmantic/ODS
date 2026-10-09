@@ -339,7 +339,72 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
+})
+
+function mockPeerPolling(downloadResponse) {
+  globalThis.fetch.mockImplementation(async path => {
+    if (path === '/api/remote-provider/status') return response(peerReadyStatusPayload)
+    if (path === '/api/remote-provider/peer/models') return response(peerModelsPayload)
+    if (path === '/api/remote-provider/peer/models/download-status') return downloadResponse()
+    throw new Error(`Unexpected request: ${path}`)
+  })
+}
+
+function peerStatusRequests() {
+  return globalThis.fetch.mock.calls.filter(([path]) => path.endsWith('/download-status')).length
+}
+
+test.each(['complete', 'failed', 'cancelled'])('observes an active peer download until %s, then stops polling', async terminal => {
+  vi.useFakeTimers()
+  let reads = 0
+  mockPeerPolling(() => response(++reads === 1 ? peerActiveDownloadStatusPayload : {
+    status: terminal, active: false, isDownloading: false, model: 'remote-available', percent: 100,
+  }))
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  expect(peerStatusRequests()).toBe(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(peerStatusRequests()).toBe(2)
+  expect(screen.getByText(new RegExp(`${terminal} - remote-available - 100%`, 'i'))).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /cancel download/i })).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(peerStatusRequests()).toBe(2)
+  view.unmount()
+})
+
+test('recovers peer download observations after a failed poll without overlapping requests', async () => {
+  vi.useFakeTimers()
+  let reads = 0
+  let finishPending
+  mockPeerPolling(() => {
+    reads += 1
+    if (reads === 2) return new Promise(resolve => { finishPending = resolve })
+    return response(peerActiveDownloadStatusPayload)
+  })
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(peerStatusRequests()).toBe(2)
+  await act(async () => { finishPending(response({ detail: 'Peer temporarily unavailable' }, 503)) })
+  expect(screen.getByText('Peer temporarily unavailable')).toBeInTheDocument()
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
+  expect(peerStatusRequests()).toBe(3)
+  expect(screen.queryByText('Peer temporarily unavailable')).not.toBeInTheDocument()
+  view.unmount()
+  await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+  expect(peerStatusRequests()).toBe(3)
+})
+
+test('does not poll idle peer downloads', async () => {
+  vi.useFakeTimers()
+  mockPeerPolling(() => response(peerDownloadStatusPayload))
+  const view = render(createElement(RemoteProvider))
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(6000) })
+  expect(peerStatusRequests()).toBe(1)
+  view.unmount()
 })
 
 test('renders remote provider status and proof receipt', async () => {
