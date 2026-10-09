@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Validate resolved Docker Compose stack for syntax errors
 # Usage: validate-compose-stack.sh --compose-flags "-f file1.yml -f file2.yml" [--env-file /path/to/.env]
+# Quote or backslash-escape paths inside --compose-flags using POSIX shell syntax.
+# Flags are parsed as arguments; shell substitutions and globbing are not performed.
 #
 # Returns:
 #   0 - Valid compose stack
@@ -38,16 +40,38 @@ if [[ -z "$COMPOSE_FLAGS" ]]; then
     exit 1
 fi
 
-# Build env-file flag if provided (allows compose to resolve required variable references)
-ENV_FILE_ARGS=()
-if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
-    ENV_FILE_ARGS=(--env-file "$ENV_FILE")
+# Parse the complete string before invoking Docker. A temporary NUL-delimited
+# stream preserves empty arguments and newlines on Bash 3, and lets us check the
+# parser's exit status (which process substitution would hide).
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required to parse --compose-flags" >&2
+    exit 1
 fi
+validation_output=$(mktemp)
+trap 'rm -f "$validation_output"' EXIT
+if ! python3 -I - "$COMPOSE_FLAGS" > "$validation_output" <<'PY'
+import os
+import shlex
+import sys
 
-COMPOSE_FLAGS_ARR=()
-if ! eval "COMPOSE_FLAGS_ARR=($COMPOSE_FLAGS)" 2>/dev/null; then
-    read -ra COMPOSE_FLAGS_ARR <<< "$COMPOSE_FLAGS"
+try:
+    flags = shlex.split(sys.argv[1], comments=False, posix=True)
+except ValueError as exc:
+    print(f"ERROR: invalid --compose-flags: {exc}", file=sys.stderr)
+    sys.exit(1)
+if not flags:
+    print("ERROR: --compose-flags requires at least one argument", file=sys.stderr)
+    sys.exit(1)
+for flag in flags:
+    sys.stdout.buffer.write(os.fsencode(flag) + b"\0")
+PY
+then
+    exit 1
 fi
+COMPOSE_FLAGS_ARR=()
+while IFS= read -r -d '' compose_arg; do
+    COMPOSE_FLAGS_ARR+=("$compose_arg")
+done < "$validation_output"
 
 # Check if docker/docker compose is available
 if command -v docker &>/dev/null && docker compose version &>/dev/null; then
@@ -57,6 +81,12 @@ elif command -v docker-compose &>/dev/null; then
 else
     echo "ERROR: docker compose not found" >&2
     exit 1
+fi
+
+# Append only present env-file arguments, avoiding empty-array expansion under
+# Bash 3's nounset behavior.
+if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
+    DOCKER_COMPOSE_CMD+=(--env-file "$ENV_FILE")
 fi
 
 # Validate compose stack syntax
@@ -71,15 +101,13 @@ fi
 # - Invalid service definitions
 # - Circular dependencies
 # - Invalid environment variable references
-validation_output=$(mktemp)
-if "${DOCKER_COMPOSE_CMD[@]}" "${ENV_FILE_ARGS[@]}" "${COMPOSE_FLAGS_ARR[@]}" config > "$validation_output" 2>&1; then
+if "${DOCKER_COMPOSE_CMD[@]}" "${COMPOSE_FLAGS_ARR[@]}" config > "$validation_output" 2>&1; then
     if ! $QUIET; then
         echo "Compose stack validation passed"
         # Show summary of services
         service_count=$(grep -c "^  [a-z]" "$validation_output" || echo "0")
         echo "  Services defined: $service_count"
     fi
-    rm -f "$validation_output"
     exit 0
 else
     echo "Compose stack validation FAILED" >&2
@@ -88,6 +116,5 @@ else
     cat "$validation_output" >&2
     echo "" >&2
     echo "Compose flags: $COMPOSE_FLAGS" >&2
-    rm -f "$validation_output"
     exit 1
 fi
