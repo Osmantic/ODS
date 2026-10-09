@@ -45,6 +45,7 @@ BOOTSTRAP_PIXEL_OWNER=""
 BOOTSTRAP_PIXEL_HOME=""
 BOOTSTRAP_PIXEL_CONFIG_MUTATED=false
 BOOTSTRAP_PIXEL_RELEASE_FAILED=false
+BOOTSTRAP_PIXEL_NATIVE=false
 
 model_router_swap_gate_call() {
     local action="$1" token="$2" lease_seconds="${3:-30}"
@@ -234,6 +235,17 @@ MODELS_INI="$INSTALL_DIR/config/llama-server/models.ini"
 STATUS_FILE="$INSTALL_DIR/data/bootstrap-status.json"
 UPGRADE_LOCK_DIR=""
 
+native_bootstrap_model() {
+    local operation="$1" python_cmd
+    python_cmd="${ODS_PYTHON_CMD:-}"
+    [[ -n "$python_cmd" ]] || python_cmd="$(read_env_value ODS_PYTHON_CMD)"
+    [[ -n "$python_cmd" ]] || python_cmd=python3
+    "$python_cmd" "$INSTALL_DIR/installers/macos/lib/pixel-native-model-promotion.py" \
+        "$operation" --install-dir "$INSTALL_DIR" \
+        --transaction "$BOOTSTRAP_PIXEL_TRANSACTION" \
+        --gguf-file "$FULL_GGUF_FILE" --context "$FULL_MAX_CONTEXT"
+}
+
 prepare_bootstrap_pixel_model() {
     BOOTSTRAP_PIXEL_OWNER=""
     BOOTSTRAP_PIXEL_HOME=""
@@ -275,6 +287,14 @@ prepare_bootstrap_pixel_model() {
 }
 
 acquire_bootstrap_pixel_model_transaction() {
+    if [[ "$(uname -s 2>/dev/null || true)" == Darwin ]]; then
+        local native_transaction
+        native_transaction="$(native_bootstrap_model begin)" || return 1
+        [[ "$native_transaction" =~ ^[a-f0-9]{64}$ || "$native_transaction" == unmanaged ]] || return 1
+        BOOTSTRAP_PIXEL_NATIVE=true
+        BOOTSTRAP_PIXEL_TRANSACTION="$native_transaction"
+        return 0
+    fi
     prepare_bootstrap_pixel_model || return 1
     [[ -n "$BOOTSTRAP_PIXEL_OWNER" ]] || return 0
     local binary transaction
@@ -292,6 +312,16 @@ finish_bootstrap_pixel_model_transaction() {
     local outcome="$1"
     [[ -n "$BOOTSTRAP_PIXEL_TRANSACTION" ]] || return 0
     [[ "$BOOTSTRAP_PIXEL_RELEASE_FAILED" != true ]] || return 1
+    if [[ "${BOOTSTRAP_PIXEL_NATIVE:-false}" == true ]]; then
+        # Used only by pre-mutation cleanup. A changed native route is released
+        # by the adapter after its full proof, never by the generic EXIT trap.
+        if [[ "$outcome" != rolled-back ]] || ! native_bootstrap_model release-unchanged; then
+            BOOTSTRAP_PIXEL_RELEASE_FAILED=true
+            return 1
+        fi
+        BOOTSTRAP_PIXEL_TRANSACTION=""
+        return 0
+    fi
     if ! _ods_pixel_model_transition finish "$BOOTSTRAP_PIXEL_OWNER" "$BOOTSTRAP_PIXEL_HOME" \
         "$BOOTSTRAP_PIXEL_TRANSACTION" "$outcome"; then
         BOOTSTRAP_PIXEL_RELEASE_FAILED=true
@@ -1713,6 +1743,7 @@ acquire_model_lifecycle_lock || fail "Could not serialize background full-model 
 
 _windows_native_llama_swap_applies=false
 _docker_llama_swap_applies=false
+_macos_native_llama_swap_applies=false
 if is_windows_bash; then
     # Windows AMD runs ggml-org llama-server.exe natively (Round F); the
     # installer migrates older runtimes before this script runs.
@@ -1724,6 +1755,8 @@ if is_windows_bash; then
         && [[ "$_runtime_mode_for_swap" == "windows-llama-server-fallback" || ( "$_runtime_for_swap" == "llama-server" && "$_location_for_swap" == "host" ) ]]; then
         _windows_native_llama_swap_applies=true
     fi
+elif [[ "$(uname -s 2>/dev/null || true)" == Darwin && -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
+    _macos_native_llama_swap_applies=true
 elif [[ -n "$DOCKER_CMD" ]]; then
     # Linux Docker installs mutate .env/models.ini before attempting a
     # llama-server hot-swap. Snapshot whenever Docker is available so every
@@ -1731,7 +1764,7 @@ elif [[ -n "$DOCKER_CMD" ]]; then
     _docker_llama_swap_applies=true
 fi
 
-if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
+if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" || "${_macos_native_llama_swap_applies:-false}" == "true" ]]; then
     if ! acquire_bootstrap_pixel_model_transaction; then
         write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
             "Full model downloaded and verified, but ODS could not safely drain Portal work before activation. Current model configuration was left unchanged; inspect Pixel transition recovery before retrying."
@@ -1744,7 +1777,7 @@ if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_ap
     fi
 fi
 
-if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" ]]; then
+if [[ "$_windows_native_llama_swap_applies" == "true" || "$_docker_llama_swap_applies" == "true" || "${_macos_native_llama_swap_applies:-false}" == "true" ]]; then
     log "Snapshotting active model config before full-model swap..."
     if ! snapshot_active_model_config; then
         discard_active_model_config_snapshot
@@ -2170,162 +2203,27 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
         exit 1
     fi
 elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
-    # macOS native llama-server (Metal) — restart with new model
-    log "Detected native llama-server (macOS Metal mode)"
-
-    LLAMA_SERVER_BIN="$INSTALL_DIR/bin/llama-server"
-    LLAMA_SERVER_PID_FILE="$INSTALL_DIR/data/.llama-server.pid"
-    LLAMA_SERVER_LOG="$HOME/Library/Logs/ODS/llama-server.log"
-
-    if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-        log "WARNING: llama-server binary not found at $LLAMA_SERVER_BIN. Cannot hot-swap."
-        log "Run './ods-macos.sh restart' to load the new model manually."
+    # macOS uses the same native restart, live completion proof, and protected
+    # Pixel transaction as an interactive switch. Health alone is insufficient.
+    log "Promoting the native macOS model under the captured Pixel transaction..."
+    native_bootstrap_model promote
+    _native_promotion_status=$?
+    if [[ "$_native_promotion_status" == 0 ]]; then
+        BOOTSTRAP_PIXEL_TRANSACTION=""
+        HOT_SWAP_VERIFIED=true
+        discard_active_model_config_snapshot
     else
-        # Read updated model config from .env
-        _gguf_file=$(grep '^GGUF_FILE=' "$ENV_FILE" | cut -d= -f2 | tr -d '"'"'")
-        _ctx_size=$(grep '^CTX_SIZE=' "$ENV_FILE" | cut -d= -f2 | tr -d '"'"'" || echo "")
-        [[ -z "$_ctx_size" ]] && _ctx_size=$(grep '^MAX_CONTEXT=' "$ENV_FILE" | cut -d= -f2 | tr -d '"'"'" || echo "")
-        [[ -z "$_ctx_size" ]] && _ctx_size="16384"
-        _model_path="$MODELS_DIR/${_gguf_file}"
-
-        if [[ ! -f "$_model_path" ]]; then
-            log "WARNING: Model file not found at $_model_path"
-        else
-            # Read reasoning mode from .env (default off to prevent thinking models
-            # from consuming the entire token budget on internal reasoning)
-            _reasoning=$(grep '^LLAMA_REASONING=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "")
-            [[ -z "$_reasoning" ]] && _reasoning="off"
-            case "$_reasoning" in
-                off)  _reasoning_fmt="none" ;;
-                on)   _reasoning_fmt="deepseek" ;;
-                *)    _reasoning_fmt="$_reasoning" ;;
-            esac
-
-            # Spell draft flags for this runtime and add the macOS defaults it
-            # supports (--ctx-checkpoints 32, --spec-type ngram-mod, and
-            # --reasoning on b9014 instead of this --reasoning-format), with the
-            # helper install-macos.sh and ods-macos.sh use, before the bootstrap
-            # model is stopped. A rejected setting must not strand the swap.
-            _llama_tuning_args=(--reasoning-format "$_reasoning_fmt")
-            _tuning_helper="$INSTALL_DIR/installers/macos/lib/native-checkpoint-args.py"
-            if [[ -f "$_tuning_helper" ]] && _tuning_file="$(mktemp)"; then
-                if "${ODS_PYTHON_CMD:-python3}" "$_tuning_helper" --binary "$LLAMA_SERVER_BIN" \
-                    --interval="$(read_env_value LLAMA_ARG_CHECKPOINT_EVERY_NT)" \
-                    --checkpoints="$(read_env_value LLAMA_ARG_CTX_CHECKPOINTS)" \
-                    --cache-mib="$(read_env_value LLAMA_ARG_CACHE_RAM)" \
-                    --idle-seconds="$(read_env_value LLAMA_ARG_SLEEP_IDLE_SECONDS)" \
-                    --min-spacing="$(read_env_value LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT)" \
-                    --explicit-spec-type="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
-                    --spec-default="$(read_env_value LLAMA_SPEC_TYPE)" \
-                    --draft-n-max="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \
-                    --draft-type-k="$(read_env_value LLAMA_ARG_SPEC_DRAFT_TYPE_K)" \
-                    --draft-type-v="$(read_env_value LLAMA_ARG_SPEC_DRAFT_TYPE_V)" \
-                    --reasoning-mode="$_reasoning" --reasoning-format-fallback="$_reasoning_fmt" \
-                    --apply-defaults > "$_tuning_file"; then
-                    _llama_tuning_args=()
-                    while IFS= read -r -d '' _tuning_field; do
-                        _llama_tuning_args+=("$_tuning_field")
-                    done < "$_tuning_file"
-                else
-                    log "WARNING: native llama-server tuning was rejected for this runtime; starting the full model without it. Fix .env, then run './ods-macos.sh restart'."
-                fi
-                rm -f "$_tuning_file"
-            fi
-
-            # Capture old model path for rollback before we kill the process
-            _old_pid=$(cat "$LLAMA_SERVER_PID_FILE" 2>/dev/null | tr -d '[:space:]')
-            _old_model_path=""
-            if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
-                _old_model_path=$(ps -p "$_old_pid" -o args= 2>/dev/null | grep -oE '\-\-model [^ ]+' | awk '{print $2}') || true
-            fi
-
-            # Stop existing native llama-server
-            if [[ -n "$_old_pid" ]] && kill -0 "$_old_pid" 2>/dev/null; then
-                # Verify it's actually llama-server (PID could have been reused)
-                if ps -p "$_old_pid" -o comm= 2>/dev/null | grep -q llama; then
-                    log "Stopping native llama-server (PID $_old_pid)..."
-                    kill "$_old_pid" 2>/dev/null || true
-                    sleep 2
-                    if kill -0 "$_old_pid" 2>/dev/null; then
-                        kill -9 "$_old_pid" 2>/dev/null || true
-                    fi
-                else
-                    log "PID $_old_pid is no longer llama-server, skipping kill"
-                fi
-            fi
-
-            # The dashboard's LAN binding must not expose native inference.
-            _bind="127.0.0.1"
-            _native_port=$(grep '^ODS_NATIVE_LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            [[ "$_native_port" =~ ^[0-9]+$ ]] || _native_port="8080"
-            _flash_attn=$(grep '^LLAMA_ARG_FLASH_ATTN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            _gpu_layers=$(grep '^N_GPU_LAYERS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
-            [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
-            _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            _llama_args=(
-                --host "$_bind" --port "$_native_port"
-                --model "$_model_path"
-                --ctx-size "$_ctx_size"
-                --n-gpu-layers "$_gpu_layers"
-                --metrics
-            )
-            [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
-            [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
-            [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
-            [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
-            [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
-            _llama_args+=(${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"})
-
-            # Relaunch with new model
-            log "Starting native llama-server with ${_gguf_file}..."
-            bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
-                "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
-            _new_pid="$(cat "$LLAMA_SERVER_PID_FILE")"
-
-            # Wait for health
-            log "Waiting for native llama-server health..."
-            _healthy=false
-            for _i in $(seq 1 60); do
-                if curl -sf --max-time 5 "http://127.0.0.1:${_native_port}/health" &>/dev/null; then
-                    _healthy=true
-                    break
-                fi
-                sleep 5
-            done
-
-            if $_healthy; then
-                log "SUCCESS: Native llama-server running with ${_gguf_file} (PID $_new_pid)"
-                HOT_SWAP_VERIFIED=true
-            else
-                log "WARNING: New model failed to load. Attempting rollback..."
-                kill "$_new_pid" 2>/dev/null || true
-                sleep 2
-                if kill -0 "$_new_pid" 2>/dev/null; then
-                    kill -9 "$_new_pid" 2>/dev/null || true
-                fi
-                if [[ -n "${_old_model_path:-}" && -f "$_old_model_path" ]]; then
-                    bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
-                            "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" \
-                            --host "$_bind" --port "$_native_port" \
-                            --model "$_old_model_path" \
-                            --ctx-size "$_ctx_size" \
-                            --n-gpu-layers "$_gpu_layers" \
-                            --reasoning-format "${_reasoning_fmt:-none}" \
-                            --metrics
-                    _rollback_pid="$(cat "$LLAMA_SERVER_PID_FILE")"
-                    log "Rolled back to previous model: $(basename "$_old_model_path") (PID $_rollback_pid)"
-                else
-                    log "WARNING: Could not rollback — previous model not found."
-                    log "Run './ods-macos.sh restart' to manually recover."
-                fi
-                write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
-                    "Full model downloaded and verified, but native macOS llama-server did not load it after swap. Bootstrap model kept; run './ods-macos.sh restart' or re-run to retry."
-                exit 1
-            fi
+        # Exit 20 is confined to runtime failure before any Pixel apply, with
+        # the same hold re-proved and host state unchanged. Every ambiguous
+        # apply/finish stays held; do not restore inference behind its back.
+        if [[ "$_native_promotion_status" == 20 ]] && restore_active_model_config \
+            && native_bootstrap_model rollback; then
+            BOOTSTRAP_PIXEL_TRANSACTION=""
+            log "Previous native model and Pixel contract were verified after rollback."
         fi
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Native full-model promotion did not finish. The bootstrap model was kept; inspect the preserved model-switch recovery state before retrying."
+        exit 1
     fi
 else
     log "Docker services not running. Config updated — full model will load on next start."

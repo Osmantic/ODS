@@ -149,3 +149,58 @@ def test_env_change_during_identity_probe_never_runs_the_old_completion(route, m
         attempts=2, initial_delay=0, interval=0,
         return_proof=True,
         env_still_current=lambda: tma._mod._initial_switchboard_route_env_matches(snapshot)) == {}
+
+
+def hold_background_transaction():
+    current = tma._mod._PixelModelTransaction({})
+    current.previous = dict(model='old-model.gguf', contextLength=65536,
+        maxTokens=8192, reasoning=False)
+    current._save('held')
+    assert tma._mod._pixel_model_recovery_status()['pending']
+
+
+def test_held_background_transaction_cancels_observer_without_probing(route, monkeypatch):
+    _, state_path = route
+    before = state_path.read_bytes()
+    hold_background_transaction()
+    monkeypatch.setattr(tma._mod, '_wait_for_model_readiness',
+        lambda *_a, **_k: pytest.fail('a held bootstrap owns runtime proof'))
+    monkeypatch.setattr(tma._mod, '_schedule_initial_switchboard_verification',
+        lambda *_: pytest.fail('status must not schedule a competing writer'))
+    tma._mod._verify_switchboard_route_for_status({'status': 'complete'}, 'status')
+    assert not tma._mod._publish_verified_initial_switchboard_route(reason='startup')
+    assert tma._mod._switchboard_initial_verify_cancel.is_set()
+    assert state_path.read_bytes() == before
+
+
+def test_background_hold_acquired_during_proof_prevents_publication(route, monkeypatch):
+    _, state_path = route
+    before = state_path.read_bytes()
+    def proof(*_args, **_kwargs):
+        hold_background_transaction()
+        return dict(identity='old-model.gguf', contextLength=65536, contextVerified=True)
+    monkeypatch.setattr(tma._mod, '_wait_for_model_readiness', proof)
+    assert not tma._mod._publish_verified_initial_switchboard_route(reason='status')
+    assert state_path.read_bytes() == before
+
+
+def test_unreadable_background_journal_never_authorizes_observer(route, monkeypatch):
+    _, state_path = route
+    before = state_path.read_bytes()
+    journal = tma._mod._pixel_model_journal_path()
+    journal.write_text('not a transaction')
+    journal.chmod(0o600)
+    monkeypatch.setattr(tma._mod, '_wait_for_model_readiness',
+        lambda *_a, **_k: pytest.fail('an unsafe journal must prevent runtime probing'))
+    assert not tma._mod._publish_verified_initial_switchboard_route(reason='startup')
+    assert state_path.read_bytes() == before
+
+
+def test_completed_background_transaction_allows_new_observation(route):
+    env_path, _ = route
+    hold_background_transaction()
+    current = tma._mod._read_pixel_model_journal()
+    current.update(phase='completed', outcome='rollback')
+    tma._mod._atomic_write_json(tma._mod._pixel_model_journal_path(), current, 0o600)
+    assert tma._mod._prepare_initial_switchboard_verification()
+    assert tma._mod._initial_switchboard_route_env_matches(tma._mod.load_env(env_path))

@@ -367,24 +367,8 @@ for arg in ${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}
                 self.assertEqual(argv[argv.index("--model") + 1], str(self.install / "data/models/model.gguf"))
                 self.assert_argv(argv, release)
 
-    def test_bootstrap_full_model_swap(self):
-        source = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
-        block = section(source, "            # Read reasoning mode from .env", "            # Capture old model path")
-        script = (
-            "set -uo pipefail\n"
-            'ENV_FILE="$INSTALL/.env"; INSTALL_DIR="$INSTALL"; LLAMA_SERVER_BIN="$RUNTIME"\n'
-            "log() { echo \"$*\" >&2; }\n"
-            'read_env_value() { grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-; }\n'
-            + block +
-            '\nfor arg in ${_llama_tuning_args[@]+"${_llama_tuning_args[@]}"}; do printf "%s\\0" "$arg"; done\n'
-        )
-        for release, expected in self.EXPECTED.items():
-            with self.subTest(release=release):
-                self.use_runtime(release)
-                self.assertEqual(self.run_bash(script), expected)
-        # A rejected setting keeps the swap going with only the reasoning format.
-        (self.install / ".env").write_text("LLAMA_ARG_SPEC_DRAFT_N_MAX=0\n")
-        self.assertEqual(self.run_bash(script), ["--reasoning-format", "none"])
+
+    # Bootstrap now delegates to the tested host-agent native launcher.
 
 
 class LauncherContractTests(unittest.TestCase):
@@ -399,12 +383,10 @@ class LauncherContractTests(unittest.TestCase):
     def launcher_flags(self):
         install = (ROOT / "installers/macos/install-macos.sh").read_text(encoding="utf-8")
         cli = (ROOT / "installers/macos/ods-macos.sh").read_text(encoding="utf-8")
-        upgrade = (ROOT / "scripts/bootstrap-upgrade.sh").read_text(encoding="utf-8")
         agent_flags, qualified_keys = host_agent_flags()
         return {
             "install-macos.sh": array_flags(section(install, "# Read reasoning mode from .env", "# Wait for health endpoint"), "_llama_args"),
             "ods-macos.sh": array_flags(section(cli, "start_native_llama() {", "stop_native_llama() {"), "llama_args"),
-            "bootstrap-upgrade.sh": array_flags(section(upgrade, "# macOS native llama-server (Metal)", "# Wait for health"), "_llama_args"),
             "ods-host-agent.py": agent_flags,
         }, qualified_keys
 

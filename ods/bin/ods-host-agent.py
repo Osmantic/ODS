@@ -665,10 +665,19 @@ _SWITCHBOARD_ROUTE_ENV_KEYS = (
 )
 
 
+def _model_transaction_blocks_route_observer() -> bool:
+    """A background participant owns the same durable model transaction."""
+    try:
+        return bool(_pixel_model_recovery_status()['pending'])
+    except (OSError, ValueError, RuntimeError):
+        # An unreadable/unsafe journal is not permission to replace its route.
+        return True
+
+
 def _prepare_initial_switchboard_verification() -> bool:
     """Reset route-proof cancellation only while no lifecycle owner exists."""
     with _model_lifecycle_state_lock:
-        if _model_lifecycle_operation:
+        if _model_lifecycle_operation or _model_transaction_blocks_route_observer():
             _switchboard_initial_verify_cancel.set()
             return False
         _switchboard_initial_verify_cancel.clear()
@@ -2601,6 +2610,8 @@ def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
 
 def _initial_switchboard_route_env_matches(expected_env: dict) -> bool:
     """Abandon observational proof when the installer selects another route."""
+    if _model_transaction_blocks_route_observer():
+        return False
     current_env = load_env(INSTALL_DIR / ".env")
     return all(
         str(current_env.get(key) or "") == str(expected_env.get(key) or "")
@@ -2657,11 +2668,11 @@ def _publish_verified_initial_switchboard_route(
         return False
 
     fresh_env = load_env(INSTALL_DIR / ".env")
-    if any(
+    if _model_transaction_blocks_route_observer() or any(
         str(fresh_env.get(key) or "") != str(env.get(key) or "")
         for key in route_env_keys
     ):
-        logger.info("switchboard initial route proof discarded after env changed")
+        logger.info("switchboard initial route proof discarded after env changed or model transaction acquired")
         return False
     if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
         return False
@@ -2845,7 +2856,7 @@ def _model_status_allows_route_proof(data: dict) -> bool:
 def _verify_switchboard_route_for_status(data: dict, reason: str) -> None:
     if _switchboard_state is None:
         return
-    if _model_lifecycle_status():
+    if _model_lifecycle_status() or _model_transaction_blocks_route_observer():
         _switchboard_initial_verify_cancel.set()
         return
     state_path = _switchboard_state_path()

@@ -28,6 +28,8 @@ on:
       - 'ods/tests/test_macos_pixel_ops_state_live.py'
       - 'ods/get-ods.sh'
       - 'ods/tests/test_bootstrap_system_bash.py'
+      - 'ods/scripts/bootstrap-upgrade.sh'
+      - 'ods/tests/test_bootstrap_macos_model_promotion.py'
       - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
   push:
@@ -58,6 +60,8 @@ on:
       - 'ods/tests/test_macos_pixel_ops_state_live.py'
       - 'ods/get-ods.sh'
       - 'ods/tests/test_bootstrap_system_bash.py'
+      - 'ods/scripts/bootstrap-upgrade.sh'
+      - 'ods/tests/test_bootstrap_macos_model_promotion.py'
       - 'ods/bin/ods-host-agent.py'
       - '.github/workflows/test-macos-bridge.yml'
 
@@ -78,7 +82,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install 'pytest>=8,<9' 'PyYAML>=6,<7'
       - name: Verify the one-line bootstrap runs under the system Bash
-        run: python -m pytest -q ods/tests/test_bootstrap_system_bash.py
+        run: python -m pytest -q ods/tests/test_bootstrap_system_bash.py ods/tests/test_bootstrap_macos_model_promotion.py
       - name: Verify native retirement precedes destructive uninstall
         run: bash ods/tests/test-macos-uninstall-launchagents.sh
       - name: Verify bridge admission and real HTTP forwarding
