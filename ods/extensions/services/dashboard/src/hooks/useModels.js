@@ -1,3 +1,4 @@
+import {modelActivationStatus} from '../lib/modelActivationStatus'
 import { useState, useEffect, useCallback, useRef } from 'react'
 
 // Mock data for development/demo - gated behind VITE_USE_MOCK_DATA env var
@@ -235,6 +236,8 @@ export function useModels({observe=true} = {}) {
   const [activationReadyModel, setActivationReadyModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [configuredModel, setConfiguredModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
   const [modelLifecycle, setModelLifecycle] = useState(null)
+  const [modelActivation, setModelActivation] = useState(null)
+  const [modelRecoveryPending, setModelRecoveryPending] = useState(false)
   const [odsMode, setOdsMode] = useState(USE_MOCK_DATA ? MOCK_MODES.odsMode : 'unknown')
   const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
@@ -334,6 +337,8 @@ export function useModels({observe=true} = {}) {
       setActivationReadyModel(data.activationReadyModel ?? null)
       setConfiguredModel(data.configuredModel ?? null)
       setModelLifecycle(normalizeModelLifecycle(data.modelLifecycle))
+      setModelActivation(modelActivationStatus(data.modelActivation))
+      setModelRecoveryPending(data.modelRecoveryPending === true)
       const effectiveMode = normalizeOdsMode(data.odsMode)
       setOdsMode(effectiveMode)
       setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
@@ -358,6 +363,7 @@ export function useModels({observe=true} = {}) {
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
         setFetchError(err.message)
+        setModelActivation(null)
         setModelManagement(normalizeModelManagement(null))
       }
       // No silent fallback - let error propagate to UI
@@ -678,6 +684,8 @@ export function useModels({observe=true} = {}) {
     activationReadyModel,
     configuredModel,
     modelLifecycle,
+    modelActivation,
+    modelRecoveryPending,
     odsMode,
     configuredMode,
     llmBackend,

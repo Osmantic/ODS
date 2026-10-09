@@ -6,9 +6,11 @@ pins both the faster path and the safety contract it must keep.
 """
 
 import importlib.util
+import copy
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -405,6 +407,188 @@ class TestReadinessFastWindow:
         assert len(probes) == 2 + 3
         assert sleeps[:1] == [0.5]
         assert sleeps[-2:] == [5, 5]
+
+    def test_proven_terminal_load_failure_skips_remaining_wait(self, monkeypatch):
+        probes, sleeps = self._probe_runtime(monkeypatch, ready_on_probe=10**9)
+        diagnosis: dict = {}
+        assert self._wait(fast_poll_seconds=30, terminal_failure_probe=lambda: True,
+                          diagnosis=diagnosis) == {}
+        assert len(probes) == 1 and sleeps == []
+        assert diagnosis['code'] == 'runtime_load_failed' and diagnosis['final'] is True
+
+    @pytest.mark.parametrize('health', ['loading', 'unreachable'])
+    def test_loading_and_transient_unreachable_keep_waiting(self, monkeypatch, health):
+        probes, sleeps = self._probe_runtime(monkeypatch, ready_on_probe=1)
+        observations = iter([health, health, 'ok'])
+        monkeypatch.setattr(_mod, '_runtime_health', lambda _env: next(observations))
+        assert self._wait(fast_poll_seconds=30, terminal_failure_probe=lambda: False)['contextVerified']
+        assert sleeps == [0.5, 0.5]
+
+
+class TestStagedFatalLoadEvidence:
+    START = '2026-10-09T03:23:58.123456789Z'
+    FATAL = ("llama_model_load: error loading model: missing tensor 'blk.24.ssm_conv1d.weight'\n"
+             'main: exiting due to model loading error\n')
+
+    @classmethod
+    def row(cls):
+        return {'Id': 'a' * 64, 'Config': {'Cmd': ['--model', '/models/new-model.gguf']},
+                'State': {'Status': 'restarting', 'ExitCode': 1, 'OOMKilled': False,
+                          'StartedAt': cls.START}}
+
+    def script(self, monkeypatch, rows, logs=None):
+        calls = []
+        observations = iter(rows)
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == ['docker', 'inspect']:
+                observation = next(observations)
+                if isinstance(observation, Exception):
+                    raise observation
+                return subprocess.CompletedProcess(cmd, 0, json.dumps([observation]), '')
+            assert cmd[:2] == ['docker', 'logs']
+            assert cmd == ['docker', 'logs', '--since', self.START, '--tail', '100', 'a' * 64]
+            return subprocess.CompletedProcess(cmd, 0, self.FATAL if logs is None else logs, '')
+
+        monkeypatch.setattr(_mod.subprocess, 'run', run)
+        return calls
+
+    def probe(self):
+        return _mod._staged_llama_load_failure_probe('new-model.gguf', 1791516237.0)
+
+    @pytest.mark.parametrize('status', ['restarting', 'exited', 'dead'])
+    def test_exact_current_process_terminal_failure(self, monkeypatch, status):
+        row = self.row()
+        row['State']['Status'] = status
+        self.script(monkeypatch, [row, row, row])
+        assert self.probe()() is True
+
+    def test_actual_readiness_exits_for_current_missing_tensor_without_timeout(self, monkeypatch):
+        row = self.row()
+        self.script(monkeypatch, [row, row, row])
+        monkeypatch.setattr(_mod, '_runtime_health', lambda _env: 'unreachable')
+        sleeps = []
+        monkeypatch.setattr(_mod.time, 'sleep', sleeps.append)
+        diagnosis: dict = {}
+        assert TestReadinessFastWindow()._wait(
+            fast_poll_seconds=30, terminal_failure_probe=self.probe(), diagnosis=diagnosis) == {}
+        assert sleeps == []
+        assert diagnosis['code'] == 'runtime_load_failed'
+
+    @pytest.mark.parametrize('change', [
+        {'Id': 'b' * 64},
+        {'Config': {'Cmd': ['--model', '/models/other.gguf']}},
+        {'State': {'Status': 'running'}},
+        {'State': {'ExitCode': 0}},
+        {'State': {'OOMKilled': True}},
+        {'State': {'StartedAt': '2026-10-09T03:20:00.000000000Z'}},
+        {'State': {'StartedAt': 'invalid'}},
+    ])
+    def test_unrelated_or_unproven_failure_does_not_shorten_wait(self, monkeypatch, change):
+        initial, observed = self.row(), self.row()
+        for key, value in change.items():
+            if key == 'State':
+                observed[key].update(value)
+            else:
+                observed[key] = value
+        calls = self.script(monkeypatch, [initial, observed])
+        assert self.probe()() is False
+        assert all(cmd[1] != 'logs' for cmd in calls)
+
+    @pytest.mark.parametrize('logs', [
+        'main: exiting due to model loading error\n',
+        "llama_model_load: error loading model: missing tensor 'blk.24.ssm_conv1d.weight'\n",
+        'llama_model_load: error loading model: out of memory\nmain: exiting due to model loading error\n',
+        'untrusted prefix ' + FATAL,
+    ])
+    def test_only_allowlisted_complete_fatal_signature(self, monkeypatch, logs):
+        row = self.row()
+        self.script(monkeypatch, [row, row, row], logs)
+        assert self.probe()() is False
+
+    @pytest.mark.parametrize('replace', [True, False])
+    def test_container_or_process_replaced_during_log_read(self, monkeypatch, replace):
+        row, after = self.row(), copy.deepcopy(self.row())
+        if replace:
+            after['Id'] = 'b' * 64
+        else:
+            after['State']['StartedAt'] = '2026-10-09T03:23:59.123456789Z'
+        self.script(monkeypatch, [row, row, after])
+        assert self.probe()() is False
+
+    def test_unavailable_docker_does_not_claim_fatal(self, monkeypatch):
+        self.script(monkeypatch, [self.row(), subprocess.TimeoutExpired('docker', 5)])
+        assert self.probe()() is False
+
+    def test_unrecognized_initial_container_disables_probe(self, monkeypatch):
+        row = self.row()
+        row['Config']['Cmd'] = ['unrecognized']
+        self.script(monkeypatch, [row])
+        assert self.probe() is None
+
+
+class TestActivationLifecycleResult:
+    @pytest.fixture(autouse=True)
+    def isolated_lifecycle(self, monkeypatch):
+        monkeypatch.setattr(_mod, '_model_lifecycle_lock', threading.Lock())
+        for name in ('_model_lifecycle_operation', '_model_lifecycle_target',
+                     '_model_activation_target', '_model_activation_phase',
+                     '_model_activation_failure_code', '_model_activation_result'):
+            monkeypatch.setattr(_mod, name, None)
+        monkeypatch.setattr(_mod, '_switchboard_initial_verify_cancel', threading.Event())
+
+    def test_progress_is_owned_and_terminal_result_survives_neutral_polls(self):
+        assert _mod._model_lifecycle_status() == {}
+        _mod._set_model_activation_phase('loading')
+        assert _mod._model_lifecycle_status() == {}
+        assert _mod._begin_model_activation('target-model')[0]
+        assert _mod._model_lifecycle_status()['activationPhase'] == 'preparing'
+        _mod._set_model_activation_phase('rolling_back', 'runtime_load_failed')
+        _mod._set_model_activation_phase('rollback_verifying')
+        assert _mod._model_lifecycle_status()['activationFailureCode'] == 'runtime_load_failed'
+        _mod._record_model_activation_result('rolled_back', 'runtime_load_failed')
+        assert 'activationResult' not in _mod._model_lifecycle_status()
+        _mod._end_model_activation()
+        terminal = {'outcome': 'rolled_back', 'failureCode': 'runtime_load_failed'}
+        assert _mod._model_lifecycle_status() == {'activationResult': terminal}
+        for operation in _mod._MODEL_RUNTIME_NEUTRAL_OPERATIONS:
+            assert _mod._begin_model_lifecycle(operation)[0]
+            assert _mod._model_lifecycle_status()['activationResult'] == terminal
+            _mod._end_model_lifecycle(operation)
+            assert _mod._model_lifecycle_status() == {'activationResult': terminal}
+        assert _mod._begin_model_activation('next-model')[0]
+        assert 'activationResult' not in _mod._model_lifecycle_status()
+        _mod._end_model_activation()
+        assert _mod._model_lifecycle_status() == {}
+
+    def test_terminal_result_does_not_block_current_route_proof(self, monkeypatch):
+        monkeypatch.setattr(_mod, '_model_activation_result', {'outcome': 'activated', 'failureCode': None})
+        monkeypatch.setattr(_mod, '_switchboard_state', object())
+        monkeypatch.setattr(_mod, '_switchboard_state_needs_current_env_verification', lambda _: True)
+        monkeypatch.setattr(_mod, '_model_status_allows_route_proof', lambda _: True)
+        scheduled: list[str] = []
+        monkeypatch.setattr(_mod, '_schedule_initial_switchboard_verification', scheduled.append)
+        _mod._verify_switchboard_route_for_status({}, 'test')
+        assert scheduled == ['test']
+
+    @pytest.mark.parametrize('setter,args', [
+        ('_set_model_activation_phase', ('/secret/path',)),
+        ('_set_model_activation_phase', ('loading', 'secret=value')),
+        ('_record_model_activation_result', ('/secret/path',)),
+        ('_record_model_activation_result', ('rolled_back', 'secret=value')),
+    ])
+    def test_unknown_values_never_enter_status(self, setter, args):
+        with pytest.raises(ValueError) as caught:
+            getattr(_mod, setter)(*args)
+        assert 'secret' not in str(caught.value)
+        assert _mod._model_lifecycle_status() == {}
+
+    @pytest.mark.parametrize('code', ['timeout', 'identity_mismatch', '/secret/path', {'unsafe': 'value'}, None])
+    @pytest.mark.parametrize('healthy', [True, False])
+    def test_internal_diagnostic_normalization_cannot_obstruct_rollback(self, code, healthy):
+        assert _mod._model_activation_public_failure({'code': code}, healthy) == (
+            'consumer_verification_failed' if healthy else 'runtime_readiness_failed')
 
 
 @pytest.mark.parametrize(

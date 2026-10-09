@@ -3186,9 +3186,12 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 20
+assert len(set(managed)) == len(managed) == 21
 assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "subagent-admission", "hook-provenance", "run-id-redaction"}.issubset(managed)
 assert "command-attempt-warning" in managed
+assert "subagent-session" in managed
+assert "--subagent-session" in installer
+assert "host/openclaw-subagent-session.json" in installer
 assert "--command-attempt-warning" in installer
 assert "host/openclaw-command-attempt-warning.json" in installer
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")

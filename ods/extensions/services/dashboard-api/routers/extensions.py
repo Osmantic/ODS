@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -482,6 +483,12 @@ def _gpu_compatible(ext: dict) -> bool:
     return not gpu_backends or "all" in gpu_backends or GPU_BACKEND in gpu_backends
 
 
+def _service_starting(service) -> bool:
+    """Startup requires declared container health, not a slow/failed HTTP probe."""
+    return (service is not None and service.status in {"down", "degraded"}
+            and getattr(service, "startup_pending", False) is True)
+
+
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
@@ -536,6 +543,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         svc = services_by_id.get(ext_id)
         if svc and svc.status == "healthy":
             return "enabled"
+        if _service_starting(svc):
+            return "installing"
         if svc and svc.status in {"unhealthy", "degraded"}:
             return "unhealthy"
         return "stopped"
@@ -545,6 +554,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         svc = services_by_id.get(ext_id)
         if svc and svc.status == "healthy":
             return "enabled"
+        if _service_starting(svc):
+            return "installing"
         return "disabled"
 
     # User-installed extension â€” health-based when compose.yaml exists
@@ -557,6 +568,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             svc = services_by_id.get(ext_id)
             if svc and svc.status == "healthy":
                 return "enabled"
+            if _service_starting(svc):
+                return "installing"
             # HTTP 4xx/5xx from the health endpoint is the clearest "container
             # is up but broken" signal â€” surface it as "unhealthy" so the UI
             # can prompt a log check. Timeouts / connection refused / DNS
@@ -1860,17 +1873,20 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
     for sid, cfg in candidates.items():
         matches = [item for item in containers if isinstance(item, dict) and item.get("service_id") == sid]
         state = "unknown"
+        startup_pending = False
         # Ambiguous snapshots cannot establish readiness of this extension.
         if len(matches) == 1:
             item = matches[0]
             if item.get("state") == "running":
                 state = {"healthy": "healthy", "unhealthy": "unhealthy"}.get(item.get("health"), "degraded")
+                startup_pending = item.get("health") == "starting"
             elif item.get("state") in {"exited", "dead", "removing", "created"}:
                 state = "down"
         statuses[sid] = ServiceStatus(
             id=sid, name=cfg.get("name", sid), port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status=state, response_time_ms=None,
+            startup_pending=startup_pending,
         )
 
 
@@ -2012,6 +2028,7 @@ async def extensions_catalog(
         enriched = {
             **ext,
             "status": status,
+            "runtime_starting": status == "installing" and _service_starting(services_by_id.get(ext_id)),
             "installable": installable,
             "source": source,
             "has_data": has_data,
@@ -3485,6 +3502,7 @@ async def extension_detail(
         "description": ext.get("description", ""),
         "status": status,
         "error_message": error_message,
+        "runtime_starting": status == "installing" and _service_starting(services_by_id.get(service_id)),
         "source": source,
         "installable": installable,
         **_qualified_builtin_selection(service_id),
@@ -4945,6 +4963,15 @@ def enable_extension(
             warnings.append(
                 f"{svc_id}: post_start hook failed â€” manual configuration may be needed",
             )
+
+    # FastAPI runs this sync endpoint in an AnyIO worker. Observe on the app
+    # loop, which owns the HTTP clients, while retaining the operation locks.
+    # User recipes are already probed live by catalog/detail.
+    started_builtins = [sid for sid in enabled_services
+                        if sid in LIBRARY_MANAGEABLE_BUILTINS and sid not in failed_services]
+    if started_builtins:
+        from helpers import refresh_cached_builtin_services
+        from_thread.run(refresh_cached_builtin_services, started_builtins)
 
     logger.info("Enabled extension: %s (deps: %s)", service_id,
                 enabled_services[:-1] if len(enabled_services) > 1 else "none")

@@ -1706,6 +1706,35 @@ if [[ -n "$FULL_GGUF_SHA256" ]]; then
     fi
 fi
 
+promote_managed_macos_bootstrap() {
+    [[ "$(uname -s 2>/dev/null || true)" == "Darwin" ]] || return 10
+    local helper="$INSTALL_DIR/scripts/macos-bootstrap-promote.py"
+    local python
+    python="$(command -v python3)" || return 1
+    [[ -f "$helper" && ! -L "$helper" ]] || return 1
+    "$python" "$helper" "$INSTALL_DIR" "$FULL_GGUF_FILE" \
+        "$FULL_LLM_MODEL" "$FULL_MAX_CONTEXT"
+}
+
+BOOTSTRAP_GGUF="${BOOTSTRAP_GGUF_FILE:-Qwen3.5-2B-Q4_K_M.gguf}"
+BOOTSTRAP_PATH="$MODELS_DIR/$BOOTSTRAP_GGUF"
+HOT_SWAP_VERIFIED=false
+# The host agent owns the native Pixel and router gates, model configuration,
+# runtime restart, and rollback. Call it before acquiring any of those gates.
+# An ambiguous activation must never fall through to the legacy raw restart.
+if promote_managed_macos_bootstrap; then
+    HOT_SWAP_VERIFIED=true
+    log "Native Pixel and full-model runtime promotion verified."
+else
+    _macos_promotion_result=$?
+    if [[ "$_macos_promotion_result" -ne 10 ]]; then
+        write_status "failed" 100 "$TOTAL_BYTES" "$TOTAL_BYTES" 0 \
+            "Full model downloaded, but protected macOS activation could not be confirmed. Existing model files were kept. Inspect Dashboard Models and recovery state before retrying."
+        fail "Protected macOS model activation could not be confirmed."
+    fi
+fi
+
+if [[ "$HOT_SWAP_VERIFIED" != "true" ]]; then
 # Download bytes stay outside the lifecycle lock. Linux finalization acquires it
 # immediately before publishing the full GGUF filename, then retains it through
 # config promotion, compose verification, and bootstrap cleanup.
@@ -1774,10 +1803,6 @@ load-on-startup = true
 n-ctx = ${FULL_MAX_CONTEXT}
 EOF
 log "models.ini updated"
-
-BOOTSTRAP_GGUF="${BOOTSTRAP_GGUF_FILE:-Qwen3.5-2B-Q4_K_M.gguf}"
-BOOTSTRAP_PATH="$MODELS_DIR/$BOOTSTRAP_GGUF"
-HOT_SWAP_VERIFIED=false
 
 # ── Phase 5: Hot-swap llama-server (if running) ──
 # Read OLLAMA_PORT from .env (nohup doesn't inherit env vars from parent)
@@ -2331,6 +2356,8 @@ else
     log "Docker services not running. Config updated — full model will load on next start."
     discard_active_model_config_snapshot
 fi
+
+fi # Legacy promotion for Linux, Windows, and macOS without native Pixel.
 
 # ── Phase 5b: Remove bootstrap model only after verified full-model serving ──
 # Keep the bootstrap as the recovery path unless the new model has answered a

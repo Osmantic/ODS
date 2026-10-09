@@ -47,6 +47,22 @@ Every stage asks before changing anything. Answer `y` to continue.
 
 `-NonInteractive` never installs prerequisites or changes Docker Desktop settings; it only checks them. Never send passwords through chat.
 
+### Docker Desktop is installed but setup cannot find it
+
+Setup checks Docker Desktop's per-user location (`%LOCALAPPDATA%\Programs\DockerDesktop`),
+its all-users location (`%ProgramFiles%\Docker\Docker`), and custom `InstallLocation`
+values registered by Docker Desktop under the current user or machine. It requires
+both `Docker Desktop.exe` and its bundled `resources\bin\docker.exe` in the same
+installation. A standalone Docker CLI on `PATH` is not enough.
+
+If winget says Docker Desktop is already installed or has no applicable update
+(for example exit `-1978335189`), setup rechecks those locations. A detected installation proceeds through the normal
+engine, Ubuntu integration and Compose checks without requesting another Windows
+restart. If it still cannot find the application and CLI, open Docker Desktop
+from Start and share its installation folder and the exact ODS error with support.
+Keep your Docker data and Ubuntu installation; a Windows restore point or deleting
+containers is not a remedy for this discovery error.
+
 ## Options and location
 
 Use `wsl -l -v` to find distribution names. For an existing Ubuntu:

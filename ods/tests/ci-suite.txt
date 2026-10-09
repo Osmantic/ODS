@@ -220,6 +220,7 @@ tests/test-wsl-whisper-port-reservation.sh
 tests/test-wsl-windows-port-detection.sh
 tests/test_bootstrap_pixel_transaction.py
 tests/test_bootstrap_status_checksum.py
+tests/test_build_installation_context_output.py
 tests/test_build_installation_context_port.py
 tests/test_chromadb_healthcheck.py
 tests/test_cleanup_wsl_pixel_mounts.py
@@ -266,3 +267,6 @@ tests/test-migrate-shield-key.sh
 tests/test-ods-cli-update-shield-key.sh
 tests/test-backup-publication.sh
 tests/test-restore-compose-flags.sh
+tests/test-cli-purge-docker-inspection.sh
+tests/test-ods-cli-update-backup-required.sh
+tests/test-update-backup-publication.py

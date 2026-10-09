@@ -372,7 +372,7 @@ def test_ordinary_docker_binary_does_not_provision_another_cli(tmp_path, monkeyp
     assert module.native_docker_binary(binary) == str(binary.resolve())
 
 
-@pytest.mark.parametrize('fault', [None, 'no-webui', 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])
+@pytest.mark.parametrize('fault', [None, 'no-webui', 'ref', 'compose', 'context', 'remote', 'compose-command', 'project', 'services', 'node', 'pull', 'inspect', 'image', 'probe', 'prepare', 'activate'])
 def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_path, monkeypatch, fault):
     install_dir = tmp_path / 'ODS with spaces'
     (install_dir / 'data').mkdir(parents=True)
@@ -390,17 +390,23 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
     monkeypatch.setenv('DOCKER_CERT_PATH', '/unused-certificates')
     monkeypatch.setattr(module, 'preflight', lambda path, **kw: Path(path))
     monkeypatch.setattr(module.shutil, 'which', lambda name: str(binary))
-    monkeypatch.setattr(module, 'node_tools', lambda: ('/node', '/npm'))
+    def node_tools():
+        if fault == 'node':
+            raise OSError('private-node-path')
+        return '/node', '/npm'
+    monkeypatch.setattr(module, 'node_tools', node_tools)
     events = []
     def command(argv, **kwargs):
         argv = list(map(str, argv))
         if 'context' in argv:
             events.append('context')
+            if fault == 'context': raise ValueError('private-context-error')
             return json.dumps([{'Endpoints': {'docker': {'Host': 'tcp://remote:2375' if fault == 'remote' else 'unix://' + str(socket)}}}])
         assert kwargs['env']['DOCKER_HOST'] == 'unix://' + str(socket)
         assert not {'DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'} & kwargs['env'].keys()
         if 'compose' in argv:
             events.append('compose')
+            if fault == 'compose-command': raise subprocess.TimeoutExpired(['private-argument'], 1)
             assert argv[argv.index('--project-directory') + 1] == str(install_dir)
             services = ('dashboard-api', 'model-router') if fault == 'no-webui' else (
                 'dashboard-api', 'model-router', 'open-webui')
@@ -408,9 +414,11 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
                 'services': {} if fault == 'services' else dict.fromkeys(services, {})})
         if 'pull' in argv:
             events.append('pull')
+            if fault == 'pull': raise ValueError('native-installer-command-failed')
             return ''
         if 'inspect' in argv:
             events.append('image')
+            if fault == 'inspect': return 'private-invalid-json'
             return json.dumps([{'Id': 'sha256:' + 'a' * 64, 'Architecture': 'amd64' if fault == 'image' else 'arm64', 'Os': 'linux'}])
         assert 'run' in argv and '--read-only' in argv and '--network' in argv
         events.append('probe')
@@ -435,12 +443,85 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
             compose_files=[] if fault == 'compose' else files[:1],
             ref='invalid' if fault == 'ref' else module.DEFAULT_REF)
     if fault and fault != 'no-webui':
-        with pytest.raises(ValueError): run()
+        with pytest.raises((ValueError, OSError, subprocess.SubprocessError)) as caught: run()
+        expected = {
+            'ref': 'installation-inputs', 'compose': 'installation-inputs',
+            'context': 'docker-context', 'remote': 'docker-context',
+            'compose-command': 'base-compose-config', 'project': 'base-compose-config',
+            'services': 'base-compose-config', 'node': 'native-node-tools',
+            'pull': 'ingress-image-download', 'inspect': 'ingress-image-inspect',
+            'image': 'ingress-image-inspect', 'probe': 'ingress-runtime-probe',
+            'prepare': 'native-preparation', 'activate': 'native-activation',
+        }
+        assert caught.value._ods_install_phase == expected[fault]
         if fault not in ('prepare', 'activate'):
             assert not (install_dir / 'data/pixel-native').exists()
     else:
         assert run() == install_dir / 'data/pixel-native/preparation'
         assert events == ['context', 'compose', 'pull', 'image', 'probe', 'prepare', 'activate']
+
+
+@pytest.mark.parametrize('phase', ['ingress-image-download', 'ingress-runtime-probe'])
+@pytest.mark.parametrize('failure', ['exit', 'timeout', 'missing'])
+def test_early_command_failure_names_phase_without_receipts_or_private_output(
+        tmp_path, monkeypatch, capsys, phase, failure):
+    install_dir = tmp_path / 'ods'
+    install_dir.mkdir()
+    private = 'secret-canary-command-output'
+    if failure == 'missing':
+        argv = [str(tmp_path / private)]
+    else:
+        program = ('import time; time.sleep(10)' if failure == 'timeout' else
+            'import sys; print(' + repr(private) + '); print(' + repr(private) +
+            ', file=sys.stderr); sys.exit(23)')
+        argv = [sys.executable, '-c', program]
+    def fail(**kwargs):
+        with module.installation_phase(phase):
+            module.command(argv, timeout=0.05 if failure == 'timeout' else 10)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', str(install_dir), '--ods-source', str(install_dir)])
+    assert module.main() == 1
+    output = capsys.readouterr()
+    assert output.out == ''
+    assert '[phase:' + phase + ']' in output.err
+    assert 'preparation has not started; its receipts may not exist yet' in output.err
+    assert private not in output.err and str(tmp_path) not in output.err
+    assert not list(install_dir.iterdir())
+
+
+def test_phase_retains_typed_health_diagnostics(monkeypatch, capsys):
+    compose = module.helper('compose')
+    states = {name: {'state': 'running', 'health': 'healthy'} for name in compose.SERVICES}
+    states['pixel-workspace-preview'] = {'state': 'restarting', 'health': 'unhealthy'}
+    error = compose.NativeHealthTimeout(states)
+    def fail(**kwargs):
+        with module.installation_phase('native-activation'):
+            raise error
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    output = capsys.readouterr().err
+    assert '[phase:native-activation]' in output
+    assert '[native-compose-health-timeout]' in output
+    assert 'pixel-workspace-preview=restarting/unhealthy' in output
+    assert 'preparation has not started' not in output
+
+
+@pytest.mark.parametrize('phase', ['secret-canary-phase', ['ingress-image-download']])
+def test_unrecognized_phase_metadata_never_crosses_output_boundary(monkeypatch, capsys, phase):
+    error = ValueError('secret-canary-error')
+    error._ods_install_phase = phase
+    def fail(**kwargs):
+        raise error
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    output = capsys.readouterr().err
+    assert 'secret-canary' not in output
+    assert '[phase:' not in output
 
 
 def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persistence():

@@ -280,6 +280,45 @@ it.each([true,false])('clears an earlier activation error only after confirmed r
   expect(posts().map(([url])=>url)).toEqual([`/api/models/${encodeURIComponent(target)}/load`,'/api/models/recovery'])
 })
 
+it.each(['same transaction','pending','different transaction','idle','failed read'])('reconciles an activation error after recovery elsewhere only with proof: %s',async outcome=>{
+  vi.useFakeTimers()
+  let recoveryState={pending:false,phase:'idle',transactionId:null},readOk=true
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery')return {ok:readOk,status:readOk?200:503,json:async()=>recoveryState}
+    if(options?.method==='POST'){
+      recoveryState={pending:true,phase:'applied',transactionId:'a'.repeat(64)}
+      return {ok:false,status:500,json:async()=>({detail:'Health check failed; previous model restoration could not be proved; recovery is required.'})}
+    }
+    return {ok:true,json:async()=>payload()}
+  }))
+  const settled=vi.fn()
+  render(view({onSettled:settled}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 4B'}))
+  await act(async()=>{})
+  fireEvent.click(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/}))
+  fireEvent.click(screen.getByRole('button',{name:'Switch model',exact:true}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000)})
+  expect(screen.getByRole('alert')).toHaveTextContent('recovery is required')
+  expect(screen.getByRole('button',{name:'Recover model switch'})).toBeVisible()
+  fireEvent.keyDown(window,{key:'Escape'})
+  // Models (or another tab) resolves the held transaction while Portal stays mounted.
+  recoveryState=outcome==='pending'?recoveryState:outcome==='idle'
+    ? {pending:false,phase:'idle',transactionId:null}
+    : {pending:false,phase:'completed',transactionId:(outcome==='different transaction'?'b':'a').repeat(64),outcome:'rollback'}
+  readOk=outcome!=='failed read'
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 4B'}))
+  await act(async()=>{})
+  if(outcome==='same transaction'){
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
+    expect(settled).toHaveBeenCalledTimes(2)
+  }else{
+    expect(screen.getByRole('alert')).toHaveTextContent('recovery is required')
+    expect(settled).toHaveBeenCalledOnce()
+  }
+  expect(posts().map(([url])=>url)).toEqual([`/api/models/${encodeURIComponent(target)}/load`])
+})
+
 it('prevents a pending confirmation from switching models after a task starts',async()=>{
   const {rerender}=render(view())
   await open()
