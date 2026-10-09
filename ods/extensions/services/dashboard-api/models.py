@@ -233,6 +233,8 @@ class ModelLibraryResponse(BaseModel):
     recommendationPolicy: Optional[str] = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
     modelLifecycle: Optional[dict[str, Any]] = None
+    modelActivation: Optional[dict[str, Any]] = None
+    modelRecoveryPending: bool = False
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"

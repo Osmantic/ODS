@@ -1025,6 +1025,9 @@ def test_api_models_marks_backend_activation_target(test_client, monkeypatch, tm
             "activeOperation": "model_activation",
             "activeTarget": "qwen3.5-9b-q4",
             "activeModelId": "qwen3.5-9b-q4",
+            "activationPhase": "rolling_back",
+            "activationFailureCode": "runtime_load_failed",
+            "modelTransactionPending": True,
         },
     )
 
@@ -1042,6 +1045,9 @@ def test_api_models_marks_backend_activation_target(test_client, monkeypatch, tm
     row = payload["models"][0]
     assert row["status"] == "downloaded"
     assert row["modelOperation"] == payload["modelLifecycle"]
+
+    assert payload["modelActivation"] == {"active": True, "phase": "rolling_back", "failureCode": "runtime_load_failed"}
+    assert payload["modelRecoveryPending"] is True
 
 
 def test_agent_activation_conflict_preserves_target(monkeypatch):

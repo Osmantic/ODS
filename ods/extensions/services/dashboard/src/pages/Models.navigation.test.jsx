@@ -55,6 +55,32 @@ afterEach(() => {
   delete document.hidden
 })
 
+it('shows actual rollback progress after navigation while blocking a new model load',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async url=>{
+    if(url==='/api/models/recovery')return {ok:true,json:async()=>({pending:true,phase:'held',transactionId:'a'.repeat(64)})}
+    const payload=await response(true).json()
+    return {ok:true,json:async()=>({...payload,modelActivation:{active:true,phase:'rolling_back',failureCode:'runtime_load_failed'}})}
+  }))
+  await openModels()
+  expect(screen.getByRole('alert',{name:'Model activation'})).toHaveTextContent('restoring previous model')
+  expect(screen.getByRole('button',{name:'Working'})).toBeDisabled()
+  expect(screen.queryByRole('button',{name:'Recover model switch'})).toBeNull()
+  expect(posts()).toHaveLength(0)
+})
+
+it('offers the existing guarded recovery only after an authoritative pending read',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async url=>{
+    if(url==='/api/models/recovery')return {ok:true,json:async()=>({pending:true,phase:'held',transactionId:'a'.repeat(64)})}
+    const payload=await response(false).json()
+    return {ok:true,json:async()=>({...payload,modelRecoveryPending:true,
+      modelActivation:{active:false,outcome:'rollback_unconfirmed',failureCode:'rollback_unconfirmed'}})}
+  }))
+  await openModels()
+  expect(screen.getByRole('alert',{name:'Model activation'})).toHaveTextContent('Model recovery needs attention')
+  expect(screen.getByRole('button',{name:'Recover model switch'})).toBeEnabled()
+  expect(posts()).toHaveLength(0)
+})
+
 it('stops all activation polling after leaving Models between polls', async () => {
   const view = await openModels()
   await startActivation()

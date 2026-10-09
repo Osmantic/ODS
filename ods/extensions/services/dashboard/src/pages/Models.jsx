@@ -1,3 +1,5 @@
+import ModelActivationNotice from '../components/ModelActivationNotice'
+import PortalModelRecovery from '../components/PortalModelRecovery'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import HelpLink from '../components/HelpLink'
 import {
@@ -73,6 +75,8 @@ export default function Models({ compact = false }) {
     externalApi,
     modelManagement,
     modelLifecycle,
+    modelActivation,
+    modelRecoveryPending,
     runtimeActionLoading,
     stopRuntime,
     startRuntime,
@@ -259,7 +263,7 @@ export default function Models({ compact = false }) {
     canActivateModels={canActivateModels} activationModeError={activationModeError} apiMode={llmBackend === 'external'}
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
-    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading || runtimeActionLoading)}
+    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading || runtimeActionLoading || modelLifecycle?.active)}
     downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
     onDownload={() => handleDownload(model.id)} onLoad={() => { if (canActivateModels && !runtimeActionLoading) setActivationConfigModel(model) }}
     onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
@@ -314,6 +318,9 @@ export default function Models({ compact = false }) {
           </button>
         </div>
       </header>}
+
+      <ModelActivationNotice value={modelActivation} pending={modelLifecycle?.operation === 'model_activation'} onRefresh={refresh}/>
+      <PortalModelRecovery active={Boolean(modelRecoveryPending || modelActivation?.outcome === 'rollback_unconfirmed') && !modelLifecycle?.active} operationActive={Boolean(modelLifecycle?.active)} refreshKey={modelActivation} onRecovered={refresh}/>
 
       {error && (
         <div className="mb-5 rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">

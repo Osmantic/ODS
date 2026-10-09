@@ -1,3 +1,5 @@
+import ModelActivationNotice from '../components/ModelActivationNotice'
+import {modelActivationStatus} from '../lib/modelActivationStatus'
 import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
@@ -607,6 +609,7 @@ export default function Pixel({ systemStatus = null }) {
   const [modelSupport, setModelSupport] = useState(null)
   const [runtimeIdentity, setRuntimeIdentity] = useState(null)
   const [runtimeReadiness, setRuntimeReadiness] = useState(null)
+  const [modelActivation, setModelActivation] = useState(null)
   const [modelSwitching,setModelSwitching]=useState(false)
   const [modelStatusRefresh,setModelStatusRefresh]=useState(0)
   const [preview, setPreview] = useState(() => initialChat?.preview || null)
@@ -930,8 +933,10 @@ export default function Pixel({ systemStatus = null }) {
           : data.state === 'model_switching'
             ? 'switching'
             : 'unavailable')
+        setModelActivation(modelActivationStatus(data.modelActivation))
         setStatusDetail(typeof data.detail === 'string' ? data.detail : '')
       } catch (error) {
+        if (!stopped) setModelActivation(null)
         if (!stopped && error?.name !== 'AbortError') {
           setAgentRuntime(null)
           setRuntimeIdentity(null)
@@ -1704,6 +1709,7 @@ export default function Pixel({ systemStatus = null }) {
         </div>
       </header>
       {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
+      <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'available' && modelSupport && (
         <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">
           {modelSupport.detail}
@@ -1747,13 +1753,6 @@ export default function Pixel({ systemStatus = null }) {
             {statusDetail && <p className="mt-1 text-sm">{statusDetail}</p>}
             <p className="mt-4 text-xs">Your other ODS applications remain available while the agent reconnects.</p>
             </div>
-          </div>
-        )}
-        {status === 'switching' && messages.length === 0 && (
-          <div className="mx-auto flex h-full max-w-lg flex-col items-center justify-center text-center text-theme-text-muted">
-            <Loader2 className="mb-4 h-9 w-9 animate-spin text-theme-accent-light" />
-            <p className="font-medium text-theme-text">{displayName} is switching models</p>
-            <p className="mt-1 text-sm">Your draft is safe. {displayName} will reconnect automatically when activation completes.</p>
           </div>
         )}
         {status === 'available' && messages.length === 0 && (

@@ -12,7 +12,7 @@ function recovery(value) {
 }
 
 /** Recovery verifies the existing transaction; it never starts a new model load. */
-export default function PortalModelRecovery({onPendingChange,onBusyChange,onRecovered,refreshKey=0,active=true}) {
+export default function PortalModelRecovery({onPendingChange,onBusyChange,onRecovered,refreshKey=0,active=true,operationActive=false}) {
   const [state,setState]=useState(null),[busy,setBusy]=useState(false),[error,setError]=useState('')
   // Offered only when the agent says the switch changed nothing (fleet row 27).
   const [releasable,setReleasable]=useState(false)
@@ -36,7 +36,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     return ()=>{controller.abort();clearTimeout(timer)}
   },[refreshKey,active])
   async function recover(release=false) {
-    if(locked.current || !state?.pending)return
+    if(locked.current || operationActive || !state?.pending)return
     locked.current=true;setBusy(true);setError('');callbacks.current.onBusyChange?.(true)
     const controller=new AbortController();request.current=controller
     const timer=setTimeout(()=>controller.abort(),405000)
@@ -63,12 +63,12 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
   }
   if(!state?.pending)return null
   return <div className="portal-model-notice">
-    <p>A previous model switch was interrupted. Verify it before continuing.</p>
-    <button type="button" disabled={busy} onClick={()=>recover()}>{busy?'Recovering…':'Recover model switch'}</button>
+    <p>{operationActive ? 'A model operation is in progress. Wait for it to finish before requesting recovery.' : 'A model switch still needs verification before continuing.'}</p>
+    <button type="button" disabled={busy || operationActive} onClick={()=>recover()}>{busy?'Recovering…':'Recover model switch'}</button>
     {error && <p role="alert">{error}</p>}
     {releasable && <>
       <p>The switch did not change anything, so ODS can release it and put Portal back on the model settings it had before. If that model was not working, choose another model or rerun the installer afterwards.</p>
-      <button type="button" disabled={busy} onClick={()=>recover(true)}>{busy?'Releasing…':'Release without checking'}</button>
+      <button type="button" disabled={busy || operationActive} onClick={()=>recover(true)}>{busy?'Releasing…':'Release without checking'}</button>
     </>}
     {error && <HelpLink/>}
   </div>

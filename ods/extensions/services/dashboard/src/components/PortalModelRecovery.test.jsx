@@ -6,6 +6,20 @@ const done={...pending,pending:false,phase:'completed',outcome:'commit'}
 const reply=(body,ok=true)=>({ok,json:async()=>body})
 afterEach(()=>vi.unstubAllGlobals())
 
+it('does not call an owned activation interrupted or offer competing recovery',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async()=>reply(pending)))
+  const view=render(<PortalModelRecovery operationActive/>)
+  const button=await screen.findByRole('button',{name:'Recover model switch'})
+  expect(button).toBeDisabled()
+  expect(screen.getByText(/A model operation is in progress/)).toBeVisible()
+  expect(screen.queryByText(/was interrupted/)).toBeNull()
+  fireEvent.click(button)
+  expect(fetch.mock.calls.every(([,options])=>options.method!=='POST')).toBe(true)
+  view.rerender(<PortalModelRecovery operationActive={false}/>)
+  expect(button).toBeEnabled()
+  expect(screen.getByText(/still needs verification/)).toBeVisible()
+})
+
 it('is invisible for an idle or unsupported runtime and never starts recovery automatically',async()=>{
   vi.stubGlobal('fetch',vi.fn(async()=>reply({pending:false,phase:'idle',transactionId:null})))
   const {container}=render(<PortalModelRecovery/>)
