@@ -205,7 +205,7 @@ export const PHANTOM_PROCESS_REASON =
   "No background process is running in this response. Every command so far has completed, and its output is in the corresponding exec result. Continue with that output instead of calling process.";
 
 const NATIVE_DELEGATION_WAIT_REASON =
-  "This owner response has accepted native subagents with completion events still pending. The process tool controls background exec sessions; it cannot wait for native subagents. Use sessions_yield to end this turn and receive their completion events. This refused process call ran nothing.";
+  'This owner response has accepted native subagents with completion events still pending. The process tool controls background exec sessions; it cannot wait for native subagents. Call tool_describe with {"id":"openclaw:core:sessions_yield"}, then tool_call with {"id":"openclaw:core:sessions_yield","args":{}} to end this turn and receive their completion events. This is a native tool call, not process(action="yield") or a shell command. This refused process call ran nothing.';
 
 // Per run and per kind of corrective answer (see recordFreeCorrection): how
 // many answers are recorded without consuming the failure budget.

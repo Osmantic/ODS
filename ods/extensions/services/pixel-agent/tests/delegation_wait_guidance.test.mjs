@@ -40,6 +40,10 @@ function fixture(){
 for(const wrapped of [false,true])test(`actual index hook guides a phantom process call to native yield (wrapped=${wrapped})`,async()=>{
  const f=fixture();f.spawn();const result=await f.call({wrapped});assert.equal(result.decision.block,true);assert.match(result.decision.blockReason,/sessions_yield/);assert.match(result.decision.blockReason,/completion events/);
  const repeat=await f.call({wrapped,callId:'second'});assert.equal(repeat.decision.blockReason,result.decision.blockReason,'fixed refusal preserves identical-outcome loop detection');
+ assert.match(result.decision.blockReason,/tool_describe with \{"id":"openclaw:core:sessions_yield"\}/);
+ assert.match(result.decision.blockReason,/tool_call with \{"id":"openclaw:core:sessions_yield","args":\{\}\}/);
+ assert.match(result.decision.blockReason,/not process\(action="yield"\)/);
+ assert.equal(f.registry.hasPendingChildren(owner),true,'the refusal did not execute native yield or deliver child events');
 });
 test('only accepted pending native child custody qualifies, with no prompt-string inference',async()=>{
  for(const kind of ['none','native-only','untrusted-accepted','rejected']){

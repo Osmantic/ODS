@@ -92,6 +92,7 @@ jobs:
           ODS_HOOK_EVIDENCE_PATH: ${{ runner.temp }}/portal-delegation-evidence/delegation
         run: |
           mkdir -p "$RUNNER_TEMP/portal-delegation-evidence"
+          node --test ods/extensions/services/pixel-agent/tests/runtime_delegation_wait_schema.integration.mjs
           node --test ods/extensions/services/pixel-agent/tests/runtime_delegation_delivery_hooks.integration.mjs
       - name: Preserve native delegation diagnostics
         if: always()
