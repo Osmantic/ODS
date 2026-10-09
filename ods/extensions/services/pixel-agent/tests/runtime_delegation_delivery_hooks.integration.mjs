@@ -18,9 +18,10 @@ import {setTimeout as delay} from 'node:timers/promises';
 const installed=process.env.OPENCLAW_PACKAGE_DIR;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-for(const interim of ['final','silent','waiting','extra-yield','cancel','daily-reset','reset'])
+for(const interim of ['final','silent','waiting','extra-yield','cancel','daily-reset','reset','overflow','overflow-failure'])
 test(`real gateway deferred delegation waits for two children and a verified revised terminal answer: interim=${interim}`,
   {skip:!installed || process.platform==='win32',timeout:120000},async()=>{
+  const overflow=interim.startsWith('overflow');
   const root=mkdtempSync(join(tmpdir(),'ods-delegation-hooks-'));
   const pkg=join(root,'package'), workspace=join(root,'workspace'), plugin=join(root,'plugin');
   let child, ingress, log='', revision=false, requests=0, askedFinalYield=false;
@@ -46,7 +47,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
   for(const [name,module] of [['subagent-admission','subagent-announce-origin-XoBlouka.js'],['subagent-session','agent-Dme3RrGI.js'],['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
-    ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
+    ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js'],...(overflow?[['compaction-resume','sessions-CZbwb3_c.js'],['compaction-no-work','compact-DuWIsaq_.js']]:[])]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
     const target=join(pkg,'dist',module);let text=readFileSync(target,'utf8');
     if(sha(text)!==recipe.patchedSha256) {
@@ -105,6 +106,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       if(!fixtureFs.existsSync(${JSON.stringify(followupActiveFile)}))throw new Error('owner followup did not start');
     `;
     writeFileSync(announcePath,source.replace(signature,gate));
+    // Expose the pinned native resume helper only in this private package.
+    // Invoke it after Stop deterministically instead of waiting for the native
+    // startup orphan scanner to happen to overlap cancellation on a slow host.
+    const recoveryPath=join(pkg,'dist','subagent-orphan-recovery-D8V30dko.js');
+    const recoverySource=readFileSync(recoveryPath,'utf8');
+    assert.equal(recoverySource.split('async function resumeOrphanedSession(params) {').length,2);
+    writeFileSync(recoveryPath,recoverySource+'\nexport { resumeOrphanedSession as fixtureResumeOrphanedSession };\n');
   }
   mkdirSync(workspace);mkdirSync(plugin);
   const eventsFile=join(root,'hooks.jsonl');
@@ -122,13 +130,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     import {abortAgentHarnessRun,abortAndDrainAgentHarnessRun,resolveActiveEmbeddedRunSessionId} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/agent-harness-runtime.js')).href)};
     import {getSessionEntry,patchSessionEntry,resolveStorePath} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/session-store-runtime.js')).href)};
     import {extractAssistantVisibleText} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/agent-runtime.js')).href)};
-    let revised=false,contextCompaction;const sharedGuard=createToolLoopGuard({
+    let revised=false,contextCompaction,pressureInjected=false;const sharedGuard=createToolLoopGuard({
       abortRun:createRunAbortAdapter({resolveSessionId:resolveActiveEmbeddedRunSessionId,abort:abortAgentHarnessRun}),
       abortRunAndDrain:(sessionId,sessionKey)=>abortAndDrainAgentHarnessRun({
         sessionId:resolveActiveEmbeddedRunSessionId(sessionKey)||sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'}),
       execControl:{signal:()=>true}});
     const record=(hook,event,ctx,extra={})=>appendFileSync(${JSON.stringify(eventsFile)},JSON.stringify({
-      hook,agentId:ctx.agentId,runId:ctx.runId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,trigger:ctx.trigger,
+      hook,at:Date.now(),error:event.error,agentId:ctx.agentId,runId:ctx.runId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,trigger:ctx.trigger,
       provenance:ctx.inputProvenance,success:event.success,text:event.lastAssistantMessage,
       messageRoles:event.messages?.map(m=>m.role),
       lastStopReason:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.stopReason,
@@ -157,10 +165,26 @@ test(`real gateway deferred delegation waits for two children and a verified rev
           return !resolveActiveEmbeddedRunSessionId(sessionKey);
         },
         resolveOwnerSession:sessionKey=>getSessionEntry({sessionKey,storePath:resolveStorePath(api.config?.session?.store,{agentId:'pixel'})})});
+      if(${JSON.stringify(interim)}==='cancel')api.registerHttpRoute({path:'/pixel-ods/fixture-resume',auth:'gateway',match:'exact',handler:async(_req,res)=>{
+        const {H:nativeRuns}=await import(${JSON.stringify(pathToFileURL(join(pkg,'dist','subagent-registry-state-D0TtGqOr.js')).href)});
+        const {fixtureResumeOrphanedSession}=await import(${JSON.stringify(pathToFileURL(join(pkg,'dist','subagent-orphan-recovery-D8V30dko.js')).href)});
+        const original=nativeRuns.get(${JSON.stringify(collisionRun)});
+        if(!original)throw new Error('native child run receipt missing');
+        const result=await fixtureResumeOrphanedSession({sessionKey:original.childSessionKey,task:original.task,
+          originalRunId:${JSON.stringify(collisionRun)},originalRun:original});
+        record('fixture-native-resume',{}, {},{result});
+        res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));return true;
+      }});
       api.on('before_prompt_build',(event,ctx)=>{
         if(registry.admission?.(ctx)){record('prompt-denied',event,ctx);return;}
         registry.observe(event,ctx);if(${JSON.stringify(interim)}==='cancel')sharedGuard.observeRun(ctx,'pixel');
-        record('prompt',event,ctx);return {prependContext:registry.promptContext(ctx)};
+        record('prompt',event,ctx);
+        let context=registry.promptContext(ctx)??'';
+        if(${JSON.stringify(interim)}.startsWith('overflow')&&ctx.runId?.startsWith('announce:')&&!pressureInjected){
+          pressureInjected=true;record('fixture-pressure',{},ctx);
+          context+='\\n'+('PUBLIC_OFFLINE_PRESSURE_TOKEN '.repeat(10000));
+        }
+        return {prependContext:context};
       });
       api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',{},ctx,{decision});return decision;});
       api.registerHttpRoute({path:'/pixel-ods/abort',auth:'gateway',match:'exact',handler:async(req,res)=>{
@@ -197,11 +221,14 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     const all=JSON.stringify(body.messages);
     const currentUser=JSON.stringify(body.messages.filter(m=>m.role==='user').at(-1)?.content);
     const userMessages=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');
-    const trace={request:requests,lastRole:body.messages.at(-1)?.role,childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
+    const trace={at:Date.now(),request:requests,roles:body.messages.map(m=>m.role),lastRole:body.messages.at(-1)?.role,childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
     providerTrace.push(trace);if(providerTrace.length>40)providerTrace.shift();
     let delta,finish='stop';
     const deferred=(id,name,args)=>({index:0,id,type:'function',function:{name:'tool_call',arguments:JSON.stringify({id:name,args})}});
-    if(userMessages.includes('FAIL_FIXTURE')) {
+    if(overflow && !body.tools?.length && /summar|compact|checkpoint/i.test(all)) {
+      if(interim==='overflow-failure'){trace.branch='compaction-failure';res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'offline fixture compaction refusal',type:'invalid_request_error'}}));return;}
+      trace.branch='compaction';delta={role:'assistant',content:'Public fixture checkpoint: the owner asked for two read-only reviews and a consolidated result. Both native child jobs were spawned. Wait for their completion events; do not replay the owner or spawn again.'};
+    } else if(userMessages.includes('FAIL_FIXTURE')) {
       trace.branch='provider-error';res.writeHead(400,{'Content-Type':'application/json'});
       res.end(JSON.stringify({error:{message:'offline fixture provider refusal',type:'invalid_request_error'}}));return;
     } else if(currentUser.includes('WARMUP_FIXTURE')&&!currentUser.includes('Delegate two')&&!userMessages.includes('RECOVER_AFTER_STOP')&&!userMessages.includes('CHILD_FIXTURE_TASK')) {
@@ -269,8 +296,8 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   const probe=createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
   const config={logging:{file:join(root,'runtime.log')},update:{checkOnStart:false},
     gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token:'fixture-only-0123456789abcdef'},http:{endpoints:{chatCompletions:{enabled:true}}}},
-    agents:{defaults:{workspace,skipBootstrap:true,sandbox:{mode:'off'},model:{primary:'fixture/test'},contextTokens:131072,heartbeat:{every:'0m'}},list:[{id:'pixel',default:true,workspace}]},
-    models:{mode:'replace',providers:{fixture:{baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,api:'openai-completions',apiKey:'fixture-only',models:[{id:'test',name:'Fixture',contextWindow:131072,maxTokens:4096,reasoning:false,input:['text']}]}}},
+    agents:{defaults:{workspace,skipBootstrap:true,sandbox:{mode:'off'},model:{primary:'fixture/test'},contextTokens:overflow?65536:131072,...overflow?{compaction:{reserveTokens:13108,reserveTokensFloor:13108,keepRecentTokens:2048}}:{},heartbeat:{every:'0m'}},list:[{id:'pixel',default:true,workspace}]},
+    models:{mode:'replace',providers:{fixture:{baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,api:'openai-completions',apiKey:'fixture-only',models:[{id:'test',name:'Fixture',contextWindow:overflow?65536:131072,maxTokens:overflow?8192:4096,reasoning:false,input:['text']}]}}},
     tools:{allow:['tool_search','tool_describe','tool_call','sessions_spawn','sessions_yield'],toolSearch:{enabled:true,mode:'tools'},loopDetection:{enabled:false}},plugins:{allow:['delivery-fixture'],load:{paths:[plugin]},entries:{'delivery-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}}};
   writeFileSync(join(root,'openclaw.json'),JSON.stringify(config));
   try {
@@ -280,10 +307,17 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x);
     let ready=false;
     for(let i=0;i<250;i++){try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);}
-    assert.ok(ready,log);
+    assert.ok(ready,log);assert.ok(!log.includes('failed to load plugin'),log);
     ingress=createIngressServer({token:'fixture-only-0123456789abcdef',gatewayPort:port,...interim==='cancel'?{historyLedger:createChatHistoryLedger(join(root,'history-ledger'))}:{}});
     await new Promise(resolve=>ingress.listen(0,'127.0.0.1',resolve));
     const ingressPort=ingress.address().port;
+    // Real prior turns provide compactable history without depending on a
+    // separate pressure-compaction repair. The transient pressure is public
+    // fixture input, applied only before the first child announcement.
+    if(overflow) for(let warm=0;warm<4;warm++){
+      const warmup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'WARMUP_FIXTURE: public prior requirements. '+('PUBLIC_RETAINED_FIXTURE_REQUIREMENT '.repeat(500))}]}),signal:AbortSignal.timeout(30000)});
+      assert.ok((await warmup.text()).includes('READY'));
+    }
     if(interim==='cancel') {
       const warmup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[prior[0]],request_id:'cancel-warmup',history_snapshot:{schemaVersion:1,messages:[prior[0]]}}),signal:AbortSignal.timeout(30000)});
       assert.ok((await warmup.text()).includes('READY'));
@@ -365,6 +399,21 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       const blockedChildren=new Set(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&events.some(end=>end.hook==='end'&&end.runId===e.runId)).map(e=>e.provenance.sourceSessionKey));
       assert.equal(blockedChildren.size,2,JSON.stringify({events,log}));
       for(const key of blockedChildren)assert.ok(events.some(e=>e.hook==='end'&&e.sessionKey===key&&e.lastStopReason==='aborted'&&e.success===false),'both native child runs confirm abortion');
+      const resumed=await fetch(`http://127.0.0.1:${port}/pixel-ods/fixture-resume`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef'},signal:AbortSignal.timeout(15000)});
+      assert.equal(resumed.status,200);
+      assert.equal((await resumed.json()).resumed,true,'native helper submits its real internal gateway request');
+      let resumeAdmission;
+      for(let i=0;i<200;i++) {
+        events=readEvents();
+        resumeAdmission=events.find(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_interrupted_resume');
+        if(resumeAdmission&&events.some(e=>e.hook==='end'&&e.runId===resumeAdmission.runId))break;
+        await delay(50);
+      }
+      assert.ok(resumeAdmission,'pinned runtime supplies orphan-resume provenance');
+      assert.notEqual(resumeAdmission.runId,collisionRun,'native recovery replaces the child run UUID');
+      assert.equal(resumeAdmission.decision?.outcome,'block','Stop fences the same child before resumed inference');
+      assert.ok(events.some(e=>e.hook==='end'&&e.runId===resumeAdmission.runId&&e.success===false),'resumed child reaches a blocked terminal event');
+      assert.ok(!events.some(e=>e.hook==='before-tool'&&e.runId===resumeAdmission.runId),'resumed child executes no tools');
       assert.equal(providerTrace.filter(e=>e.announcement).length,0,'after both late announcements, no announcement reached the model');
       assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'after draining both late announcements, only the actual owner followup generated');
       assert.equal(requests,6,'warmup + owner spawn/yield + two children + owner followup only');
@@ -381,7 +430,24 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       return;
     }
     const response=await responsePromise;
-    const body=await response.text();assert.equal(response.status,200,body+'\n'+log);
+    const body=await response.text();
+    if(interim==='overflow-failure'){
+      let events=[];
+      for(let i=0;i<350;i++){
+        events=existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+        if(events.some(e=>e.hook==='admission'&&e.runId?.startsWith('announce:')&&e.decision?.outcome==='block'))break;
+        await delay(100);
+      }
+      const ends=events.filter(e=>e.hook==='end'&&e.runId?.startsWith('announce:'));
+      assert.ok(ends.some(e=>e.success===false && /context|overflow/i.test(e.error??'')), 'failed recovery must eventually emit a terminal failed agent_end');
+      assert.ok(events.some(e=>e.hook==='admission'&&e.runId?.startsWith('announce:')&&e.decision?.outcome==='block'),'failed recovery must block later child announcements');
+      assert.ok(!body.includes('CONSOLIDATED_VERIFIED'));
+      const failed=providerTrace.find(e=>e.branch==='compaction-failure');assert.ok(failed);
+      assert.ok(ends.filter(e=>e.success===false).every(e=>e.at>=failed.at),'failed agent_end must follow actual recovery failure');
+      if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({events,providerTrace,body,requests,log},null,2));
+      return;
+    }
+    assert.equal(response.status,200,body+'\n'+log);
     assert.ok(body.includes('CONSOLIDATED_VERIFIED'),body);assert.ok(!body.includes('Waiting for the review.'),body);assert.ok(!body.includes('CONSOLIDATED_REVIEW'),body);
     let events=[];
     for(let i=0;i<250;i++) {
@@ -390,7 +456,12 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       await delay(100);
     }
     assert.ok(events.some(e=>e.hook==='end'&&e.lastText==='CONSOLIDATED_VERIFIED'),JSON.stringify({body,events,requests,log}));
-    const original=events.find(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:'));
+    if(overflow){
+      assert.ok(providerTrace.some(e=>e.branch==='compaction'),'native recovery must call the offline summary provider');
+      assert.ok(!events.some(e=>e.hook==='end'&&e.runId?.startsWith('announce:')&&e.success===false),'recovered precheck is not a terminal failure');
+      assert.equal(events.filter(e=>e.hook==='tool'&&e.toolName==='sessions_spawn').length,2,'recovery must not replay owner work');
+    }
+    const original=events.find(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:')&&events.some(t=>t.hook==='tool'&&t.runId===e.runId&&t.toolName==='sessions_spawn'));
     const verifiedRun=events.find(e=>e.hook==='finalize'&&e.text===(interim==='extra-yield'?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'))?.runId;
     const announcement=events.find(e=>e.hook==='prompt'&&e.runId===verifiedRun&&e.provenance?.sourceTool==='subagent_announce');
     assert.ok(announcement,JSON.stringify(events));

@@ -84,7 +84,7 @@ jobs:
         shell: bash
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_context.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_no_work.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_hook_provenance.integration.mjs
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_context.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_no_work.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_32k_prompt_budget.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_hook_provenance.integration.mjs
       - name: Verify deferred delegation through the real gateway and Portal ingress
         shell: bash
         env:
@@ -92,6 +92,7 @@ jobs:
           ODS_HOOK_EVIDENCE_PATH: ${{ runner.temp }}/portal-delegation-evidence/delegation
         run: |
           mkdir -p "$RUNNER_TEMP/portal-delegation-evidence"
+          node --test ods/extensions/services/pixel-agent/tests/runtime_delegation_wait_schema.integration.mjs
           node --test ods/extensions/services/pixel-agent/tests/runtime_delegation_delivery_hooks.integration.mjs
       - name: Preserve native delegation diagnostics
         if: always()

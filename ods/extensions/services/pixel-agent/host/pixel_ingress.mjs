@@ -922,8 +922,8 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
   }
 }
 
-// A native sessions_yield response is an introduction, not the completed owner
-// answer. Keep this exact request open for its registered parent continuation.
+// An accepted native spawn can return a waiting introduction without calling
+// sessions_yield. Keep the exact request open for its registered continuation.
 // Polling reads host receipts only; it never invokes the model or replays tools.
 async function awaitSubagentDelivery(completion, user, token, gatewayPort, signal, deps) {
   const runId=completion?.id;

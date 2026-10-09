@@ -474,7 +474,8 @@ export default definePluginEntry({
       const interrupted=delegationDelivery.blocked(context,event);
       if (interrupted) return interrupted;
       let guard = withPixelCronDeliveryDefault(
-        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
+        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
+          delegationDelivery.hasPendingChildren(context)),
         event, context, AGENT_ID,
       );
       const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
