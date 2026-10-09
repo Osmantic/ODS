@@ -5,6 +5,7 @@ on:
     paths:
       - 'ods/bin/ods-macos-llm-bridge.py'
       - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_macos_upsert_env_value.py'
       - 'ods/tests/test_bridge_denied_admission.py'
       - 'ods/installers/macos/**'
       - 'ods/installers/lib/pixel-workspace-guidance.py'
@@ -41,6 +42,7 @@ on:
     paths:
       - 'ods/bin/ods-macos-llm-bridge.py'
       - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_macos_upsert_env_value.py'
       - 'ods/tests/test_bridge_denied_admission.py'
       - 'ods/installers/macos/**'
       - 'ods/installers/lib/pixel-workspace-guidance.py'
@@ -107,6 +109,8 @@ jobs:
         run: bash ods/tests/test-macos-uninstall-launchagents.sh
       - name: Verify bridge admission and real HTTP forwarding
         run: python -m pytest -q ods/tests/test_bridge_denied_admission.py ods/tests/test_macos_llm_bridge.py
+      - name: Verify private environment rollback custody
+        run: python -m pytest -q ods/tests/test_macos_upsert_env_value.py
       - name: Verify native installer, update and startup contracts
         run: >-
           python -m pytest -q
