@@ -3,9 +3,11 @@
 This checks host routing and upgrade preservation, not launchd, Metal or Docker
 connectivity. Colima bridge tests cover the separate container-to-host hop.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -110,23 +112,70 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
 
 
 @pytest.mark.parametrize('bind', ['0.0.0.0', '::', '192.168.106.1'])
-def test_background_model_upgrade_preserves_private_listener(tmp_path, bind):
-    """Execute production argument assembly without launching Metal or launchd."""
-    env_file = tmp_path / '.env'
+def test_background_model_upgrade_preserves_private_listener(tmp_path, monkeypatch, bind):
+    """Promotion must reach the shared launcher with private, tuned arguments.
+
+    Execute the production promotion/restart/argv chain and tuning qualifier;
+    replace only host service mutations and the post-launch readiness probe.
+    """
+    def load(name, path):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    host = load('ods_private_route_host', ODS / 'bin/ods-host-agent.py')
+    promotion = load('ods_private_route_promotion', MAC / 'lib/pixel-native-model-promotion.py')
+    install = tmp_path / 'ODS installation'
+    runtime = install / 'bin/llama-server'
+    service = install / 'installers/macos/lib/native-llama-service.sh'
+    runtime.parent.mkdir(parents=True)
+    service.parent.mkdir(parents=True)
+    shutil.copy2(MAC / 'lib/native-llama-service.sh', service)
+    shutil.copy2(MAC / 'lib/native-checkpoint-args.py', service.with_name('native-checkpoint-args.py'))
+    # Real qualifier probes an inert runtime that prints the pinned --help fixture.
+    help_file = install / 'runtime-help.txt'
+    shutil.copy2(ODS / 'tests/fixtures/llama-server-help/b9014.txt', help_file)
+    runtime.write_text('#!/bin/sh\ncat "' + str(help_file) + '"\n', encoding='utf-8')
+    runtime.chmod(0o700)
+    env_file = install / '.env'
     env_file.write_text(f'BIND_ADDRESS={bind}\nODS_NATIVE_LLAMA_PORT=18081\n'
-                        'N_GPU_LAYERS=33\nLLAMA_ARG_CACHE_TYPE_K=q8_0\n', encoding='utf-8')
-    source = (ODS / 'scripts/bootstrap-upgrade.sh').read_text(encoding='utf-8')
-    begin = source.index('            # The dashboard\'s LAN binding must not expose native inference.')
-    end = source.index('\n            # Relaunch with new model', begin)
-    script = ('set -eu\nENV_FILE="$1"\n_model_path="$2"\n_ctx_size=8192\n'
-              '_llama_tuning_args=()\n' + source[begin:end] +
-              '\nprintf "%s\\0" "${_llama_args[@]}"\n')
-    result = subprocess.run(['bash', '-s', '--', str(env_file), str(tmp_path / 'full model.gguf')],
-                            input=script, text=True, capture_output=True, timeout=10)
-    assert result.returncode == 0, result.stderr
-    args = result.stdout.rstrip('\0').split('\0')
+        'GGUF_FILE=full-model.gguf\nLLM_MODEL=full-model\nCTX_SIZE=8192\n'
+        'ODS_MODEL_SWITCHBOARD=disabled\nN_GPU_LAYERS=33\nLLAMA_ARG_CACHE_TYPE_K=q8_0\n',
+        encoding='utf-8')
+    monkeypatch.setattr(host, 'INSTALL_DIR', install)
+    monkeypatch.setattr(host, 'DATA_DIR', install / 'data')
+    monkeypatch.setattr(host.platform, 'system', lambda: 'Darwin')
+    monkeypatch.setattr(promotion.Path, 'home', lambda: tmp_path / 'home')
+    events = []
+    monkeypatch.setattr(host, '_require_macos_bridge_manager', lambda _path: events.append('validate'))
+    monkeypatch.setattr(host, '_stop_macos_native_llama_server', lambda _path: events.append('stop'))
+    monkeypatch.setattr(host, '_configure_macos_llm_bridge', lambda _path: events.append('bridge'))
+    monkeypatch.setattr(host, '_disable_conflicting_macos_bridge', lambda *_args: None)
+    monkeypatch.setattr(host, '_find_usable_bash', lambda: 'bash')
+    monkeypatch.setattr(host, '_catalog_model_for_current_env', lambda _env: ('full-model', {}))
+    monkeypatch.setattr(host, '_wait_for_model_readiness',
+        lambda *_args, **_kwargs: dict(identity='full-model.gguf', contextLength=8192, contextVerified=True))
+    launches = []
+    real_run = subprocess.run
+    def run(args, **kwargs):
+        if len(args) > 1 and args[1] == str(service):
+            assert args[2:5] == ['start', str(install), str(runtime)]
+            events.append('launch')
+            launches.append(args[6:])
+            Path(args[5]).write_text('12345\n', encoding='utf-8')
+            return subprocess.CompletedProcess(args, 0, '', '')
+        return real_run(args, **kwargs)
+    monkeypatch.setattr(host.subprocess, 'run', run)
+    promotion.promote(host, host.load_env(env_file), 'unmanaged', 'full-model.gguf', 8192)
+    assert events == ['validate', 'stop', 'bridge', 'launch']
+    assert len(launches) == 1
+    args = launches[0]
     assert args[args.index('--host') + 1] == '127.0.0.1'
     assert args[args.index('--port') + 1] == '18081'
-    assert args[args.index('--model') + 1] == str(tmp_path / 'full model.gguf')
+    assert args[args.index('--model') + 1] == str(install / 'data/models/full-model.gguf')
+    assert args[args.index('--ctx-size') + 1] == '8192'
     assert args[args.index('--n-gpu-layers') + 1] == '33'
     assert args[args.index('--cache-type-k') + 1] == 'q8_0'
+    assert args[args.index('--ctx-checkpoints') + 1] == '32'
+    assert args[args.index('--spec-type') + 1] == 'ngram-mod'
