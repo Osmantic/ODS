@@ -119,7 +119,8 @@ const MAX_STORED_MESSAGES = 2000
 const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
 const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
-const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
+const STOPPED_AGENT_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
+const STOPPED_CHAT_NOTICE = 'Stopped by you.'
 const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
 const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
 const CLEAN_CONTEXT_RECOVERY_NOTICE = 'The first attempt did not reach the Operations Broker, and the host verified that no work was submitted. Retrying once with a clean context…'
@@ -415,11 +416,12 @@ function replaceLastAssistant(messages, update) {
   return next
 }
 
-function stoppedContent(content) {
+function stoppedContent(content, chatOnly = false) {
+  const notice = chatOnly ? STOPPED_CHAT_NOTICE : STOPPED_AGENT_NOTICE
   const partial = typeof content === 'string' ? content.trimEnd() : ''
-  if (!partial) return STOPPED_NOTICE
-  if (partial.includes(STOPPED_NOTICE)) return partial
-  return `${partial}\n\n---\n\n_${STOPPED_NOTICE}_`
+  if (!partial) return notice
+  if (partial === notice || partial.endsWith(`_${notice}_`)) return partial
+  return `${partial}\n\n---\n\n_${notice}_`
 }
 
 function messagePublication(message) {
@@ -786,7 +788,7 @@ export default function Pixel({ systemStatus = null }) {
                 try {
                   const saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
                     messages:replaceLastAssistant(source.messages, {
-                      content: result.state === 'cancelled' ? stoppedContent(recovered.content)
+                      content: result.state === 'cancelled' ? stoppedContent(recovered.content, chat.chatMode === 'chat')
                         : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
                       status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
                       ...(recovered.task ? {task:recovered.task} : {}),
@@ -1462,7 +1464,7 @@ export default function Pixel({ systemStatus = null }) {
       abortRef.current = null
       requestIdRef.current = null
       setMessages(previous => replaceLastAssistant(previous, {
-        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content),
+        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content, chatMode === 'chat'),
         status: 'stopped',
       }))
       setSending(false)
