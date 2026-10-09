@@ -713,8 +713,8 @@ cmd_status() {
 cmd_backup() (
     local backup_name="${1:-}"
     _require_positive_backup_retention || return 1
-    if [[ -n "$backup_name" && ! "$backup_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
-        log_error "Invalid backup name. Use 1-64 letters, numbers, underscores, or hyphens."
+    if [[ "$backup_name" == */* || "$backup_name" == *\\* || "$backup_name" =~ [[:cntrl:]] ]]; then
+        log_error "Invalid backup name. Path separators and control characters are not allowed."
         return 1
     fi
     local timestamp

@@ -211,6 +211,24 @@ else
     fail "dangling recovery artifact changed: $output"
 fi
 
+# Preserve the ordinary filename labels accepted before transaction staging.
+for ordinary_label in 'before my update' 'trước-cập-nhật' 'backup (stable)'; do
+    output=$(PATH="$DATE_BIN:$PATH" run_backup "$ordinary_label")
+    if [[ -f "$BACKUPS/backup-$ordinary_label-20260823-123456/snapshot.json" ]]; then
+        pass "legacy label remains accepted: $ordinary_label"
+    else
+        fail "legacy filename label rejected: $output"
+    fi
+done
+for unsafe_label in $'line\nbreak' $'tab\tlabel' 'nested/name' 'nested\name'; do
+    output=$(PATH="$DATE_BIN:$PATH" run_backup "$unsafe_label")
+    if echo "$output" | grep -q 'Invalid backup name'; then
+        pass "control or separator label is refused"
+    else
+        fail "unsafe label accepted: $output"
+    fi
+done
+
 # 8. invalid retention cannot delete the snapshot and report success
 # ---------------------------------------------------------------------------
 for invalid_retention in 0 -1 invalid; do
