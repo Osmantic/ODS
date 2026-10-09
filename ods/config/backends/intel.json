@@ -1,0 +1,14 @@
+{
+  "id": "intel",
+  "llm_engine": "llama-server",
+  "service_name": "llama-server",
+  "public_api_port": 8080,
+  "public_health_url": "http://127.0.0.1:8080/health",
+  "provider_name": "local-llama",
+  "provider_url": "http://llama-server:8080/v1",
+  "runtime": {
+    "llama_server": {
+      "linux_image": "ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b"
+    }
+  }
+}

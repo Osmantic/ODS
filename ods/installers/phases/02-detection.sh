@@ -299,11 +299,14 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "intel" ]]; then
     #    detect_gpu() already confirmed it via sysfs; this adds a human-readable log line.
     _arc_pci_name=""
     if command -v lspci &>/dev/null; then
+        # Battlemage's lspci name is "Battlemage G31 [Intel Graphics]" — no
+        # "Arc" string — and a no-match grep would otherwise abort the phase
+        # under set -e via the command substitution.
         _arc_pci_name=$(lspci 2>/dev/null \
             | grep -i 'VGA\|Display\|3D' \
-            | grep -i 'Intel.*Arc\|Arc.*Intel\|Intel.*A[0-9][0-9][0-9]\|Intel.*B[0-9][0-9][0-9]' \
+            | grep -iE 'Intel.*Arc|Arc.*Intel|Intel.*A[0-9][0-9][0-9]|Intel.*B[0-9][0-9][0-9]|Battlemage' \
             | head -1 \
-            | sed 's/.*: //')
+            | sed 's/.*: //') || true
         if [[ -n "$_arc_pci_name" ]]; then
             ai_ok "lspci: $_arc_pci_name"
         else
@@ -312,7 +315,7 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "intel" ]]; then
                 | grep -i 'VGA\|Display\|3D' \
                 | grep -i 'Intel' \
                 | head -1 \
-                | sed 's/.*: //')
+                | sed 's/.*: //') || true
             [[ -n "$_arc_pci_name" ]] && ai_ok "lspci: $_arc_pci_name (Intel GPU)" \
                 || ai_warn "lspci: Intel Arc sysfs entry found but lspci VGA entry not visible — IOMMU or PCIe bridge may obscure it"
         fi
@@ -387,6 +390,16 @@ fi
 GPU_TOPOLOGY_JSON="{}"
 GPU_HAS_NVLINK="false"
 GPU_TOTAL_VRAM=0
+
+# Intel Arc multi-GPU: emit a minimal topology so phase 03's assignment step
+# has a GPU list to work with. SYCL has no P2P fabric ranking — links stay
+# empty; llama.cpp picks devices by ONEAPI_DEVICE_SELECTOR index anyway.
+if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "intel" ]] && declare -F detect_intel_topo >/dev/null 2>&1; then
+    GPU_TOPOLOGY_JSON=$(detect_intel_topo 2>>"$LOG_FILE") || GPU_TOPOLOGY_JSON="{}"
+    GPU_TOTAL_VRAM=$GPU_VRAM
+    log "Intel topology: $(echo "$GPU_TOPOLOGY_JSON" | jq -r '.gpu_count // 0') GPU(s)"
+fi
+
 if [[ $GPU_COUNT -gt 1 && "$GPU_BACKEND" == "nvidia" ]]; then
     ai "Detecting multi-GPU topology..."
     if [[ -f "$SCRIPT_DIR/installers/lib/nvidia-topo.sh" ]]; then
