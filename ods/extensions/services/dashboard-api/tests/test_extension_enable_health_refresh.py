@@ -1,7 +1,9 @@
 """An enable response must hand current observations to the next Library read."""
 import asyncio
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 
 import helpers
@@ -125,3 +127,99 @@ def test_refused_start_keeps_error_and_does_not_claim_runtime_startup(
     for row in read_library(test_client):
         assert row['status'] == 'error'
         assert row['runtime_starting'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('poll_timing', ['before_actions', 'during_probes'])
+@pytest.mark.parametrize('first_ready', ['open-webui', 'n8n'])
+@pytest.mark.parametrize('fresh_status', ['healthy', 'unhealthy'])
+async def test_webui_and_n8n_actions_survive_a_delayed_background_poll(
+        enable_health, monkeypatch, poll_timing, first_ready, fresh_status):
+    """Exercise both real action endpoints and the production poll loop together."""
+    import main
+    import security
+
+    configs = {
+        'open-webui': {'name': 'Open WebUI', 'port': 8080, 'external_port': 3000},
+        'unrelated': {'name': 'unrelated', 'port': 5678},
+    }
+    monkeypatch.setattr(helpers, 'SERVICES', configs)
+    stale = [status('unrelated', 'healthy'), status('open-webui', 'down')]
+    helpers.set_services_cache(stale)  # n8n has not yet entered the poller cache.
+    entered = {name: asyncio.Event() for name in ['open-webui', 'n8n']}
+    finish = {name: asyncio.Event() for name in entered}
+    poll_entered, finish_poll, poll_applied = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    never = asyncio.Event()
+
+    async def probe(service_id, config, **kwargs):
+        entered[service_id].set()
+        await finish[service_id].wait()
+        return status(service_id, fresh_status)
+
+    async def stale_poll():
+        poll_entered.set()
+        await finish_poll.wait()
+        return stale
+
+    async def poll_sleep(delay):
+        if delay == 2:  # The initial startup delay is unrelated to this race.
+            return
+        poll_applied.set()  # The real loop has attempted its cache publication.
+        await never.wait()
+
+    monkeypatch.setattr(helpers, 'check_service_health', probe)
+    monkeypatch.setattr(helpers, 'request_agent_json', AsyncMock(return_value={
+        'schema_version': 'ods.host-service-health.v1', 'containers': [{
+            'service_id': 'n8n', 'container_name': 'ods-n8n',
+            'state': 'running', 'health': fresh_status,
+        }],
+    }))
+    selection = Mock(return_value={'enabled': True, 'action': 'enabled'})
+    monkeypatch.setattr(extensions, 'request_agent_json', selection)
+    monkeypatch.setattr(main, 'get_all_services', stale_poll)
+    # Do not replace asyncio.sleep process-wide or rely on wall-clock races.
+    monkeypatch.setattr(main, 'asyncio', SimpleNamespace(sleep=poll_sleep))
+    tasks = []
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                base_url='http://test', headers={
+                                    'Authorization': f'Bearer {security.DASHBOARD_API_KEY}',
+                                }) as client:
+        try:
+            if poll_timing == 'before_actions':
+                tasks.append(asyncio.create_task(main._poll_service_health()))
+                await asyncio.wait_for(poll_entered.wait(), 2)
+            actions = {
+                'open-webui': asyncio.create_task(client.post('/api/webui/selection',
+                                                              json={'enabled': True})),
+                'n8n': asyncio.create_task(client.post('/api/extensions/n8n/enable')),
+            }
+            tasks.extend(actions.values())
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered.values())), 2)
+            if poll_timing == 'during_probes':
+                tasks.append(asyncio.create_task(main._poll_service_health()))
+                await asyncio.wait_for(poll_entered.wait(), 2)
+            for service_id in [first_ready, next(name for name in entered if name != first_ready)]:
+                finish[service_id].set()
+                response = await asyncio.wait_for(actions[service_id], 2)
+                assert response.status_code == 200
+                if service_id == 'n8n':
+                    assert response.json()['failed_services'] == []
+            finish_poll.set()
+            await asyncio.wait_for(poll_applied.wait(), 2)
+            assert {row.id: row.status for row in helpers.get_cached_services()} == {
+                'unrelated': 'healthy', 'open-webui': fresh_status, 'n8n': fresh_status,
+            }
+            assert len(helpers.get_cached_services()) == 3
+            selection.assert_called_once_with('POST', '/v1/webui/selection',
+                                              payload={'enabled': True}, timeout=900)
+            catalog = await client.get('/api/extensions/catalog')
+            n8n = next(row for row in catalog.json()['extensions'] if row['id'] == 'n8n')
+            assert n8n['status'] == ('enabled' if fresh_status == 'healthy' else 'unhealthy')
+            assert n8n['runtime_starting'] is False
+        finally:
+            for event in finish.values():
+                event.set()
+            finish_poll.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
