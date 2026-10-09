@@ -40,6 +40,29 @@ it('keeps a pristine install stopped and prevents start without a device', async
   expect(screen.queryByLabelText('Device API key')).not.toBeInTheDocument()
 })
 
+it.each(['revoked', 'expired'])('allows replacement after 64 %s device grants', async kind => {
+  const devices = Array.from({ length: 64 }, (_, index) => ({
+    ...device(), id: `device-${index.toString(16).padStart(16, '0')}`,
+    createdAt: kind === 'expired' ? now - 2 : now,
+    revoked: kind === 'revoked', expiresAt: kind === 'expired' ? now - 1 : now + 86400,
+  }))
+  const replacement = issued()
+  replacement.configuration.revision = 65
+  const { fetchMock } = setup(snapshot(64, devices), () => response(replacement))
+  await createKey()
+  const [, options] = fetchMock.mock.calls.find(([, options]) => options.method === 'POST')
+  expect(JSON.parse(options.body).expectedRevision).toBe(64)
+})
+
+it('keeps the 64 live grant limit', async () => {
+  setup(snapshot(64, Array.from({ length: 64 }, (_, index) => ({
+    ...device(), id: `device-${index.toString(16).padStart(16, '0')}`,
+  }))))
+  await screen.findByText('GLM')
+  fireEvent.change(screen.getByLabelText('Device label'), { target: { value: 'Replacement' } })
+  expect(screen.getByRole('button', { name: 'Create device key' })).toBeDisabled()
+})
+
 it('does not fabricate a usable snapshot from malformed or failed reads', async () => {
   setup({})
   expect(await screen.findByRole('alert')).toHaveTextContent('unavailable')

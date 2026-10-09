@@ -111,6 +111,7 @@ export default function PixelSharingSettings() {
   const config = snapshot?.configuration
   const route = snapshot?.activeRoute
   const now = Math.max(clock, Date.now())
+  const liveDeviceCount = config?.devices.filter(device => !device.revoked && device.expiresAt * 1000 > now).length ?? 0
   useEffect(() => {
     const future = config?.devices.filter(device => !device.revoked)
       .map(device => device.expiresAt * 1000).filter(expires => expires > now) || []
@@ -195,7 +196,7 @@ export default function PixelSharingSettings() {
       <div className="grid gap-3 md:grid-cols-[1fr_10rem_auto] items-end">
         <label className="text-sm">Device label<input className={inputStyle} value={label} maxLength={256} onChange={event => setLabel(event.target.value)} placeholder="My laptop" disabled={locked} /></label>
         <label className="text-sm">Expires in days<input className={inputStyle} type="number" min={1} max={365} value={days} onChange={event => setDays(event.target.value === '' ? '' : Number(event.target.value))} disabled={locked} /></label>
-        <button className={buttonStyle} disabled={locked || !route || !validLabel || !validDays || config.devices.length >= 64} onClick={issue}>Create device key</button>
+        <button className={buttonStyle} disabled={locked || !route || !validLabel || !validDays || liveDeviceCount >= 64} onClick={issue}>Create device key</button>
       </div>
       {issued && <div className="rounded-lg border border-theme-border p-4 space-y-3">
         <h3 className="font-medium">One-time connection settings</h3>
