@@ -101,7 +101,14 @@ def download_artifact(url: str, destination: Path) -> Path:
         expected.replace(destination)
         # Only this immutable artifact's SDK state is removed, and only after
         # publication. Other stages and the shared Hub cache remain untouched.
-        shutil.rmtree(payload)
+        try:
+            shutil.rmtree(payload)
+        except OSError as exc:
+            print(
+                f"WARNING: Artifact published; SDK staging cleanup pending at {payload} "
+                f"({type(exc).__name__})",
+                file=sys.stderr,
+            )
     return destination
 
 

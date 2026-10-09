@@ -290,6 +290,56 @@ def test_download_cannot_publish_an_unrelated_file(monkeypatch, tmp_path):
     assert destination.read_bytes() == b"curl partial"
 
 
+def test_published_download_succeeds_when_real_filesystem_cleanup_fails(
+    monkeypatch, tmp_path, capsys
+):
+    if os.name != "nt" and os.geteuid() == 0:
+        pytest.skip("Root bypasses the filesystem permission denial")
+    helper = _load_helper()
+    destination = tmp_path / "model.part"
+    destination.write_bytes(b"curl partial")
+    held = []
+
+    def download(**kwargs):
+        payload = Path(kwargs["local_dir"])
+        artifact = payload / "nested" / "model.gguf"
+        artifact.parent.mkdir()
+        artifact.write_bytes(b"GGUF complete")
+        metadata = payload / ".cache" / "metadata"
+        metadata.parent.mkdir()
+        metadata.write_bytes(b"owned SDK metadata")
+        if os.name == "nt":
+            import ctypes
+
+            create = ctypes.windll.kernel32.CreateFileW
+            create.argtypes = [ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong,
+                               ctypes.c_void_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.c_void_p]
+            create.restype = ctypes.c_void_p
+            # A real open handle without FILE_SHARE_DELETE blocks rmtree on Windows.
+            handle = create("\\\\?\\" + str(metadata.resolve()), 0x80000000, 3, None, 3, 128, None)
+            assert handle not in (None, ctypes.c_void_p(-1).value)
+            close = ctypes.windll.kernel32.CloseHandle
+            close.argtypes = [ctypes.c_void_p]
+            held.append((metadata, lambda: close(handle)))
+        else:
+            # The model can be renamed while this separate metadata directory
+            # remains readable but disallows unlinking its file.
+            metadata.parent.chmod(0o500)
+            held.append((metadata, lambda: metadata.parent.chmod(0o700)))
+        return str(artifact)
+
+    _stub_hub(monkeypatch, download)
+    try:
+        result = helper.download_artifact(URL, destination)
+        assert result == destination
+        assert result.read_bytes() == b"GGUF complete"
+        assert held[0][0].read_bytes() == b"owned SDK metadata"
+        assert "Artifact published; SDK staging cleanup pending" in capsys.readouterr().err
+    finally:
+        for _, release in held:
+            release()
+
+
 @pytest.mark.parametrize("filename", ["../escape.gguf", "sub/../escape.gguf", "C%3Aescape.gguf", "sub%5Cescape.gguf"])
 def test_staging_rejects_unsafe_filename(tmp_path, filename):
     with pytest.raises(ValueError, match="safe relative path"):
