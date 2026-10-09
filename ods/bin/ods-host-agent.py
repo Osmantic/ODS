@@ -822,11 +822,10 @@ def _download_huggingface_artifact(
         maximum=300,
     )
     code = r'''
-import shutil
 import sys
 from pathlib import Path
 
-repo_id, revision, filename, dest, cache_dir = sys.argv[1:6]
+repo_id, revision, filename, dest, cache_dir, local_dir = sys.argv[1:7]
 try:
     from huggingface_hub import hf_hub_download
 except Exception as exc:
@@ -842,11 +841,15 @@ path = hf_hub_download(
     filename=filename,
     revision=revision,
     cache_dir=cache_dir,
+    local_dir=local_dir,
     local_files_only=False,
 )
 dest_path = Path(dest)
 dest_path.parent.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(path, dest_path)
+source = Path(path)
+if source.is_symlink() or not source.resolve().is_relative_to(Path(local_dir).resolve()):
+    raise RuntimeError("Hugging Face returned an artifact outside its download staging directory")
+source.replace(dest_path)
 '''
     cmd = [
         sys.executable,
@@ -858,7 +861,14 @@ shutil.copyfile(path, dest_path)
         str(part_tmp),
         str(cache_dir),
     ]
+    staging_dir = None
+    proc = None
     try:
+        # The Hub's local_dir path downloads into this operation's directory
+        # instead of first retaining a second full artifact in the shared cache.
+        # Keep it on the model filesystem so publication is a rename, not a copy.
+        staging_dir = Path(tempfile.mkdtemp(prefix=".ods-hf-", dir=part_tmp.parent))
+        cmd.append(str(staging_dir))
         child_env = os.environ.copy()
         persisted_hf_token = load_env(INSTALL_DIR / ".env").get("HF_TOKEN", "").strip()
         if persisted_hf_token and not child_env.get("HF_TOKEN"):
@@ -933,6 +943,15 @@ shutil.copyfile(path, dest_path)
             _model_download_proc = None
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"Hugging Face Hub fallback could not start: {exc}"
+    finally:
+        # Reap the child before cleanup, including cancelled/timed-out transfers.
+        # Only this operation's private staging directory is removed; shared
+        # Hugging Face cache entries and an earlier curl partial are preserved.
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        if staging_dir is not None:
+            shutil.rmtree(staging_dir)
 
     if cancel_event.is_set():
         return False, "Download cancelled by user"

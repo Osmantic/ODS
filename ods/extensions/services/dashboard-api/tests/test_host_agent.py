@@ -8506,6 +8506,172 @@ class TestModelDeleteSafety:
         assert target.exists()
 
 
+class TestHuggingFaceFallbackStaging:
+    def _setup(self, tmp_path, monkeypatch, mode="success"):
+        install = tmp_path / "install"
+        models = install / "data/models"
+        models.mkdir(parents=True)
+        cache = install / "data/hf-cache"
+        cache.mkdir()
+        (cache / "preexisting").write_bytes(b"shared cache sentinel")
+        shim = tmp_path / "python-shim"
+        shim.mkdir()
+        (shim / "huggingface_hub.py").write_text('''
+import os
+import time
+from pathlib import Path
+def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
+    root = Path(local_dir or cache_dir)
+    path = root / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as artifact:
+        for _ in range(int(os.environ.get("ODS_TEST_HF_MIB", "1"))):
+            artifact.write(b"x" * 1024 * 1024)
+    Path(os.environ["ODS_TEST_HF_STARTED"]).touch()
+    if os.environ["ODS_TEST_HF_MODE"] == "failure":
+        raise OSError("fixture interrupted transfer")
+    while os.environ["ODS_TEST_HF_MODE"] == "cancel":
+        time.sleep(.05)
+    if os.environ["ODS_TEST_HF_MODE"] == "foreign":
+        return str(Path(cache_dir) / "preexisting")
+    return str(path)
+''', encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setenv("PYTHONPATH", str(shim))
+        monkeypatch.setenv("ODS_TEST_HF_MODE", mode)
+        monkeypatch.setenv("ODS_TEST_HF_STARTED", str(tmp_path / "started"))
+        monkeypatch.setenv("ODS_MODEL_DOWNLOAD_ALLOWED_HOSTS", "huggingface.co")
+        monkeypatch.setenv("ODS_HF_HUB_FALLBACK_STATUS_SECONDS", "2")
+        return install, models, cache
+
+    def test_fallback_publishes_one_artifact_without_retaining_a_new_cache_copy(self, tmp_path, monkeypatch):
+        _install, models, cache = self._setup(tmp_path, monkeypatch)
+        destination = models / "model.gguf.part"
+        ok, error = _mod._download_huggingface_artifact(
+            "https://huggingface.co/org/repo/resolve/main/subdir/model.gguf",
+            destination, threading.Event(),
+        )
+        assert ok, error
+        assert destination.stat().st_size == int(os.environ.get("ODS_TEST_HF_MIB", "1")) * 1024 * 1024
+        assert destination.stat().st_nlink == 1
+        assert list(models.iterdir()) == [destination]
+        assert list(cache.iterdir()) == [cache / "preexisting"]
+        assert (cache / "preexisting").read_bytes() == b"shared cache sentinel"
+
+    @pytest.mark.parametrize("cleanup_failure", [False, True])
+    def test_authenticated_download_handler_verifies_and_publishes_hub_artifact(self, tmp_path, monkeypatch, cleanup_failure):
+        install, models, cache = self._setup(tmp_path, monkeypatch)
+        mib = int(os.environ.get("ODS_TEST_HF_MIB", "1"))
+        digest = hashlib.sha256()
+        for _ in range(mib):
+            digest.update(b"x" * 1024 * 1024)
+        model = {"gguf_file": "model.gguf",
+                 "gguf_url": "https://huggingface.co/org/repo/resolve/main/subdir/model.gguf",
+                 "gguf_sha256": digest.hexdigest()}
+        (install / "config").mkdir()
+        (install / "config/model-library.json").write_text(json.dumps({"models": [model]}), encoding="utf-8")
+        (install / ".env").write_text("GPU_BACKEND=cpu\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_thread", None)
+        monkeypatch.setattr(_mod, "_model_download_proc", None)
+        monkeypatch.setattr(_mod, "_model_download_cancel", threading.Event())
+        def head(cmd, **kwargs):
+            assert cmd[0] == "curl"
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(_mod.subprocess, "run", head)
+        if cleanup_failure:
+            def refuse_cleanup(path):
+                raise OSError("fixture staging cleanup denied")
+            monkeypatch.setattr(_mod.shutil, "rmtree", refuse_cleanup)
+        real_popen = subprocess.Popen
+
+        class FailedCurl:
+            returncode = 22
+
+            def communicate(self, timeout=None):
+                return "", "curl fixture failed"
+
+        def popen(cmd, **kwargs):
+            if cmd[0] == "curl":
+                return FailedCurl()
+            assert cmd[0] == sys.executable
+            return real_popen(cmd, **kwargs)
+
+        monkeypatch.setattr(_mod.subprocess, "Popen", popen)
+        handler = _FakeHandler(json.dumps(model).encode())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=20)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install / "data/model-download-status.json").read_text(encoding="utf-8"))
+        if cleanup_failure:
+            assert status["status"] == "failed"
+            assert "staging cleanup denied" in status["error"]
+            assert not (models / "model.gguf").exists()
+            assert not (models / "model.gguf.part").exists()
+            assert list(cache.iterdir()) == [cache / "preexisting"]
+            assert _mod._model_download_proc is None
+            acquired, _active = _mod._begin_model_lifecycle("model_switch")
+            assert acquired
+            _mod._end_model_lifecycle("model_switch")
+            return
+        assert status["status"] == "complete", status
+        target = models / "model.gguf"
+        assert target.stat().st_size == mib * 1024 * 1024
+        assert target.stat().st_nlink == 1
+        observed = hashlib.sha256()
+        with target.open("rb") as artifact:
+            for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+                observed.update(chunk)
+        assert observed.hexdigest() == digest.hexdigest()
+        assert list(models.iterdir()) == [target]
+        assert list(cache.iterdir()) == [cache / "preexisting"]
+
+    @pytest.mark.parametrize("mode", ["failure", "cancel", "foreign"])
+    def test_fallback_discards_only_its_own_partial_download(self, tmp_path, monkeypatch, mode):
+        install, models, cache = self._setup(tmp_path, monkeypatch, mode)
+        partial = models / "model.gguf.part"
+        partial.write_bytes(b"earlier curl partial")
+        cancel = threading.Event()
+        result = []
+        worker = threading.Thread(target=lambda: result.append(_mod._download_huggingface_artifact(
+            "https://huggingface.co/org/repo/resolve/main/model.gguf",
+            models / "model.gguf.part", cancel, status_path=install / "data/status.json",
+        )))
+        worker.start()
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "started").exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert (tmp_path / "started").exists()
+        if mode == "cancel":
+            cancel.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert result and result[0][0] is False
+        assert list(models.iterdir()) == [partial]
+        assert partial.read_bytes() == b"earlier curl partial"
+        assert list(cache.iterdir()) == [cache / "preexisting"]
+        assert (cache / "preexisting").read_bytes() == b"shared cache sentinel"
+        assert _mod._model_download_proc is None
+
+    def test_fallback_cleans_private_directory_when_child_cannot_start(self, tmp_path, monkeypatch):
+        _install, models, cache = self._setup(tmp_path, monkeypatch)
+
+        def cannot_start(*args, **kwargs):
+            raise OSError("fixture child launch refused")
+
+        monkeypatch.setattr(_mod.subprocess, "Popen", cannot_start)
+        ok, error = _mod._download_huggingface_artifact(
+            "https://huggingface.co/org/repo/resolve/main/model.gguf",
+            models / "model.gguf.part", threading.Event(),
+        )
+        assert not ok and "child launch refused" in error
+        assert not list(models.iterdir())
+        assert list(cache.iterdir()) == [cache / "preexisting"]
+
+
 class TestModelDownloadFileIntegrity:
 
     class _NoCancel:
