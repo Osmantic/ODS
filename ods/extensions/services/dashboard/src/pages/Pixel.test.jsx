@@ -2273,21 +2273,37 @@ describe('Pixel', () => {
     })
   })
 
-  it('replays a cancelled Chat only receipt with its original mode and partial answer', async () => {
+  it.each([false, true])('replays a cancelled Chat only receipt and continues its conversation (retained Stop=%s)', async stopRetained => {
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'stopped-chat',requestId:'stopped-attempt',inFlight:true,chatMode:'chat',
       messages:[{role:'user',content:'Tell me a story'},{role:'assistant',content:''}]}))
-    globalThis.fetch.mockImplementation(async url => {
+    let cancelled = !stopRetained
+    globalThis.fetch.mockImplementation(async (url, options) => {
       if(url==='/api/pixel/status')return response({available:true,runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
-      if(url==='/api/pixel/chat/result')return response({state:'cancelled',events:'data: {"choices":[{"delta":{"content":"A short beginning"}}]}\n\ndata: [DONE]\n\n'})
+      if(url==='/api/pixel/chat/result')return response(cancelled ? {state:'cancelled',events:'data: {"choices":[{"delta":{"content":"A short beginning"}}]}\n\ndata: [DONE]\n\n'} : {state:'unknown',events:''})
+      if(url==='/api/pixel/chat/cancel') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:'stopped-chat',request_id:'stopped-attempt'})
+        cancelled = true
+        return response({aborted:true})
+      }
+      if(url==='/api/pixel/chat/stream')return sseResponse([JSON.stringify({choices:[{delta:{content:'New reply'}}]}),'[DONE]'])
       throw new Error(`Unexpected request ${url}`)
     })
     render(<Pixel />)
+    if(stopRetained)fireEvent.click(await screen.findByRole('button',{name:'Try Stop previous work'}))
     expect(await screen.findByText('Stopped by you.')).toBeVisible()
     expect(screen.getByText('A short beginning')).toBeVisible()
     expect(screen.queryByText(/Workspace changes completed before cancellation/)).toBeNull()
     await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))).toMatchObject({chatMode:'chat',requestId:null,inFlight:false,
       messages:[{role:'user',content:'Tell me a story'},{role:'assistant',status:'stopped',content:'A short beginning\n\n---\n\n_Stopped by you._'}]}))
-    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream' || url==='/api/pixel/chat/cancel')).toBe(false)
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream' || url==='/api/pixel/chat/activity')).toBe(false)
+    expect(globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/cancel')).toHaveLength(stopRetained ? 1 : 0)
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Continue the story'}})
+    await waitFor(()=>expect(screen.getByTitle('Send')).toBeEnabled())
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText('New reply')).toBeVisible()
+    const posted=JSON.parse(globalThis.fetch.mock.calls.find(([url])=>url==='/api/pixel/chat/stream')[1].body)
+    expect(posted).toMatchObject({chat_id:'stopped-chat',mode:'chat'})
+    expect(posted.request_id).not.toBe('stopped-attempt')
   })
 
   it('keeps partial output but marks it durably when the owner stops a response', async () => {
