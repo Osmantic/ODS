@@ -9,8 +9,8 @@ use the xet read-token flow, so installers use this as a fallback after curl.
 from __future__ import annotations
 
 import argparse
-import shutil
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -43,16 +43,23 @@ def download_artifact(url: str, destination: Path) -> Path:
             "python -m pip install 'huggingface_hub[hf_xet]>=0.27'"
         ) from exc
 
-    downloaded = Path(
-        hf_hub_download(repo_id=repo_id, filename=filename, revision=revision)
-    )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp_destination = destination.with_name(f"{destination.name}.hf-tmp")
-    shutil.copyfile(downloaded, tmp_destination)
-    if tmp_destination.stat().st_size <= 0:
-        tmp_destination.unlink(missing_ok=True)
-        raise RuntimeError("downloaded artifact is empty")
-    tmp_destination.replace(destination)
+    # Keep the existing curl partial until success, without also retaining a
+    # full Hub cache copy. Staging beside the destination allows an atomic move.
+    with tempfile.TemporaryDirectory(
+        prefix=f".{destination.name}.hf-", dir=destination.parent
+    ) as staging_dir:
+        downloaded = Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                local_dir=staging_dir,
+            )
+        )
+        if downloaded.stat().st_size <= 0:
+            raise RuntimeError("downloaded artifact is empty")
+        downloaded.replace(destination)
     return destination
 
 
