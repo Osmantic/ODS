@@ -170,6 +170,7 @@ tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
 tests/test-preset-import-export.sh
+tests/test-preset-macos-appledouble.sh
 tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh
