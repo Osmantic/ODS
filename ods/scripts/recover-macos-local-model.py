@@ -31,7 +31,7 @@ def installed_env(install_dir):
     host = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = host
     spec.loader.exec_module(host)
-    if not hasattr(host, 'load_env'):
+    if not callable(getattr(host, 'load_env', None)):
         raise RecoveryError('The installed host agent cannot load environment configuration')
     return host.load_env(install_dir / '.env')
 
@@ -114,7 +114,8 @@ def main():
     except RecoveryError as error:
         print(f'Recovery stopped: {error}. Keep all saved state.', file=sys.stderr)
         return 1
-    except (OSError, ValueError, RuntimeError, urllib.error.URLError, ImportError, AttributeError) as error:
+    except (OSError, ValueError, RuntimeError, urllib.error.URLError,
+            ImportError, AttributeError, SyntaxError, TypeError) as error:
         print(f'Recovery stopped ({type(error).__name__}). Keep all saved state. '
               'Check the local host-agent log; do not retry an unconfirmed operation.', file=sys.stderr)
         return 1
