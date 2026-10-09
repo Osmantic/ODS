@@ -388,7 +388,7 @@ async def _host_model_status() -> dict[str, object] | None:
     return status if isinstance(status, dict) else None
 
 
-async def _local_inference_issue(host_status: object) -> str | None:
+async def _local_inference_issue(host_status: object) -> tuple[str, str] | None:
     # Gateway discovery proves the agent exists, not that its model server is
     # reachable. Probe the configured host runtime without spending tokens.
     runtime = _active_runtime_projection(host_status)
@@ -399,21 +399,32 @@ async def _local_inference_issue(host_status: object) -> str | None:
     if (read_live_env_value("LLM_BACKEND").lower() == "external"
             or read_live_env_value("AMD_INFERENCE_LOCATION").lower() != "host"):
         return None
-    try:
-        telemetry = await request_agent_json("GET", "/v1/llm/status", timeout=3.0)
-        if (isinstance(telemetry, dict)
-                and telemetry.get("schema_version") == "ods.host-llm-status.v1"
-                and isinstance(telemetry.get("health"), dict)
-                and telemetry["health"].get("status") == "ok"):
+    for path, schema in (("/v1/llm/health", "ods.host-llm-health.v1"),
+                         ("/v1/llm/status", "ods.host-llm-status.v1")):
+        try:
+            observation = await request_agent_json("GET", path, timeout=3.0)
+        except AgentHTTPError as error:
+            if error.status_code == 404 and path == "/v1/llm/health":
+                # One rolling-upgrade fallback for an older host agent.
+                continue
+            if error.status_code == 501:
+                # Non-native runtimes retain their existing discovery path.
+                return None
+            break
+        except AgentClientError:
+            break
+        if (not isinstance(observation, dict) or observation.get("schema_version") != schema
+                or not isinstance(observation.get("health"), dict)):
+            break
+        health = observation["health"].get("status")
+        if health == "ok":
             return None
-    except AgentHTTPError as error:
-        # Linux/WSL hosts do not implement Windows-native telemetry. Its
-        # absence cannot declare their otherwise discoverable agent offline.
-        if error.status_code == 501:
-            return None
-    except AgentClientError:
-        pass
-    return "The local model runtime is unavailable. Restore it in Models before sending another task."
+        if health == "loading":
+            return "model_loading", "The local model is still loading. Portal will check again shortly; your draft is preserved."
+        if health == "error":
+            return "model_unavailable", "The local model runtime reported a health error. Review its status in Models before sending another task."
+        break
+    return "model_unverified", "Portal could not verify the local model's health. It will check again shortly; your draft is preserved."
 
 
 def _model_readiness_issue_from_status(status: object) -> tuple[str, str] | None:
@@ -592,7 +603,8 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         if available:
             inference_issue = await _local_inference_issue(host_status)
             if inference_issue:
-                return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable", "detail": inference_issue}
+                state, detail = inference_issue
+                return {**activation_metadata, "available": False, "model": None, "state": state, "detail": detail}
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
