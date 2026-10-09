@@ -112,6 +112,7 @@ def test_storage_failure_is_explicit_without_private_details(client, monkeypatch
 @pytest.mark.parametrize("operation", ["upload", "lifecycle"])
 @pytest.mark.parametrize("failure_kind,diagnostic", [
     ("custody", "ImageStoreCustodyError; custody=database_mode"),
+    ("metadata", "ImageStoreCustodyError; custody=database_mode; stage=existing_file; expected_uid=1000; actual_uid=501; device=37; inode=1234"),
     ("unknown-custody", "ImageStoreCustodyError; custody=unknown"),
     ("other", "ValueError"),
 ])
@@ -121,7 +122,10 @@ def test_custody_logs_only_allowlisted_reason_and_keeps_public_response(
     from pixel_image_store import ImageStoreCustodyError
     private = "/private/path owner=123 credential=secret image=private-bytes"
     failure = (ValueError(private) if failure_kind == "other" else
-               ImageStoreCustodyError("database_mode" if failure_kind == "custody" else private, private))
+               ImageStoreCustodyError("database_mode" if failure_kind in {"custody", "metadata"} else private, private,
+                                     metadata={"stage": "existing_file", "expected_uid": 1000, "actual_uid": 501,
+                                               "device": 37, "inode": 1234, "credential": private}
+                                     if failure_kind == "metadata" else None))
 
     def broken(*args):
         raise failure
@@ -140,6 +144,8 @@ def test_custody_logs_only_allowlisted_reason_and_keeps_public_response(
     assert f"{log} ({diagnostic})" in caplog.messages
     assert private not in caplog.text
     assert private not in response.text
+    assert "expected_uid" not in response.text
+    assert "inode" not in response.text
 
 
 def test_capacity_preserves_previous_image(client, monkeypatch):

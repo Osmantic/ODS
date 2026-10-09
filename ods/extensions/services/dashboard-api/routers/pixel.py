@@ -34,7 +34,7 @@ from pixel_chat_identity import messages_with_identity
 from pixel_chat_context import HistoryMessage, HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
-from routers.pixel_images import router as image_router, resolve_message_images, conversation_storage
+from routers.pixel_images import router as image_router, resolve_message_images, conversation_storage, PixelStorageUnavailable
 from pixel_edge_read_client import borrow_edge_read_client, get_edge_read_client
 
 
@@ -836,10 +836,13 @@ async def _retained_chat_stream(request, body, owner):
                     raise HTTPException(status_code=409, detail=issue[1])
                 messages = await _prepare_chat_messages(body, owner)
                 await conversation_storage("assert_available", owner, body.chat_id)
-            except Exception:
+            except Exception as exc:
                 # The attempt ID was committed, but no producer or agent turn
                 # was started. Retain an exact terminal receipt for reloads.
                 text = "Portal did not start this attempt. Restore its connection and send your message again."
+                if isinstance(exc, PixelStorageUnavailable):
+                    text = ("Portal did not start this attempt because its conversation storage is unavailable. "
+                            "Please try again. If this continues, check ODS storage diagnostics.")
                 frame = {"choices": [{"delta": {"content": text}}]}
                 data = f"data: {json.dumps(frame)}\n\n".encode() + _error_event(text) + b"data: [DONE]\n\n"
                 store.reject_before_submission(identity, data)
