@@ -50,7 +50,7 @@ from models import (
 from security import verify_api_key
 from gpu import get_gpu_info
 from helpers import (
-    get_all_services, get_cached_services, set_services_cache,
+    get_all_services, get_cached_services, get_services_cache_revision, set_services_cache,
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_cached_llama_metrics, get_loaded_model, get_llama_context_size,
@@ -1933,8 +1933,9 @@ async def _poll_service_health():
     await asyncio.sleep(2)  # let services start
     while True:
         try:
+            revision = get_services_cache_revision()
             statuses = await get_all_services()
-            set_services_cache(statuses)
+            set_services_cache(statuses, expected_revision=revision)
         except Exception:
             logger.exception("Service health poll failed")
         await asyncio.sleep(_SERVICE_POLL_INTERVAL)

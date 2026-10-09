@@ -888,6 +888,7 @@ async def get_llama_vision_support() -> Optional[bool]:
 # lookups (Docker Desktop) never block API responses.
 
 _services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
+_services_cache_revision = 0
 
 
 def _host_service_affirmed_stopped(service_id: str) -> bool:
@@ -921,10 +922,19 @@ def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
     return status
 
 
-def set_services_cache(statuses: list) -> None:
-    """Store latest health check results (called by background poll)."""
-    global _services_cache
+def get_services_cache_revision() -> int:
+    """Revision captured before a background health poll starts."""
+    return _services_cache_revision
+
+
+def set_services_cache(statuses: list, *, expected_revision: Optional[int] = None) -> bool:
+    """Store a poll result only if no owner refresh superseded its snapshot."""
+    global _services_cache, _services_cache_revision
+    if expected_revision is not None and expected_revision != _services_cache_revision:
+        return False
     _services_cache = [_normalize_cached_service_status(status) for status in statuses]
+    _services_cache_revision += 1
+    return True
 
 
 def get_cached_services() -> Optional[list]:
@@ -934,12 +944,34 @@ def get_cached_services() -> Optional[list]:
 
 async def refresh_cached_service_status(service_id: str) -> None:
     """Re-check one service and replace its cached row after an owner action."""
-    global _services_cache
+    global _services_cache, _services_cache_revision
     config = SERVICES.get(service_id)
     if config is None or _services_cache is None:
         return
     status = _normalize_cached_service_status(await check_service_health(service_id, config))
     _services_cache = [status if item.id == service_id else item for item in _services_cache]
+    _services_cache_revision += 1
+
+
+async def refresh_cached_builtin_services(service_ids: list[str]) -> None:
+    """Publish current health after a Library start, before its response.
+
+    A newly selected built-in may be absent from both the import-time registry
+    and the cache. Use the same current manifests and Docker reconciliation as
+    the poller, and fence polls begun before or during this owner refresh.
+    The caller retains the affected extension operation locks throughout.
+    """
+    global _services_cache, _services_cache_revision
+    selected = set(service_ids) & LIBRARY_MANAGEABLE_BUILTINS
+    if not selected or _services_cache is None:
+        return  # An uncached catalog already performs a fresh full observation.
+    _services_cache_revision += 1
+    statuses = await get_all_services(only_service_ids=selected)
+    # Merge into the current list: an unrelated owner refresh may have finished
+    # while these probes awaited I/O. Never put its old row back.
+    _services_cache = [row for row in _services_cache if row.id not in selected]
+    _services_cache.extend(_normalize_cached_service_status(row) for row in statuses)
+    _services_cache_revision += 1
 
 
 # --- Service Health ---
@@ -1075,7 +1107,7 @@ def _switched_off_status(service_id: str, config: dict):
     return not_deployed()
 
 
-async def get_all_services() -> list[ServiceStatus]:
+async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
     """Get all service health statuses.
 
     Uses ``return_exceptions=True`` so that one misbehaving service
@@ -1099,7 +1131,10 @@ async def get_all_services() -> list[ServiceStatus]:
                 service_configs.setdefault(service_id, current_optional[service_id])
             else:
                 service_configs.pop(service_id, None)
-    tasks = [_switched_off_status(sid, cfg) or check_service_health(sid, cfg)
+    if only_service_ids is not None:
+        service_configs = {sid: cfg for sid, cfg in service_configs.items() if sid in only_service_ids}
+    tasks = [_switched_off_status(sid, cfg) or check_service_health(
+                 sid, cfg, **({"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}))
              for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1135,6 +1170,7 @@ async def get_all_services() -> list[ServiceStatus]:
             if isinstance(item, dict) and item.get("container_name")
         }
     except (AgentClientError, ValueError):
+        containers = []
         by_service = {}
         by_name = {}
 
@@ -1143,6 +1179,7 @@ async def get_all_services() -> list[ServiceStatus]:
         config = service_configs.get(status.id, {})
         item = by_service.get(status.id) or by_name.get(str(config.get("container_name") or ""))
         replacement = status.status
+        startup_pending = False
         if item and config.get("type", "docker") == "docker":
             health = str(item.get("health") or "none").casefold()
             state = str(item.get("state") or "unknown").casefold()
@@ -1153,12 +1190,21 @@ async def get_all_services() -> list[ServiceStatus]:
                 replacement = "healthy"
             elif health == "unhealthy":
                 replacement = "unhealthy"
-            elif health == "starting" and status.status in {"down", "degraded"}:
+            elif state == "running" and health == "starting" and status.status in {"down", "degraded"}:
                 replacement = "degraded"
+                # Do not turn a timeout into startup guidance without one
+                # unambiguous running container's declared health state.
+                matches = [row for row in containers if isinstance(row, dict) and (
+                    row.get("service_id") == status.id or (
+                        config.get("container_name") and
+                        row.get("container_name") == config["container_name"]
+                    )
+                )]
+                startup_pending = len(matches) == 1
             elif state in {"exited", "dead", "removing"}:
                 replacement = "down"
-        if replacement != status.status:
-            status = status.model_copy(update={"status": replacement})
+        if replacement != status.status or startup_pending != status.startup_pending:
+            status = status.model_copy(update={"status": replacement, "startup_pending": startup_pending})
         reconciled.append(status)
 
     if _host_native_llm():

@@ -31,6 +31,8 @@ class ServiceStatus(BaseModel):
     external_port: int
     status: str  # "healthy", "unhealthy", "unknown", "degraded", "down", "not_deployed"
     response_time_ms: Optional[float] = None
+    # Internal health provenance; a slow HTTP probe alone cannot establish startup.
+    startup_pending: bool = Field(default=False, exclude=True)
 
 
 class NodeCapabilities(BaseModel):

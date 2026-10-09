@@ -71,6 +71,19 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
   const redact = (await import(pathToFileURL(join(candidate, 'dist', redactName)))).d;
   const file = join(workspace, 'counter.html');
   const resetFile = (content = originalPage) => writeFileSync(file, content, {mode: 0o600});
+  const suggestions = error => {
+    const match = error.message.match(/retry edit with this edits array: (\{"edits":.*\})\. This is a partial retry:/);
+    return match ? JSON.parse(match[1]).edits : null;
+  };
+  async function rejectedEdit(content, oldText, newText) {
+    resetFile(content);
+    let failure;
+    await assert.rejects(invoke(native.X(workspace), {path:'counter.html',edits:[{oldText,newText}]}), error => {
+      failure=error; return true;
+    });
+    assert.equal(readFileSync(file,'utf8'),content,'suggestion never applies an edit');
+    return failure;
+  }
   const maskedEdit = value => ({path: 'counter.html', edits: [
     {oldText: `const STORAGE_KEY = '${value}';`, newText: ''},
     {oldText: 'const DEFAULT_VALUE = 3;', newText: 'const DEFAULT_VALUE = 4;'},
@@ -144,6 +157,140 @@ test('pinned edit recovery preserves native failure and secret masking', {timeou
     }
     for (const source of ["const STORAGE_NAMESPACE = 'harborCounterValue';", "localStorage.getItem('harborCounterValue');"])
       assert.equal(redact(source, {}), source);
+  });
+
+  await t.test('failed whole-block repair offers only exact safe requested hunks for explicit retry', async () => {
+    resetFile();
+    const visible=redact(textOf(await invoke(native.H(workspace),{path:'counter.html'})),{});
+    const requested=visible.replace(/const STORAGE_KEY = '[^']*';\n/, '')
+      .replace('parseInt(localStorage.getItem(STORAGE_KEY)) || DEFAULT_VALUE','DEFAULT_VALUE')
+      .replace('function update() { localStorage.setItem(STORAGE_KEY, count.toString()); }','function update() {}');
+    const failure=await rejectedEdit(originalPage,visible,requested);
+    const edits=suggestions(failure);
+    assert.equal(edits?.length,1,'adjacent changed lines form one exact hunk');
+    assert.match(failure.message,/partial retry: 1 changed block\(s\) were omitted/);
+    assert.doesNotMatch(JSON.stringify(edits),/harbor|\u2026|\*{3}|const STORAGE_KEY/);
+    assert.equal(redact(JSON.stringify(edits),{}),JSON.stringify(edits),'public redaction leaves retry anchors exact');
+    await invoke(native.X(workspace),{path:'counter.html',edits});
+    const repaired=readFileSync(file,'utf8');
+    assert.ok(repaired.includes("const STORAGE_KEY = 'harborCounterValue';"));
+    assert.doesNotMatch(repaired,/localStorage|sessionStorage/);
+    const controls=pageControls(repaired);
+    assert.equal(controls.value(),3);controls.increase();assert.equal(controls.value(),4);
+    controls.reset();assert.equal(controls.value(),3);assert.equal(pageControls(repaired).value(),3);
+  });
+
+  await t.test('real STORAGE_KEY and API credentials stay masked and byte-preserved through suggested edits', async () => {
+    const secret='fixture-secret-authentication-value';
+    const source=originalPage.replace('harborCounterValue',secret).replace('const DEFAULT_VALUE',`const API_KEY = '${secret}';\nconst DEFAULT_VALUE`);
+    resetFile(source);
+    const visible=redact(textOf(await invoke(native.H(workspace),{path:'counter.html'})),{});
+    assert.ok(!visible.includes(secret));
+    const desired=visible.replace('parseInt(localStorage.getItem(STORAGE_KEY)) || DEFAULT_VALUE','DEFAULT_VALUE')
+      .replace('function update() { localStorage.setItem(STORAGE_KEY, count.toString()); }','function update() {}');
+    const failure=await rejectedEdit(source,visible,desired);
+    const edits=suggestions(failure);assert.equal(edits?.length,1);
+    // The native error already appends file context internally; the public
+    // redaction boundary must still mask it, and the new proposal adds none.
+    assert.ok(!redact(failure.message,{}).includes(secret));
+    assert.ok(!JSON.stringify(edits).includes(secret));
+    assert.doesNotMatch(JSON.stringify(edits),/API_KEY|const STORAGE_KEY|\u2026|\*{3}/);
+    await invoke(native.X(workspace),{path:'counter.html',edits});
+    const result=readFileSync(file,'utf8');
+    assert.ok(result.includes(`const STORAGE_KEY = '${secret}';`));
+    assert.ok(result.includes(`const API_KEY = '${secret}';`));
+  });
+
+  await t.test('masked-only or new secret changes never become suggestions', async () => {
+    for(const value of ['***','harbor\u2026alue','[REDACTED]']) {
+      const error=await rejectedEdit(originalPage,`const STORAGE_KEY = '${value}';\n`, '');
+      assert.equal(suggestions(error),null);
+    }
+    for(const replacement of ["const API_KEY = 'fixture-secret-authentication-value';\n", "const next = 'sk-fixture1234567890';\n", "const next = '***';\n"]) {
+      const error=await rejectedEdit(originalPage,"const STORAGE_KEY = '***';\nconst DEFAULT_VALUE = 3;\n",`const STORAGE_KEY = '***';\n${replacement}`);
+      assert.equal(suggestions(error),null);assert.ok(!error.message.includes('fixture-secret-authentication-value'));
+    }
+  });
+
+  await t.test('ambiguous, insertion-only, multiple and oversized requests retain refusal without suggestions', async () => {
+    const masked="const STORAGE_KEY = '***';\n";
+    let failure=await rejectedEdit('const STORAGE_KEY = \'harborCounterValue\';\nalpha\nalpha\n',masked+'alpha\n',masked+'beta\n');
+    assert.equal(suggestions(failure),null,'duplicate anchor');
+    failure=await rejectedEdit(originalPage,masked,masked+'new statement\n');
+    assert.equal(suggestions(failure),null,'insert-only has no source anchor');
+    for(const extra of ['x'.repeat(32769), 'x\n'.repeat(257)]) {
+      failure=await rejectedEdit(originalPage,masked+extra,masked+'updated\n');
+      assert.equal(suggestions(failure),null);
+    }
+    resetFile();
+    await assert.rejects(invoke(native.X(workspace),{path:'counter.html',edits:[
+      {oldText:masked+'const DEFAULT_VALUE = 3;\n',newText:masked+'const DEFAULT_VALUE = 4;\n'},
+      {oldText:'unrelated missing',newText:''},
+    ]}),error=>{assert.equal(suggestions(error),null);return true;});
+    assert.equal(readFileSync(file,'utf8'),originalPage);
+  });
+
+  await t.test('suggestions cannot authorize a stale or newly ambiguous subsequent edit', async () => {
+    const masked=redact(originalPage,{});
+    const desired=masked.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 4;');
+    const error=await rejectedEdit(originalPage,masked,desired), edits=suggestions(error);
+    assert.equal(edits?.length,1);
+    for(const changed of [originalPage.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 5;'), originalPage+'const DEFAULT_VALUE = 3;\n']) {
+      resetFile(changed);
+      await assert.rejects(invoke(native.X(workspace),{path:'counter.html',edits}));
+      assert.equal(readFileSync(file,'utf8'),changed);
+    }
+  });
+
+  await t.test('unique hunk in a wrong or only partially matching block is not offered', async () => {
+    const masked=redact(originalPage,{});
+    for(const oldText of [masked.replace('<script>','<section>'), masked.replace('function increase()', 'function absent()'),
+      masked.slice(1), masked.slice(0,-3)]) {
+      const error=await rejectedEdit(originalPage,oldText,oldText.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 4;'));
+      assert.equal(suggestions(error),null,'the whole requested block must bind to a current full-line location');
+    }
+    const error=await rejectedEdit(originalPage+originalPage,masked,masked.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 4;'));
+    assert.equal(suggestions(error),null,'the masked block must itself be unique');
+  });
+
+  await t.test('CRLF file keeps its line endings when a suggested explicit retry succeeds', async () => {
+    const source=originalPage.replaceAll('\n','\r\n');
+    const oldText=redact(source,{}), newText=oldText.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 4;');
+    const error=await rejectedEdit(source,oldText,newText),edits=suggestions(error);
+    assert.equal(edits?.length,1);
+    await invoke(native.X(workspace),{path:'counter.html',edits});
+    assert.equal(readFileSync(file,'utf8'),source.replace('const DEFAULT_VALUE = 3;','const DEFAULT_VALUE = 4;'));
+  });
+
+  await t.test('exact retained Mac counter edit yields two safe requested edits with no source disclosure', {skip:!process.env.ODS_OWNED_EDIT_FIXTURE}, async () => {
+    const fixture=JSON.parse(readFileSync(process.env.ODS_OWNED_EDIT_FIXTURE,'utf8'));
+    const source=readFileSync(process.env.ODS_OWNED_COUNTER_HTML,'utf8');
+    assert.equal(sha(source),'3ef54a3392affb6e03cea4169a61124117d8e2afe20101b36c7e26214ef4b803');
+    assert.equal(sha(fixture.edits[0].oldText),'79407337398943c4349b5fe3f828cf0c095253e048445a3cdcafff426102c789');
+    assert.equal(sha(fixture.edits[0].newText),'3a2634c33907eb7410c932a044a1e1523f69bfe79c9d21b171f3da762ff20048');
+    const {oldText,newText}=fixture.edits[0];
+    const failure=await rejectedEdit(source,oldText,newText),edits=suggestions(failure);
+    assert.equal(edits?.length,2);assert.match(failure.message,/partial retry: 1 changed block/);
+    assert.doesNotMatch(JSON.stringify(edits),/harbor|const STORAGE_KEY|\*{3}/);
+    await invoke(native.X(workspace),{path:'counter.html',edits});
+    const result=readFileSync(file,'utf8');
+    assert.doesNotMatch(result,/localStorage|sessionStorage/);
+    assert.ok(result.includes("const STORAGE_KEY = 'harborCounterValue';"));
+    function liveControls(html) {
+      const handlers={},elements={};
+      for(const id of ['counterDisplay','increaseBtn','resetBtn'])
+        elements[id]={textContent:'3',addEventListener:(event,fn)=>{handlers[id+':'+event]=fn;}};
+      const document={getElementById:id=>elements[id],addEventListener:(event,fn)=>{handlers['document:'+event]=fn;}};
+      const context={document,window:{},setTimeout:()=>{},localStorage:new Proxy({}, {get(){throw new Error('SecurityError fixture');}})};
+      vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/i)[1],context,{timeout:1000});
+      return {handlers,elements};
+    }
+    assert.throws(()=>liveControls(source),/SecurityError fixture/);
+    const controls=liveControls(result);
+    assert.equal(controls.elements.counterDisplay.textContent,3);
+    controls.handlers['increaseBtn:click']();assert.equal(controls.elements.counterDisplay.textContent,4);
+    controls.handlers['resetBtn:click']();assert.equal(controls.elements.counterDisplay.textContent,3);
+    assert.equal(liveControls(result).elements.counterDisplay.textContent,3);
   });
 
   await t.test('successful edits, duplicate text, invalid input and missing files keep their native behavior', async () => {

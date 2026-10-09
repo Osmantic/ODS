@@ -229,6 +229,7 @@ tests/test_extension_audit_library.py
 tests/test_healthcheck_redirect_policy.py
 tests/test_hf_download_helper.py
 tests/test_macos_launchd_stop_live.py
+tests/test_macos_recover_local_model.py
 tests/test_macos_snapshot_definition.py
 tests/test_matrix_zypper_transport.py
 tests/test_model_library_native_context.py
@@ -262,6 +263,7 @@ tests/test_portal_identity.py
 tests/test_preview_inspection_delayed_entrance.py
 tests/test_remote_completion_telemetry.py
 tests/test_todo_fixes.py
+tests/test_validate_compose_stack_spaces.py
 tests/test-linux-service-port-rerun.py
 tests/test-migrate-shield-key.sh
 tests/test-ods-cli-update-shield-key.sh

@@ -320,14 +320,15 @@ export function promptContractForAgent(
   { verificationStatus, configuredContextWindow, configuredLeanPrompt, privateBrowserAccess, executionHost } = {}
 ) {
   if (!context || context.agentId !== agentId) return undefined;
-  // Restore the September 16 selector, including conservative context fallback.
+  // A 32K runtime also needs the compact core: fixed instructions otherwise
+  // exhaust its reserved input budget even after conversation compaction.
   const contextWindows = [
     configuredContextWindow,
     context.contextTokenBudget,
     context.contextWindowReferenceTokens,
   ].filter(value => Number.isInteger(value) && value > 0);
   const leanPrompt = configuredLeanPrompt === true ||
-    (contextWindows.length > 0 && Math.min(...contextWindows) < 32768);
+    (contextWindows.length > 0 && Math.min(...contextWindows) <= 32768);
   const conversationContract = conversationContractForExecution(leanPrompt
     ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT, executionHost);
   const teamRole=managedTeamRole(event);

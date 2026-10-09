@@ -1208,7 +1208,7 @@ cmd_chat() {
 cmd_update_pixel() {
     test_install
     /usr/bin/python3 "${INSTALL_DIR}/installers/macos/lib/pixel-native-update.py" \
-        --install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" "$@"
+        --install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR" --prompt-for-sudo "$@"
 }
 
 cmd_update() {
