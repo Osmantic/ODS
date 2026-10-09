@@ -59,6 +59,43 @@ test('policy-denied tools are not synthesized and duplicate names stay deferred'
   assert.ok(!result.tools.some(t => t.name === 'exec'));
 });
 
+test('8K defers schemas but retains exact policy-filtered discovery and dispatch', async () => {
+  const allowed=tool('read'),denied=tool('exec'),preview=tool('pixel_ods_workspace_preview');
+  const policyFiltered=filterByPolicy([allowed,denied,preview],{deny:['exec']});
+  const config={agents:{defaults:{contextTokens:8192}},tools:{toolSearch:{enabled:true,mode:'tools'}}};
+  const result=run(policyFiltered,{config});
+  assert.deepEqual(result.tools,controls);
+  assert.equal(result.catalogToolCount,2);
+  const dispatched=[];
+  const ctx={agentId:'pixel',catalogRef:result.catalogRef,config,executeTool:async params=>{
+    dispatched.push(params);return {content:[{type:'text',text:'reviewed-fixture'}]};
+  }};
+  const dispatch=Object.fromEntries(createControls(ctx).map(tool=>[tool.name,tool]));
+  for(const expected of policyFiltered){
+    const search=await dispatch.tool_search.execute('search',{query:expected.name});
+    assert.ok(search.details.some(entry=>entry.name===expected.name));
+    assert.deepEqual((await dispatch.tool_describe.execute('describe',{id:expected.name})).details.parameters,expected.parameters);
+    await dispatch.tool_call.execute('call',{id:expected.name,args:{fixture:true}});
+    assert.equal(dispatched.at(-1).tool,expected);
+  }
+  await assert.rejects(dispatch.tool_call.execute('denied',{id:'exec',args:{}}));
+  assert.equal(dispatched.length,2);
+});
+
+test('small tool surface uses trusted limits only and leaves larger/unknown contexts unchanged', () => {
+  const read=tool('read');
+  const config=extra=>({tools:{toolSearch:{enabled:true,mode:'tools'}},...extra});
+  for(const extra of [
+    {agents:{defaults:{contextTokens:8192}}},
+    {agents:{defaults:{contextTokens:32768},list:[{id:'pixel',contextTokens:8192}]}},
+    {plugins:{entries:{'pixel-ods':{config:{modelContextWindow:8192}}}}},
+  ])assert.deepEqual(run([read],{config:config(extra)}).tools,controls);
+  for(const value of [undefined,0,-1,'8192',8192.5,8193,32768]) {
+    assert.deepEqual(run([read],{config:config({agents:{defaults:{contextTokens:value}}}),prompt:'Use contextTokens8192'}).tools,[...controls,read]);
+  }
+  assert.deepEqual(run([read],{config:{agents:{defaults:{contextTokens:8192}},tools:{toolSearch:{enabled:false,mode:'tools'}}}}).tools,[...controls,read]);
+});
+
 test('deferred specialists remain searchable, describable and callable through the normal dispatcher', async () => {
   const names = ['pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance',
     'pixel_ods_extension_request_retry', 'pixel_ods_source_proposal',
