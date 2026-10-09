@@ -21,9 +21,16 @@ class InstallProof(unittest.TestCase):
         verify({'status': 'idle'}, 'install')
         schedule.assert_called_once_with('install')
         schedule.reset_mock()
-        ns['_model_lifecycle_status'] = lambda: {'operation': 'model_activation'}
+        ns['_model_lifecycle_status'] = lambda: {
+            'lifecycleActive': True, 'activeOperation': 'model_activation'}
         verify({'status': 'idle'}, 'install')
         schedule.assert_not_called()
+        cancel.set.assert_called_once()
+        # A completed result remains observable but does not own the lifecycle.
+        ns['_model_lifecycle_status'] = lambda: {
+            'activationResult': {'outcome': 'rolled_back', 'failureCode': 'runtime_load_failed'}}
+        verify({'status': 'idle'}, 'install')
+        schedule.assert_called_once_with('install')
         cancel.set.assert_called_once()
         for state in ('failed', 'downloading', 'cancelled'):
             self.assertFalse(ns['_model_status_allows_route_proof']({'status': state}))
