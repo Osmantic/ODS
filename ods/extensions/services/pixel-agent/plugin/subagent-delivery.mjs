@@ -262,6 +262,15 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     const chain=roots.get(runId);
     return chain && ownerMatches(chain,user) && valid(chain) ? chain.ready?.runId : undefined;
   }
+  function hasPendingChildren(context) {
+    const run = owned(context);
+    // Advice must have the same live owner custody as delivery. A prompt,
+    // provisional native hook, sparse context or superseded run is not proof.
+    if (!run || run.id !== run.chain.currentRun || context.sessionId !== run.chain.sessionId
+        || !context.sessionKey || context.sessionKey !== run.chain.sessionKey
+        || !ownerMatches(run.chain,context.sessionKey.slice(prefix.length))) return false;
+    return [...run.chain.children.values()].some(child=>!child.announced);
+  }
   function promptContext(context) {
     const run = owned(context);
     if (!run || run.id === run.chain.id || run.id !== run.chain.currentRun) return;
@@ -328,6 +337,6 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       return {block:true,blockReason:'No registered child completion event is pending. Review the current event and the earlier child results supplied in this run, then consolidate the owner response. This yield was not executed.'};
     }
   }
-  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,admission,
+  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,admission,hasPendingChildren,
     invalidate:() => {for (const chain of roots.values()) fail(chain);}};
 }

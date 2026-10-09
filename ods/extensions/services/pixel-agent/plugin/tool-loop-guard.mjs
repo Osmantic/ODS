@@ -204,6 +204,9 @@ export const PENDING_EXEC_LOOP_ABORT_REASON =
 export const PHANTOM_PROCESS_REASON =
   "No background process is running in this response. Every command so far has completed, and its output is in the corresponding exec result. Continue with that output instead of calling process.";
 
+const NATIVE_DELEGATION_WAIT_REASON =
+  "This owner response has accepted native subagents with completion events still pending. The process tool controls background exec sessions; it cannot wait for native subagents. Use sessions_yield to end this turn and receive their completion events. This refused process call ran nothing.";
+
 // Per run and per kind of corrective answer (see recordFreeCorrection): how
 // many answers are recorded without consuming the failure budget.
 export const FREE_CORRECTIONS_PER_KIND = 2;
@@ -7672,8 +7675,13 @@ export function createToolLoopGuard({
   // Publication currency across later calls (see preview-revalidation.mjs).
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
-  function beforeToolCall(event, context, agentId = "pixel") {
-    const decision = decideToolCall(event, context, agentId);
+  function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
+    const originalDecision = decideToolCall(event, context, agentId);
+    // Only refine an already-proven phantom process refusal. Real exec
+    // sessions, earlier denials, correction allowances and failure fuses keep
+    // their existing decisions. Fixed text preserves identical-outcome checks.
+    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
