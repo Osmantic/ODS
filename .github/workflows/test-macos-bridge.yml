@@ -16,6 +16,7 @@ on:
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
       - 'ods/ods-uninstall.sh'
       - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_migration_source_proof.py'
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
@@ -51,6 +52,7 @@ on:
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
       - 'ods/ods-uninstall.sh'
       - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_migration_source_proof.py'
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
@@ -112,6 +114,7 @@ jobs:
           ods/tests/test_macos_pixel_native_uninstall.py
           ods/tests/test_macos_pixel_ops_account.py
           ods/tests/test_macos_pixel_native_update.py
+          ods/tests/test_macos_pixel_migration_source_proof.py
           ods/tests/test_pixel_workspace_guidance.py
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py
