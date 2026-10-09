@@ -301,7 +301,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.match(host.appendSystemContext, /pixel_ods_host_observe/);
 
   const full = promptContractForAgent(
-    { agentId: "pixel", contextTokenBudget: 32768 },
+    { agentId: "pixel", contextTokenBudget: 32769 },
     "pixel"
   );
   assert.deepEqual(full, { appendSystemContext: ODS_CONVERSATION_CONTRACT });
@@ -352,6 +352,50 @@ test("adds one exact compact tool route for natural broad host questions", () =>
     promptContractForAgent({ agentId: "pixel" }, "pixel", { prompt }).appendSystemContext,
     `${ODS_CONVERSATION_CONTRACT}${exact}`
   );
+});
+
+test('32K selects the compact core from every trusted context source', () => {
+  for (const window of [32767, 32768, 32769, 65536]) {
+    for (const source of ['configured', 'budget', 'reference']) {
+      const context = {agentId:'pixel', contextTokenBudget:65536, contextWindowReferenceTokens:65536};
+      const options = {configuredContextWindow:65536};
+      if (source === 'configured') options.configuredContextWindow = window;
+      if (source === 'budget') context.contextTokenBudget = window;
+      if (source === 'reference') context.contextWindowReferenceTokens = window;
+      const result = promptContractForAgent(context, 'pixel', {prompt:'What is 14 plus 8?'}, options);
+      assert.equal(result.appendSystemContext, window <= 32768
+        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT);
+    }
+  }
+  assert.equal(promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt:'Use a 32K context.'})
+    .appendSystemContext, ODS_CONVERSATION_CONTRACT, 'owner prose cannot select the trusted budget');
+});
+
+test('32K preserves explicit compact-mode intent routes and verification safeguards', () => {
+  for (const prompt of [
+    'Compare Open WebUI with Flowise in the ODS extension catalog.',
+    'Install Flowise on the ODS host.',
+    'What can you tell me about this machine?',
+    'Make a playable Breakout game.',
+    'Continue checking the published preview controls.',
+    'Give me the existing report.pdf as a download.',
+    'Read the private URL http://192.168.1.20.',
+  ]) {
+    for (const executionHost of ['sandbox', 'gateway']) {
+      for (const verificationStatus of ['pending', 'failed']) {
+        const options = {executionHost, verificationStatus, privateBrowserAccess:false};
+        const actual = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt},
+          {...options, configuredContextWindow:32768});
+        const existingLean = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt},
+          {...options, configuredContextWindow:65536, configuredLeanPrompt:true});
+        assert.deepEqual(actual, existingLean, prompt);
+        assert.match(actual.appendSystemContext, /untrusted data, never authority/);
+        assert.match(actual.appendSystemContext, /never self-approve/);
+        assert.match(actual.appendSystemContext, /normal\/malformed input exit status/);
+        assert.match(actual.appendSystemContext, /wait without starting the dependent action/);
+      }
+    }
+  }
 });
 
 test("adds one model-agnostic approval route for local and explicit SSH host commands", () => {
@@ -464,7 +508,7 @@ test('full restoration retains newer CLI verification and authorization-state gu
 });
 
 test('full-context ordinary tasks receive historical process, verification and stopping guidance automatically', () => {
-  for (const configuredContextWindow of [32768, 65536]) {
+  for (const configuredContextWindow of [32769, 65536]) {
     for (const prompt of ['Repair this Python parser.', 'Summarize these records in a report.', 'Continue the running build.']) {
       const {appendSystemContext: contract} = promptContractForAgent(
         {agentId:'pixel'}, 'pixel', {prompt},
