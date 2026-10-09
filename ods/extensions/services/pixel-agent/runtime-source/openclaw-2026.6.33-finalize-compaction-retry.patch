@@ -1,0 +1,17 @@
+--- embedded-agent-CJx-nG3W.js (reviewed ODS recipe)
++++ embedded-agent-CJx-nG3W.js (preserve unsubmitted continuation)
+@@ -2925 +2925,2 @@
+-					const basePrompt = nextAttemptPromptOverride ?? (provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);
++					const attemptPromptOverride = nextAttemptPromptOverride;
++					const basePrompt = attemptPromptOverride ?? (provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);
+@@ -3379,0 +3381,7 @@
++						// The initial precheck compiled this continuation but never submitted
++						// it. Preserve its exact revision across native recovery; a summary
++						// cannot reconstruct instructions that were never persisted.
++						if (promptErrorSource === "precheck" && preflightRecovery
++							&& preflightRecovery.source === void 0
++							&& ["compact_only", "compact_then_truncate"].includes(preflightRecovery.route))
++							nextAttemptPromptOverride = attemptPromptOverride;
+@@ -3523 +3531 @@
+-									nextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;
++									nextAttemptPromptOverride ??= MID_TURN_PRECHECK_CONTINUATION_PROMPT;
