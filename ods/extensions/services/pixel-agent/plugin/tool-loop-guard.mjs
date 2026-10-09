@@ -5948,10 +5948,17 @@ function hasExplicitWorkspacePreviewDirective(text) {
   // A requested delivery action can follow a diagnosis or code repair. Do not
   // mistake a subordinate "why we should publish" for that owner command.
   const commands = text.matchAll(
-    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\b/gi
   );
   return [...commands].some((match) => {
-    const target = match[2].split(/\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0];
+    // Do not consume this target in matchAll: it may contain a later command
+    // such as "Open README.md, then publish demo/index.html".
+    const target = text.slice(match.index + match[0].length, match.index + match[0].length + 512)
+      .split(/[!?;\n]|\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0].trim();
+    // An explicit publication command can refer to a previously named HTML
+    // file's folder. Questions about what that file shows are not commands.
+    if (/^(?:publish|republish|preview|serve)$/i.test(match[1]) &&
+      /\b(?:folder|directory)\b/i.test(target) && hasWorkspaceHtmlTarget(text)) return true;
     if (hasWorkspaceHtmlTarget(target)) return true;
     const visualTargetPattern = /\b(?:website|site|web\s*page|frontend|dashboard|preview|animation|illustration|scene|game|chart|diagram|svg)\b/i;
     const visualTarget = visualTargetPattern.test(target);
@@ -5964,6 +5971,9 @@ function hasExplicitWorkspacePreviewDirective(text) {
     // command. Bind that pronoun within this clause, not an earlier topic.
     const precedingClause = text.slice(0, match.index)
       .split(/[!?;\n]|\.(?=\s|$)/).at(-1);
+    if (!target.trim() && /^(?:publish|republish|preview|serve)$/i.test(match[1])) {
+      return hasWorkspaceHtmlTarget(precedingClause);
+    }
     return /^(?:it|this|that)(?:\s|[.!?;]|$)/i.test(target.trim()) &&
       (hasWorkspaceHtmlTarget(precedingClause) ||
         (/\b(?:browser|preview)\b/i.test(target) &&
@@ -6206,12 +6216,8 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   ) return false;
   const directPreview =
     explicitDelivery ||
-    // A dot inside index.html is part of the requested filename, not a
-    // sentence boundary between the preview action and its target.
-    // Delivery verbs in a rejected list ("do not edit, publish, or run")
-    // are constraints, even when another clause names an HTML file.
-    (hasWorkspaceHtmlTarget(actionText) &&
-      /\b(?:preview|publish|serve|open|show|view)\b/i.test(actionText)) ||
+    // An HTML filename plus "what does it show?" is a read-only question.
+    // Bind delivery to an owner command above, not any nearby verb.
     /\b(?:preview|publish|republish|serve)\b[^.!?;\n]{0,96}\b(?:artworks?|illustrations?|charts?|diagrams?|animations?|games?|sites?|websites?|web\s*pages?|frontends?)\b/i.test(actionText) ||
     /\b(?:site|website|web\s*page|frontend)\b[^.!?;\n]{0,96}\b(?:preview|publish|republish|serve)\b/i.test(actionText);
   const unreachableLocalPreview =

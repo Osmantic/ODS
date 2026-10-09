@@ -1853,6 +1853,77 @@ test("read-only HTML diagnosis does not acquire preview or mutation coaching fro
   assert.notEqual(guard.verificationForRun("run-1")?.status, "failed");
 });
 
+for (const wrapped of [false, true]) {
+  for (const prompt of [
+    "Read the existing Playground/hf-runtime-check-0437/index.html file. What initial number does its Harbor counter show? Reply in one sentence based on the file, and do not change anything.",
+    "Read demo/index.html. Which number does the counter show initially?",
+    "Read demo/index.html and tell me which dialog it can open.",
+    "Read demo/index.html. Can its counter show a negative value? Do not change anything.",
+  ]) {
+    test(`read-only HTML questions do not coach publication (wrapped=${wrapped}): ${prompt}`, () => {
+      const guard = createToolLoopGuard();
+      const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
+      guard.observeRun(context, "pixel", { prompt });
+      const args = { path: prompt.includes("Playground/") ? "Playground/hf-runtime-check-0437/index.html" : "demo/index.html" };
+      const toolName = wrapped ? "tool_call" : "read";
+      const params = wrapped ? { id: "openclaw:core:read", args } : args;
+      const result = { content: [{ type: "text", text: '<!doctype html><output id="counter">3</output>' }] };
+      const observed = wrapped ? wrappedCoreResult("read", result) : result;
+      const toolCallId = "read-counter";
+      assert.notEqual(call(guard, toolName, { event: { toolCallId, params } })?.block, true);
+      afterCall(guard, toolName, { event: { toolCallId, params, result: observed } });
+      const persisted = persistToolResult(guard, toolName, toolCallId, observed);
+      assert.doesNotMatch(JSON.stringify(persisted?.message ?? observed), /publish BEFORE|pixel_ods_workspace_preview|must be delivered in Workbench/);
+      assert.equal(guard.beforeAgentFinalize({ lastAssistantMessage: "The counter initially shows 3." }, context)?.retry, undefined);
+      assert.equal(reply(guard, { event: { payload: { text: "The counter initially shows 3." } } }), undefined);
+      assert.equal(userMessageRequestsWorkspacePreview([], prompt), false);
+    });
+  }
+}
+
+test("HTML delivery still requires the requested publication after read-only inspection", () => {
+  for (const prompt of [
+    "Read demo/index.html, then publish demo/index.html.",
+    "Do not edit anything. Publish the existing demo/index.html.",
+    "Read demo/index.html and publish it.",
+    "Read demo/index.html and publish.",
+    "Could you please show demo/index.html?",
+    "I want you to preview demo/index.html.",
+    "Open README.md, then publish Playground/site/index.html.",
+    "Show the README text and then publish Playground/site/index.html.",
+    "Open README.md, then publish Playground/counter/index.html.",
+    "Show the README text and then publish Playground/counter/index.html.",
+  ]) {
+    assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
+    const guard = createToolLoopGuard();
+    const context = { agentId: "pixel", runId: "run-1", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt });
+    assert.ok(guard.beforeAgentFinalize({ lastAssistantMessage: "The counter initially shows 3." }, context)?.retry, prompt);
+  }
+});
+
+for (const wrapped of [false, true]) {
+  test(`a saved preview does not turn a new file question into publication (wrapped=${wrapped})`, () => {
+    const guard = createToolLoopGuard();
+    const { write } = seedNamedPreview(guard);
+    const context = { agentId: "pixel", runId: "run-read-question", sessionId: "session-1" };
+    guard.observeRun(context, "pixel", { prompt: "Read log-viewer-lab/index.html. What initial text does it show? Reply in one sentence and do not change anything." });
+    const toolName = wrapped ? "tool_call" : "read";
+    const args = { path: write.path };
+    const params = wrapped ? { id: "openclaw:core:read", args } : args;
+    const result = { content: [{ type: "text", text: write.content }] };
+    const observed = wrapped ? wrappedCoreResult("read", result) : result;
+    const callContext = { ...context, toolName, toolCallId: "read-saved-preview" };
+    const event = { toolName, toolCallId: callContext.toolCallId, params };
+    assert.notEqual(guard.beforeToolCall(event, callContext)?.block, true);
+    guard.afterToolCall({ ...event, result: observed }, callContext);
+    const persisted = guard.toolResultPersist({ ...event, message: { role: "toolResult", ...event, ...observed } }, callContext);
+    assert.doesNotMatch(JSON.stringify(persisted?.message ?? observed), /publish BEFORE|pixel_ods_workspace_preview|must be delivered in Workbench/);
+    assert.equal(guard.beforeAgentFinalize({ lastAssistantMessage: "The page initially shows logs." }, context)?.retry, undefined);
+    assert.equal(guard.replyPayloadSending({ runId: context.runId, kind: "final", payload: { text: "The page initially shows logs." } }), undefined);
+  });
+}
+
 test("binds a preserved owner file and recovers a compact-model workdir envelope", () => {
   const guard = createToolLoopGuard();
   const prompt =
