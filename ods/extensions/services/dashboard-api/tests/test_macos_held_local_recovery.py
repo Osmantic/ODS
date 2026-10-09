@@ -175,7 +175,7 @@ def test_endpoint_post_apply_failure_is_unconfirmed_not_busy(split_route, monkey
     monkeypatch.setattr(host, 'check_auth', lambda _: True)
     monkeypatch.setattr(host, 'read_json_body', lambda _: {'transactionId': tx.id})
     monkeypatch.setattr(host, '_begin_model_lifecycle', lambda _: (True, None))
-    ended = []
+    ended: list[str] = []
     monkeypatch.setattr(host, '_end_model_lifecycle', ended.append)
     proofs = iter([True, False])
     monkeypatch.setattr(host, '_prove_pixel_model_contract', lambda *_: next(proofs))
