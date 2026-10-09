@@ -666,9 +666,9 @@ _SWITCHBOARD_ROUTE_ENV_KEYS = (
 
 
 def _prepare_initial_switchboard_verification() -> bool:
-    """Reset route-proof cancellation only while no lifecycle owner exists."""
+    """Defer route proof while a live or durable model transition owns it."""
     with _model_lifecycle_state_lock:
-        if _model_lifecycle_operation:
+        if _model_lifecycle_operation or _pixel_model_transition_pending_for_route_proof():
             _switchboard_initial_verify_cancel.set()
             return False
         _switchboard_initial_verify_cancel.clear()
@@ -2687,17 +2687,27 @@ def _publish_verified_initial_switchboard_route(
         "vision": bool(model.get("vision")),
         "agentViable": _model_agent_viable(model, context_length),
     }
-    _switchboard_state.record_verified_route(
-        state_path,
-        catalog_id=model_id or llm_model_name or gguf_file,
-        runtime_model_id=runtime_identity,
-        backend_kind=backend_kind,
-        endpoint_id=endpoint_id,
-        native_route=native_route,
-        context_length=context_length,
-        capabilities=capabilities,
-        proof_identity=runtime_identity,
-    )
+    # A model transition can begin while the slow runtime proof is in flight.
+    # Serialize the final write with lifecycle admission and recheck the
+    # durable journal: a held transaction's before-state must stay immutable
+    # across a host-agent restart as well as within this process.
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation or _pixel_model_transition_pending_for_route_proof():
+            _switchboard_initial_verify_cancel.set()
+            return False
+        if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
+            return False
+        _switchboard_state.record_verified_route(
+            state_path,
+            catalog_id=model_id or llm_model_name or gguf_file,
+            runtime_model_id=runtime_identity,
+            backend_kind=backend_kind,
+            endpoint_id=endpoint_id,
+            native_route=native_route,
+            context_length=context_length,
+            capabilities=capabilities,
+            proof_identity=runtime_identity,
+        )
     logger.info(
         "switchboard initial route verified (%s): %s",
         reason,
@@ -4546,11 +4556,103 @@ def _recover_pixel_model_transaction(config: dict, *, release_unverified: bool =
         return pending
 
 
+def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict:
+    """Explicitly align a held native route with unchanged, proven Mac inference.
+
+    The caller owns the model lifecycle lock. This is not an automatic recovery
+    fallback: a stale bootstrap contract is replaced inside its original hold,
+    with no inference restart, journal deletion or unverified gate release.
+    """
+    journal = _read_pixel_model_journal()
+    if (platform.system() != 'Darwin' or config.get('GPU_BACKEND') != 'apple'
+            or config.get('ODS_MODE') != 'local' or journal is None
+            or journal['transactionId'] != transaction_id
+            or journal['phase'] not in {'held', 'applying', 'applied', 'committing'}
+            or (journal['phase'] == 'held') != (journal['target'] is None)
+            or journal['outcome'] is not None
+            or 'routeFingerprint' in journal['previous']):
+        raise RuntimeError('Current-local repair requires the original held Mac local transaction')
+    current = _pixel_model_config_digests()
+    if ('unavailable' in current.values() or current != journal['before']
+            or journal['after'] not in (None, current)):
+        raise RuntimeError('Model configuration changed; current-local repair refused')
+    # Read the environment inside the captured digest window, never from an
+    # earlier request snapshot or the advisory bootstrap completion record.
+    live_config = load_env(INSTALL_DIR / '.env')
+    if live_config != config or _pixel_model_config_digests() != current:
+        raise RuntimeError('Model configuration changed during repair inspection')
+    gguf = str(config.get('GGUF_FILE') or '')
+    context = journal['previous']['contextLength']
+    if (not _valid_pixel_model_name(gguf) or Path(gguf).name != gguf
+            or not gguf.endswith('.gguf')
+            or config.get('CTX_SIZE') != str(context)
+            or config.get('MAX_CONTEXT') != str(context)
+            or _pixel_local_identity_matches(config, gguf, journal['previous']['model'])):
+        raise RuntimeError('Current-local repair requires a different local model at the saved context')
+    if _model_stores.safe_artifact(_active_model_directory(config), gguf) is None:
+        raise RuntimeError('Current local model is not durably installed; repair refused')
+    target = {**journal['previous'], 'model': gguf,
+              'reasoning': _pixel_model_reasoning_capable(str(config.get('LLM_MODEL') or gguf), config),
+              'imageInput': 'unknown'}
+    if not _valid_managed_pixel_runtime_contract(target):
+        raise RuntimeError('Current-local repair target is invalid')
+    if journal['target'] is not None and journal['target'] != target:
+        raise RuntimeError('Saved repair target differs from current local inference')
+    transaction = _PixelModelTransaction(config)
+    transaction.id = transaction_id
+    transaction.previous = journal['previous']
+    transaction.target = journal['target']
+    transaction.journal = journal
+    expected_phase = 'held' if journal['target'] is None else 'applied'
+    expected_contract = journal['previous'] if journal['target'] is None else target
+    status = _runtime_model_control('model-status', config=config)
+    completed = transaction._matches(status, 'completed', target, 'commit')
+    if not (transaction._matches(status, expected_phase, expected_contract)
+            or (journal['phase'] == 'committing' and completed)):
+        raise RuntimeError('Native ownership or application of the saved repair is unconfirmed')
+    if not _prove_pixel_model_contract(config, target):
+        raise RuntimeError('Current local inference did not prove the repair target')
+    _verify_litellm_route(config)
+    status_after = _runtime_model_control('model-status', config=config)
+    if status_after != status:
+        raise RuntimeError('Native model recovery state changed during proof')
+    if (_pixel_model_config_digests() != current
+            or _read_pixel_model_journal() != journal):
+        raise RuntimeError('Model recovery evidence changed before repair')
+    if completed:
+        transaction._save('completed', 'commit')
+        return {'pending': False, 'phase': 'completed',
+                'transactionId': transaction_id, 'outcome': 'commit'}
+    if journal['target'] is None:
+        transaction.apply(target)
+    # Re-prove after the native gateway restart. A failure leaves the durable
+    # applied transaction intact; it must not release either admission gate.
+    if (not _prove_pixel_model_contract(config, target)
+            or _pixel_model_config_digests() != current):
+        raise RuntimeError('Current local inference changed during native repair')
+    transaction.verify_held()
+    if (_pixel_model_config_digests() != current
+            or _read_pixel_model_journal() != transaction.journal):
+        raise RuntimeError('Model recovery evidence changed before completion')
+    transaction.finish('commit')
+    return {'pending': False, 'phase': 'completed',
+            'transactionId': transaction_id, 'outcome': 'commit'}
+
+
 def _pixel_model_recovery_status() -> dict:
     journal=_read_pixel_model_journal()
     if journal is None:
         return {'pending':False,'phase':'idle','transactionId':None}
     return {'pending':journal['phase']!='completed','phase':journal['phase'],'transactionId':journal['transactionId']}
+
+
+def _pixel_model_transition_pending_for_route_proof() -> bool:
+    """Fail closed when route proof cannot establish transition custody."""
+    try:
+        return bool(_pixel_model_recovery_status()['pending'])
+    except (OSError, ValueError, RuntimeError, TypeError):
+        logger.warning('Initial route proof deferred: model transition state is unavailable')
+        return True
 
 
 def _read_remote_provider_activation_state() -> dict | None:
@@ -10152,6 +10254,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_retired_lemonade_endpoint()
         elif self.path == "/v1/model/recover":
             self._handle_model_recover()
+        elif self.path == "/v1/model/recover/current-local":
+            self._handle_model_repair_current_local()
         elif self.path == "/v1/remote-provider/plan":
             self._handle_remote_provider_plan()
         elif self.path == "/v1/remote-provider/apply":
@@ -13281,6 +13385,33 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self,409 if result['pending'] else 200,result,no_store=True)
         except Exception:
             json_response(self,503,{'pending':True,'phase':'unavailable','reason':'model-recovery-unavailable'},no_store=True)
+        finally:
+            _end_model_lifecycle('model_recovery')
+
+    def _handle_model_repair_current_local(self):
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        if (type(body) is not dict or set(body) != {'transactionId'}
+                or not isinstance(body['transactionId'], str)
+                or re.fullmatch('[a-f0-9]{64}', body['transactionId']) is None):
+            json_response(self, 400, {'error': 'A saved model transactionId is required'})
+            return
+        acquired, _active = _begin_model_lifecycle('model_recovery')
+        if not acquired:
+            json_response(self, 409, {'error': 'Model lifecycle is busy'})
+            return
+        _switchboard_initial_verify_cancel.set()
+        try:
+            result = _repair_held_pixel_local_route(
+                load_env(INSTALL_DIR / '.env'), transaction_id=body['transactionId'])
+            json_response(self, 200, result, no_store=True)
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            logger.warning('Current-local model repair stopped: %s', exc)
+            json_response(self, 409, {'pending': True, 'phase': 'unavailable',
+                                     'reason': 'current-local-model-repair-unconfirmed'}, no_store=True)
         finally:
             _end_model_lifecycle('model_recovery')
 
