@@ -68,9 +68,22 @@ set_last_migrated_version() {
     echo "$version" > "$MIGRATION_STATE"
 }
 
-# Compare semantic versions
-# Returns: 0 if equal, 1 if v1 > v2, 2 if v1 < v2
+# Accept release cores (including legacy abbreviated and zero-padded forms),
+# optionally followed by prerelease/git-describe and build metadata suffixes.
+# A present invalid version is not the same as an absent version (0.0.0).
+validate_version() {
+    local version_pattern='^v?[0-9]+(\.[0-9]+){0,2}(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$'
+    if [[ ! "$1" =~ $version_pattern ]]; then
+        log_error "Invalid version in ${2:-comparison}; refusing migration. Restore a valid version before retrying." >&2
+        return 1
+    fi
+}
+
+# Compare release cores; suffixes do not select different migration sets.
+# Returns: 0 if equal, 1 if v1 > v2, 2 if v1 < v2, 3 for invalid input.
 compare_versions() {
+    validate_version "$1" || return 3
+    validate_version "$2" || return 3
     local v1="${1#v}"
     local v2="${2#v}"
     v1="${v1%%[-+]*}"
@@ -86,8 +99,8 @@ compare_versions() {
     for i in {0..2}; do
         local p1="${V1_PARTS[$i]:-0}"
         local p2="${V2_PARTS[$i]:-0}"
-        [[ "$p1" =~ ^[0-9]+$ ]] && p1=$((10#$p1)) || p1=0
-        [[ "$p2" =~ ^[0-9]+$ ]] && p2=$((10#$p2)) || p2=0
+        p1=$((10#$p1))
+        p2=$((10#$p2))
         
         if [[ "$p1" -gt "$p2" ]]; then
             return 1
@@ -196,6 +209,8 @@ cmd_check() {
     
     current_version=$(get_current_version)
     last_migrated=$(get_last_migrated_version)
+    validate_version "$current_version" "$VERSION_FILE" || return 1
+    validate_version "$last_migrated" "$MIGRATION_STATE" || return 1
     
     log_info "Current version: $current_version"
     log_info "Last migrated: $last_migrated"
@@ -223,6 +238,9 @@ cmd_check() {
                 compare_versions "$migration_version" "$last_migrated" || mig_cmp=$?
                 local target_cmp=0
                 compare_versions "$migration_version" "$current_version" || target_cmp=$?
+                if [[ $mig_cmp -eq 3 || $target_cmp -eq 3 ]]; then
+                    return 1
+                fi
                 if [[ $mig_cmp -eq 1 && $target_cmp -ne 1 ]]; then
                     echo "  - $migration_version: $(head -5 "$migration" | grep '^# Description:' | sed 's/# Description://')"
                 fi
@@ -245,6 +263,8 @@ cmd_migrate() {
     
     current_version=$(get_current_version)
     last_migrated=$(get_last_migrated_version)
+    validate_version "$current_version" "$VERSION_FILE" || return 1
+    validate_version "$last_migrated" "$MIGRATION_STATE" || return 1
     
     # Create backup first
     cmd_backup >/dev/null
@@ -283,6 +303,9 @@ cmd_migrate() {
             # Do not apply future configuration and then stamp an older target.
             local target_cmp=0
             compare_versions "$migration_version" "$current_version" || target_cmp=$?
+            if [[ $mig_cmp -eq 3 || $target_cmp -eq 3 ]]; then
+                return 1
+            fi
             if [[ $mig_cmp -eq 1 && $target_cmp -ne 1 ]]; then
                 log_info "Running migration: $migration_version"
                 

@@ -343,8 +343,8 @@ fi
 
 cmp_code=0
 cmp_subshell "unknown" "2.4.0" || cmp_code=$?
-if [[ $cmp_code -eq 2 ]]; then
-    pass "compare_versions: non-numeric string compares less than real version"
+if [[ $cmp_code -eq 3 ]]; then
+    pass "compare_versions: non-numeric string is rejected"
 else
     fail "compare_versions: unknown vs 2.4.0 exited $cmp_code"
 fi
