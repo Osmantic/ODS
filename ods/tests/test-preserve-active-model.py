@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,131 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "preserve-active-model.py"
+
+SAVED_CUDA_IMAGE = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+
+
+def image_phase_rerun(saved_backend: str, detected_backend: str, *,
+                      reselect: bool = False, image: str = SAVED_CUDA_IMAGE) -> dict[str, str]:
+    """Run the shipped preservation block, AMD filter and full .env template.
+
+    Hardware detection/service setup is outside this fixture. No Docker, model
+    load or installed paths are used; the catalog artifact is a four-KiB file.
+    """
+    detection = (ROOT / "installers/phases/02-detection.sh").read_text(encoding="utf-8")
+    phase02 = detection[detection.index("# The tier/catalog result is a recommendation."):
+                        detection.index("\nunset _native_python", detection.index("# The tier/catalog result is a recommendation."))]
+    directories = (ROOT / "installers/phases/06-directories.sh").read_text(encoding="utf-8")
+    reader_start = directories.index("    _env_get() {")
+    reader_end = directories.index("\n    }", reader_start) + len("\n    }")
+    reader = directories[reader_start:reader_end]
+    image_filter = directories[directories.index("    # The AMD overlays pin their own llama.cpp images."):
+                               directories.index('    LLAMA_SERVER_MEMORY_LIMIT_VALUE=""')]
+    template_start = directories.index('        cat > "$INSTALL_DIR/.env" << ENV_EOF')
+    template_end = directories.index('\nENV_EOF', template_start) + len('\nENV_EOF')
+    template = directories[template_start:template_end]
+    carry_start = directories.index('    chmod 600 "$INSTALL_DIR/.env"', template_end)
+    carry_end = directories.index('    unset _phase06_previous_env', carry_start) + len('    unset _phase06_previous_env')
+    carry = directories[carry_start:carry_end]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        install = root / "install"
+        install.mkdir()
+        env, catalog, _, _ = write_model_fixture(install)
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write(f"GPU_BACKEND={saved_backend}\nLLAMA_SERVER_IMAGE={image}\n")
+        source = root / "source"
+        (source / "config").mkdir(parents=True)
+        shutil.copyfile(catalog, source / "config/model-library.json")
+        for name in ("lib", "scripts", "installers"):
+            (source / name).symlink_to(ROOT / name, target_is_directory=True)
+        script = root / "rerun.sh"
+        script.write_text('''set -eo pipefail
+SCRIPT_DIR=$1
+INSTALL_DIR=$2
+_selector_python=$3
+GPU_BACKEND=$4
+ODS_RESELECT_MODEL=$5
+source "$SCRIPT_DIR/lib/safe-env.sh"
+source "$SCRIPT_DIR/lib/dotenv-quote.sh"
+source "$SCRIPT_DIR/installers/lib/external-services.sh"
+source "$SCRIPT_DIR/installers/lib/native-llm.sh"
+source "$SCRIPT_DIR/installers/lib/amd-runtime.sh"
+log() { :; }
+ai_warn() { :; }
+error() { printf '%s\\n' "$*" >&2; return 1; }
+LOG_FILE="$INSTALL_DIR/phase.log"
+TIER=1
+GPU_MEMORY_TYPE=discrete
+GPU_VRAM=8192
+RAM_GB=32
+HOST_ARCH=amd64
+LLM_MODEL=recommended-other
+GGUF_FILE=recommended-other.gguf
+MAX_CONTEXT=32768
+LLAMA_SERVER_IMAGE=registry.example/recommended-current:fixture
+''' + phase02 + '''
+_phase06_previous_env="$INSTALL_DIR/previous.env"
+cp "$INSTALL_DIR/.env" "$_phase06_previous_env"
+EXTERNAL_LLM_ACTIVE=false
+NATIVE_LLM_ACTIVE=false
+ODS_MODE_VALUE=local
+GPU_COUNT=1
+_env_existing="$_phase06_previous_env"
+''' + reader + '\n' + image_filter + '\n' + template + '\n' + carry + '\n', encoding="utf-8")
+        completed = subprocess.run(
+            ["bash", str(script), str(source), str(install), sys.executable,
+             detected_backend, str(reselect).lower()],
+            env={"PATH": os.environ["PATH"], "HOME": str(root), "LC_ALL": "C"},
+            text=True, capture_output=True, timeout=20,
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert not completed.stderr, completed.stderr
+        values = {}
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#") and "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+        return values
+
+
+def test_same_backend_image_pin_survives_actual_installer_phases() -> None:
+    values = image_phase_rerun("nvidia", "nvidia")
+    assert values.get("LLAMA_SERVER_IMAGE") == SAVED_CUDA_IMAGE, values.get("LLAMA_SERVER_IMAGE")
+    assert (values["GPU_BACKEND"], values["LLM_BACKEND"], values["LLM_MODEL"],
+            values["GGUF_FILE"], values["MAX_CONTEXT"]) == (
+                "nvidia", "llama-server", "agent-test", "Agent-Test-Q4_K_M.gguf", "65536")
+    # Equal-to-default is still a saved pin, not permission to delete it.
+    default_image = "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
+    assert image_phase_rerun("nvidia", "nvidia", image=default_image)["LLAMA_SERVER_IMAGE"] == default_image
+
+
+def test_image_pin_does_not_cross_backend_or_reselection_boundaries() -> None:
+    for saved, detected in (("nvidia", "amd"), ("nvidia", "cpu"), ("", "nvidia")):
+        values = image_phase_rerun(saved, detected)
+        assert "LLAMA_SERVER_IMAGE" not in values, (saved, detected, values.get("LLAMA_SERVER_IMAGE"))
+    values = image_phase_rerun("nvidia", "nvidia", reselect=True)
+    assert values["LLAMA_SERVER_IMAGE"] == "registry.example/recommended-current:fixture"
+    assert values["LLM_MODEL"] == "recommended-other"
+    # Existing AMD safety filtering still rejects an incompatible CUDA pin.
+    assert "LLAMA_SERVER_IMAGE" not in image_phase_rerun("amd", "amd")
+
+
+def test_invalid_saved_image_is_not_emitted_or_executed() -> None:
+    for kind in ("whitespace", "substitution"):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "image-executed"
+            image = ("registry.example/llama:tag bad" if kind == "whitespace" else
+                     f"registry.example/llama:$(touch {shlex.quote(str(marker))})")
+            env, catalog, imports, models_dir = write_model_fixture(root)
+            with env.open("a", encoding="utf-8") as handle:
+                handle.write(f"GPU_BACKEND=nvidia\nLLAMA_SERVER_IMAGE='{image}'\n")
+            before = env.read_bytes()
+            assert run_helper(env, catalog, imports, models_dir) == {}
+            assert env.read_bytes() == before
+            assert not marker.exists()
 
 
 def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Path, Path, Path]:
@@ -201,6 +328,8 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         env, catalog, imports, models_dir = write_model_fixture(root)
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write(f"GPU_BACKEND=nvidia\nLLAMA_SERVER_IMAGE={SAVED_CUDA_IMAGE}\n")
         state = root / "data" / "model-state.json"
         state.write_text(
             json.dumps(
@@ -250,6 +379,7 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
         assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
         assert values["MAX_CONTEXT"] == "65536"
         assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert not values.get("LLAMA_SERVER_IMAGE")  # The pin belongs to another model.
         assert values["MODEL_RUNTIME_PROFILE"] == ""
         assert values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
         assert values["LLAMA_ARG_CACHE_TYPE_V"] == "q4_0"
@@ -267,6 +397,7 @@ def test_verified_switchboard_state_recovers_an_interrupted_installer_env() -> N
             vram_mb=4096,
         )
         assert matching_env_values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+        assert matching_env_values["LLAMA_SERVER_IMAGE"] == SAVED_CUDA_IMAGE
         assert matching_env_values["MODEL_RUNTIME_PROFILE"] == ""
         assert matching_env_values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
         assert matching_env_values["LLAMA_ARG_CACHE_TYPE_V"] == "q4_0"
@@ -849,13 +980,17 @@ def test_host_native_selection_survives_a_rerun_without_a_linux_artifact() -> No
         root = Path(tmp)
         # A retired line left in the .env never relabels the served model.
         env = write_host_native_fixture(root, LEMONADE_MODEL="Different-Model", LLAMA_ARG_CACHE_TYPE_K="f16",
-                                        LLAMA_ARG_CACHE_TYPE_V="f16")
+                                        LLAMA_ARG_CACHE_TYPE_V="f16", GPU_BACKEND="nvidia",
+                                        LLAMA_SERVER_IMAGE=SAVED_CUDA_IMAGE)
+        before = env.read_bytes()
         values = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts", native_llm=True)
         assert values["GGUF_FILE"] == SERVED_35B
         assert values["LLM_MODEL"] == record["llm_model_name"]
         assert values["MAX_CONTEXT"] == "65536"
         assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
         assert values["LLAMA_ARG_CACHE_TYPE_K"] == "f16"
+        assert values.get("LLAMA_SERVER_IMAGE") != SAVED_CUDA_IMAGE
+        assert env.read_bytes() == before
         # The local mode still requires this host's artifact.
         assert run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts") == {}
         # The Windows host serves another model than the retained record: stop.
@@ -986,6 +1121,9 @@ def test_legacy_managed_lemonade_install_is_preserved_on_the_migration_rerun() -
 
 def main() -> int:
     tests = [
+        test_same_backend_image_pin_survives_actual_installer_phases,
+        test_image_pin_does_not_cross_backend_or_reselection_boundaries,
+        test_invalid_saved_image_is_not_emitted_or_executed,
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
         test_preserved_context_is_clamped_to_the_declared_native_context,
