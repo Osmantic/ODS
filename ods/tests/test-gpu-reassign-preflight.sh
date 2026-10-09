@@ -15,19 +15,35 @@ FAKE_INSTALL="$FIXTURE/install"
 STUB_BIN="$FIXTURE/bin"
 mkdir -p "$FAKE_INSTALL" "$STUB_BIN"
 trap 'rm -rf "$FIXTURE"' EXIT
+mkdir -p "$FIXTURE/home"
+ENV_BIN=$(type -P env)
+UNEXPECTED_CALLS="$FIXTURE/unexpected-calls"
 
 : > "$FAKE_INSTALL/docker-compose.base.yml"
 echo "GPU_BACKEND=nvidia" > "$FAKE_INSTALL/.env"
 
-# Populate isolated STUB_BIN with required utilities
-if command -v jq >/dev/null 2>&1; then
-    ln -s "$(command -v jq)" "$STUB_BIN/jq"
-fi
+# Expose only startup utilities, including bash for ods-cli's env shebang.
+# Never append system PATH directories: an installed nvidia-smi must remain
+# undiscoverable. Missing fixture prerequisites are setup failures, not skips.
+ln -s "$BASH" "$STUB_BIN/bash"
 for cmd in awk sed grep cut tr date basename uname dirname cat; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-        ln -s "$(command -v "$cmd")" "$STUB_BIN/$cmd"
-    fi
+    utility=$(type -P "$cmd") || { echo "Missing fixture utility: $cmd" >&2; exit 1; }
+    ln -s "$utility" "$STUB_BIN/$cmd"
 done
+# The preflight only discovers jq; executing it would mean the test crossed
+# its intended guard. Do not depend on jq being installed on the test host.
+cat > "$STUB_BIN/jq" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'unexpected jq invocation' >> "$GPU_PREFLIGHT_TRACE"
+exit 99
+STUB
+chmod +x "$STUB_BIN/jq"
+
+run_cli() {
+    "$ENV_BIN" -i HOME="$FIXTURE/home" ODS_HOME="$FAKE_INSTALL" \
+        PATH="$1" NO_COLOR=1 GPU_PREFLIGHT_TRACE="$UNEXPECTED_CALLS" \
+        "$ODS_CLI" gpu reassign
+}
 
 PASSED=0
 FAILED=0
@@ -37,7 +53,7 @@ fail() { echo "  ✗ FAIL: $1"; FAILED=$((FAILED + 1)); }
 
 echo "── 1. ods gpu reassign with nvidia-smi missing ──"
 set +e
-OUT=$(ODS_HOME="$FAKE_INSTALL" PATH="$STUB_BIN:/usr/bin:/bin" "$ODS_CLI" gpu reassign 2>&1)
+OUT=$(run_cli "$STUB_BIN" 2>&1)
 RC=$?
 set -e
 
@@ -56,7 +72,7 @@ fi
 echo "── 2. companion guard: apple silicon exit 1 ──"
 echo "GPU_BACKEND=apple" > "$FAKE_INSTALL/.env"
 set +e
-OUT_APPLE=$(ODS_HOME="$FAKE_INSTALL" PATH="$STUB_BIN:/usr/bin:/bin" "$ODS_CLI" gpu reassign 2>&1)
+OUT_APPLE=$(run_cli "$STUB_BIN" 2>&1)
 RC_APPLE=$?
 set -e
 
@@ -76,17 +92,12 @@ echo "── 3. companion guard: missing jq exit 1 ──"
 echo "GPU_BACKEND=nvidia" > "$FAKE_INSTALL/.env"
 BIN_NO_JQ="$FIXTURE/bin_no_jq"
 mkdir -p "$BIN_NO_JQ"
-if command -v bash >/dev/null 2>&1; then
-    ln -s "$(command -v bash)" "$BIN_NO_JQ/bash"
-fi
-for cmd in awk sed grep cut tr date basename uname dirname cat; do
-    if command -v "$cmd" >/dev/null 2>&1; then
-        ln -s "$(command -v "$cmd")" "$BIN_NO_JQ/$cmd"
-    fi
+for cmd in bash awk sed grep cut tr date basename uname dirname cat; do
+    ln -s "$STUB_BIN/$cmd" "$BIN_NO_JQ/$cmd"
 done
 
 set +e
-OUT_JQ=$(ODS_HOME="$FAKE_INSTALL" PATH="$BIN_NO_JQ" "$ODS_CLI" gpu reassign 2>&1)
+OUT_JQ=$(run_cli "$BIN_NO_JQ" 2>&1)
 RC_JQ=$?
 set -e
 
@@ -100,6 +111,12 @@ if echo "$OUT_JQ" | grep -q "jq not found — required for GPU reassignment"; th
     pass "emits missing jq warning"
 else
     fail "missing jq warning: $OUT_JQ"
+fi
+
+if [[ ! -e "$UNEXPECTED_CALLS" ]]; then
+    pass "all cases stop before jq execution or topology detection"
+else
+    fail "preflight continued past the intended guard"
 fi
 
 echo ""
