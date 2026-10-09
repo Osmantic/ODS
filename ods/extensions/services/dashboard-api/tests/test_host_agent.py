@@ -8517,29 +8517,49 @@ class TestHuggingFaceFallbackStaging:
         shim = tmp_path / "python-shim"
         shim.mkdir()
         (shim / "huggingface_hub.py").write_text('''
+import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
+held = []
+def get_hf_file_metadata(url):
+    return SimpleNamespace(commit_hash=os.environ.get("ODS_TEST_HF_COMMIT", "a" * 40))
 def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
     root = Path(local_dir or cache_dir)
+    partial = root / "sdk.incomplete"
+    resume = partial.stat().st_size if partial.exists() else 0
+    Path(os.environ["ODS_TEST_HF_RECEIPT"]).write_text(json.dumps({"root": str(root), "resume_bytes": resume}))
     path = root / filename
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("wb") as artifact:
-        for _ in range(int(os.environ.get("ODS_TEST_HF_MIB", "1"))):
-            artifact.write(b"x" * 1024 * 1024)
+    mode = os.environ["ODS_TEST_HF_MODE"]
+    if mode in {"failure", "cancel", "timeout"}:
+        partial.write_bytes(b"x" * 65536)
     Path(os.environ["ODS_TEST_HF_STARTED"]).touch()
-    if os.environ["ODS_TEST_HF_MODE"] == "failure":
+    if mode == "failure":
         raise OSError("fixture interrupted transfer")
-    while os.environ["ODS_TEST_HF_MODE"] == "cancel":
+    while mode in {"cancel", "timeout"}:
         time.sleep(.05)
-    if os.environ["ODS_TEST_HF_MODE"] == "foreign":
+    if mode == "foreign":
         return str(Path(cache_dir) / "preexisting")
+    with partial.open("ab") as artifact:
+        artifact.write(b"x" * (int(os.environ.get("ODS_TEST_HF_MIB", "1")) * 1024 * 1024 - resume))
+    partial.replace(path)
+    if mode == "cleanup_failure":
+        metadata = root / ".cache" / "metadata"
+        metadata.parent.mkdir()
+        metadata.write_bytes(b"owned SDK metadata")
+        if os.name == "nt":
+            held.append(metadata.open("rb"))
+        else:
+            metadata.parent.chmod(0o500)
     return str(path)
 ''', encoding="utf-8")
         monkeypatch.setattr(_mod, "INSTALL_DIR", install)
         monkeypatch.setenv("PYTHONPATH", str(shim))
         monkeypatch.setenv("ODS_TEST_HF_MODE", mode)
         monkeypatch.setenv("ODS_TEST_HF_STARTED", str(tmp_path / "started"))
+        monkeypatch.setenv("ODS_TEST_HF_RECEIPT", str(tmp_path / "sdk-receipt.json"))
         monkeypatch.setenv("ODS_MODEL_DOWNLOAD_ALLOWED_HOSTS", "huggingface.co")
         monkeypatch.setenv("ODS_HF_HUB_FALLBACK_STATUS_SECONDS", "2")
         return install, models, cache
@@ -8554,13 +8574,18 @@ def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
         assert ok, error
         assert destination.stat().st_size == int(os.environ.get("ODS_TEST_HF_MIB", "1")) * 1024 * 1024
         assert destination.stat().st_nlink == 1
-        assert list(models.iterdir()) == [destination]
+        assert [path for path in models.iterdir() if not path.name.startswith(".ods-hf-")] == [destination]
+        assert not list(models.rglob("payload"))
         assert list(cache.iterdir()) == [cache / "preexisting"]
         assert (cache / "preexisting").read_bytes() == b"shared cache sentinel"
 
     @pytest.mark.parametrize("cleanup_failure", [False, True])
-    def test_authenticated_download_handler_verifies_and_publishes_hub_artifact(self, tmp_path, monkeypatch, cleanup_failure):
-        install, models, cache = self._setup(tmp_path, monkeypatch)
+    def test_authenticated_download_handler_verifies_and_publishes_hub_artifact(self, tmp_path, monkeypatch, cleanup_failure, caplog):
+        if cleanup_failure and os.name != "nt" and os.geteuid() == 0:
+            pytest.skip("Root bypasses the real cleanup permission denial")
+        install, models, cache = self._setup(
+            tmp_path, monkeypatch, mode="cleanup_failure" if cleanup_failure else "success"
+        )
         mib = int(os.environ.get("ODS_TEST_HF_MIB", "1"))
         digest = hashlib.sha256()
         for _ in range(mib):
@@ -8580,10 +8605,6 @@ def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
         monkeypatch.setattr(_mod.subprocess, "run", head)
-        if cleanup_failure:
-            def refuse_cleanup(path):
-                raise OSError("fixture staging cleanup denied")
-            monkeypatch.setattr(_mod.shutil, "rmtree", refuse_cleanup)
         real_popen = subprocess.Popen
 
         class FailedCurl:
@@ -8607,16 +8628,14 @@ def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
         assert not _mod._model_download_thread.is_alive()
         status = json.loads((install / "data/model-download-status.json").read_text(encoding="utf-8"))
         if cleanup_failure:
-            assert status["status"] == "failed"
-            assert "staging cleanup denied" in status["error"]
-            assert not (models / "model.gguf").exists()
-            assert not (models / "model.gguf.part").exists()
-            assert list(cache.iterdir()) == [cache / "preexisting"]
+            assert "Artifact published; SDK staging cleanup pending" in caplog.text
+            metadata = list(models.rglob("metadata"))
+            assert len(metadata) == 1 and metadata[0].read_bytes() == b"owned SDK metadata"
+            metadata[0].parent.chmod(0o700)
             assert _mod._model_download_proc is None
             acquired, _active = _mod._begin_model_lifecycle("model_switch")
             assert acquired
             _mod._end_model_lifecycle("model_switch")
-            return
         assert status["status"] == "complete", status
         target = models / "model.gguf"
         assert target.stat().st_size == mib * 1024 * 1024
@@ -8626,12 +8645,28 @@ def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
             for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
                 observed.update(chunk)
         assert observed.hexdigest() == digest.hexdigest()
-        assert list(models.iterdir()) == [target]
+        assert [path for path in models.iterdir() if not path.name.startswith(".ods-hf-")] == [target]
         assert list(cache.iterdir()) == [cache / "preexisting"]
 
-    @pytest.mark.parametrize("mode", ["failure", "cancel", "foreign"])
-    def test_fallback_discards_only_its_own_partial_download(self, tmp_path, monkeypatch, mode):
+    @pytest.mark.parametrize("mode", ["failure", "cancel", "timeout", "foreign"])
+    def test_fallback_preserves_owned_sdk_state_and_prior_curl_partial(self, tmp_path, monkeypatch, mode):
         install, models, cache = self._setup(tmp_path, monkeypatch, mode)
+        children = []
+        real_popen = subprocess.Popen
+
+        def popen(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            return child
+
+        monkeypatch.setattr(_mod.subprocess, "Popen", popen)
+        if mode == "timeout":
+            # Exercise real communicate/kill/reap with a short fixture deadline.
+            # The separate timeout configuration test covers the 30s minimum.
+            positive_int = _mod._positive_int_env
+            monkeypatch.setattr(_mod, "_positive_int_env", lambda key, *args, **kwargs:
+                                2 if key == "ODS_HF_HUB_FALLBACK_TIMEOUT_SECONDS"
+                                else positive_int(key, *args, **kwargs))
         partial = models / "model.gguf.part"
         partial.write_bytes(b"earlier curl partial")
         cancel = threading.Event()
@@ -8650,11 +8685,61 @@ def hf_hub_download(*, filename, cache_dir, local_dir=None, **kwargs):
         worker.join(timeout=10)
         assert not worker.is_alive()
         assert result and result[0][0] is False
-        assert list(models.iterdir()) == [partial]
+        assert len(children) == 1 and children[0].returncode is not None
+        if mode == "timeout":
+            assert "timed out after 2s" in result[0][1]
+        assert [path for path in models.iterdir() if not path.name.startswith(".ods-hf-")] == [partial]
+        assert len(list(models.glob(".ods-hf-*"))) == 1
+        if mode in {"failure", "cancel", "timeout"}:
+            sdk_partial = list(models.rglob("sdk.incomplete"))
+            assert len(sdk_partial) == 1 and sdk_partial[0].stat().st_size == 65536
         assert partial.read_bytes() == b"earlier curl partial"
         assert list(cache.iterdir()) == [cache / "preexisting"]
         assert (cache / "preexisting").read_bytes() == b"shared cache sentinel"
         assert _mod._model_download_proc is None
+        if mode in {"cancel", "timeout"}:
+            monkeypatch.setenv("ODS_TEST_HF_MODE", "success")
+            ok, error = _mod._download_huggingface_artifact(
+                "https://huggingface.co/org/repo/resolve/main/model.gguf",
+                partial, threading.Event(),
+            )
+            assert ok, error
+            receipt = json.loads((tmp_path / "sdk-receipt.json").read_text())
+            assert receipt["resume_bytes"] == 65536
+            assert len(children) == 2 and all(child.returncode is not None for child in children)
+            assert not list(models.rglob("payload"))
+
+    def test_retry_reuses_owned_sdk_partial_with_a_real_child(self, tmp_path, monkeypatch):
+        _install, models, cache = self._setup(tmp_path, monkeypatch, mode="failure")
+        partial = models / "model.gguf.part"
+        partial.write_bytes(b"earlier curl partial")
+        url = "https://huggingface.co/org/repo/resolve/main/model.gguf"
+        ok, _error = _mod._download_huggingface_artifact(url, partial, threading.Event())
+        assert not ok and partial.read_bytes() == b"earlier curl partial"
+        first = json.loads((tmp_path / "sdk-receipt.json").read_text())
+        monkeypatch.setenv("ODS_TEST_HF_MODE", "success")
+        ok, error = _mod._download_huggingface_artifact(url, partial, threading.Event())
+        assert ok, error
+        second = json.loads((tmp_path / "sdk-receipt.json").read_text())
+        assert first["root"] == second["root"] and second["resume_bytes"] == 65536
+        assert partial.read_bytes() == b"x" * 1024 * 1024
+        assert not list(models.rglob("payload"))
+        assert (cache / "preexisting").read_bytes() == b"shared cache sentinel"
+
+    def test_new_revision_keeps_old_partial_separate(self, tmp_path, monkeypatch):
+        _install, models, _cache = self._setup(tmp_path, monkeypatch, mode="failure")
+        partial = models / "model.gguf.part"
+        url = "https://huggingface.co/org/repo/resolve/main/model.gguf"
+        roots = []
+        for commit in ("a" * 40, "b" * 40):
+            monkeypatch.setenv("ODS_TEST_HF_COMMIT", commit)
+            ok, _error = _mod._download_huggingface_artifact(url, partial, threading.Event())
+            assert not ok
+            receipt = json.loads((tmp_path / "sdk-receipt.json").read_text())
+            assert receipt["resume_bytes"] == 0
+            roots.append(receipt["root"])
+        assert roots[0] != roots[1]
+        assert len(list(models.rglob("sdk.incomplete"))) == 2
 
     def test_fallback_cleans_private_directory_when_child_cannot_start(self, tmp_path, monkeypatch):
         _install, models, cache = self._setup(tmp_path, monkeypatch)
