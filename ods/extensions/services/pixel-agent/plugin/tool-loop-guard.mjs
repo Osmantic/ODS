@@ -12,6 +12,7 @@ import {validDeliveredArtifact} from './workspace-artifact.mjs';
 
 import { createHash, randomBytes } from "node:crypto";
 import { validSourceReview, normalizeWorkspacePreviewParams, PREVIEW_STORAGE_DISCLOSURE } from './workspace-preview.mjs';
+import {unsupportedPreviewStorageClaim, unverifiedPreviewStorageDelivery} from './preview-storage-assurance.mjs';
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -12432,6 +12433,20 @@ export function createToolLoopGuard({
       });
     }
     if (state?.recursiveDeleteDenied || state?.progressBudget.exhausted || state?.clientCancelled || state?.webLoopAborted) return undefined;
+    // The OpenAI-compatible route skips reply_payload_sending. Bind this final
+    // answer's storage contradiction to the same run/snapshot for the private
+    // ingress verification query, without requesting another tool/model turn.
+    if (state?.workspacePreview &&
+        (!event?.runId || event.runId === runId) &&
+        (!event?.sessionId || event.sessionId === state.currentSessionId) &&
+        (!event?.sessionKey || event.sessionKey === state.currentSessionKey) &&
+        (!context.sessionId || context.sessionId === state.currentSessionId) &&
+        (!context.sessionKey || context.sessionKey === state.currentSessionKey)) {
+      const answer = typeof event?.lastAssistantMessage === 'string'
+        ? event.lastAssistantMessage : assistantMessageText(event?.lastAssistantMessage);
+      state.workspaceStorageClaim = unsupportedPreviewStorageClaim(answer)
+        ? {siteId: state.workspacePreview.siteId, sha256: state.workspacePreview.sha256} : undefined;
+    }
     // A silent sentinel is never an answer to an owner-authored chat message.
     // One revision pass; the harness still refuses it after side effects.
     if (state?.ownerIntentObserved && !state.managedTeamWorker && !state.silentOwnerReplyRetried &&
@@ -12957,6 +12972,11 @@ export function createToolLoopGuard({
         (state.operationsRequiredActions.size > 0 &&
           [...state.operationsRequiredActions].every((action) =>
             action.startsWith("host.") || action === "ods.extensions.list" || action === "ods.extensions.search"))));
+    if (verification.status === 'passed' && verification.preview && verification.text &&
+        state?.workspaceStorageClaim?.siteId === verification.preview.siteId &&
+        state.workspaceStorageClaim.sha256 === verification.preview.sha256) {
+      return unverifiedPreviewStorageDelivery(verification);
+    }
     return verification.status === "passed" && verification.text &&
       (readOnlyOperations || verification.preview || state?.exactDownloadPromotion)
       ? { ...verification, deliveryMode: "append" }
@@ -12977,7 +12997,12 @@ export function createToolLoopGuard({
         reason: "Pixel delivers one terminal owner-visible reply per turn.",
       };
     }
-    const verification = deliveryVerificationForRun(event?.runId);
+    let verification = deliveryVerificationForRun(event?.runId);
+    if (verification.status === 'passed' && verification.preview && verification.text &&
+        unsupportedPreviewStorageClaim(event.payload?.text)) {
+      state.workspaceStorageClaim = {siteId: verification.preview.siteId, sha256: verification.preview.sha256};
+      verification = unverifiedPreviewStorageDelivery(verification);
+    }
     const authoritativeText = verification.text;
     if (!authoritativeText) return undefined;
     if (verification.deliveryMode === "append" &&
