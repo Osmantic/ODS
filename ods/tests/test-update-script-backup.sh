@@ -38,6 +38,8 @@ trap 'rm -rf "$FIXTURE"' EXIT
 # INSTALL_DIR is the script's own directory; BACKUP_DIR is $HOME/.ods/backups
 mkdir -p "$FIXTURE/home"
 cp "$ROOT_DIR/ods-update.sh" "$FIXTURE/ods-update.sh"
+mkdir -p "$FIXTURE/scripts"
+cp "$ROOT_DIR/scripts/publish-update-backup.py" "$FIXTURE/scripts/"
 : > "$FIXTURE/docker-compose.base.yml"
 : > "$FIXTURE/docker-compose.nvidia.yml"
 printf '%s\n' '-f docker-compose.base.yml -f docker-compose.nvidia.yml' > "$FIXTURE/.compose-flags"

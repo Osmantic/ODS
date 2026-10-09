@@ -48,6 +48,8 @@ INSTALL="$TMP_DIR/install"
 HOME_DIR="$TMP_DIR/home"
 mkdir -p "$INSTALL/config/litellm" "$INSTALL/config/n8n" "$INSTALL/data" "$HOME_DIR"
 cp "$UPDATE_SCRIPT" "$INSTALL/ods-update.sh"
+mkdir -p "$INSTALL/scripts"
+cp "$ROOT_DIR/scripts/publish-update-backup.py" "$INSTALL/scripts/"
 # Use the reviewed real guard; synthetic target remains separate from helper code.
 mkdir -p "$INSTALL/scripts"
 ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$INSTALL/scripts/source-update-preflight.py"

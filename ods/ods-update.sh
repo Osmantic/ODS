@@ -713,6 +713,7 @@ cmd_status() {
 cmd_backup() (
     local backup_name="${1:-}"
     _require_positive_backup_retention || return 1
+    command -v python3 >/dev/null 2>&1 || { log_error "Python 3 is required to publish a backup safely."; return 1; }
     if [[ "$backup_name" == */* || "$backup_name" == *\\* || "$backup_name" =~ [[:cntrl:]] ]]; then
         log_error "Invalid backup name. Path separators and control characters are not allowed."
         return 1
@@ -729,13 +730,13 @@ cmd_backup() (
     
     log_info "Creating backup: ${backup_id}"
     
-    local lock_path="${BACKUP_DIR}/.${backup_id}.lock" staging_path=""
+    local lock_path="${BACKUP_DIR}/.${backup_id}.lock" staging_path="" publication_started=false
     mkdir -p "$BACKUP_DIR"
     if ! mkdir -m 700 "$lock_path"; then
         log_error "Backup already in progress: ${backup_id}"
         return 1
     fi
-    trap '[[ -z "$staging_path" ]] || rm -rf -- "$staging_path"; rmdir -- "$lock_path"' EXIT
+    trap '[[ -z "$staging_path" || "$publication_started" == true ]] || rm -rf -- "$staging_path"; rmdir -- "$lock_path"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
     if [[ -e "$backup_path" || -L "$backup_path" ]]; then
@@ -810,7 +811,14 @@ cmd_backup() (
         > "$staging_path/snapshot.json"
     
     jq empty "$staging_path/metadata.json" "$staging_path/snapshot.json"
-    mv "$staging_path" "$backup_path"
+    # Ordinary mv can nest the snapshot inside a destination created after the
+    # initial check. Preserve both names if exclusive publication is refused or
+    # interrupted; never discard potentially recoverable bytes after this point.
+    publication_started=true
+    if ! python3 -I "${SCRIPT_DIR}/scripts/publish-update-backup.py" "$staging_path" "$backup_path"; then
+        log_error "Backup publication was not confirmed. Inspect preserved staging '$staging_path' and destination '$backup_path'; no retention cleanup was run."
+        return 1
+    fi
     staging_path=""
 
     log_ok "Backup created: ${backup_path}"
