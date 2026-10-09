@@ -93,7 +93,10 @@ def test_repair_endpoint_owns_lifecycle_and_releases_it_on_failure(monkeypatch, 
     monkeypatch.setattr(host, 'check_auth', lambda _: True)
     monkeypatch.setattr(host, 'read_json_body', lambda _: {'transactionId': 'a' * 64})
     monkeypatch.setattr(host, 'load_env', lambda _: {'fixture': 'env'})
-    monkeypatch.setattr(host, '_begin_model_lifecycle', lambda kind: (actions.append('begin') or True, None))
+    def begin(kind):
+        actions.append('begin')
+        return True, None
+    monkeypatch.setattr(host, '_begin_model_lifecycle', begin)
     monkeypatch.setattr(host, '_end_model_lifecycle', lambda kind: actions.append('end'))
     from threading import Event
     monkeypatch.setattr(host, '_switchboard_initial_verify_cancel', Event())

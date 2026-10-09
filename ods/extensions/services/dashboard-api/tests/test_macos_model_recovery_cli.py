@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+from email.message import Message
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -125,7 +126,7 @@ def test_inspection_never_outputs_invalid_receipt_fields(installed, monkeypatch,
 
 
 def test_refusal_keeps_private_response_out_of_error(installed, monkeypatch, tmp_path):
-    failure = urllib.error.HTTPError('http://127.0.0.1', 409, 'conflict', {},
+    failure = urllib.error.HTTPError('http://127.0.0.1', 409, 'conflict', Message(),
                                      io.BytesIO(b'private response must not be printed'))
     calls = transport(monkeypatch, iter([PENDING, failure]))
     with pytest.raises(client.RecoveryError, match='HTTP 409') as error:
@@ -154,6 +155,8 @@ def test_unsupported_environment_makes_no_network_call(installed, monkeypatch, t
 def test_redirect_does_not_forward_credential():
     paths = []
     class Redirect(BaseHTTPRequestHandler):
+        server: HTTPServer
+
         def do_GET(self):
             paths.append(self.path)
             self.send_response(302)
