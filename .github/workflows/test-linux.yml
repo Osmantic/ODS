@@ -94,7 +94,7 @@ jobs:
       - name: GPU assignment capacity contracts
         run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
       - name: macOS TCP bridge lifecycle contracts
-        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py -q
+        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py tests/test_macos_pixel_native_bootstrap.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
@@ -270,6 +270,9 @@ jobs:
       - name: Model Catalog Artifact Pins
         run: python3 tests/test-model-library-pinned-urls.py
 
+      - name: Installer Tier Maps Use Catalog Pins
+        run: python3 tests/test-tier-map-catalog-pins.py
+
       - name: README Model Tables Match the Selector
         run: python3 tests/test-readme-model-tables.py
 
@@ -317,6 +320,7 @@ jobs:
       - name: Validate Manifests Tests
         run: |
           bash tests/test-validate-manifests.sh
+          python3 tests/test-cli-config-validation.py -v
           bash tests/test-validate-manifest-schema.sh
 
       - name: Health Check Tests
@@ -500,6 +504,7 @@ jobs:
           docker run --rm --network none --entrypoint cat caddy:2.11.3-alpine /usr/bin/caddy > "$RUNNER_TEMP/ods-test-caddy"
           chmod 700 "$RUNNER_TEMP/ods-test-caddy"
           python3 tests/test-hermes-proxy-access.py --caddy-bin "$RUNNER_TEMP/ods-test-caddy" -v
+          python3 tests/test-ods-proxy-port-redirect.py --caddy-bin "$RUNNER_TEMP/ods-test-caddy" -v
 
       - name: Hermes Slash Worker Prune Tests
         run: |
@@ -558,6 +563,7 @@ jobs:
         run: |
           bash tests/test-pixel-integration.sh
           bash tests/test-pixel-host-install.sh
+          bash tests/test-pixel-owner-docker-preflight.sh
           bash tests/test-pixel-same-pin-upgrade.sh
           python3 -m unittest -v tests/test_pixel_model_transition.py
           python3 -m unittest -v tests/test_pixel_native_search.py
@@ -576,6 +582,7 @@ jobs:
         run: |
           python3 -m pytest -q tests/test_cloud_installer_messages.py
           bash tests/test-preflight-network-check.sh
+          bash tests/test-phase11-local-build-failure.sh
           bash tests/test-phase03-no-gpu-assignment-message.sh
           bash tests/test-preflight-external-gpu.sh
           bash tests/test-linux-install-preflight.sh
@@ -625,6 +632,9 @@ jobs:
 
       - name: Bootstrap Upgrade Compose Flags Recovery Tests
         run: bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
+
+      - name: macOS protected bootstrap promotion
+        run: python3 -m pytest -q tests/test_macos_bootstrap_promote.py tests/test_macos_bootstrap_dispatch.py
 
       - name: Support Bundle Evidence Tests
         run: bash tests/test-support-bundle.sh

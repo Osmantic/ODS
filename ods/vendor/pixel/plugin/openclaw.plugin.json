@@ -2,7 +2,7 @@
   "id": "pixel-source-broker",
   "name": "Pixel Source Broker",
   "description": "Projection-only email, calendar, and social tools with bounded Calendar actuation.",
-  "version": "4.3.29",
+  "version": "4.3.31",
   "contracts": {
     "tools": [
       "pixel_limb_status",

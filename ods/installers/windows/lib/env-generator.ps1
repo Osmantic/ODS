@@ -709,7 +709,7 @@ MODEL_PERFORMANCE_LABEL=$performanceLabel
 GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
 N_GPU_LAYERS=$nGpuLayers
-$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
+$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c" })
 $(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
 $(if ($llamaServerMemoryLimit) { "LLAMA_SERVER_MEMORY_LIMIT=$llamaServerMemoryLimit" })
 #=== llama.cpp Runtime Tuning ===

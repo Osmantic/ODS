@@ -163,6 +163,32 @@ PY
     fi
 }
 
+ods_pixel_check_owner_docker() {
+    local owner home status
+    owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || {
+        ai_bad "Could not determine the Pixel install owner for the Docker check."
+        return 1
+    }
+    home="$(ods_pixel_owner_home "$owner")" || {
+        ai_bad "Could not resolve the home directory for Pixel owner '$owner'."
+        return 1
+    }
+    ai "Checking Docker access as Pixel owner '$owner'..."
+    # Pixel bootstrap uses plain Docker as this owner, even when the ODS core
+    # can proceed via sudo docker. Reuse its group refresh and environment.
+    # Discard info's potentially sensitive stdout, but keep the actual error
+    # visible rather than interpreting every failure as a socket permission.
+    if ods_pixel_run_as_owner "$owner" "$home" docker info >/dev/null; then
+        return 0
+    else
+        status=$?
+    fi
+    ai_bad "Pixel's Docker access check failed for '$owner' (exit $status); see the error above."
+    ai_warn "As '$owner', run 'docker info >/dev/null' without sudo and resolve the reported error before retrying with the same install options."
+    ai_warn "Recovery: https://github.com/Osmantic/ODS/blob/main/ods/docs/TROUBLESHOOTING.md#pixel-cannot-access-docker"
+    return "$status"
+}
+
 # Resolve Pixel search before phase 03 chooses Compose services. Use the same
 # owner-private onboarding selector as phase 11, and the explicit > installed
 # .env precedence that phase 06 applies. Never source .env as shell code.
@@ -5008,19 +5034,10 @@ _ods_pixel_install_preview_inspection() {
     ods_sudo systemctl enable pixel-preview-inspection.service || return 1
     ods_sudo systemctl restart pixel-preview-inspection.service || return 1
     ods_sudo systemctl is-active --quiet pixel-preview-inspection.service || return 1
-    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - <<'PY' || return 1
-import socket, time
-for attempt in range(50):
-    try:
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(1)
-            client.connect('/run/ods-pixel-inspection/control.sock')
-        break
-    except OSError:
-        if attempt == 49:
-            raise SystemExit('Pixel preview inspection socket is not ready for its owner')
-        time.sleep(.1)
-PY
+    # Type=simple becomes active before Python imports finish and the broker
+    # binds its socket. Slow WSL startup can exceed the former five-second wait.
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" wait-owner-socket \
+        || return 1
     ods_sudo /usr/bin/python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
@@ -5279,6 +5296,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
         && -f "$plugin_root/host/openclaw-subagent-admission.json" \
+        && -f "$plugin_root/host/openclaw-subagent-session.json" \
         && -f "$plugin_root/host/openclaw-hook-provenance.json" \
         && -f "$plugin_root/host/openclaw-run-id-redaction.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
@@ -5689,7 +5707,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -5838,6 +5856,15 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/subagent-admission" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's subagent admission repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Native child completion keeps its owner session across automatic expiration.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --subagent-session \
+        --state-dir "$home/.openclaw/ods-runtime-patches/subagent-session" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's subagent session repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Preserve trusted inter-session provenance in native prompt-hook contexts.

@@ -545,6 +545,14 @@ _model_lifecycle_last_operation: str | None = None
 _model_management_lock = threading.Lock()
 _model_management_cache: tuple | None = None
 _model_activation_target: str | None = None
+_model_activation_phase: str | None = None
+_model_activation_failure_code: str | None = None
+# Process-owned evidence only: no inference from a retained journal after a
+# restart. Neutral status/reproof work preserves it; a new runtime operation
+# invalidates it. Restored outcomes are recorded only after rollback proof.
+_model_activation_result: dict | None = None
+_MODEL_ACTIVATION_PHASES = frozenset({'preparing', 'loading', 'verifying', 'rolling_back', 'rollback_verifying'})
+_MODEL_ACTIVATION_FAILURE_CODES = frozenset({'runtime_load_failed', 'runtime_readiness_failed', 'consumer_verification_failed', 'rollback_unconfirmed'})
 _model_status_verify_thread: threading.Thread | None = None
 _switchboard_initial_verify_lock = threading.Lock()
 _switchboard_initial_verify_thread: threading.Thread | None = None
@@ -567,6 +575,7 @@ def _begin_model_lifecycle(operation: str, target: str = "") -> tuple[bool, dict
     """Claim the process-wide model lifecycle boundary without waiting."""
     global _model_lifecycle_operation, _model_lifecycle_target, _model_lifecycle_revision
     global _model_lifecycle_last_operation, _model_runtime_revision
+    global _model_activation_result
     with _model_lifecycle_state_lock:
         if not _model_lifecycle_lock.acquire(blocking=False):
             return False, {
@@ -577,6 +586,7 @@ def _begin_model_lifecycle(operation: str, target: str = "") -> tuple[bool, dict
         _model_lifecycle_target = target or None
         _model_lifecycle_revision += 1
         if operation not in _MODEL_RUNTIME_NEUTRAL_OPERATIONS:
+            _model_activation_result = None
             _model_runtime_revision += 1
             _model_lifecycle_last_operation = operation
         return True, {"operation": operation, "target": target or None}
@@ -620,8 +630,11 @@ def _model_lifecycle_status() -> dict:
         operation = _model_lifecycle_operation
         target = _model_lifecycle_target
         activation_target = _model_activation_target
+        phase = _model_activation_phase
+        failure_code = _model_activation_failure_code
+        result = dict(_model_activation_result) if _model_activation_result else None
     if not operation:
-        return {}
+        return {'activationResult': result} if result else {}
     payload = {
         "lifecycleActive": True,
         "activeOperation": operation,
@@ -629,9 +642,44 @@ def _model_lifecycle_status() -> dict:
     }
     if operation == "model_activation":
         payload["activeModelId"] = activation_target or target
+        payload['activationPhase'] = phase or 'preparing'
+        payload['activationFailureCode'] = failure_code
     else:
         payload["activeModelId"] = None
+        if result:
+            payload['activationResult'] = result
     return payload
+
+
+def _set_model_activation_phase(phase: str, failure_code: str | None = None) -> None:
+    """Publish only actual owned work and fixed, non-sensitive reason codes."""
+    if phase not in _MODEL_ACTIVATION_PHASES or (failure_code is not None and failure_code not in _MODEL_ACTIVATION_FAILURE_CODES):
+        raise ValueError('Invalid model activation progress')
+    global _model_activation_phase, _model_activation_failure_code
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation == 'model_activation':
+            _model_activation_phase = phase
+            if failure_code is not None:
+                _model_activation_failure_code = failure_code
+
+
+def _record_model_activation_result(outcome: str, failure_code: str | None = None) -> None:
+    if outcome not in {'activated', 'rolled_back', 'rollback_unconfirmed'} or (failure_code is not None and failure_code not in _MODEL_ACTIVATION_FAILURE_CODES):
+        raise ValueError('Invalid model activation outcome')
+    global _model_activation_result
+    with _model_lifecycle_state_lock:
+        # A lost response after proof cannot undo the observed runtime outcome.
+        # Only the next lifecycle claim may invalidate this terminal evidence.
+        if _model_lifecycle_operation == 'model_activation' and _model_activation_result is None:
+            _model_activation_result = {'outcome': outcome, 'failureCode': failure_code}
+
+
+def _model_activation_public_failure(diagnosis: dict, healthy: bool) -> str:
+    """Internal readiness details cannot block rollback or enter public status."""
+    code = diagnosis.get('code')
+    if isinstance(code, str) and code in _MODEL_ACTIVATION_FAILURE_CODES:
+        return code
+    return 'consumer_verification_failed' if healthy else 'runtime_readiness_failed'
 
 
 # .env keys that decide whether inference is a container or a host-native
@@ -666,9 +714,9 @@ _SWITCHBOARD_ROUTE_ENV_KEYS = (
 
 
 def _prepare_initial_switchboard_verification() -> bool:
-    """Reset route-proof cancellation only while no lifecycle owner exists."""
+    """Defer route proof while a live or durable model transition owns it."""
     with _model_lifecycle_state_lock:
-        if _model_lifecycle_operation:
+        if _model_lifecycle_operation or _pixel_model_transition_pending_for_route_proof():
             _switchboard_initial_verify_cancel.set()
             return False
         _switchboard_initial_verify_cancel.clear()
@@ -677,7 +725,7 @@ def _prepare_initial_switchboard_verification() -> bool:
 
 def _begin_model_activation(model_id: str) -> tuple[bool, str | None]:
     """Atomically acquire activation ownership and publish its target."""
-    global _model_activation_target
+    global _model_activation_target, _model_activation_phase, _model_activation_failure_code
     acquired, active = _begin_model_lifecycle("model_activation", model_id)
     if not acquired:
         active_target = active.get("target")
@@ -688,14 +736,18 @@ def _begin_model_activation(model_id: str) -> tuple[bool, str | None]:
     _switchboard_initial_verify_cancel.set()
     with _model_lifecycle_state_lock:
         _model_activation_target = model_id
+        _model_activation_phase = 'preparing'
+        _model_activation_failure_code = None
         return True, model_id
 
 
 def _end_model_activation() -> None:
     """Clear activation ownership before making the lock available again."""
-    global _model_activation_target
+    global _model_activation_target, _model_activation_phase, _model_activation_failure_code
     with _model_lifecycle_state_lock:
         _model_activation_target = None
+        _model_activation_phase = None
+        _model_activation_failure_code = None
     _end_model_lifecycle("model_activation")
 
 
@@ -1838,15 +1890,28 @@ def _verify_model_artifact(
     path: Path,
     artifact: dict,
     cancel_event: threading.Event | None = None,
+    *,
+    raise_on_error: bool = False,
 ) -> tuple[bool, str]:
     """Verify one model artifact against exact catalog integrity metadata."""
+    def verification_error(reason: str) -> tuple[bool, str]:
+        # A failed inspection is not proof of corrupt content. Callers that
+        # replace existing artifacts must stop without deleting those files.
+        if raise_on_error:
+            raise RuntimeError(reason)
+        return False, reason
+
     try:
-        if not path.is_file():
-            return False, "file is missing"
+        # is_file() suppresses inspection errors on Python 3.14. Only a
+        # successful stat can distinguish content from an unreadable artifact.
         initial_stat = path.stat()
+        if not stat_mod.S_ISREG(initial_stat.st_mode):
+            return False, "file is missing"
         actual_size = initial_stat.st_size
+    except (FileNotFoundError, NotADirectoryError):
+        return False, "file is missing"
     except OSError as exc:
-        return False, f"file could not be inspected: {exc}"
+        return verification_error(f"file could not be inspected: {exc}")
     if actual_size <= 0:
         return False, "file is empty"
 
@@ -1857,11 +1922,11 @@ def _verify_model_artifact(
     expected_sha = str(artifact.get("sha256") or "").strip().lower()
     if expected_sha:
         if not re.fullmatch(r"[0-9a-f]{64}", expected_sha):
-            return False, "catalog SHA256 is malformed"
+            return verification_error("catalog SHA256 is malformed")
         try:
             resolved_path = str(path.resolve(strict=True))
         except (OSError, RuntimeError) as exc:
-            return False, f"file could not be resolved: {exc}"
+            return verification_error(f"file could not be resolved: {exc}")
         verification_signature = (
             initial_stat.st_dev,
             initial_stat.st_ino,
@@ -1907,11 +1972,11 @@ def _verify_model_artifact(
                         return False, "verification cancelled"
                     digest.update(chunk)
         except OSError as exc:
-            return False, f"file could not be hashed: {exc}"
+            return verification_error(f"file could not be hashed: {exc}")
         try:
             final_stat = path.stat()
         except OSError as exc:
-            return False, f"file could not be inspected after hashing: {exc}"
+            return verification_error(f"file could not be inspected after hashing: {exc}")
         final_signature = (
             final_stat.st_dev,
             final_stat.st_ino,
@@ -1924,7 +1989,7 @@ def _verify_model_artifact(
         if final_signature != verification_signature:
             with _model_artifact_verification_cache_lock:
                 _model_artifact_verification_cache.pop(resolved_path, None)
-            return False, "file changed during verification"
+            return verification_error("file changed during verification")
         actual_sha = digest.hexdigest()
         if actual_sha != expected_sha:
             with _model_artifact_verification_cache_lock:
@@ -1939,7 +2004,7 @@ def _verify_model_artifact(
             )
             sampled_stat = path.stat()
         except OSError as exc:
-            return False, f"file could not be sampled after hashing: {exc}"
+            return verification_error(f"file could not be sampled after hashing: {exc}")
         sampled_signature = (
             sampled_stat.st_dev,
             sampled_stat.st_ino,
@@ -1950,14 +2015,14 @@ def _verify_model_artifact(
             expected_sha,
         )
         if sampled_signature != verification_signature:
-            return False, "file changed after verification"
+            return verification_error("file changed after verification")
         with _model_artifact_verification_cache_lock:
             _model_artifact_verification_cache[resolved_path] = (
                 verification_signature,
                 sampled_digest,
             )
     elif expected_size is None:
-        return False, "catalog has no exact size or SHA256"
+        return verification_error("catalog has no exact size or SHA256")
 
     if cancel_event is not None and cancel_event.is_set():
         return False, "verification cancelled"
@@ -2674,17 +2739,27 @@ def _publish_verified_initial_switchboard_route(
         "vision": bool(model.get("vision")),
         "agentViable": _model_agent_viable(model, context_length),
     }
-    _switchboard_state.record_verified_route(
-        state_path,
-        catalog_id=model_id or llm_model_name or gguf_file,
-        runtime_model_id=runtime_identity,
-        backend_kind=backend_kind,
-        endpoint_id=endpoint_id,
-        native_route=native_route,
-        context_length=context_length,
-        capabilities=capabilities,
-        proof_identity=runtime_identity,
-    )
+    # A model transition can begin while the slow runtime proof is in flight.
+    # Serialize the final write with lifecycle admission and recheck the
+    # durable journal: a held transaction's before-state must stay immutable
+    # across a host-agent restart as well as within this process.
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation or _pixel_model_transition_pending_for_route_proof():
+            _switchboard_initial_verify_cancel.set()
+            return False
+        if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
+            return False
+        _switchboard_state.record_verified_route(
+            state_path,
+            catalog_id=model_id or llm_model_name or gguf_file,
+            runtime_model_id=runtime_identity,
+            backend_kind=backend_kind,
+            endpoint_id=endpoint_id,
+            native_route=native_route,
+            context_length=context_length,
+            capabilities=capabilities,
+            proof_identity=runtime_identity,
+        )
     logger.info(
         "switchboard initial route verified (%s): %s",
         reason,
@@ -2832,7 +2907,7 @@ def _model_status_allows_route_proof(data: dict) -> bool:
 def _verify_switchboard_route_for_status(data: dict, reason: str) -> None:
     if _switchboard_state is None:
         return
-    if _model_lifecycle_status():
+    if _model_lifecycle_status().get('lifecycleActive'):
         _switchboard_initial_verify_cancel.set()
         return
     state_path = _switchboard_state_path()
@@ -3406,7 +3481,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "f2d71d31e8cebac691d109de994c1b4636504cd3"
+    bundled_ref = "2ef78e7067211a198748c5499ed5a0261f4b48b6"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
@@ -4533,11 +4608,103 @@ def _recover_pixel_model_transaction(config: dict, *, release_unverified: bool =
         return pending
 
 
+def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict:
+    """Explicitly align a held native route with unchanged, proven Mac inference.
+
+    The caller owns the model lifecycle lock. This is not an automatic recovery
+    fallback: a stale bootstrap contract is replaced inside its original hold,
+    with no inference restart, journal deletion or unverified gate release.
+    """
+    journal = _read_pixel_model_journal()
+    if (platform.system() != 'Darwin' or config.get('GPU_BACKEND') != 'apple'
+            or config.get('ODS_MODE') != 'local' or journal is None
+            or journal['transactionId'] != transaction_id
+            or journal['phase'] not in {'held', 'applying', 'applied', 'committing'}
+            or (journal['phase'] == 'held') != (journal['target'] is None)
+            or journal['outcome'] is not None
+            or 'routeFingerprint' in journal['previous']):
+        raise RuntimeError('Current-local repair requires the original held Mac local transaction')
+    current = _pixel_model_config_digests()
+    if ('unavailable' in current.values() or current != journal['before']
+            or journal['after'] not in (None, current)):
+        raise RuntimeError('Model configuration changed; current-local repair refused')
+    # Read the environment inside the captured digest window, never from an
+    # earlier request snapshot or the advisory bootstrap completion record.
+    live_config = load_env(INSTALL_DIR / '.env')
+    if live_config != config or _pixel_model_config_digests() != current:
+        raise RuntimeError('Model configuration changed during repair inspection')
+    gguf = str(config.get('GGUF_FILE') or '')
+    context = journal['previous']['contextLength']
+    if (not _valid_pixel_model_name(gguf) or Path(gguf).name != gguf
+            or not gguf.endswith('.gguf')
+            or config.get('CTX_SIZE') != str(context)
+            or config.get('MAX_CONTEXT') != str(context)
+            or _pixel_local_identity_matches(config, gguf, journal['previous']['model'])):
+        raise RuntimeError('Current-local repair requires a different local model at the saved context')
+    if _model_stores.safe_artifact(_active_model_directory(config), gguf) is None:
+        raise RuntimeError('Current local model is not durably installed; repair refused')
+    target = {**journal['previous'], 'model': gguf,
+              'reasoning': _pixel_model_reasoning_capable(str(config.get('LLM_MODEL') or gguf), config),
+              'imageInput': 'unknown'}
+    if not _valid_managed_pixel_runtime_contract(target):
+        raise RuntimeError('Current-local repair target is invalid')
+    if journal['target'] is not None and journal['target'] != target:
+        raise RuntimeError('Saved repair target differs from current local inference')
+    transaction = _PixelModelTransaction(config)
+    transaction.id = transaction_id
+    transaction.previous = journal['previous']
+    transaction.target = journal['target']
+    transaction.journal = journal
+    expected_phase = 'held' if journal['target'] is None else 'applied'
+    expected_contract = journal['previous'] if journal['target'] is None else target
+    status = _runtime_model_control('model-status', config=config)
+    completed = transaction._matches(status, 'completed', target, 'commit')
+    if not (transaction._matches(status, expected_phase, expected_contract)
+            or (journal['phase'] == 'committing' and completed)):
+        raise RuntimeError('Native ownership or application of the saved repair is unconfirmed')
+    if not _prove_pixel_model_contract(config, target):
+        raise RuntimeError('Current local inference did not prove the repair target')
+    _verify_litellm_route(config)
+    status_after = _runtime_model_control('model-status', config=config)
+    if status_after != status:
+        raise RuntimeError('Native model recovery state changed during proof')
+    if (_pixel_model_config_digests() != current
+            or _read_pixel_model_journal() != journal):
+        raise RuntimeError('Model recovery evidence changed before repair')
+    if completed:
+        transaction._save('completed', 'commit')
+        return {'pending': False, 'phase': 'completed',
+                'transactionId': transaction_id, 'outcome': 'commit'}
+    if journal['target'] is None:
+        transaction.apply(target)
+    # Re-prove after the native gateway restart. A failure leaves the durable
+    # applied transaction intact; it must not release either admission gate.
+    if (not _prove_pixel_model_contract(config, target)
+            or _pixel_model_config_digests() != current):
+        raise RuntimeError('Current local inference changed during native repair')
+    transaction.verify_held()
+    if (_pixel_model_config_digests() != current
+            or _read_pixel_model_journal() != transaction.journal):
+        raise RuntimeError('Model recovery evidence changed before completion')
+    transaction.finish('commit')
+    return {'pending': False, 'phase': 'completed',
+            'transactionId': transaction_id, 'outcome': 'commit'}
+
+
 def _pixel_model_recovery_status() -> dict:
     journal=_read_pixel_model_journal()
     if journal is None:
         return {'pending':False,'phase':'idle','transactionId':None}
     return {'pending':journal['phase']!='completed','phase':journal['phase'],'transactionId':journal['transactionId']}
+
+
+def _pixel_model_transition_pending_for_route_proof() -> bool:
+    """Fail closed when route proof cannot establish transition custody."""
+    try:
+        return bool(_pixel_model_recovery_status()['pending'])
+    except (OSError, ValueError, RuntimeError, TypeError):
+        logger.warning('Initial route proof deferred: model transition state is unavailable')
+        return True
 
 
 def _read_remote_provider_activation_state() -> dict | None:
@@ -10139,6 +10306,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_retired_lemonade_endpoint()
         elif self.path == "/v1/model/recover":
             self._handle_model_recover()
+        elif self.path == "/v1/model/recover/current-local":
+            self._handle_model_repair_current_local()
         elif self.path == "/v1/remote-provider/plan":
             self._handle_remote_provider_plan()
         elif self.path == "/v1/remote-provider/apply":
@@ -12785,49 +12954,6 @@ class AgentHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Existing files are reusable only after exact catalog verification.
-        # This intentionally hashes them before returning already_downloaded;
-        # non-empty alone is not evidence that a prior transfer completed.
-        valid_preexisting_files = set()
-        invalid_existing_files = {}
-        try:
-            for filename, target in artifact_paths.items():
-                valid, reason = _verify_model_artifact(target, artifact_by_file[filename])
-                if valid:
-                    valid_preexisting_files.add(filename)
-                elif target.exists():
-                    invalid_existing_files[filename] = reason
-        except Exception:
-            _end_model_lifecycle("model_download")
-            raise
-
-        if len(valid_preexisting_files) == len(download_plan):
-            # A previous process can leave stale "downloading" status after the
-            # final file is already on disk. Normalize that here so the
-            # dashboard stops showing phantom progress.
-            _write_model_status(status_path, "complete", gguf_file, 0, 0)
-            _end_model_lifecycle("model_download")
-            json_response(self, 200, {"status": "already_downloaded"})
-            return
-
-        for filename, reason in invalid_existing_files.items():
-            logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
-            try:
-                artifact_paths[filename].unlink(missing_ok=True)
-            except OSError as exc:
-                _end_model_lifecycle("model_download")
-                json_response(
-                    self,
-                    500,
-                    {"error": f"Invalid model artifact could not be replaced: {filename}: {exc}"},
-                )
-                return
-        pending_download_plan = [
-            (idx, fn, url)
-            for idx, (fn, url) in enumerate(download_plan, 1)
-            if fn not in valid_preexisting_files
-        ]
-
         # Check for concurrent download
         with _model_download_lock:
             if _model_download_thread is not None and _model_download_thread.is_alive():
@@ -12894,6 +13020,36 @@ class AgentHandler(BaseHTTPRequestHandler):
 
                 try:
                     models_dir.mkdir(parents=True, exist_ok=True)
+                    # Reverification can hash many gigabytes after an agent
+                    # restart. Own it in the acknowledged, cancellable worker,
+                    # just like verification of newly downloaded artifacts.
+                    valid_preexisting_files = set()
+                    invalid_existing_files = {}
+                    for filename, target in artifact_paths.items():
+                        if target.exists():
+                            _write_model_status(status_path, "verifying", filename, 0, target.stat().st_size)
+                        valid, reason = _verify_model_artifact(
+                            target, artifact_by_file[filename], _model_download_cancel,
+                            raise_on_error=True,
+                        )
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        if valid:
+                            valid_preexisting_files.add(filename)
+                        elif target.exists():
+                            invalid_existing_files[filename] = reason
+                    for filename, reason in invalid_existing_files.items():
+                        if _model_download_cancel.is_set():
+                            _finish_cancelled_download()
+                            return
+                        logger.warning("Discarding invalid existing model artifact %s: %s", filename, reason)
+                        artifact_paths[filename].unlink(missing_ok=True)
+                    pending_download_plan = [
+                        (idx, fn, url)
+                        for idx, (fn, url) in enumerate(download_plan, 1)
+                        if fn not in valid_preexisting_files
+                    ]
                     for _part_idx, part_file_name, part_url in pending_download_plan:
                         url_error = _model_download_url_error(part_url)
                         if url_error:
@@ -12908,7 +13064,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                             )
                             return
                     label = gguf_file if len(download_plan) == 1 else f"{gguf_file} ({len(download_plan)} parts)"
-                    _write_model_status(status_path, "downloading", label, 0, 0)
+                    if pending_download_plan:
+                        _write_model_status(status_path, "downloading", label, 0, 0)
 
                     for part_idx, part_file_name, part_url in pending_download_plan:
                         if _model_download_cancel.is_set():
@@ -13280,6 +13437,33 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self,409 if result['pending'] else 200,result,no_store=True)
         except Exception:
             json_response(self,503,{'pending':True,'phase':'unavailable','reason':'model-recovery-unavailable'},no_store=True)
+        finally:
+            _end_model_lifecycle('model_recovery')
+
+    def _handle_model_repair_current_local(self):
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        if (type(body) is not dict or set(body) != {'transactionId'}
+                or not isinstance(body['transactionId'], str)
+                or re.fullmatch('[a-f0-9]{64}', body['transactionId']) is None):
+            json_response(self, 400, {'error': 'A saved model transactionId is required'})
+            return
+        acquired, _active = _begin_model_lifecycle('model_recovery')
+        if not acquired:
+            json_response(self, 409, {'error': 'Model lifecycle is busy'})
+            return
+        _switchboard_initial_verify_cancel.set()
+        try:
+            result = _repair_held_pixel_local_route(
+                load_env(INSTALL_DIR / '.env'), transaction_id=body['transactionId'])
+            json_response(self, 200, result, no_store=True)
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            logger.warning('Current-local model repair stopped: %s', exc)
+            json_response(self, 409, {'pending': True, 'phase': 'unavailable',
+                                     'reason': 'current-local-model-repair-unconfirmed'}, no_store=True)
         finally:
             _end_model_lifecycle('model_recovery')
 
@@ -13662,6 +13846,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         rollback_attempted = False
         runtime_restart_strategy: str | None = None
         readiness_diagnosis: dict = {}
+        healthy = False
         opencode_restarted = False
         opencode_config_mutated = False
         litellm_restart_attempted = False
@@ -13773,6 +13958,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             """Restore config/runtime/dependents and prove the prior route."""
             nonlocal rollback_attempted
             rollback_attempted = True
+            _set_model_activation_phase('rolling_back', _model_activation_public_failure(readiness_diagnosis, healthy))
             try:
                 if pixel_transaction is not None:
                     pixel_transaction.verify_held()
@@ -13841,6 +14027,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                             _atomic_write_text(hermes_template_config, repaired_template)
 
                 restore_previous_runtime()
+                _set_model_activation_phase('rollback_verifying')
                 litellm_restarted = False
                 if litellm_restart_attempted:
                     litellm_restarted = _restore_container_state(
@@ -13923,6 +14110,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return True, ""
             except Exception as rollback_exc:
                 logger.exception("Failed to prove previous model route during rollback")
+                _record_model_activation_result('rollback_unconfirmed', 'rollback_unconfirmed')
                 return False, str(rollback_exc)
 
         try:
@@ -14233,6 +14421,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     return_proof=True,
                     require_exact_context=requested_context_length is not None,
                     diagnosis=readiness_diagnosis,
+                    terminal_failure_probe=(_staged_llama_load_failure_probe(_gguf, runtime_stage_started)
+                        if runtime_restart_strategy in {'compose-llama', 'container-llama'} else None),
                     **_activation_readiness_cadence(),
                 )
 
@@ -14246,6 +14436,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             # - Host-native Linux: docker compose stop+up, same as bootstrap-upgrade.sh.
             env = load_env(env_path)
             _in_container = bool(os.environ.get("ODS_HOST_INSTALL_DIR"))
+            _set_model_activation_phase('loading')
+            runtime_stage_started = time.time()
 
             if wsl_managed.get('managed') is True:
                 runtime_restart_strategy = 'wsl-native-llama'
@@ -14322,7 +14514,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         llama_server_image
                         or env.get("LLAMA_SERVER_IMAGE")
                         or (
-                            "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+                            "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
                             if gpu_backend == "nvidia"
                             else ""
                         )
@@ -14381,11 +14573,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                     return_identity=True,
                     require_exact_context=requested_context_length is not None,
                     diagnosis=readiness_diagnosis,
+                    terminal_failure_probe=(_staged_llama_load_failure_probe(gguf_file, runtime_stage_started)
+                        if runtime_restart_strategy in {'compose-llama', 'container-llama'} else None),
                     **_activation_readiness_cadence(),
                 )
                 healthy = bool(runtime_identity)
 
             if healthy:
+                _set_model_activation_phase('verifying')
                 if host_native_llama:
                     _write_host_native_litellm_config(env, gguf_file, llm_model_name)
 
@@ -14698,6 +14893,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "switchboard verified-state publication deferred for runtime %s",
                         runtime_restart_strategy,
                     )
+                _record_model_activation_result('activated')
                 json_response(
                     self,
                     200,
@@ -14716,6 +14912,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 runtime_failure = capture_runtime_failure()
                 logger.warning("Model activation failed — rolling back")
                 rolled_back, rollback_error = rollback_and_prove()
+                if rolled_back:
+                    _record_model_activation_result('rolled_back', _model_activation_public_failure(readiness_diagnosis, healthy))
                 error = (
                     "Health check failed — rolled back to previous model"
                     if rolled_back
@@ -14745,6 +14943,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             if not committed and mutation_started and not rollback_attempted:
                 runtime_failure = capture_runtime_failure()
                 rolled_back, rollback_error = rollback_and_prove()
+                if rolled_back:
+                    _record_model_activation_result('rolled_back', _model_activation_public_failure(readiness_diagnosis, healthy))
             logger.exception("Model activation failed")
             error = f"Model activation failed: {exc}"
             if rollback_error:
@@ -14757,6 +14957,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 payload.update(pending=True, code='managed_model_recovery_required')
             if mutation_started:
                 payload["rolled_back"] = rolled_back
+                if not rolled_back:
+                    _record_model_activation_result('rollback_unconfirmed', 'rollback_unconfirmed')
             if switchboard_run and not switchboard_run.get("ok"):
                 payload["failure_phase"] = switchboard_run.get("phase")
                 payload["failure_detail"] = switchboard_run.get("detail")
@@ -15593,6 +15795,7 @@ def _wait_for_model_readiness(
     fast_poll_interval: float = _MODEL_READINESS_FAST_POLL_INTERVAL_SECONDS,
     diagnosis: dict | None = None,
     env_still_current=None,
+    terminal_failure_probe=None,
 ) -> bool | str | dict[str, object]:
     """Prove exact runtime identity and one matching meaningful completion.
 
@@ -15645,6 +15848,7 @@ def _wait_for_model_readiness(
             cancel_event=cancel_event,
             diagnosis=diagnosis,
             env_still_current=env_still_current,
+            terminal_failure_probe=terminal_failure_probe,
         )
         # Every success contract is truthy; every not-ready result is falsy
         # and falls through to the unchanged regular schedule below.
@@ -15762,6 +15966,12 @@ def _wait_for_model_readiness(
         except subprocess.TimeoutExpired:
             if attempt % 6 == 0:
                 logger.info("Model readiness attempt %d timed out", attempt + 1)
+        # Only activation supplies a probe bound to its newly staged container.
+        # Neither a timeout, 503/loading nor arbitrary log text ends this wait.
+        if terminal_failure_probe is not None and terminal_failure_probe():
+            diagnosis.update(code='runtime_load_failed', final=True,
+                reason='The selected model cannot be loaded by the installed runtime: a required tensor is missing.')
+            return not_ready
         if attempt + 1 < attempts and interval > 0:
             if cancel_event is not None:
                 if cancel_event.wait(interval):
@@ -18821,6 +19031,74 @@ def _runtime_log_excerpt(text: object) -> str:
     selected = [line for line in lines if _RUNTIME_LOG_SIGNAL_RE.search(line)] or lines
     excerpt = [line[:240] for line in selected[-_RUNTIME_LOG_EXCERPT_MAX_LINES:]]
     return "\n".join(excerpt)[-_RUNTIME_LOG_EXCERPT_MAX_CHARS:]
+
+
+def _staged_llama_load_failure_probe(gguf_file: str, stage_started: float):
+    """Recognize a terminal missing-tensor exit in this exact staged container.
+
+    This is only constructed after activation replaced the runtime. Unsupported
+    command shapes or uncertain Docker observations retain the normal wait.
+    Logs from another container, model, or process start cannot shorten it;
+    the process must also have started after this activation began staging.
+    """
+    def inspect():
+        result = subprocess.run(['docker', 'inspect', '--type', 'container', 'ods-llama-server'],
+            capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            return None
+        rows = json.loads(result.stdout)
+        if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
+            return None
+        row = rows[0]
+        args = row.get('Config', {}).get('Cmd') or []
+        models = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg in {'-m', '--model'}]
+        if (not re.fullmatch('[a-f0-9]{64}', str(row.get('Id', '')))
+                or models != ['/models/' + gguf_file]):
+            return None
+        return row
+
+    try:
+        staged = inspect()
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+        return None
+    if staged is None:
+        return None
+    container_id = staged['Id']
+    last_probe = -math.inf
+
+    def failed():
+        nonlocal last_probe
+        now = time.monotonic()
+        if now - last_probe < 1:
+            return False
+        last_probe = now
+        try:
+            row = inspect()
+            if row is None or row['Id'] != container_id:
+                return False
+            state = row.get('State', {})
+            start = state.get('StartedAt', '')
+            if (state.get('Status') not in {'exited', 'dead', 'restarting'}
+                    or type(state.get('ExitCode')) is not int or state['ExitCode'] == 0
+                    or state.get('OOMKilled') is True
+                    or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z', start)
+                    or start.startswith('0001-')):
+                return False
+            if datetime.fromisoformat(start.replace('Z', '+00:00')).timestamp() < stage_started:
+                return False
+            result = subprocess.run(['docker', 'logs', '--since', start, '--tail', '100', container_id],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5)
+            if result.returncode != 0:
+                return False
+            lines = result.stdout.splitlines()
+            missing = any(re.fullmatch(r"llama_model_load: error loading model: missing tensor '[A-Za-z0-9_.-]{1,200}'", line) for line in lines)
+            exited = 'main: exiting due to model loading error' in lines
+            after = inspect()
+            return bool(missing and exited and after is not None and after['Id'] == container_id
+                and after.get('State') == state)
+        except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+            return False
+    return failed
 
 
 def _failed_llama_server_log_excerpt(container: str = "ods-llama-server") -> str:

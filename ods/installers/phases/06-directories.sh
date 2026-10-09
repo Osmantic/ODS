@@ -107,7 +107,10 @@ _phase06_pixel_runtime_layout() {
     docker_endpoint="$(timeout 10s "${docker_command[@]}" context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" || return 1
     [[ "$docker_endpoint" == unix:///* ]] || return 1
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
-    [[ "$docker_os" == "Docker Desktop" ]] || return 0
+    case "$docker_os" in
+        'Docker Desktop'|'Docker Desktop (containerized)') ;;
+        *) return 0 ;;
+    esac
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
     # Use this distro's path. Docker Desktop's WSL proxy translates bind
     # sources from the calling distro; the daemon's own name for this tmpfs
@@ -895,6 +898,33 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         printf '%s\n' "$default"
     }
 
+    # Resolve every fixed service-port assignment before regenerating .env.
+    # Export the resolved values too: later phases use the service registry,
+    # which otherwise retains the defaults it loaded before this rerun.
+    while read -r _port_key _port_default; do
+        _port_value="$(_env_get_explicit_first "$_port_key" "$_port_default")"
+        if [[ ! "$_port_value" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$_port_value > 65535 )); then
+            error "$_port_key must be a port from 1 to 65535"
+            return 1
+        fi
+        printf -v "${_port_key}_VALUE" '%s' "$_port_value"
+        printf -v "$_port_key" '%s' "$_port_value"
+        export "$_port_key"
+    done <<'SERVICE_PORT_DEFAULTS'
+WEBUI_PORT 3000
+PERPLEXICA_PORT 3004
+TTS_PORT 8880
+N8N_PORT 5678
+QDRANT_PORT 6333
+QDRANT_GRPC_PORT 6334
+EMBEDDINGS_PORT 8090
+LITELLM_PORT 4000
+HERMES_PROXY_PORT 9120
+SERVICE_PORT_DEFAULTS
+    declare -F sr_resolve_ports >/dev/null 2>&1 && sr_resolve_ports
+    unset _port_key _port_default _port_value
+    N8N_WEBHOOK_URL_VALUE="$(_env_get_explicit_first N8N_WEBHOOK_URL "http://localhost:${N8N_PORT_VALUE}")"
+
     # The local llama-server port may already belong to another owner service
     # (for example a fleet worker). Honor an explicit install override before
     # preserving an older .env value, and reject malformed ports before Compose.
@@ -1641,17 +1671,17 @@ fi)
 
 #=== Ports ===
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
-WEBUI_PORT=3000
+WEBUI_PORT=$(dotenv_value "${WEBUI_PORT_VALUE}")
 DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
 SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
-PERPLEXICA_PORT=3004
+PERPLEXICA_PORT=$(dotenv_value "${PERPLEXICA_PORT_VALUE}")
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
-TTS_PORT=8880
-N8N_PORT=5678
-QDRANT_PORT=6333
-QDRANT_GRPC_PORT=6334
-EMBEDDINGS_PORT=8090
-LITELLM_PORT=4000
+TTS_PORT=$(dotenv_value "${TTS_PORT_VALUE}")
+N8N_PORT=$(dotenv_value "${N8N_PORT_VALUE}")
+QDRANT_PORT=$(dotenv_value "${QDRANT_PORT_VALUE}")
+QDRANT_GRPC_PORT=$(dotenv_value "${QDRANT_GRPC_PORT_VALUE}")
+EMBEDDINGS_PORT=$(dotenv_value "${EMBEDDINGS_PORT_VALUE}")
+LITELLM_PORT=$(dotenv_value "${LITELLM_PORT_VALUE}")
 LANGFUSE_PORT=$(dotenv_value "${LANGFUSE_PORT}")
 
 #=== Hermes Agent ===
@@ -1662,7 +1692,7 @@ HERMES_LLM_BASE_URL=$(dotenv_value "${HERMES_LLM_BASE_URL_VALUE}")
 HERMES_LLM_API_KEY=$(dotenv_value "${HERMES_LLM_API_KEY_VALUE}")
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
 HERMES_REQUIRE_OWNER_CARD=${HERMES_REQUIRE_OWNER_CARD:-false}
-HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
+HERMES_PROXY_PORT=$(dotenv_value "${HERMES_PROXY_PORT_VALUE}")
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-ods-hermes:9119}
 ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 
@@ -1741,7 +1771,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$(dotenv_value "${N8N_WEBHOOK_URL_VALUE}")
 TIMEZONE=${SYSTEM_TZ:-UTC}
 
 #=== Langfuse (LLM Observability) ===
@@ -1791,6 +1821,8 @@ ENV_EOF
         . "$SCRIPT_DIR/installers/lib/extension-env-carry.sh"
         ods_carry_extension_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" \
             "$SCRIPT_DIR/extensions/services" "$INSTALL_DIR/data/user-extensions"
+        ods_carry_public_url_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env"
+        ods_carry_named_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" "${ODS_OWNER_ENV_KEYS[@]}"
         rm -f "$_phase06_previous_env"
     fi
     unset _phase06_previous_env

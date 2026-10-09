@@ -755,6 +755,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   commit and verified against its SHA-256 on Linux and macOS. The tier maps
   previously fetched it from `resolve/main` with no checksum, and the bootstrap
   checked a hash against a moving branch. The pin matches the catalog entry.
+- Every Qwen model in the Linux, macOS and Windows tier maps, and the Windows
+  fast-start bootstrap model, is now downloaded from the same fixed Hugging
+  Face commit as its catalog entry. They were fetched from `resolve/main`
+  while being checked against one fixed revision's SHA-256, so an upstream
+  re-upload would have failed every install at that tier. Windows tier 0 and
+  the NV_ULTRA tier also had no checksum, and now verify their downloads. A new
+  test keeps every tier-map and bootstrap download on the catalog's pin.
 - macOS: the installer refuses to run when the install directory overlaps
   the source checkout (the clone root, an ancestor, or a folder inside it),
   comparing directories by identity rather than spelling. On the default

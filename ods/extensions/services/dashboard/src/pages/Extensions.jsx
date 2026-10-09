@@ -471,7 +471,11 @@ export default function Extensions({ compact = false }) {
         throw new Error(typeof error.detail === 'string' ? error.detail : 'Could not add Open WebUI')
       }
       await Promise.all([fetchCatalog(), fetchWebuiSelection()])
-      setToast({ type: 'success', text: 'Open WebUI added. Existing chat data was preserved.' })
+      // Selection is host-owned, but the catalog's health cache may still be
+      // catching up (or its immediate probe may have failed). Follow readiness
+      // without repeating Add; only catalog health exposes the launch link.
+      setToast({ type: 'info', text: 'Open WebUI selected. Waiting for its service to become ready.' })
+      pollProgress('open-webui')
     } catch (error) {
       await fetchWebuiSelection()
       setToast({ type: 'error', text: friendlyError(error.message) || 'Could not add Open WebUI. Check its selection before retrying.' })
@@ -837,7 +841,8 @@ export default function Extensions({ compact = false }) {
 }
 
 function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
-  let tooltip = STATUS_DESCRIPTIONS[status] || ''
+  const runtimeStarting = status === 'installing' && ext.runtime_starting === true
+  let tooltip = runtimeStarting ? 'Service is starting; waiting for its health check' : STATUS_DESCRIPTIONS[status] || ''
   if (status === 'incompatible') {
     tooltip += ` \u2014 requires ${ext.gpu_backends?.join(' or ') || 'specific GPU'}, your system: ${gpuBackend || 'unknown'}`
   }
@@ -845,7 +850,7 @@ function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
   const badge = (status === 'installing' || status === 'setting_up') ? (
     <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 flex items-center gap-1 cursor-help">
       <Loader2 size={8} className="animate-spin" />
-      {status === 'setting_up' ? 'setting up' : 'installing'}
+      {runtimeStarting ? 'starting' : status === 'setting_up' ? 'setting up' : 'installing'}
     </span>
   ) : status === 'error' ? (
     <span
@@ -908,11 +913,12 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
   const isUserExt = ext.source === 'user'
   const isManagedBuiltin = isCore && ext.library_manageable === true
   const isError = status === 'error'
+  const runtimeStarting = status === 'installing' && ext.runtime_starting === true
   // A saved progress record can describe a terminal failure or completion.
   // Only active phases should keep the installation spinner on screen.
-  const showProgress = !isError && (progressData?.status
+  const showProgress = !isError && (runtimeStarting || (progressData?.status
     ? ['pulling', 'starting', 'setup_hook'].includes(progressData.status)
-    : status === 'installing' || status === 'setting_up')
+    : status === 'installing' || status === 'setting_up'))
   const isStopped = status === 'stopped'
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
@@ -990,7 +996,7 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
       {showProgress && (
         <div className="px-4 py-2 border-t border-theme-border/40 text-[10px] text-blue-400/80 flex items-center gap-2">
           <Loader2 size={12} className="animate-spin" />
-          <span>{progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
+          <span>{runtimeStarting ? 'Starting service — waiting for health check...' : progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
         </div>
       )}
       {/* Error message — expandable when long or multiline so docker-compose
@@ -1350,14 +1356,14 @@ function DetailModal({ ext, gpuBackend, onClose }) {
             </div>
           )}
 
-          {/* CLI Commands */}
-          <div>
+          {/* The CLI refuses selection changes for category=core services. */}
+          {ext.category !== 'core' && <div>
             <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-2">CLI Commands</h4>
             <div className="space-y-1">
               <CopyableCommand command={`ods enable ${ext.id}`} />
               <CopyableCommand command={`ods disable ${ext.id}`} />
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

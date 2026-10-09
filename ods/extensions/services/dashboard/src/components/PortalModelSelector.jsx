@@ -182,7 +182,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavai
           ? <p className="portal-model-notice">Change this model on its external host.</p>
           : <Link className="portal-model-manage" to={remote?'/pixel/settings?section=connections':'/models'}><SlidersHorizontal size={14} aria-hidden="true"/>{remote?'Provider settings':'Manage models'}</Link>}
       </>}
-      <PortalModelRecovery active={open && observeCatalog} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
+      <PortalModelRecovery active={open && observeCatalog} operationActive={pending || Boolean(modelLifecycle?.active)} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
     </section>
   </div>
 }

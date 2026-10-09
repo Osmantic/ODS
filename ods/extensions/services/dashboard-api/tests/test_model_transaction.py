@@ -258,6 +258,33 @@ def test_partial_host_mutation_cannot_be_recovered_by_a_generic_reset(controller
     assert calls.count('model-begin')==1
 
 
+def test_legacy_macos_promotion_with_held_2b_contract_keeps_recovery_pending(controller, monkeypatch):
+    config, state, calls, _ = controller
+    previous = {'model': 'Qwen3.5-2B-Q4_K_M.gguf', 'contextLength': 65536,
+                'maxTokens': 8192, 'reasoning': False}
+    state['contract'] = previous
+    env = {'PIXEL_OPENWEBUI_KEY': 'configured', 'GPU_BACKEND': 'apple',
+           'GGUF_FILE': 'Qwen3.5-9B-Q4_K_M.gguf', 'LLM_MODEL': 'qwen3.5-9b'}
+    transaction = host._begin_pixel_model_transaction(env)
+    config.write_text('changed by interrupted activation')
+    status = host.INSTALL_DIR / 'data/bootstrap-status.json'
+    status.write_text(json.dumps({'status': 'complete', 'percent': 100,
+                                 'model': env['GGUF_FILE']}))
+    monkeypatch.setattr(host, '_managed_wsl_runtime', lambda _: {'managed': False})
+    monkeypatch.setattr(host, '_wait_for_model_readiness', lambda *a, **k: {
+        'identity': env['GGUF_FILE'], 'contextLength': 65536, 'contextVerified': True})
+    monkeypatch.setattr(host, '_prove_pixel_model_contract', _real_prove_pixel_model_contract)
+    assert not host._prove_pixel_model_contract(env, previous)
+    before = host._pixel_model_journal_path().read_bytes()
+    for explicit_release in (False, True):
+        result = host._recover_pixel_model_transaction(env, release_unverified=explicit_release)
+        assert result['pending'] and result['phase'] == 'held'
+        assert result['releasable'] is False
+    assert transaction.target is None
+    assert host._pixel_model_journal_path().read_bytes() == before
+    assert 'model-apply' not in calls and 'model-finish' not in calls
+
+
 @pytest.mark.parametrize('drift', ['GGUF_FILE=other-model.gguf', 'CTX_SIZE=8192'])
 def test_commit_recovery_reads_current_env_before_releasing_native_hold(controller,monkeypatch,drift):
     _,state,calls,_=controller

@@ -253,7 +253,7 @@ async def test_template_apply_additive(tmp_path):
         MockSvc("svc-a", "healthy"),
     ]
 
-    mock_activate = MagicMock(return_value={"id": "svc-b", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "svc-b", "action": "enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -262,6 +262,7 @@ async def test_template_apply_additive(tmp_path):
         patch("routers.templates.TEMPLATES", mock_templates),
         patch("routers.templates._BASE_COMPOSE_SERVICES", frozenset()),
         patch("routers.templates.USER_EXTENSIONS_DIR", tmp_path / "user-ext"),
+        patch("routers.extensions.USER_EXTENSIONS_DIR", tmp_path / "user-ext"),
         patch("helpers.get_cached_services", return_value=mock_svc_list),
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
@@ -273,6 +274,9 @@ async def test_template_apply_additive(tmp_path):
         # Create user ext dir so host agent path resolves for svc-b
         user_ext = tmp_path / "user-ext" / "svc-b"
         user_ext.mkdir(parents=True)
+        healthy_ext = tmp_path / "user-ext" / "svc-a"
+        healthy_ext.mkdir()
+        (healthy_ext / "compose.yaml").write_text("services: {}\n")
         from routers.templates import apply_template
         result = await apply_template("test-tmpl", api_key="test")
 
@@ -297,7 +301,7 @@ async def test_template_apply_activates_deps(tmp_path):
             self.id = id_
             self.status = status
 
-    mock_activate = MagicMock(side_effect=lambda svc_id: {"id": svc_id, "action": "enabled"})
+    mock_activate = MagicMock(side_effect=lambda svc_id: {"id": svc_id, "action": "enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -375,7 +379,7 @@ async def test_template_apply_starts_enabled_stopped_dependency_first(tmp_path):
         ),
         patch(
             "routers.extensions._activate_service",
-            return_value={"id": "child-svc", "action": "already_enabled"},
+            return_value={"id": "child-svc", "action": "already_enabled", "sha256": "a" * 64},
         ),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
@@ -478,7 +482,7 @@ async def test_template_apply_builtin_extension(tmp_path):
             self.id = id_
             self.status = status
 
-    mock_activate = MagicMock(return_value={"id": "builtin-svc", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "builtin-svc", "action": "enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -520,7 +524,7 @@ async def test_template_apply_reports_builtin_start_failure(tmp_path):
         "name": "Test",
         "services": ["builtin-svc"],
     }]
-    mock_activate = MagicMock(return_value={"id": "builtin-svc", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "builtin-svc", "action": "enabled", "sha256": "a" * 64})
     mock_hooks = MagicMock(return_value=True)
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
@@ -559,7 +563,7 @@ async def test_template_apply_does_not_start_after_pre_start_failure(tmp_path):
         "name": "Test",
         "services": ["svc-a"],
     }]
-    mock_activate = MagicMock(return_value={"id": "svc-a", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "svc-a", "action": "enabled", "sha256": "a" * 64})
     mock_agent = MagicMock(return_value=True)
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
@@ -595,7 +599,7 @@ async def test_template_apply_runs_builtin_post_install_before_start(tmp_path):
         "name": "Test",
         "services": ["svc-a"],
     }]
-    mock_activate = MagicMock(return_value={"id": "svc-a", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "svc-a", "action": "enabled", "sha256": "a" * 64})
     mock_agent = MagicMock(return_value=True)
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
@@ -639,7 +643,7 @@ async def test_template_apply_skips_dependent_after_prior_activation_failure(tmp
     def mock_activate(service_id):
         if service_id == "dep-svc":
             raise HTTPException(status_code=400, detail="dependency config invalid")
-        return {"id": service_id, "action": "enabled"}
+        return {"id": service_id, "action": "enabled", "sha256": "a" * 64}
 
     def mock_missing_deps(service_id):
         return ["dep-svc"] if service_id == "child-svc" else []
@@ -707,8 +711,8 @@ async def test_template_apply_enforces_gpu_compatibility_for_dependencies(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_template_apply_reports_dependencies_enabled_before_later_activation_failure(tmp_path):
-    """A partial additive activation remains visible and gets its runtime start."""
+async def test_template_apply_refuses_whole_selection_before_later_validation_failure(tmp_path):
+    """Validate the whole host selection before committing any dependency."""
     from fastapi import HTTPException
 
     mock_templates = [{
@@ -720,7 +724,7 @@ async def test_template_apply_reports_dependencies_enabled_before_later_activati
     def mock_activate(service_id):
         if service_id == "bad-dep":
             raise HTTPException(status_code=400, detail="bad dependency compose")
-        return {"id": service_id, "action": "enabled"}
+        return {"id": service_id, "action": "enabled", "sha256": "a" * 64}
 
     mock_agent = MagicMock(return_value=True)
     mock_lock = MagicMock()
@@ -746,11 +750,11 @@ async def test_template_apply_reports_dependencies_enabled_before_later_activati
         from routers.templates import apply_template
         result = await apply_template("test-tmpl", api_key="test")
 
-    assert result["results"]["good-dep"] == "enabled_as_dependency"
+    assert "good-dep" not in result["results"]
     assert "bad dependency compose" in result["results"]["child-svc"]
-    assert result["enabled_count"] == 1
-    assert result["started_count"] == 1
-    mock_agent.assert_called_once_with("start", "good-dep")
+    assert result["enabled_count"] == 0
+    assert result["started_count"] == 0
+    mock_agent.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -764,6 +768,7 @@ async def test_template_apply_does_not_start_dependent_after_runtime_failure(tmp
     mock_activate = MagicMock(side_effect=lambda service_id: {
         "id": service_id,
         "action": "enabled",
+        "sha256": "a" * 64,
     })
     mock_agent = MagicMock(side_effect=lambda action, service_id: service_id != "dep-svc")
     mock_lock = MagicMock()
@@ -816,7 +821,7 @@ async def test_template_apply_auto_installs_library_extension(tmp_path):
         install_calls.append(svc_id)
 
     # After install, _activate_service sees compose.yaml is already in place
-    mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "already_enabled"})
+    mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "already_enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -863,7 +868,7 @@ async def test_template_apply_library_install_failure_skips_gracefully(tmp_path)
     def mock_install(svc_id):
         raise HTTPException(status_code=503, detail="Extensions library is unavailable")
 
-    mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -1013,7 +1018,7 @@ async def test_template_apply_reinstalls_library_extension_with_error_progress(t
         patch("helpers.get_cached_services", return_value=[]),
         patch(
             "routers.extensions._activate_service",
-            return_value={"id": "lib-svc", "action": "already_enabled"},
+            return_value={"id": "lib-svc", "action": "already_enabled", "sha256": "a" * 64},
         ),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
@@ -1047,7 +1052,7 @@ async def test_template_apply_library_already_installed_skips_reinstall(tmp_path
     (user_ext / "lib-svc").mkdir(parents=True)  # Already installed
 
     mock_install = MagicMock()
-    mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "lib-svc", "action": "enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -1098,8 +1103,8 @@ async def test_template_apply_mixed_builtin_and_library(tmp_path):
 
     def mock_activate(svc_id):
         if svc_id == "lib-svc":
-            return {"id": svc_id, "action": "already_enabled"}
-        return {"id": svc_id, "action": "enabled"}
+            return {"id": svc_id, "action": "already_enabled", "sha256": "a" * 64}
+        return {"id": svc_id, "action": "enabled", "sha256": "a" * 64}
 
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
@@ -1150,7 +1155,7 @@ async def test_template_apply_already_enabled_still_starts(tmp_path):
             self.status = status
 
     # _activate_service returns already_enabled (compose.yaml exists but container not running)
-    mock_activate = MagicMock(return_value={"id": "svc-a", "action": "already_enabled"})
+    mock_activate = MagicMock(return_value={"id": "svc-a", "action": "already_enabled", "sha256": "a" * 64})
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -1194,7 +1199,7 @@ async def test_template_apply_invalidates_compose_flags_cache(tmp_path):
             self.id = id_
             self.status = status
 
-    mock_activate = MagicMock(return_value={"id": "svc-b", "action": "enabled"})
+    mock_activate = MagicMock(return_value={"id": "svc-b", "action": "enabled", "sha256": "a" * 64})
     mock_invalidate = MagicMock()
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
@@ -1225,109 +1230,23 @@ async def test_template_apply_invalidates_compose_flags_cache(tmp_path):
     assert mock_invalidate.called, "apply_template must invalidate .compose-flags cache"
 
 
-# --- Event-loop non-blocking guarantee (structural / AST proof) ---
+# --- Event-loop worker boundary ---
 
 
-def test_apply_template_blocking_calls_run_in_to_thread():
-    """Every blocking helper inside apply_template must be wrapped in
-    asyncio.to_thread so the event loop is not stalled while waiting on
-    network or filesystem locks.
+def test_apply_template_dispatches_complete_transaction_off_loop():
+    """The shared guard and physical lifecycle must use one worker invocation."""
+    import asyncio
+    from unittest.mock import AsyncMock
 
-    This is a structural proof: we walk the AST of apply_template and
-    confirm that any Call to a known blocking helper appears as the first
-    argument of an asyncio.to_thread(...) call inside an Await.
-    Replaces a flaky concurrent-request timing test with a deterministic
-    one.
-    """
-    import ast
-    import inspect
-    import textwrap
+    from routers import templates
 
-    from routers.templates import apply_template
-
-    blocking_callees = {
-        "_call_agent_hook",
-        "_call_agent",
-        "_call_agent_invalidate_compose_cache",
-        "_get_missing_deps_transitive",
-        "_has_error_progress",
-        "_read_direct_deps",
-        "_sync_extension_config",
-        "_write_error_progress",
-        "_install_from_library",
-        "_install_with_lock",
-        "_activate_with_lock",
-    }
-
-    src = textwrap.dedent(inspect.getsource(apply_template))
-    tree = ast.parse(src)
-
-    # Collect every Call to a blocking helper
-    found_blocking_calls: list[tuple[str, bool]] = []
-
-    class _Walker(ast.NodeVisitor):
-        def __init__(self):
-            self.in_to_thread_first_arg = False
-
-        def visit_Call(self, node: ast.Call) -> None:
-            func_name = None
-            if isinstance(node.func, ast.Attribute):
-                func_name = node.func.attr
-            elif isinstance(node.func, ast.Name):
-                func_name = node.func.id
-
-            # Check whether this is asyncio.to_thread(<callee>, ...) and mark
-            # its first positional arg as "wrapped".
-            is_to_thread = (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr == "to_thread"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "asyncio"
-            )
-            if is_to_thread and node.args:
-                first = node.args[0]
-                # The first argument should be a Name referencing a callable
-                if isinstance(first, ast.Name) and first.id in blocking_callees:
-                    found_blocking_calls.append((first.id, True))
-
-            # Detect direct (non-wrapped) calls to blocking helpers — these
-            # would be the regression we want to prevent.
-            if func_name in blocking_callees and not is_to_thread:
-                found_blocking_calls.append((func_name, False))
-
-            self.generic_visit(node)
-
-    _Walker().visit(tree)
-
-    # Build a map: callee -> set of (wrapped) booleans seen
-    seen: dict[str, set[bool]] = {}
-    for name, wrapped in found_blocking_calls:
-        seen.setdefault(name, set()).add(wrapped)
-
-    # The blocking helpers we expect apply_template to invoke
-    must_be_wrapped = {
-        "_call_agent_hook",
-        "_call_agent",
-        "_get_missing_deps_transitive",
-        "_has_error_progress",
-        "_read_direct_deps",
-        "_sync_extension_config",
-        "_write_error_progress",
-        "_install_with_lock",
-        "_activate_with_lock",
-    }
-
-    for callee in must_be_wrapped:
-        assert callee in seen, (
-            f"Expected apply_template to call {callee}() — not found in AST. "
-            f"Either the helper was renamed or the to_thread wrapping was removed."
-        )
-        assert True in seen[callee], (
-            f"{callee}() is called but never wrapped in asyncio.to_thread(...). "
-            f"This would block the event loop and is a regression of the "
-            f"apply_template async fix."
-        )
-        assert False not in seen[callee], (
-            f"{callee}() is called directly (without asyncio.to_thread). "
-            f"All blocking helpers must run in the thread pool."
-        )
+    template = {"id": "worker-test", "services": []}
+    with (
+        patch.object(templates, "TEMPLATES", [template]),
+        patch("helpers.get_cached_services", return_value=[]),
+        patch.object(templates.asyncio, "to_thread", new_callable=AsyncMock) as worker,
+    ):
+        worker.return_value = {"receipt": "fixture"}
+        result = asyncio.run(templates.apply_template("worker-test", api_key="test"))
+    worker.assert_awaited_once_with(templates._apply_template_guarded, template, [])
+    assert result == {"receipt": "fixture"}

@@ -17,6 +17,7 @@ from typing import Optional
 from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
+from model_activation_status import model_activation_status
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 
@@ -1472,6 +1473,8 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         payload,
         _model_lifecycle_from_agent_status(agent_status),
     )
+    payload["modelActivation"] = model_activation_status(agent_status)
+    payload["modelRecoveryPending"] = isinstance(agent_status, dict) and agent_status.get("modelTransactionPending") is True
     loaded_entry = next((m for m in payload["models"] if m["status"] == "loaded"), None) or {}
     sample_key = (loaded_model, metrics.get("throughput_sampled_at"))
     if (gpu_info and loaded_model and live_tps > 0

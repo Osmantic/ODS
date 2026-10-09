@@ -474,7 +474,8 @@ export default definePluginEntry({
       const interrupted=delegationDelivery.blocked(context,event);
       if (interrupted) return interrupted;
       let guard = withPixelCronDeliveryDefault(
-        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
+        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
+          delegationDelivery.hasPendingChildren(context)),
         event, context, AGENT_ID,
       );
       const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
@@ -609,9 +610,10 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
-        const [delegated,parentAborted]=await Promise.all([delegatedPending,parentPending]);
-        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
+        const [delegated,parentAborted,compactionAborted]=await Promise.all([delegatedPending,parentPending,compactionPending]);
+        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted || compactionAborted });
         return true;
       },
     });

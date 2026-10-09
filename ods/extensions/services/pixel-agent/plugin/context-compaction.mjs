@@ -15,6 +15,8 @@ const text = value => typeof value === 'string' && value.length > 0 && value.len
   !/[\u0000-\u001f\u007f]/.test(value) ? value : null;
 const idle = count => ({status:'idle', requestId:null, tokensBefore:null, tokensAfter:null, reason:null, count});
 const ERROR = () => new Error('context coordination unavailable');
+const runtimeBusy = error => error?.name === 'GatewayClientRequestError' && error.gatewayCode === 'UNAVAILABLE' &&
+  error.message === 'Session is active; retry compaction after the current run finishes.';
 export async function prepareStableContextModel({entry}) {
   if (entry?.providerOverride === 'ods-policy' || entry?.modelProvider === 'ods-policy') {
     throw Object.assign(ERROR(),{code:'unsupported-model'});
@@ -82,10 +84,13 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
   callGateway, admission, activeSession = () => false,
   directory = path.join(process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw'), '.ods-context-compactions'),
   now = () => Date.now(), instanceId = PROCESS_INSTANCE, timeoutMs = 1920000,
-  prepareModel = prepareStableContextModel, maximumRequests = 128, requireModelObservation = true} = {}) {
+  prepareModel = prepareStableContextModel, maximumRequests = 128, requireModelObservation = true,
+  busyRetryLimit = 120, busyRetryDelayMs = 250} = {}) {
   if (!/^[a-z0-9_-]{1,64}$/.test(agentId) || typeof readSession !== 'function' ||
       typeof callGateway !== 'function' || !admission || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 ||
-      timeoutMs > 1920000 || !Number.isSafeInteger(maximumRequests) || maximumRequests < 1 || maximumRequests > 512) throw ERROR();
+      timeoutMs > 1920000 || !Number.isSafeInteger(maximumRequests) || maximumRequests < 1 || maximumRequests > 512 ||
+      !Number.isSafeInteger(busyRetryLimit) || busyRetryLimit < 1 || busyRetryLimit > 120 ||
+      !Number.isSafeInteger(busyRetryDelayMs) || busyRetryDelayMs < 1 || busyRetryDelayMs > 250) throw ERROR();
   const pending = new Map();
   const modelAttempts = new Map();
   const keyFor = user => { if (!USER.test(user ?? '')) throw ERROR(); return `agent:${agentId}:openai-user:${user}`; };
@@ -205,15 +210,16 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
     try { const ledger = read(user); recover(user, ledger); return project(user, entryFor(user), ledger); }
     catch { return unavailable(user); }
   }
-  async function execute(user, ledger, item, entry) {
-    const sessionKey = keyFor(user); let modelLease, timer, dispatched = false;
+  async function execute(user, ledger, item, entry, task) {
+    const sessionKey = keyFor(user); let modelLease, timer;
+    const retryDeadline = performance.now() + Math.min(timeoutMs, 30000);
     try {
       modelLease = await prepareModel({sessionKey,sessionId:entry.sessionId,entry,leaseToken:item.leaseToken});
       // The admission lease predates this RPC and remains held until its exact
       // final response. sessions.compact itself must never find an active run.
-      if (!admission.owns(item.leaseToken) || activeSession(sessionKey) ||
+      if (task.cancelled || pending.get(user) !== task || !admission.owns(item.leaseToken) || activeSession(sessionKey) ||
           revisionFor(user, entryFor(user)) !== item.sessionRevision) throw ERROR();
-      dispatched = true;
+      task.dispatched = true;
       timer = setTimeout(() => {
         item.status = 'unknown'; item.reason = 'result-unconfirmed';
         try { save(user,ledger); } catch { /* Preserve the held barrier. */ }
@@ -222,7 +228,30 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       // Continue observing the original promise after a local deadline. A
       // later authenticated final response can settle this exact operation;
       // a disconnected RPC remains unknown and is never dispatched twice.
-      const result = await callGateway('sessions.compact', {timeoutMs}, {key:sessionKey,agentId});
+      let result;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          result = await callGateway('sessions.compact', {timeoutMs}, {key:sessionKey,agentId});
+          break;
+        } catch (error) {
+          // The pinned native idle guard refuses before touching the transcript.
+          // Its tracked runs can outlive the embedded run after Stop. Await that
+          // drain under the same lease; an uncertain RPC is never sent again.
+          if (!runtimeBusy(error) || attempt + 1 >= busyRetryLimit || performance.now() >= retryDeadline) throw error;
+          task.dispatched = false;
+          clearTimeout(timer);
+          await new Promise(resolve => setTimeout(resolve, Math.min(busyRetryDelayMs, Math.max(1, retryDeadline - performance.now()))));
+          if (performance.now() >= retryDeadline) throw error;
+          if (task.cancelled || pending.get(user) !== task || !admission.owns(item.leaseToken) || activeSession(sessionKey) ||
+              revisionFor(user, entryFor(user)) !== item.sessionRevision) throw ERROR();
+          task.dispatched = true;
+          timer = setTimeout(() => {
+            item.status = 'unknown'; item.reason = 'result-unconfirmed';
+            try { save(user,ledger); } catch { /* Preserve the held barrier. */ }
+          },timeoutMs);
+          timer.unref?.();
+        }
+      }
       clearTimeout(timer);
       if (result?.key !== sessionKey || typeof result.ok !== 'boolean' || typeof result.compacted !== 'boolean') throw ERROR();
       item.status = result.ok ? result.compacted ? 'completed' : 'skipped' : 'failed';
@@ -237,18 +266,19 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       }
       await modelLease.close(); modelLease = undefined;
       save(user, ledger);
-      admission.release(item.leaseToken);
+      admission.release(item.leaseToken); task.released = true;
     } catch (error) {
       // A rejected/expired transport does not prove the RPC stopped. Keep the
       // barrier and receipt unknown; a repeated request never starts it again.
-      const refused = error?.name === 'GatewayClientRequestError' && error.gatewayCode === 'UNAVAILABLE' &&
-        error.message === 'Session is active; retry compaction after the current run finishes.';
-      item.status = dispatched && !refused ? 'unknown' : 'failed';
-      item.reason = refused ? 'runtime-busy' : dispatched ? 'result-unconfirmed' : error?.code === 'unsupported-model' ? 'unsupported-model' : 'coordination-failed';
+      const refused = runtimeBusy(error);
+      item.status = task.dispatched && !refused ? 'unknown' : 'failed';
+      item.reason = refused ? 'runtime-busy' : task.dispatched ? 'result-unconfirmed' : error?.code === 'unsupported-model' ? 'unsupported-model' : 'coordination-failed';
       try {
-        if (!dispatched || refused) await modelLease?.close();
+        if (!task.dispatched || refused) await modelLease?.close();
         save(user, ledger);
-        if (!dispatched || refused) admission.release(item.leaseToken);
+        if ((!task.dispatched || refused) && admission.owns(item.leaseToken)) {
+          admission.release(item.leaseToken); task.released = true;
+        }
       } catch { /* Held admission remains conservative. */ }
     } finally { clearTimeout(timer); pending.delete(user); }
   }
@@ -277,8 +307,11 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       const item = {requestId,status:'running',tokensBefore:snapshot.context?.used ?? null,tokensAfter:null,reason:null,
         leaseToken:token,instance:instanceId,sessionRevision:snapshot.sessionRevision};
       ledger.operations.push(item); save(user, ledger);
-      pending.set(user, item);
-      queueMicrotask(() => { void execute(user, ledger, item, entry); });
+      const task = {item, dispatched:false, cancelled:false};
+      pending.set(user, task);
+      task.done = new Promise(resolve => {
+        queueMicrotask(() => { void execute(user, ledger, item, entry, task).finally(resolve); });
+      });
       return project(user, entry, ledger);
     } catch {
       if (acquired && !pending.has(user)) {
@@ -287,6 +320,17 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       const snapshot=context(user);
       return admission.status()?.available === true && admission.status().phase !== 'idle' ? {...snapshot,status:'busy'} : snapshot;
     }
+  }
+  async function cancelPending(user) {
+    keyFor(user);
+    const task = pending.get(user);
+    // A dispatch with an unknown outcome cannot be cancelled by inference.
+    // Only a pre-dispatch wait (including an explicit native refusal) is ours.
+    if (!task) return false;
+    task.cancelled = true;
+    if (task.dispatched) return false;
+    await task.done;
+    return task.item.status === 'failed' && task.released === true;
   }
   async function withMaintenance(user, callback) {
     const sessionKey = keyFor(user), ledger = read(user);
@@ -367,5 +411,5 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
     finally { entries?.closeSync(); }
   }
   recoverOwnedAtStartup();
-  return {context, compact, withMaintenance, observeModelInput, observeModelOutput};
+  return {context, compact, cancelPending, withMaintenance, observeModelInput, observeModelOutput};
 }

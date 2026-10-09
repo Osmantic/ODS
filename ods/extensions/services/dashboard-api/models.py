@@ -31,6 +31,8 @@ class ServiceStatus(BaseModel):
     external_port: int
     status: str  # "healthy", "unhealthy", "unknown", "degraded", "down", "not_deployed"
     response_time_ms: Optional[float] = None
+    # Internal health provenance; a slow HTTP probe alone cannot establish startup.
+    startup_pending: bool = Field(default=False, exclude=True)
 
 
 class NodeCapabilities(BaseModel):
@@ -233,6 +235,8 @@ class ModelLibraryResponse(BaseModel):
     recommendationPolicy: Optional[str] = None
     recommendationAlternatives: list[dict[str, Any]] = Field(default_factory=list)
     modelLifecycle: Optional[dict[str, Any]] = None
+    modelActivation: Optional[dict[str, Any]] = None
+    modelRecoveryPending: bool = False
     odsMode: str = "unknown"
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"

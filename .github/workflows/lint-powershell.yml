@@ -249,6 +249,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Host Agent Stale PID Recovery (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-host-agent-stale-pid.ps1
+
+      - name: Windows Host Agent Stale PID Recovery (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-host-agent-stale-pid.ps1
+
       - name: Windows Install Model Proof
         shell: pwsh
         run: ./tests/contracts/test-windows-install-model-proof.ps1

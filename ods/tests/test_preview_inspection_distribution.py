@@ -542,6 +542,46 @@ def test_native_transport_requires_explicit_arguments(monkeypatch, tmp_path):
         module.build_config(source=tmp_path, owner_uid=501, transport="docker-desktop")
 
 
+@pytest.mark.parametrize("failure_kind", ["build", "timeout"])
+def test_failed_build_keeps_original_error_and_conditionally_guides_dns(
+    monkeypatch, tmp_path, capsys, failure_kind
+):
+    monkeypatch.setattr(module, "docker_path", lambda transport: "/usr/bin/docker")
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir="/home/owner"))
+    for name in module.BUILD_FILES:
+        (tmp_path / name).write_bytes(b"fixed input")
+        (tmp_path / name).chmod(0o644)
+    calls = []
+    original = (
+        subprocess.CalledProcessError(17, ["docker", "build"])
+        if failure_kind == "build"
+        else subprocess.TimeoutExpired(["docker", "build"], 1800)
+    )
+
+    def run(argv, **kw):
+        calls.append(argv)
+        assert argv[:4] == ["/usr/bin/docker", "--host", "unix:///var/run/docker.sock", "build"]
+        assert kw["check"] is True and kw["timeout"] == 1800
+        assert kw["stdout"] is module.sys.stderr
+        assert kw["env"] == {"PATH": "/usr/bin:/bin", "HOME": "/home/owner"}
+        assert "--network=host" not in argv and "--dns" not in argv
+        raise original
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    with pytest.raises(type(original)) as caught:
+        module.build_config(source=tmp_path, owner_uid=1000, transport="local")
+    assert caught.value is original
+    assert len(calls) == 1  # No image inspection, probe or restart after failure.
+    output = capsys.readouterr()
+    assert output.out == ""  # Never contaminate the JSON config channel.
+    if failure_kind == "build":
+        assert "If it reports EAI_AGAIN" in output.err
+        assert "INSTALL-TROUBLESHOOTING.md#container-build-dns" in output.err
+        assert "alone does not establish DNS failure" in output.err
+    else:
+        assert output.err == ""
+
+
 @pytest.mark.parametrize("fault", ["symlink", "owner", "mode", "hardlink"])
 def test_installed_file_custody_rejects_replacement(fault):
     mode, uid, links = stat.S_IFREG | 0o644, 0, 1

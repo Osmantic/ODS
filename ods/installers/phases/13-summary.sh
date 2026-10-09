@@ -55,7 +55,7 @@ if $DRY_RUN; then
     echo ""
 else
     _summary_chat_url=""
-    [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || _summary_chat_url="http://localhost:3000"
+    [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || _summary_chat_url="http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
     if [[ -z "$_summary_chat_url" && "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _summary_chat_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel"
     fi

@@ -537,7 +537,9 @@ def test_real_model_handoff_tracks_worker_and_refuses_duplicate(model_handoff, m
     installed, files, environment = model_handoff
     script = installed / 'scripts/bootstrap-upgrade.sh'
     script.write_text('''#!/bin/bash
-printf '%s\\n' "$@" > "$1/data/observed.args"
+# Publish only after printf has finished; existence is the reader's signal.
+printf '%s\\n' "$@" > "$1/data/observed.args.tmp" &&
+    mv "$1/data/observed.args.tmp" "$1/data/observed.args"
 while [[ ! -f "$1/data/release-fixture" ]]; do sleep 0.05; done
 ''')
     children = []
@@ -553,6 +555,7 @@ while [[ ! -f "$1/data/release-fixture" ]]; do sleep 0.05; done
         deadline = time.monotonic() + 5
         while not (installed / 'data/observed.args').exists() and time.monotonic() < deadline:
             time.sleep(0.01)
+        assert (installed / 'data/observed.args').exists(), 'fixture arguments were not published'
         observed = (installed / 'data/observed.args').read_text().splitlines()
         assert observed[0] == str(installed)
         assert observed[1:] == (installed / 'data/bootstrap-upgrade.args').read_text().splitlines()
@@ -936,8 +939,11 @@ esac
     assert 'fixture-private-key' not in log.read_text()
 
 
-@pytest.mark.parametrize('fault', [None, 'redirect', 'unauthorized', 'malformed', 'oversize', 'slow-headers', 'slow-body'])
-def test_readiness_http_is_bounded_and_never_redirects_local_credentials(monkeypatch, fault):
+@pytest.mark.parametrize(('fault', 'startup_delay'), [
+    pytest.param(fault, 0, id=fault or 'ok')
+    for fault in [None, 'redirect', 'unauthorized', 'malformed', 'oversize', 'slow-headers', 'slow-body']
+] + [pytest.param('oversize', 0.6, id='oversize-delayed-start')])
+def test_readiness_http_is_bounded_and_never_redirects_local_credentials(monkeypatch, fault, startup_delay):
     requests = []
     release = Event()
     class Handler(BaseHTTPRequestHandler):
@@ -946,7 +952,7 @@ def test_readiness_http_is_bounded_and_never_redirects_local_credentials(monkeyp
             try:
                 if fault == 'slow-headers':
                     self.connection.sendall(b'HTTP/1.1 200 OK\r\nX-Slow: ')
-                    release.wait(3)
+                    release.wait(20)
                     return
                 self.send_response(302 if fault == 'redirect' else 401 if fault == 'unauthorized' else 200)
                 if fault == 'redirect':
@@ -955,7 +961,7 @@ def test_readiness_http_is_bounded_and_never_redirects_local_credentials(monkeyp
                 if fault == 'slow-body':
                     self.wfile.write(b'{')
                     self.wfile.flush()
-                    release.wait(3)
+                    release.wait(20)
                     return
                 self.wfile.write(b'x' * (readiness.MAX_RESPONSE + 1) if fault == 'oversize' else
                     b'fixture-private-key invalid-json' if fault == 'malformed' else b'{"ok":true}')
@@ -968,27 +974,65 @@ def test_readiness_http_is_bounded_and_never_redirects_local_credentials(monkeyp
     worker.start()
     run = readiness.subprocess.run
     children = []
+    expired = []
     def observed(command, **kwargs):
         children.append(command)
         assert 'fixture-private-key' not in ' '.join(command)
         assert json.loads(kwargs['input'])['key'] == 'fixture-private-key'
-        return run(command, **kwargs)
+        if startup_delay:
+            # Exercise the real worker after startup takes longer than the old
+            # 0.4-second budget; interpreter startup is part of probe's deadline.
+            prelude = ('import runpy,sys,time; time.sleep(float(sys.argv[1])); '
+                'sys.argv=sys.argv[2:]; runpy.run_path(sys.argv[0],run_name="__main__")')
+            command = [command[0], '-I', '-c', prelude, str(startup_delay), *command[2:]]
+        try:
+            result = run(command, **kwargs)
+        except subprocess.TimeoutExpired:
+            expired.append(True)
+            raise
+        assert 'fixture-private-key' not in result.stdout + result.stderr
+        return result
     monkeypatch.setattr(readiness.subprocess, 'run', observed)
     try:
         started = time.monotonic()
         if fault:
             with pytest.raises(ValueError, match='^native-readiness-http-failed$'):
-                readiness.probe(server.server_port, '/probe', key='fixture-private-key', timeout=0.4)
+                readiness.probe(server.server_port, '/probe', key='fixture-private-key', timeout=5)
         else:
-            assert readiness.probe(server.server_port, '/probe', key='fixture-private-key', timeout=2) == {'ok': True}
-        assert time.monotonic() - started < 2.5
+            assert readiness.probe(server.server_port, '/probe', key='fixture-private-key', timeout=5) == {'ok': True}
+        assert time.monotonic() - started < 7.5
         assert requests == [('/probe', 'Bearer fixture-private-key')]
         assert len(children) == 1
+        # Slow responses must hit the parent deadline, before the worker's
+        # 10-second socket timeout or the server's 20-second release fallback.
+        # Other faults must actually reach their response validation branch.
+        assert expired == ([True] if fault in ('slow-headers', 'slow-body') else [])
     finally:
         release.set()
         server.shutdown()
         server.server_close()
         worker.join(timeout=3)
+
+
+def test_readiness_http_deadline_includes_worker_startup(monkeypatch):
+    run = readiness.subprocess.run
+    expired = []
+    def delayed_start(command, **kwargs):
+        assert 'fixture-private-key' not in ' '.join(command)
+        assert json.loads(kwargs['input'])['key'] == 'fixture-private-key'
+        prelude = ('import runpy,sys,time; time.sleep(20); '
+            'sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")')
+        try:
+            return run([command[0], '-I', '-c', prelude, *command[2:]], **kwargs)
+        except subprocess.TimeoutExpired:
+            expired.append(True)
+            raise
+    monkeypatch.setattr(readiness.subprocess, 'run', delayed_start)
+    started = time.monotonic()
+    with pytest.raises(ValueError, match='^native-readiness-http-failed$'):
+        readiness.probe(1, '/probe', key='fixture-private-key', timeout=0.4)
+    assert time.monotonic() - started < 2.5
+    assert expired == [True]
 
 
 @pytest.fixture

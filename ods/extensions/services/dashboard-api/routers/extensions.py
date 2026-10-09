@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -482,6 +483,12 @@ def _gpu_compatible(ext: dict) -> bool:
     return not gpu_backends or "all" in gpu_backends or GPU_BACKEND in gpu_backends
 
 
+def _service_starting(service) -> bool:
+    """Startup requires declared container health, not a slow/failed HTTP probe."""
+    return (service is not None and service.status in {"down", "degraded"}
+            and getattr(service, "startup_pending", False) is True)
+
+
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
@@ -536,6 +543,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         svc = services_by_id.get(ext_id)
         if svc and svc.status == "healthy":
             return "enabled"
+        if _service_starting(svc):
+            return "installing"
         if svc and svc.status in {"unhealthy", "degraded"}:
             return "unhealthy"
         return "stopped"
@@ -545,6 +554,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
         svc = services_by_id.get(ext_id)
         if svc and svc.status == "healthy":
             return "enabled"
+        if _service_starting(svc):
+            return "installing"
         return "disabled"
 
     # User-installed extension â€” health-based when compose.yaml exists
@@ -557,6 +568,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             svc = services_by_id.get(ext_id)
             if svc and svc.status == "healthy":
                 return "enabled"
+            if _service_starting(svc):
+                return "installing"
             # HTTP 4xx/5xx from the health endpoint is the clearest "container
             # is up but broken" signal â€” surface it as "unhealthy" so the UI
             # can prompt a log check. Timeouts / connection refused / DNS
@@ -1773,6 +1786,54 @@ def _serialize_extension_operation(func):
     return wrapped
 
 
+def _serialize_extension_group_operation(*, include_dependencies: bool):
+    """Own every service an enable/disable may affect, in template lock order."""
+    def decorate(func):
+        @wraps(func)
+        def wrapped(service_id: str, *args, **kwargs):
+            if not _SERVICE_ID_RE.match(service_id):
+                return func(service_id, *args, **kwargs)
+
+            def operation_ids():
+                with _extensions_lock():
+                    pending = [service_id]
+                    try:
+                        pending.extend(_feature_companions(service_id))
+                    except HTTPException:
+                        # The endpoint retains its normal validation response.
+                        pass
+                    visited = set()
+                    while pending:
+                        target = pending.pop()
+                        if target in visited:
+                            continue
+                        visited.add(target)
+                        if include_dependencies:
+                            try:
+                                pending.extend(_read_direct_deps(target))
+                            except HTTPException:
+                                pass
+                    return sorted(visited)
+
+            for _ in range(3):
+                planned = operation_ids()
+                # Never wait on operation locks while holding the graph lock,
+                # or acquire a dependency after holding its unsorted root.
+                with contextlib.ExitStack() as locks:
+                    for target in planned:
+                        locks.enter_context(_extension_operation_lock(target))
+                    if operation_ids() != planned:
+                        continue
+                    return func(service_id, *args, **kwargs)
+            raise HTTPException(
+                status_code=409,
+                detail="Extension dependencies changed; retry the operation",
+            )
+
+        return wrapped
+    return decorate
+
+
 def _extensions_lock_path() -> Path:
     """Use the same canonical lock file as the host selection helper.
 
@@ -1812,17 +1873,20 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
     for sid, cfg in candidates.items():
         matches = [item for item in containers if isinstance(item, dict) and item.get("service_id") == sid]
         state = "unknown"
+        startup_pending = False
         # Ambiguous snapshots cannot establish readiness of this extension.
         if len(matches) == 1:
             item = matches[0]
             if item.get("state") == "running":
                 state = {"healthy": "healthy", "unhealthy": "unhealthy"}.get(item.get("health"), "degraded")
+                startup_pending = item.get("health") == "starting"
             elif item.get("state") in {"exited", "dead", "removing", "created"}:
                 state = "down"
         statuses[sid] = ServiceStatus(
             id=sid, name=cfg.get("name", sid), port=cfg["port"],
             external_port=cfg.get("external_port", cfg["port"]),
             status=state, response_time_ms=None,
+            startup_pending=startup_pending,
         )
 
 
@@ -1875,6 +1939,14 @@ async def enable_webui_from_library(request: Request, api_key: str = Depends(ver
     if (not isinstance(result, dict) or result.get("enabled") is not True
             or result.get("action") not in {"enabled", "already_selected"}):
         raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    # The Library immediately refetches catalog and detail after this action.
+    # Refresh this one cached health row now; the background all-service poll
+    # can otherwise leave a successful Add looking disabled until Refresh.
+    from helpers import refresh_cached_service_status
+    try:
+        await refresh_cached_service_status("open-webui")
+    except Exception:  # noqa: BLE001 - the host action already succeeded
+        logger.warning("Could not refresh Open WebUI health after selection", exc_info=True)
     return JSONResponse({"enabled": True, "action": result["action"]},
                         headers={"Cache-Control": "no-store"})
 
@@ -1956,6 +2028,7 @@ async def extensions_catalog(
         enriched = {
             **ext,
             "status": status,
+            "runtime_starting": status == "installing" and _service_starting(services_by_id.get(ext_id)),
             "installable": installable,
             "source": source,
             "has_data": has_data,
@@ -3429,6 +3502,7 @@ async def extension_detail(
         "description": ext.get("description", ""),
         "status": status,
         "error_message": error_message,
+        "runtime_starting": status == "installing" and _service_starting(services_by_id.get(service_id)),
         "source": source,
         "installable": installable,
         **_qualified_builtin_selection(service_id),
@@ -4712,7 +4786,7 @@ def prepare_extension_images(
 
 
 @router.post("/api/extensions/{service_id}/enable")
-@_serialize_extension_operation
+@_serialize_extension_group_operation(include_dependencies=True)
 def enable_extension(
     service_id: str,
     auto_enable_deps: bool = Query(False),
@@ -4889,6 +4963,15 @@ def enable_extension(
             warnings.append(
                 f"{svc_id}: post_start hook failed â€” manual configuration may be needed",
             )
+
+    # FastAPI runs this sync endpoint in an AnyIO worker. Observe on the app
+    # loop, which owns the HTTP clients, while retaining the operation locks.
+    # User recipes are already probed live by catalog/detail.
+    started_builtins = [sid for sid in enabled_services
+                        if sid in LIBRARY_MANAGEABLE_BUILTINS and sid not in failed_services]
+    if started_builtins:
+        from helpers import refresh_cached_builtin_services
+        from_thread.run(refresh_cached_builtin_services, started_builtins)
 
     logger.info("Enabled extension: %s (deps: %s)", service_id,
                 enabled_services[:-1] if len(enabled_services) > 1 else "none")
@@ -5067,7 +5150,7 @@ def _enabled_dependents(service_id: str) -> list[str]:
 
 
 @router.post("/api/extensions/{service_id}/disable")
-@_serialize_extension_operation
+@_serialize_extension_group_operation(include_dependencies=False)
 def disable_extension(service_id: str, include_data_info: bool = Query(True), api_key: str = Depends(verify_api_key)):
     """Disable an enabled extension."""
     _validate_service_id(service_id)

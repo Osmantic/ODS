@@ -157,5 +157,85 @@ else
     fail "carrying extension settings changed private env permissions"
 fi
 
+# Owner-set public URLs (docs/ODS-PROXY.md) are never written by the
+# template either; a rerun must keep them.
+cat > "$tmp/urls-old.env" <<'ENV'
+ODS_PUBLIC_URL=https://ods.example.com
+ODS_SERVICE_PUBLIC_URLS={"open-webui":"https://chat.example.com","n8n":"https://n8n.example.com"}
+OPEN_WEBUI_PUBLIC_URL=https://first.example.com
+OPEN_WEBUI_PUBLIC_URL=https://chat.example.com
+N8N_PUBLIC_URL=https://from-template.example.com
+NOT_A_PUBLIC_URL_KEY=x
+ODS_PUBLIC_URL_EXTRA=x
+ENV
+printf 'WEBUI_SECRET=current\nN8N_PUBLIC_URL=https://kept-template.example.com\n' > "$tmp/urls-new.env"
+ods_carry_public_url_env_keys "$tmp/urls-old.env" "$tmp/urls-new.env"
+for line in ODS_PUBLIC_URL=https://ods.example.com \
+            'ODS_SERVICE_PUBLIC_URLS={"open-webui":"https://chat.example.com","n8n":"https://n8n.example.com"}' \
+            OPEN_WEBUI_PUBLIC_URL=https://chat.example.com; do
+    if [[ "$(grep -cxF "$line" "$tmp/urls-new.env")" == 1 ]]; then
+        pass "public URL carried: ${line%%=*}"
+    else
+        fail "public URL not carried exactly once: ${line%%=*}"
+    fi
+done
+[[ "$(grep -c '^OPEN_WEBUI_PUBLIC_URL=' "$tmp/urls-new.env")" == 1 ]] \
+    && pass "the last assignment of a repeated public URL wins" || fail "a repeated public URL was carried twice"
+grep -qx 'N8N_PUBLIC_URL=https://kept-template.example.com' "$tmp/urls-new.env" \
+    && [[ "$(grep -c '^N8N_PUBLIC_URL=' "$tmp/urls-new.env")" == 1 ]] \
+    && pass "a public URL the template wrote is not overridden" || fail "template public URL was overridden or duplicated"
+grep -Eq '^(NOT_A_PUBLIC_URL_KEY|ODS_PUBLIC_URL_EXTRA)=' "$tmp/urls-new.env" \
+    && fail "keys that are not public URLs were carried" || pass "only *_PUBLIC_URL and *_PUBLIC_URLS keys are carried"
+cp "$tmp/urls-new.env" "$tmp/urls-once.env"
+ods_carry_public_url_env_keys "$tmp/urls-old.env" "$tmp/urls-new.env"
+cmp -s "$tmp/urls-once.env" "$tmp/urls-new.env" && pass "public URL carry-over is idempotent" || fail "public URL carry-over is not idempotent"
+urls="$(line_of 'ods_carry_public_url_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env"')"
+if [[ -n "$urls" && -n "$rewrite" && "$rewrite" -lt "$urls" ]]; then
+    pass "phase 06 carries public URLs after its rewrite"
+else
+    fail "phase 06 does not carry public URLs across its .env rewrite"
+fi
+
+# Settings ODS tells the owner to set in .env, which no installer writes.
+cat > "$tmp/owner-old.env" <<'ENV'
+N8N_API_KEY=n8n-api-first
+N8N_API_KEY=n8n-api-current
+HF_TOKEN='hf_owner token'
+LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc
+AUDIO_TTS_VOICE=af_bella
+HF_TOKEN_EXTRA=not-listed
+LLAMA_ARG_N_CPU_MOE=99
+ENV
+printf 'WEBUI_SECRET=current\nAUDIO_TTS_VOICE=from-template\n' > "$tmp/owner-new.env"
+ods_carry_named_env_keys "$tmp/owner-old.env" "$tmp/owner-new.env" "${ODS_OWNER_ENV_KEYS[@]}"
+for line in N8N_API_KEY=n8n-api-current "HF_TOKEN='hf_owner token'" LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc; do
+    if [[ "$(grep -cxF "$line" "$tmp/owner-new.env")" == 1 ]]; then
+        pass "owner setting carried: ${line%%=*}"
+    else
+        fail "owner setting not carried exactly once: ${line%%=*}"
+    fi
+done
+[[ "$(grep -c '^N8N_API_KEY=' "$tmp/owner-new.env")" == 1 ]] \
+    && pass "the last assignment of an owner setting wins" || fail "an owner setting was carried twice"
+grep -qx 'AUDIO_TTS_VOICE=from-template' "$tmp/owner-new.env" && [[ "$(grep -c '^AUDIO_TTS_VOICE=' "$tmp/owner-new.env")" == 1 ]] \
+    && pass "an owner setting the template wrote is not overridden" || fail "template owner setting was overridden or duplicated"
+grep -Eq '^(HF_TOKEN_EXTRA|LLAMA_ARG_N_CPU_MOE)=' "$tmp/owner-new.env" \
+    && fail "unlisted or installer-managed keys were carried" || pass "only the listed owner settings are carried"
+# A listed key the installer starts writing would let an old value override
+# the installer's choice; it must then leave the list.
+managed=""
+for key in "${ODS_OWNER_ENV_KEYS[@]}"; do
+    grep -qw "$key" "$ROOT_DIR/installers/phases/06-directories.sh" "$ROOT_DIR/installers/lib/tier-map.sh" \
+        "$ROOT_DIR/install-core.sh" && managed="$managed $key"
+done
+[[ -z "$managed" ]] && pass "no listed owner setting is installer-managed" \
+    || fail "listed owner settings are written by the installer:$managed"
+owner="$(line_of 'ods_carry_named_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" "${ODS_OWNER_ENV_KEYS[@]}"')"
+if [[ -n "$owner" && -n "$rewrite" && "$rewrite" -lt "$owner" ]]; then
+    pass "phase 06 carries owner settings after its rewrite"
+else
+    fail "phase 06 does not carry owner settings across its .env rewrite"
+fi
+
 [[ $FAILED -eq 0 ]] || { echo "$FAILED check(s) failed" >&2; exit 1; }
 echo "All extension .env carry-over checks passed"

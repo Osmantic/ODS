@@ -25,10 +25,22 @@ docker_log="$tmp_dir/docker.log"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data/models" "$install_dir/scripts" "$install_dir/bin" "$bin_dir"
+# This fixture checks resume dispatch, not launchd or native inference. The CLI
+# now delegates both start and stop through its installed service helper.
+mkdir -p "$install_dir/installers/macos/lib"
+cat > "$install_dir/installers/macos/lib/native-llama-service.sh" <<'NATIVE'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+    start) : > "$4" ;;
+    stop) : ;;
+    *) exit 1 ;;
+esac
+NATIVE
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
 touch "$install_dir/data/models/Qwen3.5-2B-Q4_K_M.gguf"
-touch "$install_dir/bin/llama-server"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$install_dir/bin/llama-server"
 chmod +x "$install_dir/bin/llama-server"
 
 cat > "$install_dir/.env" <<'ENV'
