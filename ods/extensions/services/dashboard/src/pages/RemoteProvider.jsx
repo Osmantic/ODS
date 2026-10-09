@@ -432,10 +432,15 @@ export default function RemoteProvider({ compact = false }) {
     if (!quiet) setPeerModelsLoading(true)
     setPeerModelsError(null)
     try {
-      const [modelsPayload, downloadPayload] = await Promise.all([
+      let [modelsPayload, downloadPayload] = await Promise.all([
         fetchJson('/api/remote-provider/peer/models', {}, PEER_MODELS_TIMEOUT_MS),
         fetchJson('/api/remote-provider/peer/models/download-status', {}, PEER_MODELS_TIMEOUT_MS),
       ])
+      // The parallel inventory read can precede the download's final rename.
+      // Refresh after completion is observed before retiring its polling timer.
+      if (downloadPayload?.status === 'complete') {
+        modelsPayload = await fetchJson('/api/remote-provider/peer/models', {}, PEER_MODELS_TIMEOUT_MS)
+      }
       setPeerModelsData(modelsPayload)
       setPeerDownloadStatus(downloadPayload)
       return modelsPayload
