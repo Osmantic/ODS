@@ -145,15 +145,18 @@ def download(package, destination):
     opener = urllib.request.build_opener(NoRedirect())
     for attempt in range(3):
         digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
+        created = False
         try:
-            with opener.open(package['url'], timeout=60) as response, destination.open('xb') as output:
-                for block in iter(lambda: response.read(1024 * 1024), b''):
-                    count += len(block)
-                    if count > 64 * 1024 * 1024:
-                        raise BootstrapError('pinned-package-too-large')
-                    digest.update(block)
-                    integrity.update(block)
-                    output.write(block)
+            with destination.open('xb') as output:
+                created = True
+                with opener.open(package['url'], timeout=60) as response:
+                    for block in iter(lambda: response.read(1024 * 1024), b''):
+                        count += len(block)
+                        if count > 64 * 1024 * 1024:
+                            raise BootstrapError('pinned-package-too-large')
+                        digest.update(block)
+                        integrity.update(block)
+                        output.write(block)
                 output.flush()
                 os.fsync(output.fileno())
             if (digest.hexdigest() != package['sha256']
@@ -161,11 +164,12 @@ def download(package, destination):
                 raise BootstrapError('pinned-package-checksum-mismatch')
             return
         except BootstrapError:
-            destination.unlink(missing_ok=True)
-            raise
-        except FileExistsError:
+            if created:
+                destination.unlink(missing_ok=True)
             raise
         except (OSError, urllib.request.URLError, http.client.HTTPException) as error:
+            if not created:
+                raise
             destination.unlink(missing_ok=True)
             if attempt == 2:
                 raise BootstrapError('pinned-package-download-failed') from error

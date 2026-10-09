@@ -289,6 +289,29 @@ def test_download_refuses_preexisting_destination_without_deleting(tmp_path, rel
     assert destination.read_bytes() == b'pre-existing artifact data'
 
 
+@pytest.mark.parametrize('network_error', [
+    ConnectionResetError('connection dropped before opening destination'),
+    urllib.request.URLError('DNS resolution failed'),
+])
+def test_download_preserves_existing_destination_even_when_transport_is_down(
+        tmp_path, release, monkeypatch, network_error):
+    calls = []
+
+    def unavailable(*args, **kwargs):
+        calls.append(True)
+        raise network_error
+
+    monkeypatch.setattr(bootstrap.urllib.request, 'build_opener',
+        lambda *a: SimpleNamespace(open=unavailable))
+    monkeypatch.setattr(bootstrap.time, 'sleep', lambda seconds: None)
+    destination = tmp_path / 'existing.tgz'
+    destination.write_bytes(b'owner artifact')
+    with pytest.raises(FileExistsError):
+        bootstrap.download(release['openclawPackage'], destination)
+    assert destination.read_bytes() == b'owner artifact'
+    assert calls == []
+
+
 @pytest.mark.parametrize('fault', [None, 'root', 'arch', 'npm', 'version', 'probe', 'plugin-version', 'plugin-id'])
 def test_staging_is_nonroot_and_publishes_only_verified_runtime(tmp_path, release, monkeypatch, fault):
     for directory, plugin_id in bootstrap.PIXEL_PLUGINS:
