@@ -41,6 +41,26 @@ export function hasVisibilityTransitionPlan(request) {
         isDeepStrictEqual(before.locator, after.locator))));
 }
 
+const BEHAVIOR_ACTIONS = ['fill', 'click', 'select-option'];
+const BEHAVIOR_ASSERTIONS = ['assert-text', 'assert-visible', 'assert-hidden'];
+
+// The existing completion evidence floor, shared with tool-time feedback.
+// This checks plan coverage only; a receipt still has to pass and bind to the
+// current snapshot/session before it can establish interaction evidence.
+export function previewBehaviorPlanIssue(request) {
+  if (request.steps.some(step => step.action === 'download')) return {reason: 'download'};
+  if (!request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action))) return {reason: 'no_interaction'};
+  let pending;
+  for (const [index, step] of request.steps.entries()) {
+    if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
+    else if (BEHAVIOR_ACTIONS.includes(step.action)) {
+      if (pending?.action === 'click') return {reason: 'missing_postcondition', index: pending.index, nextIndex: index};
+      pending = {action: step.action, index};
+    }
+  }
+  return pending ? {reason: 'missing_postcondition', index: pending.index} : undefined;
+}
+
 // Load-time controls (capsule-computed): the accessible name of every button
 // and link after the page scripts ran, hidden ones included, in document
 // order. Names and text are page data. Evidence about names only; it never
@@ -149,6 +169,7 @@ function transitionCoverageFeedback(request, result) {
 // requirement comes from the run guard, bound to this exact call; without it
 // the result is unchanged.
 export const TRANSITION_UNTESTED = 'transition_untested';
+export const BEHAVIOR_UNTESTED = 'interaction_untested';
 export function transitionCorrection(request, requirement) {
   const clickAt = request.steps.findIndex(step => step.action === 'click');
   const control = clickAt >= 0 ? request.steps[clickAt].locator
@@ -168,6 +189,18 @@ export function transitionCorrection(request, requirement) {
     click: clickAt >= 0, assertedBefore: before.length > 0};
 }
 const locatorText = locator => locator.selector !== undefined ? JSON.stringify(locator.selector) : `${locator.role} ${JSON.stringify(locator.name)}`;
+function behaviorIncompleteFeedback(request, issue) {
+  const why = issue.reason === 'missing_postcondition'
+    ? `Step ${issue.index + 1} (${request.steps[issue.index].action}) has no result assertion ${issue.nextIndex === undefined
+      ? 'before the plan ends' : `before step ${issue.nextIndex + 1} (${request.steps[issue.nextIndex].action})`}.`
+    : issue.reason === 'no_interaction' ? 'This plan contains no interaction.'
+      : 'Download verification does not establish the outstanding interaction checks.';
+  return 'Preview inspection INCOMPLETE - interactions not verified. The listed browser steps passed, but the submitted plan does not satisfy the interaction check. ' +
+    why + ' Next step: compare the action order with the source and the owner\'s intended behavior, then inspect the same published snapshot with the intended actions and visible or text result assertions. ' +
+    'Fill/select may prepare a click; assert each click\'s result before the next action, and assert the result of a value change when no click follows. ' +
+    'Keep the intended checks and expected results. Do not change the site just to satisfy a mistaken test plan or replace expected text with observed text. ' +
+    'The original browser receipt and submitted steps are retained unchanged; they do not verify overall functionality.';
+}
 function transitionIncompleteFeedback(request, requirement) {
   const {args, basis, members, first, last, target, click, assertedBefore} = transitionCorrection(request, requirement);
   const why = [
@@ -330,7 +363,7 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
 // observations (control names); it never binds interaction proof.
 export function validateIncompleteInspectionReceipt(value, request) {
   if(!exact(value,['schemaVersion','kind','status','errorCode','siteId','sha256','planSha256','scope','receipt'])||value.schemaVersion!==1||
-    value.kind!==INSPECTION_KIND||value.status!=='incomplete'||value.errorCode!==TRANSITION_UNTESTED||value.scope!==INSPECTION_SCOPE) throw Error('invalid incomplete inspection');
+    value.kind!==INSPECTION_KIND||value.status!=='incomplete'||![TRANSITION_UNTESTED,BEHAVIOR_UNTESTED].includes(value.errorCode)||value.scope!==INSPECTION_SCOPE) throw Error('invalid incomplete inspection');
   const receipt=validateWorkspacePreviewInspectionReceipt(value.receipt,request);
   if(receipt.status!=='passed'||receipt.siteId!==value.siteId||receipt.sha256!==value.sha256||receipt.planSha256!==value.planSha256) throw Error('invalid incomplete inspection');
   return receipt;
@@ -358,8 +391,9 @@ function nativeRequest(payload,{signal}={}) {
 }
 // transitionRequirement(toolCallId, params) is supplied by the run guard. It
 // returns the owner's show/hide requirement for exactly this call, or
-// undefined; it can only withhold "passed", never grant it.
-export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement}={}) {
+// undefined. behaviorRequirement similarly reports a remembered interaction
+// duty for this call. Both can only withhold "passed", never grant it.
+export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement,behaviorRequirement}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
@@ -386,10 +420,17 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
         if (result.status==='passed' && !pageErrors && !hasVisibilityTransitionPlan(normalized) && typeof transitionRequirement==='function') {
           try { requirement=transitionRequirement(toolCallId,params); } catch { requirement=undefined; }
         }
+        const behaviorIssue=previewBehaviorPlanIssue(normalized);
+        let behaviorRequired=false;
+        if (result.status==='passed' && !pageErrors && !requirement && behaviorIssue && typeof behaviorRequirement==='function') {
+          try { behaviorRequired=behaviorRequirement(toolCallId,params)===true; } catch { behaviorRequired=false; }
+        }
+        const incompleteCode=requirement?TRANSITION_UNTESTED:behaviorRequired?BEHAVIOR_UNTESTED:undefined;
         // Quote page text once, labelled; the evidence copy keeps only the count.
         const summary=pageErrors
           ? `Preview inspection ${result.status==='passed'?'steps passed, but':'failed, and'} ${pageErrorFeedback(pageErrors)}`
           : requirement ? transitionIncompleteFeedback(normalized, requirement)
+            : behaviorRequired ? behaviorIncompleteFeedback(normalized, behaviorIssue)
             : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}`;
         // The palette is stated once, as its fixed line; the evidence copy omits
         // it and the load-time control names (used only for locator feedback).
@@ -397,12 +438,12 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
         const palette=renderedColors?` ${renderedColorsLine(renderedColors)}`:'';
         // An incomplete inspection's evidence copy never reads "passed" overall;
         // details.receipt keeps the capsule receipt unchanged.
-        const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:requirement?{...rest,status:'incomplete'}:rest;
+        const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:incompleteCode?{...rest,status:'incomplete'}:rest;
         const text=`${summary} ${result.scope}${palette} Evidence: ${JSON.stringify(evidence)}`;
         // Incomplete is an error outcome: it is never a pass, and the capsule
         // receipt it carries cannot bind interaction evidence.
-        if (requirement) return {content:[{type:'text',text}],isError:true,details:{schemaVersion:1,kind:INSPECTION_KIND,
-          status:'incomplete',errorCode:TRANSITION_UNTESTED,siteId:result.siteId,sha256:result.sha256,planSha256:result.planSha256,
+        if (incompleteCode) return {content:[{type:'text',text}],isError:true,details:{schemaVersion:1,kind:INSPECTION_KIND,
+          status:'incomplete',errorCode:incompleteCode,siteId:result.siteId,sha256:result.sha256,planSha256:result.planSha256,
           scope:INSPECTION_SCOPE,receipt:result}};
         return {content:[{type:'text',text}],details:result,...(result.status==='failed'?{isError:true}:{})};
       } catch {

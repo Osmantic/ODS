@@ -3,6 +3,7 @@ import {
   inspectionControls,
   inspectionPageErrors,
   normalizeWorkspacePreviewInspectionParams,
+  previewBehaviorPlanIssue,
   validateIncompleteInspectionReceipt,
   validateWorkspacePreviewInspectionReceipt,
 } from './workspace-preview-inspect.mjs';
@@ -167,7 +168,6 @@ export function boundStaticPreviewInspection(params, result, preview) {
 }
 
 const BEHAVIOR_ACTIONS = ['fill', 'click', 'select-option'];
-const BEHAVIOR_ASSERTIONS = ['assert-text', 'assert-visible', 'assert-hidden'];
 
 // Remember the first bounded action plan, even if its locator schema was bad.
 // This is the model's attempted check, not a natural-language interpretation
@@ -185,21 +185,7 @@ export function attemptedPreviewBehavior(params, preview) {
 
 export function boundPreviewBehavior(params, result, preview, attempted) {
   if (!attempted) return undefined;
-  return boundInspection(params, result, preview, request => {
-    if (request.steps.some(step => step.action === 'download')) return false;
-    if (!request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action))) return false;
-    // Fill/select can prepare a click, but each click needs a postcondition
-    // before another action. A value change without a click needs one too.
-    let pending;
-    for (const step of request.steps) {
-      if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
-      else if (BEHAVIOR_ACTIONS.includes(step.action)) {
-        if (pending === 'click') return false;
-        pending = step.action;
-      }
-    }
-    return pending === undefined;
-  });
+  return boundInspection(params, result, preview, request => !previewBehaviorPlanIssue(request));
 }
 
 export function previewBehaviorInstruction(preview, pageErrors) {
