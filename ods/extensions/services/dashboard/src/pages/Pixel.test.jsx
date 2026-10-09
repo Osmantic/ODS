@@ -193,6 +193,57 @@ describe('Pixel', () => {
     expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
   })
 
+  it.each([false, true])('recovers a Chat-only interruption and continues the same conversation (receipt delayed=%s)', async delayed => {
+    localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema:1,chatId:'chat-restart',requestId:'before-restart',chatMode:'chat',inFlight:true,
+      draft:'Continue this conversation',messages:[{role:'user',content:'First question'},{role:'assistant',content:'Old partial text'}]}))
+    let recovered = !delayed
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true,runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
+      if (url === '/api/pixel/chat/result') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:'chat-restart',request_id:'before-restart'})
+        return response(recovered ? {state:'interrupted',events:'data: '+JSON.stringify({choices:[{delta:{content:'Saved before restart'}}]})+'\n\n'} : {state:'unknown',events:''})
+      }
+      if (url === '/api/pixel/chat/stream') return sseResponse([JSON.stringify({choices:[{delta:{content:'The next response'}}]}),'[DONE]'])
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    if (delayed) {
+      expect(await screen.findByRole('button',{name:'Check activity again'})).toBeEnabled()
+      expect(screen.getByRole('button',{name:'Try Stop previous work'})).toBeEnabled()
+      expect(screen.getByTitle('Send')).toBeDisabled()
+      expect(screen.getByRole('button',{name:'Agent'})).toBeDisabled()
+      recovered = true
+      fireEvent.click(screen.getByRole('button',{name:'Check activity again'}))
+    }
+    expect(await screen.findByText('Saved before restart')).toBeVisible()
+    expect(screen.queryByText(/Stopped by you/)).toBeNull()
+    await waitFor(()=>expect(screen.getByTitle('Send')).toBeEnabled())
+    expect(screen.getByRole('button',{name:'Agent'})).toBeEnabled()
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Continue this conversation')
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText('The next response')).toBeVisible()
+    const posts=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(posts).toHaveLength(1)
+    expect(JSON.parse(posts[0][1].body)).toEqual(expect.objectContaining({chat_id:'chat-restart',mode:'chat',request_id:expect.not.stringMatching(/^before-restart$/)}))
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/activity' || url==='/api/pixel/chat/cancel')).toBe(false)
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).interrupted).toBe(false))
+  })
+
+  it('cannot send a receiptless Chat-only Stop to the Agent route', async () => {
+    localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema:1,chatId:'chat-no-receipt',chatMode:'chat',inFlight:true,
+      messages:[{role:'user',content:'Previous question'},{role:'assistant',content:''}]}))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available:true,runtime:{source:'local-switchboard',model:'fixture.gguf',contextLength:32768}})
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    fireEvent.click(await screen.findByRole('button',{name:'Try Stop previous work'}))
+    expect(await screen.findByText('This saved chat has no request receipt. Portal cannot confirm or stop its previous response. Start a new chat to continue.')).toBeVisible()
+    expect(globalThis.fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/cancel' || url==='/api/pixel/chat/activity')).toBe(false)
+  })
+
   it('keeps prompts clean without copy/reuse controls or inline tool-call summaries',async()=>{
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'clean-chat',messages:[
       {role:'user',content:'A clean prompt'},

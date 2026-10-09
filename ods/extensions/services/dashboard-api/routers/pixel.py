@@ -15,7 +15,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import AsyncIterator, Callable, Literal
+from typing import Any, AsyncIterator, Callable, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -846,7 +846,7 @@ async def _retained_chat_stream(request, body, owner):
     await conversation_storage("assert_available", owner, body.chat_id)
     store = _chat_results()
     identity = (owner_namespace(owner), body.chat_id, body.request_id)
-    fingerprint_input = [m.model_dump() for m in body.messages]
+    fingerprint_input: object = [m.model_dump() for m in body.messages]
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
     if body.image_route is not None:
@@ -953,7 +953,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                 owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True)
         if chat_only:
             upstream_url = f"{_MODEL_ROUTER_URL}/v1/chat/completions"
-            upstream_args = {"json": {"model": "ods/current", "stream": True, "messages": messages}}
+            upstream_args: dict[str, Any] = {"json": {"model": "ods/current", "stream": True, "messages": messages}}
             upstream_headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
         else:
             upstream_url = f"{edge_url}/v1/chat/completions"

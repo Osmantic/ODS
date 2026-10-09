@@ -5,6 +5,7 @@ import sqlite3
 import time
 from pathlib import Path
 import sys
+from typing import cast
 
 import pytest
 from fastapi import FastAPI, HTTPException, Request
@@ -49,8 +50,8 @@ def body(request="attempt-one", text="Do work"):
 
 
 def chat_body(request="attempt-one", text="Just answer"):
-    return pixel.ChatStreamRequest(chat_id="chat-test", request_id=request, mode="chat",
-                                   messages=[{"role": "user", "content": text}])
+    return pixel.ChatStreamRequest.model_validate({"chat_id": "chat-test", "request_id": request, "mode": "chat",
+                                                  "messages": [{"role": "user", "content": text}]})
 
 
 def test_chat_only_uses_model_router_without_agent_tools_or_extension_context(store, monkeypatch):
@@ -65,7 +66,7 @@ def test_chat_only_uses_model_router_without_agent_tools_or_extension_context(st
         async def forbidden_edge(*_args):
             pytest.fail("Chat-only must never cancel a Pixel Edge agent")
         monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden_edge)
-        response = await pixel.pixel_chat_stream(ConnectedRequest(), chat_body(), OWNER)
+        response = await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(), OWNER)
         assert await stream_body(response) == FINAL
         assert captured["url"] == "http://model-router:9099/v1/chat/completions"
         assert captured["json"]["model"] == "ods/current"
@@ -91,7 +92,7 @@ def test_chat_only_refuses_unproven_or_separate_provider_without_inference(store
     monkeypatch.setattr(pixel.httpx, "AsyncClient", no_inference)
     async def run():
         with pytest.raises(HTTPException) as error:
-            await pixel.pixel_chat_stream(ConnectedRequest(), chat_body(), OWNER)
+            await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(), OWNER)
         assert error.value.status_code == 409
         assert error.value.detail == pixel._CHAT_ONLY_ROUTE_DETAIL
         assert store.get(IDENTITY)["state"] == "interrupted"
@@ -109,11 +110,11 @@ def test_chat_only_replay_reuses_receipt_and_cannot_change_route(store, monkeypa
         monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: Client(
             FakeResponse(content_type="text/event-stream", chunks=[FINAL])))
         for _ in range(2):
-            response = await pixel.pixel_chat_stream(ConnectedRequest(), chat_body(), OWNER)
+            response = await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(), OWNER)
             assert await stream_body(response) == FINAL
         assert calls == ["http://model-router:9099/v1/chat/completions"]
         with pytest.raises(HTTPException) as error:
-            await pixel.pixel_chat_stream(ConnectedRequest(), body(text="Just answer"), OWNER)
+            await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), body(text="Just answer"), OWNER)
         assert error.value.status_code == 423
         assert store.get(IDENTITY)["mode"] == "chat"
         assert len(calls) == 1
@@ -136,7 +137,7 @@ def test_chat_only_stop_cancels_exact_http_producer_without_touching_edge(store,
         async def forbidden_edge(*_args):
             pytest.fail("Chat-only Stop must not target Pixel Edge")
         monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden_edge)
-        await pixel.pixel_chat_stream(ConnectedRequest(), chat_body(), OWNER)
+        await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(), OWNER)
         await started.wait()
         assert await pixel.pixel_chat_cancel(pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER) == {"aborted": True}
         await closed.wait()
@@ -148,7 +149,8 @@ def test_chat_only_stop_cancels_exact_http_producer_without_touching_edge(store,
     asyncio.run(run())
 
 
-def test_chat_only_restart_recovery_never_queries_or_stops_agent(store, tmp_path, monkeypatch):
+@pytest.mark.parametrize("cancel_before_continue", [False, True])
+def test_chat_only_restart_recovery_never_queries_or_stops_agent(store, tmp_path, monkeypatch, cancel_before_continue):
     store.reserve(IDENTITY, "chat-input", mode="chat")
     store.append(IDENTITY, b'data: {"choices":[{"delta":{"content":"Partial"}}]}\n\n')
     restarted = receipts.ChatResultStore(tmp_path / "receipts")
@@ -162,9 +164,18 @@ def test_chat_only_restart_recovery_never_queries_or_stops_agent(store, tmp_path
             pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
         assert result["state"] == "interrupted"
         assert "Partial" in result["events"]
+        if cancel_before_continue:
+            assert await pixel.pixel_chat_cancel(
+                pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER) == {"aborted": True}
+            assert restarted.get(IDENTITY)["state"] == "cancelled"
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(content_type="text/event-stream", chunks=[FINAL])))
+        response = await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(request="after-restart"), OWNER)
+        assert await stream_body(response) == FINAL
+        assert restarted.get((*IDENTITY[:2], "after-restart"))["state"] == "complete"
+        # A stale observer cannot cancel the later request in this chat.
         assert await pixel.pixel_chat_cancel(
-            pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER) == {"aborted": True}
-        assert restarted.get(IDENTITY)["state"] == "cancelled"
+            pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER) == {"aborted": False}
     try:
         asyncio.run(recover())
     finally:
@@ -182,7 +193,7 @@ def test_chat_only_never_publishes_provider_errors_or_tool_calls(store, monkeypa
         async def forbidden_edge(*_args):
             pytest.fail("Chat-only failure must not cancel an Edge session")
         monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden_edge)
-        response = await pixel.pixel_chat_stream(ConnectedRequest(), chat_body(), OWNER)
+        response = await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(), OWNER)
         result = await stream_body(response)
         assert forbidden not in result
         assert b"Portal could not complete the response" in result
@@ -193,11 +204,11 @@ def test_chat_only_never_publishes_provider_errors_or_tool_calls(store, monkeypa
 
 def test_chat_only_rejects_image_routes_and_requires_retained_identity():
     with pytest.raises(ValueError):
-        pixel.ChatStreamRequest(chat_id="chat-test", mode="chat", messages=[{"role": "user", "content": "Hello"}])
+        pixel.ChatStreamRequest.model_validate({"chat_id": "chat-test", "mode": "chat", "messages": [{"role": "user", "content": "Hello"}]})
     with pytest.raises(ValueError):
-        pixel.ChatStreamRequest(chat_id="chat-test", request_id="attempt-one", mode="chat",
-            messages=[{"role": "user", "content": "Hello"}],
-            image_route={"routeFingerprint": "a" * 64, "unknownConsent": False})
+        pixel.ChatStreamRequest.model_validate({"chat_id": "chat-test", "request_id": "attempt-one", "mode": "chat",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "image_route": {"routeFingerprint": "a" * 64, "unknownConsent": False}})
 
 
 def test_chat_only_legacy_receipts_default_to_agent_and_mode_cannot_change(tmp_path):

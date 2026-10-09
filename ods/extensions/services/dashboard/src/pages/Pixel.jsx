@@ -823,13 +823,18 @@ export default function Pixel({ systemStatus = null }) {
             }
           }
         }
-        const response = await fetch('/api/pixel/chat/activity', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId }), signal: controller.signal,
-        })
-        const data = await response.json()
-        if (response.ok && data && Object.keys(data).length === 1
-          && ['active', 'terminal', 'unknown'].includes(data.state)) state = data.state
+        // Edge activity describes Agent work. Only the exact durable receipt
+        // can confirm a Chat-only producer is terminal; keep retry/Stop
+        // available if that receipt cannot yet be recovered.
+        if (chatMode !== 'chat') {
+          const response = await fetch('/api/pixel/chat/activity', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId }), signal: controller.signal,
+          })
+          const data = await response.json()
+          if (response.ok && data && Object.keys(data).length === 1
+            && ['active', 'terminal', 'unknown'].includes(data.state)) state = data.state
+        }
       } catch {
         // A failed lookup or edge restart is not evidence that work finished.
       } finally { globalThis.clearTimeout(deadline) }
@@ -843,7 +848,7 @@ export default function Pixel({ systemStatus = null }) {
       controller?.abort()
       if (timer !== null) globalThis.clearTimeout(timer)
     }
-  }, [interrupted, sending, activityRefresh, updateRestoredActivity])
+  }, [interrupted, sending, activityRefresh, updateRestoredActivity, chatMode])
 
   useEffect(() => {
     let controller = null
@@ -1408,6 +1413,10 @@ export default function Pixel({ systemStatus = null }) {
     const restored = !controller && interrupted
       && ['active', 'unknown'].includes(restoredActivityRef.current)
     if ((!controller && !restored) || stopping || stopRequestRef.current) return
+    if (chatMode === 'chat' && !requestId) {
+      setStopError('This saved chat has no request receipt. Portal cannot confirm or stop its previous response. Start a new chat to continue.')
+      return
+    }
 
     // Bound the acknowledgement independently of the live chat stream.
     // A deadline is uncertainty, never permission to claim the task stopped.
@@ -1476,7 +1485,7 @@ export default function Pixel({ systemStatus = null }) {
       }
       settleStop()
     }
-  }, [stopping, interrupted, updateRestoredActivity])
+  }, [stopping, interrupted, updateRestoredActivity, chatMode])
 
   const startNewChat = useCallback(() => {
     if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
