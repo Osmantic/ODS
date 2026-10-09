@@ -1330,6 +1330,28 @@ class TestGetHttpxClient:
 
 class TestServicesCache:
 
+    @pytest.mark.asyncio
+    async def test_owner_refresh_rejects_an_older_background_poll(self, monkeypatch):
+        """A poll begun before WebUI Add must not restore its stale snapshot."""
+        import helpers
+        monkeypatch.setattr(helpers, "SERVICES", {"open-webui": {
+            "name": "Open WebUI", "host": "open-webui", "port": 8080,
+            "external_port": 3000, "health": "/health", "type": "docker",
+        }})
+        monkeypatch.setattr(helpers, "_services_cache", None)
+        monkeypatch.setattr(helpers, "_services_cache_revision", 0, raising=False)
+        stale = ServiceStatus(id="open-webui", name="Open WebUI", port=8080,
+                              external_port=3000, status="not_deployed")
+        fresh = ServiceStatus(id="open-webui", name="Open WebUI", port=8080,
+                              external_port=3000, status="healthy")
+        set_services_cache([stale])
+        poll_revision = helpers.get_services_cache_revision()
+        monkeypatch.setattr(helpers, "check_service_health", AsyncMock(return_value=fresh))
+
+        await helpers.refresh_cached_service_status("open-webui")
+        assert set_services_cache([stale], expected_revision=poll_revision) is False
+        assert get_cached_services()[0].status == "healthy"
+
     def test_set_and_get(self, monkeypatch):
         import helpers
         monkeypatch.setattr(helpers, "_services_cache", None)

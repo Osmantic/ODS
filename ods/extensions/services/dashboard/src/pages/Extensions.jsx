@@ -471,7 +471,11 @@ export default function Extensions({ compact = false }) {
         throw new Error(typeof error.detail === 'string' ? error.detail : 'Could not add Open WebUI')
       }
       await Promise.all([fetchCatalog(), fetchWebuiSelection()])
-      setToast({ type: 'success', text: 'Open WebUI added. Existing chat data was preserved.' })
+      // Selection is host-owned, but the catalog's health cache may still be
+      // catching up (or its immediate probe may have failed). Follow readiness
+      // without repeating Add; only catalog health exposes the launch link.
+      setToast({ type: 'info', text: 'Open WebUI selected. Waiting for its service to become ready.' })
+      pollProgress('open-webui')
     } catch (error) {
       await fetchWebuiSelection()
       setToast({ type: 'error', text: friendlyError(error.message) || 'Could not add Open WebUI. Check its selection before retrying.' })

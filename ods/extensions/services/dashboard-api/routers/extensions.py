@@ -1939,6 +1939,14 @@ async def enable_webui_from_library(request: Request, api_key: str = Depends(ver
     if (not isinstance(result, dict) or result.get("enabled") is not True
             or result.get("action") not in {"enabled", "already_selected"}):
         raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    # The Library immediately refetches catalog and detail after this action.
+    # Refresh this one cached health row now; the background all-service poll
+    # can otherwise leave a successful Add looking disabled until Refresh.
+    from helpers import refresh_cached_service_status
+    try:
+        await refresh_cached_service_status("open-webui")
+    except Exception:  # noqa: BLE001 - the host action already succeeded
+        logger.warning("Could not refresh Open WebUI health after selection", exc_info=True)
     return JSONResponse({"enabled": True, "action": result["action"]},
                         headers={"Cache-Control": "no-store"})
 

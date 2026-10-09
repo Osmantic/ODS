@@ -94,7 +94,7 @@ jobs:
       - name: GPU assignment capacity contracts
         run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
       - name: macOS TCP bridge lifecycle contracts
-        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py -q
+        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py tests/test_macos_pixel_native_bootstrap.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
@@ -317,6 +317,7 @@ jobs:
       - name: Validate Manifests Tests
         run: |
           bash tests/test-validate-manifests.sh
+          python3 tests/test-cli-config-validation.py -v
           bash tests/test-validate-manifest-schema.sh
 
       - name: Health Check Tests

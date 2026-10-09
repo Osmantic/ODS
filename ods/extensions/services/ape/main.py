@@ -1064,7 +1064,15 @@ async def audit(last_n: int = 50, api_key: str = Depends(verify_api_key)):
                 chunk = f.read(position - chunk_start)
                 lines_found += chunk.count(b'\n')
                 position = chunk_start
-            f.seek(position)
+            if position > 0:
+                # The backward scan may stop inside a JSON record or UTF-8
+                # sequence. Discard that fragment as bytes; the extra newline
+                # lookbehind above keeps enough complete recent records.
+                f.seek(position - 1)
+                if f.read(1) != b'\n':
+                    f.readline()
+            else:
+                f.seek(0)
             for line in f:
                 total_lines += 1
                 if line.strip():

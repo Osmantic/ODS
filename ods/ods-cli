@@ -2620,6 +2620,7 @@ cmd_config() {
                     success "Extension manifests validated"
                 else
                     warn "Extension manifest validation reported issues. See output above."
+                    return 1
                 fi
             else
                 warn "validate-manifests.sh not found at $INSTALL_DIR/scripts/validate-manifests.sh"

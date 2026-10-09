@@ -1199,7 +1199,13 @@ cmd_changelog() {
         else
             log_warn "No local CHANGELOG.md found."
             log_info "Fetching latest release notes from GitHub..."
-            cmd_changelog "$(curl -sf --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | jq -r '.tag_name // empty')" || true
+            local latest_version
+            if ! latest_version=$(curl -sf --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+                | jq -er '.tag_name | select(type == "string" and length > 0)' 2>/dev/null); then
+                log_error "Could not determine the latest release. Check connectivity or request a specific version."
+                return 1
+            fi
+            cmd_changelog "$latest_version"
         fi
     fi
 }

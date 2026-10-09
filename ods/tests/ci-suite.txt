@@ -272,3 +272,4 @@ tests/test-restore-compose-flags.sh
 tests/test-cli-purge-docker-inspection.sh
 tests/test-ods-cli-update-backup-required.sh
 tests/test-update-backup-publication.py
+tests/test-update-changelog-fallback.py
