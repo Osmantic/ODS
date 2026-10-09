@@ -222,6 +222,9 @@ jobs:
       - name: Fleet Host Lock Contract
         run: bash tests/test-fleet-host-lock.sh
 
+      - name: Pre-download interactive and non-interactive input
+        run: bash tests/test-pre-download-tier-noninteractive.sh
+
       # SECURITY_AUDIT.md presents these as the project's standing security
       # checks, so CI has to be what runs them. No workflow invokes `make
       # test`, so Makefile wiring alone would leave them unenforced.
