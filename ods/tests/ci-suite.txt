@@ -266,3 +266,4 @@ tests/test-migrate-shield-key.sh
 tests/test-ods-cli-update-shield-key.sh
 tests/test-backup-publication.sh
 tests/test-restore-compose-flags.sh
+tests/test-ods-cli-update-backup-required.sh
