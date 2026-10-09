@@ -19,18 +19,18 @@ mkdir -p "$BACKUP_ROOT/backup-fixture-20261009-000000"
 printf '{"manifest_version":"1.0","backup_id":"backup-fixture-20261009-000000","backup_type":"config"}\n' \
     > "$BACKUP_ROOT/backup-fixture-20261009-000000/manifest.json"
 
-rm() {
-    printf called > "$TEST_BACKUP_ROOT/rm-called"
+python3() {
+    printf called > "$TEST_BACKUP_ROOT/helper-called"
     return 1
 }
 
 if printf 'y\n' | delete_backup backup-fixture-20261009-000000 >/dev/null 2>&1; then
-    echo "FAIL: delete_backup reported success after rm failed"
+    echo "FAIL: delete_backup reported success after its deletion helper failed"
     exit 1
 fi
 [[ -d "$BACKUP_ROOT/backup-fixture-20261009-000000" ]] || {
     echo "FAIL: failed deletion unexpectedly removed the backup"
     exit 1
 }
-[[ -f "$TEST_BACKUP_ROOT/rm-called" ]] || { echo "FAIL: fixture never reached rm"; exit 1; }
+[[ -f "$TEST_BACKUP_ROOT/helper-called" ]] || { echo "FAIL: fixture never reached the deletion helper"; exit 1; }
 echo "PASS: failed backup deletion propagates non-zero status"
