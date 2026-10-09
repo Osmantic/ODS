@@ -11929,7 +11929,7 @@ test("named HTML repair binds read-edit-publish to its own trusted session and r
 });
 
 test("named HTML repair never borrows another project or session's preview custody", () => {
-  for (const [path,sessionId] of [['other-lab/index.html','session-1'],['log-viewer-lab/index.html','different-session']]) {
+  for (const [path,sessionId] of [['other-lab/index.html','session-1'],['index.html','session-1'],['log-viewer-lab/index.html','different-session']]) {
     const guard=createToolLoopGuard(); seedNamedPreview(guard);
     const context={agentId:'pixel',runId:'other-repair',sessionId};
     guard.observeRun(context,'pixel',{prompt:`Please fix only ${path}. Republish the corrected preview.`});

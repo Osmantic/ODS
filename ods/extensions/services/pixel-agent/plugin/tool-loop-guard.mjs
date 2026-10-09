@@ -9815,7 +9815,7 @@ export function createToolLoopGuard({
         // A named repair inherits only the verified project it actually names.
         // Unrelated files remain on the ordinary workspace path, not redirected
         // into the last preview merely because this session has one.
-        const repairMatchesPreview = !repairPath || repairPath === 'index.html' ||
+        const repairMatchesPreview = !repairPath ||
           repairPath.startsWith(`${previousPreview?.relativeDirectory}/`);
         // Verification intent survives a gateway restart; it requires fresh
         // evidence but cannot confer a previous project's continuation scope.
