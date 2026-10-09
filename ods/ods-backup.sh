@@ -253,6 +253,12 @@ delete_backup() {
         return 1
     fi
 
+    # This command owns only the timestamped IDs produced by ODS backups.
+    if [[ ! "$backup_id" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?[0-9]{8}-[0-9]{6}(\.tar\.gz)?$ ]]; then
+        log_error "Not an ODS backup ID: $backup_id"
+        return 1
+    fi
+
     local target="$BACKUP_ROOT/$backup_id"
 
     # Compressed backups are .tar.gz files, not directories; also accept the
@@ -263,6 +269,31 @@ delete_backup() {
 
     if [[ ! -e "$target" ]]; then
         log_error "Backup not found: $backup_id"
+        return 1
+    fi
+
+    # A matching filename alone does not authorize deleting operator data.
+    # Read its exact manifest without extracting an archive onto the host.
+    local manifest_data archive_id="${backup_id%.tar.gz}"
+    if [[ -L "$target" ]]; then
+        log_error "Refusing to delete a symbolic-link backup: $backup_id"
+        return 1
+    elif [[ -d "$target" && -f "$target/manifest.json" && ! -L "$target/manifest.json" ]]; then
+        manifest_data=$(cat "$target/manifest.json") || return 1
+    elif [[ -f "$target" && "$target" == *.tar.gz ]]; then
+        if ! manifest_data=$(tar xOzf "$target" "$archive_id/manifest.json"); then
+            log_error "Cannot read backup manifest: $backup_id"
+            return 1
+        fi
+    else
+        log_error "Backup manifest is unavailable; no files deleted: $backup_id"
+        return 1
+    fi
+    if ! jq -e -s --arg id "$archive_id" \
+        'length == 1 and (.[0] | type == "object" and .manifest_version == "1.0"
+         and .backup_id == $id and (.backup_type == "config" or .backup_type == "user-data" or .backup_type == "full"))' \
+        <<< "$manifest_data" >/dev/null; then
+        log_error "Backup manifest does not identify the selected backup; no files deleted: $backup_id"
         return 1
     fi
 
