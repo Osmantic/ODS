@@ -3803,7 +3803,11 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_begin_pixel_model_transaction", lambda *_: pytest.fail("no transaction may start"))
         monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda *_: pytest.fail("no runtime may restart"))
         handler = _ResponseHandler(request_body={"model_id": "target-model"})
-        handler._do_model_activate = lambda *args, **kwargs: _mod.AgentHandler._do_model_activate(handler, *args, **kwargs)
+        monkeypatch.setattr(
+            handler, "_do_model_activate",
+            lambda *args, **kwargs: _mod.AgentHandler._do_model_activate(handler, *args, **kwargs),
+            raising=False,
+        )
 
         _mod.AgentHandler._handle_model_activate(handler)
 

@@ -12,6 +12,7 @@ import time
 import types
 import httpx
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -3239,7 +3240,7 @@ def test_agent_activation_projects_only_fixed_preflight_timeout(monkeypatch, var
         "Wait until Models shows no operation in progress, refresh model status, then try again. "
         "If this repeats, check that Docker is responding."
     )
-    payload = {"code": "model_preflight_inspection_timeout", "error": message}
+    payload: Any = {"code": "model_preflight_inspection_timeout", "error": message}
     path, status = "/v1/model/activate", 500
     if variant == "unknown-code":
         payload["code"] = "not-a-supported-code"
