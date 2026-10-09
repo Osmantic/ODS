@@ -12,6 +12,7 @@ class InstallProof(unittest.TestCase):
         module = ast.Module(body=[node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names], type_ignores=[])
         schedule, cancel = Mock(), Mock()
         ns = dict(_switchboard_state=object(), _bootstrap_status_allows_route_proof=lambda: False,
+                  _model_transaction_blocks_route_observer=lambda: False,
                   _model_lifecycle_status=lambda: {}, _switchboard_state_path=lambda: Path('state'),
                   _switchboard_state_needs_current_env_verification=lambda path: True,
                   _schedule_initial_switchboard_verification=schedule, _switchboard_initial_verify_cancel=cancel)

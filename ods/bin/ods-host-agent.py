@@ -665,10 +665,19 @@ _SWITCHBOARD_ROUTE_ENV_KEYS = (
 )
 
 
+def _model_transaction_blocks_route_observer() -> bool:
+    """A background participant owns the same durable model transaction."""
+    try:
+        return bool(_pixel_model_recovery_status()['pending'])
+    except (OSError, ValueError, RuntimeError):
+        # An unreadable/unsafe journal is not permission to replace its route.
+        return True
+
+
 def _prepare_initial_switchboard_verification() -> bool:
     """Reset route-proof cancellation only while no lifecycle owner exists."""
     with _model_lifecycle_state_lock:
-        if _model_lifecycle_operation:
+        if _model_lifecycle_operation or _model_transaction_blocks_route_observer():
             _switchboard_initial_verify_cancel.set()
             return False
         _switchboard_initial_verify_cancel.clear()
@@ -2601,6 +2610,8 @@ def _initial_switchboard_backend(env: dict) -> tuple[str, str, str | None]:
 
 def _initial_switchboard_route_env_matches(expected_env: dict) -> bool:
     """Abandon observational proof when the installer selects another route."""
+    if _model_transaction_blocks_route_observer():
+        return False
     current_env = load_env(INSTALL_DIR / ".env")
     return all(
         str(current_env.get(key) or "") == str(expected_env.get(key) or "")
@@ -2656,16 +2667,6 @@ def _publish_verified_initial_switchboard_route(
         logger.info("switchboard initial route proof deferred (%s)", reason)
         return False
 
-    fresh_env = load_env(INSTALL_DIR / ".env")
-    if any(
-        str(fresh_env.get(key) or "") != str(env.get(key) or "")
-        for key in route_env_keys
-    ):
-        logger.info("switchboard initial route proof discarded after env changed")
-        return False
-    if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
-        return False
-
     runtime_identity = str(proof["identity"])
     if not _runtime_model_identity_matches(
         runtime_identity,
@@ -2687,17 +2688,30 @@ def _publish_verified_initial_switchboard_route(
         "vision": bool(model.get("vision")),
         "agentViable": _model_agent_viable(model, context_length),
     }
-    _switchboard_state.record_verified_route(
-        state_path,
-        catalog_id=model_id or llm_model_name or gguf_file,
-        runtime_model_id=runtime_identity,
-        backend_kind=backend_kind,
-        endpoint_id=endpoint_id,
-        native_route=native_route,
-        context_length=context_length,
-        capabilities=capabilities,
-        proof_identity=runtime_identity,
-    )
+    # The participant uses this same lock for before-digests + prepared.
+    # Whichever wins finishes before the other inspects the durable state.
+    with _switchboard_state.write_transaction(state_path):
+        fresh_env = load_env(INSTALL_DIR / ".env")
+        if _model_transaction_blocks_route_observer() or any(
+            str(fresh_env.get(key) or "") != str(env.get(key) or "")
+            for key in route_env_keys
+        ):
+            logger.info("switchboard initial route proof discarded after env changed or model transaction acquired")
+            return False
+        if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
+            return False
+
+        _switchboard_state.record_verified_route(
+            state_path,
+            catalog_id=model_id or llm_model_name or gguf_file,
+            runtime_model_id=runtime_identity,
+            backend_kind=backend_kind,
+            endpoint_id=endpoint_id,
+            native_route=native_route,
+            context_length=context_length,
+            capabilities=capabilities,
+            proof_identity=runtime_identity,
+        )
     logger.info(
         "switchboard initial route verified (%s): %s",
         reason,
@@ -2845,7 +2859,7 @@ def _model_status_allows_route_proof(data: dict) -> bool:
 def _verify_switchboard_route_for_status(data: dict, reason: str) -> None:
     if _switchboard_state is None:
         return
-    if _model_lifecycle_status():
+    if _model_lifecycle_status() or _model_transaction_blocks_route_observer():
         _switchboard_initial_verify_cancel.set()
         return
     state_path = _switchboard_state_path()
@@ -4255,12 +4269,18 @@ class _PixelModelTransaction:
         self.journal = None
 
     def _save(self, phase: str, outcome=None):
-        if self.journal is None:
-            self.journal = {'schemaVersion':1,'transactionId':self.id,'phase':phase,'previous':self.previous,
-                'target':None,'before':_pixel_model_config_digests(),'after':None,'outcome':None}
-        self.journal.update(phase=phase,previous=self.previous,target=self.target,outcome=outcome)
-        if phase in {'committing','rolling-back'}:self.journal['after']=_pixel_model_config_digests()
-        _atomic_write_json(_pixel_model_journal_path(),self.journal,0o600)
+        if _switchboard_state is None:
+            raise RuntimeError("Model state serialization is unavailable")
+        with _switchboard_state.write_transaction(_switchboard_state_path()):
+            if self.journal is None:
+                if _model_transaction_blocks_route_observer():
+                    raise _PixelModelTransactionUncertain(
+                        "Managed model maintenance is already pending; recovery is required")
+                self.journal = {'schemaVersion':1,'transactionId':self.id,'phase':phase,'previous':self.previous,
+                    'target':None,'before':_pixel_model_config_digests(),'after':None,'outcome':None}
+            self.journal.update(phase=phase,previous=self.previous,target=self.target,outcome=outcome)
+            if phase in {'committing','rolling-back'}:self.journal['after']=_pixel_model_config_digests()
+            _atomic_write_json(_pixel_model_journal_path(),self.journal,0o600)
 
     def _matches(self, value: dict, phase: str, contract: dict, outcome=None) -> bool:
         return (value['transactionId'] == self.id and value['status'] == phase

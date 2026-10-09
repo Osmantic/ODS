@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -36,6 +37,63 @@ def _record(path, model="qwen3.5-9b", runtime="Qwen3.5-9B-Q4_K_M.gguf", backend=
 
 
 class TestStateModule:
+    def test_writer_reentry_and_exception_release(self, tmp_path):
+        path = tmp_path / 'model-state.json'
+        code = '''
+import sys
+sys.path.insert(0, sys.argv[1])
+from model_switchboard import state as sb
+try:
+    with sb.write_transaction(sys.argv[2], timeout=.1):
+        sb.record_verified_route(sys.argv[2], catalog_id='m', runtime_model_id='m.gguf',
+            backend_kind='llama-server', endpoint_id='llama-server-default',
+            context_length=32768, capabilities=dict(chat=True, tools=False,
+            vision=False, agentViable=False), proof_identity='m.gguf')
+    print('written')
+except sb.StateError as exc:
+    assert str(exc) == 'model state write lock is busy'
+    print('blocked')
+'''
+        def child():
+            result = subprocess.run([sys.executable, '-c', code, str(_BIN_DIR), str(path)],
+                                    capture_output=True, text=True, timeout=10)
+            assert result.returncode == 0, result.stderr
+            return result.stdout.strip()
+        with pytest.raises(ValueError):
+            with sb.write_transaction(path):
+                assert child() == 'blocked'
+                with sb.write_transaction(path):
+                    _record(path)
+                assert child() == 'blocked'
+                raise ValueError('abort caller')
+        # Both thread and file ownership were released, but the inode persists.
+        inode = path.with_name('model-state.json.lock').stat().st_ino
+        assert child() == 'written'
+        assert _record(path)['seq'] == 3
+        assert path.with_name('model-state.json.lock').stat().st_ino == inode
+
+    @pytest.mark.skipif(os.name == 'nt', reason='POSIX lock custody')
+    @pytest.mark.parametrize('unsafe', ['symlink', 'hardlink', 'shared', 'directory'])
+    def test_writer_rejects_unsafe_lock_without_repair(self, tmp_path, unsafe):
+        path = tmp_path / 'model-state.json'
+        lock = path.with_name('model-state.json.lock')
+        target = tmp_path / 'other'
+        target.write_bytes(b'keep')
+        target.chmod(0o600)
+        if unsafe == 'symlink':
+            lock.symlink_to(target)
+        elif unsafe == 'hardlink':
+            os.link(target, lock)
+        elif unsafe == 'directory':
+            lock.mkdir()
+        else:
+            lock.write_bytes(b'keep')
+            lock.chmod(0o666)
+        with pytest.raises(sb.StateError, match='unsafe'):
+            _record(path)
+        assert not path.exists()
+        assert target.read_bytes() == b'keep'
+
     def test_roundtrip_and_schema_agreement(self, tmp_path):
         path = tmp_path / "model-state.json"
         doc = _record(path)

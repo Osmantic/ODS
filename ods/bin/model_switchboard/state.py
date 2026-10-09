@@ -19,11 +19,14 @@ Stdlib only: the standalone host agent imports this from the installed tree.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import stat
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -61,12 +64,83 @@ _PROOF_KEYS = {"identity", "completion"}
 _HISTORY_KEYS = {"routeSeq", "catalogId", "runtimeModelId", "verifiedAt"}
 _AVAILABILITY_KEYS = {"mode", "queueDeadline"}
 
-_WRITE_LOCK = threading.Lock()
+_WRITE_LOCK = threading.RLock()
+_HELD_WRITE_LOCKS: set[str] = set()
 _LAST_GOOD: dict[str, dict[str, Any]] = {}
 
 
 class StateError(RuntimeError):
     """Raised for unrecoverable state-record violations (writer side)."""
+
+
+@contextmanager
+def write_transaction(path: os.PathLike | str, *, timeout: float = 5):
+    """Serialize route publication and a host participant's first snapshot.
+
+    The persistent sidecar is never replaced or unlinked. Reentry permits a
+    caller to check its durable journal and publish through record_verified_route
+    in one critical section. Runtime probes and controller calls belong outside.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.parent.resolve() / (target.name + '.lock')
+    key = str(lock_path)
+    with _WRITE_LOCK:
+        if key in _HELD_WRITE_LOCKS:
+            yield
+            return
+        # Refuse links, shared files and foreign owners; do not repair custody.
+        try:
+            prior = lock_path.lstat()
+        except FileNotFoundError:
+            prior = None
+        if prior is not None and (not stat.S_ISREG(prior.st_mode) or prior.st_nlink != 1):
+            raise StateError('model state write lock is unsafe')
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
+        fd = os.open(lock_path, flags, 0o600)
+        try:
+            actual = os.fstat(fd)
+            named = lock_path.lstat()
+            if (not stat.S_ISREG(actual.st_mode) or actual.st_nlink != 1
+                    or (actual.st_dev, actual.st_ino) != (named.st_dev, named.st_ino)
+                    or (os.name != 'nt' and (actual.st_uid != os.geteuid()
+                                             or stat.S_IMODE(actual.st_mode) & 0o077))):
+                raise StateError('model state write lock is unsafe')
+            if os.name == 'nt':
+                import msvcrt
+                if actual.st_size == 0:
+                    os.write(fd, b'\0')
+                def acquire():
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                def release():
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                def acquire():
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                def release():
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    acquire()
+                    break
+                except OSError as exc:
+                    if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise StateError('model state write lock is busy') from exc
+                    time.sleep(.025)
+            _HELD_WRITE_LOCKS.add(key)
+            try:
+                yield
+            finally:
+                _HELD_WRITE_LOCKS.remove(key)
+                release()
+        finally:
+            os.close(fd)
 
 
 def _utcnow_iso() -> str:
@@ -414,7 +488,7 @@ def record_verified_route(
 ) -> dict[str, Any]:
     """Record a proven active route (observe mode: call only after success).
 
-    Reload-modify-write under a process lock. If the on-disk record is valid
+    Reload-modify-write under the shared file lock. If the on-disk record is valid
     and newer than our cache, the on-disk record wins as the base — a writer
     can never regress ``seq``.
     """
@@ -422,7 +496,7 @@ def record_verified_route(
         raise StateError(f"legacy route {backend_kind}/{endpoint_id} is readable only")
     if backend_kind not in _WRITABLE_BACKEND_KINDS:
         backend_kind = "unknown"
-    with _WRITE_LOCK:
+    with write_transaction(path):
         base, errors = read_state(path)
         if base is None:
             if errors:
