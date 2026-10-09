@@ -39,16 +39,21 @@ if [[ -z "$COMPOSE_FLAGS" ]]; then
 fi
 
 # Build env-file flag if provided (allows compose to resolve required variable references)
-ENV_FILE_FLAG=""
+ENV_FILE_ARGS=()
 if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]]; then
-    ENV_FILE_FLAG="--env-file $ENV_FILE"
+    ENV_FILE_ARGS=(--env-file "$ENV_FILE")
+fi
+
+COMPOSE_FLAGS_ARR=()
+if ! eval "COMPOSE_FLAGS_ARR=($COMPOSE_FLAGS)" 2>/dev/null; then
+    read -ra COMPOSE_FLAGS_ARR <<< "$COMPOSE_FLAGS"
 fi
 
 # Check if docker/docker compose is available
 if command -v docker &>/dev/null && docker compose version &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker compose"
+    DOCKER_COMPOSE_CMD=(docker compose)
 elif command -v docker-compose &>/dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
+    DOCKER_COMPOSE_CMD=(docker-compose)
 else
     echo "ERROR: docker compose not found" >&2
     exit 1
@@ -67,7 +72,7 @@ fi
 # - Circular dependencies
 # - Invalid environment variable references
 validation_output=$(mktemp)
-if $DOCKER_COMPOSE_CMD $ENV_FILE_FLAG $COMPOSE_FLAGS config > "$validation_output" 2>&1; then
+if "${DOCKER_COMPOSE_CMD[@]}" "${ENV_FILE_ARGS[@]}" "${COMPOSE_FLAGS_ARR[@]}" config > "$validation_output" 2>&1; then
     if ! $QUIET; then
         echo "Compose stack validation passed"
         # Show summary of services
