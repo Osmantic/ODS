@@ -17,6 +17,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
   // Offered only when the agent says the switch changed nothing (fleet row 27).
   const [releasable,setReleasable]=useState(false)
   const mounted=useRef(false),request=useRef(null),locked=useRef(false)
+  const pendingTransaction=useRef(null)
   const callbacks=useRef({onPendingChange,onBusyChange,onRecovered})
   callbacks.current={onPendingChange,onBusyChange,onRecovered}
   useEffect(()=>{
@@ -31,10 +32,19 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
       // failures are not recovery state and must never invent an outcome.
       if(!response.ok && ![409,503].includes(response.status))return
       const value=recovery(await response.json())
-      if(!controller.signal.aborted && value){setState(value);callbacks.current.onPendingChange?.(value.pending)}
+      if(!controller.signal.aborted && value){
+        setState(value);callbacks.current.onPendingChange?.(value.pending)
+        if(value.pending)pendingTransaction.current=value.transactionId
+        // Models or another tab can complete this same held transaction. A
+        // successful, matching receipt retires its earlier local errors;
+        // idle, unrelated receipts, and availability alone do not prove it.
+        else if(response.ok && value.phase==='completed' && value.transactionId===pendingTransaction.current && !operationActive){
+          pendingTransaction.current=null;setError('');setReleasable(false);callbacks.current.onRecovered?.()
+        }else if(value.transactionId!==pendingTransaction.current)pendingTransaction.current=null
+      }
     }).catch(()=>{}).finally(()=>clearTimeout(timer))
     return ()=>{controller.abort();clearTimeout(timer)}
-  },[refreshKey,active])
+  },[refreshKey,active,operationActive])
   async function recover(release=false) {
     if(locked.current || operationActive || !state?.pending)return
     locked.current=true;setBusy(true);setError('');callbacks.current.onBusyChange?.(true)
@@ -45,7 +55,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
         body:release?'{"releaseUnverified":true}':'{}',signal:controller.signal})
       const value=recovery(await response.json())
       if(!mounted.current || controller.signal.aborted)return
-      if(value){setState(value);callbacks.current.onPendingChange?.(value.pending)}
+      if(value){pendingTransaction.current=value.pending?value.transactionId:null;setState(value);callbacks.current.onPendingChange?.(value.pending)}
       if(response.ok && value && !value.pending){setReleasable(false);callbacks.current.onRecovered?.();return}
       const proofMissing=value?.reason==='model-recovery-proof-required'
       setReleasable(proofMissing && value.releasable===true)

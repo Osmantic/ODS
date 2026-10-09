@@ -28,6 +28,24 @@ it('is invisible for an idle or unsupported runtime and never starts recovery au
   expect(fetch.mock.calls[0][1].method).toBeUndefined()
 })
 
+it('waits for an active operation to end before retiring an externally recovered error',async()=>{
+  let state=pending
+  vi.stubGlobal('fetch',vi.fn(async()=>reply(state)))
+  const recovered=vi.fn()
+  const view=render(<PortalModelRecovery onRecovered={recovered}/>)
+  await screen.findByRole('button',{name:'Recover model switch'})
+  state=done
+  view.rerender(<PortalModelRecovery onRecovered={recovered} operationActive/>)
+  await waitFor(()=>expect(screen.queryByRole('button')).toBeNull())
+  expect(recovered).not.toHaveBeenCalled()
+  view.rerender(<PortalModelRecovery onRecovered={recovered} operationActive={false}/>)
+  await waitFor(()=>expect(recovered).toHaveBeenCalledOnce())
+  view.rerender(<PortalModelRecovery onRecovered={recovered} refreshKey={1}/>)
+  await act(async()=>{})
+  expect(recovered).toHaveBeenCalledOnce()
+  expect(fetch.mock.calls.every(([,options])=>!options.method)).toBe(true)
+})
+
 it('recovers only the existing transaction and prevents duplicate clicks',async()=>{
   let resolvePost
   vi.stubGlobal('fetch',vi.fn(async(_,options)=>options?.method==='POST'?await new Promise(resolve=>{resolvePost=resolve}):reply(pending)))
