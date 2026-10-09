@@ -578,6 +578,57 @@ def _qualify_upgrade(kind, current, candidate, *, current_digest, candidate_dige
                             candidate_digest=candidate_digest)
 
 
+def migration_source_proof(*, owner_name, current_digest, gateway_port):
+    """Inspect the selected sealed source as root without activating anything.
+
+    Darwin restricts readlink on root-owned private symlinks. Owner preparation
+    needs this narrow proof, never a permission change or root build. These
+    hashes bind readable owner snapshots and authorize no later activation.
+    """
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise InstallError('protected-macos-verification-required')
+    if not isinstance(current_digest, str) or not re.fullmatch('[a-f0-9]{64}', current_digest):
+        raise InstallError('approved-current-bundle-digest-required')
+    from pixel_macos_custody import protected_bytes, protected_tree_metadata
+    owner = pwd.getpwnam(owner_name)
+    if owner.pw_uid <= 0:
+        raise InstallError('native-gateway-owner-invalid')
+    definition = protected_bytes(_launchd.GATEWAY_PLIST)
+    document, environment, _, _, node, entrypoint = _source_gateway(
+        _launchd.GATEWAY_PLIST, owner_name, gateway_port)
+    current = _bundle.INSTALL_ROOT / current_digest
+    previous = environment.get('OPENCLAW_CONFIG_PATH')
+    if (document != plistlib.loads(definition) or document.get('UserName') != owner_name
+            or node != current / 'node' or entrypoint != current / 'runtime/openclaw.mjs'
+            or not _source_runtime_config(previous, RUNTIME_CONFIG_ROOT / str(owner.pw_uid), current_digest)):
+        raise InstallError('active-runtime-migration-source-mismatch')
+    config = _configuration_bytes(previous, owner.pw_uid)
+    protected_tree_metadata(current)
+    _bundle.verify(current, expected_digest=current_digest)
+    if (protected_bytes(_launchd.GATEWAY_PLIST) != definition
+            or _configuration_bytes(previous, owner.pw_uid) != config):
+        raise InstallError('native-migration-source-changed-during-verification')
+    return {'currentBundleDigest': current_digest,
+        'sourceDefinitionSha256': hashlib.sha256(definition).hexdigest(),
+        'sourceConfigSha256': hashlib.sha256(config).hexdigest()}
+
+
+def _migration_source_main(argv):
+    parser = argparse.ArgumentParser(description='Read-only privileged proof of the selected native migration source.')
+    parser.add_argument('--owner', required=True)
+    parser.add_argument('--current-bundle-digest', required=True)
+    parser.add_argument('--gateway-port', type=int, default=18789)
+    args = parser.parse_args(argv)
+    try:
+        proof = migration_source_proof(owner_name=args.owner,
+            current_digest=args.current_bundle_digest, gateway_port=args.gateway_port)
+    except (OSError, ValueError, KeyError, TypeError):
+        print('error: native-migration-source-verification-failed', file=sys.stderr)
+        return 1
+    print(json.dumps(proof, sort_keys=True))
+    return 0
+
+
 def qualify_migration_selection(*, owner_name, current_digest, gateway_port, candidate,
                                 runtime_bundle, bundle_digest, services_bundle, services_digest, source_ref):
     """Read-only binding of migration artifacts to the selected active deployment.
@@ -3106,12 +3157,15 @@ def _migration_main(argv):
     parser.add_argument('--access-port', type=int, default=18790)
     for name in ('docker', 'compose-project', 'ingress-image', 'ingress-user'):
         parser.add_argument('--' + name)
-    parser.add_argument('--activate', action='store_true', help='Requires root; default is a read-only plan')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--activate', action='store_true', help='Requires root; default is a read-only plan')
+    mode.add_argument('--verify-preparation', action='store_true',
+        help='Read-only root qualification; emit only selected source and candidate hashes')
     args = parser.parse_args(argv)
     from pixel_access_bridge import AccessError
     from pixel_macos_custody import CustodyError
     try:
-        if args.activate and (sys.platform != 'darwin' or os.geteuid() != 0):
+        if (args.activate or args.verify_preparation) and (sys.platform != 'darwin' or os.geteuid() != 0):
             raise InstallError('macos-root-install-required')
         bindings = (args.docker, args.compose_project, args.ingress_image, args.ingress_user)
         if any(bindings) and not all(bindings):
@@ -3142,13 +3196,21 @@ def _migration_main(argv):
                 break
         print('error: native-joint-migration-failed' + detail + '; retain the preparation and protected recovery journal', file=sys.stderr)
         return 1
-    print(json.dumps({'operation': 'native-migration', 'status': outcome,
-        'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}, sort_keys=True))
+    public = {'operation': 'native-migration', 'status': outcome,
+        'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}
+    if args.verify_preparation:
+        public.update(currentBundleDigest=args.current_bundle_digest,
+            sourceDefinitionSha256=hashlib.sha256(plan['source_bytes']).hexdigest(),
+            sourceConfigSha256=hashlib.sha256(plan['migration_source_config_bytes']).hexdigest())
+    print(json.dumps(public, sort_keys=True))
     return 0
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'verify-migration-source':
+        sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+        return _migration_source_main(argv[1:])
     if argv and argv[0] == 'repair-controller':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _controller_repair_main(argv[1:])
