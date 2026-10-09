@@ -332,11 +332,11 @@ interactive_menu() {
     list_models
     
     echo ""
-    read -p "Select tier to download [nano/edge/pro/cluster] ($recommended): " tier_choice
+    read -p "Select tier to download [nano/edge/pro/cluster] ($recommended): " tier_choice || tier_choice=""
     tier_choice="${tier_choice:-$recommended}"
     
     echo ""
-    read -p "Also download voice components (STT/TTS)? [y/N] " -n 1 -r voice_choice
+    read -p "Also download voice components (STT/TTS)? [y/N] " -n 1 -r voice_choice || voice_choice=""
     echo
     
     local include_voice="false"
