@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 import yaml
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -4954,6 +4955,15 @@ def enable_extension(
             warnings.append(
                 f"{svc_id}: post_start hook failed â€” manual configuration may be needed",
             )
+
+    # FastAPI runs this sync endpoint in an AnyIO worker. Observe on the app
+    # loop, which owns the HTTP clients, while retaining the operation locks.
+    # User recipes are already probed live by catalog/detail.
+    started_builtins = [sid for sid in enabled_services
+                        if sid in LIBRARY_MANAGEABLE_BUILTINS and sid not in failed_services]
+    if started_builtins:
+        from helpers import refresh_cached_builtin_services
+        from_thread.run(refresh_cached_builtin_services, started_builtins)
 
     logger.info("Enabled extension: %s (deps: %s)", service_id,
                 enabled_services[:-1] if len(enabled_services) > 1 else "none")

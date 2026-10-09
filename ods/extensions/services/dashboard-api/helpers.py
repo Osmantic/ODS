@@ -888,6 +888,7 @@ async def get_llama_vision_support() -> Optional[bool]:
 # lookups (Docker Desktop) never block API responses.
 
 _services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
+_services_cache_revision = 0
 
 
 def _host_service_affirmed_stopped(service_id: str) -> bool:
@@ -921,10 +922,19 @@ def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
     return status
 
 
-def set_services_cache(statuses: list) -> None:
-    """Store latest health check results (called by background poll)."""
-    global _services_cache
+def get_services_cache_revision() -> int:
+    """Revision captured before a background health poll starts."""
+    return _services_cache_revision
+
+
+def set_services_cache(statuses: list, *, expected_revision: Optional[int] = None) -> bool:
+    """Store a poll result only if no owner refresh superseded its snapshot."""
+    global _services_cache, _services_cache_revision
+    if expected_revision is not None and expected_revision != _services_cache_revision:
+        return False
     _services_cache = [_normalize_cached_service_status(status) for status in statuses]
+    _services_cache_revision += 1
+    return True
 
 
 def get_cached_services() -> Optional[list]:
@@ -934,12 +944,34 @@ def get_cached_services() -> Optional[list]:
 
 async def refresh_cached_service_status(service_id: str) -> None:
     """Re-check one service and replace its cached row after an owner action."""
-    global _services_cache
+    global _services_cache, _services_cache_revision
     config = SERVICES.get(service_id)
     if config is None or _services_cache is None:
         return
     status = _normalize_cached_service_status(await check_service_health(service_id, config))
     _services_cache = [status if item.id == service_id else item for item in _services_cache]
+    _services_cache_revision += 1
+
+
+async def refresh_cached_builtin_services(service_ids: list[str]) -> None:
+    """Publish current health after a Library start, before its response.
+
+    A newly selected built-in may be absent from both the import-time registry
+    and the cache. Use the same current manifests and Docker reconciliation as
+    the poller, and fence polls begun before or during this owner refresh.
+    The caller retains the affected extension operation locks throughout.
+    """
+    global _services_cache, _services_cache_revision
+    selected = set(service_ids) & LIBRARY_MANAGEABLE_BUILTINS
+    if not selected or _services_cache is None:
+        return  # An uncached catalog already performs a fresh full observation.
+    _services_cache_revision += 1
+    statuses = await get_all_services(only_service_ids=selected)
+    # Merge into the current list: an unrelated owner refresh may have finished
+    # while these probes awaited I/O. Never put its old row back.
+    _services_cache = [row for row in _services_cache if row.id not in selected]
+    _services_cache.extend(_normalize_cached_service_status(row) for row in statuses)
+    _services_cache_revision += 1
 
 
 # --- Service Health ---
@@ -1075,7 +1107,7 @@ def _switched_off_status(service_id: str, config: dict):
     return not_deployed()
 
 
-async def get_all_services() -> list[ServiceStatus]:
+async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
     """Get all service health statuses.
 
     Uses ``return_exceptions=True`` so that one misbehaving service
@@ -1099,7 +1131,10 @@ async def get_all_services() -> list[ServiceStatus]:
                 service_configs.setdefault(service_id, current_optional[service_id])
             else:
                 service_configs.pop(service_id, None)
-    tasks = [_switched_off_status(sid, cfg) or check_service_health(sid, cfg)
+    if only_service_ids is not None:
+        service_configs = {sid: cfg for sid, cfg in service_configs.items() if sid in only_service_ids}
+    tasks = [_switched_off_status(sid, cfg) or check_service_health(
+                 sid, cfg, **({"timeout": _CATALOG_HEALTH_TIMEOUT} if only_service_ids is not None else {}))
              for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
