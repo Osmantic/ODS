@@ -314,7 +314,7 @@ export default function Settings({ activeSection = 'all' }) {
       const payload = await fetchPayload('/api/settings/env', 15000, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: 'form', values: envValues, clearSecrets: envClearedSecrets }),
+        body: JSON.stringify({ mode: 'form', revision: envEditor.revision, values: envValues, clearSecrets: envClearedSecrets }),
       })
       applyEnvEditorPayload(payload)
       setNotice({ type: 'info', text: `.env saved.${payload?.backupPath ? ` Backup: ${payload.backupPath}.` : ''} ${payload?.applyPlan?.summary || 'Restart or rebuild the stack to apply service-level changes.'}` })

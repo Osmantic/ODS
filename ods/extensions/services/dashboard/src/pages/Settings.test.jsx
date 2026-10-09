@@ -27,6 +27,7 @@ const storage = {
 
 const editor = {
   path: '.env',
+  revision: 'fixture-current-environment-revision',
   fields: {
     ODS_VERSION: {
       key: 'ODS_VERSION',
@@ -80,9 +81,9 @@ const payloadByUrl = (url) => {
 }
 
 const renderSettings = (override = null) => {
-  const fetchMock = vi.fn(async (url) => {
+  const fetchMock = vi.fn(async (url, options) => {
     if (override) {
-      const overridden = override(url)
+      const overridden = override(url, options)
       if (overridden) return overridden
     }
     return response(payloadByUrl(url))
@@ -321,6 +322,8 @@ it.each([true,false])('locks the environment draft until its pending save settle
     ? new Promise(resolve => {finish = resolve})
     : original(url,options))
   fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  const saveRequest = fetchMock.mock.calls.find(([, options]) => options?.method === 'PUT')
+  expect(JSON.parse(saveRequest[1].body).revision).toBe(editor.revision)
   expect(field).toBeDisabled()
   const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
   expect(within(env).getByRole('button',{name:'Reload'})).toBeDisabled()
@@ -333,6 +336,37 @@ it.each([true,false])('locks the environment draft until its pending save settle
   fireEvent.change(field,{target:{value:'192.168.1.26'}})
   expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
   expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+})
+
+it('keeps a conflicted draft until explicit reload, then saves with the new revision', async () => {
+  let reads = 0
+  let saves = 0
+  const conflict = 'Configuration changed since this editor loaded. Reload the environment editor before saving.'
+  const {fetchMock} = renderSettings((url, options) => {
+    if (url !== '/api/settings/env') return null
+    if (options?.method === 'PUT') {
+      saves += 1
+      return saves === 1 ? response({detail:{message:conflict}}, 409)
+        : response({...editor, revision:'saved-revision', values:JSON.parse(options.body).values})
+    }
+    reads += 1
+    return response({...editor, revision:reads === 1 ? editor.revision : 'reloaded-revision'})
+  })
+  const field = await screen.findByLabelText('LAN Host IP')
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await screen.findByText(conflict)
+  expect(field).toHaveValue('192.168.1.25')
+  expect(reads).toBe(1)
+
+  const env = screen.getByRole('heading',{name:'Environment Editor'}).closest('section')
+  fireEvent.click(within(env).getByRole('button',{name:'Reload'}))
+  await screen.findByText('Environment editor reloaded from disk.')
+  fireEvent.change(field,{target:{value:'192.168.1.26'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(saves).toBe(2))
+  const saveRequests = fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')
+  expect(JSON.parse(saveRequests[1][1].body).revision).toBe('reloaded-revision')
 })
 
 it.each([true, false])('protects saved settings while runtime apply is pending and recovers (success=%s)', async success => {
