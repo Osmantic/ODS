@@ -1798,6 +1798,13 @@ def _is_pixel_lifecycle_busy(detail: Any) -> bool:
     )
 
 
+_MODEL_PREFLIGHT_INSPECTION_TIMEOUT_MESSAGE = (
+    "ODS could not verify Docker service state, so it did not start this model switch. "
+    "Wait until Models shows no operation in progress, refresh model status, then try again. "
+    "If this repeats, check that Docker is responding."
+)
+
+
 def _call_agent_model(
     path: str,
     body: dict,
@@ -1834,6 +1841,16 @@ def _call_agent_model(
             raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
         if exc.status_code == 400:
             raise HTTPException(status_code=400, detail=_agent_http_detail(exc)) from exc
+        if path == "/v1/model/activate" and exc.status_code == 500:
+            detail = _agent_http_detail(exc)
+            expected = {
+                "code": "model_preflight_inspection_timeout",
+                "error": _MODEL_PREFLIGHT_INSPECTION_TIMEOUT_MESSAGE,
+            }
+            if detail == expected:
+                # Only this fixed pre-mutation refusal crosses as structured
+                # guidance. Never forward arbitrary host fields or retry it.
+                raise HTTPException(status_code=502, detail=expected) from exc
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     except AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc

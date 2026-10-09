@@ -3228,3 +3228,42 @@ def test_api_models_names_the_external_api_model_and_host(test_client, monkeypat
 def test_external_api_host_keeps_only_host_and_port(url, host):
     from routers import models as models_router
     assert models_router._external_api_host(url) == host
+
+
+@pytest.mark.parametrize("variant", ["exact", "unknown-code", "extra-field", "raw-message", "boolean-message", "array", "other-path", "other-status"])
+def test_agent_activation_projects_only_fixed_preflight_timeout(monkeypatch, variant):
+    import routers.models as models_router
+
+    message = (
+        "ODS could not verify Docker service state, so it did not start this model switch. "
+        "Wait until Models shows no operation in progress, refresh model status, then try again. "
+        "If this repeats, check that Docker is responding."
+    )
+    payload = {"code": "model_preflight_inspection_timeout", "error": message}
+    path, status = "/v1/model/activate", 500
+    if variant == "unknown-code":
+        payload["code"] = "not-a-supported-code"
+    elif variant == "extra-field":
+        payload["pending"] = False
+    elif variant == "raw-message":
+        payload["error"] = "private docker command"
+    elif variant == "boolean-message":
+        payload["error"] = True
+    elif variant == "array":
+        payload = [payload]
+    elif variant == "other-path":
+        path = "/v1/model/download"
+    elif variant == "other-status":
+        status = 503
+    calls = []
+
+    def refuse(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise models_router.AgentHTTPError(status, "existing fallback error", json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", refuse)
+    with pytest.raises(models_router.HTTPException) as error:
+        models_router._call_agent_model(path, {}, retry_download_busy_seconds=60, retry_pixel_busy_seconds=60)
+    assert error.value.status_code == 502
+    assert error.value.detail == (payload if variant == "exact" else "existing fallback error")
+    assert len(calls) == 1
