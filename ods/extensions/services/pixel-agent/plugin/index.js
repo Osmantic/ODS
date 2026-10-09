@@ -375,6 +375,7 @@ export default definePluginEntry({
     });
     const delegationDelivery = subagentDeliveryFor(toolLoopGuard, {
       agentId:AGENT_ID,
+      nativeDelegationRequested:runId => toolLoopGuard.nativeDelegationRequestedForRun(runId),
       finalText:extractAssistantVisibleText,
       accessIdentity:() => {
         const state=accessRuntime.status();
