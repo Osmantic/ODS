@@ -3787,7 +3787,7 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
         monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
 
-    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved'])
+    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved', 'runtime_load_failed', 'timeout', 'identity_mismatch'])
     def test_native_controller_holds_before_model_mutation_and_finishes_only_after_proof(self,tmp_path,monkeypatch,failure):
         install,env_path,original,*_=_write_model_activation_fixture(tmp_path)
         original=original.replace('CTX_SIZE=2048','CTX_SIZE=65536')+'PIXEL_OPENWEBUI_KEY=configured\n'
@@ -3820,12 +3820,17 @@ class TestModelActivateRollback:
                 else:
                     assert proofs[-1]=='old-model.gguf'
                     assert env_path.read_text(encoding='utf-8')==original
+                    assert _mod._model_lifecycle_status()['activationPhase']=='rollback_verifying'
+                    assert 'activationResult' not in _mod._model_lifecycle_status()
                     state['contract']=previous
                 state.update(status='completed',pending=False,outcome=request['outcome'])
             return dict(state)
         def readiness(*args,**kwargs):
             identity=kwargs.get('gguf_file')
             proofs.append(identity)
+            if failure in {'runtime_load_failed','timeout','identity_mismatch'} and identity=='new-model.gguf':
+                kwargs['diagnosis']['code']=failure
+                return False
             if failure=='rollback-unproved' and identity=='old-model.gguf':return False
             return _mock_verified_readiness(*args,**kwargs)
         real_write=_mod._atomic_write_json
@@ -3839,23 +3844,38 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod,'_atomic_write_json',write)
         monkeypatch.setattr(_mod,'_reconcile_ods_managed_pixel_model',lambda *a,**kw:pytest.fail('must use coordinated native apply'))
         handler=_ResponseHandler()
-        _mod.AgentHandler._do_model_activate(handler,'target-model',requested_context_length=65536)
+        monkeypatch.setattr(_mod,'_model_activation_result',None)
+        assert _mod._begin_model_activation('target-model')[0]
+        try:
+            _mod.AgentHandler._do_model_activate(handler,'target-model',requested_context_length=65536)
+            assert _mod._model_lifecycle_status()['lifecycleActive'] is True
+            assert 'activationResult' not in _mod._model_lifecycle_status()
+        finally:
+            _mod._end_model_activation()
+        result=_mod._model_lifecycle_status().get('activationResult')
         payload=handler.parse_response()
         assert calls.count('model-begin')<=1 and calls.count('model-apply')<=1 and calls.count('model-finish')<=1
         if failure in {None,'lost-apply-ack'}:
             assert handler.response_code==200,payload
             assert state['status']=='completed' and state['outcome']=='commit'
+            assert result=={'outcome':'activated','failureCode':None}
         elif failure=='busy':
             assert handler.response_code==500,payload
             assert env_path.read_text(encoding='utf-8')==original and restarts==[]
             assert calls==['model-status']
-        elif failure in {'apply-refused','receipt-write'}:
+            assert result is None
+        elif failure in {'apply-refused','receipt-write','runtime_load_failed','timeout','identity_mismatch'}:
             assert handler.response_code==500 and payload['rolled_back'] is True,payload
             assert state['contract']==previous and state['outcome']=='rollback'
             assert not payload.get('pending')
+            code=('runtime_load_failed' if failure=='runtime_load_failed' else
+                  'runtime_readiness_failed' if failure in {'timeout','identity_mismatch'} else
+                  'consumer_verification_failed')
+            assert result=={'outcome':'rolled_back','failureCode':code}
         else:
             assert handler.response_code==500 and payload['pending'] is True,payload
             assert state['pending'] is True and state['outcome'] is None
+            assert result=={'outcome':'rollback_unconfirmed','failureCode':'rollback_unconfirmed'}
             if failure=='commit-unconfirmed':assert restarts==['new-model.gguf']
             else:assert 'model-finish' not in calls
 
