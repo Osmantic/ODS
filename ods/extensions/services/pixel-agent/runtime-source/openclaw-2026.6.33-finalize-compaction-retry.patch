@@ -1,0 +1,26 @@
+--- embedded-agent-CJx-nG3W.js (reviewed ODS recipe)
++++ embedded-agent-CJx-nG3W.js (preserve revision through safe recovery)
+@@ -2925 +2925,2 @@
+-					const basePrompt = nextAttemptPromptOverride ?? (provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);
++					const attemptPromptOverride = nextAttemptPromptOverride;
++					const basePrompt = attemptPromptOverride ?? (provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);
+@@ -3379,0 +3381,16 @@
++						// An initial precheck never submitted the continuation. A provider
++						// overflow may retain it only with explicit native no-work proof.
++						// Neither case may reconstruct this unpersisted revision from a summary.
++						const initialPrecheck = promptErrorSource === "precheck" && preflightRecovery
++							&& preflightRecovery.source === void 0
++							&& ["compact_only", "compact_then_truncate"].includes(preflightRecovery.route);
++						const providerOverflow = !timedOut && !preflightRecovery
++							&& contextOverflowError.source === "assistantError"
++							&& currentAttemptAssistant?.stopReason === "error";
++						const providerRejectedBeforeWork = providerOverflow
++							&& attempt.replayMetadata.replaySafe === true
++							&& attempt.replayMetadata.hadPotentialSideEffects === false
++							&& attempt.toolMetas.length === 0 && attempt.itemLifecycle.startedCount === 0
++							&& !hasAttemptTerminalState(attempt);
++						if (initialPrecheck || providerRejectedBeforeWork) nextAttemptPromptOverride = attemptPromptOverride;
++						else if (providerOverflow && attempt.toolMetas.length > 0) continueFromCurrentTranscript();
+@@ -3523 +3540 @@
+-									nextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;
++									nextAttemptPromptOverride ??= MID_TURN_PRECHECK_CONTINUATION_PROMPT;
