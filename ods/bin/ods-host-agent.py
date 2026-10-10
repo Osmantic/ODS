@@ -888,31 +888,120 @@ def _download_huggingface_artifact(
         maximum=300,
     )
     code = r'''
+import hashlib
+import json
+import os
+import re
 import shutil
+import stat
 import sys
 from pathlib import Path
 
-repo_id, revision, filename, dest, cache_dir = sys.argv[1:6]
-try:
-    from huggingface_hub import hf_hub_download
-except Exception as exc:
-    print(
-        "huggingface_hub is not installed; install with: "
-        "python -m pip install 'huggingface_hub[hf_xet]'",
-        file=sys.stderr,
-    )
-    raise
+def _owned_directory(directory: Path, identity: bytes) -> None:
+    marker = directory / "owner.json"
+    try:
+        directory.mkdir(mode=0o700)
+    except FileExistsError:
+        _check_plain_path(directory, directory=True)
+        _check_plain_path(marker, directory=False)
+        if marker.stat().st_size != len(identity) or marker.read_bytes() != identity:
+            raise RuntimeError("Hugging Face staging ownership does not match")
+    else:
+        with marker.open("xb") as stream:
+            stream.write(identity)
 
-path = hf_hub_download(
-    repo_id=repo_id,
-    filename=filename,
-    revision=revision,
-    cache_dir=cache_dir,
-    local_files_only=False,
-)
-dest_path = Path(dest)
-dest_path.parent.mkdir(parents=True, exist_ok=True)
-shutil.copyfile(path, dest_path)
+def _check_plain_path(path: Path, *, directory: bool) -> None:
+    info = path.lstat()
+    reparse = getattr(info, "st_file_attributes", 0) & getattr(
+        stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+    )
+    valid_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    if reparse or not valid_type or (not directory and info.st_nlink != 1):
+        raise RuntimeError("Hugging Face staging contains an unsafe filesystem entry")
+
+def _check_plain_tree(stage: Path) -> None:
+    _check_plain_path(stage, directory=True)
+    for directory, subdirs, files in os.walk(stage, followlinks=False):
+        for name in subdirs:
+            _check_plain_path(Path(directory) / name, directory=True)
+        for name in files:
+            _check_plain_path(Path(directory) / name, directory=False)
+
+def download_artifact(repo_id, revision, filename, destination, cache_dir, url):
+    if any(part in {"", ".", ".."} for part in filename.split("/")) or any(
+        char in filename for char in "\\:"
+    ):
+        raise ValueError("Hugging Face artifact filename is not a safe relative path")
+    try:
+        from filelock import FileLock
+        from huggingface_hub import get_hf_file_metadata, hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "huggingface_hub is not installed; install with: "
+            "python -m pip install 'huggingface_hub[hf_xet]>=0.27'"
+        ) from exc
+
+    # Resolve moving branches before selecting resumable storage. The SDK also
+    # keys its incomplete files by ETag; bytes from another revision are not reused.
+    if re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None:
+        revision = get_hf_file_metadata(url).commit_hash or ""
+    if re.fullmatch(r"[0-9a-fA-F]{40}", revision) is None:
+        raise RuntimeError("Hugging Face artifact has no immutable commit identity")
+    revision = revision.lower()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    identity = json.dumps(
+        {"schema": 1, "repo_id": repo_id, "revision": revision,
+         "filename": filename, "destination": destination.name},
+        sort_keys=True,
+    ).encode("utf-8")
+    target_identity = json.dumps(
+        {"schema": 1, "destination": os.path.normcase(destination.name)}, sort_keys=True
+    ).encode("utf-8")
+    custody = destination.parent / f".ods-hf-{hashlib.sha256(target_identity).hexdigest()}"
+    _owned_directory(custody, target_identity)
+    _check_plain_tree(custody)
+
+    # Retain the small owner directory and use the same cross-process lock path.
+    # A failed download keeps SDK resume state; it never consumes curl's partial.
+    # The lock covers every revision targeting this destination, not just retries
+    # of one artifact. Different artifact identities retain separate SDK state.
+    with FileLock(str(custody / "download.lock"), timeout=0):
+        _check_plain_tree(custody)
+        stage = custody / hashlib.sha256(identity).hexdigest()
+        _owned_directory(stage, identity)
+        payload = stage / "payload"
+        payload.mkdir(exist_ok=True)
+        downloaded = Path(
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                revision=revision,
+                cache_dir=str(cache_dir),
+                local_dir=str(payload),
+            )
+        )
+        _check_plain_tree(stage)
+        expected = payload / filename
+        if not expected.is_file() or not os.path.samefile(downloaded, expected):
+            raise RuntimeError("downloaded artifact is outside owned staging")
+        if expected.stat().st_size <= 0:
+            expected.unlink()
+            raise RuntimeError("downloaded artifact is empty")
+        expected.replace(destination)
+        # Only this immutable artifact's SDK state is removed, and only after
+        # publication. Other stages and the shared Hub cache remain untouched.
+        try:
+            shutil.rmtree(payload)
+        except OSError as exc:
+            print(
+                f"WARNING: Artifact published; SDK staging cleanup pending at {payload} "
+                f"({type(exc).__name__})",
+                file=sys.stderr,
+            )
+    return destination
+
+repo_id, revision, filename, dest, cache_dir, url = sys.argv[1:7]
+download_artifact(repo_id, revision, filename, Path(dest), Path(cache_dir), url)
 '''
     cmd = [
         sys.executable,
@@ -923,7 +1012,9 @@ shutil.copyfile(path, dest_path)
         filename,
         str(part_tmp),
         str(cache_dir),
+        part_url,
     ]
+    proc = None
     try:
         child_env = os.environ.copy()
         persisted_hf_token = load_env(INSTALL_DIR / ".env").get("HF_TOKEN", "").strip()
@@ -999,6 +1090,12 @@ shutil.copyfile(path, dest_path)
             _model_download_proc = None
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"Hugging Face Hub fallback could not start: {exc}"
+    finally:
+        # Reap cancelled/timed-out children. The child owns immutable SDK staging;
+        # retaining it preserves SDK-supported resume without touching shared cache.
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            proc.wait(timeout=5)
 
     if cancel_event.is_set():
         return False, "Download cancelled by user"
@@ -1006,6 +1103,9 @@ shutil.copyfile(path, dest_path)
         logger.warning("Model download Hugging Face Hub fallback timed out for %s", filename)
         return False, stderr_text or f"Hugging Face Hub fallback timed out after {fallback_timeout}s"
     if proc.returncode == 0 and _model_file_ready(part_tmp):
+        for line in stderr_text.splitlines():
+            if line.startswith("WARNING: Artifact published; SDK staging cleanup pending"):
+                logger.warning("%s", line)
         return True, ""
     details = stderr_text or stdout_text
     if proc.returncode == 0:
