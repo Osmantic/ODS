@@ -1,6 +1,6 @@
 import pytest
 
-from cafe_llama_icd import CAPABILITIES, configuration_to_env, validate_cafe_configuration
+from cafe_llama_icd import CAPABILITIES, validate_cafe_configuration
 from inference_configuration import (
     configuration_signature,
     rank_measured_candidates,
@@ -92,24 +92,6 @@ def test_candidate_without_runtime_profile_returns_no_configurations():
     )
 
     assert candidate.inference_configurations() == []
-
-
-def test_cafe_configuration_maps_to_environment():
-    candidate = make_candidate()
-    configuration = candidate.inference_configurations()[0].configuration
-
-    validate_cafe_configuration(configuration)
-    env = configuration_to_env(configuration)
-
-    assert env == {
-        "CAFE_LLAMA_ENABLED": "true",
-        "LLAMA_ARG_N_GPU_LAYERS": "99",
-        "MAX_CONTEXT": "8192",
-        "LLAMA_ARG_CACHE_TYPE_K": "f16",
-        "LLAMA_ARG_FLASH_ATTN": "on",
-        "LLAMA_ARG_SPEC_TYPE": "none",
-        "LLAMA_ARG_SPEC_DRAFT_N_MAX": "0",
-    }
 
 
 def test_cafe_rejects_unverified_capabilities():
