@@ -1,8 +1,9 @@
 """ODS-shaped cafe-llama.cpp runtime adapter contract.
 
-This module is intentionally small: core ICD stays runtime-agnostic while
-cafe-llama exposes its known configuration vocabulary and environment mapping.
-Execution remains outside runtime_selection.
+Only options verified against the currently supported runtime profile are
+advertised. Experimental kernels, Turbo KV, MoE offload, SSD streaming and
+speculative decoding must not become selectable until the exact binary and
+environment mapping have been verified. Execution remains outside ICD.
 """
 from __future__ import annotations
 
@@ -10,12 +11,13 @@ from typing import Any
 
 RUNTIME_ID = "cafe-llama.cpp"
 
+# Conservative allowlist. Expand only alongside binary-level validation and tests.
 CAPABILITIES = {
-    "kernel": ["baseline", "ptq1-mmV"],
-    "kv_cache": ["f16", "q8_0", "turbo2", "turbo3", "turbo4"],
+    "kernel": ["baseline"],
+    "kv_cache": ["f16", "q8_0"],
     "flash_attention": [True, False],
-    "offload": ["none", "host-moe", "cpu-moe", "ssd"],
-    "speculation": ["none", "draft-mtp"],
+    "offload": ["none"],
+    "speculation": ["none"],
 }
 
 ENV_MAPPING = {
@@ -32,16 +34,28 @@ def validate_cafe_configuration(configuration: dict[str, Any]) -> None:
     if configuration.get("runtime") != RUNTIME_ID:
         raise ValueError("configuration is not a cafe-llama.cpp configuration")
 
-    kv = str(configuration.get("kv_cache") or "").lower()
-    if kv.startswith("turbo") and configuration.get("flash_attention") is not True:
-        raise ValueError("turbo KV requires flash attention")
+    for dimension, allowed in CAPABILITIES.items():
+        value = configuration.get(dimension)
+        if value is not None and value not in allowed:
+            raise ValueError(f"unsupported cafe configuration value for {dimension}: {value!r}")
 
-    speculation = str(configuration.get("speculation") or "").lower()
-    draft_tokens = int(configuration.get("draft_tokens") or 0)
-    if speculation in {"none", "off"} and draft_tokens != 0:
-        raise ValueError("non-speculative configuration cannot have draft tokens")
-    if speculation == "draft-mtp" and draft_tokens <= 0:
-        raise ValueError("draft-mtp requires draft tokens")
+    context = configuration.get("context")
+    if context is not None and (
+        isinstance(context, bool) or not isinstance(context, int) or context <= 0
+    ):
+        raise ValueError("context must be a positive integer")
+
+    gpu_layers = configuration.get("gpu_layers")
+    if gpu_layers is not None and (
+        isinstance(gpu_layers, bool) or not isinstance(gpu_layers, int) or gpu_layers < 0
+    ):
+        raise ValueError("gpu_layers must be a non-negative integer")
+
+    draft_tokens = configuration.get("draft_tokens") or 0
+    if isinstance(draft_tokens, bool) or not isinstance(draft_tokens, int) or draft_tokens < 0:
+        raise ValueError("draft_tokens must be a non-negative integer")
+    if draft_tokens != 0:
+        raise ValueError("draft tokens require a verified speculative-decoding profile")
 
 
 def configuration_to_env(configuration: dict[str, Any]) -> dict[str, str]:
@@ -52,15 +66,10 @@ def configuration_to_env(configuration: dict[str, Any]) -> dict[str, str]:
         if value is None:
             continue
         if dimension == "flash_attention":
+            if not isinstance(value, bool):
+                raise ValueError("flash_attention must be boolean")
             env[key] = "on" if value else "off"
         else:
             env[key] = str(value)
-    offload = str(configuration.get("offload") or "none").lower()
     env["CAFE_LLAMA_ENABLED"] = "true"
-    if offload == "host-moe":
-        env["LLAMA_ARG_HOST_MOE"] = "on"
-    elif offload == "cpu-moe":
-        env["LLAMA_ARG_CPU_MOE"] = "on"
-    elif offload == "ssd":
-        env["LLAMA_ARG_SSD_STREAMING"] = "on"
     return env
