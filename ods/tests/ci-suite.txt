@@ -270,6 +270,8 @@ tests/test-migrate-shield-key.sh
 tests/test-ods-cli-update-shield-key.sh
 tests/test-backup-publication.sh
 tests/test-restore-compose-flags.sh
+
+tests/test-model-lifecycle-lock-wait-bound.sh
 tests/test-cli-purge-docker-inspection.sh
 tests/test-ods-cli-update-backup-required.sh
 tests/test-update-backup-publication.py
