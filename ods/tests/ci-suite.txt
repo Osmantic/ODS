@@ -275,3 +275,4 @@ tests/test-ods-cli-update-backup-required.sh
 tests/test-update-backup-publication.py
 tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
+tests/test_uninstall_validate_install_dir.py
