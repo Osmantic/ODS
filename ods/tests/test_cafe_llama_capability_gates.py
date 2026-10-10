@@ -56,3 +56,14 @@ def test_turbo_kv_requires_explicit_flash_attention_true():
 def test_flash_attention_rejects_integer_truthiness():
     with pytest.raises(ValueError, match="flash_attention must be boolean"):
         validate_cafe_configuration(configuration(flash_attention=1))
+
+
+def test_hardware_backend_is_not_mistaken_for_runtime_identity():
+    from inference_configuration import discover_configurations
+
+    candidates = discover_configurations(
+        model={"id": "test-model", "context_length": 4096},
+        runtime_profiles=[{"id": "nvidia-profile", "backend": "nvidia", "context_length": 4096}],
+    )
+
+    assert candidates == []
