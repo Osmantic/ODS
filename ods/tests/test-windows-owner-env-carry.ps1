@@ -78,6 +78,17 @@ try {
         Assert-True (@(Get-Content -LiteralPath $envPath | Where-Object { $_ -ceq '#=== Owner settings (kept from the previous .env) ===' }).Count -eq 1) `
             "rerun ${run}: owner settings header is missing or repeated"
     }
+    # Keep the owner's model-profile opt-in or opt-out across repeated installs.
+    foreach ($mode in @('off', 'observe', 'enabled')) {
+        $expectedProfile = "ODS_MODEL_PROFILES=$mode"
+        [IO.File]::AppendAllText($envPath, "`n$expectedProfile`n", [Text.UTF8Encoding]::new($false))
+        foreach ($run in 1..2) {
+            $null = New-ODSEnv -InstallDir $tempRoot -TierConfig $tier -Tier '1' -GpuBackend 'none' -SystemRamGB 8
+            $found = @(Get-Assignments $envPath 'ODS_MODEL_PROFILES')
+            Assert-True (($found.Count -eq 1) -and ($found[0] -ceq $expectedProfile)) `
+                "Model profile mode $mode changed on rerun $run"
+        }
+    }
     # The private writer emits UTF-8 without a BOM. PS5.1 otherwise reads it as
     # the Windows ANSI codepage, corrupting non-ASCII owner settings on rerun.
     # Construct codepoints so this test's own script encoding is irrelevant.

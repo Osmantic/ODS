@@ -219,6 +219,7 @@ $script:ODS_OWNER_ENV_KEYS = @(
     "AUDIO_TTS_VOICE"
     "AUDIO_TTS_OPENAI_API_BASE_URL"
     "AUDIO_TTS_OPENAI_API_KEY"
+    "ODS_MODEL_PROFILES"
 )
 
 function Get-ODSCarriedEnvLines {
