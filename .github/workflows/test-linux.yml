@@ -225,6 +225,9 @@ jobs:
       - name: Pre-download interactive and non-interactive input
         run: bash tests/test-pre-download-tier-noninteractive.sh
 
+      - name: Incus VM Check Exit Status Regression
+        run: bash tests/test-fleet-incus-vm-fail-closed.sh
+
       # SECURITY_AUDIT.md presents these as the project's standing security
       # checks, so CI has to be what runs them. No workflow invokes `make
       # test`, so Makefile wiring alone would leave them unenforced.
