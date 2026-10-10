@@ -555,7 +555,7 @@ test('ignores repository metadata that arrives after its dialog was replaced', a
       label: `${name}-only-Q4.gguf`,
       quantization: 'Q4_K_M',
       sizeBytes: 1024,
-      files: [{ filename: `${name}.gguf` }],
+      files: [{ filename: `${name}/${name}-only-Q4.gguf` }],
     }],
     url: `https://huggingface.co/org/${name}`,
   })
@@ -581,15 +581,15 @@ test('ignores repository metadata that arrives after its dialog was replaced', a
     await act(async () => {
       resolveFirstDetails({ ok: true, json: async () => details('first') })
     })
-    expect(screen.queryByText('first-only-Q4.gguf')).not.toBeInTheDocument()
+    expect(screen.queryByText('first/first-only-Q4.gguf')).not.toBeInTheDocument()
     expect(screen.getByText('Reading repository metadata...')).toBeInTheDocument()
 
     await act(async () => {
       resolveSecondDetails({ ok: true, json: async () => details('second') })
     })
-    expect(await screen.findByText('second-only-Q4.gguf')).toBeInTheDocument()
+    expect(await screen.findByText('second/second-only-Q4.gguf')).toBeInTheDocument()
     expect(screen.getByText('Hub config')).toBeInTheDocument()
-    expect(screen.queryByText('first-only-Q4.gguf')).not.toBeInTheDocument()
+    expect(screen.queryByText('first/first-only-Q4.gguf')).not.toBeInTheDocument()
   } finally {
     vi.unstubAllGlobals()
   }

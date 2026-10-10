@@ -94,6 +94,7 @@ def preflight_env(monkeypatch, tmp_path):
     state = {"details": _details(), "header": _dense_header(), "storage": {
         "freeBytes": 20 * GIB, "totalBytes": 100 * GIB, "marginBytes": 5 * GIB}}
     reads = []
+    cached_reads = []
 
     async def fake_details(repo_id):
         assert repo_id == REPO
@@ -101,24 +102,29 @@ def preflight_env(monkeypatch, tmp_path):
 
     async def fake_header(repo_id, revision, filename, *, expected_size=None, token="", client=None):
         reads.append((repo_id, revision, filename, expected_size))
-        if isinstance(state["header"], Exception):
-            raise state["header"]
-        return state["header"]
+        header = state.get("headers", {}).get(filename, state["header"])
+        if isinstance(header, Exception):
+            raise header
+        return header
 
     async def fake_storage():
         return state["storage"]
 
     def fake_cached(repo_id, revision, filename):
         # What the preflight read earlier in this process (the import never reads).
+        cached_reads.append((repo_id, revision, filename))
+        if "cached_headers" in state:
+            return state["cached_headers"].get(filename)
         if not state.get("cached", True) or isinstance(state["header"], Exception):
             return None
-        return state["header"]
+        return state["header"] if filename == "model-Q4_K_M.gguf" else None
 
     monkeypatch.setattr(models_router, "_hf_repo_details", fake_details)
     monkeypatch.setattr(hf_gguf_header, "fetch_gguf_header", fake_header)
     monkeypatch.setattr(hf_gguf_header, "cached_gguf_header", fake_cached)
     monkeypatch.setattr(models_router, "_model_storage_status", fake_storage)
     state["reads"] = reads
+    state["cached_reads"] = cached_reads
     return models_router, state
 
 
@@ -133,7 +139,7 @@ def test_preflight_reports_header_runtime_fit_template_and_disk(test_client, pre
 
     assert response.status_code == 200
     body = response.json()
-    # One header read for the repository, from its smallest artifact.
+    # One network header read, scoped to its artifact rather than the repository.
     assert state["reads"] == [(REPO, "c" * 40, "model-Q4_K_M.gguf", 4 * GIB)]
     assert body["header"] == {"status": "read", "file": "model-Q4_K_M.gguf", "bytesRead": 2_000_000}
     assert body["architecture"] == "llama"
@@ -142,10 +148,16 @@ def test_preflight_reports_header_runtime_fit_template_and_disk(test_client, pre
     assert body["contextLength"] == 131072
     assert body["template"] == {"present": True, "tools": True, "thinking": "toggle"}
     assert body["refusal"] is None
+    assert body["artifactId"] == "a" * 20
     small, large = body["artifacts"]["a" * 20], body["artifacts"]["b" * 20]
     assert small["fit"]["estimate"] == "architecture"
     assert small["fit"]["status"] in {"fits", "fits_short_context"}
     assert large["fit"]["status"] == "too_large"
+    assert large["fit"]["estimate"] == "rough"
+    assert large["architecture"] is None
+    assert large["template"] == {"present": None, "tools": None, "thinking": "unknown"}
+    assert large["contextLength"] is None
+    assert large["contextSource"] == "unavailable"
     assert small["disk"] == "ok"
     assert large["disk"] == "insufficient"
 
@@ -178,7 +190,7 @@ def test_preflight_names_a_reranker_from_its_header(test_client, preflight_env):
     assert body["runtime"]["architectureSupported"] is None
 
 
-def test_preflight_without_a_header_uses_the_hub_hint(test_client, preflight_env):
+def test_preflight_without_a_header_cannot_bind_a_multi_artifact_hub_hint(test_client, preflight_env):
     _router, state = preflight_env
     state["header"] = hf_gguf_header.HeaderUnavailable("rate_limited", "Hugging Face rate limit reached")
     state["storage"] = None
@@ -187,8 +199,8 @@ def test_preflight_without_a_header_uses_the_hub_hint(test_client, preflight_env
 
     assert body["header"]["status"] == "unavailable"
     assert body["header"]["reason"] == "rate_limited"
-    assert body["architecture"] == "llama"
-    assert body["runtime"]["architectureSupported"] is True
+    assert body["architecture"] is None
+    assert body["runtime"]["architectureSupported"] is None
     assert body["template"] == {"present": None, "tools": None, "thinking": "unknown"}
     assert body["artifacts"]["a" * 20]["fit"]["estimate"] == "rough"
     assert body["artifacts"]["a" * 20]["disk"] == "unknown"
@@ -202,8 +214,8 @@ def test_preflight_reports_where_the_context_came_from(test_client, preflight_en
 
     state["header"] = hf_gguf_header.HeaderUnavailable("rate_limited", "Hugging Face rate limit reached")
     body = _preflight(test_client).json()
-    assert body["contextLength"] == 8192
-    assert body["contextSource"] == "hub_config"
+    assert body["contextLength"] is None
+    assert body["contextSource"] == "unavailable"
 
 
 _GATED = hf_gguf_header.HeaderUnavailable("gated", "This repository is gated")
@@ -227,6 +239,7 @@ def test_preflight_refuses_a_gated_repository_this_host_cannot_download(
     assert body["refusal"]["overridable"] is False
     assert "accept its license" in body["refusal"]["message"]
     assert "HF_TOKEN in Settings" in body["refusal"]["message"]
+    assert all(row["refusal"]["code"] == "gated" for row in body["artifacts"].values())
 
 
 def test_preflight_allows_a_gated_repository_the_token_can_read(test_client, preflight_env, monkeypatch):
@@ -266,8 +279,8 @@ def test_speculative_decoding_heads_are_not_offered_or_read_as_the_model():
     ]}
     artifacts = models_router._hf_gguf_artifacts(payload)
     assert [artifact["label"] for artifact in artifacts] == ["gpt-oss-20b-MXFP4.gguf"]
-    # The header that speaks for the repository is the model's own.
-    assert models_router._preflight_header_source(artifacts)["filename"] == "gpt-oss-20b-MXFP4.gguf"
+    # The default checked artifact is the model, never its speculative head.
+    assert models_router._preflight_header_artifact(artifacts)["files"][0]["filename"] == "gpt-oss-20b-MXFP4.gguf"
 
 
 def _import(test_client, **extra):
@@ -299,7 +312,7 @@ def test_import_anyway_records_the_acknowledged_runtime(test_client, preflight_e
     state["header"] = _dense_header("nanbeige")
     dispatched = []
 
-    def dispatch(_path, payload):
+    def dispatch(_path, payload, **_kwargs):
         dispatched.append(payload)
         return {"status": "started"}
 
@@ -329,7 +342,7 @@ def test_import_anyway_cannot_import_a_reranker_as_a_chat_model(test_client, pre
 
 def test_import_record_carries_the_header_layout_and_context(test_client, preflight_env, monkeypatch):
     models_router, _state = preflight_env
-    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, payload: {"status": "started"})
+    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, payload, **_kwargs: {"status": "started"})
 
     response = _import(test_client)
 
@@ -362,7 +375,7 @@ def test_search_rows_flag_text_ranking_repositories():
 
 def test_import_never_waits_on_a_hub_header_read(test_client, preflight_env, monkeypatch):
     models_router, state = preflight_env
-    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, payload: {"status": "started"})
+    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, payload, **_kwargs: {"status": "started"})
 
     response = _import(test_client)
 
@@ -370,11 +383,37 @@ def test_import_never_waits_on_a_hub_header_read(test_client, preflight_env, mon
     assert state["reads"] == []
 
 
+def test_import_accepts_the_checked_repository_revision(test_client, preflight_env, monkeypatch):
+    router, state = preflight_env
+    monkeypatch.setattr(router, "_call_agent_model", lambda *_a, **_k: {"status": "started"})
+
+    response = _import(test_client, revision="c" * 40)
+
+    assert response.status_code == 200
+    assert state["reads"] == []
+    record = json.loads((router.Path(router.DATA_DIR) / "model-imports.json").read_text())["models"][0]
+    assert record["source_revision"] == "c" * 40
+
+
+def test_import_rejects_changed_revision_before_cache_registration_or_dispatch(test_client, preflight_env, monkeypatch):
+    router, state = preflight_env
+    monkeypatch.setattr(router, "_call_agent_model", lambda *_a, **_k: pytest.fail("not dispatched"))
+
+    response = _import(test_client, revision="d" * 40, allowUnsupportedRuntime=True)
+
+    assert response.status_code == 409
+    assert response.headers["X-ODS-Import-Started"] == "false"
+    assert "revision changed" in response.json()["detail"]
+    assert state["reads"] == state["cached_reads"] == []
+    assert not (router.Path(router.DATA_DIR) / "model-imports.json").exists()
+
+
 def test_import_without_a_cached_header_gates_on_the_hub_summary(test_client, preflight_env, monkeypatch):
     models_router, state = preflight_env
     monkeypatch.setattr(models_router, "GPU_BACKEND", "amd")
     state["cached"] = False
     state["details"] = _details(ggufArchitecture="nanbeige")
+    state["details"]["artifacts"] = state["details"]["artifacts"][:1]
     monkeypatch.setattr(models_router, "_call_agent_model", lambda *_a, **_k: pytest.fail("not dispatched"))
 
     response = _import(test_client)
@@ -382,6 +421,113 @@ def test_import_without_a_cached_header_gates_on_the_hub_summary(test_client, pr
     assert response.status_code == 422
     assert response.json()["detail"]["code"] == "runtime_architecture_unsupported"
     assert state["reads"] == []
+
+
+def test_selected_artifact_preflight_reads_only_its_own_header(test_client, preflight_env):
+    _router, state = preflight_env
+    other = _dense_header("qwen3", {"tokenizer.chat_template": "plain prompt"})
+    other.update(context_length=4096, block_count=24, attention_head_count_kv=4)
+    state["headers"] = {"model-Q8_0.gguf": other}
+
+    response = test_client.get(
+        f"/api/models/huggingface/preflight/{REPO}?artifactId={'b' * 20}",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert state["reads"] == [(REPO, "c" * 40, "model-Q8_0.gguf", 30 * GIB)]
+    assert body["artifactId"] == "b" * 20
+    assert body["architecture"] == body["artifacts"]["b" * 20]["architecture"] == "qwen3"
+    assert body["contextLength"] == 4096
+    assert body["template"]["tools"] is False
+    assert body["artifacts"]["a" * 20]["architecture"] == "llama"
+
+
+def test_unknown_artifact_preflight_does_not_read_a_different_file(test_client, preflight_env):
+    _router, state = preflight_env
+    response = test_client.get(
+        f"/api/models/huggingface/preflight/{REPO}?artifactId={'f' * 20}",
+        headers=test_client.auth_headers,
+    )
+    assert response.status_code == 409
+    assert state["reads"] == []
+
+
+def test_selected_split_artifact_reads_its_first_part_only(test_client, preflight_env):
+    _router, state = preflight_env
+    artifact = state["details"]["artifacts"][1]
+    artifact["files"] = [
+        {"filename": f"other/model-{part:05d}-of-00002.gguf", "sizeBytes": 15 * GIB, "sha256": "f" * 64}
+        for part in (1, 2)
+    ]
+
+    response = test_client.get(
+        f"/api/models/huggingface/preflight/{REPO}?artifactId={'b' * 20}",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 200
+    assert state["reads"] == [(REPO, "c" * 40, "other/model-00001-of-00002.gguf", 15 * GIB)]
+    assert response.json()["artifactId"] == "b" * 20
+
+
+def test_mixed_repository_import_uses_selected_cached_header(test_client, preflight_env, monkeypatch):
+    router, state = preflight_env
+    other = _dense_header("qwen3", {"tokenizer.chat_template": "plain prompt"})
+    other.update(context_length=4096, block_count=24, attention_head_count_kv=4)
+    state["cached_headers"] = {"model-Q4_K_M.gguf": _dense_header(), "model-Q8_0.gguf": other}
+    monkeypatch.setattr(router, "_call_agent_model", lambda *_a, **_k: {"status": "started"})
+
+    response = _import(test_client, artifactId="b" * 20)
+
+    assert response.status_code == 200
+    assert state["reads"] == []
+    assert state["cached_reads"] == [(REPO, "c" * 40, "model-Q8_0.gguf")]
+    record = json.loads((router.Path(router.DATA_DIR) / "model-imports.json").read_text())["models"][0]
+    assert record["architecture"] == "qwen3"
+    assert record["block_count"] == 24
+    assert record["attention_head_count_kv"] == 4
+    assert record["context_length"] == record["max_context_length"] == 4096
+    assert record["template_signals"]["tools"] is False
+
+
+def test_unread_selected_artifact_does_not_inherit_a_cached_reranker(test_client, preflight_env, monkeypatch):
+    router, state = preflight_env
+    state["header"] = _dense_header("qwen3", {"qwen3.pooling_type": 4})
+    monkeypatch.setattr(router, "_call_agent_model", lambda *_a, **_k: {"status": "started"})
+
+    body = _preflight(test_client).json()
+    assert body["artifacts"]["a" * 20]["refusal"]["code"] == "not_a_chat_model:reranker"
+    assert body["artifacts"]["b" * 20]["refusal"] is None
+    state["reads"].clear()
+    response = _import(test_client, artifactId="b" * 20)
+
+    assert response.status_code == 200
+    assert state["reads"] == []
+    record = json.loads((router.Path(router.DATA_DIR) / "model-imports.json").read_text())["models"][0]
+    assert record["context_length"] == 8192
+    assert record.get("max_context_length") is None
+    assert record.get("context_source") == "unavailable"
+    for key in ("architecture", "block_count", "recurrent_state_bytes", "template_signals"):
+        assert key not in record
+
+
+@pytest.mark.parametrize("field,value", [("repoId", "other/repo"), ("revision", "d" * 40), ("artifactId", "b" * 20), ("file", "other.gguf")])
+def test_import_record_ignores_header_bound_to_another_artifact(preflight_env, field, value):
+    import asyncio
+
+    router, state = preflight_env
+    artifact = state["details"]["artifacts"][0]
+    gate = asyncio.run(router._hf_preflight_gate(state["details"], artifact, read_header=False))
+    gate["artifact"][field] = value
+
+    record = router._hf_import_record(state["details"], artifact, gate=gate)
+
+    assert "architecture" not in record
+    assert "template_signals" not in record
+    assert "block_count" not in record
+    assert record["context_length"] == 8192
 
 
 def test_storage_check_allows_for_a_windows_managed_model_store(monkeypatch):
@@ -418,7 +564,7 @@ def test_import_waits_out_a_short_lifecycle_hold(test_client, preflight_env, mon
     models_router, _state = preflight_env
     calls = []
 
-    def agent(path, payload):
+    def agent(path, payload, **_kwargs):
         calls.append(path)
         if len(calls) < 3:
             # The integrity check a restarted agent runs, then a Pixel re-proof.
@@ -438,7 +584,7 @@ def test_a_busy_host_refuses_the_import_in_words_without_starting_it(test_client
     models_router, _state = preflight_env
     calls = []
 
-    def agent(path, payload):
+    def agent(path, payload, **_kwargs):
         calls.append(path)
         raise _busy("model_activation")
 
@@ -457,18 +603,20 @@ def test_a_short_hold_that_outlasts_the_grace_still_ends_in_words(test_client, p
     models_router, _state = preflight_env
     clock = [1000.0]
 
-    def agent(path, payload):
-        clock[0] += 20.0
+    def agent(path, payload, *, timeout):
+        clock[0] += min(20.0, timeout)
         raise _busy("artifact_verification")
 
     monkeypatch.setattr(models_router, "_call_agent_model", agent)
     monkeypatch.setattr(models_router.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(models_router.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(models_router.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
 
     response = _import(test_client)
 
     assert response.status_code == 409
     assert "checking a downloaded model file" in response.json()["detail"]["message"]
+    assert clock[0] == 1030.0
+    assert response.headers["X-ODS-Import-Started"] == "false"
 
 
 def _two_quantizations():
@@ -509,7 +657,7 @@ def test_preflight_judges_each_files_tensor_types(test_client, preflight_env, mo
 def test_import_refuses_a_file_this_build_cannot_read_unless_acknowledged(test_client, preflight_env, monkeypatch):
     models_router, state = preflight_env
     monkeypatch.setattr(models_router, "GPU_BACKEND", "amd")
-    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, payload: {"status": "started"})
+    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, payload, **_kwargs: {"status": "started"})
     state["details"] = _two_quantizations()
 
     refused = test_client.post("/api/models/huggingface/import", headers=test_client.auth_headers,
@@ -567,7 +715,7 @@ def test_import_brings_the_projector_unless_vision_is_unticked(test_client, pref
     state["details"] = _vision_details()
     sent: list[dict] = []
 
-    def agent(path, payload):
+    def agent(path, payload, **_kwargs):
         sent.append(payload)
         return {"status": "started"}
 
@@ -596,18 +744,48 @@ def test_an_unknown_projector_choice_is_refused(test_client, preflight_env, monk
     assert response.status_code == 409
 
 
-def test_preflight_counts_the_projector_in_fit_and_disk(test_client, preflight_env):
+@pytest.mark.parametrize("artifact_id", [None, "b" * 20])
+def test_preflight_counts_the_projector_in_fit_and_disk(test_client, preflight_env, artifact_id):
     _router, state = preflight_env
     state["details"] = _vision_details()
     # 20 GiB free, 5 GiB margin: the 4 GiB weights fit alone, 15 GiB weights + 1 GiB projector do not.
     state["details"]["artifacts"][1]["sizeBytes"] = 15 * GIB
     state["details"]["artifacts"][1]["files"][0]["sizeBytes"] = 15 * GIB
 
-    body = _preflight(test_client).json()
+    url = f"/api/models/huggingface/preflight/{REPO}"
+    if artifact_id:
+        url += f"?artifactId={artifact_id}"
+    body = test_client.get(url, headers=test_client.auth_headers).json()
 
     assert body["projector"] == {"id": "p" * 20, "label": "mmproj-F16.gguf", "sizeBytes": GIB, "precision": "F16"}
     assert body["artifacts"]["a" * 20]["disk"] == "ok"
     assert body["artifacts"]["b" * 20]["disk"] == "insufficient"
+
+
+def test_selected_header_tensor_refusal_is_preserved_through_import(test_client, preflight_env, monkeypatch):
+    router, state = preflight_env
+    monkeypatch.setattr(router, "GPU_BACKEND", "amd")
+    selected = {**_dense_header("qwen3"), "tensor_types": [42]}
+    state["headers"] = {"model-Q8_0.gguf": selected}
+    state["cached_headers"] = {"model-Q8_0.gguf": selected}
+    monkeypatch.setattr(router, "_call_agent_model", lambda *_a, **_k: {"status": "started"})
+
+    body = test_client.get(f"/api/models/huggingface/preflight/{REPO}?artifactId={'b' * 20}",
+                          headers=test_client.auth_headers).json()
+    assert body["artifacts"]["a" * 20]["tensors"]["status"] == "ok"
+    check = body["artifacts"]["b" * 20]["tensors"]
+    assert check["source"] == "header" and check["unknown"] == ["Q2_0"]
+    assert check["refusal"]["code"] == "runtime_tensor_type_unsupported"
+    state["reads"].clear()
+
+    response = _import(test_client, artifactId="b" * 20, revision="c" * 40)
+    assert response.status_code == 422
+    assert not (router.Path(router.DATA_DIR) / "model-imports.json").exists()
+    response = _import(test_client, artifactId="b" * 20, revision="c" * 40, allowUnsupportedRuntime=True)
+    assert response.status_code == 200 and state["reads"] == []
+    record = json.loads((router.Path(router.DATA_DIR) / "model-imports.json").read_text())["models"][0]
+    assert record["architecture"] == "qwen3"
+    assert record["runtime_override"]["tensorTypes"] == ["Q2_0"]
 
 
 def test_a_windows_launcher_without_vision_support_imports_the_weights_alone(test_client, monkeypatch):
@@ -671,7 +849,7 @@ def test_delete_waits_out_a_short_hold_and_refuses_a_long_one_in_words(test_clie
     monkeypatch.setattr(models_router.time, "sleep", lambda _seconds: None)
     calls = []
 
-    def agent(path, payload):
+    def agent(path, payload, **_kwargs):
         calls.append((path, payload["gguf_file"]))
         if len(calls) == 1:
             raise _busy("pixel_access_mode")  # the periodic Pixel re-proof
@@ -684,7 +862,7 @@ def test_delete_waits_out_a_short_hold_and_refuses_a_long_one_in_words(test_clie
 
     calls.clear()
 
-    def switching(path, payload):
+    def switching(path, payload, **_kwargs):
         calls.append((path, payload["gguf_file"]))
         raise _busy("model_activation")  # not a short hold
 
