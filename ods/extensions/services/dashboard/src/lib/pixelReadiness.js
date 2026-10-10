@@ -1,5 +1,7 @@
 // Readiness v1 is deliberately never "ready": runtime identity v1 cannot
 // establish release binding. This projection is not an admission permission.
+export const PIXEL_RECOVERY_REQUIRED = 'ods:pixel-recovery-required'
+
 const reasons = {
   'access-proof-unverified': 'Host access and installed-release readiness are unverified.',
   'access-probe-timeout': 'Access verification timed out. Effective permissions and installed-release readiness are unverified.',

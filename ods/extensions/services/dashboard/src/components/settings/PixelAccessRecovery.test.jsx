@@ -1,6 +1,7 @@
 import {act, cleanup, fireEvent, render, screen} from '@testing-library/react'
 import {afterEach, beforeEach, expect, it, vi} from 'vitest'
 import PixelAccessCard from './PixelAccessCard'
+import { PIXEL_RECOVERY_REQUIRED } from '../../lib/pixelReadiness'
 
 const verified = {available:true,surface:'wsl-systemd',configured_mode:'full-access',effective_mode:'full-access',runtime_verified:true,revision:'a'.repeat(64),busy:false,pending:false}
 const unavailable = {...verified,available:false,surface:'linux',runtime_verified:false,effective_mode:'unknown'}
@@ -72,11 +73,11 @@ it('backs off failed inspections and recovers without retrying a permission muta
 it('pauses recovery while hidden and coalesces visible/focus/online into one fresh read',async()=>{
  const slow=deferred();const fetch=vi.fn().mockResolvedValueOnce(response(unavailable)).mockReturnValueOnce(slow.promise);vi.stubGlobal('fetch',fetch)
  render(<PixelAccessCard/>);await tick(0)
- visibility='hidden';fireEvent(document,new Event('visibilitychange'));await tick(120000);expect(fetch).toHaveBeenCalledTimes(1)
+ visibility='hidden';fireEvent(document,new Event('visibilitychange'));fireEvent(window,new Event(PIXEL_RECOVERY_REQUIRED));await tick(120000);expect(fetch).toHaveBeenCalledTimes(1)
  visibility='visible';fireEvent(document,new Event('visibilitychange'));fireEvent.focus(window);fireEvent(window,new Event('online'));await tick(0)
  expect(fetch).toHaveBeenCalledTimes(2);await act(async()=>slow.resolve(response(verified)));expect(effective()).toHaveTextContent('Full Access')
 })
-it.each(['focus','online'])('refreshes a previously verified status on %s, keeping proof withdrawn until the read finishes',async(event)=>{
+it.each(['focus','online',PIXEL_RECOVERY_REQUIRED])('refreshes a previously verified status on %s, keeping proof withdrawn until the read finishes',async(event)=>{
  const slow=deferred();const fetch=vi.fn().mockResolvedValueOnce(response(verified)).mockReturnValueOnce(slow.promise);vi.stubGlobal('fetch',fetch)
  render(<PixelAccessCard/>);await tick(0);fireEvent(window,new Event(event));await tick(0)
  expect(fetch).toHaveBeenCalledTimes(2);expect(effective()).toHaveTextContent('Not verified')
@@ -94,7 +95,7 @@ it('aborts inspection and removes wake-up listeners on unmount',async()=>{
  const slow=deferred();const fetch=vi.fn().mockReturnValue(slow.promise);vi.stubGlobal('fetch',fetch)
  const view=render(<PixelAccessCard/>);await tick(0);view.unmount()
  expect(fetch.mock.calls[0][1].signal.aborted).toBe(true)
- fireEvent.focus(window);fireEvent(window,new Event('online'));await tick(120000);expect(fetch).toHaveBeenCalledTimes(1)
+ fireEvent.focus(window);fireEvent(window,new Event('online'));fireEvent(window,new Event(PIXEL_RECOVERY_REQUIRED));await tick(120000);expect(fetch).toHaveBeenCalledTimes(1)
  await act(async()=>slow.resolve(response(verified)));expect(screen.queryByText('Full Access')).toBeNull()
 })
 it('superseded automatic inspection cannot replace a newer permission mutation receipt',async()=>{
@@ -110,12 +111,27 @@ it('superseded automatic inspection cannot replace a newer permission mutation r
 it('wake-up events during an explicit change never race the POST with an automatic read',async()=>{
  const post=deferred();const fetch=vi.fn().mockImplementation((_url,opts)=>opts?.method==='POST'?post.promise:Promise.resolve(response(verified)));vi.stubGlobal('fetch',fetch)
  render(<PixelAccessCard/>);await tick(0);fireEvent.click(screen.getByRole('button',{name:'Restore Sandbox'}));await tick(0)
- expect(fetch).toHaveBeenCalledTimes(3);fireEvent.focus(window);fireEvent(window,new Event('online'));await tick(10000);expect(fetch).toHaveBeenCalledTimes(3)
+ expect(fetch).toHaveBeenCalledTimes(3);fireEvent.focus(window);fireEvent(window,new Event('online'));fireEvent(window,new Event(PIXEL_RECOVERY_REQUIRED));await tick(10000);expect(fetch).toHaveBeenCalledTimes(3)
  await act(async()=>post.resolve(response({...verified,configured_mode:'sandboxed',effective_mode:'sandboxed'})));expect(effective()).toHaveTextContent('Sandbox')
+})
+
+it('supersedes a pre-hold read on the recovery signal and ignores its eventual stale Sandbox receipt',async()=>{
+ const slow=deferred(),sandbox={...verified,configured_mode:'sandboxed',effective_mode:'sandboxed'}
+ const fetch=vi.fn().mockResolvedValueOnce(response(sandbox)).mockReturnValueOnce(slow.promise)
+  .mockResolvedValue(response({...sandbox,reason:'chat-recovery-required'}));vi.stubGlobal('fetch',fetch)
+ render(<PixelAccessCard/>);await tick(0)
+ fireEvent.focus(window);await tick(0);expect(fetch).toHaveBeenCalledTimes(2)
+ fireEvent(window,new Event(PIXEL_RECOVERY_REQUIRED));await tick(0)
+ expect(fetch).toHaveBeenCalledTimes(3);expect(fetch.mock.calls[1][1].signal.aborted).toBe(true)
+ expect(screen.getByRole('alert')).toHaveTextContent('new messages are held')
+ await act(async()=>slow.resolve(response(sandbox)))
+ expect(screen.getByRole('button',{name:'Enable Full Access'})).toBeDisabled()
+ expect(screen.getByRole('alert')).toHaveTextContent('new messages are held')
+ expect(fetch.mock.calls.every(([,options])=>options?.method!=='POST')).toBe(true)
 })
 it('does not poll a mounted but hidden settings section, and refreshes when opened',async()=>{
  const fetch=vi.fn().mockResolvedValue(response(verified));vi.stubGlobal('fetch',fetch)
- const view=render(<PixelAccessCard active={false}/>);await tick(90000);fireEvent.focus(window);expect(fetch).not.toHaveBeenCalled()
+ const view=render(<PixelAccessCard active={false}/>);await tick(90000);fireEvent.focus(window);fireEvent(window,new Event(PIXEL_RECOVERY_REQUIRED));expect(fetch).not.toHaveBeenCalled()
  view.rerender(<PixelAccessCard active/>);await tick(0);expect(fetch).toHaveBeenCalledTimes(1)
  view.rerender(<PixelAccessCard active={false}/>);await tick(90000);fireEvent(window,new Event('online'));expect(fetch).toHaveBeenCalledTimes(1)
 })

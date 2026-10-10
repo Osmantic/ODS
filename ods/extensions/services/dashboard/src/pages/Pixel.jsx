@@ -34,7 +34,7 @@ import {compactCommand,CONTEXT_REQUEST_ID,historySnapshot,usePortalContext} from
 import PortalModelSelector from '../components/PortalModelSelector'
 import PortalRuntimeIdentity from '../components/PortalRuntimeIdentity'
 import PortalReadiness from '../components/PortalReadiness'
-import { pixelReadinessView } from '../lib/pixelReadiness'
+import { pixelReadinessView, PIXEL_RECOVERY_REQUIRED } from '../lib/pixelReadiness'
 import PortalAgentActivity from '../components/PortalAgentActivity'
 import PortalExtensionSetup from '../components/PortalExtensionSetup'
 import PortalExtensionProgress from '../components/PortalExtensionProgress'
@@ -618,6 +618,11 @@ export default function Pixel({ systemStatus = null }) {
 
   const [status, setStatus] = useState('loading')
   const [statusDetail, setStatusDetail] = useState('')
+  useEffect(() => {
+    // Wake an already-open Permissions panel once when admission becomes held.
+    // The panel still fetches its own authoritative access receipt.
+    if (status === 'recovery') window.dispatchEvent(new Event(PIXEL_RECOVERY_REQUIRED))
+  }, [status])
   const [messages, setMessages] = useState(() => initialChat?.messages || [])
   const [input, setInput] = useState(() => initialChat?.draft || '')
   const [persistenceError, setPersistenceError] = useState('')

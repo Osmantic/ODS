@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { PIXEL_RECOVERY_REQUIRED } from '../../lib/pixelReadiness'
 
 const modeName = mode => mode === 'full-access' ? 'Full Access' : mode === 'sandboxed' ? 'Sandbox' : 'Not verified'
 const surfaceName = surface => ({'linux-systemd':'Linux', 'wsl-systemd':'WSL', linux:'Linux', darwin:'macOS', windows:'Windows'})[surface] || 'Unavailable'
@@ -81,10 +82,16 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       setVisible(document.visibilityState !== 'hidden')
       void refresh({background: true})
     }
+    const recoveryRequired = () => {
+      // A read started before the hold cannot confirm current permissions.
+      // Supersede that read once, without racing an explicit access mutation.
+      if (document.visibilityState !== 'hidden') void refresh()
+    }
     wake()
     document.addEventListener('visibilitychange', wake)
     window.addEventListener('focus', wake)
     window.addEventListener('online', wake)
+    window.addEventListener(PIXEL_RECOVERY_REQUIRED, recoveryRequired)
     return () => {
       activation.current++
       mounted.current = false
@@ -94,6 +101,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       document.removeEventListener('visibilitychange', wake)
       window.removeEventListener('focus', wake)
       window.removeEventListener('online', wake)
+      window.removeEventListener(PIXEL_RECOVERY_REQUIRED, recoveryRequired)
     }
   }, [active, refresh])
   useEffect(() => {
