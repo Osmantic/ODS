@@ -344,8 +344,8 @@ export default function Extensions({ compact = false }) {
     }
   }
 
-  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false } = {}) => {
-    setMutating(serviceId)
+  const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false, displayServiceId = serviceId } = {}) => {
+    setMutating(displayServiceId)
     setConfirm(null)
     setDepConfirm(null)
     try {
@@ -471,7 +471,11 @@ export default function Extensions({ compact = false }) {
         throw new Error(typeof error.detail === 'string' ? error.detail : 'Could not add Open WebUI')
       }
       await Promise.all([fetchCatalog(), fetchWebuiSelection()])
-      setToast({ type: 'success', text: 'Open WebUI added. Existing chat data was preserved.' })
+      // Selection is host-owned, but the catalog's health cache may still be
+      // catching up (or its immediate probe may have failed). Follow readiness
+      // without repeating Add; only catalog health exposes the launch link.
+      setToast({ type: 'info', text: 'Open WebUI selected. Waiting for its service to become ready.' })
+      pollProgress('open-webui')
     } catch (error) {
       await fetchWebuiSelection()
       setToast({ type: 'error', text: friendlyError(error.message) || 'Could not add Open WebUI. Check its selection before retrying.' })
@@ -482,10 +486,15 @@ export default function Extensions({ compact = false }) {
   }
 
   const requestAction = (ext, action) => {
+    // Hermes is internal-only; add its browser proxy and required services together.
+    const addHermesWeb = action === 'enable' && ext.id === 'hermes'
+      && ext.library_selected === false && ext.status === 'disabled'
     const messages = {
       'add-webui': 'Add Open WebUI? ODS will download and start its chat service. Any existing Open WebUI chats and settings will be reused.',
       install: `Install ${ext.name}? This will download and start the service.`,
-      enable: `Enable ${ext.name}? The service will be started.`,
+      enable: addHermesWeb
+        ? 'Add Hermes Agent and its browser access? ODS will start Hermes, Hermes Auth Proxy, and required services including SearXNG.'
+        : `Enable ${ext.name}? The service will be started.`,
       disable: `Disable ${ext.name}? The service will be stopped.`,
       // A failed extension still has an enabled definition; the API stops
       // whatever the failed attempt left running before removing it.
@@ -506,6 +515,7 @@ export default function Extensions({ compact = false }) {
     // the install plan), before any request that copies or starts anything.
     openDialog({
       action, ext, message: messages[action],
+      ...(addHermesWeb ? { targetServiceId: 'hermes-proxy', autoEnableDeps: true } : {}),
       ...(action === 'install'
         ? { settings: { serviceId: ext.id, fields: [], loading: true, error: '' } } : {}),
     })
@@ -514,8 +524,9 @@ export default function Extensions({ compact = false }) {
   const confirmAction = async () => {
     const current = confirm
     if (!current || settingsBusy || current.settings?.loading) return
-    const run = () => current.action === 'add-webui' ? handleWebuiAdd() : handleMutation(current.ext.id, current.action, {
+    const run = () => current.action === 'add-webui' ? handleWebuiAdd() : handleMutation(current.targetServiceId || current.ext.id, current.action, {
       autoEnableDeps: current.autoEnableDeps === true,
+      displayServiceId: current.ext.id,
       force: current.action === 'update' && (
         current.ext.locally_modified || ['untracked', 'unknown'].includes(current.ext.update_status)
       ),
@@ -721,6 +732,7 @@ export default function Extensions({ compact = false }) {
             <ExtensionCard
               key={ext.id}
               ext={ext}
+              hermesProxy={ext.id === 'hermes' ? extensions.find(e => e.id === 'hermes-proxy') : null}
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
               onDetails={() => setExpanded(ext.id)}
@@ -728,7 +740,7 @@ export default function Extensions({ compact = false }) {
               onAction={requestAction}
               webuiSelection={webuiSelection}
               mutating={mutating}
-              progressData={progressMap[ext.id]}
+              progressData={progressMap[ext.id] || (ext.id === 'hermes' ? progressMap['hermes-proxy'] : null)}
             />
           ))}
         </div>
@@ -829,7 +841,8 @@ export default function Extensions({ compact = false }) {
 }
 
 function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
-  let tooltip = STATUS_DESCRIPTIONS[status] || ''
+  const runtimeStarting = status === 'installing' && ext.runtime_starting === true
+  let tooltip = runtimeStarting ? 'Service is starting; waiting for its health check' : STATUS_DESCRIPTIONS[status] || ''
   if (status === 'incompatible') {
     tooltip += ` \u2014 requires ${ext.gpu_backends?.join(' or ') || 'specific GPU'}, your system: ${gpuBackend || 'unknown'}`
   }
@@ -837,7 +850,7 @@ function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
   const badge = (status === 'installing' || status === 'setting_up') ? (
     <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 flex items-center gap-1 cursor-help">
       <Loader2 size={8} className="animate-spin" />
-      {status === 'setting_up' ? 'setting up' : 'installing'}
+      {runtimeStarting ? 'starting' : status === 'setting_up' ? 'setting up' : 'installing'}
     </span>
   ) : status === 'error' ? (
     <span
@@ -886,7 +899,7 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
+function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
@@ -900,11 +913,12 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isUserExt = ext.source === 'user'
   const isManagedBuiltin = isCore && ext.library_manageable === true
   const isError = status === 'error'
+  const runtimeStarting = status === 'installing' && ext.runtime_starting === true
   // A saved progress record can describe a terminal failure or completion.
   // Only active phases should keep the installation spinner on screen.
-  const showProgress = !isError && (progressData?.status
+  const showProgress = !isError && (runtimeStarting || (progressData?.status
     ? ['pulling', 'starting', 'setup_hook'].includes(progressData.status)
-    : status === 'installing' || status === 'setting_up')
+    : status === 'installing' || status === 'setting_up'))
   const isStopped = status === 'stopped'
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
@@ -919,8 +933,9 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
     ext.update_available || ext.locally_modified || ['untracked', 'unknown'].includes(ext.update_status)
   )
   const showRollback = isUserExt && ext.rollback_available
-  const launchUrl = serviceUrl(ext)
-  const launchPort = ext.external_port ?? ext.external_port_default ?? ext.port
+  const launchService = ext.id === 'hermes' && hermesProxy?.status === 'enabled' ? hermesProxy : ext
+  const launchUrl = serviceUrl(launchService)
+  const launchPort = launchService.external_port ?? launchService.external_port_default ?? launchService.port
 
   return (
     <article className="extension-entry">
@@ -981,7 +996,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       {showProgress && (
         <div className="px-4 py-2 border-t border-theme-border/40 text-[10px] text-blue-400/80 flex items-center gap-2">
           <Loader2 size={12} className="animate-spin" />
-          <span>{progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
+          <span>{runtimeStarting ? 'Starting service — waiting for health check...' : progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
         </div>
       )}
       {/* Error message — expandable when long or multiline so docker-compose
@@ -1028,7 +1043,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               onClick={() => onAction(ext, 'enable')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
-              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd && ext.id === 'hermes' ? 'Add Hermes with web access' : showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
             </button>
           )}
           {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false && (
@@ -1341,14 +1356,14 @@ function DetailModal({ ext, gpuBackend, onClose }) {
             </div>
           )}
 
-          {/* CLI Commands */}
-          <div>
+          {/* The CLI refuses selection changes for category=core services. */}
+          {ext.category !== 'core' && <div>
             <h4 className="text-xs font-medium text-theme-text-muted uppercase tracking-wider mb-2">CLI Commands</h4>
             <div className="space-y-1">
               <CopyableCommand command={`ods enable ${ext.id}`} />
               <CopyableCommand command={`ods disable ${ext.id}`} />
             </div>
-          </div>
+          </div>}
         </div>
       </div>
     </div>

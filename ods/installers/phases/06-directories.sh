@@ -107,7 +107,10 @@ _phase06_pixel_runtime_layout() {
     docker_endpoint="$(timeout 10s "${docker_command[@]}" context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" || return 1
     [[ "$docker_endpoint" == unix:///* ]] || return 1
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
-    [[ "$docker_os" == "Docker Desktop" ]] || return 0
+    case "$docker_os" in
+        'Docker Desktop'|'Docker Desktop (containerized)') ;;
+        *) return 0 ;;
+    esac
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
     # Use this distro's path. Docker Desktop's WSL proxy translates bind
     # sources from the calling distro; the daemon's own name for this tmpfs
@@ -382,6 +385,12 @@ else
     _phase06_prune_ready=true
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" \
         && ( -e "$_phase06_pixel_marker" || -L "$_phase06_pixel_marker" ) ]]; then
+        # Fail before source restoration, pruning or staging. Rootless fallback
+        # is supported for optional extras, not an existing Pixel deployment.
+        if [[ ${EUID:-$(id -u)} -ne 0 && "${ODS_SUDO_AVAILABLE:-true}" == false ]]; then
+            error "source-upgrade-sudo-required: Updating the existing Pixel installation requires sudo. Preserve the installation and any pending upgrade state."
+            return 1
+        fi
         _phase06_pixel_owner="$(ods_pixel_install_owner)" || {
             error "Could not identify the ODS owner for a Pixel source transition."
             return 1
@@ -390,11 +399,10 @@ else
             error "Could not resolve the ODS owner home for a Pixel source transition."
             return 1
         }
-        # A failed source-update step prints its own reason (fixed text, never
-        # paths) above; name the step too, so the install never stops without
-        # a cause (fleet: a laptop stopped in phase 06 with none).
+        # Name the failed step even if the child was interrupted before it
+        # could emit a diagnostic. Do not promise a reason was printed.
         _phase06_source_failed() {
-            error "The Pixel source update stopped at its '$1' step; the reason is printed above."
+            error "The Pixel source update stopped at its '$1' step. Preserve the installation and any pending upgrade state."
             return 1
         }
         _ods_pixel_source_transition_required \
@@ -457,7 +465,10 @@ else
                 unset _phase06_source_status
                 ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" \
                     || _phase06_source_failed hold || return 1
-                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || _phase06_source_failed hold || return 1
+                if [[ ! "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]]; then
+                    error "source-hold-response-invalid: The Pixel source hold did not return a valid transaction identifier. Preserve any existing admission hold and upgrade state; no source copy was started."
+                    return 1
+                fi
                 export ODS_PIXEL_SOURCE_TRANSACTION
                 _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || _phase06_source_failed copy || return 1
                 # Everything after this boundary can update Compose/env/data
@@ -619,8 +630,9 @@ else
     if ! $_phase06_rootless; then
         for _data_dir in "$INSTALL_DIR"/data/*/; do
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
-            # Private retained chat results belong to Dashboard UID 1000.
+            # Private chat results and image history belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-images/" ]] && continue
             # Token Spy's persistent directory intentionally belongs to its
             # container UID 1000; phase 06 verifies that identity below.
             [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
@@ -648,6 +660,7 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/pixel-images/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/ape/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
@@ -686,7 +699,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     fi
 
     if declare -F _ods_apply_deferred_feature_state >/dev/null; then
-        _ods_apply_deferred_feature_state || {
+        _ods_apply_deferred_feature_state "$_phase06_requested_pixel_ref" || {
             error "Deferred feature reconciliation failed; resume the same installer candidate."
             return 1
         }
@@ -884,6 +897,33 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         fi
         printf '%s\n' "$default"
     }
+
+    # Resolve every fixed service-port assignment before regenerating .env.
+    # Export the resolved values too: later phases use the service registry,
+    # which otherwise retains the defaults it loaded before this rerun.
+    while read -r _port_key _port_default; do
+        _port_value="$(_env_get_explicit_first "$_port_key" "$_port_default")"
+        if [[ ! "$_port_value" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$_port_value > 65535 )); then
+            error "$_port_key must be a port from 1 to 65535"
+            return 1
+        fi
+        printf -v "${_port_key}_VALUE" '%s' "$_port_value"
+        printf -v "$_port_key" '%s' "$_port_value"
+        export "$_port_key"
+    done <<'SERVICE_PORT_DEFAULTS'
+WEBUI_PORT 3000
+PERPLEXICA_PORT 3004
+TTS_PORT 8880
+N8N_PORT 5678
+QDRANT_PORT 6333
+QDRANT_GRPC_PORT 6334
+EMBEDDINGS_PORT 8090
+LITELLM_PORT 4000
+HERMES_PROXY_PORT 9120
+SERVICE_PORT_DEFAULTS
+    declare -F sr_resolve_ports >/dev/null 2>&1 && sr_resolve_ports
+    unset _port_key _port_default _port_value
+    N8N_WEBHOOK_URL_VALUE="$(_env_get_explicit_first N8N_WEBHOOK_URL "http://localhost:${N8N_PORT_VALUE}")"
 
     # The local llama-server port may already belong to another owner service
     # (for example a fleet worker). Honor an explicit install override before
@@ -1461,6 +1501,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # subsequent phases — later mkdirs create container-bind-mount dirs that
     # need world-traverse (e.g. SearXNG runs as uid 977).
     # The chmod 600 below is belt-and-braces.
+    # The template only knows ODS's own keys. Snapshot the previous .env so the
+    # settings bundled and installed extensions own can be carried over after
+    # the rewrite.
+    _phase06_previous_env=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        _phase06_previous_env="$(mktemp)" || return 1
+        cp "$INSTALL_DIR/.env" "$_phase06_previous_env" || return 1
+    fi
     (
         umask 077
         cat > "$INSTALL_DIR/.env" << ENV_EOF
@@ -1623,17 +1671,17 @@ fi)
 
 #=== Ports ===
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
-WEBUI_PORT=3000
+WEBUI_PORT=$(dotenv_value "${WEBUI_PORT_VALUE}")
 DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
 SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
-PERPLEXICA_PORT=3004
+PERPLEXICA_PORT=$(dotenv_value "${PERPLEXICA_PORT_VALUE}")
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
-TTS_PORT=8880
-N8N_PORT=5678
-QDRANT_PORT=6333
-QDRANT_GRPC_PORT=6334
-EMBEDDINGS_PORT=8090
-LITELLM_PORT=4000
+TTS_PORT=$(dotenv_value "${TTS_PORT_VALUE}")
+N8N_PORT=$(dotenv_value "${N8N_PORT_VALUE}")
+QDRANT_PORT=$(dotenv_value "${QDRANT_PORT_VALUE}")
+QDRANT_GRPC_PORT=$(dotenv_value "${QDRANT_GRPC_PORT_VALUE}")
+EMBEDDINGS_PORT=$(dotenv_value "${EMBEDDINGS_PORT_VALUE}")
+LITELLM_PORT=$(dotenv_value "${LITELLM_PORT_VALUE}")
 LANGFUSE_PORT=$(dotenv_value "${LANGFUSE_PORT}")
 
 #=== Hermes Agent ===
@@ -1644,7 +1692,7 @@ HERMES_LLM_BASE_URL=$(dotenv_value "${HERMES_LLM_BASE_URL_VALUE}")
 HERMES_LLM_API_KEY=$(dotenv_value "${HERMES_LLM_API_KEY_VALUE}")
 HERMES_LANGUAGE=${HERMES_LANGUAGE:-en}
 HERMES_REQUIRE_OWNER_CARD=${HERMES_REQUIRE_OWNER_CARD:-false}
-HERMES_PROXY_PORT=${HERMES_PROXY_PORT:-9120}
+HERMES_PROXY_PORT=$(dotenv_value "${HERMES_PROXY_PORT_VALUE}")
 HERMES_PROXY_UPSTREAM=${HERMES_PROXY_UPSTREAM:-ods-hermes:9119}
 ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 
@@ -1723,7 +1771,7 @@ WEB_SEARCH_ENGINE=searxng
 
 #=== n8n Settings ===
 N8N_HOST=localhost
-N8N_WEBHOOK_URL=http://localhost:5678
+N8N_WEBHOOK_URL=$(dotenv_value "${N8N_WEBHOOK_URL_VALUE}")
 TIMEZONE=${SYSTEM_TZ:-UTC}
 
 #=== Langfuse (LLM Observability) ===
@@ -1768,6 +1816,16 @@ ENV_EOF
     )
 
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
+    if [[ -n "$_phase06_previous_env" ]]; then
+        # shellcheck source=../lib/extension-env-carry.sh
+        . "$SCRIPT_DIR/installers/lib/extension-env-carry.sh"
+        ods_carry_extension_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" \
+            "$SCRIPT_DIR/extensions/services" "$INSTALL_DIR/data/user-extensions"
+        ods_carry_public_url_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env"
+        ods_carry_named_env_keys "$_phase06_previous_env" "$INSTALL_DIR/.env" "${ODS_OWNER_ENV_KEYS[@]}"
+        rm -f "$_phase06_previous_env"
+    fi
+    unset _phase06_previous_env
     # Docker Desktop's daemon is outside the installing WSL namespace.
     # Prepare its authenticated control address before phase 07 starts the
     # host agent and before Compose inherits dashboard-api's environment.

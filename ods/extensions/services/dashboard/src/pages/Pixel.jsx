@@ -1,3 +1,5 @@
+import ModelActivationNotice from '../components/ModelActivationNotice'
+import {modelActivationStatus} from '../lib/modelActivationStatus'
 import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
@@ -49,7 +51,7 @@ import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pi
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
 import PortalDeliveredArtifacts from '../components/PortalDeliveredArtifacts'
-import { deliveredArtifactMetadata, parseDeliveredArtifactsFrame } from '../lib/pixelDeliveredArtifacts'
+import { deliveredArtifactDisplayText, deliveredArtifactMetadata, parseDeliveredArtifactsFrame } from '../lib/pixelDeliveredArtifacts'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
 import MetalMetricIcon from '../components/MetalMetricIcon'
@@ -582,6 +584,11 @@ export default function Pixel({ systemStatus = null }) {
   const [initialChat] = useState(loadStoredChat)
   const conversationWriter = useRef(null)
   if (!conversationWriter.current) conversationWriter.current = createConversationWriter(initialChat?.persistenceSnapshot)
+  const savedView = useRef(null)
+  const hydrating = useRef(Boolean(initialChat))
+  const hydrationAction = useRef(initialChat?.persistenceSnapshot?.persistenceVersion !== 2
+    ? initialChat?.interrupted ? 'activate' : 'normalize' : null)
+  const persistenceFailed = useRef(false)
   const pendingImport = useRef(null)
   const sendKey = usePixelSendKey()
 
@@ -602,6 +609,7 @@ export default function Pixel({ systemStatus = null }) {
   const [modelSupport, setModelSupport] = useState(null)
   const [runtimeIdentity, setRuntimeIdentity] = useState(null)
   const [runtimeReadiness, setRuntimeReadiness] = useState(null)
+  const [modelActivation, setModelActivation] = useState(null)
   const [modelSwitching,setModelSwitching]=useState(false)
   const [modelStatusRefresh,setModelStatusRefresh]=useState(0)
   const [preview, setPreview] = useState(() => initialChat?.preview || null)
@@ -623,6 +631,8 @@ export default function Pixel({ systemStatus = null }) {
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
+  const imageWorkPending = useRef(false)
+  imageWorkPending.current = images.busy
   const imageDraftKey = JSON.stringify(images.receipts)
   const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
@@ -752,27 +762,58 @@ export default function Pixel({ systemStatus = null }) {
               return
             }
             if (['complete', 'interrupted', 'cancelled'].includes(result.state)) {
+              // Recovery changes only the exact request's result, using the
+              // latest saved record so stream progress and other metadata are
+              // retained. An unsaved local edit must remain available to export.
+              if (persistenceFailed.current) return
+              if (imageWorkPending.current) {
+                timer = globalThis.setTimeout(checkActivity, 2000)
+                return
+              }
+              let chat = loadStoredChat(readConversations().find(item => item.chatId === chatId))
+              if (!chat || chat.chatId !== chatId) throw new Error('Saved conversation is unavailable')
               const recovered = retainedResult(result.events)
               const successful = result.state === 'complete' && recovered.done && !recovered.failed
-              setMessages(previous => {
+              if (chat.requestId === requestId && chat.interrupted) {
+                const source = chat.persistenceSnapshot
                 const publication = successful ? recovered.preview : null
-                const before = [...previous].reverse().find(message => message.publication?.relativeDirectory === publication?.relativeDirectory)?.publication || null
-                return replaceLastAssistant(previous, {
-                content: result.state === 'cancelled' ? stoppedContent(recovered.content)
-                  : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
-                status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
-                ...(recovered.task ? {task:recovered.task} : {}),
-                ...(successful && recovered.questions ? {questions:recovered.questions} : {}),
-                ...(successful && recovered.artifacts ? {artifacts:recovered.artifacts} : {}),
-                ...(publication ? {publication,beforePublication:before} : {}),
-              })})
-              if (successful && recovered.preview) {
-                setPreview(recovered.preview); setPreviewRefresh(0)
-                setWorkspaceOpen(true); setPreviewCollapsed(false)
+                const before = [...source.messages].reverse().find(message => message.publication?.relativeDirectory === publication?.relativeDirectory)?.publication || null
+                const writer = createConversationWriter(source)
+                try {
+                  const saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
+                    messages:replaceLastAssistant(source.messages, {
+                      content: result.state === 'cancelled' ? stoppedContent(recovered.content)
+                        : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
+                      status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
+                      ...(recovered.task ? {task:recovered.task} : {}),
+                      ...(successful && recovered.questions ? {questions:recovered.questions} : {}),
+                      ...(successful && recovered.artifacts ? {artifacts:recovered.artifacts} : {}),
+                      ...(publication ? {publication,beforePublication:before} : {}),
+                    }),
+                    ...(publication ? {preview:publication, workspaceOpen:true} : {}),
+                  })
+                  chat = loadStoredChat(saved)
+                } catch (error) {
+                  setPersistenceError(error?.code === 'conversation-changed' ? error.message
+                    : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
+                  throw error
+                }
               }
-              requestIdRef.current = null
-              setInterrupted(false)
-              updateRestoredActivity('terminal')
+              // The sender may already have saved, or another request may now
+              // own this chat. Adopt its authoritative record without writing.
+              conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
+              hydrating.current = true; hydrationAction.current = null; savedView.current = null
+              requestIdRef.current = chat.requestId
+              contextStartRef.current = chat.contextStart
+              compactionRequestRef.current = chat.compactionRequestId
+              images.replace(chatId, chat.draftImages)
+              setInput(chat.draft)
+              setMessages(chat.messages)
+              setPreview(chat.preview); setPreviewRefresh(0)
+              setWorkspaceOpen(chat.workspaceOpen); setPreviewCollapsed(false)
+              setInterrupted(chat.interrupted)
+              updateRestoredActivity(chat.interrupted ? 'checking' : 'terminal')
+              if (chat.interrupted) setActivityRefresh(value => value + 1)
               void contextControl.refresh(true)
               return
             }
@@ -892,8 +933,10 @@ export default function Pixel({ systemStatus = null }) {
           : data.state === 'model_switching'
             ? 'switching'
             : 'unavailable')
+        setModelActivation(modelActivationStatus(data.modelActivation))
         setStatusDetail(typeof data.detail === 'string' ? data.detail : '')
       } catch (error) {
+        if (!stopped) setModelActivation(null)
         if (!stopped && error?.name !== 'AbortError') {
           setAgentRuntime(null)
           setRuntimeIdentity(null)
@@ -950,7 +993,7 @@ export default function Pixel({ systemStatus = null }) {
       })
       // Report storage limits without silently trimming previous turns.
       if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
-      conversationWriter.current({
+      const snapshot = {
         schema: 1,
         chatId: chatIdRef.current,
         requestId: requestIdRef.current,
@@ -963,11 +1006,27 @@ export default function Pixel({ systemStatus = null }) {
         compactionRequestId: compactionRequestRef.current,
         preview,
         workspaceOpen,
-      })
+      }
+      const view = JSON.stringify(snapshot)
+      // Hydration is a view operation, including in StrictMode. In particular,
+      // its interrupted=true/sending=false normalization is not a saved edit.
+      if (hydrating.current) {
+        hydrating.current = false
+        if (hydrationAction.current === 'activate') conversationWriter.current.activate()
+        else if (hydrationAction.current === 'normalize') conversationWriter.current(snapshot)
+        hydrationAction.current = null
+        savedView.current = view
+        return
+      }
+      if (savedView.current === view) return
+      conversationWriter.current(snapshot)
+      savedView.current = view
+      persistenceFailed.current = false
       setPersistenceError('')
     } catch (error) {
       // Conversation persistence is a convenience; chat remains usable when
       // storage is unavailable, full, or blocked by the browser.
+      persistenceFailed.current = true
       setPersistenceError(error?.code === 'conversation-changed' ? error.message
         : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
     }
@@ -1375,6 +1434,14 @@ export default function Pixel({ systemStatus = null }) {
       // rewrite that completed answer as owner-stopped.
       if (stopRequestRef.current !== stopRequest || chatIdRef.current !== chatId || requestIdRef.current !== requestId || abortRef.current !== controller
         || (restored && !['active', 'unknown'].includes(restoredActivityRef.current))) return
+      if (restored && requestId) {
+        // The observer's partial transcript can predate the sender's latest
+        // save. Settle the acknowledged request through retained-result
+        // recovery, which preserves that work and grants an exact handoff.
+        updateRestoredActivity('checking')
+        setActivityRefresh(value => value + 1)
+        return
+      }
       controller?.abort()
       abortRef.current = null
       requestIdRef.current = null
@@ -1471,6 +1538,8 @@ export default function Pixel({ systemStatus = null }) {
       const chat = loadStoredChat(readConversations().find(item => item.chatId === event.detail))
       if (!chat || chat.chatId === chatIdRef.current) return
       conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
+      hydrating.current = true; savedView.current = null; persistenceFailed.current = false
+      hydrationAction.current = chat.interrupted || chat.persistenceSnapshot.recoverySource ? 'activate' : 'normalize'
       chatIdRef.current = chat.chatId
       images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
@@ -1640,6 +1709,7 @@ export default function Pixel({ systemStatus = null }) {
         </div>
       </header>
       {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
+      <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'available' && modelSupport && (
         <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">
           {modelSupport.detail}
@@ -1685,13 +1755,6 @@ export default function Pixel({ systemStatus = null }) {
             </div>
           </div>
         )}
-        {status === 'switching' && messages.length === 0 && (
-          <div className="mx-auto flex h-full max-w-lg flex-col items-center justify-center text-center text-theme-text-muted">
-            <Loader2 className="mb-4 h-9 w-9 animate-spin text-theme-accent-light" />
-            <p className="font-medium text-theme-text">{displayName} is switching models</p>
-            <p className="mt-1 text-sm">Your draft is safe. {displayName} will reconnect automatically when activation completes.</p>
-          </div>
-        )}
         {status === 'available' && messages.length === 0 && (
           <div className="pixel-welcome mx-auto text-theme-text-muted">
             <div>
@@ -1705,7 +1768,9 @@ export default function Pixel({ systemStatus = null }) {
         )}
         {messages.map((message, index) => {
           if (isQuestionAnswer(messages,index)) return null
-          const displayedContent=message.role==='assistant' ? publicationDisplayText(message.content,message.publication) : message.content
+          const publicationContent=message.role==='assistant' ? publicationDisplayText(message.content,message.publication) : message.content
+          const displayedContent=message.role==='assistant' && message.status==='done'
+            ? deliveredArtifactDisplayText(publicationContent,message.artifacts) : publicationContent
           return (
           <div key={index} data-pixel-message-index={index} tabIndex={-1} data-pixel-response={message.role === 'assistant' ? '' : undefined} className={`mx-auto flex min-w-0 w-full max-w-5xl ${message.role === 'user' ? 'justify-end gap-2' : 'justify-start'}`}>
             {message.role === 'assistant' && <PixelMascot state={pixelReplyPose(message, sending && index === messages.length - 1)} settled={message.status !== 'streaming'} className="pixel-reply-character" />}

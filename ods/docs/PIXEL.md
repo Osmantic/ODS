@@ -133,6 +133,228 @@ or disabling it; use the managed native update/migration path and preserve
 `data/pixel-native` and its receipts. Do not delete protected state or use force
 to work around that guard. See [MACOS-QUICKSTART.md](MACOS-QUICKSTART.md).
 
+If native retirement reports `native-retirement-stopped-job-needs-witness`, do
+not remove more files or fabricate a shutdown receipt. See the explicit,
+maintainer-assisted [stopped-service retirement recovery](MACOS_PIXEL_RETIREMENT_RECOVERY.md).
+It preserves verified autostart definitions and requires a Mac restart before
+retiring a deployment that lacks a live process-tree witness.
+
+### Retained initial installation stopped at final health
+
+A healthy gateway alone does not complete initial activation. The installer
+also waits for `pixel-native-ingress`, `pixel-workspace-preview`, and
+`pixel-edge`. A timeout reports each service's last observed state; preview
+startup errors report a fixed stage and reason without paths or configuration
+values. These diagnostics are also written to the install log.
+
+For an initial attempt with `activation.json` reporting `status: error`,
+`requiresRecovery: true`, and `phase: final-health` (or `webui-routing`), the
+maintainer recovery helper can finish the **Pixel stage** once the underlying
+services are healthy. Use a reviewed ODS source tree containing the helper,
+and run as the same signed-in Mac user who installed ODS:
+
+```bash
+python3 /path/to/reviewed-ODS/ods/installers/macos/lib/pixel-native-recover.py \
+  --install-dir "$HOME/ods" --ods-source "$HOME/ods"
+```
+
+Replace the source path and installation directory with their actual paths.
+The helper requests sudo for read-only verification of the protected initial
+activation. It checks the protected journals, exact runtime/service selection,
+live process identity, access readiness and released admission, then checks
+Docker health and refreshes Dashboard/Open WebUI's native route. It verifies
+protected readiness again before publishing `selection-update.json`. The
+original preparation and activation receipts are preserved. A rejected check
+before publication does not publish readiness; an identical completed recovery
+can be retried. The optional model handoff described below runs after publication.
+Do not edit the receipts, replay activation, uninstall, or clear volumes to
+bypass a rejection. This helper does not repair an unfinished protected
+activation, perform a native migration, or extend the health timeout.
+
+**This is not a whole-installer resume.** Success prints `native-pixel-ready`.
+The original installer may also have stopped before the host-agent setup,
+optional OpenCode setup, background full-model download, and final readiness
+summary. Those remaining steps need a separate maintainer-reviewed continuation
+before declaring ODS fully installed. In particular, model and extension
+management need a working host agent; do not infer that they work from Pixel
+health alone. Older failed installs may retain only the starter model because
+the selected full-model download arguments had not yet been persisted.
+
+For maintainer-assisted recovery, `--restore-host-agent` additionally runs the
+same isolated Python runtime and login LaunchAgent setup used by the normal
+installer. It uses the verified native Docker transport, configures the host
+bridge where needed, and requires an authenticated Dashboard-to-host-agent
+request to succeed. This runs between the protected readbacks; a setup failure
+does not publish a new successful selection. Success includes
+`hostAgentReady: true`, but still reports `installerComplete: false`.
+Private diagnostics are retained at
+`data/pixel-native/preparation/continuation-host-agent.log`; review them before
+sharing. A failed operation can leave the owner-level host agent partially
+configured, so preserve the installation and retry only after diagnosis.
+The flag does not install optional tools or launch the full-model download.
+Older attempts did not persist the OpenCode choice before the Pixel stage;
+do not infer that choice from a missing binary or LaunchAgent.
+
+New macOS installations save `ENABLE_OPENCODE=true` or `false` before Pixel
+activation. For a retained failed installation, maintainers can inspect the
+remaining choices without running recovery or setup:
+
+```bash
+python3 /path/to/reviewed-ODS/ods/installers/macos/lib/pixel-native-recover.py \
+  --install-dir "$HOME/ods" --ods-source "$HOME/ods" --inspect-continuation
+```
+
+This reads the retained configuration and renders the selected Compose stack;
+it does not request sudo, start services, write selection receipts or verify
+live readiness. Output distinguishes saved choices from unknown historical
+choices, lists checks still required, and omits credentials and download
+arguments. Missing `ENABLE_OPENCODE` yields `requiresChoice: ["opencode"]`.
+After confirming the user's original choice, add `--opencode-choice disabled`
+or `enabled` to the inspection command or optional-setup command below. This
+confirmation is not persisted and
+cannot override a saved choice. Whisper model setup and Perplexica configuration
+are listed only when those services are in the retained Compose selection.
+Inspection cannot be combined with setup options and never reports a
+completed installation.
+
+For observational checks against a running native installation, maintainers
+can run the separate API inspector as the signed-in owner (not with sudo):
+
+```bash
+python3 /path/to/reviewed-ODS/ods/installers/macos/lib/pixel-native-readiness.py \
+  --install-dir "$HOME/ods"
+```
+
+For an old installation without a saved OpenCode choice, confirm the original
+choice using `--opencode-choice disabled` or `enabled`. This does not change
+the saved configuration. The inspector checks Dashboard, authenticated host
+access, the selected model's live identity/context, extensions and Portal
+access. Cloud mode checks route discovery, not successful provider inference.
+Requests have bounded response sizes and wall-clock deadlines; credentials
+stay on loopback and are not printed or forwarded through redirects.
+
+Exit zero and `api-checks-passed` mean only these observations passed. Output
+always retains `installerComplete: false` and lists outstanding verification:
+protected recovery, selected service/optional-tool health, model completion,
+and Portal chat plus preview delivery. Release identity remains unverified
+unless a separate release attestation establishes it. This command does not
+activate services, resume setup or replace the genuine failed-install test.
+
+Add `--include-services` to also inspect the retained Docker selection after
+Pixel has reached its ready selection. This uses the installed native gateway's
+Docker socket/project, not the shell's current Docker context or Compose
+profiles. The existing native-selection and Compose security validators run
+before inspection; a missing or unrecovered selection is not bypassed.
+
+The inspector accepts init jobs only when their selected dependencies require
+successful completion and they exited with code zero. It requires every
+selected running replica to pass its configured healthcheck, respects disabled
+profiles as filtered by Compose, and checks profiles enabled in the retained
+environment rather than skipping services with a profile annotation. It
+rejects a running Docker model when that service is scaled to
+zero for native Metal inference. Configuration and selection are rechecked
+around Docker observations. No `up`, restart, setup or download is performed.
+Per-service booleans appear in `serviceChecks`; no container configuration or
+credentials are printed. Successful observations remove only the
+`selected-service-health` pending gate. If the resolved selection also confirms
+that none of OpenCode, Whisper or Perplexica was chosen, optional setup has no
+pending state to verify. Selected optional tools still require their setup and
+functional checks; container health alone does not certify those tools.
+
+Once the combined inspector passes, maintainers can explicitly exercise a
+visible answer and an actual tool-produced preview:
+
+```bash
+python3 /path/to/reviewed-ODS/ods/installers/macos/lib/pixel-native-acceptance.py \
+  --run --install-dir "$HOME/ods" --timeout 600
+```
+
+For a missing historical OpenCode choice, add the same confirmed
+`--opencode-choice disabled` or `enabled`. This test is **not read-only**: it
+creates two test conversation IDs and requests one uniquely named workspace
+directory with an HTML file and published preview. The prompts prohibit
+dependency installation and edits to other files. Use it when no other
+installation/model change is in progress. It does not run automatically after
+recovery or retry failed model actions.
+
+Before dispatch, the test saves an owner-only `acceptance-<id>.json` under
+`data/pixel-native/preparation` and prints its conversation IDs and markers.
+Each request has the specified wall-clock limit (1-900 seconds). An incomplete
+stream triggers one bounded cancellation request for that test conversation
+only; `cancelConfirmed: false` means the server's stop was not established.
+Preserve the record and inspect its conversation/workspace before another test.
+Partial work is never deleted. API credentials and model transcripts are not
+printed, and preview links are fetched only through the local preview port
+without forwarding API credentials or following redirects.
+
+`functional-checks-passed` requires a visible marker answer, a completed stream
+without errors, and HTTP 200 containing the unique marker from the published
+page, with matching configuration and readiness observations before/after.
+It remains `installerComplete: false`: this does not verify protected recovery,
+release identity, optional-tool inference or the reporter's original failure.
+The report removes only the model-completion and Portal chat/preview pending
+gates when both tests and the final stability observation pass. Other pending
+verification is retained, including protected recovery.
+
+`--restore-optional-tools` executes the same OpenCode, Whisper model and
+Perplexica setup functions as the normal installer, for the retained choices
+only. Historical installations missing the OpenCode choice require the
+explicit confirmation above before setup begins. Core with a confirmed or
+saved opt-out reports `optionalTools.status: not-selected` and starts no extra
+tools. A disabled choice does not stop a current user OpenCode session.
+
+Selected OpenCode must use the reviewed release, retain its inference route,
+and pass owned LaunchAgent plus local HTTP readiness checks. Foreign plists or
+jobs are not replaced. Selected Whisper requires a cached model, including
+after a bounded download trigger; an accepted trigger alone is not success.
+Perplexica must pass the existing endpoint, credential and model configuration
+readback.
+
+Optional setup runs inside the recovery selection lock, between protected
+readbacks and before readiness publication. It rechecks the retained
+environment and rendered Compose selection around setup. Failure preserves
+the original receipts and can leave partial owner-level configuration; inspect
+the private `data/pixel-native/preparation/continuation-optional-tools.log`
+before retrying. `optionalTools.status: ready` confirms this setup step, not
+completion of the full installer or the later model swap.
+
+The separate `--resume-model` option saves the verified Compose file selection
+and resumes the original full-model choice using the installed
+`bootstrap-upgrade.sh`. It matches the saved recommendation against the
+installed catalog, including context, pinned artifact URL and checksum; it
+does not reselect a model from current hardware policy. A different active
+model/store, ambiguous recommendation or conflicting retry metadata is refused.
+If the saved model is already selected, it only restores the missing Compose
+cache; this configuration check is not a live inference proof.
+
+For a qualifying retained failure, the setup options can be supplied together
+(add the confirmed OpenCode choice if the historical installation lacks it):
+
+```bash
+python3 /path/to/reviewed-ODS/ods/installers/macos/lib/pixel-native-recover.py \
+  --install-dir "$HOME/ods" --ods-source "$HOME/ods" \
+  --restore-host-agent --restore-optional-tools --resume-model
+```
+
+The model handoff occurs **after** Pixel readiness is published. A later
+handoff failure therefore leaves that successful Pixel selection intact.
+Original activation receipts are never rewritten. Existing same-owner upgrade
+processes are checked before starting a new one; do not delete PID/status files
+to bypass an in-progress worker. Retry arguments and the new PID are saved
+atomically. If starting the worker fails before it exists, a new failed status
+allows the normal `ods start`/`ods restart` retry path.
+
+The returned `modelUpgrade.status: download-started` means only that the
+background worker started. Inspect `logs/model-upgrade.log` and
+`data/bootstrap-status.json`, then verify the active model and Portal after
+the swap. The helper still reports `installerComplete: false`: final
+full-install readiness remains a separate release gate, as does optional setup
+when `--restore-optional-tools` was not requested.
+
+For the preview crash loop reported in #7448, the old generic logs cannot
+establish the original startup exception. Recovery of services after the
+timeout does not prove that the underlying startup problem has been fixed.
+
 ## Linux host architecture
 
 The following systemd/socket layout describes Linux and WSL2. macOS uses native
@@ -654,6 +876,34 @@ verifies and retires the previous managed Pixel release using its exact local
 source checkout. If that checkout is missing or changed, the upgrade stops
 before retirement or source copy; restore the checkout from a local backup and
 retry. Custom remote source settings are not silently migrated.
+
+On Linux/WSL2, a retained-source retry can restart its existing Pixel Edge if
+it stopped cleanly before the installer could acquire the source-upgrade
+hold. This runs only through the root installer operation: ordinary status
+polling and model requests do not restart containers. The active gateway must
+still prove the same configured access mode, the source plan must remain
+staged and unheld, and the original private Edge gate must be idle. The
+coordinator verifies the container's installation identity, protected owner
+credential, restrictions and unshared Compose volume before starting that
+immutable container ID once. It then verifies health and the unchanged gate
+before acquiring the usual durable source hold. The already-running path is
+unchanged.
+
+Paused/restarting containers, nonzero exits, OOM termination, foreign or
+changed containers, missing/held/interrupted gate state, stale runtime proof
+and existing transitions are not silently repaired. A bounded `source-edge-*`
+reason identifies a refusal without exposing credentials. A failed check
+preserves source snapshots, admission holds and the selected access mode; it
+does not recreate a container or volume. This recovery addresses a cleanly
+stopped retained Edge, not the underlying reason it stopped.
+
+The focused `test_source_edge_restart.py` suite covers custody, race and
+transition refusals. Portal runtime CI additionally runs
+`test_source_edge_restart_docker.py` on an isolated Linux Docker runner using
+the production image and Compose fragment. That test exercises stopped-volume
+inspection, immutable-ID start, readiness and preservation of an existing
+hold; host gateway/source proofs use fixtures, so it is not a full WSL or
+model-install qualification.
 
 ## Configuration reference
 

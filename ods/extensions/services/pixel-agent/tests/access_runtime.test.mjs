@@ -49,6 +49,12 @@ function identity(pid = process.pid) {
   return {version: 2, pid, bootId: fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
     startTicks: stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)[19]};
 }
+function darwinWitness(directory, pid = process.pid) {
+  const claim = fs.statSync(path.join(directory, '.process-claim'), {bigint:true});
+  const owner = fs.statSync(path.join(directory, 'process.json'), {bigint:true});
+  return {version:1, pid, claim:[claim.dev, claim.ino].map(String),
+    owner:[owner.dev, owner.ino, owner.birthtimeNs, owner.ctimeNs].map(String)};
+}
 async function childProcess(t, script) {
   const child = spawn(process.execPath, ['--input-type=module', '-e', script],
     {stdio: ['ignore', 'ignore', 'pipe', 'ipc']});
@@ -518,6 +524,102 @@ test('Darwin concurrent stale claims elect exactly one owner and preserve its ho
   t.after(() => fs.rmSync(path.dirname(options.directory), {recursive:true}));
 });
 
+test('Darwin lifetime claim survives registration and releases on gateway death', {skip:process.platform !== 'darwin'}, async t => {
+  const options = fixture();
+  t.after(() => fs.rmSync(path.dirname(options.directory), {recursive:true}));
+  const {child, message} = await childProcess(t, `
+    import {createAccessRuntime} from ${JSON.stringify(runtimeUrl)};
+    const runtime = createAccessRuntime(${JSON.stringify(options)});
+    runtime.acquire('${token}', runtime.status().revision);
+    process.send(runtime.status()); setInterval(() => {}, 1000);`);
+  assert.equal(message.available, true);
+  const names = ['process.json', 'state.json'];
+  const before = names.map(name => fs.readFileSync(path.join(options.directory, name), 'utf8'));
+  assert.deepEqual(JSON.parse(before[0]), {pid:child.pid});
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.directory, 'process-claim.json'))),
+    darwinWitness(options.directory, child.pid));
+  assert.equal(createAccessRuntime(options).status().initialization_failure, 'process-claim');
+  assert.deepEqual(names.map(name => fs.readFileSync(path.join(options.directory, name), 'utf8')), before);
+  const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
+  const runtime = createAccessRuntime(options), status = runtime.status();
+  assert.equal(status.available, true);
+  assert.equal(status.phase, 'held');
+  assert.equal(runtime.owns(token), true);
+  assert.equal(createAccessRuntime(options).status().initialization_failure, 'process-claim');
+});
+
+test('Darwin witnessed unlocked record tolerates reused live PID without releasing saved holds',
+  {skip:process.platform !== 'darwin'}, () => {
+    for (const phase of ['idle', 'held', 'busy', 'interrupted']) {
+      const options = fixture(); seed(options, {pid:process.pid}, phase);
+      try {
+        fs.writeFileSync(path.join(options.directory, '.process-claim'), '', {mode:0o600});
+        fs.writeFileSync(path.join(options.directory, 'process-claim.json'), JSON.stringify(darwinWitness(options.directory)), {mode:0o600});
+        const runtime = createAccessRuntime(options), status = runtime.status();
+        assert.equal(status.available, true);
+        assert.equal(status.phase, phase === 'busy' ? 'interrupted' : phase);
+        assert.equal(runtime.admit({}, {runId:'reused-pid'}).outcome, phase === 'idle' ? 'pass' : 'block');
+        if (phase === 'held') assert.equal(runtime.owns(token), true);
+      } finally { fs.rmSync(path.dirname(options.directory), {recursive:true}); }
+    }
+  });
+
+test('Darwin refuses stale or malformed witnesses and live legacy owners unchanged',
+  {skip:process.platform !== 'darwin'}, () => {
+    for (const change of [
+      value => ({...value, claim:[value.claim[0], String(BigInt(value.claim[1]) + 1n)]}),
+      value => ({...value, owner:[value.owner[0], value.owner[1], value.owner[2], '0']}),
+      value => ({...value, claim:[Number(value.claim[0]), value.claim[1]]}),
+      value => ({...value, version:5}),
+      value => ({...value, extra:true}),
+      () => null,
+    ]) {
+      const options = fixture(); seed(options, {pid:process.pid}, 'held');
+      try {
+        fs.writeFileSync(path.join(options.directory, '.process-claim'), '', {mode:0o600});
+        const witness = change(darwinWitness(options.directory));
+        if (witness !== null) fs.writeFileSync(path.join(options.directory, 'process-claim.json'), JSON.stringify(witness), {mode:0o600});
+        const names = ['process.json', 'state.json'];
+        const before = names.map(name => fs.readFileSync(path.join(options.directory, name), 'utf8'));
+        assert.equal(createAccessRuntime(options).status().initialization_failure, 'process-identity');
+        assert.deepEqual(names.map(name => fs.readFileSync(path.join(options.directory, name), 'utf8')), before);
+      } finally { fs.rmSync(path.dirname(options.directory), {recursive:true}); }
+    }
+  });
+
+test('Darwin failed initialization releases its claim without accepting corrupt state',
+  {skip:process.platform !== 'darwin'}, () => {
+    const options = fixture();
+    const dead = spawnSync(process.execPath, ['-e', '']);
+    assert.equal(dead.status, 0);
+    seed(options, {pid:dead.pid});
+    try {
+      const state = path.join(options.directory, 'state.json');
+      fs.writeFileSync(state, 'invalid-json');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        assert.equal(createAccessRuntime(options).status().initialization_failure, 'state-read');
+        assert.equal(fs.readFileSync(state, 'utf8'), 'invalid-json');
+      }
+    } finally { fs.rmSync(path.dirname(options.directory), {recursive:true}); }
+  });
+
+test('Darwin legacy rewrite invalidates a witness even when the PID and bytes match',
+  {skip:process.platform !== 'darwin'}, () => {
+    const options = fixture(); seed(options, {pid:process.pid}, 'held');
+    try {
+      fs.writeFileSync(path.join(options.directory, '.process-claim'), '', {mode:0o600});
+      const witness = darwinWitness(options.directory);
+      fs.writeFileSync(path.join(options.directory, 'process-claim.json'), JSON.stringify(witness), {mode:0o600});
+      const lock = path.join(options.directory, 'process.json'), before = fs.readFileSync(lock);
+      // The previous runtime uses unlink + exclusive create during rollback.
+      fs.unlinkSync(lock); fs.writeFileSync(lock, before, {flag:'wx', mode:0o600});
+      assert.notDeepEqual(darwinWitness(options.directory).owner, witness.owner);
+      assert.equal(createAccessRuntime(options).status().available, false);
+      assert.deepEqual(fs.readFileSync(lock), before);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(options.directory, 'state.json'))).phase, 'held');
+    } finally { fs.rmSync(path.dirname(options.directory), {recursive:true}); }
+  });
+
 test('simultaneous stale registrations elect one live owner without replacing it', linux, async t => {
   const options = fixture(), previous = identity(); previous.startTicks = String(BigInt(previous.startTicks) + 1n);
   seed(options, previous);
@@ -543,7 +645,7 @@ test('simultaneous stale registrations elect one live owner without replacing it
 
 test('process and kernel claim files require private owned regular single-link entries',
   {skip: !['linux', 'darwin'].includes(process.platform)}, () => {
-  for (const name of ['process.json', '.process-claim']) {
+  for (const name of ['process.json', '.process-claim', ...(process.platform === 'darwin' ? ['process-claim.json'] : [])]) {
     for (const kind of ['symlink', 'hardlink', 'public', 'directory', 'foreign-owner']) {
       const options = fixture(); seed(options, {pid: process.pid});
       const target = path.join(options.directory, name), source = path.join(options.directory, 'source');

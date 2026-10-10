@@ -48,16 +48,19 @@ LOCAL_RAG_ENABLED=true
 OFFLINE_EOF
 
     # Pre-download GGUF embeddings for memory_search.  Offline mode is only
-    # valid when this required asset is present and structurally valid: a
-    # failed download must not leave an install that cannot work offline.
+    # valid when this required asset is present and matches its pinned hash:
+    # a failed download must not leave an install that cannot work offline.
     ai "Pre-downloading GGUF embeddings for offline memory_search..."
     mkdir -p "$INSTALL_DIR/models/embeddings"
+    command -v sha256sum >/dev/null 2>&1 || error "Offline mode requires sha256sum to verify the embedding asset."
 
+    # Pinned revision, so an upstream re-upload cannot change what is installed.
     EMBED_FILE="$INSTALL_DIR/models/embeddings/nomic-embed-text-v1.5.Q4_K_M.gguf"
-    EMBED_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    EMBED_URL="https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/0188c9bf409793f810680a5a431e7b899c46104c/nomic-embed-text-v1.5.Q4_K_M.gguf"
+    EMBED_SHA256="d4e388894e09cf3816e8b0896d81d265b55e7a9fff9ab03fe8bf4ef5e11295ac"
     _embedding_valid() {
         [[ -s "$1" ]] || return 1
-        [[ "$(head -c 4 "$1" 2>/dev/null)" == "GGUF" ]]
+        [[ "$(sha256sum -- "$1" | cut -d ' ' -f 1)" == "$EMBED_SHA256" ]]
     }
     if _embedding_valid "$EMBED_FILE"; then
         log "Embeddings already downloaded"
@@ -72,7 +75,7 @@ OFFLINE_EOF
         fi
         if ! _embedding_valid "$_embed_tmp"; then
             rm -f -- "$_embed_tmp"
-            error "Downloaded offline embedding asset is missing or not a GGUF file."
+            error "Downloaded offline embedding asset does not match its pinned SHA-256."
         fi
         mv -f -- "$_embed_tmp" "$EMBED_FILE" || error "Could not install the offline embedding asset."
     fi

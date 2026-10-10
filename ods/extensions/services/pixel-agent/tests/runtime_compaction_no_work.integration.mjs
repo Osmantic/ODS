@@ -76,10 +76,10 @@ test('actual harness emits typed no-work before provider and leaves history and 
   assert.equal((await f.session.getEntries()).length,rows.length+1,'next turn can append without a stale compaction phase');
 });
 
-async function caller(t,rows,{mode='success',abortSignal,timeoutSeconds}={}) {
-  let requests=0;
+async function caller(t,rows,{mode='success',abortSignal,timeoutSeconds,trigger='manual',pressure=false}={}) {
+  let requests=0;const requestBodies=[];
   const server=http.createServer(async(req,res)=>{
-    for await(const _ of req){} requests++;
+    let body='';for await(const chunk of req)body+=chunk;requestBodies.push(JSON.parse(body));requests++;
     if(mode==='error'){res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'Nothing to compact',type:'invalid_request_error',code:'compaction_not_needed'}}));return;}
     if(mode==='hang')return;
     res.writeHead(200,{'Content-Type':'text/event-stream'});
@@ -93,12 +93,12 @@ async function caller(t,rows,{mode='success',abortSignal,timeoutSeconds}={}) {
   fs.mkdirSync(workspace,{recursive:true});fs.mkdirSync(agentDir,{recursive:true});
   const sessionId='11111111-2222-4333-8444-555555555555',sessionFile=path.join(area,sessionId+'.jsonl');
   fs.writeFileSync(sessionFile,[{type:'session',version:3,id:sessionId,timestamp:new Date().toISOString(),cwd:workspace},...rows].map(JSON.stringify).join('\n')+'\n');
-  const config={agents:{defaults:{model:'fixture/model',workspace,...timeoutSeconds?{compaction:{timeoutSeconds}}:{}},list:[{id:'pixel',workspace,agentDir}]},
-    models:{providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,apiKey:'fixture-only',models:[{id:'model',name:'fixture',contextWindow:131072,maxTokens:1024}]}}},
+  const config={agents:{defaults:{model:'fixture/model',workspace,...pressure?{compaction:{reserveTokens:13108,reserveTokensFloor:0,keepRecentTokens:2048,...timeoutSeconds?{timeoutSeconds}:{}}}:timeoutSeconds?{compaction:{timeoutSeconds}}:{}},list:[{id:'pixel',workspace,agentDir}]},
+    models:{providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,apiKey:'fixture-only',models:[{id:'model',name:'fixture',contextWindow:pressure?32768:131072,maxTokens:pressure?8192:1024}]}}},
     plugins:{enabled:false}};
   fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
-  const invoke=()=>compactEmbeddedAgentSessionDirect({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:fixture',workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',trigger:'manual',abortSignal});
-  return {invoke,sessionFile,get requests(){return requests;}};
+  const invoke=()=>compactEmbeddedAgentSessionDirect({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:fixture',workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',trigger,abortSignal});
+  return {invoke,sessionFile,requestBodies,get requests(){return requests;}};
 }
 const readRows=file=>fs.readFileSync(file,'utf8').trim().split('\n').map(JSON.parse);
 test('actual native compact wrapper reports confirmed skip for a short conversation',async t=>{
@@ -156,4 +156,100 @@ test('authenticated exact-session no-work result releases maintenance and permit
   assert.equal(runtime.context(user).compaction.status,'skipped');assert.equal(token,null);
   let next=false;await runtime.withMaintenance(user,()=>{next=true;});assert.equal(next,true);assert.equal(token,null);
   assert.equal(f.requests,0);
+});
+
+// Public synthetic messages preserve the measured failing shape: a single user
+// turn, 14 messages, 2158 heuristic tokens, with 1988 after its first message.
+// No production prompt, tool result, credential or private reasoning is copied.
+function pressureHistory() {
+  const messages=[];
+  const text=(value,tokens)=>value.padEnd(tokens*4,'.');
+  const user='Delegate two short native read-only reviews, wait for both, and combine findings. Do not edit or publish. OUTPUT_CONTRACT_SENTINEL';
+  messages.push({role:'user',content:text(user,170),timestamp:1});
+  const call=(tokens,calls)=>{
+    const blocks=calls.map(([id,name])=>({type:'toolCall',id,name,arguments:{}}));
+    const chars=blocks.reduce((n,b)=>n+b.name.length+JSON.stringify(b.arguments).length,0);
+    blocks.push({type:'text',text:'.'.repeat(tokens*4-chars)});
+    messages.push({role:'assistant',content:blocks,stopReason:'toolUse',api:'openai-completions',provider:'fixture',model:'model',usage:{input:19500,output:100,totalTokens:19600},timestamp:1});
+  };
+  const result=(tokens,id,name)=>messages.push({role:'toolResult',toolCallId:id,toolName:name,content:[{type:'text',text:text('Public fixture result',tokens)}],isError:false,timestamp:1});
+  call(33,[['search','tool_search']]);result(192,'search','tool_search');
+  call(172,[['bad-one','tool_call'],['bad-two','tool_call']]);result(19,'bad-one','tool_call');result(19,'bad-two','tool_call');
+  call(37,[['describe','tool_describe']]);result(737,'describe','tool_describe');
+  call(174,[['child-one','sessions_spawn'],['child-two','sessions_spawn']]);result(231,'child-one','sessions_spawn');result(231,'child-two','sessions_spawn');
+  call(46,[['poll','process']]);result(48,'poll','process');
+  messages.push({role:'assistant',content:[{type:'text',text:text('Waiting for both child results.',49)}],stopReason:'stop',api:'openai-completions',provider:'fixture',model:'model',usage:{input:20099,output:49,totalTokens:20148},timestamp:1});
+  return messages.map((message,i)=>({type:'message',id:`pressure-${i}`,parentId:i?`pressure-${i-1}`:null,message}));
+}
+function assertPairedTail(rows,firstKept) {
+  const start=rows.findIndex(r=>r.id===firstKept);assert.ok(start>0);
+  const calls=new Set();
+  for(const {message}of rows.slice(start)) {
+    if(message.role==='assistant')for(const part of message.content)if(part.type==='toolCall')calls.add(part.id);
+    if(message.role==='toolResult')assert.ok(calls.has(message.toolCallId),'retained result must retain its originating call');
+  }
+}
+test('pressure fixture reproduces exact native no-work boundary with safe split available',()=>{
+  const rows=pressureHistory();assert.equal(rows.length,14);
+  assert.equal(rows.reduce((n,r)=>n+native.E(r.message),0),2158);
+  assert.equal(native.D(rows,0,rows.length,2048).firstKeptEntryIndex,0);
+  const cut=native.D(rows,0,rows.length,1024);assert.equal(cut.firstKeptEntryIndex,8);assert.equal(cut.isSplitTurn,true);
+  assertPairedTail(rows,rows[cut.firstKeptEntryIndex].id);
+});
+test('overflow recovery compacts a retained short turn and preserves exact owner request and tool pairing',async t=>{
+  const rows=pressureHistory(),f=await caller(t,rows,{pressure:true,trigger:'overflow'});
+  const outcome=await f.invoke();assert.equal(outcome.ok,true);assert.equal(outcome.compacted,true);
+  assert.equal(f.requests,1,'one bounded preparation retry, one summary call');
+  const checkpoint=readRows(f.sessionFile).find(r=>r.type==='compaction');assert.ok(checkpoint);
+  assert.ok(checkpoint.summary.includes(JSON.stringify(rows[0].message.content)),'exact unfinished request survives the cut');
+  assert.match(checkpoint.summary,/do not replay completed actions/);
+  assertPairedTail(rows,checkpoint.firstKeptEntryId);
+  assert.deepEqual(readRows(f.sessionFile).filter(r=>r.type==='message'),rows,'compaction must never dispatch or rewrite original tools/messages');
+  assert.ok(f.requestBodies.every(b=>b.max_tokens<=8192||b.max_completion_tokens<=8192),'model output limit remains bounded');
+});
+test('manual compaction of identical short turn remains no-work without provider',async t=>{
+  const f=await caller(t,pressureHistory(),{pressure:true});const outcome=await f.invoke();
+  assert.equal(outcome.ok,true);assert.equal(outcome.compacted,false);assert.equal(f.requests,0);
+});
+test('pressure fallback with no safe smaller cut remains no-work',async t=>{
+  const f=await caller(t,history(),{pressure:true,trigger:'overflow'});const outcome=await f.invoke();
+  assert.equal(outcome.ok,true);assert.equal(outcome.compacted,false);assert.equal(f.requests,0);
+});
+test('pressure summary provider failure remains failed without checkpoint',async t=>{
+  const rows=pressureHistory(),f=await caller(t,rows,{pressure:true,trigger:'overflow',mode:'error'});
+  const outcome=await f.invoke();assert.equal(outcome.ok,false);assert.equal(outcome.compacted,false);assert.equal(f.requests,1);
+  assert.equal(readRows(f.sessionFile).some(r=>r.type==='compaction'),false);
+  assert.deepEqual(readRows(f.sessionFile).filter(r=>r.type==='message'),rows);
+});
+test('pressure recovery respects cancellation while summary is pending',async t=>{
+  const controller=new AbortController(),f=await caller(t,pressureHistory(),{pressure:true,trigger:'overflow',mode:'hang',abortSignal:controller.signal});
+  const timer=setTimeout(()=>controller.abort(),500);t.after(()=>clearTimeout(timer));
+  const outcome=await f.invoke();assert.equal(outcome.ok,false);assert.equal(outcome.compacted,false);
+  assert.equal(readRows(f.sessionFile).some(r=>r.type==='compaction'),false);
+});
+test('pressure recovery respects configured summary deadline',async t=>{
+  const f=await caller(t,pressureHistory(),{pressure:true,trigger:'overflow',mode:'hang',timeoutSeconds:1});
+  const outcome=await f.invoke();assert.equal(outcome.ok,false);assert.equal(outcome.compacted,false);assert.equal(f.requests,1);
+  assert.equal(readRows(f.sessionFile).some(r=>r.type==='compaction'),false);
+});
+
+test('pressure recovery preserves text-block owner content verbatim',async t=>{
+  const rows=pressureHistory();rows[0].message.content=[{type:'text',text:rows[0].message.content.slice(0,100)},{type:'text',text:rows[0].message.content.slice(100)}];
+  const f=await caller(t,rows,{pressure:true,trigger:'overflow'}),outcome=await f.invoke();
+  assert.equal(outcome.ok,true);assert.equal(outcome.compacted,true);
+  assert.ok(readRows(f.sessionFile).find(r=>r.type==='compaction').summary.includes(JSON.stringify(rows[0].message.content)));
+});
+test('pressure compaction refuses to lose a non-text owner attachment',async t=>{
+  const rows=pressureHistory();rows[0].message.content=[{type:'text',text:rows[0].message.content},{type:'image',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jVJkAAAAASUVORK5CYII=',mimeType:'image/png'}];
+  const f=await caller(t,rows,{pressure:true,trigger:'overflow'}),outcome=await f.invoke();
+  assert.equal(outcome.ok,false);assert.equal(outcome.compacted,false);assert.match(outcome.reason,/non-text attachment/);
+  assert.equal(readRows(f.sessionFile).some(r=>r.type==='compaction'),false);
+  assert.deepEqual(readRows(f.sessionFile).filter(r=>r.type==='message'),rows);
+});
+test('pressure compaction refuses an owner request beyond verbatim preservation budget',async t=>{
+  const rows=pressureHistory();rows[0].message.content+='x'.repeat(32769);
+  const f=await caller(t,rows,{pressure:true,trigger:'overflow'}),outcome=await f.invoke();
+  assert.equal(outcome.ok,false);assert.equal(outcome.compacted,false);assert.match(outcome.reason,/preservation budget/);
+  assert.equal(readRows(f.sessionFile).some(r=>r.type==='compaction'),false);
+  assert.deepEqual(readRows(f.sessionFile).filter(r=>r.type==='message'),rows);
 });

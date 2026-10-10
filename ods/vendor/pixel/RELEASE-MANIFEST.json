@@ -1,7 +1,7 @@
 {
   "$schema": "./schemas/release-manifest-v1.schema.json",
   "schemaVersion": 1,
-  "pixel": "4.3.29",
+  "pixel": "4.3.31",
   "supportedHosts": [
     "Ubuntu 24.04 LTS",
     "Debian 12"
@@ -196,7 +196,7 @@
     "boundary": "terminal-only-clean-migration-no-in-place-update",
     "v1Contract": {
       "sourcePixel": "3.2.2",
-      "targetPixel": "4.3.29"
+      "targetPixel": "4.3.31"
     },
     "activation": "self-contained-migrate-legacy-clean-activate-transaction",
     "privacy": "content-free-receipts-no-paths-no-identity-no-user-content"

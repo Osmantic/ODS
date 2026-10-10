@@ -254,13 +254,50 @@ def test_final_readiness_requires_all_exact_services_healthy(monkeypatch, fault)
     if fault == 'unhealthy': rows[0]['Health'] = 'unhealthy'
     if fault == 'stopped': rows[0]['State'] = 'exited'
     def run(*args, **kwargs):
-        assert args == ('ps', '--format', 'json', *module.SERVICES)
+        assert args == ('ps', '--all', '--format', 'json', *module.SERVICES)
         body = json.dumps(rows) if fault == 'array' else '\n'.join(json.dumps(row) for row in rows)
         return SimpleNamespace(returncode=1 if fault == 'exit' else 0, stdout='broken' if fault == 'json' else body)
     if fault in (None, 'array'):
         assert module.wait_ready(run) == {'phase': 'docker-ready'}
     else:
         with pytest.raises(ValueError, match='health-timeout'): module.wait_ready(run)
+
+
+@pytest.mark.parametrize('fault', ['preview', 'missing', 'duplicate', 'private', 'timeout', 'exit', 'json'])
+def test_health_timeout_identifies_last_state_without_private_output(monkeypatch, fault):
+    clock = [0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(module.time, 'sleep', lambda delay: clock.__setitem__(0, 91))
+    rows = [{'Service': name, 'State': 'running', 'Health': 'healthy'} for name in module.SERVICES]
+    rows[1].update(State='restarting', Health='unhealthy', Error='secret-fixture', Command='/private/config')
+    if fault == 'missing': rows.pop(1)
+    if fault == 'duplicate': rows.append(dict(rows[1]))
+    if fault == 'private': rows[1].update(State='secret-fixture', Health='/private/config')
+    def run(*args, **kwargs):
+        assert '--all' in args
+        if fault == 'timeout':
+            raise module.subprocess.TimeoutExpired(['secret-fixture'], 10, stderr='/private/config')
+        return SimpleNamespace(returncode=1 if fault == 'exit' else 0,
+            stdout='secret-fixture' if fault == 'json' else json.dumps(rows))
+    with pytest.raises(module.NativeHealthTimeout) as raised:
+        module.wait_ready(run)
+    message = module.health_diagnostic(raised.value)
+    assert str(raised.value) == 'native-compose-health-timeout'
+    assert 'secret-fixture' not in message and '/private/config' not in message
+    if fault in ('preview', 'missing', 'duplicate', 'private'):
+        assert 'pixel-native-ingress=running/healthy' in message
+        assert 'pixel-edge=running/healthy' in message
+    expected = {'preview': 'restarting/unhealthy', 'missing': 'missing/unknown',
+                'duplicate': 'duplicate/unknown'}.get(fault, 'unknown/unknown')
+    assert 'pixel-workspace-preview=' + expected in message
+
+
+def test_health_diagnostic_rejects_untrusted_exception_attributes():
+    error = ValueError('native-compose-health-timeout')
+    for value in (None, {'password': 'secret'},
+                  {name: {'state': 'secret', 'health': 'healthy'} for name in module.SERVICES}):
+        error.service_states = value
+        assert module.health_diagnostic(error) == ''
 
 
 @pytest.mark.parametrize('fault', [None, 'binding', 'idle', 'revision', 'busy', 'unblocked', 'conflict'])

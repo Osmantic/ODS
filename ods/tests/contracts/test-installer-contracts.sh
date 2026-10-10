@@ -882,17 +882,17 @@ grep -q 'export ODS_PYTHON_CMD' installers/macos/install-macos.sh \
   || { echo "[FAIL] macOS installer does not export the selected Python for resolver scripts"; exit 1; }
 
 echo "[contract] macOS OpenCode uses discoverable binary path"
-grep -q 'type -P opencode' installers/macos/install-macos.sh \
+grep -q 'type -P opencode' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must resolve an executable OpenCode file, not a shell function/alias"; exit 1; }
-grep -q 'brew --prefix' installers/macos/install-macos.sh \
+grep -q 'brew --prefix' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must check the Homebrew prefix for OpenCode"; exit 1; }
-grep -q '_opencode_candidate_is_file' installers/macos/install-macos.sh \
+grep -q '_opencode_candidate_is_file' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must validate resolved OpenCode as an absolute executable file"; exit 1; }
-grep -q 'ods_install_opencode' installers/macos/install-macos.sh \
+grep -q 'ods_install_opencode' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS installer must install the reviewed OpenCode release"; exit 1; }
-grep -q '<string>${OPENCODE_BIN}</string>' installers/macos/install-macos.sh \
+grep -q '<string>${OPENCODE_BIN}</string>' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS OpenCode LaunchAgent must use resolved OPENCODE_BIN"; exit 1; }
-grep -q '_compute_launchd_path "$(dirname "$OPENCODE_BIN")"' installers/macos/install-macos.sh \
+grep -q '_compute_launchd_path "$(dirname "$OPENCODE_BIN")"' installers/macos/lib/post-pixel-install.sh \
   || { echo "[FAIL] macOS OpenCode LaunchAgent PATH must include resolved binary directory"; exit 1; }
 
 echo "[contract] macOS local rebuilds respect selected compose services"

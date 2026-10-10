@@ -11,7 +11,7 @@ import {validDeliveredArtifact} from './workspace-artifact.mjs';
 // OpenClaw's public harness runtime.
 
 import { createHash, randomBytes } from "node:crypto";
-import { validSourceReview, normalizeWorkspacePreviewParams } from './workspace-preview.mjs';
+import { validSourceReview, normalizeWorkspacePreviewParams, PREVIEW_STORAGE_DISCLOSURE } from './workspace-preview.mjs';
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -39,8 +39,10 @@ import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
-  boundInspectionPageErrors, boundInspectionControls, pageErrorRepairInstruction, visibilityInspectionMatches,
-  visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition } from './preview-interaction-assurance.mjs';
+  boundInspectionPageErrors, boundInspectionControls, boundRenderedPreviewInspection, renderedInspectionInstruction,
+  pageErrorRepairInstruction, visibilityInspectionMatches,
+  visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition,
+  attemptedPreviewBehavior, boundPreviewBehavior, previewBehaviorInstruction } from './preview-interaction-assurance.mjs';
 import { workspaceRevalidationCandidate, workspaceReadOnlyCall, settledRevalidationReceipt, boundedPreviewVerification } from "./preview-revalidation.mjs";
 import { boundedPreviewDelivery } from './preview-delivery-recovery.mjs';
 import { extractRequestedLiterals, requestedTextCheck, requestedTextInstruction, requestedTextRevisionInstruction,
@@ -201,6 +203,9 @@ export const PENDING_EXEC_LOOP_ABORT_REASON =
 // carries no per-call detail and needs no separate coaching.
 export const PHANTOM_PROCESS_REASON =
   "No background process is running in this response. Every command so far has completed, and its output is in the corresponding exec result. Continue with that output instead of calling process.";
+
+const NATIVE_DELEGATION_WAIT_REASON =
+  'This owner response has accepted native subagents with completion events still pending. The process tool controls background exec sessions; it cannot wait for native subagents. Call tool_describe with {"id":"openclaw:core:sessions_yield"}, then tool_call with {"id":"openclaw:core:sessions_yield","args":{}} to end this turn and receive their completion events. This is a native tool call, not process(action="yield") or a shell command. This refused process call ran nothing.';
 
 // Per run and per kind of corrective answer (see recordFreeCorrection): how
 // many answers are recorded without consuming the failure budget.
@@ -4598,6 +4603,22 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
+// This selects prompt guidance only; it grants no tool or publication authority.
+export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  if (!text || ownerForbidsTools(text)) return false;
+  const lane = ownerLaneText(text);
+  if (/\b(?:https?:\/\/|www\.)/i.test(lane)) return false;
+  if (/^\s*(?:please\s+)?(?:how\b|what\b|why\b|where\b|when\b|explain\b|describe\b|tell\s+me\s+(?:how|about)\b|is\b|are\b|does\b)/i.test(lane)) return false;
+  const positive = lane.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause =>
+    !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:download|deliver|attach|publish)\b/i.test(clause)
+  ).join(' ');
+  return /\b(?:download(?:able)?|attach(?:ment)?|deliver(?:y)?)\b/i.test(positive) &&
+    (/\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)\b/i.test(positive) ||
+      (/\b(?:documents?|files?|archives?)\b/i.test(positive) &&
+        !/\b(?:images?|photos?|audio|video|websites?|webpages?|html)\b|\.(?:png|jpe?g|gif|svg|mp3|mp4|wav|webm|html?)\b/i.test(positive)));
+}
+
 function ownerLaneText(text) {
   // Classify only current owner prose. Embedded examples cannot opt a workspace
   // turn into extension work; identifiers quoted as operands remain usable.
@@ -5895,12 +5916,13 @@ function workspacePreviewInstructionText(text, {preserveFileTargets = false} = {
   let projected = text
     .replace(/(`{3,}|~{3,})[\s\S]*?\1/g, " ")
     .replace(/^[ \t]*>[^\n]*/gm, " ");
-  // An explicit payload can be delimited or one unquoted sentence. Preserve
-  // independent instructions after its closing quote or sentence boundary.
+  // An explicit payload can be delimited or one unquoted sentence, with or
+  // without a colon. Preserve independent instructions after its closing
+  // quote, sentence boundary, or a conjunction introducing another action.
   // Undelimited multi-sentence prose remains ambiguous; this is not a parser
   // for every way an owner can express a task.
   projected = projected.replace(
-    /\b(?:containing|with\s+(?:the\s+)?(?:contents?|text))\s*(?:exactly\s*)?:\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|[^\n]*?(?=[!?;\n]|\.(?=\s|$)|$))/gi,
+    /\b(?:containing|with\s+(?:the\s+)?(?:contents?|text))(?:\s+exactly)?(?:\s*:\s*|\s+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|[^\n]*?(?=\b(?:and(?:\s+then)?|then|but|instead)\s+(?:build|create|develop|design|generate|implement|make|write|publish|republish|preview|serve)\b|[!?;\n]|\.(?=\s|$)|$))/gi,
     " "
   );
   const quotedTarget = (value) =>
@@ -5929,10 +5951,17 @@ function hasExplicitWorkspacePreviewDirective(text) {
   // A requested delivery action can follow a diagnosis or code repair. Do not
   // mistake a subordinate "why we should publish" for that owner command.
   const commands = text.matchAll(
-    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\b/gi
   );
   return [...commands].some((match) => {
-    const target = match[2].split(/\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0];
+    // Do not consume this target in matchAll: it may contain a later command
+    // such as "Open README.md, then publish demo/index.html".
+    const target = text.slice(match.index + match[0].length, match.index + match[0].length + 512)
+      .split(/[!?;\n]|\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0].trim();
+    // An explicit publication command can refer to a previously named HTML
+    // file's folder. Questions about what that file shows are not commands.
+    if (/^(?:publish|republish|preview|serve)$/i.test(match[1]) &&
+      /\b(?:folder|directory)\b/i.test(target) && hasWorkspaceHtmlTarget(text)) return true;
     if (hasWorkspaceHtmlTarget(target)) return true;
     const visualTargetPattern = /\b(?:website|site|web\s*page|frontend|dashboard|preview|animation|illustration|scene|game|chart|diagram|svg)\b/i;
     const visualTarget = visualTargetPattern.test(target);
@@ -5945,6 +5974,9 @@ function hasExplicitWorkspacePreviewDirective(text) {
     // command. Bind that pronoun within this clause, not an earlier topic.
     const precedingClause = text.slice(0, match.index)
       .split(/[!?;\n]|\.(?=\s|$)/).at(-1);
+    if (!target.trim() && /^(?:publish|republish|preview|serve)$/i.test(match[1])) {
+      return hasWorkspaceHtmlTarget(precedingClause);
+    }
     return /^(?:it|this|that)(?:\s|[.!?;]|$)/i.test(target.trim()) &&
       (hasWorkspaceHtmlTarget(precedingClause) ||
         (/\b(?:browser|preview)\b/i.test(target) &&
@@ -6187,12 +6219,8 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   ) return false;
   const directPreview =
     explicitDelivery ||
-    // A dot inside index.html is part of the requested filename, not a
-    // sentence boundary between the preview action and its target.
-    // Delivery verbs in a rejected list ("do not edit, publish, or run")
-    // are constraints, even when another clause names an HTML file.
-    (hasWorkspaceHtmlTarget(actionText) &&
-      /\b(?:preview|publish|serve|open|show|view)\b/i.test(actionText)) ||
+    // An HTML filename plus "what does it show?" is a read-only question.
+    // Bind delivery to an owner command above, not any nearby verb.
     /\b(?:preview|publish|republish|serve)\b[^.!?;\n]{0,96}\b(?:artworks?|illustrations?|charts?|diagrams?|animations?|games?|sites?|websites?|web\s*pages?|frontends?)\b/i.test(actionText) ||
     /\b(?:site|website|web\s*page|frontend)\b[^.!?;\n]{0,96}\b(?:preview|publish|republish|serve)\b/i.test(actionText);
   const unreachableLocalPreview =
@@ -6251,18 +6279,20 @@ function directBasicSiteCreation(text) {
     .replace(/^\s*>[^\n]*/gm, " ").replace(/"[^"\n]*"|`[^`\n]*`/g, " ")
     .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   let creation = false;
+  // A short subject such as "reading-list" can modify the site noun.
+  // Stack, source, and input prerequisites are still checked by the caller.
   const clauses = prose.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause => clause.trim());
   for (const clause of clauses) {
     const request = clause.trim().replace(/^please[,\s]+/i, "")
       .replace(/^(?:can|could|would)\s+you\s+(?:please\s+)?/i, "")
       .replace(/^por\s+favor[,\s]+/i, "");
-    const match = request.match(/^(?:build|create|make|design|generate)\s+(?:(?:me|us)\s+)?(?:a|an)\s+(?:new\s+)?(?:(?:polished|responsive|accessible|clean|modern|small)[,\s]+){0,4}(?:basic|simple|one[- ]page|single[- ]page)[,\s]+(?:(?:polished|responsive|accessible|clean|modern|small|one[- ]page|single[- ]page)[,\s]+){0,4}(?:website|site|web\s*page|landing\s+page)\b/i)
+    const match = request.match(/^(?:build|create|make|design|generate)\s+(?:(?:me|us)\s+)?(?:a|an)\s+(?:new\s+)?(?:(?:polished|responsive|accessible|clean|modern|small)[,\s]+){0,4}(?:basic|simple|one[- ]page|single[- ]page)[,\s]+(?:(?:polished|responsive|accessible|clean|modern|small|one[- ]page|single[- ]page)[,\s]+){0,4}(?:[a-z][a-z0-9-]*\s+){0,3}(?:website|site|web\s*page|landing\s+page)\b/i)
       ?? request.match(/^(?:crie|criar|faca|fazer|construa|construir)\s+(?:para\s+mim\s+)?(?:um|uma)\s+(?:(?:novo|nova)\s+)?(?:site|website|pagina\s+web|landing\s+page)\s+(?:simples|basico|basica|de\s+uma\s+pagina)\b/i);
     if (match) {
       const tail = request.slice(match[0].length).trim();
       // A bare noun after "website" may be the real object (crawler, content
       // analyzer, or an unknown future tool). Do not force HTML by guessing.
-      if (tail && !/^(?:[,:(]|(?:for|with|without|in|on|about|from|using|via|leveraging|and|then|that|which|to|called|named|para|com|sem|em|e)\b)/i.test(tail)) return false;
+      if (tail && !/^(?:[,:(]|(?:for|with|without|in|on|about|from|using|via|leveraging|and|then|that|which|where|to|called|named|para|com|sem|em|e)\b)/i.test(tail)) return false;
       creation = true;
     } else if (!/^(?:(?:and|then|now|e|depois)\s+)?(?:publish|preview|show|display|serve|publique|mostre)\b/i.test(request)) {
       // Unknown additional instructions can contain prerequisites. Preserve
@@ -6282,7 +6312,7 @@ export function workspacePreviewMode(messages, prompt = undefined) {
   // work and a real build. The deterministic entry-file fast path is only for
   // a fresh static artifact where those steps add failure modes, not value.
   const frameworkOrBuild =
-    /\b(?:angular|astro|bun|gatsby|jsx|next(?:\.js)?|node(?:\.js)?|npm|nuxt|parcel|pnpm|react|remix|rollup|svelte|tsx|typescript|vite|vue|webpack|yarn)\b/i.test(text) ||
+    /\b(?:angular|astro|blazor|bun|django|express|fastapi|flask|gatsby|jsx|laravel|next(?:\.js)?|node(?:\.js)?|npm|nuxt|parcel|phoenix|pnpm|qwik|rails|react|remix|rollup|solid(?:start)?|svelte|tsx|typescript|vite|vue|webpack|yarn)\b/i.test(text) ||
     /\b(?:build\s+command|build\s+output|compile|dependencies|package\.json|source\s+tree)\b/i.test(text);
   const existingProject =
     /\b(?:existing|current|previous|prior|already[- ]created|updated|revised|corrected|repair|fix|debug|migrate|upgrade|rename|move)\b/i.test(text) ||
@@ -6368,12 +6398,32 @@ function freshWorkspaceCreationRequested(text) {
   );
 }
 
+function workspaceVisualRepairIntent(text) {
+  const owner = ownerLaneText(text);
+  // Read-only explanations and quoted instructions cannot require an edit.
+  if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:edit|modify|change|write|overwrite)\s+(?:any\s+)?(?:files?|anything|source)\b|\bno\s+(?:file|source)\s+changes\b/i.test(owner)) return undefined;
+  const commands = owner.matchAll(
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:fix|repair|correct)\s+(?:only\s+)?([^!?;\n]{1,512})/gi
+  );
+  const paths = new Set();
+  let visual = false;
+  for (const command of commands) {
+    const target = command[1];
+    const file = /^(?:the\s+)?[`"']?(?:\/workspace\/)?([A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?)[`"']?(?=$|[\s:,.!?;])/i.exec(target);
+    if (file && file[1].split('/').every(part => WORKSPACE_PATH_COMPONENT.test(part))) paths.add(file[1]);
+    if (/^(?:(?:the|this|that|existing|previous|current)\s+)+(?:corrected\s+|repaired\s+|fixed\s+)?(?:app|page|preview|site|website)\b/i.test(target)) visual = true;
+  }
+  if (paths.size > 1) return undefined;
+  return paths.size === 1 ? {path:[...paths][0]} : visual ? {} : undefined;
+}
+
 export function userMessageRequestsWorkspaceVisualContinuation(
   messages,
   prompt = undefined
 ) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return false;
+  if (workspaceVisualRepairIntent(text) && !freshWorkspaceCreationRequested(text)) return true;
   if (userMessageRequestsWorkspaceContinuation([], text)) return false;
   // Keeping an app as-is is preservation, not a request to edit a prior preview.
   // Other change verbs in the same request still identify a visual revision.
@@ -6401,6 +6451,28 @@ export function userMessageRequestsWorkspaceVisualContinuation(
         !rejection.test(clause) &&
         !withoutAction.test(clause)
     );
+}
+
+
+// An explicit check of an existing page may exercise controls without asking
+// for source edits. Keep this narrow: ambiguous or independent edit requests
+// retain the ordinary read/edit continuation contract.
+export function userMessageRequestsWorkspaceVerificationContinuation(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt).trim();
+  if (!text || freshWorkspaceCreationRequested(text) || ownerForbidsWorkspacePreview([], text)) return false;
+  const command = /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:finish\s+)?(?:verif(?:y|ying)|test(?:ing)?|inspect(?:ing)?|check(?:ing)?)\s+(?:(?:the|this|that|my|our|existing|current|previous|prior|same)\s+)+(?:preview|page|site|website|app|artifact)\b/i.exec(text);
+  if (!command) return false;
+  // Conditional repairs remain possible after a failed check; they are not a
+  // requirement to change healthy files. Other repair/edit commands still are.
+  const rest = text.slice(command[0].length).replace(
+    /\b(?:fix|repair|correct)\s+(?:anything|any\s+(?:issue|issues|error|errors))\s+(?:(?:that|which)\s+)?(?:fails?|breaks?|is\s+broken)\b/gi, ' '
+  ).replace(/\b(?:fix|repair|correct)\s+(?:it|them)\s+if\s+(?:it|they|a\s+check|any\s+check|the\s+checks?)\s+(?:fails?|breaks?)\b/gi, ' ');
+  if (/\b(?:animate|build|change|create|design|develop|edit|generate|implement|improve|make|modify|overwrite|patch|polish|refresh|restyle|rework|save|tweak|update|write|fix|repair|correct)\b/i.test(rest)) return false;
+  // Add/remove in an explicitly introduced test sequence can mean interacting
+  // with data. Adding interface/source elements is still an edit request.
+  if (/\b(?:add|remove)\b/i.test(rest) && !/^\s*:/.test(rest)) return false;
+  if (/\b(?:add|remove)\b[^.!?;\n,:]{0,64}\b(?:button|control|feature|component|panel|section|page|file|toggle|handler|function|style)s?\b/i.test(rest)) return false;
+  return true;
 }
 
 function workspacePreviewDirectoryFromState(state) {
@@ -6560,6 +6632,7 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
   }
   if (
     state?.workspaceVisualContinuationRequested &&
+    !state.workspacePreviewVerificationContinuation &&
     details.sha256 === state.workspaceVisualContinuationOriginalSha256
   ) return undefined;
   // The trusted host verifies the complete snapshot, including preserved
@@ -7028,6 +7101,29 @@ export function createToolLoopGuard({
       proof.sessionId === state.currentSessionId && proof.sessionKey === state.currentSessionKey;
   }
 
+  function workspaceBehaviorInspectionPassed(state) {
+    const proof = state.workspaceBehaviorInspection;
+    return visibilityInspectionMatches(proof, state.workspacePreview) &&
+      proof.sessionId === state.currentSessionId && proof.sessionKey === state.currentSessionKey;
+  }
+
+  function workspaceRenderedInspectionRequired(state) {
+    return workspacePreviewInspectionAvailable &&
+      (state.workspacePreviewModelAuthored || state.workspacePreviewVerificationRequested);
+  }
+
+  function workspaceRenderedInspectionPassed(state) {
+    const proof = state.workspaceRenderedInspection;
+    return visibilityInspectionMatches(proof, state.workspacePreview) &&
+      proof.sessionId === state.currentSessionId && proof.sessionKey === state.currentSessionKey;
+  }
+
+  function workspaceBehaviorAttempt(state) {
+    const attempt = state.workspaceBehaviorAttempt;
+    return attempt?.sessionId === state.currentSessionId && attempt?.sessionKey === state.currentSessionKey
+      ? attempt : undefined;
+  }
+
   function rememberSessionDownload(sessionId, jobId) {
     if (typeof sessionId !== "string" || !sessionId || !OPS_JOB_ID.test(jobId)) return;
     const jobs = sessionDownloadJobs.get(sessionId) ?? new Set();
@@ -7242,11 +7338,29 @@ export function createToolLoopGuard({
         ?.priorVisibilityInspection : undefined;
     const priorVisibilityInspection = selectedToolName === PREVIEW_INSPECTION_TOOL
       ? state?.workspaceVisibilityInspection ?? parentPrior : undefined;
+    const parentPriorBehavior = selectedToolName === PREVIEW_INSPECTION_TOOL && toolCallId.startsWith('tool_search_code:')
+      ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.runId === runId &&
+        run.selectedToolName === PREVIEW_INSPECTION_TOOL && toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1]
+        ?.priorBehaviorInspection : undefined;
+    const priorBehaviorInspection = selectedToolName === PREVIEW_INSPECTION_TOOL
+      ? state?.workspaceBehaviorInspection ?? parentPriorBehavior : undefined;
     // Keep the previous proof with this exact pending call. Until its receipt
     // validates, neither unfinished nor mismatched inspections retain a pass.
     if (selectedToolName === PREVIEW_INSPECTION_TOOL && state) {
       state.workspaceVisibilityInspection = undefined;
+      state.workspaceBehaviorInspection = undefined;
+      state.workspaceRenderedInspection = undefined;
       state.workspaceInspectionGeneration = (state.workspaceInspectionGeneration ?? 0) + 1;
+    }
+    // First-attempt obligation: record the duty to check an interaction
+    // once per run, bound to the current preview snapshot. Never overwritten.
+    // Explicit show/hide duties already bind a requested transition. A model's
+    // extra exploratory clicks must not expand that owner-bound requirement.
+    if (selectedToolName === PREVIEW_INSPECTION_TOOL && state &&
+        !state.workspaceVisibilityInteractionRequired && !workspaceBehaviorAttempt(state)) {
+      const attempt = attemptedPreviewBehavior(selectedParams, state.workspacePreview);
+      if (attempt) state.workspaceBehaviorAttempt = Object.freeze({...attempt,
+        sessionId: state.currentSessionId, sessionKey: state.currentSessionKey});
     }
     pendingToolRuns.set(toolCallId, {
       runId,
@@ -7257,6 +7371,7 @@ export function createToolLoopGuard({
       inspectionSessionId: runs.get(runId)?.currentSessionId,
       inspectionSessionKey: runs.get(runId)?.currentSessionKey,
       priorVisibilityInspection,
+      priorBehaviorInspection,
       inspectionGeneration: state?.workspaceInspectionGeneration,
       verificationFingerprint,
       transport,
@@ -7402,10 +7517,13 @@ export function createToolLoopGuard({
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
         workspacePreviewForbidden: false,
+        workspaceDocumentDeliveryRequested: false,
         workspacePreviewMode: undefined,
         workspacePreviewAuthorshipRequired: false,
         workspacePreviewModelAuthored: false,
         workspaceVisualContinuationRequested: false,
+        workspacePreviewVerificationRequested: false,
+        workspacePreviewVerificationContinuation: false,
         workspaceVisualContinuationEdited: false,
         workspaceVisualContinuationOriginalSha256: undefined,
         workspacePreviewInspectionRequested: false,
@@ -7577,8 +7695,13 @@ export function createToolLoopGuard({
   // Publication currency across later calls (see preview-revalidation.mjs).
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
-  function beforeToolCall(event, context, agentId = "pixel") {
-    const decision = decideToolCall(event, context, agentId);
+  function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
+    const originalDecision = decideToolCall(event, context, agentId);
+    // Only refine an already-proven phantom process refusal. Real exec
+    // sessions, earlier denials, correction allowances and failure fuses keep
+    // their existing decisions. Fixed text preserves identical-outcome checks.
+    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
@@ -8155,6 +8278,10 @@ export function createToolLoopGuard({
         ? pendingParams.id.split(":").at(-1)
         : toolName;
     if (pendingSelectedName === WORKSPACE_PREVIEW_TOOL) {
+      if (state?.workspaceDocumentDeliveryRequested && !state.workspacePreviewRequired) {
+        return {block:true, blockReason:
+          'The owner requested a downloadable document. Do not call pixel_ods_workspace_preview for documents. Call tool_call with id pixel_ods_workspace_artifact and args {"relativePath":"<exact existing workspace-relative document path>"} instead.'};
+      }
       if (!state?.ownerIntentObserved || state.workspacePreviewForbidden) {
         return {
           block: true,
@@ -8346,9 +8473,13 @@ export function createToolLoopGuard({
           blockReason: visualContinuationReadInstruction(state, selectedPath),
         };
       }
+      if (selectedToolName === WORKSPACE_PREVIEW_TOOL && state.workspacePreviewVerificationContinuation &&
+          !state.successfulReadPaths.has(`${continuationDirectory}/index.html`)) {
+        return {block: true, blockReason: visualContinuationReadInstruction(state)};
+      }
       if (
         selectedToolName === WORKSPACE_PREVIEW_TOOL &&
-        !state.workspaceVisualContinuationEdited
+        !state.workspaceVisualContinuationEdited && !state.workspacePreviewVerificationContinuation
       ) {
         return {
           block: true,
@@ -9669,6 +9800,7 @@ export function createToolLoopGuard({
       if (currentUserText(event?.messages, event?.prompt)) {
         state.ownerIntentObserved = true;
         state.workspacePreviewForbidden = ownerForbidsWorkspacePreview(event?.messages, event?.prompt);
+        state.workspaceDocumentDeliveryRequested = userMessageRequestsWorkspaceDocumentDelivery(event?.messages, event?.prompt);
         const previousPreview = typeof sessionId === "string" && sessionId
           ? sessionPreviews.get(sessionId)
           : undefined;
@@ -9684,8 +9816,22 @@ export function createToolLoopGuard({
             event?.messages,
             event?.prompt
           );
+        const verificationContinuationRequested = userMessageRequestsWorkspaceVerificationContinuation(
+          event?.messages, event?.prompt
+        );
+        const repairPath = workspaceVisualRepairIntent(ownerIntent)?.path;
+        // A named repair inherits only the verified project it actually names.
+        // Unrelated files remain on the ordinary workspace path, not redirected
+        // into the last preview merely because this session has one.
+        const repairMatchesPreview = !repairPath ||
+          repairPath.startsWith(`${previousPreview?.relativeDirectory}/`);
+        // Verification intent survives a gateway restart; it requires fresh
+        // evidence but cannot confer a previous project's continuation scope.
+        // A host-authored delivery retry in this same run must not erase the
+        // original owner's verification obligation.
+        state.workspacePreviewVerificationRequested ||= verificationContinuationRequested;
         const trustedSessionPreview =
-          visualContinuationRequested && typeof sessionId === "string" && sessionId
+          (visualContinuationRequested || verificationContinuationRequested) && repairMatchesPreview && typeof sessionId === "string" && sessionId
             ? sessionPreviews.get(sessionId)
             : undefined;
         const previewRequested = namedPreviewRequested || userMessageRequestsWorkspacePreview(
@@ -9695,6 +9841,7 @@ export function createToolLoopGuard({
           currentOwnerIntentText(event?.messages, event?.prompt)
         ));
         state.workspaceVisualContinuationRequested = Boolean(trustedSessionPreview);
+        state.workspacePreviewVerificationContinuation = Boolean(trustedSessionPreview) && verificationContinuationRequested;
         if (trustedSessionPreview) {
           state.workspaceVisualContinuationOriginalSha256 ??= trustedSessionPreview.sha256;
         }
@@ -9702,7 +9849,7 @@ export function createToolLoopGuard({
         // With no verified previous preview, ordinary tools must remain usable
         // to locate the requested files. Only a real preview binds its scope.
         state.workspacePreviewRequired = !state.workspacePreviewForbidden && (
-          Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
+          state.workspacePreviewVerificationRequested || Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
         const visibilityObligation = sessionPreviewVisibilityObligations.get(sessionId);
@@ -10157,6 +10304,28 @@ export function createToolLoopGuard({
         state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
           : retainInteraction ? priorProof : undefined;
+        // Behavior proof uses the same session and snapshot binding as the
+        // visibility proof. A static-only call may retain the prior behavior
+        // proof for the same current session; otherwise it is cleared.
+        const behaviorAttempt = state.workspaceBehaviorAttempt;
+        const behaviorBound = behaviorAttempt && behaviorAttempt.sessionId === state.currentSessionId &&
+          behaviorAttempt.sessionKey === state.currentSessionKey ? behaviorAttempt : undefined;
+        const behaviorProof = !failedToolOutcome(event) && behaviorBound
+          ? boundPreviewBehavior(inspected.params, inspected.result, state.workspacePreview, behaviorBound) : undefined;
+        const priorBehaviorProof = pendingToolRun.priorBehaviorInspection;
+        const retainBehavior = !failedToolOutcome(event) && behaviorBound &&
+          visibilityInspectionMatches(priorBehaviorProof, state.workspacePreview) &&
+          priorBehaviorProof.sessionId === state.currentSessionId && priorBehaviorProof.sessionKey === state.currentSessionKey &&
+          boundStaticPreviewInspection(inspected.params, inspected.result, state.workspacePreview);
+        state.workspaceBehaviorInspection = behaviorProof ? Object.freeze({...behaviorProof,
+          sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
+          : retainBehavior ? priorBehaviorProof : undefined;
+        // Reuse the strict current pending-call/session/generation binding above.
+        // Every new inspection clears the previous proof and establishes its own.
+        const renderedProof = !failedToolOutcome(event)
+          ? boundRenderedPreviewInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
+        state.workspaceRenderedInspection = renderedProof ? Object.freeze({...renderedProof,
+          sessionId: state.currentSessionId, sessionKey: state.currentSessionKey}) : undefined;
         state.workspaceVisibilityInspectionUnavailable =
           inspected.result?.details?.errorCode === 'unavailable';
         // Selects the repair instruction only; bound to this exact snapshot.
@@ -10435,6 +10604,9 @@ export function createToolLoopGuard({
       // Preserve the immutable host snapshot, but require fresh publication
       // before presenting the potentially changed workspace as current.
       state.workspacePreviewVerifiedDirectory = state.workspacePreview.relativeDirectory;
+      // Its proof cannot pass while publication is invalidated. An eligible
+      // settled read-only call may restore the exact host-verified snapshot;
+      // any fresh publication below always resets the browser proof.
       state.workspacePreview = undefined;
       sessionPreviews.delete(state.currentSessionId);
       sessionPreviewVisibilityObligations.delete(state.currentSessionId);
@@ -10591,7 +10763,12 @@ export function createToolLoopGuard({
     // reject an unexpected success receipt instead of accepting publication.
     const declinedPreviewError = state.ownerIntentObserved &&
       state.workspacePreviewForbidden && previewEvent?.result?.isError === true;
-    if (previewEvent && !declinedPreviewError) {
+    // A rejected website tool cannot create a website-delivery obligation for
+    // a document-only request. Unexpected successes still follow receipt checks.
+    const documentPreviewError = state.ownerIntentObserved &&
+      state.workspaceDocumentDeliveryRequested && !state.workspacePreviewRequired &&
+      previewEvent?.result?.isError === true;
+    if (previewEvent && !declinedPreviewError && !documentPreviewError) {
       state.workspacePreviewAttempted = true;
       const requestedDirectory = normalizeWorkspaceFilePath(
         previewEvent?.params?.relativeDirectory
@@ -10610,7 +10787,12 @@ export function createToolLoopGuard({
       state.workspacePreviewLastAttemptSucceeded = Boolean(preview);
       if (preview) {
         state.workspacePreviewDirectory = preview.relativeDirectory;
-        state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview);
+        state.workspaceRenderedInspection = undefined;
+        state.workspaceInspectionGeneration = (state.workspaceInspectionGeneration ?? 0) + 1;
+        // Publishing identical bytes again must not erase their known authorship
+        // and bypass the browser check after tracked write contents are cleared.
+        state.workspacePreviewModelAuthored = workspacePreviewAuthorshipMatches(state, preview) ||
+          Boolean(state.workspacePreviewModelAuthored && visibilityInspectionMatches(state.workspaceLastVerifiedPreview, preview));
         state.workspacePreview = preview;
         // Bound to this snapshot's bytes; checked before tracked content clears.
         state.workspaceRequestedTextCheck = requestedTextCheck(state.requestedLiterals, preview, {
@@ -11317,9 +11499,10 @@ export function createToolLoopGuard({
   function visualContinuationPrerequisite(state) {
     if (!state?.workspaceVisualContinuationRequested || state.workspaceVisualContinuationEdited) return undefined;
     const directory = state.workspaceTaskDirectory;
-    const hasRead = typeof directory === "string" && [...state.successfulReadPaths].some(
-      path => path.startsWith(`${directory}/`)
-    );
+    const hasRead = typeof directory === "string" && (state.workspacePreviewVerificationContinuation
+      ? state.successfulReadPaths.has(`${directory}/index.html`)
+      : [...state.successfulReadPaths].some(path => path.startsWith(`${directory}/`)));
+    if (state.workspacePreviewVerificationContinuation && hasRead) return undefined;
     return {
       stage: hasRead ? "workspace-visual-continuation-edit" : "workspace-visual-continuation-read",
       instruction: hasRead ? WORKSPACE_VISUAL_CONTINUATION_REQUIRES_EDIT_REASON
@@ -11423,9 +11606,21 @@ export function createToolLoopGuard({
           stage: 'workspace-preview-interaction',
           instruction: visibilityInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors),
         };
+        if (workspaceBehaviorAttempt(state) &&
+            !workspaceBehaviorInspectionPassed(state) &&
+            !state.workspaceVisibilityInspectionUnavailable) return {
+          stage: 'workspace-preview-behavior',
+          instruction: previewBehaviorInstruction(state.workspacePreview,
+            state.workspaceInspectionPageErrors),
+        };
         if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) return {
           stage: 'workspace-preview-control-name-inspection',
           instruction: requestedControlNameInspectionInstruction(state.workspacePreview, state.requestedControlNames),
+        };
+        if (workspaceRenderedInspectionRequired(state) && !workspaceRenderedInspectionPassed(state) &&
+            !state.workspaceVisibilityInspectionUnavailable) return {
+          stage: 'workspace-preview-rendered',
+          instruction: renderedInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors),
         };
         return undefined;
       }
@@ -11744,13 +11939,24 @@ export function createToolLoopGuard({
             ? 'Keep the published preview, but report the requested interaction as unverified because inspection is unavailable. Do not claim the interaction works.'
             : visibilityInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors));
         }
+        if (workspaceBehaviorAttempt(state) &&
+            !workspaceBehaviorInspectionPassed(state)) {
+          return '[ODS Pixel next step] ' + (state.workspaceVisibilityInspectionUnavailable
+            ? 'Keep the published preview, but report the attempted interaction checks as unverified because inspection is unavailable. Do not claim they work.'
+            : previewBehaviorInstruction(state.workspacePreview,
+              state.workspaceInspectionPageErrors));
+        }
         // Any inspection of this snapshot reports its load-time names.
         if (controlNamesUninspected(state) && !state.workspaceVisibilityInspectionUnavailable) {
           return `[ODS Pixel next step] ${requestedControlNameInspectionInstruction(state.workspacePreview,
             state.requestedControlNames)}`;
         }
-        // Page errors never block delivery, but must not be followed by
-        // "give the final result" coaching as a second, conflicting step.
+        if (workspaceRenderedInspectionRequired(state) && !workspaceRenderedInspectionPassed(state)) {
+          return '[ODS Pixel next step] ' + (state.workspaceVisibilityInspectionUnavailable
+            ? 'Keep the published preview, but report its browser check as unverified because inspection is unavailable.'
+            : renderedInspectionInstruction(state.workspacePreview, state.workspaceInspectionPageErrors));
+        }
+        // Keep an unverified preview available without coaching false success.
         return `[ODS Pixel next step] ${pageErrorRepairInstruction(state.workspacePreview,
           state.workspaceInspectionPageErrors) ?? WORKSPACE_PREVIEW_COMPLETE_REASON}`;
       }
@@ -12417,6 +12623,9 @@ export function createToolLoopGuard({
       // snapshot cannot turn a failed or still-running check into completion.
       const interactionUnverified = state.workspaceVisibilityInteractionRequired &&
         !workspaceVisibilityInspectionPassed(state);
+      const behaviorUnverified = Boolean(workspaceBehaviorAttempt(state)) &&
+        !workspaceBehaviorInspectionPassed(state);
+      const renderedUnverified = workspaceRenderedInspectionRequired(state) && !workspaceRenderedInspectionPassed(state);
       const checkStatus = state.latestVerificationStatus;
       const checkIncomplete = checkStatus === "failed" || checkStatus === "pending";
       const checkText = checkStatus === "failed" ? VERIFICATION_FAILED_DELIVERY_PREFIX
@@ -12426,13 +12635,18 @@ export function createToolLoopGuard({
       const requestedTextMissing = requestedTextDeliveryNote(state.workspacePreview, state.workspaceRequestedTextCheck,
         state.workspaceControlNameCheck);
       return {
-        status: checkIncomplete ? checkStatus : interactionUnverified || requestedTextMissing ? "failed" : "passed",
+        status: checkIncomplete ? checkStatus : interactionUnverified || behaviorUnverified || renderedUnverified || requestedTextMissing ? "failed" : "passed",
         text:
           (checkText ? `${checkText}\n\n` : "") +
           (requestedTextMissing ? `${requestedTextMissing}\n\n` : "") +
+          (renderedUnverified ? "The published page has not passed browser inspection. Its browser check remains unverified.\n\n" : "") +
           (interactionUnverified ? "The requested show/hide interaction has not passed browser inspection. The published preview is available, but that behavior remains unverified.\n\n" : "") +
+          (behaviorUnverified ? "The attempted preview interaction checks have not passed browser inspection. The published preview is available, but those checks remain unverified.\n\n" : "") +
+          (workspaceBehaviorAttempt(state) && !behaviorUnverified && !state.workspaceVisibilityInteractionRequired
+            ? "Browser inspection passed for the submitted interaction checks only; this does not verify all requested behavior.\n\n" : "") +
           (state.workspaceVisibilityInteractionRequired && !interactionUnverified
             ? "Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n" : "") +
+          `${PREVIEW_STORAGE_DISCLOSURE}\n\n` +
           `${WORKSPACE_PREVIEW_PUBLISHED_DELIVERY_PREFIX}\n\n` +
           `[Open preview](${state.workspacePreview.url})\n\n` +
           (state.workspacePreviewModelAuthored
@@ -12821,6 +13035,8 @@ export function createToolLoopGuard({
       state.workspacePreview = undefined;
       state.previewRevalidationCandidate = undefined;
       state.workspaceVisibilityInspection = undefined;
+      state.workspaceBehaviorInspection = undefined;
+      state.workspaceRenderedInspection = undefined;
       state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
       sessionPreviews.delete(state.currentSessionId);
       sessionPreviewVisibilityObligations.delete(state.currentSessionId);

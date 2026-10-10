@@ -286,22 +286,30 @@ def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch
     assert agent._hermes_compose_plan_error(["-f", "extensions/services/hermes/compose.yaml"]) == ""
 
 
-def test_hermes_start_prepares_route_before_compose_up(monkeypatch):
+@pytest.mark.parametrize("refresh_ok", [True, False])
+def test_hermes_start_prepares_route_before_compose_up(monkeypatch, refresh_ok):
     order = []
+
+    def record(name, result):
+        order.append(name)
+        return result
+
     monkeypatch.setattr(agent, "resolve_compose_flags", lambda: [])
     monkeypatch.setattr(agent, "_hermes_compose_plan_error", lambda flags: "")
-    monkeypatch.setattr(agent, "_prepare_hermes_route_for_start", lambda: (order.append("route") or (True, "")))
-    monkeypatch.setattr(agent, "_prepare_hermes_persona_for_start", lambda: (order.append("persona") or (True, "")))
+    monkeypatch.setattr(agent, "_prepare_hermes_route_for_start", lambda: record("route", (True, "")))
+    monkeypatch.setattr(agent, "_prepare_hermes_persona_for_start", lambda: record("persona", (True, "")))
+    refresh_result = (refresh_ok, "" if refresh_ok else "Persona refresh failed")
+    monkeypatch.setattr(agent, "_refresh_running_hermes_persona", lambda: record("refresh", refresh_result))
     monkeypatch.setattr(agent, "_precreate_data_dirs", lambda service: None)
     monkeypatch.setattr(agent, "_repair_rootless_data_ownership", lambda service: None)
     monkeypatch.setattr(agent, "_find_ext_dir", lambda service: None)
-    monkeypatch.setattr(agent, "_run_selected_extension_up", lambda service, flags, **kwargs: (
-        order.append("compose") or subprocess.CompletedProcess([], 0, "", "")))
+    monkeypatch.setattr(agent, "_run_selected_extension_up", lambda service, flags, **kwargs: record(
+        "compose", subprocess.CompletedProcess([], 0, "", "")))
     monkeypatch.setattr(agent.subprocess, "run", lambda command, **kwargs: (
         pytest.fail(f"Unexpected subprocess outside selected start: {command}")))
 
-    assert agent.docker_compose_action("hermes", "start") == (True, "")
-    assert order == ["route", "persona", "compose"]
+    assert agent.docker_compose_action("hermes", "start") == refresh_result
+    assert order == ["route", "persona", "compose", "refresh"]
 
 
 def test_hermes_persona_repairs_empty_mount_directory_without_deleting_owner_data(tmp_path, monkeypatch):

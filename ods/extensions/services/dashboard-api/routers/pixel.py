@@ -8,6 +8,7 @@ try:
 except ImportError:  # Python 3.10; installed by this runtime's requirements.
     from async_timeout import timeout as async_timeout
 import hashlib
+from model_activation_status import model_activation_status
 import json
 import logging
 import os
@@ -310,6 +311,12 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
     row = _result_state(store, key)
     if row is None:
         return {"state": "unknown", "events": ""}
+    if (key[:2] in _result_stops and store.is_latest(key)
+            and row["state"] in {"active", "unresolved", "interrupted"}):
+        # The producer can finish before native Stop acknowledges its outcome.
+        # Do not let a subscriber finalize that provisional failure and forget
+        # the request identity while its exact cancellation is still pending.
+        return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
         activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
         if activity["state"] == "terminal":
@@ -545,10 +552,13 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     if config is None:
         return {"available": False, "model": None, "detail": "Portal is not enabled"}
     host_status = await _host_model_status()
+    activation = model_activation_status(host_status)
+    activation_metadata = {"modelActivation": activation} if activation else {}
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
         return {
+            **activation_metadata,
             "available": False,
             "model": None,
             "state": state,
@@ -565,9 +575,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
             timeout=timeout,
         ) as response:
             if response.status_code != 200:
-                return {"available": False, "model": None, "detail": "Portal service is unavailable"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
             if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
+                return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
             raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
@@ -582,7 +592,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         if available:
             inference_issue = await _local_inference_issue(host_status)
             if inference_issue:
-                return {"available": False, "model": None, "state": "model_unavailable", "detail": inference_issue}
+                return {**activation_metadata, "available": False, "model": None, "state": "model_unavailable", "detail": inference_issue}
         runtime = _active_runtime_projection(host_status)
         if available and runtime is None:
             runtime = await _verified_external_host_runtime(host_status)
@@ -598,6 +608,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         if available:
             identity, (access, access_issue) = await asyncio.gather(
                 _current_runtime_identity(edge_url, key), _current_access_readiness())
+        result.update(activation_metadata)
         result["runtimeIdentity"] = identity
         result["runtimeMatchesRelease"] = identity["runtimeMatchesRelease"]
         result["readiness"] = project_readiness(available, access, identity, access_issue)
@@ -613,9 +624,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         # Exception text and request objects can contain upstream credentials.
         # Retain the failure phase/type without logging those sensitive values.
         logger.warning("Pixel edge status request failed (%s)", type(exc).__name__)
-        return {"available": False, "model": None, "detail": "Portal service is unavailable"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service is unavailable"}
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError, TypeError):
-        return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
+        return {**activation_metadata, "available": False, "model": None, "detail": "Portal service returned an invalid response"}
 
 
 @router.get("/ops/{job_id}", dependencies=[Depends(verify_api_key)])
@@ -751,7 +762,10 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
                 entry = store.get(identity)
                 if entry is None or entry["state"] == "complete":
                     return {"aborted": False}
-                if recovering_interrupted:
+                # Native cancellation may end the producer with an upstream
+                # error before its acknowledgement returns. Use the fresh row:
+                # finish() deliberately cannot rewrite an interrupted receipt.
+                if entry["state"] == "interrupted":
                     return {"aborted": store.confirm_interrupted_cancel(identity)}
                 store.finish(identity, "cancelled")
             return {"aborted": aborted}

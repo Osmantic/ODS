@@ -135,7 +135,7 @@ list_backups() {
     local backups=()
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 ! -name '.partial-*' \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 
     if [[ ${#backups[@]} -eq 0 ]]; then
         log_error "No backups found in: $BACKUP_ROOT"
@@ -199,7 +199,7 @@ select_backup() {
     local backups=()
     while IFS= read -r -d '' backup; do
         backups+=("$backup")
-    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
+    done < <(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 ! -name '.partial-*' \( -type d -o -name "*.tar.gz" \) -print0 2>/dev/null | sort -z -r)
 
     local index=$((selection - 1))
     if [[ $index -lt 0 || $index -ge ${#backups[@]} ]]; then
@@ -399,27 +399,81 @@ dry_run_preview() {
     log_info "Dry run complete. No changes were made."
 }
 
-# Stop running containers
+# Resolve the compose stack the installer persisted. The repo does not ship a
+# top-level docker-compose.yml, so bare `docker compose down` finds no project.
+resolve_compose_flags() {
+    if [[ -e "$ODS_DIR/.compose-flags" || -L "$ODS_DIR/.compose-flags" ]]; then
+        [[ -f "$ODS_DIR/.compose-flags" && ! -L "$ODS_DIR/.compose-flags" ]] || return 1
+        cat "$ODS_DIR/.compose-flags"
+    else
+        log_error "Cannot prove the installed Compose stack without .compose-flags; rebuild the stack receipt before retrying." >&2
+        return 1
+    fi
+}
+
+# Stop only the project and services described by the complete resolved stack.
 stop_containers() {
     log_step "Stopping containers..."
-
-    local projects
+    local compose_flags parsed project projects argument
+    local -a compose_args=()
+    if ! compose_flags="$(resolve_compose_flags)"; then
+        log_error "Cannot resolve Compose files; refusing to restore live data."
+        return 1
+    fi
+    # The resolver emits shell-quoted -f arguments. Parse without eval, retain
+    # spaced filenames, and refuse incomplete or foreign command options.
+    if ! parsed="$(printf '%s' "$compose_flags" | python3 -c '
+import pathlib, shlex, sys
+args = shlex.split(sys.stdin.read())
+if not args or len(args) % 2:
+    raise ValueError("Expected nonempty Compose -f file pairs")
+root = pathlib.Path(sys.argv[1])
+for option, filename in zip(args[::2], args[1::2]):
+    if option != "-f" or not filename or "\n" in filename or "\r" in filename:
+        raise ValueError("Invalid Compose file selection")
+    if not (root / filename).is_file():
+        raise ValueError("Resolved Compose file is missing")
+print("\n".join(args))
+' "$ODS_DIR")"; then
+        log_error "Invalid resolved Compose files; refusing to restore live data."
+        return 1
+    fi
+    while IFS= read -r argument; do compose_args+=("$argument"); done <<< "$parsed"
+    cd "$ODS_DIR" || return 1
+    if ! project="$(docker compose "${compose_args[@]}" config --format json | python3 -c '
+import json, sys
+name = json.load(sys.stdin).get("name")
+if not isinstance(name, str) or not name.strip() or "\n" in name or "\r" in name:
+    raise ValueError("Compose project identity is unavailable")
+print(name)
+')"; then
+        log_error "Cannot validate the Compose project; refusing to restore live data."
+        return 1
+    fi
     if ! projects=$(docker compose ls --quiet); then
         log_error "Cannot determine running containers; refusing to restore."
         return 1
     fi
-    if ! printf '%s\n' "$projects" | grep -Fxq "$(basename "$ODS_DIR")"; then
-        log_info "No running containers found"
-        return 0
+    if printf '%s\n' "$projects" | grep -Fxq -- "$project"; then
+        if ! docker compose "${compose_args[@]}" down; then
+            log_error "Containers did not stop; refusing to restore live data."
+            return 1
+        fi
     fi
-
-    cd "$ODS_DIR"
-    if docker compose down; then
-        log_success "Containers stopped"
-    else
-        log_error "Containers did not stop; refusing to restore live data."
+    # A stale/incomplete receipt may omit an enabled service. Preserve such
+    # containers rather than widening down to orphans, but never restore data
+    # while any container in the actual project is still running.
+    local remaining
+    if ! remaining=$(docker ps --filter "label=com.docker.compose.project=$project" --format '{{.ID}}'); then
+        log_error "Cannot verify project shutdown; refusing to restore live data."
         return 1
     fi
+    if [[ -n "$remaining" ]]; then
+        log_error "Project containers remain running; preserve them and repair .compose-flags before retrying restore."
+        return 1
+    fi
+    log_success "Project containers are stopped"
+    return 0
 }
 
 # Restore all selected paths as one transaction. User data remains additive:

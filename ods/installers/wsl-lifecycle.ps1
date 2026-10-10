@@ -391,9 +391,20 @@ function Invoke-ODSWslRelayHolder([string]$Directory) {
     }
 }
 
+function Get-ODSWslAgentAddressFailureReason([string]$Output) {
+    if ($Output.Length -le 2048 -and $Output.TrimStart().StartsWith('{')) {
+        try {
+            $result=$Output | ConvertFrom-Json -ErrorAction Stop
+            if ($result -is [pscustomobject] -and $result.error -is [string] -and
+                $result.error -cmatch '\A[a-z][a-z-]{0,31}\z') { return $result.error }
+        } catch { }
+    }
+    'unknown'
+}
+
 function Update-ODSWslAgentAddress($Identity) {
     $program="$($Identity.installRoot)/lib/wsl-agent-address.py"
-    $raw=(Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/python3',$program,$Identity.installRoot) 60 -Mutation | Out-String)
+    $raw=(Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/python3',$program,$Identity.installRoot) 60 -Mutation -JsonErrorReason | Out-String)
     if ($raw.Length -gt 2048) { throw 'Oversized WSL agent address result' }
     $result=$raw | ConvertFrom-Json
     if ($result.mode -notin @('unmanaged','explicit','wsl-nat-bridge') -or $result.changed -isnot [bool]) {
@@ -703,9 +714,10 @@ function Assert-ODSWslRootArguments([string[]]$Arguments) {
     }
 }
 
-function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Seconds=15,[switch]$AsRoot,[switch]$ListRunning,[switch]$Mutation) {
+function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Seconds=15,[switch]$AsRoot,[switch]$ListRunning,[switch]$Mutation,[switch]$JsonErrorReason) {
     Assert-ODSWslStartupStillWanted
     if ($ListRunning -and ($AsRoot -or $Arguments.Count -or $Mutation)) { throw 'Distribution listing accepts no executable arguments' }
+    if ($JsonErrorReason -and -not $Mutation) { throw 'JSON error reasons require a mutation command' }
     $target = @('--distribution',$Identity.distro)
     if ($AsRoot) {
         Assert-ODSWslRootArguments $Arguments
@@ -749,7 +761,15 @@ function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Second
         if ($Mutation) {
             $output=Complete-ODSWslCommand $Identity $token $output $process.ExitCode
         }
-        if ($process.ExitCode -ne 0) { throw [IO.IOException]::new('WSL startup command failed: ' + $errorOutput.Trim()) }
+        if ($process.ExitCode -ne 0) {
+            # Report the bounded helper reason only after the Linux completion
+            # acknowledgement has settled the mutation. Never expose raw output.
+            if ($JsonErrorReason) {
+                $reason=Get-ODSWslAgentAddressFailureReason $output
+                throw [IO.IOException]::new("WSL host-agent address preparation failed (reason: $reason).")
+            }
+            throw [IO.IOException]::new('WSL startup command failed: ' + $errorOutput.Trim())
+        }
         if ($cancelled) { throw $cancelled }
         Assert-ODSWslStartupStillWanted
         $output

@@ -2300,21 +2300,6 @@ cmd_update() {
         return 0
     fi
 
-    ensure_llama_cpu_budget
-
-    # Upsert SHIELD_API_KEY when missing (pre-PR-#1069 upgrade path).
-    # Without it the dashboard Privacy Shield stats panel fails after
-    # update because dashboard-api can no longer authenticate its
-    # proxied /stats call. Mirrors the env-generator.sh upsert pattern.
-    if [[ -z "$(_env_get_raw "SHIELD_API_KEY")" ]]; then
-        _env_set "SHIELD_API_KEY" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')"
-    fi
-
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-
     # Version compatibility check — warn on major version jumps before touching anything
     if ! _check_version_compat "$force_flag"; then
         exit 0
@@ -2326,23 +2311,38 @@ cmd_update() {
         log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
     fi
 
-    # Pre-update snapshot — safety net before any images are pulled.
-    # Delegates to ods-update.sh (which writes to data/backups/ and includes
-    # extension configs) when available; falls back to ods-backup.sh.
+    # Require the configuration snapshot that `ods rollback` can restore,
+    # before changing configuration, Compose selection, images or containers.
     local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
-    if [[ -x "$INSTALL_DIR/ods-update.sh" ]]; then
-        log "Creating pre-update snapshot (${_snap_label})..."
-        if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
-            warn "Pre-update snapshot failed; proceeding without safety net."
-        fi
-    elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
-        log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" --type user-data --description "$_snap_label"; then
-            warn "Pre-update backup failed; proceeding without safety net."
-        fi
-    else
-        warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
+    if [[ ! -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        error "ods-update.sh is missing or not executable; restore it before updating so a rollback snapshot can be created."
     fi
+    log "Creating pre-update snapshot (${_snap_label})..."
+    if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
+        error "Pre-update snapshot failed. Resolve backup storage and retry; no update was applied."
+    fi
+
+    # Upsert SHIELD_API_KEY when missing (pre-PR-#1069 upgrade path).
+    # Without it the dashboard Privacy Shield stats panel fails after
+    # update because dashboard-api can no longer authenticate its
+    # proxied /stats call. Mirrors the env-generator.sh upsert pattern.
+    if [[ -z "$(_env_get_raw "SHIELD_API_KEY")" ]]; then
+        local shield_key
+        shield_key="$(openssl rand -hex 32 2>/dev/null)" || shield_key=""
+        if [[ ! "$shield_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            shield_key="$(od -An -N 32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || shield_key=""
+        fi
+        [[ "$shield_key" =~ ^[0-9a-fA-F]{64}$ ]] \
+            || error "Could not generate SHIELD_API_KEY; existing configuration was preserved."
+        _env_set "SHIELD_API_KEY" "$shield_key"
+    fi
+
+    ensure_llama_cpu_budget
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
 
     if ! _ods_cli_pull_external_images "${flags[@]}"; then
         error "Failed to pull latest images"
@@ -2620,6 +2620,7 @@ cmd_config() {
                     success "Extension manifests validated"
                 else
                     warn "Extension manifest validation reported issues. See output above."
+                    return 1
                 fi
             else
                 warn "validate-manifests.sh not found at $INSTALL_DIR/scripts/validate-manifests.sh"
@@ -2811,8 +2812,12 @@ checks = [
     ('Docker Daemon', runtime.get('docker_daemon', False)),
     ('Docker Compose', runtime.get('compose_cli', False)),
     ('Dashboard HTTP', runtime.get('dashboard_http', False)),
-    ('WebUI HTTP', runtime.get('webui_http', False)),
 ]
+
+# Reports without an enablement field retain the legacy required check.
+webui_disabled = runtime.get('webui_enabled') is False
+if not webui_disabled:
+    checks.append(('WebUI HTTP', runtime.get('webui_http', False)))
 
 has_failures = False
 for name, status in checks:
@@ -2821,6 +2826,9 @@ for name, status in checks:
     else:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
+
+if webui_disabled:
+    print(f"  {CYAN}ℹ{NC} WebUI HTTP (not installed)")
 
 llm_backend = runtime.get('llm_backend', {})
 if llm_backend:
@@ -3304,7 +3312,11 @@ cmd_purge() {
 
     # Check if container is still running (disable may have failed to stop it)
     local _container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${_container}$"; then
+    local _running_containers
+    if ! _running_containers=$(docker ps --format '{{.Names}}'); then
+        error "Cannot verify whether $service_id is running. Restore Docker connectivity and retry; data was not deleted."
+    fi
+    if grep -Fxq -- "$_container" <<< "$_running_containers"; then
         error "$service_id container is still running. Run 'ods stop $service_id' first."
     fi
 
@@ -5356,8 +5368,12 @@ cmd_agent() {
                         success "Agent started (LaunchAgent)" || warn "Agent start failed"
                     ;;
                 systemd)
-                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
-                        success "Agent started (systemd)" || warn "Agent start failed"
+                    if sudo systemctl start ods-host-agent.service 2>/dev/null; then
+                        success "Agent started (systemd)"
+                    else
+                        log_error "Agent start failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -5414,8 +5430,12 @@ cmd_agent() {
                         success "Agent stopped" || warn "Agent not running"
                     ;;
                 systemd)
-                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if sudo systemctl stop ods-host-agent.service 2>/dev/null; then
+                        success "Agent stopped"
+                    else
+                        log_error "Agent stop failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
@@ -6070,7 +6090,7 @@ _gpu_reassign() {
         topo_detect_fn="detect_nvidia_topo"
         if ! command -v nvidia-smi &>/dev/null; then
             warn "nvidia-smi not found — GPU reassignment unavailable"
-            return
+            return 1
         fi
     fi
 

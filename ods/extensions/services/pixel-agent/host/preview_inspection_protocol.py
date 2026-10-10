@@ -45,7 +45,7 @@ class Invalid(ValueError):
 
 
 def read_only_wsl_docker(binary, info):
-    """Desktop's ISO reports 0775, but cannot be written by its root group."""
+    """Verify Desktop's immutable ISO despite its CLI/directory 0775 modes."""
     binary = Path(binary)
     if (
         str(binary) != "/mnt/wsl/docker-desktop/cli-tools/usr/bin/docker"
@@ -83,8 +83,18 @@ def read_only_wsl_docker(binary, info):
             or "ro" not in super_options.split(",")
         ):
             return False
+        mount_root = Path(target)
         for parent in binary.parents:
             parent_info = parent.lstat()
+            # Desktop also ships directories such as usr/bin with mode 0775.
+            # Accept that exact mode only within the verified ISO, where the
+            # directory itself is read-only. Ancestors outside it still control
+            # the mounted path and must retain their ordinary custody checks.
+            read_only_image_parent = (
+                (parent == mount_root or mount_root in parent.parents)
+                and stat.S_IMODE(parent_info.st_mode) == 0o775
+                and os.statvfs(parent).f_flag & os.ST_RDONLY
+            )
             if (
                 not stat.S_ISDIR(parent_info.st_mode)
                 or parent_info.st_uid != 0
@@ -92,8 +102,11 @@ def read_only_wsl_docker(binary, info):
                 or (
                     parent_info.st_mode & 0o022
                     and not (
-                        parent == Path("/mnt/wsl")
-                        and parent_info.st_mode & stat.S_ISVTX
+                        read_only_image_parent
+                        or (
+                            parent == Path("/mnt/wsl")
+                            and parent_info.st_mode & stat.S_ISVTX
+                        )
                     )
                 )
             ):

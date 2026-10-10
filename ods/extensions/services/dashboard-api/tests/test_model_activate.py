@@ -3526,7 +3526,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=f2d71d31e8cebac691d109de994c1b4636504cd3\n"
+        "PIXEL_SOURCE_REF=2ef78e7067211a198748c5499ed5a0261f4b48b6\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -3578,7 +3578,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "f2d71d31e8cebac691d109de994c1b4636504cd3"
+    source_ref = "2ef78e7067211a198748c5499ed5a0261f4b48b6"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -3787,7 +3787,7 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
         monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
 
-    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved'])
+    @pytest.mark.parametrize('failure', [None, 'busy', 'lost-apply-ack', 'apply-refused', 'receipt-write', 'commit-unconfirmed', 'rollback-unproved', 'runtime_load_failed', 'timeout', 'identity_mismatch', 'commit-response-write', 'rollback-response-write'])
     def test_native_controller_holds_before_model_mutation_and_finishes_only_after_proof(self,tmp_path,monkeypatch,failure):
         install,env_path,original,*_=_write_model_activation_fixture(tmp_path)
         original=original.replace('CTX_SIZE=2048','CTX_SIZE=65536')+'PIXEL_OPENWEBUI_KEY=configured\n'
@@ -3820,12 +3820,17 @@ class TestModelActivateRollback:
                 else:
                     assert proofs[-1]=='old-model.gguf'
                     assert env_path.read_text(encoding='utf-8')==original
+                    assert _mod._model_lifecycle_status()['activationPhase']=='rollback_verifying'
+                    assert 'activationResult' not in _mod._model_lifecycle_status()
                     state['contract']=previous
                 state.update(status='completed',pending=False,outcome=request['outcome'])
             return dict(state)
         def readiness(*args,**kwargs):
             identity=kwargs.get('gguf_file')
             proofs.append(identity)
+            if failure in {'runtime_load_failed','timeout','identity_mismatch','rollback-response-write'} and identity=='new-model.gguf':
+                kwargs['diagnosis']['code']=failure
+                return False
             if failure=='rollback-unproved' and identity=='old-model.gguf':return False
             return _mock_verified_readiness(*args,**kwargs)
         real_write=_mod._atomic_write_json
@@ -3836,26 +3841,64 @@ class TestModelActivateRollback:
         monkeypatch.setattr(_mod,'_runtime_model_control',control)
         monkeypatch.setattr(_mod,'_compose_restart_llama_server',lambda env:restarts.append(env['GGUF_FILE']))
         monkeypatch.setattr(_mod,'_wait_for_model_readiness',readiness)
+        monkeypatch.setattr(_mod,'_staged_llama_load_failure_probe',lambda *_args:None)
+        monkeypatch.setattr(_mod,'_failed_llama_server_log_excerpt',lambda *_args:'')
         monkeypatch.setattr(_mod,'_atomic_write_json',write)
         monkeypatch.setattr(_mod,'_reconcile_ods_managed_pixel_model',lambda *a,**kw:pytest.fail('must use coordinated native apply'))
+        real_response=_mod.json_response
+        response_failed=False
+        def response(handler,code,body,**kwargs):
+            nonlocal response_failed
+            if not response_failed and (
+                (failure=='commit-response-write' and code==200)
+                or (failure=='rollback-response-write' and body.get('rolled_back') is True)
+            ):
+                response_failed=True
+                raise BrokenPipeError('client disconnected after completed proof')
+            return real_response(handler,code,body,**kwargs)
+        monkeypatch.setattr(_mod,'json_response',response)
         handler=_ResponseHandler()
-        _mod.AgentHandler._do_model_activate(handler,'target-model',requested_context_length=65536)
+        monkeypatch.setattr(_mod,'_model_activation_result',None)
+        assert _mod._begin_model_activation('target-model')[0]
+        try:
+            _mod.AgentHandler._do_model_activate(handler,'target-model',requested_context_length=65536)
+            assert _mod._model_lifecycle_status()['lifecycleActive'] is True
+            assert 'activationResult' not in _mod._model_lifecycle_status()
+        finally:
+            _mod._end_model_activation()
+        result=_mod._model_lifecycle_status().get('activationResult')
         payload=handler.parse_response()
         assert calls.count('model-begin')<=1 and calls.count('model-apply')<=1 and calls.count('model-finish')<=1
+        if failure in {'commit-response-write','rollback-response-write'}:
+            assert response_failed
+            committed=failure=='commit-response-write'
+            assert state['status']=='completed' and state['pending'] is False
+            assert state['outcome']==('commit' if committed else 'rollback')
+            assert result=={'outcome':'activated' if committed else 'rolled_back',
+                            'failureCode':None if committed else 'runtime_readiness_failed'}
+            assert restarts==(['new-model.gguf'] if committed else ['new-model.gguf','old-model.gguf'])
+            return
         if failure in {None,'lost-apply-ack'}:
             assert handler.response_code==200,payload
             assert state['status']=='completed' and state['outcome']=='commit'
+            assert result=={'outcome':'activated','failureCode':None}
         elif failure=='busy':
             assert handler.response_code==500,payload
             assert env_path.read_text(encoding='utf-8')==original and restarts==[]
             assert calls==['model-status']
-        elif failure in {'apply-refused','receipt-write'}:
+            assert result is None
+        elif failure in {'apply-refused','receipt-write','runtime_load_failed','timeout','identity_mismatch'}:
             assert handler.response_code==500 and payload['rolled_back'] is True,payload
             assert state['contract']==previous and state['outcome']=='rollback'
             assert not payload.get('pending')
+            code=('runtime_load_failed' if failure=='runtime_load_failed' else
+                  'runtime_readiness_failed' if failure in {'timeout','identity_mismatch'} else
+                  'consumer_verification_failed')
+            assert result=={'outcome':'rolled_back','failureCode':code}
         else:
             assert handler.response_code==500 and payload['pending'] is True,payload
             assert state['pending'] is True and state['outcome'] is None
+            assert result=={'outcome':'rollback_unconfirmed','failureCode':'rollback_unconfirmed'}
             if failure=='commit-unconfirmed':assert restarts==['new-model.gguf']
             else:assert 'model-finish' not in calls
 
@@ -6841,6 +6884,65 @@ class TestModelActivateRollback:
         assert recreates[0][1] == "host.example/llama:custom"
         assert recreates[0][0]["LLAMA_SERVER_IMAGE"] == "host.example/llama:custom"
         assert _mod.load_env(env_path)["LLAMA_SERVER_IMAGE"] == "host.example/llama:custom"
+
+    @pytest.mark.parametrize("image_owner", ["entry", "runtime_profile"])
+    def test_in_container_activation_drops_an_image_the_previous_model_selected(
+        self, tmp_path, monkeypatch, image_owner,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        previous_image = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:" + "f" * 64
+        catalog_path = install_dir / "config" / "model-library.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        previous = {
+            "id": "previous-model",
+            "gguf_file": "old-model.gguf",
+            "gguf_url": "https://example.test/old-model.gguf",
+            "gguf_sha256": "0" * 64,
+            "llm_model_name": "old-model",
+            "context_length": 4096,
+        }
+        if image_owner == "entry":
+            previous["llama_server_image"] = previous_image
+        else:
+            previous["runtime_profiles"] = [{"id": "p", "llama_server_image": previous_image}]
+        catalog["models"].append(previous)
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8")
+            + f"MAX_CONTEXT=2048\nLLAMA_SERVER_IMAGE={previous_image}\n",
+            encoding="utf-8",
+        )
+        recreates = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install_dir))
+        monkeypatch.setattr(
+            _mod,
+            "_recreate_llama_server",
+            lambda env, override_image="": recreates.append((dict(env), override_image)),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        # target-model names no image: it runs the NVIDIA default again
+        # instead of inheriting the previous model's pinned build.
+        assert recreates[0][1].startswith("ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:")
+        assert "LLAMA_SERVER_IMAGE" not in recreates[0][0]
+        assert "LLAMA_SERVER_IMAGE" not in _mod.load_env(env_path)
+
+    def test_catalog_model_images_collects_entry_and_profile_images(self):
+        library = [
+            {"id": "a", "llama_server_image": " image/a:1 "},
+            {"id": "b", "runtime_profiles": [{"llama_server_image": "image/b:1"}, "bad", {}]},
+            {"id": "c", "llama_server_image": None, "runtime_profiles": "bad"},
+            {"id": "d"},
+        ]
+
+        assert _mod._catalog_model_images(library) == frozenset({"image/a:1", "image/b:1"})
 
     def test_pre_snapshot_failure_does_not_overwrite_configs(self, tmp_path, monkeypatch):
         install_dir, env_path, env_text, models_ini, ini_text, _yaml, _yaml_text = (

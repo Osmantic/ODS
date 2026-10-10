@@ -116,8 +116,8 @@ function Resolve-QwenTierConfig {
                 TierName   = "NVIDIA Ultra (90GB+)"
                 LlmModel   = "qwen3-coder-next"
                 GgufFile   = "qwen3-coder-next-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/ce09c67b53bc8739eef83fe67b2f5d293c270632/Qwen3-Coder-Next-Q4_K_M.gguf"
+                GgufSha256 = "9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -133,7 +133,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Strix Halo 90+"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelSizeMB = 21110
@@ -148,7 +148,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Strix Halo Compact"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
@@ -162,8 +162,8 @@ function Resolve-QwenTierConfig {
                 TierName   = "Lightweight"
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = "qwen"
                 ModelProfileEffective = "qwen"
@@ -176,7 +176,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Entry Level"
                 LlmModel   = "qwen3.5-9b"
                 GgufFile   = "Qwen3.5-9B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
                 GgufSha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
                 MaxContext = 16384
                 ModelProfileRequested = "qwen"
@@ -190,7 +190,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Prosumer"
                 LlmModel   = "qwen3.5-9b"
                 GgufFile   = "Qwen3.5-9B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
                 GgufSha256 = "03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
                 MaxContext = 32768
                 ModelProfileRequested = "qwen"
@@ -204,7 +204,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Pro"
                 LlmModel   = "qwen3.5-27b"
                 GgufFile   = "Qwen3.5-27B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/3221f178a6b842d04f1fb42f1c413534adcc0a6a/Qwen3.5-27B-Q4_K_M.gguf"
                 GgufSha256 = "84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
                 MaxContext = 65536
                 ModelProfileRequested = "qwen"
@@ -218,7 +218,7 @@ function Resolve-QwenTierConfig {
                 TierName   = "Enterprise"
                 LlmModel   = "qwen3.6-35b-a3b"
                 GgufFile   = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GgufSha256 = "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MaxContext = 131072
                 ModelProfileRequested = "qwen"
@@ -241,7 +241,8 @@ function Resolve-GemmaTierConfig {
 
     # Keep this aligned with docker-compose.nvidia.yml so preflight validates
     # the same CUDA runtime image compose will start.
-    $runtimeImage = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+    $runtimeImage = "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
+    # This tag selects the native Windows archive, not the CUDA image.
     $runtimeTag = "b9014"
 
     switch ($Tier) {
@@ -306,8 +307,8 @@ function Resolve-GemmaTierConfig {
                 TierName   = "Lightweight"
                 LlmModel   = "qwen3.5-2b"
                 GgufFile   = "Qwen3.5-2B-Q4_K_M.gguf"
-                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
-                GgufSha256 = ""
+                GgufUrl    = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+                GgufSha256 = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
                 MaxContext = 8192
                 ModelProfileRequested = $RequestedProfile
                 ModelProfileEffective = "qwen"
@@ -1247,7 +1248,7 @@ function ConvertTo-ModelFromTier {
 # Tiny model for instant chat while the full tier model downloads in background.
 
 $script:BOOTSTRAP_GGUF_FILE    = "Qwen3.5-2B-Q4_K_M.gguf"
-$script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf"
+$script:BOOTSTRAP_GGUF_URL     = "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
 $script:BOOTSTRAP_GGUF_SHA256  = "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223"
 $script:BOOTSTRAP_LLM_MODEL    = "qwen3.5-2b"
 # Hermes requires at least a 64K context window. Keep the fast-start model at

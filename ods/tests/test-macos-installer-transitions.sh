@@ -28,7 +28,11 @@ pass() {
 }
 
 extract_installer_function() {
-    sed -n "/^${1}() {/,/^}$/p" "$INSTALLER"
+    local source="$INSTALLER"
+    if [[ "$1" == _write_macos_opencode_config ]]; then
+        source="$ROOT_DIR/installers/macos/lib/post-pixel-install.sh"
+    fi
+    sed -n "/^${1}() {/,/^}$/p" "$source"
 }
 
 # shellcheck source=lib/python-cmd.sh

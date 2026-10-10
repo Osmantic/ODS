@@ -20,6 +20,46 @@ sudo usermod -aG docker $USER
 docker ps
 ```
 
+### Pixel Cannot Access Docker
+
+**Error:** `Pixel's Docker access check failed` during Docker setup, or
+`Docker daemon is unavailable to the current user` in Pixel's bootstrap log.
+
+Pixel runs Docker as the ODS install owner. The rest of the installer may be
+able to use `sudo docker` even when that owner's Docker access fails. Current
+Linux/WSL installers check the owner's access before downloading images and
+show Docker's error in the terminal. This check also applies with `--skip-docker`;
+that flag skips installing Docker, not Pixel's runtime requirements.
+
+In a terminal as the owner named in the error, run:
+
+```bash
+docker info >/dev/null
+```
+
+Run it without `sudo`. It queries Docker without changing containers and keeps
+the error visible while hiding the full info report. Use the reported error:
+
+- **Permission denied:** for a system Docker Engine, check the owner's socket
+  access and [Docker's Linux post-install instructions](https://docs.docker.com/engine/install/linux-postinstall/).
+  Docker group membership grants root-level privileges; only grant it deliberately.
+  If membership was just changed, open a new login session.
+- **Cannot connect:** check that the intended daemon is running. On WSL, check
+  Docker Desktop and its integration with the selected Ubuntu distribution.
+- **Context, endpoint or TLS error:** check `docker context show`, `DOCKER_CONTEXT`,
+  `DOCKER_HOST` and `DOCKER_CONFIG` in that user's session. Correct the setting
+  identified by Docker rather than changing socket permissions.
+
+Once the command succeeds, rerun the documented installer with the same install
+directory and options. If you previously chose `--no-pixel`, replace it with
+`--pixel` to add Pixel. This error alone does not call for `--force`, deleting
+the ODS directory, or removing containers or volumes.
+
+If the check succeeds but bootstrap still fails, it does not explain the earlier
+failure. Keep the first error and `logs/pixel-install.log` from that attempt;
+review them for credentials or private endpoints before sharing. Avoid repeated
+reinstalls based only on the generic Docker message.
+
 ### NVIDIA Container Toolkit Missing
 
 **Error:** `could not select device driver "" with capabilities: [[gpu]]`

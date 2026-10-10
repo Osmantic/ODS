@@ -59,6 +59,17 @@ def mock_edge_read_transport(monkeypatch):
     monkeypatch.setattr(pixel_edge_read_client, 'get_edge_read_client', get_fake)
 
 
+@pytest.fixture(autouse=True)
+def _no_hugging_face_header_reads(monkeypatch):
+    """Unit tests never reach Hugging Face; a test that needs a header stubs one."""
+    import hf_gguf_header
+
+    async def unreachable(*_args, **_kwargs):
+        raise hf_gguf_header.HeaderUnavailable("unreachable", "unit tests do not read Hugging Face")
+
+    monkeypatch.setattr(hf_gguf_header, "fetch_gguf_header", unreachable)
+
+
 @pytest.fixture()
 def install_dir(tmp_path, monkeypatch):
     """Provide an isolated install directory with a .env file."""

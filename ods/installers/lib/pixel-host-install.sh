@@ -163,6 +163,32 @@ PY
     fi
 }
 
+ods_pixel_check_owner_docker() {
+    local owner home status
+    owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || {
+        ai_bad "Could not determine the Pixel install owner for the Docker check."
+        return 1
+    }
+    home="$(ods_pixel_owner_home "$owner")" || {
+        ai_bad "Could not resolve the home directory for Pixel owner '$owner'."
+        return 1
+    }
+    ai "Checking Docker access as Pixel owner '$owner'..."
+    # Pixel bootstrap uses plain Docker as this owner, even when the ODS core
+    # can proceed via sudo docker. Reuse its group refresh and environment.
+    # Discard info's potentially sensitive stdout, but keep the actual error
+    # visible rather than interpreting every failure as a socket permission.
+    if ods_pixel_run_as_owner "$owner" "$home" docker info >/dev/null; then
+        return 0
+    else
+        status=$?
+    fi
+    ai_bad "Pixel's Docker access check failed for '$owner' (exit $status); see the error above."
+    ai_warn "As '$owner', run 'docker info >/dev/null' without sudo and resolve the reported error before retrying with the same install options."
+    ai_warn "Recovery: https://github.com/Osmantic/ODS/blob/main/ods/docs/TROUBLESHOOTING.md#pixel-cannot-access-docker"
+    return "$status"
+}
+
 # Resolve Pixel search before phase 03 chooses Compose services. Use the same
 # owner-private onboarding selector as phase 11, and the explicit > installed
 # .env precedence that phase 06 applies. Never source .env as shell code.
@@ -337,6 +363,21 @@ print(f"{state}|{source_ref}")
 PY
 }
 
+# An exact inert initial bootstrap has no deployed authority baseline to hold.
+# Recheck the same evidence before reconciling its ordinary source copy.
+_ods_pixel_initial_source_copy_allowed() {
+    local owner="$1" home="$2" requested_ref="$3" transition
+    transition="$(_ods_pixel_source_transition_state "$owner" "$home" "$requested_ref")" || return 1
+    [[ "$transition" == "installing|$requested_ref" \
+        && ! -e /var/lib/ods-pixel-access && ! -L /var/lib/ods-pixel-access \
+        && ! -e /etc/ods/pixel-access.json && ! -L /etc/ods/pixel-access.json \
+        && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
+        && ! -e /etc/systemd/system/openclaw-gateway.service \
+        && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
+        && PIXEL_SOURCE_REF="$requested_ref" _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
+            "$INSTALL_DIR/data/pixel/source-$requested_ref"
+}
+
 # Return 0 when an exact ODS-managed Pixel deployment needs a held transaction
 # before the installer copies source over its installed ownership evidence.
 # Return 1 when no transition is needed, and 2 for unsafe or ambiguous state.
@@ -350,14 +391,8 @@ _ods_pixel_source_transition_required() {
     # An interrupted bootstrap has not installed a release or access
     # coordinator yet. There is no authority baseline to migrate. Keep the
     # ordinary source-copy path only for the exact inert initial state.
-    if [[ "$state" == installing \
-        && ! -e /var/lib/ods-pixel-access && ! -L /var/lib/ods-pixel-access \
-        && ! -e /etc/ods/pixel-access.json && ! -L /etc/ods/pixel-access.json \
-        && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
-        && ! -e /etc/systemd/system/openclaw-gateway.service \
-        && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
-        && PIXEL_SOURCE_REF="$requested_ref" _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
-            "$INSTALL_DIR/data/pixel/source-$source_ref"; then
+    if [[ "$state" == installing ]] \
+        && _ods_pixel_initial_source_copy_allowed "$owner" "$home" "$requested_ref"; then
         return 1
     fi
     # The Pixel pin alone does not identify the ODS host integration. Preserve
@@ -388,8 +423,18 @@ _ods_pixel_source_transition_required() {
 _ods_pixel_source_upgrade() {
     local action="$1" owner="$2"
     shift 2
+    # These custody operations are mandatory. ods_sudo intentionally returns
+    # success when skipping optional privileged tasks; that is not a valid
+    # stage/status/hold response and must never authorize an upgrade step.
+    if [[ ${EUID:-$(id -u)} -ne 0 && "${ODS_SUDO_AVAILABLE:-true}" == false ]]; then
+        printf '%s\n' 'error: source-upgrade-sudo-required: Pixel source upgrade requires sudo. Preserve the existing installation and any pending upgrade state.' >&2
+        return 1
+    fi
     local helper="${SCRIPT_DIR:?}/bin/pixel_source_upgrade.py"
-    [[ -f "$helper" && ! -L "$helper" ]] || return 1
+    if [[ ! -f "$helper" || -L "$helper" ]]; then
+        printf '%s\n' 'error: source-upgrade-helper-unavailable: The reviewed Pixel source upgrade helper is missing or unsafe.' >&2
+        return 1
+    fi
     ods_sudo python3 -I "$helper" "$action" "${INSTALL_DIR:?}" "$owner" "$@"
 }
 
@@ -3907,7 +3952,7 @@ _ods_pixel_write_operations_policy() {
     ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "${policy%/*}" || return 1
     ods_pixel_run_as_owner "$owner" "$home" python3 - "$policy" "$install_root" "$workspace" \
         "$system_observer_source" <<'PY'
-import json, os, pathlib, re, shutil, socket, stat, sys, tempfile
+import json, os, pathlib, re, shutil, socket, stat, subprocess, sys, tempfile
 
 out, install_root, workspace, system_observer_source_raw = sys.argv[1:]
 path = pathlib.Path(out)
@@ -3955,6 +4000,14 @@ def required_binary(name):
     return str(pathlib.Path(candidate).resolve(strict=True))
 
 python_binary = str(pathlib.Path("/usr/bin/python3").resolve(strict=True))
+if native_macos:
+    probe = "import ctypes,os; b=ctypes.create_string_buffer(4096); assert ctypes.CDLL(None).proc_pidpath(os.getpid(),b,len(b))>0; print(b.value.decode())"
+    res = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", probe], cwd="/", env={"PATH": "/usr/bin:/bin", "HOME": "/var/empty", "TMPDIR": "/private/tmp"}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+    if not res.returncode and len(res.stdout.splitlines()) == 1:
+        cand = pathlib.Path(res.stdout.strip())
+        st = cand.lstat() if cand.exists() else None
+        if st and stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and st.st_uid == 0 and not (st.st_mode & 0o022) and os.access(cand, os.X_OK):
+            python_binary = str(cand.resolve(strict=True))
 hostname_binary = required_binary("hostname")
 uname_binary = required_binary("uname")
 cat_binary = required_binary("cat")
@@ -4571,7 +4624,7 @@ PY
 _ods_pixel_write_onboarding() {
     local owner="$1" home="$2" answers="$3" openclaw_bin="$4" plugin_path="$5" plugin_digest="$6"
     local web_search_provider="${7:-searxng}" parallel_path="${8:-}" parallel_digest="${9:-}"
-    local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=false
+    local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=default
     local gateway_alias gateway_label runtime_model model_gateway_port="${PIXEL_MODEL_RELAY_PORT:-4006}" pixel_gateway_port gateway_key="${PIXEL_MODEL_RELAY_KEY:-}"
     local gateway_key_file write_status=0
     if [[ "$context" =~ ^[0-9]+$ && "$context" -ge 4096 ]]; then
@@ -4584,13 +4637,6 @@ _ods_pixel_write_onboarding() {
         ai_bad "Pixel received an invalid model context budget."
         return 1
     }
-    # This field controls the active OpenClaw reasoning path, not merely the
-    # model family's theoretical capability. Keep the default no-think setting
-    # false even for reasoning-capable models; an explicit operator setting
-    # enables it and is reconciled transactionally on model swaps.
-    if [[ ! "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
-        reasoning=true
-    fi
     gateway_alias="$(_ods_pixel_gateway_model_alias)" || {
         ai_bad "Pixel received an unsupported ODS model Switchboard mode."
         return 1
@@ -4598,6 +4644,24 @@ _ods_pixel_write_onboarding() {
     gateway_label="Default"
     [[ "$gateway_alias" == "ods/current" ]] && gateway_label="Current"
     runtime_model="$(_ods_pixel_runtime_model_identity)" || return 1
+    # This field controls the active OpenClaw reasoning path, not merely the
+    # model family's theoretical capability. An explicit operator setting
+    # (including an empty value) always wins. When unset, the renderer decides:
+    # a local built-in Qwen3.5-2B bootstrap route defaults to reasoning on so
+    # the Portal can complete simple tasks without tool loops; every other
+    # route keeps the historical no-think default. The renderer preserves a
+    # previously validated reasoning preference for the same model route.
+    if [[ -n "${LLAMA_REASONING+x}" ]]; then
+        if [[ "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
+            reasoning=false
+        else
+            reasoning=true
+        fi
+    elif [[ -z "${EXTERNAL_LLM_URL:-}" ]]; then
+        case "$(printf '%s' "$runtime_model" | tr '[:upper:]' '[:lower:]')" in
+            qwen3.5-2b|qwen3.5-2b-q4_k_m.gguf) reasoning=bootstrap ;;
+        esac
+    fi
     if [[ ! "$model_gateway_port" =~ ^[0-9]+$ ]] || (( model_gateway_port < 1 || model_gateway_port > 65535 )); then
         ai_bad "Pixel requires a valid loopback model relay port."
         return 1
@@ -4970,19 +5034,10 @@ _ods_pixel_install_preview_inspection() {
     ods_sudo systemctl enable pixel-preview-inspection.service || return 1
     ods_sudo systemctl restart pixel-preview-inspection.service || return 1
     ods_sudo systemctl is-active --quiet pixel-preview-inspection.service || return 1
-    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - <<'PY' || return 1
-import socket, time
-for attempt in range(50):
-    try:
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(1)
-            client.connect('/run/ods-pixel-inspection/control.sock')
-        break
-    except OSError:
-        if attempt == 49:
-            raise SystemExit('Pixel preview inspection socket is not ready for its owner')
-        time.sleep(.1)
-PY
+    # Type=simple becomes active before Python imports finish and the broker
+    # binds its socket. Slow WSL startup can exceed the former five-second wait.
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" wait-owner-socket \
+        || return 1
     ods_sudo /usr/bin/python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
@@ -5240,6 +5295,8 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
+        && -f "$plugin_root/host/openclaw-subagent-admission.json" \
+        && -f "$plugin_root/host/openclaw-subagent-session.json" \
         && -f "$plugin_root/host/openclaw-hook-provenance.json" \
         && -f "$plugin_root/host/openclaw-run-id-redaction.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
@@ -5650,7 +5707,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -5790,6 +5847,24 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/run-id-redaction" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's run identity redaction repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Child announcements must enter admission even while an owner turn is active.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --subagent-admission \
+        --state-dir "$home/.openclaw/ods-runtime-patches/subagent-admission" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's subagent admission repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Native child completion keeps its owner session across automatic expiration.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --subagent-session \
+        --state-dir "$home/.openclaw/ods-runtime-patches/subagent-session" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's subagent session repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Preserve trusted inter-session provenance in native prompt-hook contexts.

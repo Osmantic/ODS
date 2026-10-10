@@ -116,6 +116,8 @@ def test_initial_bootstrap_source_refresh_requires_absent_host_deployment(tmp_pa
     host = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
     start = host.index('_ods_pixel_source_transition_required() {')
     function = host[start:host.index('\n}\n', start) + 3]
+    start = host.index('_ods_pixel_initial_source_copy_allowed() {')
+    function = host[start:host.index('\n}\n', start) + 3] + '\n' + function
     paths = dict(state='/var/lib/ods-pixel-access', config='/etc/ods/pixel-access.json',
                  program='/usr/local/libexec/ods-pixel-access', unit='/etc/systemd/system/openclaw-gateway.service')
     for label, path in paths.items():
@@ -216,7 +218,7 @@ def test_phase06_applies_deferred_selection_after_authenticated_copy_and_downstr
     copy = phase.index('_ods_pixel_source_upgrade copy', hold)
     downstream = phase.index('_ods_pixel_source_upgrade downstream', copy)
     generic_copy = phase.index('_phase06_step "copy-source"', downstream)
-    reconcile = phase.index('_ods_apply_deferred_feature_state ||', generic_copy)
+    reconcile = phase.index('_ods_apply_deferred_feature_state "$_phase06_requested_pixel_ref" ||', generic_copy)
     assert stage < hold < copy < downstream < generic_copy < reconcile
     assert phase.index('ods_pixel_uninstall_managed', downstream) < reconcile
 

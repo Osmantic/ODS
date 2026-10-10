@@ -58,6 +58,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "native-llama-runtime.ps1")
 . (Join-Path $LibDir "native-llama-legacy.ps1")
 . (Join-Path $LibDir "model-activation.ps1")
+. (Join-Path $LibDir "host-agent-process.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
 
@@ -2865,7 +2866,7 @@ function Invoke-Agent {
             if (Test-Path $pidFile) {
                 try {
                     $_oldPid = [int](Get-Content $pidFile -Raw).Trim()
-                    Stop-Process -Id $_oldPid -Force -ErrorAction SilentlyContinue
+                    Stop-ODSHostAgentProcess -ProcessId $_oldPid -AgentScript $agentScript
                 } catch { }
                 Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
             }
@@ -2965,8 +2966,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
             if (Test-Path $pidFile) {
                 try {
                     $_pid = [int](Get-Content $pidFile -Raw).Trim()
-                    Stop-Process -Id $_pid -Force -ErrorAction SilentlyContinue
-                    Write-AISuccess "Host agent stopped (PID $_pid)"
+                    Stop-ODSHostAgentProcess -ProcessId $_pid -AgentScript $agentScript
                 } catch {
                     Write-AIWarn "Could not stop agent PID: $_"
                 }
@@ -2976,7 +2976,7 @@ WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hid
             }
             foreach ($_listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)) {
                 if ($_listener.OwningProcess -gt 0) {
-                    Stop-Process -Id ([int]$_listener.OwningProcess) -Force -ErrorAction SilentlyContinue
+                    Stop-ODSHostAgentProcess -ProcessId ([int]$_listener.OwningProcess) -AgentScript $agentScript
                 }
             }
         }

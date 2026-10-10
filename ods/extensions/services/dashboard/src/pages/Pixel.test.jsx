@@ -933,7 +933,7 @@ describe('Pixel', () => {
     render(<Pixel />)
 
     await waitFor(() => expect(screen.getByText('Switching model...')).toBeInTheDocument())
-    expect(screen.getByText('Portal is switching models')).toBeInTheDocument()
+    expect(screen.getByLabelText('Model activation')).toHaveTextContent('Model change has not finished')
     expect(screen.getByPlaceholderText('Waiting for model switch...')).toBeDisabled()
   })
 

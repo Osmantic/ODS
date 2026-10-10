@@ -3,7 +3,7 @@
 # still bind its old inode, so replacing it can hide a broken next startup.
 ods_copy_install_source() {
     local source_dir="$1" install_dir="$2" log_file="$3"
-    local cloud="$install_dir/config/litellm/cloud.yaml" parent metadata owner mode
+    local cloud="$install_dir/config/litellm/cloud.yaml" parent metadata owner mode dotfile
     local -a cloud_excludes=() held_source_excludes=()
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         # The protected source transaction has already installed and verified
@@ -59,10 +59,15 @@ ods_copy_install_source() {
         # preservation. A rerun cannot safely use an unfiltered recursive cp.
         cp -r "$source_dir"/* "$install_dir/" 2>>"$log_file" || return 1
         cp "$source_dir/.gitignore" "$install_dir/" 2>>"$log_file" || return 1
-        # Root-context image builds read it (see .dockerignore). Sources from
-        # before it existed copy as they did.
-        if [[ -f "$source_dir/.dockerignore" ]]; then
-            cp "$source_dir/.dockerignore" "$install_dir/" 2>>"$log_file" || return 1
-        fi
+        # The glob above skips top-level dotfiles that rsync copies. Root-context
+        # image builds read .dockerignore; the host agent's .env save, `ods
+        # config validate` and the dashboard's settings sections read the .env
+        # schema and example from the install. Sources from before a file
+        # existed copy as they did.
+        for dotfile in .dockerignore .env.example .env.schema.json; do
+            if [[ -f "$source_dir/$dotfile" ]]; then
+                cp "$source_dir/$dotfile" "$install_dir/" 2>>"$log_file" || return 1
+            fi
+        done
     fi
 }

@@ -41,6 +41,7 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
+const EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS = "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.";
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 const CONNECT_TIMEOUT_MS = 5000;
@@ -921,8 +922,8 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
   }
 }
 
-// A native sessions_yield response is an introduction, not the completed owner
-// answer. Keep this exact request open for its registered parent continuation.
+// An accepted native spawn can return a waiting introduction without calling
+// sessions_yield. Keep the exact request open for its registered continuation.
 // Polling reads host receipts only; it never invokes the model or replays tools.
 async function awaitSubagentDelivery(completion, user, token, gatewayPort, signal, deps) {
   const runId=completion?.id;
@@ -959,7 +960,8 @@ async function awaitSubagentDelivery(completion, user, token, gatewayPort, signa
 
 function missingVisibleAssistantText(content) {
   return typeof content === 'string' && (!content.trim() ||
-    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE].includes(content.trim()));
+    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE,
+      EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS].includes(content.trim()));
 }
 
 // Standalone ingress is installed beside host helpers, without plugin code.
@@ -1219,7 +1221,8 @@ async function unfinishedExtensionDecision(completion, user, token, gatewayPort,
   if (!OPENAI_RUN_ID.test(completion?.id ?? '') || typeof user !== 'string' ||
       completion?.choices?.length !== 1 || completion.choices[0]?.finish_reason !== 'stop' ||
       typeof completion.choices[0]?.message?.content !== 'string' ||
-      completion.choices[0].message.content === EMPTY_ASSISTANT_RESPONSE) return null;
+      [EMPTY_ASSISTANT_RESPONSE, EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS]
+        .includes(completion.choices[0].message.content)) return null;
   try {
     const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/unfinished-extension-decision`, {
       method:'POST', headers:upstreamHeaders(false, token),

@@ -76,15 +76,16 @@ export default function EnvEditor({
   followUpPlan = null,
   onCompleteFollowUp = () => {},
   applying = false,
+  reading = false,
 }) {
-  useBeforeUnload(dirty || saving)
+  useBeforeUnload(dirty || saving || applying)
   const activeKeys = activeSection?.keys || []
   const canApply = Boolean(applyPlan?.supported && applyPlan?.services?.length > 0 && editor?.agentAvailable !== false)
   const issueSectionCount = countIssueSections(sections, issues)
 
   return (
     <section className="settings-premium-card settings-environment p-5 lg:p-7">
-      <fieldset disabled={saving} className="m-0 min-w-0 border-0 p-0" aria-busy={saving}>
+      <fieldset disabled={saving || applying || reading} className="m-0 min-w-0 border-0 p-0" aria-busy={saving || applying || reading}>
       <EnvironmentEditorHeader
         onRefresh={onRefresh || onReload}
         onReload={onReload}

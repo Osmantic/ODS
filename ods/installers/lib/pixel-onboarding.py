@@ -14,7 +14,7 @@ import tempfile
  search_port, plugin_path, plugin_digest, web_search_provider, parallel_path, parallel_digest) = sys.argv[1:]
 if (not context.isdigit() or not 4096 <= int(context) <= 10_000_000
         or not max_tokens.isdigit() or not 1 <= int(max_tokens) <= int(context)
-        or reasoning not in {"true", "false"}
+        or reasoning not in {"true", "false", "default", "bootstrap"}
         or not search_port.isdigit() or not 1 <= int(search_port) <= 65535):
     raise SystemExit("invalid ODS Pixel model or search budget")
 if web_search_provider not in {"searxng", "parallel-free"}:
@@ -48,6 +48,7 @@ path = pathlib.Path(out)
 # still applied by _ods_pixel_update_onboarding_model.
 route_fingerprint = None
 image_input = "unknown"
+resolved_reasoning = reasoning in {"true", "bootstrap"}
 try:
     previous_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
 except FileNotFoundError:
@@ -72,12 +73,18 @@ else:
             or not 4096 <= previous["modelContextWindow"] <= 10_000_000
             or not 1 <= previous["modelMaxTokens"] <= previous["modelContextWindow"]):
         raise SystemExit("invalid existing ODS Pixel model contract")
-    same_model = {
+    same_route = {
         "modelProvider": "ods-gateway", "modelId": gateway_alias,
         "modelName": f"ODS {gateway_label} ({model})",
         "modelBaseUrl": f"http://127.0.0.1:{model_gateway_port}/v1",
-        "modelContextWindow": int(context), "modelReasoning": reasoning == "true",
+        "modelContextWindow": int(context),
     }
+    # An unspecified setting preserves the validated preference only when the
+    # route and context are unchanged. Explicit settings always take precedence.
+    if (reasoning in {"default", "bootstrap"}
+            and all(previous.get(key) == value for key, value in same_route.items())):
+        resolved_reasoning = previous["modelReasoning"]
+    same_model = dict(same_route, modelReasoning=resolved_reasoning)
     if all(previous.get(key) == value for key, value in same_model.items()):
         max_tokens = str(previous["modelMaxTokens"])
         route_fingerprint = previous.get("modelRouteFingerprint")
@@ -110,7 +117,7 @@ payload = {
     "modelName": f"ODS {gateway_label} ({model})",
     "modelBaseUrl": f"http://127.0.0.1:{model_gateway_port}/v1",
     "modelApiKey": gateway_key,
-    "modelReasoning": reasoning == "true",
+    "modelReasoning": resolved_reasoning,
     "modelContextWindow": int(context),
     "modelMaxTokens": int(max_tokens),
     # Unknown permits image transport, not a claim that this model has vision.

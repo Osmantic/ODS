@@ -72,6 +72,33 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    @pytest.mark.parametrize("service_id,port,path,public_url", [
+        ("hermes-proxy", 9120, "/auth/ods", None),
+        ("hermes-proxy", 19320, "/auth/ods", None),
+        ("hermes", 0, "/", None),
+        ("example", 11146, "/nifi", "https://service.example.test/nifi?view=home"),
+    ])
+    def test_catalog_and_detail_preserve_resolved_launch_metadata(
+            self, test_client, monkeypatch, tmp_path, service_id, port, path, public_url):
+        # The shipped row lacks launch metadata, just as in the failed live launch.
+        catalog = [{**_make_catalog_ext(service_id), "catalog_source": "builtin"}]
+        services = {service_id: {"ui_path": path, "external_port": port,
+                                 "public_url": public_url}}
+        _patch_extensions_config(monkeypatch, catalog, services=services, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / service_id
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+            detail = test_client.get(f"/api/extensions/{service_id}", headers=test_client.auth_headers)
+        assert response.status_code == detail.status_code == 200
+        row = next(item for item in response.json()["extensions"] if item["id"] == service_id)
+        for item in (row, detail.json()):
+            assert item["ui_path"] == path
+            assert item["external_port"] == port
+            assert item.get("public_url") == public_url
+
     @pytest.mark.parametrize("service_id", ["perplexica", "searxng"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):

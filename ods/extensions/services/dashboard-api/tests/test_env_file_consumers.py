@@ -38,3 +38,38 @@ def test_process_environment_is_not_reparsed_as_dotenv(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ODS_READER_TEST", "literal # part $value")
     assert performance_oracle.read_env_value("ODS_READER_TEST", tmp_path) == "literal # part $value"
+
+
+@pytest.mark.parametrize("error", [
+    PermissionError("private configuration"),
+    FileNotFoundError("configuration missing"),
+    IsADirectoryError("configuration is a directory"),
+    OSError("configuration read failed"),
+])
+def test_file_reader_strict_option_preserves_read_error_type(tmp_path, monkeypatch, error):
+    from pathlib import Path
+    import performance_oracle
+
+    def fail_read(_path, *args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(Path, "read_text", fail_read)
+
+    # Existing consumers keep their compatibility behavior; the runtime mode
+    # gate must distinguish a denied read from missing or damaged storage.
+    assert performance_oracle.read_env_file_value("ODS_MODE", tmp_path) == ""
+    with pytest.raises(type(error)) as raised:
+        performance_oracle.read_env_file_value("ODS_MODE", tmp_path, raise_on_error=True)
+    assert raised.value is error
+
+
+def test_strict_file_reader_still_decodes_writer_values(tmp_path):
+    import performance_oracle
+
+    value = "it's $5 \"q\" back\\slash"
+    (tmp_path / ".env").write_text(
+        f"ODS_READER_TEST={quote_env_value(value)}\n", encoding="utf-8",
+    )
+    assert performance_oracle.read_env_file_value(
+        "ODS_READER_TEST", tmp_path, raise_on_error=True,
+    ) == value

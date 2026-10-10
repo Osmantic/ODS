@@ -42,6 +42,12 @@ mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
 : > "$FIXTURE/docker-compose.base.yml"
+cat > "$FIXTURE/ods-update.sh" <<'BACKUP'
+#!/usr/bin/env bash
+# This fixture exercises service verification after a completed snapshot.
+[[ "${1:-}" == backup && -n "${2:-}" ]]
+BACKUP
+chmod +x "$FIXTURE/ods-update.sh"
 
 cat > "$FIXTURE/extensions/services/bsvc/manifest.yaml" <<'EOF'
 schema_version: ods.services.v1
@@ -156,7 +162,7 @@ EOF
 
 run_update() {
     # Never let a non-zero CLI exit kill the test; callers assert on output/state
-    PATH="$FIXTURE/bin:$PATH" ODS_HOME="$FIXTURE" \
+    PATH="$FIXTURE/bin:$PATH" INSTALL_DIR="$FIXTURE" ODS_HOME="$FIXTURE" \
         bash "$FIXTURE/ods-cli" update 2>&1 || true
 }
 

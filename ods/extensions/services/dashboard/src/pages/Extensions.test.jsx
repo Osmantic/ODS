@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Extensions from './Extensions' // eslint-disable-line no-unused-vars
 
@@ -660,4 +660,49 @@ describe('Extensions page — unhealthy + install derivations', () => {
     await screen.findByText('Rollback Extension')
     expect(screen.getByRole('button', { name: 'Rollback' })).toBeInTheDocument()
   })
+})
+
+it('adds Hermes and browser access together with its declared dependencies', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes Agent',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,external_port_default:0,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,external_port_default:9120,ui_path:'/auth/ods',features:[baseFeature]},
+    {id:'searxng',name:'SearXNG',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:3})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:false,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/hermes-proxy/prepare?auto_enable_deps=true' && options.method === 'POST') return makeJsonResponse({status:'ready',service_ids:['searxng','hermes','hermes-proxy']})
+    if (target === '/api/extensions/hermes-proxy/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({enabled_services:['searxng','hermes','hermes-proxy'],failed_services:[]})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Add Hermes with web access'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('required services including SearXNG')
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/hermes-proxy/enable?auto_enable_deps=true', expect.objectContaining({method:'POST'}),
+  ))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/hermes/enable', expect.anything())
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/searxng/enable', expect.anything())
+})
+
+it('opens enabled Hermes through its ODS authenticated proxy entry', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes Agent',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,external_port_default:0,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,external_port:9120,ui_path:'/auth/ods',features:[baseFeature]},
+  ],summary:baseSummary({total:2,installed:2})})
+  render(<Extensions compact />)
+  const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
+  expect(within(agentCard).getByRole('link',{name:':9120'})).toHaveAttribute(
+    'href','http://localhost:9120/auth/ods')
 })

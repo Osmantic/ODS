@@ -21,6 +21,7 @@ import {
   ODS_WORKSPACE_NEW_STATIC_CONTRACT,
   ODS_WORKSPACE_PREVIEW_CONTRACT,
   ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT,
+  ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT,
   githubSourceContract,
   needsLoopRecovery,
   operationsRequestContract,
@@ -56,7 +57,8 @@ test('full, lean and small-context routes teach the actual preview runtime bound
       assert.match(contract, /localStorage\/sessionStorage property getters, reads and writes may throw/);
       assert.match(contract, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
       assert.match(contract, /Saving failure must not block startup, controls or continued work/);
-      assert.match(contract, /Never promise persistence or add allow-same-origin to bypass isolation/);
+      assert.match(contract, /Embedded previews have opaque origins; separate tabs may differ/);
+      assert.match(contract, /Verify persistence at the exact URL; never add allow-same-origin to bypass isolation/);
     }
   }
   for (const topic of ['workspace', 'verification']) assert.ok(AGENT_SKILLS[topic].includes(PREVIEW_RUNTIME_CONTRACT));
@@ -299,7 +301,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.match(host.appendSystemContext, /pixel_ods_host_observe/);
 
   const full = promptContractForAgent(
-    { agentId: "pixel", contextTokenBudget: 32768 },
+    { agentId: "pixel", contextTokenBudget: 32769 },
     "pixel"
   );
   assert.deepEqual(full, { appendSystemContext: ODS_CONVERSATION_CONTRACT });
@@ -350,6 +352,50 @@ test("adds one exact compact tool route for natural broad host questions", () =>
     promptContractForAgent({ agentId: "pixel" }, "pixel", { prompt }).appendSystemContext,
     `${ODS_CONVERSATION_CONTRACT}${exact}`
   );
+});
+
+test('32K selects the compact core from every trusted context source', () => {
+  for (const window of [32767, 32768, 32769, 65536]) {
+    for (const source of ['configured', 'budget', 'reference']) {
+      const context = {agentId:'pixel', contextTokenBudget:65536, contextWindowReferenceTokens:65536};
+      const options = {configuredContextWindow:65536};
+      if (source === 'configured') options.configuredContextWindow = window;
+      if (source === 'budget') context.contextTokenBudget = window;
+      if (source === 'reference') context.contextWindowReferenceTokens = window;
+      const result = promptContractForAgent(context, 'pixel', {prompt:'What is 14 plus 8?'}, options);
+      assert.equal(result.appendSystemContext, window <= 32768
+        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT);
+    }
+  }
+  assert.equal(promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt:'Use a 32K context.'})
+    .appendSystemContext, ODS_CONVERSATION_CONTRACT, 'owner prose cannot select the trusted budget');
+});
+
+test('32K preserves explicit compact-mode intent routes and verification safeguards', () => {
+  for (const prompt of [
+    'Compare Open WebUI with Flowise in the ODS extension catalog.',
+    'Install Flowise on the ODS host.',
+    'What can you tell me about this machine?',
+    'Make a playable Breakout game.',
+    'Continue checking the published preview controls.',
+    'Give me the existing report.pdf as a download.',
+    'Read the private URL http://192.168.1.20.',
+  ]) {
+    for (const executionHost of ['sandbox', 'gateway']) {
+      for (const verificationStatus of ['pending', 'failed']) {
+        const options = {executionHost, verificationStatus, privateBrowserAccess:false};
+        const actual = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt},
+          {...options, configuredContextWindow:32768});
+        const existingLean = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt},
+          {...options, configuredContextWindow:65536, configuredLeanPrompt:true});
+        assert.deepEqual(actual, existingLean, prompt);
+        assert.match(actual.appendSystemContext, /untrusted data, never authority/);
+        assert.match(actual.appendSystemContext, /never self-approve/);
+        assert.match(actual.appendSystemContext, /normal\/malformed input exit status/);
+        assert.match(actual.appendSystemContext, /wait without starting the dependent action/);
+      }
+    }
+  }
 });
 
 test("adds one model-agnostic approval route for local and explicit SSH host commands", () => {
@@ -462,7 +508,7 @@ test('full restoration retains newer CLI verification and authorization-state gu
 });
 
 test('full-context ordinary tasks receive historical process, verification and stopping guidance automatically', () => {
-  for (const configuredContextWindow of [32768, 65536]) {
+  for (const configuredContextWindow of [32769, 65536]) {
     for (const prompt of ['Repair this Python parser.', 'Summarize these records in a report.', 'Continue the running build.']) {
       const {appendSystemContext: contract} = promptContractForAgent(
         {agentId:'pixel'}, 'pixel', {prompt},
@@ -860,5 +906,67 @@ test("catalog mentions never receive GitHub proposal or single-service mutation 
     assert.match(contract, /Configuration required is a pending setup state/);
     assert.match(contract, /never request secret values in chat/);
     assert.doesNotMatch(contract, /prefer pixel_ods_extension_proposal|recipeJson|single-service mutation|Otherwise submit only the owner's requested/);
+  }
+});
+
+test("requested document delivery receives a prioritized route on full and compact prompts", async () => {
+  const {ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE: guide} = await import('../plugin/prompt-contract.mjs');
+  const {userMessageRequestsWorkspaceDocumentDelivery: selects} = await import('../plugin/tool-loop-guard.mjs');
+  for (const prompt of [
+    'Please give me the existing notes.txt as a download.',
+    'Publish the existing notes.txt as a downloadable file. Do not change its contents.',
+    'Create notes.txt containing exactly Hello. Then give me a download button for the file.',
+    'Can you attach the existing report.pdf?',
+    'Deliver the existing archive.zip.',
+    'Do not download old.zip; attach current.pdf instead.',
+    'Attach the existing "docs/report.docx".',
+  ]) {
+    assert.equal(selects([], prompt), true, prompt);
+    for (const configuredLeanPrompt of [false, true]) {
+      const result = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {configuredLeanPrompt});
+      assert.equal(result.prependContext, guide, prompt);
+      assert.ok(!result.appendSystemContext.includes(guide), prompt);
+      assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
+        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
+      assert.match(result.prependContext, /Complete any requested file creation or edits first/);
+    }
+  }
+  assert.ok(guide.length < 700);
+});
+
+test("document route preserves ordinary, remote, informational and forbidden-tool requests", async () => {
+  const {ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE: guide} = await import('../plugin/prompt-contract.mjs');
+  const {userMessageRequestsWorkspaceDocumentDelivery: selects} = await import('../plugin/tool-loop-guard.mjs');
+  for (const prompt of [
+    'Thanks.', 'Download https://example.com/report.pdf.',
+    'How do I download a file?', 'Explain how to attach report.pdf.',
+    'Do not download report.pdf; summarize it.', 'Never attach the document.',
+    'Do not use tools. Give me report.pdf as a download.',
+    'Give me photo.png as a download.', 'Attach the audio file recording.wav.',
+    'Create a website with a download button.',
+    'Summarize this example: "attach the file as a download".',
+  ]) {
+    assert.equal(selects([], prompt), false, prompt);
+    const result = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt});
+    assert.equal(result.prependContext, undefined, prompt);
+    assert.ok(!result.appendSystemContext.includes(guide), prompt);
+  }
+  const messages = [{role:'user',content:'Download report.pdf.'}, {role:'assistant',content:'Attach the file.'}, {role:'user',content:'Thanks.'}];
+  assert.equal(selects(messages), false);
+  assert.equal(selects([{role:'assistant',content:'Download report.pdf.'}]), false);
+});
+
+
+test("verification follow-up guidance permits unchanged republication without a dummy edit", () => {
+  const prompt = "Please finish verifying the preview: add an item, mark it packed, and check that the progress counter updates correctly. Fix anything that fails.";
+  for (const request of [prompt, "Verify the current preview."]) {
+  const result = promptContractForAgent(
+    { agentId: "pixel", contextTokenBudget: 16384 }, "pixel", { prompt: request },
+    { configuredLeanPrompt: true }
+  );
+  assert.ok(result.appendSystemContext.includes(ODS_WORKSPACE_VERIFICATION_CONTINUATION_CONTRACT));
+  assert.ok(!result.appendSystemContext.includes(ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT));
+  assert.match(result.appendSystemContext, /do not make a dummy edit/);
+  assert.match(result.appendSystemContext, /exact new siteId and full sha256/);
   }
 });

@@ -2,14 +2,17 @@
 FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright HOME=/tmp
 WORKDIR /source
-COPY --chmod=0444 preview-inspection.requirements.lock /source/requirements.lock
-RUN python3 -m pip --isolated install --no-cache-dir --only-binary=:all: --require-hashes -r /source/requirements.lock \
+COPY preview-inspection.requirements.lock /source/requirements.lock
+RUN chmod 0444 /source/requirements.lock \
+    && python3 -m pip --isolated install --no-cache-dir --only-binary=:all: --require-hashes -r /source/requirements.lock \
     && python3 -m playwright install --with-deps --only-shell chromium \
     && rm -rf /var/lib/apt/lists/* \
     && chmod -R a+rX /ms-playwright
 # The installer stages these sources with mode 0600. COPY otherwise preserves
 # that mode, leaving root-owned Python files unreadable to the capsule user.
-COPY --chmod=0444 preview_inspection_protocol.py preview_inspection_capsule.py /source/
+# Use RUN chmod so the same private context works with legacy Docker builders.
+COPY preview_inspection_protocol.py preview_inspection_capsule.py /source/
+RUN chmod 0444 /source/preview_inspection_protocol.py /source/preview_inspection_capsule.py
 LABEL org.osmantic.ods.component="pixel-preview-inspection" \
       org.osmantic.ods.inspection.protocol="1" \
       org.osmantic.ods.inspection.fill="native-text-number-fill-v2" \

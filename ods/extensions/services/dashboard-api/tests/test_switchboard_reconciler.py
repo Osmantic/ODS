@@ -322,6 +322,12 @@ class TestHostAgentWiring:
         probed: list[str] = []
 
         def fake_run(cmd, **_kwargs):
+            if cmd[:2] == ['docker', 'inspect']:
+                assert cmd == ['docker', 'inspect', '--type', 'container', 'ods-llama-server']
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps([{
+                    'Id': 'a' * 64, 'Config': {'Cmd': ['--model', '/models/new-model.gguf']},
+                    'State': {'Status': 'running'},
+                }]), stderr='')
             url = next((str(part) for part in cmd if str(part).startswith("http")), "")
             probed.append(url.rsplit(":8080", 1)[-1])
             if url.endswith("/health"):

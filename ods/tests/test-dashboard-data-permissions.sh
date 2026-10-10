@@ -43,7 +43,7 @@ run_case() (
     stat() {
         if [[ "$1" == -c && "$2" == '%g:%a' ]]; then
             printf '%s:%s\n' "$QA_GROUP" "$(command stat -c '%a' "$3")"
-        elif [[ "$1" == -c && "$2" == '%u:%g' && "$QA_SCENARIO" == chat_denied ]]; then
+        elif [[ "$1" == -c && "$2" == '%u:%g' && ( "$QA_SCENARIO" == chat_denied || "$QA_SCENARIO" == images_denied ) ]]; then
             printf '1001:2001\n'
         elif [[ "$1" == -c && "$2" == %g ]]; then
             printf '%s\n' "$QA_GROUP"
@@ -71,10 +71,12 @@ run_case() (
     fi
     [[ "$scenario" != chat_symlink ]] || ln -s private "$INSTALL_DIR/data/pixel-chat-results"
     [[ "$scenario" != chat_denied ]] || mkdir "$INSTALL_DIR/data/pixel-chat-results"
+    [[ "$scenario" != images_symlink ]] || ln -s private "$INSTALL_DIR/data/pixel-images"
+    [[ "$scenario" != images_denied ]] || mkdir "$INSTALL_DIR/data/pixel-images"
     local result=0
     source "$work/phase.sh" || result=$?
     case "$scenario" in
-        denied_group|denied_mode|symlink|chat_symlink|chat_denied|bad_readback|rootless_denied|rootless_image_denied)
+        denied_group|denied_mode|symlink|chat_symlink|chat_denied|images_symlink|images_denied|bad_readback|rootless_denied|rootless_image_denied)
             [[ "$result" != 0 ]] || { echo "FAIL: $scenario did not stop phase 06"; exit 1; }
             [[ "$scenario" != symlink || ! -s "$QA_CALLS" ]] ;;
         *)
@@ -87,6 +89,6 @@ run_case() (
     [[ "$scenario" != current || ! -s "$QA_CALLS" ]]
     echo "PASS: $scenario"
 )
-for scenario in owner current rootless denied_group denied_mode bad_readback rootless_denied rootless_image_denied symlink chat_symlink chat_denied; do
+for scenario in owner current rootless denied_group denied_mode bad_readback rootless_denied rootless_image_denied symlink chat_symlink chat_denied images_symlink images_denied; do
     run_case "$scenario"
 done

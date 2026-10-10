@@ -6,6 +6,7 @@ supply the selected Pixel ref.
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import uuid
 
@@ -75,8 +77,8 @@ def selected_release(source, ref):
     return value
 
 
-ODS_BUNDLED_REF = 'f2d71d31e8cebac691d109de994c1b4636504cd3'
-ODS_BUNDLED_SHA256 = '5fa764dd1b11e71eebaae193a6bba22cb9743bf6e854dbd9c7e7dd63b2ec6163'
+ODS_BUNDLED_REF = '2ef78e7067211a198748c5499ed5a0261f4b48b6'
+ODS_BUNDLED_SHA256 = 'cc4c5944a6a09a4f1132abef8811bdabf64384a8e8ee67fb3581f0071e4435b9'
 ODS_BUNDLED_SOURCE = Path(__file__).resolve().parents[3] / 'vendor/pixel.bundle'
 
 
@@ -141,20 +143,37 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def download(package, destination):
     opener = urllib.request.build_opener(NoRedirect())
-    digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
-    with opener.open(package['url'], timeout=60) as response, destination.open('xb') as output:
-        for block in iter(lambda: response.read(1024 * 1024), b''):
-            count += len(block)
-            if count > 64 * 1024 * 1024:
-                raise BootstrapError('pinned-package-too-large')
-            digest.update(block)
-            integrity.update(block)
-            output.write(block)
-        output.flush()
-        os.fsync(output.fileno())
-    if (digest.hexdigest() != package['sha256']
-            or 'sha512-' + base64.b64encode(integrity.digest()).decode() != package['integrity']):
-        raise BootstrapError('pinned-package-checksum-mismatch')
+    for attempt in range(3):
+        digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
+        created = False
+        try:
+            with destination.open('xb') as output:
+                created = True
+                with opener.open(package['url'], timeout=60) as response:
+                    for block in iter(lambda: response.read(1024 * 1024), b''):
+                        count += len(block)
+                        if count > 64 * 1024 * 1024:
+                            raise BootstrapError('pinned-package-too-large')
+                        digest.update(block)
+                        integrity.update(block)
+                        output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            if (digest.hexdigest() != package['sha256']
+                    or 'sha512-' + base64.b64encode(integrity.digest()).decode() != package['integrity']):
+                raise BootstrapError('pinned-package-checksum-mismatch')
+            return
+        except BootstrapError:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
+        except (OSError, urllib.request.URLError, http.client.HTTPException) as error:
+            if not created:
+                raise
+            destination.unlink(missing_ok=True)
+            if attempt == 2:
+                raise BootstrapError('pinned-package-download-failed') from error
+            time.sleep(attempt + 1)
 
 
 def probe_plugins(node, runtime, plugins, temporary, env, *, entrypoint='node_modules/openclaw/openclaw.mjs'):

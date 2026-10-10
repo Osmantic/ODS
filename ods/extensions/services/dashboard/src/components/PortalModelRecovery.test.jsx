@@ -6,12 +6,44 @@ const done={...pending,pending:false,phase:'completed',outcome:'commit'}
 const reply=(body,ok=true)=>({ok,json:async()=>body})
 afterEach(()=>vi.unstubAllGlobals())
 
+it('does not call an owned activation interrupted or offer competing recovery',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async()=>reply(pending)))
+  const view=render(<PortalModelRecovery operationActive/>)
+  const button=await screen.findByRole('button',{name:'Recover model switch'})
+  expect(button).toBeDisabled()
+  expect(screen.getByText(/A model operation is in progress/)).toBeVisible()
+  expect(screen.queryByText(/was interrupted/)).toBeNull()
+  fireEvent.click(button)
+  expect(fetch.mock.calls.every(([,options])=>options.method!=='POST')).toBe(true)
+  view.rerender(<PortalModelRecovery operationActive={false}/>)
+  expect(button).toBeEnabled()
+  expect(screen.getByText(/still needs verification/)).toBeVisible()
+})
+
 it('is invisible for an idle or unsupported runtime and never starts recovery automatically',async()=>{
   vi.stubGlobal('fetch',vi.fn(async()=>reply({pending:false,phase:'idle',transactionId:null})))
   const {container}=render(<PortalModelRecovery/>)
   await waitFor(()=>expect(fetch).toHaveBeenCalledOnce())
   expect(container).toBeEmptyDOMElement()
   expect(fetch.mock.calls[0][1].method).toBeUndefined()
+})
+
+it('waits for an active operation to end before retiring an externally recovered error',async()=>{
+  let state=pending
+  vi.stubGlobal('fetch',vi.fn(async()=>reply(state)))
+  const recovered=vi.fn()
+  const view=render(<PortalModelRecovery onRecovered={recovered}/>)
+  await screen.findByRole('button',{name:'Recover model switch'})
+  state=done
+  view.rerender(<PortalModelRecovery onRecovered={recovered} operationActive/>)
+  await waitFor(()=>expect(screen.queryByRole('button')).toBeNull())
+  expect(recovered).not.toHaveBeenCalled()
+  view.rerender(<PortalModelRecovery onRecovered={recovered} operationActive={false}/>)
+  await waitFor(()=>expect(recovered).toHaveBeenCalledOnce())
+  view.rerender(<PortalModelRecovery onRecovered={recovered} refreshKey={1}/>)
+  await act(async()=>{})
+  expect(recovered).toHaveBeenCalledOnce()
+  expect(fetch.mock.calls.every(([,options])=>!options.method)).toBe(true)
 })
 
 it('recovers only the existing transaction and prevents duplicate clicks',async()=>{

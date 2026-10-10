@@ -7,7 +7,10 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import DATA_DIR, GPU_BACKEND, SERVICES
+from config import (
+    DATA_DIR, EXTENSIONS_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS,
+    SERVICES, load_extension_manifests,
+)
 from helpers import dir_size_gb
 from host_agent_client import (
     AgentClientError,
@@ -33,6 +36,21 @@ _DATA_DIR_MAP = {
     "tts": "tts",
     "whisper": "whisper",
 }
+
+
+def _current_service_configs() -> dict:
+    """Refresh qualified Library built-ins without granting auxiliary authority."""
+    services = {sid: cfg for sid, cfg in SERVICES.items() if sid not in LIBRARY_MANAGEABLE_BUILTINS}
+    try:
+        selected, _, _ = load_extension_manifests(
+            EXTENSIONS_DIR, GPU_BACKEND, only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
+        )
+    except OSError as exc:
+        # A stale startup entry must not authorize a restart when current
+        # selection cannot be read. The next request can retry after repair.
+        raise HTTPException(status_code=503, detail="Current Library service selection is unavailable") from exc
+    services.update({sid: cfg for sid, cfg in selected.items() if sid in LIBRARY_MANAGEABLE_BUILTINS})
+    return services
 
 
 def _service_restartability(config: dict) -> tuple[bool, str | None]:
@@ -139,6 +157,8 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
     """Get per-service resource metrics (CPU, RAM, disk)."""
     from main import _cache  # noqa: PLC0415 — deferred import to avoid circular dependency
 
+    service_configs = await asyncio.to_thread(_current_service_configs)
+
     container_stats = _cache.get("service_resources_containers")
     disk_usage = _cache.get("service_resources_disk")
 
@@ -168,7 +188,7 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
     # when container_name is populated in SERVICES (by PR E's config.py change).
     # Falls back to ods-{sid} convention when container_name is missing.
     container_to_service = {}
-    for sid, svc in SERVICES.items():
+    for sid, svc in service_configs.items():
         cname = svc.get("container_name", f"ods-{sid}")
         if isinstance(cname, str) and cname.strip():
             container_to_service[cname] = sid
@@ -180,7 +200,7 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
         stats_by_id[mapped_id] = stat
 
     services = []
-    for service_id, config in SERVICES.items():
+    for service_id, config in service_configs.items():
         restartable, restart_unavailable_reason = _service_restartability(config)
         entry = {
             "id": service_id,
@@ -196,7 +216,7 @@ async def service_resources(api_key: str = Depends(verify_api_key)):
     # A manifest can own multiple containers (for example LibreChat's MongoDB
     # and Meilisearch). Keep their measured usage visible even though they do
     # not have separate service manifests or restart authority.
-    known_ids = set(SERVICES.keys())
+    known_ids = set(service_configs)
     for sid in dict.fromkeys([*stats_by_id, *disk_usage]):
         if sid not in known_ids:
             services.append({
@@ -231,9 +251,10 @@ async def restart_service(service_id: str, api_key: str = Depends(verify_api_key
     """Restart a single known ODS service via the host agent."""
     if not _SERVICE_ID_RE.match(service_id):
         raise HTTPException(status_code=400, detail="Invalid service_id")
-    if service_id not in SERVICES:
+    service_configs = await asyncio.to_thread(_current_service_configs)
+    if service_id not in service_configs:
         raise HTTPException(status_code=404, detail=f"Service not found: {service_id}")
-    restartable, restart_unavailable_reason = _service_restartability(SERVICES[service_id])
+    restartable, restart_unavailable_reason = _service_restartability(service_configs[service_id])
     if not restartable:
         raise HTTPException(
             status_code=400,

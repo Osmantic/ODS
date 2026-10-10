@@ -52,6 +52,9 @@ MIN_BUILD = 8955
 # common/arg.cpp (no draft model).
 SPEC_TYPES_BY_BUILD = {
     9014: {"none", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"},
+    # b11429 / d81235049384534c167caea52b85a694f6103d14: common/arg.cpp,
+    # and the official llama-server --help output.
+    11429: {"none", "ngram-cache", "ngram-simple", "ngram-map-k", "ngram-map-k4v", "ngram-mod"},
 }
 
 # Env names each pinned build reads (common/arg.cpp set_env), limited to the
@@ -79,7 +82,20 @@ ENV_NAMES_BY_BUILD = {
         # including 0 or empty, disables prompt caching.
         "LLAMA_ARG_NO_CACHE_PROMPT",
     },
+    11429: {
+        "LLAMA_ARG_REASONING", "LLAMA_ARG_FLASH_ATTN",
+        "LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V", "LLAMA_ARG_N_CPU_MOE",
+        "LLAMA_ARG_CTX_CHECKPOINTS", "LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT",
+        "LLAMA_ARG_CACHE_RAM", "LLAMA_ARG_SPEC_TYPE", "LLAMA_ARG_SPEC_DRAFT_N_MAX",
+        "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
+        "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT", "LLAMA_ARG_NO_CACHE_PROMPT",
+    },
 }
+
+# Explicitly retained bare compatibility input for older image overrides.
+# b11429 no longer reads the old checkpoint interval; it must never receive
+# a default value or be mistaken for the new minimum-spacing setting.
+REMOVED_ENV_NAMES_BY_BUILD = {11429: {"LLAMA_ARG_CHECKPOINT_EVERY_NT"}}
 
 # Upstream names ODS already passes through for newer builds, mapped to the
 # first build that reads them. llama.cpp ignores env vars it does not define,
@@ -226,28 +242,45 @@ def pinned_build(service: dict) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def default_pinned_build(errors: list[str]) -> int | None:
-    """The single llama.cpp build the NVIDIA and CPU overlays pin."""
+def default_pinned_builds(errors: list[str]) -> dict[str, int]:
+    """Check each defaulted backend against its own reviewed CLI contract."""
     builds = {name: pinned_build(llama_service(name)) for name in DEFAULT_OVERLAYS}
-    if None in builds.values() or len(set(builds.values())) != 1:
-        errors.append(f"NVIDIA and CPU overlays must pin one llama.cpp build, got {builds}")
-        return None
-    build = next(iter(builds.values()))
-    if build not in ENV_NAMES_BY_BUILD or build not in SPEC_TYPES_BY_BUILD:
-        errors.append(
-            f"llama.cpp b{build} is pinned but this contract has no env-name/--spec-type "
-            f"sets for it; add them from common/arg.cpp at tag b{build}"
-        )
-        return None
-    return build
+    reviewed = {}
+    for name, build in builds.items():
+        if build not in ENV_NAMES_BY_BUILD or build not in SPEC_TYPES_BY_BUILD:
+            errors.append(
+                f"{name}: llama.cpp b{build} is pinned but this contract has no env-name/--spec-type "
+                f"sets for it; add them from common/arg.cpp at tag b{build}"
+            )
+        else:
+            reviewed[name] = build
+    return reviewed
+
+
+def check_env_names(stack: str, build: int, entries: dict, errors: list[str]) -> None:
+    for key, value in entries.items():
+        if not key.startswith("LLAMA_ARG_") or key in ENV_NAMES_BY_BUILD[build]:
+            continue
+        if key in REMOVED_ENV_NAMES_BY_BUILD.get(build, set()):
+            if value is not None:
+                errors.append(f"{stack}: removed {key} must stay a bare compatibility pass-through on b{build}")
+            continue
+        first_build = FORWARD_ENV_NAMES.get(key)
+        if first_build is None:
+            errors.append(f"{stack}: llama.cpp b{build} does not read {key}")
+        elif build >= first_build:
+            errors.append(f"{stack}: {key} is read from b{first_build}; add it to ENV_NAMES_BY_BUILD[{build}]")
+        elif value is not None:
+            errors.append(f"{stack}: {key} is for llama.cpp b{first_build}+ and must stay a bare pass-through")
 
 
 def main() -> int:
     errors: list[str] = []
-    pinned = default_pinned_build(errors)
-    env_names = ENV_NAMES_BY_BUILD.get(pinned or 0, set())
-    spec_types = SPEC_TYPES_BY_BUILD.get(pinned or 0, set())
-    label = f"b{pinned}" if pinned else "the pinned build"
+    pinned = default_pinned_builds(errors)
+    builds = set(pinned.values())
+    # The shared .env schema may offer only options all defaulted builds read.
+    spec_types = set.intersection(*(SPEC_TYPES_BY_BUILD[build] for build in builds)) if builds else set()
+    label = "/".join(f"b{build}" for build in sorted(builds)) or "the pinned builds"
 
     # 1. Only overlays pinned to a build with the benchmarked implementation
     #    carry the default, and they carry exactly the documented expression.
@@ -300,17 +333,11 @@ def main() -> int:
 
     # 3. Every LLAMA_ARG_* the NVIDIA/CPU stacks hand to llama.cpp is a name the
     #    pinned build reads, or an upstream name for a later build passed bare.
-    for stack in sorted(defaulted if pinned else ()):
-        for key, value in merged_env(stacks[stack]).items():
-            if not key.startswith("LLAMA_ARG_") or key in env_names:
-                continue
-            first_build = FORWARD_ENV_NAMES.get(key)
-            if first_build is None:
-                errors.append(f"{stack}: llama.cpp {label} does not read {key}")
-            elif pinned and pinned >= first_build:
-                errors.append(f"{stack}: {key} is read from b{first_build}; add it to ENV_NAMES_BY_BUILD[{pinned}]")
-            elif value is not None:
-                errors.append(f"{stack}: {key} is for llama.cpp b{first_build}+ and must stay a bare pass-through")
+    for stack in sorted(defaulted):
+        build = pinned.get("docker-compose.cpu.yml" if stack == "cpu" else "docker-compose.nvidia.yml")
+        if build is None:
+            continue
+        check_env_names(stack, build, merged_env(stacks[stack]), errors)
     for stack, files in stacks.items():
         if container_env(files, {CHECKPOINT: "-1"}).get(CHECKPOINT) != "-1":
             errors.append(f"{stack}: {CHECKPOINT} is not passed to llama-server")
@@ -380,8 +407,10 @@ def main() -> int:
         if LEGACY_CHECKPOINT in text:
             errors.append(f"{relative}: still uses {LEGACY_CHECKPOINT}; llama.cpp reads {CHECKPOINT}")
 
-    # 6. Catalog verdicts about the default runtime name the build they were
-    #    recorded against. A pin move must revisit them, not inherit them.
+    # 6. Retain a negative catalog verdict while its named build is still a
+    #    shipped default. A different backend build does not inherit that
+    #    evidence or prove the model supported: activation keeps the existing
+    #    conservative refusal until a separately qualified profile exists.
     catalog = json.loads((ROOT_DIR / "config" / "model-library.json").read_text(encoding="utf-8"))
     for model in catalog.get("models") or []:
         verdict = model.get("default_runtime_compatibility")
@@ -391,8 +420,8 @@ def main() -> int:
         if not isinstance(verdict, dict) or verdict.get("status") != "incompatible":
             errors.append(f"{where}: status must be 'incompatible'")
             continue
-        if pinned and verdict.get("runtime") != f"llama.cpp {label}":
-            errors.append(f"{where}: recorded against {verdict.get('runtime')!r}, but the default is llama.cpp {label}; re-test the model and update or remove the verdict")
+        if builds and verdict.get("runtime") not in {f"llama.cpp b{build}" for build in builds}:
+            errors.append(f"{where}: recorded against {verdict.get('runtime')!r}, but no shipped default uses that build ({label}); re-test the model and update or remove the verdict")
         if not str(verdict.get("userNote") or "").strip():
             errors.append(f"{where}: needs a userNote for the activation refusal")
 

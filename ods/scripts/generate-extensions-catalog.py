@@ -117,6 +117,11 @@ def extract_entry(manifest: dict) -> dict | None:
         "features": manifest.get("features") or service.get("features", []),
     }
 
+    # The Library link needs the manifest's non-root entry point. Without it,
+    # an auth-gated service such as Hermes opens its native sign-in page.
+    if service.get("ui_path") not in (None, "/"):
+        entry["ui_path"] = service["ui_path"]
+
     if isinstance(service.get("llm"), dict):
         entry["llm"] = service["llm"]
 

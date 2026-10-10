@@ -244,6 +244,13 @@ _prune_rollback_snapshots() {
     done < <(find "${ROLLBACK_DIR}" -maxdepth 1 -type d -name "pre-update-*" | sort -r)
 }
 
+_require_positive_backup_retention() {
+    if [[ ! "$MAX_BACKUPS" =~ ^[1-9][0-9]{0,8}$ ]]; then
+        log_error "MAX_BACKUPS must be a positive integer (1-999999999); refusing to create a snapshot that may be pruned immediately."
+        return 1
+    fi
+}
+
 # snapshot_pre_update <timestamp>
 #   Creates data/backups/pre-update-<timestamp>/ and copies:
 #     • .env and .env.* variants
@@ -254,6 +261,7 @@ _prune_rollback_snapshots() {
 #   then prints the snapshot directory path on stdout.
 snapshot_pre_update() {
     local timestamp="${1:-$(date +%Y%m%d-%H%M%S)}"
+    _require_positive_backup_retention || return 1
 
     # All log calls redirect to stderr so command-substitution callers
     # (snap_dir=$(snapshot_pre_update ...)) only capture the path on stdout.
@@ -702,8 +710,14 @@ cmd_status() {
 # COMMAND: BACKUP
 #==============================================================================
 
-cmd_backup() {
+cmd_backup() (
     local backup_name="${1:-}"
+    _require_positive_backup_retention || return 1
+    command -v python3 >/dev/null 2>&1 || { log_error "Python 3 is required to publish a backup safely."; return 1; }
+    if [[ "$backup_name" == */* || "$backup_name" == *\\* || "$backup_name" =~ [[:cntrl:]] ]]; then
+        log_error "Invalid backup name. Path separators and control characters are not allowed."
+        return 1
+    fi
     local timestamp
     timestamp=$(date +%Y%m%d-%H%M%S)
     local backup_id="backup-${timestamp}"
@@ -716,7 +730,23 @@ cmd_backup() {
     
     log_info "Creating backup: ${backup_id}"
     
-    mkdir -p "$backup_path"
+    local lock_path="${BACKUP_DIR}/.${backup_id}.lock" staging_path="" publication_started=false
+    mkdir -p "$BACKUP_DIR"
+    if ! mkdir -m 700 "$lock_path"; then
+        log_error "Backup already in progress: ${backup_id}"
+        return 1
+    fi
+    trap '[[ -z "$staging_path" || "$publication_started" == true ]] || rm -rf -- "$staging_path"; rmdir -- "$lock_path"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [[ -e "$backup_path" || -L "$backup_path" ]]; then
+        log_error "Backup already exists: ${backup_id}"
+        return 1
+    fi
+
+    # Rollback discovery must never see a partially copied configuration.
+    # mktemp keeps raw environment and config private until publication.
+    staging_path=$(mktemp -d "${BACKUP_DIR}/.${backup_id}.tmp.XXXXXX")
     
     # Backup compose files
     # NB: x=$((x + 1)) not ((x++)) — the post-increment form evaluates to 0
@@ -726,7 +756,7 @@ cmd_backup() {
     for pattern in "docker-compose*.yml" "docker-compose*.yaml" ".env" ".env.*"; do
         for file in "${INSTALL_DIR}"/${pattern}; do
             if [[ -f "$file" ]]; then
-                cp "$file" "$backup_path/"
+                cp "$file" "$staging_path/"
                 files_backed_up=$((files_backed_up + 1))
             fi
         done
@@ -736,7 +766,7 @@ cmd_backup() {
     # can bring the restored stack up with the same file selection (same set
     # snapshot_pre_update captures).
     if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
-        cp "${INSTALL_DIR}/.compose-flags" "$backup_path/"
+        cp "${INSTALL_DIR}/.compose-flags" "$staging_path/"
         files_backed_up=$((files_backed_up + 1))
     fi
 
@@ -747,14 +777,14 @@ cmd_backup() {
     for ext_dir in litellm n8n searxng; do
         local src="${INSTALL_DIR}/config/${ext_dir}"
         if [[ -d "$src" ]]; then
-            cp -r "$src" "${backup_path}/config-${ext_dir}"
+            cp -r "$src" "${staging_path}/config-${ext_dir}"
             files_backed_up=$((files_backed_up + 1))
         fi
     done
 
     # Backup version file
     if [[ -f "$VERSION_FILE" ]]; then
-        cp "$VERSION_FILE" "$backup_path/.version"
+        cp "$VERSION_FILE" "$staging_path/.version"
         files_backed_up=$((files_backed_up + 1))
     fi
 
@@ -766,7 +796,7 @@ cmd_backup() {
         --argjson fc "$files_backed_up" \
         --arg dir "$INSTALL_DIR" \
         '{backup_id: $bid, timestamp: $ts, version: $ver, files_count: $fc, install_dir: $dir}' \
-        > "$backup_path/metadata.json"
+        > "$staging_path/metadata.json"
 
     # snapshot.json routes restores through the transactional
     # _restore_snapshot path, which knows how to put config-* directories
@@ -778,8 +808,19 @@ cmd_backup() {
         --argjson fc "$files_backed_up" \
         --arg dir "$INSTALL_DIR" \
         '{type:"backup", timestamp:$ts, version:$ver, files_count:$fc, install_dir:$dir}' \
-        > "$backup_path/snapshot.json"
+        > "$staging_path/snapshot.json"
     
+    jq empty "$staging_path/metadata.json" "$staging_path/snapshot.json"
+    # Ordinary mv can nest the snapshot inside a destination created after the
+    # initial check. Preserve both names if exclusive publication is refused or
+    # interrupted; never discard potentially recoverable bytes after this point.
+    publication_started=true
+    if ! python3 -I "${SCRIPT_DIR}/scripts/publish-update-backup.py" "$staging_path" "$backup_path"; then
+        log_error "Backup publication was not confirmed. Inspect preserved staging '$staging_path' and destination '$backup_path'; no retention cleanup was run."
+        return 1
+    fi
+    staging_path=""
+
     log_ok "Backup created: ${backup_path}"
     log_info "Files backed up: ${files_backed_up}"
     
@@ -805,7 +846,7 @@ cmd_backup() {
             rm -rf "$dir"
         fi
     done < <(printf '%s' "$order" | LC_ALL=C sort -r)
-}
+)
 
 #==============================================================================
 # COMMAND: UPDATE
@@ -1158,7 +1199,13 @@ cmd_changelog() {
         else
             log_warn "No local CHANGELOG.md found."
             log_info "Fetching latest release notes from GitHub..."
-            cmd_changelog "$(curl -sf --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" | jq -r '.tag_name // empty')" || true
+            local latest_version
+            if ! latest_version=$(curl -sf --max-time 15 "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
+                | jq -er '.tag_name | select(type == "string" and length > 0)' 2>/dev/null); then
+                log_error "Could not determine the latest release. Check connectivity or request a specific version."
+                return 1
+            fi
+            cmd_changelog "$latest_version"
         fi
     fi
 }

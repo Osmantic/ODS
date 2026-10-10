@@ -7,7 +7,6 @@
 tests/test-macos-native-idle.py               live-probe: needs --url and a running native llama-server
 tests/test-macos-pixel-handover.py            live-probe: needs a running native Pixel install
 tests/test-macos-pixel-lifecycle.py           live-probe: needs a running native Pixel install
-tests/test-macos-bootstrap-resume.sh          macos-only: sources installers/macos/lib/native-llama-service.sh
 
 # Needs live services or a PowerShell host.
 tests/test-dashboard-integration.sh           live: probes a running dashboard-api

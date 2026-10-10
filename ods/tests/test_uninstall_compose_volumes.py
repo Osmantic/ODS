@@ -116,6 +116,114 @@ class FakeDocker:
         raise AssertionError(f"Unexpected Docker operation: {args}")
 
 
+NATIVE_KEYS = ("pixel-native-preview-runtime", "pixel-native-previews", "pixel-native-runtime")
+
+
+class NativePixelStackVolumeTests(unittest.TestCase):
+    """#7071: a macOS native-Pixel install that stops after starting its stack
+    leaves ODS-owned volumes before the recipe reaches .compose-flags."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ods-native-volume-test-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve() / "ods"
+        (self.root / "installers/macos").mkdir(parents=True)
+        (self.root / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+        self.native = self.root / "installers/macos/pixel-native.compose.yaml.disabled"
+        shutil.copyfile(ROOT / "installers/macos/pixel-native.compose.yaml.disabled", self.native)
+        self.snapshot = Path(self.temp.name) / "snapshot.json"
+        self.snapshot.touch()
+        self.fake = FakeDocker(self.root)
+        self.fake.volumes = {f"ods_{key}": FakeDocker._volume(f"ods_{key}", key) for key in NATIVE_KEYS}
+        patcher = patch.object(MODULE, "docker", self.fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _native_container(self, service="pixel-native-ingress", recipe=None):
+        recipe = recipe or self.native
+        return {
+            "Id": CONTAINER_ID,
+            "Config": {"Labels": {
+                "com.docker.compose.project": "ods",
+                "com.docker.compose.service": service,
+                "com.docker.compose.project.working_dir": str(self.root),
+                "com.docker.compose.project.config_files":
+                    str(self.root / "docker-compose.base.yml") + "," + str(recipe),
+            }},
+            "Mounts": [{"Type": "volume", "Name": name} for name in self.fake.volumes],
+        }
+
+    def test_failed_native_install_volumes_are_owned_and_purged(self):
+        self.fake.containers = [self._native_container()]
+        MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(self.fake.volumes, {})
+
+    def test_service_not_declared_by_the_native_recipe_cannot_claim_its_volumes(self):
+        self.fake.containers = [self._native_container(service="perplexica")]
+        with self.assertRaisesRegex(ValueError, "not linked to this installation"):
+            MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+
+    def test_copy_of_the_native_recipe_elsewhere_cannot_claim_its_volumes(self):
+        copy = self.root / "data/user-extensions/look-alike/pixel-native.compose.yaml.disabled"
+        copy.parent.mkdir(parents=True)
+        shutil.copyfile(self.native, copy)
+        self.fake.containers = [self._native_container(recipe=copy)]
+        with self.assertRaisesRegex(ValueError, "not linked to this installation"):
+            MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+
+    def _shared_edge_container(self, service="pixel-edge", *, all_volumes=False):
+        edge = self.root / "extensions/services/pixel-edge/compose.yaml.disabled"
+        edge.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "extensions/services/pixel-edge/compose.yaml.disabled", edge)
+        keys = (*NATIVE_KEYS, "pixel-transition-state") if all_volumes else ("pixel-transition-state",)
+        self.fake.volumes = {f"ods_{key}": FakeDocker._volume(f"ods_{key}", key) for key in keys}
+        container = self._native_container(service=service, recipe=edge)
+        container["Config"]["Labels"]["com.docker.compose.project.config_files"] += "," + str(self.native)
+        self.fake.containers = [container]
+        return edge
+
+    def test_failed_native_stack_includes_shared_edge_transition_volume(self):
+        self._shared_edge_container(all_volumes=True)
+        MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+        captured = json.loads(self.snapshot.read_text(encoding="utf-8"))
+        self.assertEqual(set(captured["volumes"]), {f"ods_{key}" for key in (*NATIVE_KEYS, "pixel-transition-state")})
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(self.fake.volumes, {})
+
+    def test_wrong_service_cannot_claim_shared_edge_transition_volume(self):
+        self._shared_edge_container(service="perplexica")
+        with self.assertRaisesRegex(ValueError, "not linked to this installation"):
+            MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+
+    def test_copied_shared_edge_recipe_cannot_claim_transition_volume(self):
+        edge = self._shared_edge_container()
+        copy = self.root / "data/user-extensions/look-alike/edge.compose.yaml.disabled"
+        copy.parent.mkdir(parents=True)
+        shutil.copyfile(edge, copy)
+        labels = self.fake.containers[0]["Config"]["Labels"]
+        labels["com.docker.compose.project.config_files"] = labels["com.docker.compose.project.config_files"].replace(str(edge), str(copy))
+        with self.assertRaisesRegex(ValueError, "not linked to this installation"):
+            MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+
+    def test_foreign_consumer_blocks_shared_edge_transition_volume(self):
+        self._shared_edge_container()
+        self.fake.foreign_consumers["ods_pixel-transition-state"] = ["b" * 64]
+        with self.assertRaisesRegex(ValueError, "outside this installation"):
+            MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+        self.assertFalse(self.fake.removed)
+
+    def test_candidate_must_also_declare_shared_edge_transition_volume(self):
+        self._shared_edge_container()
+        trusted = Path(self.temp.name) / "candidate"
+        (trusted / "installers/macos").mkdir(parents=True)
+        shutil.copyfile(self.native, trusted / "installers/macos/pixel-native.compose.yaml.disabled")
+        with self.assertRaisesRegex(ValueError, "not linked to this installation"):
+            MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"], trusted_root=trusted)
+
+
 class UninstallVolumeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="ods-uninstall-volume-test-")
@@ -171,6 +279,107 @@ class UninstallVolumeTests(unittest.TestCase):
         self.fake.containers = []
         MODULE.complete(self.root, self.snapshot, trusted_root=trusted)
         self.assertEqual(self.fake.volumes, {})
+
+    def _enable_unselected_recipe(self):
+        disabled = self.root / "extensions/services/perplexica/compose.yaml.disabled"
+        enabled = disabled.with_name("compose.yaml")
+        disabled.rename(enabled)
+        return enabled
+
+    def test_enabled_unselected_recipe_retains_mount_proof_through_purge(self):
+        self._enable_unselected_recipe()
+        # A failed native activation leaves only base Compose flags available.
+        MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"])
+        captured = json.loads(self.snapshot.read_text(encoding="utf-8"))
+        self.assertEqual(set(captured["volumes"]), set(self.fake.volumes))
+        self.assertFalse(self.fake.removed)
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(self.fake.volumes, {})
+        self.assertEqual(self.fake.foreign, {"ods-pixel-retired-research", "ods-unrelated"})
+
+    def test_enabled_unselected_recipe_requires_exact_service_and_recipe_path(self):
+        recipe = self._enable_unselected_recipe()
+        labels = self.fake.containers[0]["Config"]["Labels"]
+        for field, bad_value in (
+            ("com.docker.compose.service", "searxng"),
+            ("com.docker.compose.project.config_files", str(self.root / "docker-compose.base.yml")),
+        ):
+            original = labels[field]
+            with self.subTest(field=field):
+                labels[field] = bad_value
+                with self.assertRaisesRegex(ValueError, "not linked"):
+                    MODULE.preflight(self.root, self.snapshot, [])
+                self.assertFalse(self.fake.removed)
+                self.assertEqual(self.snapshot.stat().st_size, 0)
+            labels[field] = original
+        self.assertTrue(recipe.is_file())
+
+    def test_enabled_unselected_recipe_requires_a_container_mount(self):
+        self._enable_unselected_recipe()
+        self.fake.containers[0]["Mounts"] = []
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_enabled_unselected_recipe_requires_trusted_candidate(self):
+        recipe = self._enable_unselected_recipe()
+        trusted = Path(self.temp.name) / "candidate"
+        candidate_recipe = trusted / recipe.relative_to(self.root)
+        candidate_recipe.parent.mkdir(parents=True)
+        candidate_recipe.write_text("services: {}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
+        self.assertFalse(self.fake.removed)
+        shutil.copyfile(recipe, candidate_recipe)
+        MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot, trusted_root=trusted)
+        self.assertEqual(self.fake.volumes, {})
+
+    def test_enabled_unselected_external_recipe_is_not_owned(self):
+        recipe = self._enable_unselected_recipe()
+        recipe.write_text("services: {}\nvolumes:\n  perplexica-data:\n    external: true\n"
+                          "  perplexica-uploads:\n    external: true\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_enabled_unselected_volume_foreign_consumer_blocks_preflight(self):
+        self._enable_unselected_recipe()
+        self.fake.foreign_consumers["ods_perplexica-data"] = ["b" * 64]
+        with self.assertRaisesRegex(ValueError, "outside this installation"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+        self.assertEqual(self.snapshot.stat().st_size, 0)
+
+    def test_enabled_recipe_cannot_override_external_volume_intent(self):
+        self._enable_unselected_recipe()
+        override = self.root / "docker-compose.override.yml"
+        override.write_text("volumes:\n  perplexica-data:\n    external: true\n",
+                            encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_enabled_recipe_policy_change_blocks_completion(self):
+        recipe = self._enable_unselected_recipe()
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = []
+        recipe.write_text("services: {}\nvolumes:\n  perplexica-data:\n    external: true\n"
+                          "  perplexica-uploads:\n    external: true\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "ownership changed"):
+            MODULE.complete(self.root, self.snapshot)
+        self.assertFalse(self.fake.removed)
+
+    def test_enabled_unselected_recipe_symlink_is_not_owned(self):
+        recipe = self._enable_unselected_recipe()
+        outside = Path(self.temp.name) / "outside.yaml"
+        recipe.rename(outside)
+        recipe.symlink_to(outside)
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
 
     def test_other_installation_in_same_compose_project_blocks_preflight(self):
         self.fake.containers[0]["Config"]["Labels"][

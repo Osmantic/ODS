@@ -100,6 +100,7 @@ function Reset-Scenario {
     $script:virtualization = $true
     $script:freeGB = 200
     $script:dockerInstalled = $true
+    $script:dockerAlreadyInstalled = $false
     $script:engineUp = $true
     $script:integrated = $true
     $script:userEnablesIntegration = $true
@@ -117,7 +118,10 @@ function Reset-Scenario {
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
 function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$script:dockerInstalled; Exe='docker-desktop.exe'; Cli='docker.exe' } }
-function Install-ODSPortalDockerDesktop { $script:calls.Add('docker-install'); $script:dockerInstalled = $true }
+function Install-ODSPortalDockerDesktop {
+    $script:calls.Add('docker-install'); $script:dockerInstalled = $true
+    return [pscustomobject]@{ AlreadyInstalled=$script:dockerAlreadyInstalled; Desktop=(Get-ODSPortalDockerDesktop) }
+}
 function Test-ODSPortalDockerEngine($Desktop) { return $script:engineUp }
 function Start-ODSPortalDockerDesktop($Desktop) { $script:calls.Add('docker-start'); $script:engineUp = $true }
 function Wait-ODSPortalDistroDocker([string]$Distro, [int]$Seconds) {
@@ -551,6 +555,27 @@ try {
     $script:dockerInstalled=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'installing Docker Desktop requests a restart'
     Check ($script:calls.Contains('docker-install') -and $script:calls.Contains('resume') -and -not $script:calls.Contains('install:Ubuntu-24.04')) 'Docker Desktop install continues after restart, not before'
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:dockerAlreadyInstalled=$true; $script:engineUp=$false
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'a verified winget no-update result continues with the existing Desktop'
+    Check ($script:calls.Contains('docker-start') -and -not $script:calls.Contains('resume')) 'existing Desktop starts without scheduling a Windows restart'
+    $order = $script:calls.ToArray()
+    $delegate = [Array]::IndexOf($order, 'install:Ubuntu-24.04')
+    foreach ($probe in @('--distribution Ubuntu-24.04 --exec docker info', '--distribution Ubuntu-24.04 --exec docker compose version')) {
+        $index = [Array]::IndexOf($order, $probe)
+        Check ($index -ge 0 -and $index -lt $delegate) 'existing Desktop must pass its WSL Docker and Compose probes before Linux setup'
+    }
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:dockerAlreadyInstalled=$true
+    $script:integrated=$false; $script:userEnablesIntegration=$false
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'Resources > WSL integration, turn on Ubuntu-24\.04' -and -not $script:calls.Contains('install:Ubuntu-24.04') -and -not $script:calls.Contains('resume')) 'winget no-update never bypasses missing WSL integration'
+    Reset-Scenario
+    $script:dockerInstalled=$false; $script:dockerAlreadyInstalled=$true; $script:scenario='compose'
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'docker compose version must succeed' -and -not $script:calls.Contains('install:Ubuntu-24.04') -and -not $script:calls.Contains('resume')) 'winget no-update never bypasses a failed Compose probe'
     Reset-Scenario
     $script:dockerInstalled=$false; $script:allowPreparation=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 1) 'declining Docker Desktop cancels setup'

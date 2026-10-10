@@ -64,7 +64,7 @@ set_qwen_tier_config() {
             TIER_NAME="Enterprise"
             LLM_MODEL="qwen3.6-35b-a3b"
             GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
             GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
             ;;
@@ -72,7 +72,7 @@ set_qwen_tier_config() {
             TIER_NAME="Pro"
             LLM_MODEL="qwen3.6-35b-a3b"
             GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
             GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
             ;;
@@ -80,7 +80,7 @@ set_qwen_tier_config() {
             TIER_NAME="Prosumer"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=32768
             ;;
@@ -96,7 +96,7 @@ set_qwen_tier_config() {
             TIER_NAME="Entry Level"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=16384
             ;;

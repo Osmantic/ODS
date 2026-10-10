@@ -54,7 +54,7 @@ set -euo pipefail
 python3 - "$@" <<'PY'
 import json,os,pathlib,sys
 root=pathlib.Path.cwd();model=root/'data/models/llm/model.gguf'
-pathlib.Path(os.environ['RESULT']).write_text(json.dumps({'args':sys.argv[1:],'model':model.read_bytes().hex() if model.exists() else None,'oldRuntime':(root/'old-runtime').exists(),'oldEnv':(root/'.env').exists(),'hidden':(root/'data/models/.cache-state').exists(),'candidate':(root/'candidate-only').read_text()}))
+pathlib.Path(os.environ['RESULT']).write_text(json.dumps({'args':sys.argv[1:],'model':model.read_bytes().hex() if model.exists() else None,'oldRuntime':(root/'old-runtime').exists(),'oldEnv':(root/'.env').exists(),'hidden':(root/'data/models/.cache-state').exists(),'imports':(root/'data/model-imports.json').read_text() if (root/'data/model-imports.json').exists() else None,'candidate':(root/'candidate-only').read_text()}))
 PY
 '''
         (ods / 'install.sh').write_text(installer)
@@ -191,6 +191,50 @@ rm -rf "$INSTALL_DIR"
         self.assertEqual((source / '.cache-state').read_bytes(), b'hidden-cache\n')
         self.assertFalse(backup.exists())
 
+    REGISTRY = '{"models": [{"id": "hf-org-model", "gguf_file": "llm/model.gguf"}]}\n'
+
+    def test_import_registry_travels_with_the_models(self):
+        registry = self.install / 'data/model-imports.json'
+        registry.write_text(self.REGISTRY)
+        with self.helper_env():
+            custody.preserve(self.install)
+            backup = Path(str(self.install) + '.models-backup')
+            self.assertEqual((backup / 'model-imports.json').read_text(), self.REGISTRY)
+            self.assertFalse(registry.exists())
+            custody.restore(self.install)
+        self.assertEqual(registry.read_text(), self.REGISTRY)
+        self.assertFalse(backup.exists())
+
+    def test_force_keep_models_reinstall_keeps_hugging_face_imports(self):
+        (self.install / 'data/model-imports.json').write_text(self.REGISTRY)
+        result = self.bootstrap('--non-interactive', '--force', '--keep-models')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The candidate installer already sees the registry beside the restored models.
+        self.assertEqual(json.loads(self.result.read_text())['imports'], self.REGISTRY)
+        self.assertEqual((self.install / 'data/model-imports.json').read_text(), self.REGISTRY)
+
+    def test_a_linked_import_registry_stops_preservation_before_any_change(self):
+        registry = self.install / 'data/model-imports.json'
+        registry.symlink_to(self.root / 'elsewhere.json')
+        with self.helper_env():
+            with self.assertRaisesRegex(ValueError, 'import registry'):
+                custody.preflight(self.install)
+        self.assertTrue((self.install / 'data/models/llm/model.gguf').is_file())
+        self.assertFalse(Path(str(self.install) + '.models-backup').exists())
+
+    def test_restore_never_overwrites_an_existing_import_registry(self):
+        registry = self.install / 'data/model-imports.json'
+        registry.write_text(self.REGISTRY)
+        with self.helper_env():
+            custody.preserve(self.install)
+            registry.write_text('{"models": []}\n')
+            with self.assertRaisesRegex(ValueError, 'registry restore destination already exists'):
+                custody.restore(self.install)
+        backup = Path(str(self.install) + '.models-backup')
+        self.assertEqual((backup / 'model-imports.json').read_text(), self.REGISTRY)
+        self.assertTrue((backup / 'models/llm/model.gguf').is_file())
+        self.assertFalse((self.install / 'data/models').exists())
+
     def test_cross_device_rename_never_copies_or_deletes_source(self):
         source = self.install / 'data/models'
         with self.helper_env(), mock.patch.object(custody.os, 'rename', side_effect=OSError(errno.EXDEV, 'cross-device')):
@@ -264,6 +308,47 @@ rm -rf "$INSTALL_DIR"
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(self.args.exists())
             self.assertTrue((self.install / 'old-runtime').exists())
+
+    def uninstall_preflight(self):
+        return subprocess.run(['python3', str(HELPER), 'preflight', str(self.install)],
+                              env=self.env, capture_output=True, text=True, timeout=30)
+
+    def test_existing_backup_refusal_names_it_and_the_recovery_choices(self):
+        # #7425: a checkout reinstall never restores the uninstaller's backup,
+        # so the next --keep-models uninstall must say what to do with it.
+        adjacent = Path(str(self.install) + '.models-backup')
+        legacy = self.home / '.ods-models-backup'
+        for backup in (adjacent, legacy):
+            with self.subTest(backup=backup):
+                backup.mkdir()
+                try:
+                    result = self.uninstall_preflight()
+                finally:
+                    self.assertTrue(backup.is_dir())
+                    backup.rmdir()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f'A model backup already exists at {backup}.', result.stderr)
+                self.assertNotIn(str(legacy if backup == adjacent else adjacent), result.stderr)
+                self.assertIn(f'recover needed models into {self.install}/data/models', result.stderr)
+                self.assertIn('without overwriting existing files', result.stderr)
+                self.assertIn('move the backup aside (or delete it)', result.stderr)
+                self.assertIn('rerun without --keep-models', result.stderr)
+                self.assertTrue((self.install / 'data/models/llm/model.gguf').is_file())
+
+    def test_uninstall_summary_says_retained_models_are_not_restored(self):
+        script = 'set -euo pipefail\nINSTALL_DIR=$1\n' \
+            + function(UNINSTALL, 'print_model_retention_summary') + '\nprint_model_retention_summary\n'
+        result = subprocess.run(['bash', '-c', script, 'fixture', str(self.install)],
+                                capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        backup = f'{self.install}.models-backup'
+        self.assertIn(f'Retained model files: {backup}/models', result.stdout)
+        self.assertIn('A later install does not automatically restore this backup', result.stdout)
+        self.assertIn(f'recover needed models into {self.install}/data/models', result.stdout)
+        self.assertIn('without overwriting existing files', result.stdout)
+        self.assertIn(f'delete {backup} (or move it aside)', result.stdout)
+        self.assertIn('the next --keep-models uninstall stops while it exists', result.stdout)
+        self.assertNotIn('Restore destination', result.stdout)
 
     def test_older_candidate_without_custody_helper_fails_before_uninstall(self):
         (self.repo / 'ods/lib/model-cache-custody.py').unlink()

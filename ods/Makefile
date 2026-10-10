@@ -27,6 +27,7 @@ test: ## Run unit and contract tests
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
 	@python3 tests/test-model-library-pinned-urls.py
+	@python3 tests/test-tier-map-catalog-pins.py
 	@bash tests/test-installer-context-parity.sh
 	@bash tests/test-embeddings-prefetch-service-cache.sh
 	@bash tests/test-hermes-context-floor.sh

@@ -504,6 +504,8 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
 @pytest.mark.parametrize('environment,manifest_name,module_name', [
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
+    ('OPENCLAW_SUBAGENT_ADMISSION_MODULE', 'openclaw-subagent-admission.json', repair_module.SUBAGENT_ADMISSION_MODULE),
+    ('OPENCLAW_AGENT_GATEWAY_MODULE', 'openclaw-subagent-session.json', repair_module.SUBAGENT_SESSION_MODULE),
     ('OPENCLAW_HOOK_CONTEXT_MODULE', 'openclaw-hook-provenance.json', repair_module.HOOK_PROVENANCE_MODULE),
     ('OPENCLAW_REDACT_MODULE', 'openclaw-run-id-redaction.json', repair_module.RUN_ID_REDACTION_MODULE),
     ('OPENCLAW_ATTEMPT_EXECUTION_MODULE', 'openclaw-context-usage.json', repair_module.CONTEXT_USAGE_MODULE),

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-05T02:00:35Z",
+  "generated_at": "2026-10-06T14:59:46Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1446,6 +1446,7 @@
           }
         }
       ],
+      "ui_path": "/_utils/",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -1494,6 +1495,7 @@
           }
         }
       ],
+      "ui_path": "/playground",
       "startup_check": true,
       "startup_timeout": 120,
       "configuration_scope": "declared-environment-keys"
@@ -1701,6 +1703,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -1862,6 +1865,7 @@
           }
         }
       ],
+      "ui_path": "/ui",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -2092,6 +2096,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/info",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -3665,6 +3670,7 @@
           ]
         }
       ],
+      "ui_path": "/auth/ods",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -4443,6 +4449,7 @@
           }
         }
       ],
+      "ui_path": "/editor",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -4787,6 +4794,7 @@
           }
         }
       ],
+      "ui_path": "/admin/",
       "startup_check": true,
       "startup_timeout": 300,
       "configuration_scope": "declared-environment-keys"
@@ -5406,6 +5414,7 @@
           }
         }
       ],
+      "ui_path": "/webui",
       "llm": {
         "consumes": true,
         "route": "gateway",
@@ -5489,6 +5498,7 @@
           }
         }
       ],
+      "ui_path": "/index.php/admin",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -5684,6 +5694,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/ui/",
       "llm": {
         "consumes": true,
         "route": "gateway",
@@ -6728,6 +6739,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -8616,6 +8628,7 @@
           }
         }
       ],
+      "ui_path": "/_/",
       "startup_check": true,
       "startup_timeout": 180,
       "configuration_scope": "declared-environment-keys"
@@ -8852,6 +8865,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/dashboard",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },
@@ -8982,6 +8996,7 @@
           }
         }
       ],
+      "ui_path": "/.web/",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -9194,6 +9209,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9250,6 +9266,7 @@
       ],
       "tags": [],
       "features": [],
+      "ui_path": "/health",
       "startup_check": true,
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
@@ -9486,6 +9503,7 @@
           }
         }
       ],
+      "ui_path": "/web/admin",
       "startup_check": true,
       "startup_timeout": 90,
       "configuration_scope": "declared-environment-keys"
@@ -10438,6 +10456,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/dashboard",
       "llm": {
         "consumes": true,
         "route": "direct",
@@ -10581,6 +10600,7 @@
       "env_vars": [],
       "tags": [],
       "features": [],
+      "ui_path": "/docs",
       "catalog_source": "builtin",
       "configuration_scope": "declared-environment-keys"
     },

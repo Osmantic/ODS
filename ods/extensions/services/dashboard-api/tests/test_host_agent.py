@@ -2112,6 +2112,34 @@ class TestValidateCoreRecreateIds:
         assert "not eligible" in error.lower()
 
 
+class TestHandleCoreRecreate:
+
+    @pytest.mark.parametrize("service_ids", [
+        [1, "llama-server"],
+        [["llama-server"]],
+        [{"id": "llama-server"}],
+    ])
+    def test_malformed_service_ids_are_rejected_with_400(
+        self, monkeypatch, service_ids,
+    ):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "CORE_SERVICE_IDS", {"llama-server"})
+        compose_calls = []
+
+        def fake_recreate(service_ids):
+            compose_calls.append(service_ids)
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": service_ids}).encode())
+
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == 400
+        assert "Invalid service_id" in handler.parse_response()["error"]
+        assert compose_calls == []
+
+
 class TestResolveComposeFlagsCache:
 
     def test_cached_recipe_is_checked_before_any_docker_command(self, tmp_path, monkeypatch):
@@ -5461,6 +5489,19 @@ class TestHandleEnvUpdate:
         assert "WEBUI_AUTH=false" in (install_dir / ".env").read_text(encoding="utf-8")
         assert handler.parse_response()["enforced_values"] == {}
 
+    @pytest.mark.parametrize("payload", [b"[]", b'"KEY=value"', b"42", b"null"])
+    def test_non_object_json_is_rejected_without_writing(self, env_update_env, payload):
+        # read_json_body() rejects these; this handler parses its own body.
+        install_dir, _ = env_update_env
+        before = (install_dir / ".env").read_bytes()
+        handler = _FakeHandler(payload)
+
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 400
+        assert handler.parse_response()["error"] == "JSON body must be an object"
+        assert (install_dir / ".env").read_bytes() == before
+
     def test_413_oversize_body(self, env_update_env):
         # Construct headers claiming body is too large; rfile content is irrelevant.
         handler = _FakeHandler(b"x", headers={"Content-Length": str(_mod.MAX_BODY + 999999) if hasattr(_mod, "MAX_BODY") else "100000"})
@@ -8336,6 +8377,156 @@ class TestModelDownloadCatalogUnavailable:
         assert body["error"] == "Model not in library catalog"
 
 
+class TestModelDownloadDiskSpace:
+    """A download that cannot leave the model store its margin is refused first."""
+
+    GIB = 1024 ** 3
+
+    def _setup(self, tmp_path, monkeypatch, *, size_bytes, free_bytes, total_bytes):
+        install_dir = tmp_path / "install"
+        (install_dir / "config").mkdir(parents=True)
+        (install_dir / "data" / "models").mkdir(parents=True)
+        (install_dir / "config" / "model-library.json").write_text(json.dumps({"models": [{
+            "id": "test-model",
+            "gguf_file": "test-model.gguf",
+            "gguf_url": "https://example.com/test-model.gguf",
+            "size_bytes": size_bytes,
+        }]}), encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_directory", lambda: install_dir / "data" / "models")
+        storage = {
+            "freeBytes": free_bytes,
+            "totalBytes": total_bytes,
+            "marginBytes": _mod._download_disk_margin(total_bytes),
+        }
+        monkeypatch.setattr(_mod, "_model_storage_status", lambda _path: dict(storage))
+        return install_dir
+
+    def _body(self):
+        return json.dumps({
+            "gguf_file": "test-model.gguf",
+            "gguf_url": "https://example.com/test-model.gguf",
+        }).encode("utf-8")
+
+    def _no_lifecycle(self, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("a refused download must not take the model lifecycle")
+        monkeypatch.setattr(_mod, "_begin_model_lifecycle", refuse)
+
+    def test_insufficient_space_returns_507_before_the_lifecycle(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
+                    free_bytes=11 * self.GIB, total_bytes=100 * self.GIB)
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 507
+        body = handler.parse_response()
+        assert body["code"] == "insufficient_disk_space"
+        assert body["requiredBytes"] == 10 * self.GIB
+        assert body["freeBytes"] == 11 * self.GIB
+        assert body["marginBytes"] == 5 * self.GIB
+
+    def test_exact_margin_passes_the_space_check(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
+                    free_bytes=12 * self.GIB, total_bytes=20 * self.GIB)
+        monkeypatch.setattr(
+            _mod, "_begin_model_lifecycle",
+            lambda *_args, **_kwargs: (False, {"operation": "model_activation"}),
+        )
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        # The space check passed; the next gate (the lifecycle) answered.
+        assert handler.response_code == 409
+
+    def test_artifact_already_on_disk_at_its_size_needs_no_space(self, tmp_path, monkeypatch):
+        install_dir = self._setup(tmp_path, monkeypatch, size_bytes=5,
+                                  free_bytes=0, total_bytes=100 * self.GIB)
+        (install_dir / "data" / "models" / "test-model.gguf").write_bytes(b"12345")
+        monkeypatch.setattr(
+            _mod, "_model_storage_status",
+            lambda _path: (_ for _ in ()).throw(AssertionError("no space check is needed")),
+        )
+        monkeypatch.setattr(
+            _mod, "_begin_model_lifecycle",
+            lambda *_args, **_kwargs: (False, {"operation": "model_activation"}),
+        )
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 409
+
+    def test_unreadable_free_space_is_a_409(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=10, free_bytes=0, total_bytes=0)
+
+        def fail(_path):
+            raise OSError("no such volume")
+
+        monkeypatch.setattr(_mod, "_model_storage_status", fail)
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 409
+        assert handler.parse_response()["error"] == "Free space on the model store could not be checked"
+
+    def test_margin_is_two_gib_or_five_percent(self):
+        assert _mod._download_disk_margin(10 * self.GIB) == 2 * self.GIB
+        assert _mod._download_disk_margin(100 * self.GIB) == 5 * self.GIB
+
+    def test_bytes_needed_skips_present_and_unsized_artifacts(self, tmp_path):
+        present = tmp_path / "present.gguf"
+        present.write_bytes(b"abc")
+        wrong_size = tmp_path / "partial.gguf"
+        wrong_size.write_bytes(b"a")
+        artifacts = [
+            {"file": "present.gguf", "size_bytes": 3},
+            {"file": "partial.gguf", "size_bytes": 4},
+            {"file": "missing.gguf", "size_bytes": 7},
+            {"file": "unsized.gguf", "size_bytes": None},
+        ]
+        paths = {name: tmp_path / name for name in (
+            "present.gguf", "partial.gguf", "missing.gguf", "unsized.gguf")}
+
+        assert _mod._download_bytes_needed(artifacts, paths) == 11
+
+    def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path):
+        status = _mod._model_storage_status(tmp_path / "not" / "created" / "yet")
+
+        assert status["totalBytes"] > 0
+        assert status["freeBytes"] >= 0
+        assert status["marginBytes"] == _mod._download_disk_margin(status["totalBytes"])
+
+    def test_storage_endpoint_reports_the_download_volume(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_directory", lambda: tmp_path)
+        handler = _FakeHandler(b"")
+
+        _mod.AgentHandler._handle_model_storage(handler)
+
+        assert handler.response_code == 200
+        assert set(handler.parse_response()) == {"freeBytes", "totalBytes", "marginBytes"}
+
+    def test_storage_endpoint_is_409_when_the_directory_cannot_be_verified(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+        def unverified():
+            raise RuntimeError("Windows runtime model-store ownership changed")
+
+        monkeypatch.setattr(_mod, "_model_download_directory", unverified)
+        handler = _FakeHandler(b"")
+
+        _mod.AgentHandler._handle_model_storage(handler)
+
+        assert handler.response_code == 409
+
+
 class TestModelDeleteSafety:
 
     def _setup(self, tmp_path, monkeypatch, *, active="other.gguf"):
@@ -8663,7 +8854,9 @@ class TestModelDownloadFileIntegrity:
         _mod.AgentHandler._handle_model_download(handler)
 
         assert handler.response_code == 200
-        assert handler.parse_response()["status"] == "already_downloaded"
+        assert handler.parse_response()["status"] == "started"
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
         status = json.loads(status_path.read_text(encoding="utf-8"))
         assert status["status"] == "complete"
         assert status["model"] == "test-model.gguf"
@@ -9565,6 +9758,91 @@ class TestDockerServiceHealthSnapshot:
             "health": "healthy",
         }]
         assert len(calls) == 2
+
+
+class TestModelConfig:
+
+    @pytest.mark.parametrize(("contents", "expected"), [
+        (None, "unknown"), ("", "unknown"), ("ODS_MODE=\n", "unknown"),
+        ("ODS_MODE=invalid\n", "unknown"),
+        ("ODS_MODE=local\n", "local"), ("ODS_MODE=hybrid\n", "hybrid"),
+        ('ODS_MODE="cloud"\n', "cloud"), ("ODS_MODE=lemonade\n", "local"),
+    ])
+    def test_uses_only_persisted_mode(self, tmp_path, monkeypatch, contents, expected):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "hybrid")
+        monkeypatch.setenv("ODS_MODE", "cloud")
+        if contents is not None:
+            text = contents + "HF_TOKEN=private-fixture\n" if contents else contents
+            (tmp_path / ".env").write_text(text, encoding="utf-8")
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"configuredMode": expected}
+        assert ("Cache-Control", "no-store") in handler.response_headers
+
+    @pytest.mark.parametrize("failure", [PermissionError, UnicodeError])
+    def test_unreadable_config_is_unknown(self, tmp_path, monkeypatch, failure):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "local")
+        monkeypatch.setenv("ODS_MODE", "local")
+
+        def denied(path):
+            assert path == tmp_path / ".env"
+            raise failure("private-fixture")
+
+        monkeypatch.setattr(_mod, "load_env", denied)
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.parse_response() == {"configuredMode": "unknown"}
+
+    def test_authenticated_fixed_route_reads_atomic_replacement(self, tmp_path, monkeypatch):
+        import urllib.error
+        import urllib.request
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "model-config-secret")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", "hybrid")
+        monkeypatch.setenv("ODS_MODE", "hybrid")
+        (tmp_path / ".env").write_text("ODS_MODE=local\nHF_TOKEN=private-fixture\n", encoding="utf-8")
+        reads = []
+        load_env = _mod.load_env
+
+        def read(path):
+            reads.append(path)
+            return load_env(path)
+
+        monkeypatch.setattr(_mod, "load_env", read)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        url = f"http://127.0.0.1:{server.server_port}/v1/model/config"
+        try:
+            for token, code in ((None, 401), ("wrong", 403)):
+                headers = {"Authorization": f"Bearer {token}"} if token else {}
+                with pytest.raises(urllib.error.HTTPError) as denied:
+                    urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2)
+                assert denied.value.code == code
+                assert reads == []
+            headers = {"Authorization": "Bearer model-config-secret"}
+            for mode in ("local", "cloud"):
+                with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
+                    assert json.load(response) == {"configuredMode": mode}
+                    assert response.headers["Cache-Control"] == "no-store"
+                if mode == "local":
+                    replacement = tmp_path / ".env-new"
+                    replacement.write_text("ODS_MODE=cloud\nHF_TOKEN=other-private-fixture\n", encoding="utf-8")
+                    os.replace(replacement, tmp_path / ".env")
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(urllib.request.Request(url + "?path=/other&keys=HF_TOKEN", headers=headers), timeout=2)
+            assert rejected.value.code == 404
+            assert reads == [tmp_path / ".env", tmp_path / ".env"]
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 class TestObservabilityWire:
