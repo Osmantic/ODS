@@ -36,6 +36,15 @@ def installed_env(install_dir):
     return host.load_env(install_dir / '.env')
 
 
+def _unique_error_object(pairs):
+    value = {}
+    for name, item in pairs:
+        if name in value:
+            raise ValueError('Duplicate error field')
+        value[name] = item
+    return value
+
+
 def request(opener, port, key, route, body=None):
     req = urllib.request.Request(
         f'http://127.0.0.1:{port}{route}',
@@ -44,10 +53,31 @@ def request(opener, port, key, route, body=None):
     try:
         response = opener.open(req, timeout=400 if body is not None else 10)
     except urllib.error.HTTPError as error:
-        # Error bodies can contain private runtime details. Only the HTTP code
-        # is exposed; no mutation is retried after a lost or rejected response.
+        # Only exact public refusals from this repair endpoint are classified.
+        # Unknown/private bodies stay suppressed, and no mutation is retried.
         code = error.code
-        error.close()
+        value = None
+        try:
+            if code == 409 and body is not None and route == '/v1/model/recover/current-local':
+                raw = error.read(65537)
+                if len(raw) <= 65536:
+                    value = json.loads(raw, object_pairs_hook=_unique_error_object)
+        except (OSError, ValueError, RecursionError):
+            pass
+        finally:
+            error.close()
+        if value in ({'error': 'Model lifecycle is busy'},
+                     {'error': 'Model lifecycle is busy', 'code': 'model_lifecycle_busy'}):
+            raise RecoveryError(
+                'Host returned HTTP 409: another model operation is in progress; '
+                'this repair request was not started. Inspect the saved state '
+                'before requesting another repair') from None
+        if (value == {'pending': True, 'phase': 'unavailable',
+                      'reason': 'current-local-model-repair-unconfirmed'}
+                and value['pending'] is True):
+            raise RecoveryError(
+                'Host returned HTTP 409: repair completion is unconfirmed and native state '
+                'may already have changed. Inspect the saved state before any further repair') from None
         raise RecoveryError(f'Host returned HTTP {code}; inspect the saved state before retrying') from None
     with response:
         if response.status != 200:

@@ -13787,7 +13787,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         acquired, _active = _begin_model_lifecycle('model_recovery')
         if not acquired:
-            json_response(self, 409, {'error': 'Model lifecycle is busy'})
+            json_response(self, 409, {'error': 'Model lifecycle is busy',
+                                     'code': 'model_lifecycle_busy'}, no_store=True)
             return
         _switchboard_initial_verify_cancel.set()
         try:
