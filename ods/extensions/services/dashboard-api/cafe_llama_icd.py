@@ -28,6 +28,8 @@ def validate_cafe_configuration(configuration: dict[str, Any]) -> None:
 
     for dimension, allowed in CAPABILITIES.items():
         value = configuration.get(dimension)
+        if dimension == "flash_attention" and value is not None and not isinstance(value, bool):
+            raise ValueError("flash_attention must be boolean")
         if value is not None and value not in allowed:
             raise ValueError(f"unsupported cafe configuration value for {dimension}: {value!r}")
 
@@ -43,7 +45,9 @@ def validate_cafe_configuration(configuration: dict[str, Any]) -> None:
     ):
         raise ValueError("gpu_layers must be a non-negative integer")
 
-    draft_tokens = configuration.get("draft_tokens") or 0
+    draft_tokens = configuration.get("draft_tokens")
+    if draft_tokens is None:
+        draft_tokens = 0
     if isinstance(draft_tokens, bool) or not isinstance(draft_tokens, int) or draft_tokens < 0:
         raise ValueError("draft_tokens must be a non-negative integer")
     if draft_tokens != 0:
