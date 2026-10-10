@@ -1,8 +1,8 @@
 import { act, fireEvent, render, screen } from '@testing-library/react'
 import HuggingFaceModelBrowser from './HuggingFaceModelBrowser'
 
-const repo = { id: 'org/model', author: 'org' }
-const artifact = { id: 'q4', label: 'model.gguf', sizeBytes: 1e9, files: [], importedModelId: 'hf-fixture' }
+const repo = { id: 'org/model', author: 'org', sha: 'c'.repeat(40) }
+const artifact = { id: 'q4', label: 'model.gguf', sizeBytes: 1e9, files: [{ filename: 'model.gguf' }], importedModelId: 'hf-fixture' }
 const response = (body, status = 200) => ({ ok: status < 400, status, json: async () => body })
 let progress, post, onImportStarted
 beforeEach(() => {
@@ -14,6 +14,11 @@ beforeEach(() => {
     if (options?.method === 'POST') return await post()
     if (url.includes('/search?')) return response({ models: [repo] })
     if (url.includes('/repositories/')) return response({ ...repo, artifacts: [artifact] })
+    if (url.includes('/preflight/')) return response({
+      ...repo, artifactId: artifact.id, modelKind: 'chat',
+      header: { status: 'read', file: 'model.gguf' },
+      artifacts: { [artifact.id]: { header: { status: 'read', file: 'model.gguf' }, refusal: null } },
+    })
     if (url === '/api/models') return response({ models: [{ id: artifact.importedModelId, gguf: 'hf-model.gguf' }] })
     return response(progress)
   }))
