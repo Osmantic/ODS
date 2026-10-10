@@ -119,6 +119,17 @@ test('publication coaching requires a current, exactly bound successful terminal
   }
 });
 
+test('passing verification cannot substitute for a missing download receipt',t=>{
+  // Existing file language was already recognized before the project fix.
+  // This isolates delivery truth from both the classifier and tool coaching.
+  const {guard,call}=fixture(t,{request:'Run the tests and attach the existing project.zip file.'});
+  call('exec',{command:'python3 -m unittest -v',workdir:'/workspace'},
+    {text:'test_valid ... ok\n\nRan 1 test in 0.001s\n\nOK'});
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  assert.equal(guard.deliveryVerificationForRun(context.runId).status,'failed');
+  assert.match(guard.deliveryVerificationForRun(context.runId).text,/requested download was not attached/);
+});
+
 test('owner cancellation retains its own terminal cause instead of a missing-download verdict',async t=>{
   const {guard}=fixture(t);
   await guard.abortUserRun('ods-'+'a'.repeat(64));
