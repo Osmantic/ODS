@@ -129,6 +129,16 @@ def test_cafe_rejects_invalid_scalar_values():
     with pytest.raises(ValueError, match="draft tokens"):
         validate_cafe_configuration(invalid_draft)
 
+    boolean_draft = dict(configuration)
+    boolean_draft["draft_tokens"] = False
+    with pytest.raises(ValueError, match="draft_tokens"):
+        validate_cafe_configuration(boolean_draft)
+
+    non_boolean_flash_attention = dict(configuration)
+    non_boolean_flash_attention["flash_attention"] = 1
+    with pytest.raises(ValueError, match="flash_attention"):
+        validate_cafe_configuration(non_boolean_flash_attention)
+
 
 def test_icd_expands_only_verified_runtime_capabilities_deterministically():
     candidate = make_candidate()
