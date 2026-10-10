@@ -1,6 +1,11 @@
 import pytest
 
-from cafe_llama_icd import CAPABILITIES, validate_cafe_configuration
+from cafe_llama_icd import (
+    CAPABILITIES,
+    DISCOVERY_CAPABILITIES,
+    parameter_catalog,
+    validate_cafe_configuration,
+)
 from inference_configuration import (
     configuration_signature,
     rank_measured_candidates,
@@ -94,20 +99,43 @@ def test_candidate_without_runtime_profile_returns_no_configurations():
     assert candidate.inference_configurations() == []
 
 
-def test_cafe_rejects_unverified_capabilities():
+def test_catalog_exposes_documented_and_build_dependent_capabilities():
     candidate = make_candidate()
     configuration = candidate.inference_configurations()[0].configuration
+    catalog = parameter_catalog()
 
-    for dimension, unsupported in (
-        ("kernel", "ptq1-mmV"),
-        ("kv_cache", "turbo4"),
-        ("offload", "host-moe"),
-        ("speculation", "draft-mtp"),
-    ):
-        invalid = dict(configuration)
-        invalid[dimension] = unsupported
-        with pytest.raises(ValueError, match=f"unsupported cafe configuration value for {dimension}"):
-            validate_cafe_configuration(invalid)
+    assert "host_moe" in catalog
+    assert "ssd_streaming" in catalog
+    assert "ngram_ssd" in catalog
+    assert "turbo_kv" in catalog
+    assert "spec_type" in catalog
+    assert "runtime_provenance" in catalog
+    assert "turbo4" in CAPABILITIES["kv_cache"]
+
+    # Catalog-known values are discoverable; a probed binary must still gate execution.
+    turbo = dict(configuration)
+    turbo["kv_cache"] = "turbo4"
+    validate_cafe_configuration(turbo)
+    with pytest.raises(ValueError, match="does not advertise kv_cache"):
+        validate_cafe_configuration(
+            turbo,
+            runtime_capabilities={
+                "kernel": ["baseline"],
+                "kv_cache": ["f16", "q8_0"],
+                "flash_attention": [True, False],
+                "offload": ["none"],
+                "speculation": ["none"],
+            },
+        )
+
+    moe = dict(configuration)
+    moe["offload"] = "host-moe"
+    validate_cafe_configuration(moe)
+    with pytest.raises(ValueError, match="does not advertise offload"):
+        validate_cafe_configuration(
+            moe,
+            runtime_capabilities={"offload": ["none"]},
+        )
 
 
 def test_cafe_rejects_invalid_scalar_values():
@@ -143,7 +171,7 @@ def test_cafe_rejects_invalid_scalar_values():
 def test_icd_expands_only_verified_runtime_capabilities_deterministically():
     candidate = make_candidate()
 
-    configs = candidate.inference_configurations(CAPABILITIES)
+    configs = candidate.inference_configurations(DISCOVERY_CAPABILITIES)
 
     assert len(configs) == 4
 
