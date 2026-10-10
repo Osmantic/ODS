@@ -68,3 +68,28 @@ The current chat's historical notes indicate existing local worktrees:
 - `~/leones-cafe-staging` — LEONES staging.
 
 Historical notes also indicate the LEONES staging contains `cafe_adapter.py`, host activation overlays, runtime selector, ICD modules, dashboard panel, tests and smoke/evidence scripts. These are prior conversation records, not a fresh scan of the machine. This assistant session has no direct shell/SSH access to the user's Ubuntu host, so it cannot honestly claim to have searched current uncommitted files, binaries, or logs there. The local reconciliation should compare these worktrees and search the installed Cafe binary's `--help` before merging the parameter registry.
+
+
+## Reconciliation with the user's Ubuntu grep audit (2026-10-10)
+
+The user supplied a read-only recursive grep excerpt from two local trees. This is direct evidence that substantial *generic llama.cpp parameter plumbing* already exists locally; it is not proof that Cafe-specific runtime activation or every flag works.
+
+### Existing work to reuse, not duplicate
+
+- `/home/ssantos/ods/.env.schema.json`: schema entries include `CTX_SIZE`, `N_GPU_LAYERS`, Flash Attention, independent K/V cache types, CPU-MoE, speculation type, draft K/V cache, and draft token cap. The excerpt also shows descriptions distinguishing native Windows/macOS launch variables from Docker's `LLAMA_ARG_*` environment mapping.
+- `/home/ssantos/ods/docker-compose.base.yml`: passes context, GPU layers, batch, Flash Attention, K/V cache types, and draft cache variables to the existing service configuration.
+- `/home/ssantos/ods/installers/phases/06-directories.sh`, `installers/phases/11-services.sh`, and platform installers: generate/update context and GPU-layer values; native macOS/Windows launch code translates a subset of environment values into CLI arguments.
+- `/home/ssantos/ods/config/model-library.json`: existing model profiles choose Flash Attention and K/V cache types, including q4_0/q8_0.
+- `/home/ssantos/leones-cafe-staging/ods-src/ods-cafe-repro-clean/ods/tests/contracts/test-windows-native-llama-legacy.ps1`: test fixture asserts mappings for cache K/V, CPU-MoE, speculation mode, draft cache, draft token count and related launch flags.
+- `tests/contracts/test-llama-runtime-tunables.py`, `tests/test-validate-env.sh`, `tests/test-macos-direct-bind-bridge.sh`, and bootstrap tests provide pre-existing regression coverage for generic runtime tunables and context propagation.
+- The staging tree contains integration and platform documentation with existing context/GPU-layer guidance, plus Hermes context-alignment notes.
+
+### What this means for the Cafe PR
+
+1. Treat existing ODS variables and launch translations as reusable infrastructure. Do not add parallel aliases for settings already represented in the schema.
+2. Keep Cafe-specific settings behind a runtime profile/capability gate. Existing `LLAMA_ARG_*` values are not automatically valid Cafe options, and a flag accepted by upstream llama.cpp is not proof that the installed Cafe binary accepts it.
+3. Compare `.env.schema.json`, Compose forwarding, each native launch path, model profile serialization, and validation tests as one parity matrix. A variable can exist in the schema but still be omitted from one launch path.
+4. Prioritize the missing Cafe boundary: identify/pin the Cafe executable, inspect its own `--help`/version, render an allowlisted argument vector, perform a real completion, publish the route only after proof, and test rollback. Keep the current `llama-server` default unchanged.
+5. The user's pasted audit shows the executable-probe section empty. Until a local `llama-server`/Cafe executable path and its help output are supplied, TurboQuant, host-MoE, SSD streaming, Cafe-specific MTP and other fork-only options remain unverified for that machine.
+
+This inventory is based on the user's supplied grep output, not a direct shell session. The grep excerpt does not show full implementations, complete test results, current worktree status, or a successful runtime probe.
