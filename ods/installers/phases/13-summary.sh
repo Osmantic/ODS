@@ -461,7 +461,7 @@ if ! $DRY_RUN && command -v ods_readiness_summary >/dev/null 2>&1; then
         # under set -e + pipefail, a false `[[ ENABLE_x ]] && printf` makes the block
         # return 1, which propagates through the pipe and trips the ERR trap.
         :
-    } | ods_readiness_summary "ods status" "$LOG_FILE" "$_dashboard_url"
+    } | ods_readiness_summary "ods status" "$LOG_FILE" "$_dashboard_url" "Dashboard"
 fi
 
 echo ""
