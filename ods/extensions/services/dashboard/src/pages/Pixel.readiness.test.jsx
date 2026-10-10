@@ -1,6 +1,7 @@
 import {act, fireEvent, screen, within} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
+import PixelAccessCard from '../components/settings/PixelAccessCard'
 
 const json = data => ({ok:true, json:async()=>data})
 const failed = () => ({schemaVersion:1, state:'attention', routeAvailable:true,
@@ -18,6 +19,67 @@ function transport(getStatus) {
     return json({})
   }))
 }
+
+it('holds a retained draft for interrupted chat recovery and resumes only after fresh idle status',async()=>{
+ let status={available:true}
+ transport(()=>status)
+ vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Keep this draft through recovery'}})
+ status={available:false,state:'chat_recovery_required',detail:'Portal stopped during an earlier turn and new messages are held.'}
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.getByText('Recovery required')).toBeVisible()
+ const composer=screen.getByPlaceholderText('Messages are held until Portal recovery')
+ expect(composer).toBeDisabled();expect(composer).toHaveValue('Keep this draft through recovery')
+ expect(screen.getByRole('link',{name:'Portal permissions'})).toHaveAttribute('href','/settings?section=access')
+ expect(screen.queryByText('Available')).toBeNull()
+ expect(fetch.mock.calls.some(call=>call[0]==='/api/pixel/chat/stream')).toBe(false)
+ status={available:true}
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep this draft through recovery')
+ expect(fetch.mock.calls.some(call=>call[0]==='/api/pixel/chat/stream')).toBe(false)
+})
+
+it('refreshes already-open verified Permissions when Portal discovers recovery without polling idle access',async()=>{
+ const sandbox={available:true,surface:'wsl-systemd',configured_mode:'sandboxed',effective_mode:'sandboxed',runtime_verified:true,revision:'a'.repeat(64),busy:false,pending:false}
+ let held=false
+ const transport=vi.fn(async(url,options)=>{
+  if(url==='/api/pixel/status')return json(held?{available:false,state:'chat_recovery_required'}:{available:true})
+  if(url==='/api/pixel/access-mode'){
+   if(options?.method==='POST')held=false
+   return json(held?{...sandbox,reason:'chat-recovery-required'}:sandbox)
+  }
+  if(url==='/api/pixel/chat/context')return json({schemaVersion:1,status:'missing',sessionRevision:null,
+   context:null,model:null,compaction:{status:'idle',count:0},history:{revision:null,acknowledgedMessages:0}})
+  return json({})
+ })
+ vi.stubGlobal('fetch',transport);vi.useFakeTimers()
+ render(<><Pixel/><PixelAccessCard/></>);await act(async()=>{})
+ const permissions=within(screen.getByRole('region',{name:'Portal permissions'}))
+ fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Keep the unsent recovery draft'}})
+ await act(async()=>{await vi.advanceTimersByTimeAsync(12000)})
+ expect(transport.mock.calls.filter(([url])=>url==='/api/pixel/access-mode')).toHaveLength(1)
+ expect(permissions.getByRole('button',{name:'Enable Full Access'})).toBeEnabled()
+ held=true
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(permissions.getByRole('alert')).toHaveTextContent('new messages are held')
+ expect(permissions.getByText('Effective').nextElementSibling).toHaveTextContent('Sandbox')
+ expect(permissions.getByRole('button',{name:'Enable Full Access'})).toBeDisabled()
+ expect(screen.getByPlaceholderText('Messages are held until Portal recovery')).toHaveValue('Keep the unsent recovery draft')
+ expect(transport.mock.calls.filter(([url])=>url==='/api/pixel/access-mode')).toHaveLength(2)
+ // An unchanged Portal status must not restart a permissions read every three seconds.
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(transport.mock.calls.filter(([url])=>url==='/api/pixel/access-mode')).toHaveLength(2)
+ expect(transport.mock.calls.some(([url,options])=>url==='/api/pixel/access-mode'&&options?.method==='POST')).toBe(false)
+ fireEvent.click(permissions.getByRole('button',{name:'Verify Sandbox'}));await act(async()=>{})
+ expect(transport.mock.calls.filter(([url,options])=>url==='/api/pixel/access-mode'&&options?.method==='POST')).toHaveLength(1)
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(permissions.queryByRole('alert')).toBeNull()
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep the unsent recovery draft')
+ expect(transport.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
+})
 
 it('retains only a diagnostic cloud label during an available access transition and recovers on polling',async()=>{
   const runtime={source:'remote-provider',model:'cloud-model',contextLength:65536,maxTokens:4096,reasoning:false}

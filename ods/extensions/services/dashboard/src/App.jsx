@@ -209,7 +209,7 @@ function BootstrapBanner({ bootstrap }) {
             <div>
               <h3 className="text-sm font-semibold text-white">{copy.title}</h3>
               <p className="text-xs text-theme-text-secondary">
-                Chat now with lightweight model • <span className="text-theme-accent-light">{bootstrap.model}</span> {copy.action}
+                {phase === 'swapping' ? 'Chat pauses during activation' : 'Chat now with lightweight model'} • <span className="text-theme-accent-light">{bootstrap.model}</span> {copy.action}
               </p>
             </div>
           </div>

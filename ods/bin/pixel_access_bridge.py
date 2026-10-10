@@ -900,11 +900,31 @@ class SystemdAccessBridge:
                     and verified.get("pid") == pid and verified.get("config_sha256") == config.get("config_sha256")
                     and verified.get("proof") == proof) else "unknown"
         if effective != config.get("configured_status") or pending or verified.get("boundary") != self.unit_boundary(): effective = "unknown"
+        # Edge can retain an interrupted chat after a process restart without
+        # any host access/model transaction. Keep valid permission proof, but
+        # disclose that new chat requires explicit recovery. Observation never
+        # releases either gate or invents a coordinator-owned journal.
+        reason = (self.pending_reason(pending) if pending else
+                  "chat-recovery-required" if edge.get("phase") == "interrupted" else
+                  "runtime-proof-required" if effective == "unknown" else None)
         return {"available": True, "surface": self.surface, "configured_mode": config.get("configured_status", "unknown"),
                 "effective_mode": effective, "runtime_verified": effective != "unknown", "revision": revision,
                 "busy": bool(native.get("active") or edge.get("streams")), "pending": pending is not None,
-                "reason": "transition-recovery-required" if pending else ("runtime-proof-required" if effective == "unknown" else None),
+                "reason": reason,
                 "scope": "owner-host", "_config": config, "_native": native, "_edge": edge}
+
+    def pending_reason(self, pending):
+        # This is an observational distinction, never permission to release a
+        # gate or evidence that its coordinator is still alive. Validate the
+        # journal before identifying a model hold; keep recovery available.
+        if isinstance(pending, dict) and pending.get("kind") == "model":
+            try:
+                journal = self.model_journal()
+                return ("model-transition-recovery-required" if journal["phase"] == "error"
+                        else "model-transition-pending")
+            except AccessError:
+                pass
+        return "transition-recovery-required"
 
     def status(self):
         try: return {key: value for key, value in self.inspect().items() if not key.startswith("_")}

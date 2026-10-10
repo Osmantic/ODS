@@ -97,6 +97,12 @@ def _read(path):
 def _write(path, record):
     if path.is_symlink():
         raise ValueError('Invalid extension request file')
+    revision = record.get('mutationRevision', 0)
+    if type(revision) is not int or revision < 0:
+        raise ValueError('Invalid extension request revision')
+    # Even a repeated cancellation records new intent. Content-only comparison
+    # would otherwise let an admission rollback resurrect that cancellation.
+    record = {**record, 'mutationRevision': revision + 1}
     descriptor, temporary = tempfile.mkstemp(prefix='.request-', dir=path.parent)
     try:
         with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
@@ -107,14 +113,16 @@ def _write(path, record):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+    return record
 
 
 def read_request(directory, owner, chat_id, request_id, *, now=None):
     owner_digest, identifier = _identity(owner, chat_id, request_id)
     record = _read(_directory(directory) / (identifier + '.json'))
     required = {'schemaVersion', 'ownerDigest', 'chatId', 'requestId', 'repository', 'createdAt', 'expiresAt', 'state'}
-    fields = set(record) - {'authorizationMode'}
+    fields = set(record) - {'authorizationMode', 'mutationRevision'}
     if (fields not in (required, required | {'proposal'}, required | {'integration'})
+            or type(record.get('mutationRevision', 0)) is not int or record.get('mutationRevision', 0) < 0
             or record.get('authorizationMode', 'research') not in {'install', 'research'}
             or record['schemaVersion'] != 1 or record['ownerDigest'] != owner_digest
             or record['chatId'] != chat_id or record['requestId'] != request_id
@@ -292,7 +300,71 @@ def bind_integration(directory, owner, chat_id, request_id, integration, *, now=
     return read_request(directory, owner, chat_id, request_id, now=now)
 
 
-def create_request(directory, owner, chat_id, request_id, command, *, now=None):
+def _prepared_write(path, record, before, preparation):
+    written = _write(path, record)
+    if preparation is not None:
+        preparation.setdefault('changes', []).append((before, written))
+
+
+def _routing_frontier(directory, owner, chat_id):
+    owner_digest, _ = _identity(owner, chat_id, 'lookup')
+    frontier = {}
+    for path in _directory(directory).glob('*.json'):
+        record = _read(path)
+        if record.get('ownerDigest') == owner_digest and record.get('chatId') == chat_id:
+            _, identifier = _identity(owner, chat_id, record.get('requestId'))
+            if path.stem != identifier:
+                raise ValueError('Stored request identity changed')
+            frontier[identifier] = hashlib.sha256(json.dumps(record, sort_keys=True).encode()).hexdigest()
+    return frontier
+
+
+def rollback_prepared_request(directory, owner, chat_id, request_id, preparation, *, now=None):
+    """Undo routing effects only after a trusted refusal, under the caller's lock.
+
+    Keep the new request as cancelled audit evidence, including concurrent
+    proposal/integration bindings. Restore prior routing only when the entire
+    owner/chat frontier still matches: a later request followed by cancellation
+    is new intent too. No packages, bindings or operation journals are reverted.
+    """
+    if not preparation.get('changes'):
+        return
+    directory = _directory(directory)
+    owner_digest, identifier = _identity(owner, chat_id, request_id)
+    unchanged = _routing_frontier(directory, owner, chat_id) == preparation['frontier']
+    previous = []
+    for before, after in preparation['changes']:
+        _, changed_id = _identity(owner, chat_id, after['requestId'])
+        if after['ownerDigest'] != owner_digest or after['chatId'] != chat_id:
+            raise ValueError('Prepared request identity changed')
+        path = directory / (changed_id + '.json')
+        if before is None:
+            if changed_id != identifier or after['state'] != 'pending':
+                continue  # A cancellation tombstone never granted routing.
+            current = read_request(directory, owner, chat_id, request_id, now=now)
+            if current['state'] != 'cancelled':
+                # Do not replace the whole record: tools may have attached a
+                # binding while HTTP admission was in flight.
+                record = _read(path)
+                _write(path, {**record, 'state': 'cancelled'})
+        elif (unchanged and before['state'] == 'pending' and after['state'] == 'cancelled'
+                and _read(path) == after):
+            previous.append((path, before))
+    # A retained revision must be reconciled by its coordinator. Never restore
+    # multiple routes, nor extend a predecessor's original expiration.
+    if len(previous) != 1:
+        return
+    path, before = previous[0]
+    revisions = directory.parent / '.extension-installations'
+    revision = revisions / (path.stem + '.revision.json')
+    if revisions.is_symlink() or revision.exists() or revision.is_symlink():
+        return
+    current = int(time.time()) if now is None else now
+    if before['expiresAt'] > current:
+        _write(path, {**_read(path), 'state': 'pending'})
+
+
+def create_request(directory, owner, chat_id, request_id, command, *, now=None, preparation=None):
     repository = command_repository(command)
     authorization_mode = command_authorization_mode(command)
     owner_digest, identifier = _identity(owner, chat_id, request_id)
@@ -320,16 +392,17 @@ def create_request(directory, owner, chat_id, request_id, command, *, now=None):
             revision = revisions / (prior_id + '.revision.json')
             if revisions.is_symlink() or revision.exists() or revision.is_symlink():
                 raise ValueError('Pending recipe revision requires reconciliation')
-            record['state'] = 'cancelled'
-            _write(peer, record)
-    _write(path, {'schemaVersion': 1, 'ownerDigest': owner_digest, 'chatId': chat_id,
+            _prepared_write(peer, {**record, 'state': 'cancelled'}, record, preparation)
+    _prepared_write(path, {'schemaVersion': 1, 'ownerDigest': owner_digest, 'chatId': chat_id,
                   'requestId': request_id, 'repository': repository, 'state': 'pending',
                   'authorizationMode': authorization_mode,
-                  'createdAt': current, 'expiresAt': current + TTL_SECONDS})
+                  'createdAt': current, 'expiresAt': current + TTL_SECONDS}, None, preparation)
+    if preparation is not None:
+        preparation['frontier'] = _routing_frontier(directory, owner, chat_id)
     return read_request(directory, owner, chat_id, request_id, now=current)
 
 
-def cancel_request(directory, owner, chat_id, request_id, *, now=None):
+def cancel_request(directory, owner, chat_id, request_id, *, now=None, preparation=None):
     owner_digest, identifier = _identity(owner, chat_id, request_id)
     path = _directory(directory) / (identifier + '.json')
     if not path.exists() and not path.is_symlink():
@@ -344,6 +417,7 @@ def cancel_request(directory, owner, chat_id, request_id, *, now=None):
     current = read_request(directory, owner, chat_id, request_id, now=now)
     path = Path(directory) / (current['id'] + '.json')
     record = _read(path)
-    record['state'] = 'cancelled'
-    _write(path, record)
+    _prepared_write(path, {**record, 'state': 'cancelled'}, record, preparation)
+    if preparation is not None:
+        preparation['frontier'] = _routing_frontier(directory, owner, chat_id)
     return read_request(directory, owner, chat_id, request_id, now=now)

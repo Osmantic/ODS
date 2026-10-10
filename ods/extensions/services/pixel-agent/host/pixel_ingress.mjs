@@ -201,6 +201,10 @@ class HttpError extends Error {
   }
 }
 
+// Only the owned transport can establish that no request reached its selected
+// loopback listener. Provider payloads cannot construct this local error type.
+class GatewayConnectRefused extends Error {}
+
 // ---------------------------------------------------------------------------
 // Injectable dependencies (defaults to the real host primitives). Tests pass
 // a `deps` object with fakes for deterministic behavior.
@@ -324,6 +328,11 @@ export function createLoopbackGatewayFetch(fetchImpl = directGatewayFetch, {
       // HTTP bodies/streams are never retried. Even a transport reset can
       // arrive after the gateway has accepted a mutation or started a run.
       if (endpoints.get(port)?.origin === origin) endpoints.delete(port);
+      const address = new URL(origin).hostname.replace(/^\[|\]$/g, '');
+      if (transport === 'loopback' && error?.code === 'ECONNREFUSED' &&
+          error.syscall === 'connect' && error.address === address && error.port === Number(port)) {
+        throw new GatewayConnectRefused('gateway connection refused before submission', {cause:error});
+      }
       throw error;
     }
   };
@@ -1283,6 +1292,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
   res.once("close", abortOnDownstreamClose);
   const wantsStream = outgoing.stream === true;
   let stopActivity;
+  let gatewayResponsePending = false;
   // OpenClaw's OpenAI-compatible streaming route concatenates assistant block
   // replies from every tool continuation. Its non-stream route returns only
   // the terminal assistant reply. This ingress already withholds response
@@ -1307,6 +1317,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     await hooks.beforeRequest?.(controller.signal);
     if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
     hooks.onSubmitted?.();
+    gatewayResponsePending = true;
     const upstream = await deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
@@ -1317,6 +1328,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         signal: controller.signal,
       }
     );
+    gatewayResponsePending = false;
     if (upstream.status < 200 || upstream.status >= 300) {
       await drain(upstream.body);
       // Classify only the gateway's status, never its potentially sensitive body.
@@ -1421,6 +1433,21 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     });
     res.end(responseBody);
   } catch (error) {
+    // Only an actual refusal to connect to this exact loopback gateway proves
+    // that its chat POST never arrived. Timeouts, resets, missing run IDs and
+    // failures after a response/continuation remain execution uncertainty.
+    if (gatewayResponsePending && !controller.signal.aborted && error instanceof GatewayConnectRefused) {
+      let notSubmitted = false;
+      try { notSubmitted = hooks.onNotSubmitted ? hooks.onNotSubmitted() === true : true; } catch { /* Keep uncertain history fenced. */ }
+      if (notSubmitted && !res.destroyed && !res.writableEnded) {
+        if (wantsStream) {
+          res.end('data: {"error":{"type":"pixel_ingress_error","code":"gateway_connect_refused"}}\n\ndata: [DONE]\n\n');
+        } else {
+          sendError(res, 503, 'gateway connection refused before submission', 'gateway_connect_refused');
+        }
+        return;
+      }
+    }
     if (!res.headersSent) {
       const message = error instanceof HttpError ? error.message : "upstream unavailable";
       sendError(res, error instanceof HttpError ? error.status : 502, message);
@@ -2046,6 +2073,15 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
         if(state.compaction?.requestId!==request_id || !['completed','skipped'].includes(state.compaction.status)) throw new HistoryError('history-compaction-unconfirmed',503);
       },
       onSubmitted:()=>{submitted=true;},
+      onNotSubmitted:()=>{
+        const current=historyLedger.read(user);
+        if(!submitted || completed || current?.requestId!==prepared.state.requestId || current.status!=='pending') return false;
+        historyLedger.abandon(user,prepared,'gateway-connect-refused');
+        const settled=historyLedger.read(user);
+        if(settled?.requestId!==prepared.state.requestId || settled.status!=='ready' || settled.reason!=='gateway-connect-refused') return false;
+        submitted=false;
+        return true;
+      },
       onComplete:async(completion,verification)=>{
         let after;
         try {after=await nativeContextRequest('context',{user},token,gatewayPort,deps)} catch { /* The verified completion still proves this input ran. */ }

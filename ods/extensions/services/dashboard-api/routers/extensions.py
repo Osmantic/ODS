@@ -2445,7 +2445,18 @@ async def extension_install_next(service_id: str, api_key: str = Depends(verify_
         raise HTTPException(status_code=409, detail="Installation state requires inspection") from exc
 
 
-async def chat_extension_request_context(owner, chat_id, request_id, command, *, include_evidence=False):
+async def rollback_chat_extension_request(owner, chat_id, request_id, preparation):
+    from extension_requests import rollback_prepared_request
+
+    def rollback():
+        with _extensions_lock():
+            rollback_prepared_request(_extensions_lock_path().parent.resolve() / '.extension-requests',
+                                      owner, chat_id, request_id, preparation)
+    await asyncio.to_thread(rollback)
+
+
+async def chat_extension_request_context(owner, chat_id, request_id, command, *, include_evidence=False,
+                                         preparation=None):
     """Register routing before inference; recover it from storage on follow-ups."""
     from extension_requests import (active_chat_request, command_repository, create_request,
                                     model_request_context, cancel_request)
@@ -2462,7 +2473,7 @@ async def chat_extension_request_context(owner, chat_id, request_id, command, *,
                 if directory.is_symlink():
                     raise ValueError('Invalid request storage')
                 directory.mkdir(exist_ok=True)
-                current = create_request(directory, owner, chat_id, request_id, command)
+                current = create_request(directory, owner, chat_id, request_id, command, preparation=preparation)
         else:
             # Ordinary chat must not wait on an installation's global lock.
             # Atomic records are routing hints; proposal submission revalidates
@@ -2475,7 +2486,7 @@ async def chat_extension_request_context(owner, chat_id, request_id, command, *,
                 return None  # Unavailable hints must not break ordinary chat.
             if current and isinstance(command, str) and command.lstrip().startswith('/'):
                 with _extensions_lock():
-                    cancel_request(directory, owner, chat_id, current['requestId'])
+                    cancel_request(directory, owner, chat_id, current['requestId'], preparation=preparation)
                 return None
         if not current or current['state'] != 'pending':
             return None
