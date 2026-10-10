@@ -573,7 +573,7 @@ def test_huggingface_import_record_pins_revision_and_renames_remote_paths():
         }],
     }
 
-    record = models_router._hf_import_record(details, artifact)
+    record = models_router._hf_import_record({**details, "artifacts": [artifact]}, artifact)
 
     assert record["source"] == "huggingface"
     assert record["source_revision"] == "c" * 40
@@ -704,7 +704,7 @@ def test_huggingface_import_retains_retry_state_after_agent_failure(
 
     attempts = 0
 
-    def flaky_agent(_path, payload):
+    def flaky_agent(_path, payload, **_kwargs):
         nonlocal attempts
         attempts += 1
         assert payload["gguf_sha256"] == "e" * 64
@@ -815,7 +815,7 @@ def test_huggingface_import_disk_refusal_is_definitively_not_started(
     async def fake_details(_repo_id):
         return _hf_import_details()
 
-    def refuse(_path, _payload):
+    def refuse(_path, _payload, **_kwargs):
         raise models_router.HTTPException(
             status_code=507,
             detail=models_router._insufficient_disk_detail({
@@ -3024,7 +3024,7 @@ def test_local_gguf_ui_id_loads_and_deletes_spaced_filename(test_client, monkeyp
     assert delete_response.status_code == 200
     assert calls == [
         ("/v1/model/activate", {"model_id": "My-Custom-Model.Q8_0"}, 2700),
-        ("/v1/model/delete", {"gguf_file": "My Custom Model.Q8_0.GGUF"}, 30),
+        ("/v1/model/delete", {"gguf_file": "My Custom Model.Q8_0.GGUF"}, 20.0),
     ]
 
 
