@@ -216,12 +216,13 @@ _phase04_own_whisper_publishes() {
 
 check_port_conflict() {
     local port="$1"
+    local allow_owned_port="${2:-true}"
     PORT_CONFLICT=false
     PORT_CONFLICT_PID=""
     PORT_CONFLICT_PROC=""
     local port_tool_found=false
 
-    if _phase04_current_install_owns_docker_port "$port"; then
+    if [[ "$allow_owned_port" == true ]] && _phase04_current_install_owns_docker_port "$port"; then
         return 1
     fi
 
@@ -294,6 +295,62 @@ check_port_conflict() {
 
     return 1
 }
+
+# Both Dashboard bindings are required: a collision on the remote listener
+# can leave the whole container without networking despite internal health.
+# Only its actual published host ports prove a safe in-place rerun. Another
+# service in the same project, or an unconnected container, is not an owner.
+_phase04_own_dashboard_publishes() {
+    local port="$1" inspected running project_name service working_dir host_ports
+    command -v docker >/dev/null 2>&1 || return 1
+    local -a inspect_command=(docker container inspect --format \
+        '{{.State.Running}}|{{ index .Config.Labels "com.docker.compose.project" }}|{{ index .Config.Labels "com.docker.compose.service" }}|{{ index .Config.Labels "com.docker.compose.project.working_dir" }}|{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostPort}} {{end}}{{end}}' \
+        ods-dashboard)
+    # Phase 05 selects sudo Docker later. A rerun may already need it to read
+    # the existing container; never prompt or alter daemon/group permissions.
+    if [[ "${DOCKER_CMD:-docker}" == 'sudo docker' ]]; then
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    elif ! inspected="$("${inspect_command[@]}" 2>/dev/null)"; then
+        command -v sudo >/dev/null 2>&1 || return 1
+        inspected="$(sudo -n "${inspect_command[@]}" 2>/dev/null)" || return 1
+    fi
+    IFS='|' read -r running project_name service working_dir host_ports <<< "$inspected"
+    [[ "$running" == true && "$project_name" == "${COMPOSE_PROJECT_NAME:-ods}" \
+        && "$service" == dashboard && -n "$working_dir" && "$working_dir" == "${INSTALL_DIR:-}" ]] || return 1
+    [[ " $host_ports " == *" $port "* ]]
+}
+
+_phase04_check_dashboard_ports() {
+    local key default port
+    for key in DASHBOARD_PORT DASHBOARD_REMOTE_PORT; do
+        default=3001
+        [[ "$key" != DASHBOARD_REMOTE_PORT ]] || default=3011
+        port="${!key:-}"
+        if [[ -z "$port" && -f "${INSTALL_DIR:-}/.env" ]]; then
+            port="$(external_llm_env_value "$INSTALL_DIR/.env" "$key")"
+        fi
+        port="${port:-$default}"
+        if [[ ! "$port" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$port > 65535 )); then
+            warn "$key must be a port from 1 to 65535"
+            return 1
+        fi
+        printf -v "$key" '%s' "$port"
+        export "$key"
+        if ! _phase04_own_dashboard_publishes "$port" && check_port_conflict "$port" false; then
+            warn "Required Dashboard port $port is in use by ${PORT_CONFLICT_PROC:-another process}."
+            warn "Choose a free $key in the environment or installed .env, then rerun the installer."
+            return 1
+        fi
+    done
+    if [[ "$DASHBOARD_PORT" == "$DASHBOARD_REMOTE_PORT" ]]; then
+        warn "DASHBOARD_PORT and DASHBOARD_REMOTE_PORT must use different host ports."
+        return 1
+    fi
+}
+
+# Fail before .env regeneration or Compose startup, including in non-interactive mode. Do not
+# stop another application or silently replace an owner's chosen port.
+_phase04_check_dashboard_ports || return 1
 
 # Ollama conflict detection
 check_ollama_conflict() {

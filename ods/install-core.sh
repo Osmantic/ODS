@@ -738,11 +738,13 @@ INSTALL_PHASE="10-amd-tuning";   source "$SCRIPT_DIR/installers/phases/10-amd-tu
 INSTALL_PHASE="11-services";     source "$SCRIPT_DIR/installers/phases/11-services.sh"
 ods_model_lifecycle_lock_release
 INSTALL_PHASE="12-health";       source "$SCRIPT_DIR/installers/phases/12-health.sh"
-# Phase 13 is informational (URLs, shortcuts, preflight). It must never fail
-# the install — any error here is cosmetic. Run with set +e to prevent
-# stray non-zero exit codes (e.g., a crashing privacy-shield health probe)
-# from triggering the cleanup_on_error trap.
+# Preserve the summary phase's errexit-disabled execution. The ERR trap remains
+# installed; independently propagate explicitly required readiness failures.
 INSTALL_PHASE="13-summary"
+ODS_INSTALL_REQUIRED_READINESS_FAILED=false
 set +e
 source "$SCRIPT_DIR/installers/phases/13-summary.sh"
 set -e
+if [[ "$ODS_INSTALL_REQUIRED_READINESS_FAILED" == true ]]; then
+    exit 1
+fi

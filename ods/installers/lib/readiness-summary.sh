@@ -102,6 +102,9 @@ ods_readiness_summary() {
     local status_cmd="${1:-ods status}"
     local log_file="${2:-}"
     local dashboard_url="${3:-http://localhost:3001}"
+    # Callers may require one service before announcing a successful install.
+    # Other services remain diagnostic, and existing callers keep that policy.
+    local required_name="${4:-}" required_ready=false
 
     local ready_lines=()
     local attention_lines=()
@@ -160,12 +163,16 @@ ods_readiness_summary() {
         line=$(printf "%-28s %s (%s)" "$name" "$open_url" "$detail")
         if [[ "$state" == "ready" ]]; then
             ready_lines+=("$line")
+            [[ "$name" != "$required_name" ]] || required_ready=true
         else
             attention_lines+=("$(printf "%-28s %s - %s" "$name" "$state" "$detail")")
         fi
     done
 
-    [[ "$total" -gt 0 ]] || return 0
+    if [[ "$total" -eq 0 ]]; then
+        [[ -z "$required_name" ]]
+        return
+    fi
 
     echo ""
     echo -e "${BGRN:-}INSTALL READINESS${NC:-}"
@@ -197,4 +204,8 @@ ods_readiness_summary() {
         fi
     fi
     echo ""
+    if [[ -n "$required_name" && "$required_ready" != true ]]; then
+        echo "Install incomplete: required $required_name is not reachable. Resolve the reported failure and rerun the installer."
+        return 1
+    fi
 }
