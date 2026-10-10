@@ -15,7 +15,7 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import AsyncIterator, Callable, Literal
+from typing import Any, AsyncIterator, Callable, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -43,6 +43,8 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_EDGE_URL = "http://pixel-edge:9595"
+_MODEL_ROUTER_URL = "http://model-router:9099"
+_CHAT_ONLY_ROUTE_DETAIL = "Chat only requires a verified local model. Use Agent for the current provider route."
 _MODEL = "portal/default"
 _CHAT_STREAM_TIMEOUT_SECONDS = 2040.0
 _CLIENT_DISCONNECT_POLL_SECONDS = 0.25
@@ -159,6 +161,7 @@ class ChatStreamRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     chat_id: str
+    mode: Literal["agent", "chat"] = "agent"
     request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
     messages: list[_Message] = Field(min_length=1, max_length=50)
     history_snapshot: HistorySnapshot | None = None
@@ -181,8 +184,12 @@ class ChatStreamRequest(BaseModel):
 
     @model_validator(mode="after")
     def _history_matches_turn(self):
+        if self.mode == "chat" and self.request_id is None:
+            raise ValueError("Chat-only requires a retained request_id")
         image_messages = [index for index, message in enumerate(self.messages) if message.images is not None]
         history_images = self.history_snapshot is not None and any(message.images for message in self.history_snapshot.messages)
+        if self.mode == "chat" and (image_messages or history_images or self.image_route is not None):
+            raise ValueError("Chat-only supports text conversations; use Agent for images")
         if (image_messages or history_images) and self.image_route is None:
             raise ValueError("Image conversations require a confirmed model route")
         if image_messages:
@@ -233,6 +240,11 @@ def _chat_results() -> ChatResultStore:
 def _result_state(store, identity):
     row = store.get(identity)
     task = _result_tasks.get(identity)
+    if (row is not None and row.get("mode", "agent") == "chat" and row["state"] == "unresolved"
+            and task is not None and not task.done()):
+        # A producer may be committing its terminal state. Its live task is
+        # stronger evidence than the transitional receipt state.
+        row["state"] = "active"
     if (row is not None and row["state"] == "active" and identity not in _result_preflights
             and (task is None or task.done())):
         # A producer may fail while committing its last bytes. The API process
@@ -338,10 +350,19 @@ async def pixel_chat_result(body: ChatResultRequest, owner: str = Depends(verify
         # the request identity while its exact cancellation is still pending.
         return {"state": "active", "events": ""}
     if row["state"] == "unresolved":
-        activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
-        if activity["state"] == "terminal":
+        # Chat-only has no native agent session. A lost API producer has closed
+        # its model-router HTTP stream; Edge activity belongs to a different
+        # execution route and cannot resolve this receipt.
+        if row.get("mode", "agent") == "chat" and not (
+            key in _result_tasks and not _result_tasks[key].done()
+        ):
             store.finish(key, "interrupted")
             row = store.get(key)
+        else:
+            activity = await pixel_chat_activity(ChatCancelRequest(chat_id=body.chat_id))
+            if activity["state"] == "terminal":
+                store.finish(key, "interrupted")
+                row = store.get(key)
     events = b"" if row["state"] == "active" else b"".join(chunk["data"] for chunk in store.chunks(key))
     return {"state": row["state"], "events": events.decode("utf-8", errors="replace")}
 
@@ -798,6 +819,21 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
             return {"aborted": False}
         _result_stops.add(identity[:2])
         try:
+            if row.get("mode", "agent") == "chat":
+                task = _result_tasks.get(identity)
+                if task is not None and not task.done():
+                    _result_abort_ack.add(identity)
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                entry = store.get(identity)
+                if entry is None or entry["state"] == "complete":
+                    return {"aborted": False}
+                if entry["state"] == "interrupted":
+                    return {"aborted": store.confirm_interrupted_cancel(identity)}
+                # An old API process cannot keep a chat-only HTTP stream open.
+                # The model router owns disconnect propagation and admission.
+                store.finish(identity, "cancelled")
+                return {"aborted": True}
             aborted = await _cancel_edge_run(edge_url, key, body.chat_id)
             if aborted:
                 entry = store.get(identity)
@@ -859,16 +895,18 @@ async def _retained_chat_stream(request, body, owner):
     await conversation_storage("assert_available", owner, body.chat_id)
     store = _chat_results()
     identity = (owner_namespace(owner), body.chat_id, body.request_id)
-    fingerprint_input = [m.model_dump() for m in body.messages]
+    fingerprint_input: object = [m.model_dump() for m in body.messages]
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
     if body.image_route is not None:
         fingerprint_input = {"conversation": fingerprint_input, "image_route": body.image_route.model_dump()}
+    if body.mode == "chat":
+        fingerprint_input = {"mode": "chat", "conversation": fingerprint_input}
     fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
-        created = store.reserve(identity, fingerprint)
+        created = store.reserve(identity, fingerprint, mode=body.mode)
     except ResultConflict as exc:
         raise HTTPException(status_code=423, detail=str(exc)) from None
     except ResultCapacity as exc:
@@ -883,6 +921,14 @@ async def _retained_chat_stream(request, body, owner):
                 issue = await _model_readiness_issue()
                 if issue is not None:
                     raise HTTPException(status_code=409, detail=issue[1])
+                if body.mode == "chat":
+                    # Pixel can have a separate remote-provider route. Sending
+                    # that conversation to ods/current would silently select a
+                    # different model. Only the verified local switchboard is
+                    # the same route this text-only mode is designed to use.
+                    runtime = _active_runtime_projection(await _host_model_status())
+                    if not runtime or runtime.get("source") != "local-switchboard":
+                        raise HTTPException(status_code=409, detail=_CHAT_ONLY_ROUTE_DETAIL)
                 messages = await _prepare_chat_messages(body, owner)
                 await conversation_storage("assert_available", owner, body.chat_id)
             except Exception:
@@ -937,6 +983,7 @@ async def _retained_chat_stream(request, body, owner):
 
 async def _produce_retained_result(store, identity, body, config, messages, *, owner=None):
     edge_url, key = config
+    chat_only = body.mode == "chat"
     done_seen = False
     answer_seen = False
     empty_done_seen = False
@@ -946,19 +993,30 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     stopped = False
     rejected = False
     oversized_image = False
+    model_switch = False
     try:
         extension_context = None
-        if owner is not None and body.messages and body.messages[-1].role == 'user':
+        if not chat_only and owner is not None and body.messages and body.messages[-1].role == 'user':
             from routers.extensions import chat_extension_request_context
             extension_context = await chat_extension_request_context(
                 owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True)
+        if chat_only:
+            upstream_url = f"{_MODEL_ROUTER_URL}/v1/chat/completions"
+            upstream_args: dict[str, Any] = {"json": {"model": "ods/current", "stream": True, "messages": messages}}
+            upstream_headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
+        else:
+            upstream_url = f"{edge_url}/v1/chat/completions"
+            upstream_args = _edge_request_arguments(
+                _edge_chat_body(body, messages, extension_context=extension_context),
+                image_turn=bool(body.messages[-1].images),
+            )
+            upstream_headers = _edge_headers(key, accept="text/event-stream", image_turn=bool(body.messages[-1].images))
         timeout = httpx.Timeout(connect=5.0, read=_CHAT_STREAM_TIMEOUT_SECONDS, write=30.0, pool=5.0)
         async with async_timeout(_CHAT_STREAM_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-                async with client.stream("POST", f"{edge_url}/v1/chat/completions",
-                        **_edge_request_arguments(_edge_chat_body(body, messages, extension_context=extension_context),
-                                                  image_turn=bool(body.messages[-1].images)),
-                        headers=_edge_headers(key, accept="text/event-stream", image_turn=bool(body.messages[-1].images))) as upstream:
+                async with client.stream("POST", upstream_url,
+                        **upstream_args, headers=upstream_headers) as upstream:
+                    model_switch = chat_only and upstream.status_code in {409, 503} and upstream.headers.get("retry-after") == "10"
                     rejected = 400 <= upstream.status_code < 500
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
@@ -979,6 +1037,10 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                     event = None
                                 if isinstance(event, dict):
                                     if "error" in event:
+                                        if chat_only:
+                                            # The router's raw upstream errors may contain
+                                            # provider details. Keep a fixed owner-facing reply.
+                                            raise ValueError("Chat-only upstream error")
                                         # A syntactically terminal SSE stream can still be
                                         # a failed attempt. Keep its sanitized error bytes
                                         # for replay, but never publish it as complete.
@@ -990,6 +1052,10 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                             continue
                                         for field in ("delta", "message"):
                                             payload = choice.get(field)
+                                            if chat_only and isinstance(payload, dict) and (
+                                                payload.get("tool_calls") or payload.get("function_call")
+                                            ):
+                                                raise ValueError("Chat-only received a tool call")
                                             if isinstance(payload, dict) and (
                                                 (isinstance(payload.get("content"), str) and payload["content"])
                                                 or bool(payload.get("tool_calls"))
@@ -1035,7 +1101,11 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     finally:
         # Keep this conversation reserved until cancellation has finished. A late
         # native cancellation must never target the next attempt in this chat.
-        if not done_seen and not cancelled and not rejected:
+        if chat_only and not done_seen:
+            # No agent was started. Closing this producer's HTTP stream is the
+            # router cancellation signal; never stop an unrelated Edge run.
+            stopped = True
+        elif not done_seen and not cancelled and not rejected:
             try:
                 stopped = await asyncio.wait_for(_cancel_edge_run(edge_url, key, body.chat_id), _CLIENT_CANCEL_TIMEOUT_SECONDS)
             except (asyncio.TimeoutError, asyncio.CancelledError):
@@ -1044,6 +1114,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
             if not done_seen:
                 text = ("Portal was stopped." if cancelled else
                         "This image turn exceeds the 16 MiB encoded limit. Reduce attachments or conversation text." if oversized_image else
+                        _MODEL_SWITCH_DETAIL if model_switch else
                         "Portal did not accept this turn. Check the conversation's context status before continuing." if rejected else
                         "Portal could not complete the response. Check saved work before continuing.")
                 store.append(identity, _error_event(text) + b"data: [DONE]\n\n", terminal=True)
