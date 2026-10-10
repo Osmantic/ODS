@@ -67,3 +67,17 @@ def test_hardware_backend_is_not_mistaken_for_runtime_identity():
     )
 
     assert candidates == []
+
+
+def test_icd_rejects_non_integer_context_and_draft_counts():
+    from inference_configuration import validate_configuration
+
+    base = {"runtime": "cafe-llama.cpp", "model_ref": "test-model", "context": 4096}
+    with pytest.raises(ValueError, match="context"):
+        validate_configuration({**base, "context": 1.5})
+    with pytest.raises(ValueError, match="context"):
+        validate_configuration({**base, "context": "4096"})
+    with pytest.raises(ValueError, match="draft_tokens"):
+        validate_configuration({**base, "draft_tokens": 1.5})
+    with pytest.raises(ValueError, match="draft_tokens"):
+        validate_configuration({**base, "draft_tokens": "2"})
