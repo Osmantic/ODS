@@ -130,10 +130,10 @@ async def test_template_preview_diff():
         result = await preview_template("test-tmpl", api_key="test")
 
     assert result["template"]["id"] == "test-tmpl"
-    # Both are base compose services → always already_enabled
+    # Both are base compose services â†’ always already_enabled
     assert "llama-server" in result["changes"]["already_enabled"]
     assert "open-webui" in result["changes"]["already_enabled"]
-    # Apple backend — all Docker services compatible, so comfyui should be in to_enable
+    # Apple backend â€” all Docker services compatible, so comfyui should be in to_enable
     assert "comfyui" in result["changes"]["to_enable"]
 
 
@@ -267,7 +267,7 @@ async def test_template_apply_additive(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
     ):
@@ -319,7 +319,7 @@ async def test_template_apply_activates_deps(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=["dep-svc"]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
     ):
@@ -360,7 +360,7 @@ async def test_template_apply_starts_enabled_stopped_dependency_first(tmp_path):
     def mock_agent(action, service_id):
         assert action == "start"
         starts.append(service_id)
-        return True
+        return True, ""
 
     user_ext = tmp_path / "user-ext"
     for service_id in ("dep-svc", "child-svc"):
@@ -384,7 +384,7 @@ async def test_template_apply_starts_enabled_stopped_dependency_first(tmp_path):
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
         patch("routers.extensions._read_direct_deps", side_effect=mock_direct_deps),
-        patch("routers.extensions._call_agent", side_effect=mock_agent),
+        patch("routers.extensions._call_agent_result", side_effect=mock_agent),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
     ):
@@ -487,11 +487,11 @@ async def test_template_apply_builtin_extension(tmp_path):
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
 
-    # user-ext dir exists but does NOT contain builtin-svc → built-in path
+    # user-ext dir exists but does NOT contain builtin-svc â†’ built-in path
     user_ext = tmp_path / "user-ext"
     user_ext.mkdir()
 
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
 
     with (
         patch("routers.templates.TEMPLATES", mock_templates),
@@ -501,7 +501,7 @@ async def test_template_apply_builtin_extension(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
     ):
@@ -538,7 +538,7 @@ async def test_template_apply_reports_builtin_start_failure(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=False),
+        patch("routers.extensions._call_agent_result", return_value=(False, "Host port 8642 is already in use")),
         patch("routers.extensions._call_agent_hook", mock_hooks),
         patch("routers.extensions._validate_service_id"),
     ):
@@ -546,6 +546,7 @@ async def test_template_apply_reports_builtin_start_failure(tmp_path):
         result = await apply_template("test-tmpl", api_key="test")
 
     assert result["results"]["builtin-svc"] == "enabled_but_start_failed"
+    assert result["warnings"] == ["builtin-svc: Host port 8642 is already in use"]
     assert result["failed_services"] == ["builtin-svc"]
     assert result["started_count"] == 0
     assert result["restart_required"] is True
@@ -564,7 +565,7 @@ async def test_template_apply_does_not_start_after_pre_start_failure(tmp_path):
         "services": ["svc-a"],
     }]
     mock_activate = MagicMock(return_value={"id": "svc-a", "action": "enabled", "sha256": "a" * 64})
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -577,7 +578,7 @@ async def test_template_apply_does_not_start_after_pre_start_failure(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook",
               side_effect=lambda sid, hook: hook != "pre_start"),
         patch("routers.extensions._validate_service_id"),
@@ -600,7 +601,7 @@ async def test_template_apply_runs_builtin_post_install_before_start(tmp_path):
         "services": ["svc-a"],
     }]
     mock_activate = MagicMock(return_value={"id": "svc-a", "action": "enabled", "sha256": "a" * 64})
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -613,7 +614,7 @@ async def test_template_apply_runs_builtin_post_install_before_start(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook",
               side_effect=lambda sid, hook: hook != "post_install"),
         patch("routers.extensions._validate_service_id"),
@@ -660,7 +661,7 @@ async def test_template_apply_skips_dependent_after_prior_activation_failure(tmp
         patch("routers.extensions._activate_service", side_effect=mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", side_effect=mock_missing_deps),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._read_direct_deps", return_value=[]),
         patch("routers.extensions._validate_service_id"),
@@ -726,7 +727,7 @@ async def test_template_apply_refuses_whole_selection_before_later_validation_fa
             raise HTTPException(status_code=400, detail="bad dependency compose")
         return {"id": service_id, "action": "enabled", "sha256": "a" * 64}
 
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -742,7 +743,7 @@ async def test_template_apply_refuses_whole_selection_before_later_validation_fa
             "routers.extensions._get_missing_deps_transitive",
             return_value=["good-dep", "bad-dep"],
         ),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._read_direct_deps", return_value=[]),
         patch("routers.extensions._validate_service_id"),
@@ -770,7 +771,7 @@ async def test_template_apply_does_not_start_dependent_after_runtime_failure(tmp
         "action": "enabled",
         "sha256": "a" * 64,
     })
-    mock_agent = MagicMock(side_effect=lambda action, service_id: service_id != "dep-svc")
+    mock_agent = MagicMock(side_effect=lambda action, service_id: (service_id != "dep-svc", "dependency failed"))
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
@@ -783,7 +784,7 @@ async def test_template_apply_does_not_start_dependent_after_runtime_failure(tmp
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch(
             "routers.extensions._read_direct_deps",
@@ -834,7 +835,7 @@ async def test_template_apply_auto_installs_library_extension(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
         patch("routers.extensions._is_installable", return_value=True),
@@ -881,7 +882,7 @@ async def test_template_apply_library_install_failure_skips_gracefully(tmp_path)
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
         patch("routers.extensions._is_installable", return_value=True),
@@ -913,7 +914,7 @@ async def test_template_apply_post_install_failure_is_retryable(tmp_path):
         (user_ext / svc_id).mkdir(parents=True, exist_ok=True)
 
     mock_activate = MagicMock()
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
     mock_write_error = MagicMock()
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
@@ -927,7 +928,7 @@ async def test_template_apply_post_install_failure_is_retryable(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook", return_value=False),
         patch("routers.extensions._sync_extension_config", return_value=True),
         patch("routers.extensions._write_error_progress", mock_write_error),
@@ -961,7 +962,7 @@ async def test_template_apply_config_sync_failure_is_retryable(tmp_path):
         (user_ext / svc_id).mkdir(parents=True, exist_ok=True)
 
     mock_activate = MagicMock()
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
     mock_hooks = MagicMock(return_value=True)
     mock_write_error = MagicMock()
     mock_lock = MagicMock()
@@ -976,7 +977,7 @@ async def test_template_apply_config_sync_failure_is_retryable(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook", mock_hooks),
         patch("routers.extensions._sync_extension_config", return_value=False),
         patch("routers.extensions._write_error_progress", mock_write_error),
@@ -1022,7 +1023,7 @@ async def test_template_apply_reinstalls_library_extension_with_error_progress(t
         ),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._sync_extension_config", return_value=True),
         patch("routers.extensions._read_direct_deps", return_value=[]),
@@ -1065,7 +1066,7 @@ async def test_template_apply_library_already_installed_skips_reinstall(tmp_path
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
         patch("routers.extensions._is_installable", return_value=True),
@@ -1118,7 +1119,7 @@ async def test_template_apply_mixed_builtin_and_library(tmp_path):
         patch("routers.extensions._activate_service", side_effect=mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
         patch("routers.extensions._is_installable", side_effect=mock_is_installable),
@@ -1130,7 +1131,7 @@ async def test_template_apply_mixed_builtin_and_library(tmp_path):
     # lib-svc was installed, builtin-svc was not
     assert installed == ["lib-svc"]
     assert result["library_installed"] == ["lib-svc"]
-    # Built-in extension: compose file toggled → message set to "enabled" in post loop
+    # Built-in extension: compose file toggled â†’ message set to "enabled" in post loop
     assert result["results"]["builtin-svc"] == "enabled"
     # Library extension: marked as library_installed
     assert result["results"]["lib-svc"] == "library_installed"
@@ -1159,7 +1160,7 @@ async def test_template_apply_already_enabled_still_starts(tmp_path):
     mock_lock = MagicMock()
     mock_lock.__enter__ = MagicMock(return_value=None)
     mock_lock.__exit__ = MagicMock(return_value=False)
-    mock_agent = MagicMock(return_value=True)
+    mock_agent = MagicMock(return_value=(True, ""))
 
     user_ext = tmp_path / "user-ext"
     (user_ext / "svc-a").mkdir(parents=True)
@@ -1168,12 +1169,12 @@ async def test_template_apply_already_enabled_still_starts(tmp_path):
         patch("routers.templates.TEMPLATES", mock_templates),
         patch("routers.templates._BASE_COMPOSE_SERVICES", frozenset()),
         patch("routers.templates.USER_EXTENSIONS_DIR", user_ext),
-        # svc-a is NOT healthy — so it won't be skipped by the healthy check
+        # svc-a is NOT healthy â€” so it won't be skipped by the healthy check
         patch("helpers.get_cached_services", return_value=[MockSvc("svc-a", "unhealthy")]),
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", mock_agent),
+        patch("routers.extensions._call_agent_result", mock_agent),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
     ):
@@ -1213,7 +1214,7 @@ async def test_template_apply_invalidates_compose_flags_cache(tmp_path):
         patch("routers.extensions._activate_service", mock_activate),
         patch("routers.extensions._extensions_lock", return_value=mock_lock),
         patch("routers.extensions._get_missing_deps_transitive", return_value=[]),
-        patch("routers.extensions._call_agent", return_value=True),
+        patch("routers.extensions._call_agent_result", return_value=(True, "")),
         patch("routers.extensions._call_agent_hook", return_value=True),
         patch("routers.extensions._validate_service_id"),
         patch(

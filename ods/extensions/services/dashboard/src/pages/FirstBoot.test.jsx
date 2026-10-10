@@ -43,7 +43,7 @@ describe('FirstBoot', () => {
     globalThis.localStorage.removeItem('ods-firstboot-progress')
   })
 
-  test.each(['http', 'network'])('retains the issued owner card across %s completion failure and retries only completion', async (failure) => {
+  test.each([['http', false], ['network', false], ['http', true], ['network', true]])('retains the issued owner card across %s completion failure with saved selection %s and retries only completion', async (failure, savedSelection) => {
     let completeCalls = 0
     const card = {url:'http://auth.ods.local/magic-link/retained-fixture', target_username:'sam', scope:'hermes', reusable:true, token_type:'owner', expires_at:null}
     const fetchMock = vi.fn(async (url) => {
@@ -63,8 +63,8 @@ describe('FirstBoot', () => {
     })
     vi.stubGlobal('fetch', fetchMock)
     const onComplete = vi.fn()
-    render(<FirstBoot onComplete={onComplete}/>)
-    await finishWizard('Chat \\+ Agents')
+    render(<FirstBoot onComplete={onComplete} installation={savedSelection ? {selection_saved: true} : undefined}/>)
+    await finishWizard(savedSelection ? null : 'Chat \\+ Agents')
     const retained = await screen.findByRole('textbox', {name:'Generated owner link'})
     expect(retained).toHaveValue(card.url)
     expect(retained).toHaveAttribute('readonly')
@@ -75,9 +75,66 @@ describe('FirstBoot', () => {
     fireEvent.click(screen.getByRole('button', {name:'Finish'}))
     await screen.findByRole('heading', {name:/you're set/i})
     expect(fetchMock.mock.calls.filter(([url]) => url === '/api/auth/magic-link/generate')).toHaveLength(1)
-    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(savedSelection ? 0 : 1)
     expect(completeCalls).toBe(2)
     expect(globalThis.localStorage.getItem('ods-firstboot-progress')).toBeNull()
+  })
+
+  test('keeps a retained installer selection without applying another bundle', async () => {
+    const onComplete = vi.fn()
+    const fetchMock = vi.fn(async url => {
+      if (url === '/api/auth/magic-link/owner-card/status') return response({ ready: false })
+      if (url === '/api/setup/complete') return response({ success: true })
+      if (url === '/api/auth/admin-session') return response({})
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<FirstBoot onComplete={onComplete} installation={{ selection_saved: true, tier: 'T4', gpu_backend: 'apple', mode: 'local' }} />)
+    await finishWizard()
+    expect(screen.getByText('Keep current installation')).toBeInTheDocument()
+    expect(screen.getByText(/check Models and Extensions for download progress and service health/i)).toBeInTheDocument()
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls.some(([url]) => url.includes('/templates/'))).toBe(false)
+  })
+
+  test('retains an explicitly chosen additive bundle after refresh', async () => {
+    globalThis.localStorage.setItem('ods-firstboot-progress', JSON.stringify({
+      step: 3, stack: 'everything', username: 'sam', deviceName: 'ods',
+    }))
+    vi.stubGlobal('fetch', vi.fn(async () => response({ ready: false })))
+    render(<FirstBoot installation={{ selection_saved: true }} />)
+    expect(screen.getByRole('button', { name: /Full ODS Stack/i })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /Keep current installation/i })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  test('shows the service refusal and clears the obsolete error when the selection changes', async () => {
+    const onComplete = vi.fn()
+    const fetchMock = vi.fn(async url => {
+      if (url === '/api/auth/magic-link/owner-card/status') return response({ ready: false })
+      if (url === '/api/templates/onboarding-full-stack/apply') return response({
+        enabled_count: 3, started_count: 0,
+        failed_services: ['hermes', 'hermes-proxy', 'ape'], skipped_services: [],
+        warnings: ['hermes: compose resolver failed: PyYAML is required', 'hermes-proxy: not started because dependencies failed: hermes'],
+        restart_required: true,
+      })
+      if (url === '/api/setup/complete') return response({ success: true })
+      if (url === '/api/auth/admin-session') return response({})
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<FirstBoot onComplete={onComplete} />)
+    await finishWizard('Full ODS Stack')
+    expect(await screen.findByText('hermes: compose resolver failed: PyYAML is required')).toBeInTheDocument()
+    expect(screen.queryByText(/Run ods restart/i)).not.toBeInTheDocument()
+    expect(onComplete).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Chat only/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.getByText(/Changing this choice does not repair them/i)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes('/templates/'))).toHaveLength(1)
   })
 
   test('generates the owner card, marks setup complete, and shows the QR', async () => {

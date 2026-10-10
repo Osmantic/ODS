@@ -42,6 +42,11 @@ def test_setup_persona_requires_auth(test_client):
     assert resp.status_code == 401
 
 
+def test_setup_status_requires_auth(test_client):
+    resp = test_client.get("/api/setup/status")
+    assert resp.status_code == 401
+
+
 def test_setup_complete_requires_auth(test_client):
     resp = test_client.post("/api/setup/complete")
     assert resp.status_code == 401
