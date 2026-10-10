@@ -94,6 +94,16 @@ cfg() {
 
 # ── Load Config ────────────────────────────────────────────────────────
 
+resolve_local_path() {
+    local path="$1"
+    case "$path" in
+        "~") printf '%s\n' "$HOME" ;;
+        "~/"*) printf '%s/%s\n' "$HOME" "${path#\~/}" ;;
+        /*) printf '%s\n' "$path" ;;
+        *) printf '%s/%s\n' "$SCRIPT_DIR" "$path" ;;
+    esac
+}
+
 CONF_FILE=$(find_config) || {
     echo "ERROR: No config file found." >&2
     echo "Searched: \$MEMORY_SHEPHERD_CONF, ./memory-shepherd.conf, /etc/memory-shepherd/memory-shepherd.conf" >&2
@@ -105,16 +115,13 @@ log "Loaded config from $CONF_FILE (${#AGENTS[@]} agents)"
 
 # ── Global Settings ────────────────────────────────────────────────────
 
-BASELINE_DIR=$(cfg general baseline_dir "$SCRIPT_DIR/baselines")
-ARCHIVE_DIR=$(cfg general archive_dir "$SCRIPT_DIR/archives")
+BASELINE_DIR=$(resolve_local_path "$(cfg general baseline_dir "$SCRIPT_DIR/baselines")")
+ARCHIVE_DIR=$(resolve_local_path "$(cfg general archive_dir "$SCRIPT_DIR/archives")")
 MAX_MEMORY_SIZE=$(cfg general max_memory_size 16384)
 ARCHIVE_RETENTION_DAYS=$(cfg general archive_retention_days 30)
 SEPARATOR=$(cfg general separator "---")
 MIN_BASELINE_SIZE=$(cfg general min_baseline_size 500)
-
-# Resolve relative paths against script directory
-[[ "$BASELINE_DIR" != /* ]] && BASELINE_DIR="$SCRIPT_DIR/$BASELINE_DIR"
-[[ "$ARCHIVE_DIR" != /* ]] && ARCHIVE_DIR="$SCRIPT_DIR/$ARCHIVE_DIR"
+REMOTE_SCP_TIMEOUT=$(cfg general remote_scp_timeout 60)
 
 # ── Reset Functions ────────────────────────────────────────────────────
 
@@ -202,7 +209,15 @@ reset_agent() {
     log "Reset $agent MEMORY.md to baseline (${baseline_size} bytes)"
 }
 
-reset_remote_agent() {
+# Remote resets run under a systemd oneshot timer with no execution timeout.
+# scp must never block on an interactive auth or host-key prompt, and a dead
+# connection must not stall the timer forever. BatchMode disables prompts,
+# ConnectTimeout bounds the handshake, and timeout caps the whole transfer.
+shepherd_scp() {
+    timeout --kill-after=5s "${REMOTE_SCP_TIMEOUT}s" scp -q -o BatchMode=yes -o ConnectTimeout=15 "$@"
+}
+
+reset_remote_agent() (
     local agent="$1"
     local remote_host="$2"
     local remote_user="$3"
@@ -223,8 +238,12 @@ reset_remote_agent() {
     fi
 
     # Fetch current memory from remote
-    local tmpfile="/tmp/memory-shepherd-${agent}-current.md"
-    if ! scp -q "${remote_user}@${remote_host}:${remote_memory}" "$tmpfile"; then
+    local tmpfile
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/memory-shepherd-${agent}.XXXXXXXX")
+    trap 'rm -f -- "$tmpfile"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if ! shepherd_scp "${remote_user}@${remote_host}:${remote_memory}" "$tmpfile"; then
         # SCP failure does not establish that the remote file is missing.
         # A failed or partial read must never authorize overwriting memory
         # whose current notes have not been archived.
@@ -265,10 +284,12 @@ reset_remote_agent() {
     fi
 
     # Push baseline to remote
-    scp -q "$baseline" "${remote_user}@${remote_host}:${remote_memory}"
+    if ! shepherd_scp "$baseline" "${remote_user}@${remote_host}:${remote_memory}"; then
+        log "ERROR: Could not push baseline for $agent to $remote_host — reset failed" >&2
+        return 1
+    fi
     log "Reset $agent MEMORY.md on $remote_host to baseline (${baseline_size} bytes)"
-    rm -f "$tmpfile"
-}
+)
 
 # ── Dispatch ───────────────────────────────────────────────────────────
 
@@ -277,6 +298,9 @@ process_agent() {
 
     local memory_file
     memory_file=$(cfg "$agent" memory_file "")
+    if [[ -n "$memory_file" ]]; then
+        memory_file=$(resolve_local_path "$memory_file")
+    fi
     local baseline_name
     baseline_name=$(cfg "$agent" baseline "")
     local archive_subdir

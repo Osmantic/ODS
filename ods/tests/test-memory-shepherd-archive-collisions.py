@@ -33,6 +33,7 @@ fi
 set -euo pipefail
 [[ "$1" == '-q' ]]
 shift
+while [[ "${1:-}" == '-o' ]]; do shift 2; done
 if [[ "$1" == 'fixture@fixture.invalid:/fixture/MEMORY.md' ]]; then
     cp "$ODS_TEST_MEMORY" "$2"
 elif [[ "$2" == 'fixture@fixture.invalid:/fixture/MEMORY.md' ]]; then

@@ -89,6 +89,7 @@ Memory Shepherd uses an INI-style config file. The search order is:
 | `max_memory_size` | `16384` | Max memory file size (bytes) before warning |
 | `archive_retention_days` | `30` | Delete archives older than this |
 | `separator` | `---` | The line that separates baseline from scratch notes |
+| `remote_scp_timeout` | `60` | Max seconds per remote SCP transfer |
 
 ### Agent Sections
 
@@ -110,6 +111,12 @@ baseline. A failed read stops the run without requesting a remote write; it
 cannot distinguish a missing file from a permission or connection failure. For
 a new remote agent, verify the destination and initialize its memory explicitly
 before enabling the reset timer.
+
+SCP runs non-interactively (`BatchMode`) with `ConnectTimeout=15`, and each
+transfer is capped by `remote_scp_timeout` (default 60 seconds) so an
+unattended timer can never hang on an auth prompt or a stalled connection.
+Remote authentication must therefore be key-based or agent-based. A failed or
+timed-out write fails the reset instead of reporting success.
 
 ### Example Config
 
@@ -282,3 +289,23 @@ sha256sum --check baselines/.checksums || echo "BASELINE TAMPERING DETECTED"
 ## License
 
 Apache 2.0 — see [LICENSE](../LICENSE).
+
+### Configured local paths and remote reset scratch
+
+Local `baseline_dir`, `archive_dir`, and agent `memory_file` paths accept `~`
+and `~/...` relative to the service user's home. Other relative paths are
+anchored to the Memory Shepherd script directory in both setup and runtime;
+absolute paths remain absolute. Remote `remote_memory` paths are passed to SCP
+unchanged.
+
+Each remote reset uses a private, uniquely allocated file under `TMPDIR`
+(default `/tmp`). It is removed on success, failed/partial fetch, archive or
+upload failure, timeout, and handled interruption. A reset never uploads the
+baseline after a failed fetch or archive, and a failed upload cannot report
+success. Archives already written are retained for recovery. `SIGKILL` and
+host power loss cannot run shell cleanup; an operator may need to remove the
+private scratch file after checking that no reset is active.
+
+The transfer deadline sends TERM first, then KILL after a five-second grace
+period if SCP ignores TERM. The configured duration plus that grace bounds a
+stalled transfer; `remote_scp_timeout=0` retains the explicit timeout opt-out.
