@@ -3,8 +3,9 @@
 # still bind its old inode, so replacing it can hide a broken next startup.
 ods_copy_install_source() {
     local source_dir="$1" install_dir="$2" log_file="$3"
-    local cloud="$install_dir/config/litellm/cloud.yaml" parent metadata owner mode dotfile
-    local -a cloud_excludes=() held_source_excludes=()
+    local cloud="$install_dir/config/litellm/cloud.yaml" parent metadata owner group mode dotfile
+    local uid gid private_group=false
+    local -a cloud_excludes=() held_source_excludes=() tighten=()
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         # The protected source transaction has already installed and verified
         # these exact trees under admission hold. Do not overwrite them again
@@ -25,20 +26,37 @@ ods_copy_install_source() {
                 return 1
             }
         done
+        # Installs made before phase 06 normalized code modes (v2.6.0 and
+        # earlier) under the user-private-group umask 002 carry group-write on
+        # these paths, and this check runs before that normalization. Group
+        # write for the owner's own private group (named after the user) grants
+        # no one else access, so tighten it; any other group or world write
+        # still refuses.
+        uid="$(id -u)"; gid="$(id -g)"
+        if [[ "$(id -gn)" == "$(id -un)" ]]; then
+            private_group=true
+        fi
         for parent in "$install_dir" "$install_dir/config" "$install_dir/config/litellm" "$cloud"; do
-            metadata="$(stat -c '%u:%a' -- "$parent")" || return 1
-            owner="${metadata%%:*}"; mode="${metadata#*:}"
-            [[ "$owner" == "$(id -u)" && "$mode" =~ ^[0-7]{3,4}$ ]] \
-                && (( (8#$mode & 8#022) == 0 )) || {
-                    error "Existing cloud provider configuration must have safe owner and write permissions."
-                    return 1
-                }
+            metadata="$(stat -c '%u:%g:%a' -- "$parent")" || return 1
+            IFS=: read -r owner group mode <<< "$metadata"
+            if [[ "$owner" != "$uid" || ! "$mode" =~ ^[0-7]{3,4}$ ]] \
+                || (( (8#$mode & 8#002) != 0 )) \
+                || { (( (8#$mode & 8#020) != 0 )) && [[ "$private_group" != true || "$group" != "$gid" ]]; }; then
+                error "Existing cloud provider configuration must have safe owner and write permissions: $parent"
+                return 1
+            fi
+            if (( (8#$mode & 8#020) != 0 )); then
+                tighten+=("$parent")
+            fi
         done
         cloud_excludes=(--exclude='/config/litellm/cloud.yaml')
         command -v rsync >/dev/null 2>&1 || {
             error "Install rsync before upgrading an existing cloud provider configuration."
             return 1
         }
+        if (( ${#tighten[@]} )); then
+            chmod g-w -- "${tighten[@]}" || return 1
+        fi
     fi
 
     [[ "$source_dir" != "$install_dir" ]] || return 0
