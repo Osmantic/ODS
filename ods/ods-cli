@@ -166,6 +166,19 @@ _env_get_raw() {
     ' "$file" 2>/dev/null | tr -d '\r' || true
 }
 
+# The install's persisted MODEL_PROFILE, unquoted. Model commands never load
+# .env; without it tier-map falls back to qwen, so a gemma4/auto install would
+# list and look for GGUFs it never downloaded.
+_ods_cli_model_profile() {
+    local profile
+    profile="$(_env_get_raw MODEL_PROFILE)"
+    case "$profile" in
+        \"*\") profile="${profile:1:${#profile}-2}" ;;
+        \'*\') profile="${profile:1:${#profile}-2}" ;;
+    esac
+    printf '%s' "$profile"
+}
+
 _ensure_hermes_dashboard_session_token() {
     [[ -f "$INSTALL_DIR/.env" ]] || return 0
     [[ -n "$(_env_get_raw HERMES_DASHBOARD_SESSION_TOKEN)" ]] && return 0
@@ -3995,11 +4008,13 @@ cmd_model() {
         list)
             # Resolve every tier with the same tier map `swap` uses, so the
             # list shows exactly what a swap would load.
-            local list_tier list_line
+            local list_tier list_line list_profile
+            list_profile="$(_ods_cli_model_profile)"
             echo -e "${BLUE}━━━ Available Tiers ━━━${NC}"
             for list_tier in T0 T1 T2 T3 T4 SH SH_LARGE NV_ULTRA ARC ARC_LITE; do
                 list_line="$(
                     . "$INSTALL_DIR/installers/lib/tier-map.sh"
+                    MODEL_PROFILE="$list_profile"
                     TIER="$list_tier"
                     [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
                     [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
@@ -4026,6 +4041,7 @@ cmd_model() {
             TIER="$tier"
             [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
             [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
+            MODEL_PROFILE="$(_ods_cli_model_profile)"
             resolve_tier_config
 
             local model_path="$INSTALL_DIR/data/models/$GGUF_FILE"
