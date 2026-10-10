@@ -15,7 +15,10 @@ services:
     volumes:
       - ./data/token-spy:/app/data:z
     environment:
-      - OLLAMA_URL=${LLM_API_URL:-http://llama-server:8080}
+      # Token Spy reads API_PROVIDER/OPENAI_UPSTREAM (as start.sh sets them);
+      # without both it proxies OpenAI-format calls to api.anthropic.com.
+      - API_PROVIDER=local
+      - OPENAI_UPSTREAM=${LLM_API_URL:-http://llama-server:8080}
       - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
     deploy:
       resources:
