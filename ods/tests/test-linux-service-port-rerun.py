@@ -6,6 +6,7 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[1]
 PHASE = (ROOT / "installers/phases/06-directories.sh").read_text()
 PORTS = {
+    "DASHBOARD_PORT": ("dashboard", 3001), "DASHBOARD_REMOTE_PORT": (None, 3011),
     "WEBUI_PORT": ("open-webui", 3000), "PERPLEXICA_PORT": ("perplexica", 3004),
     "TTS_PORT": ("tts", 8880), "N8N_PORT": ("n8n", 5678),
     "QDRANT_PORT": ("qdrant", 6333), "QDRANT_GRPC_PORT": (None, 6334),
@@ -90,6 +91,18 @@ def test_explicit_override_wins_and_missing_values_use_defaults(tmp_path):
     assert generated["N8N_PORT"] == "5900"
     assert generated["WEBUI_PORT"] == "3000"
     assert generated["N8N_WEBHOOK_URL"] == "http://localhost:5900"
+    assert generated["DASHBOARD_PORT"] == "3001"
+    assert generated["DASHBOARD_REMOTE_PORT"] == "3011"
+
+
+def test_explicit_dashboard_ports_override_saved_values(tmp_path):
+    result, output = run(tmp_path, "DASHBOARD_PORT=3301\nDASHBOARD_REMOTE_PORT=3311\n",
+                         {"DASHBOARD_PORT": "3401", "DASHBOARD_REMOTE_PORT": "3411"})
+    assert result.returncode == 0, result.stderr
+    generated = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert generated["DASHBOARD_PORT"] == "3401"
+    assert generated["DASHBOARD_REMOTE_PORT"] == "3411"
+    assert "dashboard=3401" in result.stdout.splitlines()
 
 
 def test_owner_webhook_url_survives_rerun(tmp_path):
