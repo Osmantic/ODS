@@ -555,6 +555,7 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
     return (details?.artifacts || []).filter(artifact => (
       artifact.label.toLowerCase().includes(query)
       || (artifact.quantization || '').toLowerCase().includes(query)
+      || (artifact.files || []).some(file => (file.filename || '').toLowerCase().includes(query))
     ))
   }, [details, artifactFilter])
   return (
@@ -637,7 +638,7 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
                     <input
                       type="search"
                       aria-label="Filter GGUF artifacts"
-                      placeholder="Filename or quantization"
+                      placeholder="Repository path or quantization"
                       maxLength={200}
                       value={artifactFilter}
                       onChange={event => setArtifactFilter(event.target.value)}
@@ -688,6 +689,7 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
 }
 
 function ArtifactRow({ artifact, gpu, check, checking, checkingHeader, checkIssue, refusal: artifactRefusal, busy, importing, runtimeCompatible, onImport }) {
+  const artifactPath = artifact.files?.[0]?.filename || artifact.label
   const refusal = artifactRefusal || check?.tensors?.refusal || null
   const [confirmingOverride, setConfirmingOverride] = useState(false)
   const memory = artifactMemory(artifact, gpu, check, checking)
@@ -710,7 +712,7 @@ function ArtifactRow({ artifact, gpu, check, checking, checkingHeader, checkIssu
   return (
     <div className="grid grid-cols-2 gap-3 px-4 py-3.5 lg:grid-cols-[minmax(220px,1fr)_100px_120px_130px_130px] lg:items-center lg:gap-4">
       <div className="col-span-2 min-w-0 lg:col-span-1">
-        <p className="truncate text-xs font-semibold text-theme-text" title={artifact.label}>{artifact.label}</p>
+        <p className="break-all text-xs font-semibold text-theme-text" title={artifactPath}>{artifactPath}</p>
         <p className="mt-1 text-[10px] text-theme-text-muted">{artifact.split ? `${artifact.files.length} verified parts` : 'Single verified file'}</p>
         {check?.header?.reason === 'not_read' && <p className="mt-1 text-[10px] text-theme-text-muted">This artifact’s header has not been checked.</p>}
         {refusal && !refusal.overridable && refusal.code !== 'gated' && <p className="mt-1 text-[10px] text-theme-text-secondary">{refusal.message}</p>}
