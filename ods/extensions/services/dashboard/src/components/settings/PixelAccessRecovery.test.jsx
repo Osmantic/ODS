@@ -12,6 +12,36 @@ let visibility
 beforeEach(()=>{vi.useFakeTimers();visibility='visible';vi.spyOn(document,'visibilityState','get').mockImplementation(()=>visibility)})
 afterEach(()=>{cleanup();vi.useRealTimers();vi.restoreAllMocks();vi.unstubAllGlobals()})
 
+it('keeps verified Sandbox distinct from an interrupted chat gate and polls without releasing it',async()=>{
+ const sandbox={...verified,configured_mode:'sandboxed',effective_mode:'sandboxed'}
+ const fetch=vi.fn().mockResolvedValueOnce(response({...sandbox,reason:'chat-recovery-required'})).mockResolvedValue(response(sandbox));vi.stubGlobal('fetch',fetch)
+ render(<PixelAccessCard/>);await tick(0)
+ expect(effective()).toHaveTextContent('Sandbox')
+ expect(screen.getByRole('alert')).toHaveTextContent('new messages are held')
+ expect(screen.getByRole('button',{name:'Verify Sandbox'})).toBeEnabled()
+ expect(screen.getByRole('button',{name:'Enable Full Access'})).toBeDisabled()
+ await tick(5000)
+ expect(screen.queryByRole('alert')).toBeNull()
+ expect(effective()).toHaveTextContent('Sandbox')
+ await tick(15000);expect(fetch).toHaveBeenCalledTimes(2)
+ expect(fetch.mock.calls.every(call=>call[1]?.method!=='POST')).toBe(true)
+})
+
+it('recovers an interrupted chat only after explicit Verify Sandbox with a refreshed revision',async()=>{
+ const sandbox={...verified,configured_mode:'sandboxed',effective_mode:'sandboxed'}
+ const fetch=vi.fn().mockResolvedValueOnce(response({...sandbox,reason:'chat-recovery-required'}))
+  .mockResolvedValueOnce(response({...sandbox,reason:'chat-recovery-required',revision:'b'.repeat(64)}))
+  .mockResolvedValue(response(sandbox));vi.stubGlobal('fetch',fetch)
+ render(<PixelAccessCard/>);await tick(0)
+ fireEvent.click(screen.getByRole('button',{name:'Verify Sandbox'}));await tick(0)
+ const posts=fetch.mock.calls.filter(call=>call[1]?.method==='POST')
+ expect(posts).toHaveLength(1)
+ expect(JSON.parse(posts[0][1].body)).toEqual({mode:'sandboxed',revision:'b'.repeat(64),confirmed:false})
+ expect(screen.queryByRole('alert')).toBeNull()
+ expect(effective()).toHaveTextContent('Sandbox')
+ await tick(15000);expect(fetch).toHaveBeenCalledTimes(3)
+})
+
 it('rechecks unavailable idle status automatically and replaces the fallback platform with fresh WSL proof',async()=>{
  const fetch=vi.fn().mockResolvedValueOnce(response(unavailable)).mockResolvedValue(response(verified));vi.stubGlobal('fetch',fetch)
  render(<PixelAccessCard/>);await tick(0)

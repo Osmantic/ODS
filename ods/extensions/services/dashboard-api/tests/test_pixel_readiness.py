@@ -18,7 +18,7 @@ FAILED = dict(ACCESS, available=False, configured_mode="unknown", effective_mode
               revision=None, reason="inspection-failed")
 
 
-async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False):
+async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False, recovery=False):
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
     monkeypatch.setenv("PIXEL_EDGE_URL", "http://pixel-edge:9595")
     calls = []
@@ -40,7 +40,7 @@ async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False):
 
     class Client(FakeClient):
         def stream(self, method, url, **kwargs):
-            assert not held, "A verified model hold must not probe the restarting backend"
+            assert not held and not recovery, "A known admission hold must not probe inference"
             self.response = FakeResponse(chunks=[json.dumps({"data": [{"id": "portal/default"}]} if url.endswith("/v1/models") else value).encode()])
             return super().stream(method, url, **kwargs)
 
@@ -48,6 +48,10 @@ async def status_for(monkeypatch, access=ACCESS, identity=None, *, held=False):
         result = await pixel.pixel_status()
     if held:
         assert result == {"available": False, "model": None, "state": "model_transition_pending", "detail": pixel._MODEL_HOLD_DETAIL}
+        assert all(method == "GET" for method, _path, _kwargs in calls)
+        return result
+    if recovery:
+        assert result == {"available": False, "model": None, "state": "chat_recovery_required", "detail": pixel._CHAT_RECOVERY_DETAIL}
         assert all(method == "GET" for method, _path, _kwargs in calls)
         return result
     assert result["available"] is True
@@ -109,6 +113,25 @@ async def test_bootstrap_root_model_hold_does_not_claim_live_activation_or_requi
     assert "state" not in result
     assert result["readiness"]["state"] == "attention"
     assert result["readiness"]["reasonCode"] == "access-transition-pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["linux-systemd", "wsl-systemd", "darwin"])
+async def test_interrupted_chat_gate_is_held_with_verified_permissions_and_no_host_journal(monkeypatch, surface):
+    access = {**ACCESS, "surface": surface, "reason": "chat-recovery-required"}
+    projected = pixel._access_projection(access)
+    assert projected["runtime_verified"] and projected["effective_mode"] == "sandboxed"
+    assert not projected["pending"]
+    await status_for(monkeypatch, access, recovery=True)
+    recovered = await status_for(monkeypatch, {**access, "reason": None})
+    assert recovered["available"] and recovered["readiness"]["accessState"] == "verified"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_or_legacy_controller_does_not_fabricate_an_admission_hold(monkeypatch):
+    result = await status_for(monkeypatch, {**FAILED, "surface": "windows", "reason": "chat-recovery-required"})
+    assert result["available"]
+    assert result["readiness"]["accessState"] == "failed"
 
 
 @pytest.mark.asyncio

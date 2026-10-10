@@ -19,6 +19,27 @@ function transport(getStatus) {
   }))
 }
 
+it('holds a retained draft for interrupted chat recovery and resumes only after fresh idle status',async()=>{
+ let status={available:true}
+ transport(()=>status)
+ vi.useFakeTimers()
+ render(<Pixel/>);await act(async()=>{})
+ fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'Keep this draft through recovery'}})
+ status={available:false,state:'chat_recovery_required',detail:'Portal stopped during an earlier turn and new messages are held.'}
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.getByText('Recovery required')).toBeVisible()
+ const composer=screen.getByPlaceholderText('Messages are held until Portal recovery')
+ expect(composer).toBeDisabled();expect(composer).toHaveValue('Keep this draft through recovery')
+ expect(screen.getByRole('link',{name:'Portal permissions'})).toHaveAttribute('href','/settings?section=access')
+ expect(screen.queryByText('Available')).toBeNull()
+ expect(fetch.mock.calls.some(call=>call[0]==='/api/pixel/chat/stream')).toBe(false)
+ status={available:true}
+ await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+ expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+ expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('Keep this draft through recovery')
+ expect(fetch.mock.calls.some(call=>call[0]==='/api/pixel/chat/stream')).toBe(false)
+})
+
 it('retains only a diagnostic cloud label during an available access transition and recovers on polling',async()=>{
   const runtime={source:'remote-provider',model:'cloud-model',contextLength:65536,maxTokens:4096,reasoning:false}
   let status={available:true,runtime}

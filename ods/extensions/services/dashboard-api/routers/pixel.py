@@ -73,6 +73,7 @@ _OPS_STATUSES = frozenset(
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
 _MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
+_CHAT_RECOVERY_DETAIL = "Portal stopped during an earlier turn and new messages are held. Open Portal permissions and use Verify Sandbox or Restore Sandbox before continuing."
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
     "may be unreliable; chat and experiments remain available."
@@ -611,6 +612,9 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     if access and access["available"] and access["pending"] and access["reason"] == "model-transition-pending":
         return {**activation_metadata, "available": False, "model": None, "state": "model_transition_pending",
                 "detail": _MODEL_HOLD_DETAIL}
+    if access and access["available"] and access["reason"] == "chat-recovery-required":
+        return {**activation_metadata, "available": False, "model": None, "state": "chat_recovery_required",
+                "detail": _CHAT_RECOVERY_DETAIL}
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue

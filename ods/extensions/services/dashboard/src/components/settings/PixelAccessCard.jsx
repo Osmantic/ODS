@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 const modeName = mode => mode === 'full-access' ? 'Full Access' : mode === 'sandboxed' ? 'Sandbox' : 'Not verified'
 const surfaceName = surface => ({'linux-systemd':'Linux', 'wsl-systemd':'WSL', linux:'Linux', darwin:'macOS', windows:'Windows'})[surface] || 'Unavailable'
 const verifiedMode = status => status?.available === true && status.runtime_verified === true && !status.pending && ['sandboxed', 'full-access'].includes(status.effective_mode)
+const chatRecovery = status => status?.available === true && status.reason === 'chat-recovery-required'
 
 export default function PixelAccessCard({ showHeading = true, active = true }) {
   const [status, setStatus] = useState(null)
@@ -55,7 +56,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       if (version !== inspection.current) return
       setStatus(value)
       setStale(false)
-      recoveryAttempts.current = verifiedMode(value) ? 0 : Math.min(recoveryAttempts.current + 1, 4)
+      recoveryAttempts.current = verifiedMode(value) && !chatRecovery(value) ? 0 : Math.min(recoveryAttempts.current + 1, 4)
       if (!preserveError) setError('')
       return value
     } catch {
@@ -97,8 +98,8 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
   }, [active, refresh])
   useEffect(() => {
     if (!active || !visible || changing || pendingInspection.current !== null) return undefined
-    if (verifiedMode(status) && !status.busy && !error) return undefined
-    const delay = status?.pending || status?.busy ? 5000
+    if (verifiedMode(status) && !status.busy && !chatRecovery(status) && !error) return undefined
+    const delay = status?.pending || status?.busy || chatRecovery(status) ? 5000
       : Math.min(5000 * 2 ** Math.max(0, recoveryAttempts.current - 1), 30000)
     const timer = setTimeout(() => { void refresh({background: true}) }, delay)
     return () => clearTimeout(timer)
@@ -118,7 +119,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
         setError('Current access status could not be verified. No change was requested. Refresh the status before trying again.')
         return
       }
-      if (current.busy || (current.pending && mode === 'full-access')) {
+      if (current.busy || ((current.pending || chatRecovery(current)) && mode === 'full-access')) {
         setError('Portal is working or recovering an access transition. No change was requested. Wait for it to finish, or restore Sandbox when available.')
         return
       }
@@ -164,6 +165,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       ? 'Checking Portal while the access transition is unfinished. Controls return when the running gateway can be verified.'
       : 'The access controller is unavailable on the agent runtime. Install or repair the managed runtime integration before changing permissions.'}</p> : null}
     {status?.busy ? <p role="status">Portal is working. Access changes wait until its runs and tools finish.</p> : null}
+    {chatRecovery(status) ? <p role="alert">Portal stopped during an earlier turn and new messages are held. {status.configured_mode === 'sandboxed' ? 'Verify Sandbox' : 'Restore Sandbox'} to check the runtime before continuing.</p> : null}
     {modelPending ? <p role="status">A model transition is holding new messages. Check model update progress before restoring Sandbox if recovery is required.</p>
       : status?.pending ? <p role="alert">{status.reason === 'model-transition-recovery-required'
         ? 'The model update needs recovery and new work is held. Restore Sandbox if recovery is required.'
@@ -173,7 +175,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       <button type="button" disabled={disabled} onClick={() => { void change('sandboxed') }} className="rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40">
         {status?.configured_mode === 'sandboxed' && !status?.pending ? 'Verify Sandbox' : 'Restore Sandbox'}
       </button>
-      <button type="button" disabled={disabled || status?.pending} onClick={() => { setConfirming(true); setConfirmed(false) }} className="rounded-lg border border-theme-border px-3 py-2 disabled:opacity-40">Enable Full Access</button>
+      <button type="button" disabled={disabled || status?.pending || chatRecovery(status)} onClick={() => { setConfirming(true); setConfirmed(false) }} className="rounded-lg border border-theme-border px-3 py-2 disabled:opacity-40">Enable Full Access</button>
     </div>
     {confirming ? <div role="dialog" aria-labelledby="pixel-access-confirm-title" className="rounded-lg border border-theme-border p-4 space-y-3">
       <h3 id="pixel-access-confirm-title" className="font-semibold">Confirm Full Access</h3>
