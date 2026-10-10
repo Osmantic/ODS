@@ -52,6 +52,10 @@ try {
     if ($nvidiaEnv -notmatch '(?m)^TTS_WORKERS=1\r?$' -or $nvidiaEnv -notmatch '(?m)^TTS_THREADS=4\r?$') {
         throw "Fresh Windows install did not give one Kokoro worker a bounded four-thread budget"
     }
+    # `ods model current` and the host agent read the tier back from .env.
+    if ($nvidiaEnv -notmatch '(?m)^TIER=1\r?$') {
+        throw "Generated .env does not persist TIER"
+    }
 
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^LLAMA_SERVER_MEMORY_LIMIT=.*$', 'LLAMA_SERVER_MEMORY_LIMIT=7G'
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_WORKERS=.*$', "TTS_WORKERS='2'"
