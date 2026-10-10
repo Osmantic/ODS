@@ -48,6 +48,36 @@ const installFetchMock = (catalogFixture, templates = [], webuiSelection = { ena
   return fetchMock
 }
 
+it.each([false, true])('an initial catalog timeout is unavailable, not an empty result, and Retry recovers (compact=%s)', async compact => {
+  const catalog = {agent_available: true, extensions: [{id: 'known', name: 'Known extension', status: 'not_installed', features: [baseFeature]}], summary: baseSummary()}
+  const fetchMock = installFetchMock(catalog)
+  fetchMock.mockRejectedValueOnce(new DOMException('timed out', 'AbortError'))
+  render(<Extensions compact={compact} />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Extension catalog unavailable')
+  expect(screen.queryByRole('button', {name: 'All 0'})).toBeNull()
+  expect(screen.queryByText('No extensions match')).toBeNull()
+  expect(screen.queryByText(/Try adjusting your search/)).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Retry'}))
+  expect(await screen.findByText('Known extension')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'All 1'})).toBeVisible()
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(fetchMock.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+})
+
+it('a failed refresh retains the accepted catalog and its counts', async () => {
+  const catalog = {agent_available: true, extensions: [{id: 'known', name: 'Known extension', status: 'not_installed', features: [baseFeature]}], summary: baseSummary()}
+  const fetchMock = installFetchMock(catalog)
+  render(<Extensions compact />)
+  expect(await screen.findByText('Known extension')).toBeVisible()
+  fetchMock.mockRejectedValueOnce(new DOMException('timed out', 'AbortError'))
+  fireEvent.click(screen.getByRole('button', {name: /refresh/i}))
+  expect(await screen.findByText(/Request timed out/)).toBeVisible()
+  expect(screen.getByText('Known extension')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'All 1'})).toBeVisible()
+  expect(screen.queryByText('Extension catalog unavailable')).toBeNull()
+  expect(screen.queryByText('No extensions match')).toBeNull()
+})
+
 it('hides unsupported extensions from results, categories and counts without hiding unhealthy services',async()=>{
   installFetchMock({agent_available:true,extensions:[
     {id:'supported',name:'Supported',status:'unhealthy',source:'user',features:[baseFeature]},

@@ -512,7 +512,7 @@ export default function Models({ compact = false }) {
 function CurrentModelPanel({ model, currentModel, gpu, compact = false, externalApi = null, showProfile = false, lifecycleActive = false }) {
   if (externalApi) return <ExternalApiPanel compact={compact} externalApi={externalApi} />
   const modelLabel = currentModel || model?.id
-  const speed = getSpeedDisplay(model)
+  const speed = getSpeedDisplay(model, gpu)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
@@ -539,7 +539,7 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false, external
                 {statusLabel}: {modelLabel || 'none'}
               </h2>
               {model?.quantization && <Badge>{model.quantization}</Badge>}
-              {model?.fitsVram && <Badge tone="green">{model.fitLabel || 'Fits GPU'}</Badge>}
+              {model?.fitsVram && hasGpuCapacity(gpu) && <Badge tone="green">{model.fitLabel || 'Fits GPU'}</Badge>}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-theme-text-muted">
               <span>{currentModel ? 'Active runtime' : 'Ready after first launch'}</span>
@@ -856,10 +856,10 @@ function ModelTableRow({
   const memory = getMemoryMeta(model, gpu)
   const compatibility = getCompatibilityMeta(model, memory, pixelMinimumContext)
   const compatibilityNotes = getCompatibilityNotes(model)
-  const speed = getSpeedDisplay(model)
+  const speed = getSpeedDisplay(model, gpu)
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
-  const performanceBadge = getPerformanceBadge(model)
+  const performanceBadge = getPerformanceBadge(model, gpu)
   const runDisabledReason = isRuntimeManaged ? null : getRunDisabledReason({
     model,
     gpu,
@@ -1211,7 +1211,7 @@ function ModelActivationDialog({
   // Where Run used to stop for memory, the owner may now run anyway after an
   // explicit tick, except on a hard stop (see memoryHardStop).
   const memoryBlocked = model.fitsVram === false && !model.recommended && exceedsMemory
-  const memoryStop = memoryBlocked && memoryHardStop(selected?.estimatedRequired, gpu)
+  const memoryStop = !hasGpuCapacity(gpu) || (memoryBlocked && memoryHardStop(selected?.estimatedRequired, gpu))
   const runAnywayOffered = memoryBlocked && !memoryStop
   const sharedMemoryTotal = sharedMemoryTotalGb(gpu)
 
@@ -1329,7 +1329,7 @@ function ModelActivationDialog({
             />
             <ContextMetric
               label="GPU capacity"
-              value={memoryCapacity > 0 ? `${memoryCapacity.toFixed(1)} GB` : 'Not reported'}
+              value={hasGpuCapacity(gpu) ? `${memoryCapacity.toFixed(1)} GB` : 'Not reported'}
             />
             <ContextMetric
               label="App profile"
@@ -1338,7 +1338,12 @@ function ModelActivationDialog({
             />
           </div>
 
-          {exceedsMemory && (
+          {!hasGpuCapacity(gpu) && (
+            <p role="status" className="mt-4 text-xs text-theme-text-secondary">
+              GPU capacity is unavailable. Wait for the memory reading before running this model.
+            </p>
+          )}
+          {exceedsMemory && hasGpuCapacity(gpu) && (
             <div className="mt-4 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-3 py-2.5 text-xs text-theme-text-secondary">
               <AlertCircle size={15} className="mt-0.5 shrink-0 text-theme-text-secondary" />
               This context exceeds the reported GPU memory estimate. Activation may use system memory or roll back.
@@ -1603,6 +1608,7 @@ function requiredMemoryGb(model) {
 // Why a model may not fit at any context that suits Portal. It is a warning:
 // the run dialog asks the owner to accept it, unless memoryHardStop applies.
 function getRunMemoryWarning({ model, gpu, pixelMinimumContext }) {
+  if (!hasGpuCapacity(gpu)) return 'GPU capacity is unavailable. Wait for the memory reading before running this model.'
   if (model.fitsVram === true || model.recommended) return null
   const shorterContextFits = getContextOptions(model, gpu).some(option =>
     option.fitsVram === true && option.contextLength >= Number(pixelMinimumContext || 16384)
@@ -1635,10 +1641,15 @@ function sharedMemoryTotalGb(gpu) {
 // current model. Keep the stop where running cannot work or the page cannot
 // tell: shared memory smaller than the model, or no memory figures at all.
 function memoryHardStop(requiredGb, gpu) {
-  if (!(Number(gpu?.vramTotal) > 0)) return true
+  if (!hasGpuCapacity(gpu)) return true
   const sharedTotal = sharedMemoryTotalGb(gpu)
   const required = Number(requiredGb || 0)
   return sharedTotal !== null && !(required > 0 && required <= sharedTotal)
+}
+
+function hasGpuCapacity(gpu) {
+  const total = Number(gpu?.vramTotal)
+  return Number.isFinite(total) && total > 0
 }
 
 // API mode: chat uses the model the API serves, not a model on this computer.
@@ -1854,7 +1865,9 @@ function getMemoryMeta(model, gpu) {
   const barPercent = total > 0 && required > 0 ? Math.min(100, Math.max(3, percent)) : 0
   return {
     value: required > 0 ? `${includesKv ? '~' : ''}${formatNumber(required)} GB${includesKv ? ' incl. KV' : ''}` : '--',
-    label: required > 0 ? `${formatNumber(required)} / ${formatNumber(total || 0)} GB` : '--',
+    label: required > 0
+      ? hasGpuCapacity(gpu) ? `${formatNumber(required)} / ${formatNumber(total)} GB` : `${formatNumber(required)} GB; capacity unavailable`
+      : '--',
     percent,
     percentLabel: total > 0 && required > 0 ? `${percent}%` : '--',
     barPercent,
@@ -1871,6 +1884,9 @@ function getMemoryMeta(model, gpu) {
 function getCompatibilityMeta(model, memory, pixelMinimumContext = 0) {
   if (model?.metadata?.source === 'runtime') {
     return { label: 'Runtime managed', detail: 'Fit not verified by ODS', tone: 'purple' }
+  }
+  if (!Number.isFinite(memory.total) || memory.total <= 0) {
+    return { label: 'Fit unknown', detail: 'GPU capacity unavailable', tone: 'amber' }
   }
   if (!model?.fitsVram) {
     const shorterContextFits = Array.isArray(model?.contextOptions) && model.contextOptions.some(option =>
@@ -2039,22 +2055,22 @@ function isPixelAgentVerified(compatibility) {
   return ['pixel_agent_viable', 'supported', 'verified'].includes(status)
 }
 
-function getSpeedDisplay(model) {
+function getSpeedDisplay(model, gpu) {
   const rawValue = toNumber(model?.tokensPerSec) || extractTokensPerSecond(model?.performanceLabel)
   const value = rawValue && rawValue <= MAX_SINGLE_REQUEST_TOKENS_PER_SECOND ? rawValue : null
   return {
     value,
-    label: value ? (model?.performanceLabel || `${formatNumber(value)} tok/s`) : 'Benchmark required',
+    label: value ? (model?.performanceLabel || `${formatNumber(value)} tok/s`) : hasGpuCapacity(gpu) ? 'Benchmark required' : 'Speed unavailable',
     tone: model?.fitsVram === false ? 'orange' : 'purple',
   }
 }
 
-function getPerformanceBadge(model) {
+function getPerformanceBadge(model, gpu) {
   const badges = {
     measured_local: { tone: 'green', label: 'Measured locally' },
     published_exact: { tone: 'purple', label: 'Published exact' },
     predicted_calibrated: { tone: 'purple', label: 'Calibrated estimate' },
-    benchmark_required: { tone: 'amber', label: 'Benchmark required' },
+    benchmark_required: { tone: 'amber', label: hasGpuCapacity(gpu) ? 'Benchmark required' : 'Speed unavailable' },
     incompatible: { tone: 'red', label: 'Incompatible' },
   }
   return badges[model?.performance?.source] || null
