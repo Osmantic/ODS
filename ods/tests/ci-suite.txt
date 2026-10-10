@@ -271,6 +271,8 @@ tests/test-ods-cli-update-shield-key.sh
 tests/test-backup-publication.sh
 tests/test-restore-compose-flags.sh
 tests/test-cli-purge-docker-inspection.sh
+tests/test-backup-delete-ownership.sh
+tests/test-backup-delete-custody.sh
 tests/test-ods-cli-update-backup-required.sh
 tests/test-update-backup-publication.py
 tests/test-update-changelog-fallback.py
