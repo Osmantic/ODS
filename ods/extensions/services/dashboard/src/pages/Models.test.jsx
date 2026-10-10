@@ -103,6 +103,30 @@ function confirmModelRun() {
   fireEvent.click(screen.getByRole('button', { name: 'Run model' }))
 }
 
+test.each([false, true])('refreshes the profile after first activation finishes in the Models page (compact=%s)', async (compact) => {
+  const selected = model({status: 'loaded'})
+  useModelsMock.mockReturnValue(baseState({models: [selected], currentModel: selected.id,
+    modelLifecycle: {active: true, operation: 'model_activation'}, modelActivation: {active: true, phase: 'profiling'}}))
+  const fetchMock = vi.fn(async () => ({ok: true, json: async () => ({mode: 'observe', modelId: selected.id,
+    profile: {modelId: selected.id, recordedAt: '2026-10-10T20:10:26Z', result: {status: 'complete', summary: {chat: true, tools: true}}}})}))
+  vi.stubGlobal('fetch', fetchMock)
+  try {
+    const view = render(createElement(MemoryRouter, null, createElement(Models, {compact})))
+    await act(async () => {})
+    expect(fetchMock).not.toHaveBeenCalled()
+    useModelsMock.mockReturnValue(baseState({models: [selected], currentModel: selected.id,
+      modelLifecycle: {active: false}, modelActivation: {active: false, phase: 'complete'}}))
+    view.rerender(createElement(MemoryRouter, null, createElement(Models, {compact})))
+    await act(async () => {})
+    expect(screen.getByRole('region', {name: 'What this model can do'})).toHaveTextContent('Calls tools (Pixel and agents)')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledWith(`/api/models/${selected.id}/profile`, expect.objectContaining({cache: 'no-store'}))
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
 test('uses compact source tabs and collapsible filters in the portal panel', () => {
   useModelsMock.mockReturnValue(baseState({models:[model({status:'downloaded'})]}))
   const {container} = render(createElement(MemoryRouter, null, createElement(Models, {compact:true})))
@@ -531,7 +555,7 @@ test('ignores repository metadata that arrives after its dialog was replaced', a
       label: `${name}-only-Q4.gguf`,
       quantization: 'Q4_K_M',
       sizeBytes: 1024,
-      files: [{ filename: `${name}.gguf` }],
+      files: [{ filename: `${name}/${name}-only-Q4.gguf` }],
     }],
     url: `https://huggingface.co/org/${name}`,
   })
@@ -557,15 +581,15 @@ test('ignores repository metadata that arrives after its dialog was replaced', a
     await act(async () => {
       resolveFirstDetails({ ok: true, json: async () => details('first') })
     })
-    expect(screen.queryByText('first-only-Q4.gguf')).not.toBeInTheDocument()
+    expect(screen.queryByText('first/first-only-Q4.gguf')).not.toBeInTheDocument()
     expect(screen.getByText('Reading repository metadata...')).toBeInTheDocument()
 
     await act(async () => {
       resolveSecondDetails({ ok: true, json: async () => details('second') })
     })
-    expect(await screen.findByText('second-only-Q4.gguf')).toBeInTheDocument()
+    expect(await screen.findByText('second/second-only-Q4.gguf')).toBeInTheDocument()
     expect(screen.getByText('Hub config')).toBeInTheDocument()
-    expect(screen.queryByText('first-only-Q4.gguf')).not.toBeInTheDocument()
+    expect(screen.queryByText('first/first-only-Q4.gguf')).not.toBeInTheDocument()
   } finally {
     vi.unstubAllGlobals()
   }
