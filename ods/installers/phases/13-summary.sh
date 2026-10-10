@@ -35,6 +35,45 @@ if [[ -f "$INSTALL_DIR/.env" ]]; then
     sr_resolve_ports
 fi
 
+# Required published readiness must precede any installation success message.
+if ! $DRY_RUN && command -v ods_readiness_summary >/dev/null 2>&1; then
+    _dashboard_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
+    if ! {
+        printf 'Dashboard|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[dashboard]:-3001}" "${SERVICE_HEALTH[dashboard]:-/}" "$(sr_container dashboard)" "$_dashboard_url"
+        if [[ "${ENABLE_OPEN_WEBUI:-true}" == "true" ]]; then
+            printf 'Chat UI (Open WebUI)|http://127.0.0.1:%s%s|%s|%s\n' \
+                "${SERVICE_PORTS[open-webui]:-3000}" "${SERVICE_HEALTH[open-webui]:-/}" "$(sr_container open-webui)" "http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
+        fi
+        ods_readiness_model_line \
+            "${SERVICE_PORTS[llama-server]:-8080}" "${SERVICE_HEALTH[llama-server]:-/health}" \
+            "$(sr_container llama-server)" "${SERVICE_PORTS[litellm]:-4000}"
+        printf 'Dashboard API|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[dashboard-api]:-3002}" "${SERVICE_HEALTH[dashboard-api]:-/health}" "$(sr_container dashboard-api)" "http://localhost:${SERVICE_PORTS[dashboard-api]:-3002}"
+        printf 'LiteLLM|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[litellm]:-4000}" "${SERVICE_HEALTH[litellm]:-/health/readiness}" "$(sr_container litellm)" "http://localhost:${SERVICE_PORTS[litellm]:-4000}"
+        [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && printf 'Perplexica|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[perplexica]:-3004}" "${SERVICE_HEALTH[perplexica]:-/}" "$(sr_container perplexica)" "http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
+        [[ "$ENABLE_VOICE" == "true" ]] && printf 'Whisper (STT)|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[whisper]:-9000}" "${SERVICE_HEALTH[whisper]:-/health}" "$(sr_container whisper)" "http://localhost:${SERVICE_PORTS[whisper]:-9000}"
+        [[ "$ENABLE_VOICE" == "true" ]] && printf 'Kokoro (TTS)|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[tts]:-8880}" "${SERVICE_HEALTH[tts]:-/health}" "$(sr_container tts)" "http://localhost:${SERVICE_PORTS[tts]:-8880}"
+        [[ "$ENABLE_WORKFLOWS" == "true" ]] && printf 'n8n|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[n8n]:-5678}" "${SERVICE_HEALTH[n8n]:-/healthz}" "$(sr_container n8n)" "http://localhost:${SERVICE_PORTS[n8n]:-5678}"
+        [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && printf 'Qdrant|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[qdrant]:-6333}" "${SERVICE_HEALTH[qdrant]:-/}" "$(sr_container qdrant)" "http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
+        [[ "${ENABLE_COMFYUI:-}" == "true" ]] && printf 'ComfyUI|http://127.0.0.1:%s%s|%s|%s\n' \
+            "${SERVICE_PORTS[comfyui]:-8188}" "${SERVICE_HEALTH[comfyui]:-/}" "$(sr_container comfyui)" "http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
+        # Ensure the block exits 0 regardless of the trailing optional conditionals:
+        # under set -e + pipefail, a false `[[ ENABLE_x ]] && printf` makes the block
+        # return 1, which propagates through the pipe and trips the ERR trap.
+        :
+    } | ods_readiness_summary "ods status" "$LOG_FILE" "$_dashboard_url" "Dashboard"; then
+        ODS_INSTALL_REQUIRED_READINESS_FAILED=true
+        return 1
+    fi
+fi
+
 # Get local IP for LAN access
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
 
@@ -429,40 +468,6 @@ print("ok" if values.get("setupComplete") and has_model and prefs.get("defaultCh
     fi
 fi
 
-if ! $DRY_RUN && command -v ods_readiness_summary >/dev/null 2>&1; then
-    _dashboard_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}"
-    {
-        printf 'Dashboard|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[dashboard]:-3001}" "${SERVICE_HEALTH[dashboard]:-/}" "$(sr_container dashboard)" "$_dashboard_url"
-        if [[ "${ENABLE_OPEN_WEBUI:-true}" == "true" ]]; then
-            printf 'Chat UI (Open WebUI)|http://127.0.0.1:%s%s|%s|%s\n' \
-                "${SERVICE_PORTS[open-webui]:-3000}" "${SERVICE_HEALTH[open-webui]:-/}" "$(sr_container open-webui)" "http://localhost:${SERVICE_PORTS[open-webui]:-3000}"
-        fi
-        ods_readiness_model_line \
-            "${SERVICE_PORTS[llama-server]:-8080}" "${SERVICE_HEALTH[llama-server]:-/health}" \
-            "$(sr_container llama-server)" "${SERVICE_PORTS[litellm]:-4000}"
-        printf 'Dashboard API|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[dashboard-api]:-3002}" "${SERVICE_HEALTH[dashboard-api]:-/health}" "$(sr_container dashboard-api)" "http://localhost:${SERVICE_PORTS[dashboard-api]:-3002}"
-        printf 'LiteLLM|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[litellm]:-4000}" "${SERVICE_HEALTH[litellm]:-/health/readiness}" "$(sr_container litellm)" "http://localhost:${SERVICE_PORTS[litellm]:-4000}"
-        [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && printf 'Perplexica|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[perplexica]:-3004}" "${SERVICE_HEALTH[perplexica]:-/}" "$(sr_container perplexica)" "http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
-        [[ "$ENABLE_VOICE" == "true" ]] && printf 'Whisper (STT)|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[whisper]:-9000}" "${SERVICE_HEALTH[whisper]:-/health}" "$(sr_container whisper)" "http://localhost:${SERVICE_PORTS[whisper]:-9000}"
-        [[ "$ENABLE_VOICE" == "true" ]] && printf 'Kokoro (TTS)|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[tts]:-8880}" "${SERVICE_HEALTH[tts]:-/health}" "$(sr_container tts)" "http://localhost:${SERVICE_PORTS[tts]:-8880}"
-        [[ "$ENABLE_WORKFLOWS" == "true" ]] && printf 'n8n|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[n8n]:-5678}" "${SERVICE_HEALTH[n8n]:-/healthz}" "$(sr_container n8n)" "http://localhost:${SERVICE_PORTS[n8n]:-5678}"
-        [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && printf 'Qdrant|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[qdrant]:-6333}" "${SERVICE_HEALTH[qdrant]:-/}" "$(sr_container qdrant)" "http://localhost:${SERVICE_PORTS[qdrant]:-6333}"
-        [[ "${ENABLE_COMFYUI:-}" == "true" ]] && printf 'ComfyUI|http://127.0.0.1:%s%s|%s|%s\n' \
-            "${SERVICE_PORTS[comfyui]:-8188}" "${SERVICE_HEALTH[comfyui]:-/}" "$(sr_container comfyui)" "http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
-        # Ensure the block exits 0 regardless of the trailing optional conditionals:
-        # under set -e + pipefail, a false `[[ ENABLE_x ]] && printf` makes the block
-        # return 1, which propagates through the pipe and trips the ERR trap.
-        :
-    } | ods_readiness_summary "ods status" "$LOG_FILE" "$_dashboard_url" "Dashboard"
-fi
 
 echo ""
 if $DRY_RUN; then

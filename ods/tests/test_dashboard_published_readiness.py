@@ -187,7 +187,7 @@ printf 'success card reached\\n'
     def test_actual_linux_summary_pipeline_stops_success_card(self):
         phase = (ROOT / "installers/phases/13-summary.sh").read_text()
         start = phase.index("if ! $DRY_RUN && command -v ods_readiness_summary")
-        stop = phase.index('\necho ""', start)
+        stop = phase.index('\nfi\n', start) + len('\nfi\n')
         block = phase[start:stop]
         script = f'''set -euo pipefail
 source {shlex.quote(str(ROOT / 'installers/lib/readiness-summary.sh'))}
@@ -204,6 +204,55 @@ printf 'success card reached\\n'
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("required Dashboard is not reachable", result.stdout)
         self.assertNotIn("success card reached", result.stdout)
+
+    def test_actual_installer_errexit_disabled_tail_preserves_readiness_failure(self):
+        # Source the entire production phase; only its surrounding registry and
+        # service-health dependencies are fixtures. The gate must stop before
+        # success presentation, desktop creation, or setup-complete writes.
+        phase = (ROOT / "installers/phases/13-summary.sh").read_text()
+        phases = self.root / "installers/phases"
+        phases.mkdir(parents=True)
+        (phases / "13-summary.sh").write_text(phase)
+        (self.root / "lib").mkdir()
+        (self.root / "lib/service-registry.sh").write_text(
+            'sr_load() { :; }\nsr_resolve_ports() { :; }\n'
+            'sr_container() { printf "ods-%s" "$1"; }\n')
+        core = (ROOT / "install-core.sh").read_text()
+        tail = core[core.index('INSTALL_PHASE="13-summary"'):]
+        cleanup = core[core.index('cleanup_on_error() {'):
+                       core.index('trap cleanup_on_error ERR') + len('trap cleanup_on_error ERR')]
+        for error_trap in ("", cleanup):
+            with self.subTest(real_error_trap=bool(error_trap)):
+                script = f'''set -euo pipefail
+source {shlex.quote(str(ROOT / 'installers/lib/readiness-summary.sh'))}
+SCRIPT_DIR={shlex.quote(str(self.root))}
+INSTALL_DIR={shlex.quote(str(self.root / 'installation'))}
+DRY_RUN=false; LOG_FILE=''; ENABLE_OPEN_WEBUI=false; ODS_MODE=cloud
+ENABLE_VOICE=false; ENABLE_WORKFLOWS=false; ENABLE_PERPLEXICA=false
+ENABLE_QDRANT=false; ENABLE_COMFYUI=false
+declare -A SERVICE_PORTS=([dashboard]={free_port()}) SERVICE_HEALTH=()
+ods_progress() {{ :; }}
+show_success_card() {{ printf 'SUCCESS_CARD_SENTINEL\\n'; }}
+docker() {{ printf 'healthy\\n'; }}
+{error_trap}
+{tail}
+'''
+                result = subprocess.run(["bash", "-c", script], text=True, capture_output=True, timeout=20)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("required Dashboard is not reachable", result.stdout)
+                self.assertNotIn("SUCCESS_CARD_SENTINEL", result.stdout)
+                self.assertNotIn("YOUR ODS IS LIVE", result.stdout)
+                self.assertFalse((self.root / 'installation').exists())
+
+    def test_actual_installer_tail_keeps_cosmetic_summary_failure_nonfatal(self):
+        phases = self.root / "installers/phases"
+        phases.mkdir(parents=True)
+        (phases / "13-summary.sh").write_text('return 7\n')
+        core = (ROOT / "install-core.sh").read_text()
+        tail = core[core.index('INSTALL_PHASE="13-summary"'):]
+        result = subprocess.run(["bash", "-c", f'set -euo pipefail\nSCRIPT_DIR={shlex.quote(str(self.root))}\n{tail}'],
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
