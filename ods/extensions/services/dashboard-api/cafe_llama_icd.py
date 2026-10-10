@@ -1,37 +1,65 @@
-"""ODS-shaped cafe-llama.cpp capability profile for ICD.
+"""Cafe-llama.cpp profile for ODS Inference Configuration Discovery.
 
-Only options verified against the currently supported runtime profile are
-advertised. Experimental kernels, Turbo KV, MoE offload, SSD streaming and
-speculative decoding must not become selectable until the exact binary and
-its environment mappings have been verified. This module discovers candidate
-configurations; it does not activate a runtime or translate settings to env.
+The catalog is intentionally broad: it records upstream-documented features and
+build-dependent features. A catalog entry is not proof that the selected binary,
+backend, model, or ODS activation path supports it. Pass runtime_capabilities
+from the probed binary to enforce the exact execution profile.
 """
 from __future__ import annotations
 
 from typing import Any
 
+from cafe_llama_parameters import (
+    CAPABILITY_VOCABULARY,
+    DISCOVERY_CAPABILITIES,
+    PARAMETERS,
+    parameters_by_readiness,
+)
+
 RUNTIME_ID = "cafe-llama.cpp"
 
-# Conservative allowlist. Expand only alongside binary-level validation and tests.
-CAPABILITIES = {
-    "kernel": ["baseline"],
-    "kv_cache": ["f16", "q8_0"],
-    "flash_attention": [True, False],
-    "offload": ["none"],
-    "speculation": ["none"],
+# Public feature vocabulary: broad by design, including documented and
+# build-dependent Cafe capabilities. The full parameter details live alongside.
+CAPABILITIES = CAPABILITY_VOCABULARY
+
+_DIMENSION_VOCABULARY = {
+    "kernel": CAPABILITIES["kernel_tuning"],
+    "kv_cache": CAPABILITIES["kv_cache"],
+    "offload": ["none", *CAPABILITIES["moe_placement"]],
+    "speculation": CAPABILITIES["speculation"],
 }
 
 
-def validate_cafe_configuration(configuration: dict[str, Any]) -> None:
+def validate_cafe_configuration(
+    configuration: dict[str, Any],
+    runtime_capabilities: dict[str, list[Any]] | None = None,
+) -> None:
+    """Validate the proposal against the broad catalog and, when supplied, a probed build.
+
+    Without runtime_capabilities, validation means 'known to the catalog',
+    not 'safe to execute'. The ICD candidate remains execution_authorized=False.
+    """
     if configuration.get("runtime") != RUNTIME_ID:
         raise ValueError("configuration is not a cafe-llama.cpp configuration")
 
-    for dimension, allowed in CAPABILITIES.items():
+    for dimension, allowed in _DIMENSION_VOCABULARY.items():
         value = configuration.get(dimension)
-        if dimension == "flash_attention" and value is not None and not isinstance(value, bool):
-            raise ValueError("flash_attention must be boolean")
         if value is not None and value not in allowed:
-            raise ValueError(f"unsupported cafe configuration value for {dimension}: {value!r}")
+            raise ValueError(f"unknown cafe configuration value for {dimension}: {value!r}")
+        if value is not None and runtime_capabilities is not None:
+            runtime_allowed = runtime_capabilities.get(dimension, [])
+            if value not in runtime_allowed:
+                raise ValueError(
+                    f"runtime build does not advertise {dimension}={value!r}"
+                )
+
+    flash_attention = configuration.get("flash_attention")
+    if flash_attention is not None and type(flash_attention) is not bool:
+        raise ValueError("flash_attention must be boolean")
+
+    kv_cache = str(configuration.get("kv_cache") or "").lower()
+    if kv_cache.startswith("turbo") and flash_attention is False:
+        raise ValueError("Turbo KV requires flash attention")
 
     context = configuration.get("context")
     if context is not None and (
@@ -50,5 +78,28 @@ def validate_cafe_configuration(configuration: dict[str, Any]) -> None:
         draft_tokens = 0
     if isinstance(draft_tokens, bool) or not isinstance(draft_tokens, int) or draft_tokens < 0:
         raise ValueError("draft_tokens must be a non-negative integer")
-    if draft_tokens != 0:
-        raise ValueError("draft tokens require a verified speculative-decoding profile")
+
+    speculation = str(configuration.get("speculation") or "none").lower()
+    if speculation in {"none", "off"} and draft_tokens != 0:
+        raise ValueError("non-speculative configuration cannot have draft tokens")
+    if speculation not in {"none", "off"} and draft_tokens <= 0:
+        raise ValueError("speculative decoding requires positive draft_tokens")
+
+
+def parameter_catalog() -> dict[str, dict[str, Any]]:
+    """Expose all runtime parameters, not only the small ICD sweep dimensions."""
+    return {key: dict(value) for key, value in PARAMETERS.items()}
+
+
+def parameter_readiness() -> dict[str, list[str]]:
+    return parameters_by_readiness()
+
+
+__all__ = [
+    "RUNTIME_ID",
+    "CAPABILITIES",
+    "DISCOVERY_CAPABILITIES",
+    "parameter_catalog",
+    "parameter_readiness",
+    "validate_cafe_configuration",
+]
