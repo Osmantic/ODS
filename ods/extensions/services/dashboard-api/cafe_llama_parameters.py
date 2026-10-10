@@ -91,11 +91,14 @@ CAPABILITY_VOCABULARY = {
 
 # Only bounded dimensions should be enumerated automatically by ICD.
 DISCOVERY_CAPABILITIES = {
+    # Default sweep is deliberately small and repeatable. The complete feature
+    # vocabulary remains discoverable in CAPABILITY_VOCABULARY and PARAMETERS.
+    # Expand a dimension only after probing the exact runtime build.
     "kernel": ["baseline"],
-    "kv_cache": ["f16","q8_0","turbo2","turbo3","turbo4"],
+    "kv_cache": ["f16","q8_0"],
     "flash_attention": [True, False],
-    "offload": ["none","host-moe","cpu-moe","ssd"],
-    "speculation": ["none","draft-mtp","ngram-mod"],
+    "offload": ["none"],
+    "speculation": ["none"],
 }
 
 def list_parameters(*, group: str | None = None) -> dict[str, dict[str, Any]]:
