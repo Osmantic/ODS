@@ -1441,13 +1441,14 @@ describe('Pixel', () => {
     expect(screen.queryByText('forged-runtime')).not.toBeInTheDocument()
   })
 
-  it.each([200, 409])('starts catalog installation only after an accepted owner chat command (%s)', async status => {
+  it.each([200, 409, 'rejected-stream'])('starts catalog installation only after an accepted owner chat command (%s)', async status => {
     const plan = {schemaVersion: 1, extensionId: 'demo', steps: [{extensionId: 'demo', action: 'none',
       status: 'enabled', missingConfiguration: [], configuration: []}]}
     globalThis.fetch.mockImplementation(async url => {
       if (url === '/api/pixel/status') return response({available: true, model: 'pixel/default', detail: 'local'})
       if (url === '/api/pixel/chat/stream') return status === 200
         ? sseResponse([JSON.stringify({choices: [{delta: {content: 'Checking extension.'}}]}), '[DONE]'])
+        : status === 'rejected-stream' ? sseResponse([JSON.stringify({error:{type:'pixel_dashboard_error',code:'transition_in_progress'}}),'[DONE]'])
         : response({detail: 'Model switch pending'}, 409)
       if (url === '/api/extensions/demo/install-next') return response({schemaVersion: 1, extensionId: 'demo',
         state: 'succeeded', dispatched: false, plan})
@@ -1462,6 +1463,31 @@ describe('Pixel', () => {
     else await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('/extensions @demo'))
     const installs = globalThis.fetch.mock.calls.filter(([url]) => url === '/api/extensions/demo/install-next')
     expect(installs).toHaveLength(status === 200 ? 1 : 0)
+  })
+
+  it('does not create a GitHub extension request for a rejected admission', async () => {
+    const command = '/extensions https://github.com/owner/repo'
+    globalThis.fetch.mockImplementation(async url => url === '/api/pixel/chat/stream'
+      ? sseResponse([JSON.stringify({error:{type:'pixel_dashboard_error',code:'transition_in_progress'}}),'[DONE]'])
+      : response({available:true}))
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByRole('textbox'), {target:{value:command}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText(/This message was not started/)
+    expect(screen.getByRole('textbox')).toHaveValue(command)
+    expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/extensions/github/requests'))).toHaveLength(0)
+  })
+
+  it('shows a retained model hold without claiming that activation is still running', async () => {
+    const detail = 'A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions.'
+    globalThis.fetch.mockResolvedValue(response({available:false,model:null,state:'model_transition_pending',detail}))
+    render(<Pixel />)
+    expect(await screen.findByText('Model transition pending')).toBeVisible()
+    expect(screen.getByText(detail)).toBeVisible()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    expect(screen.queryByText('Portal is switching models')).toBeNull()
+    expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(0)
   })
 
   it('sends exact body to stream endpoint', async () => {
@@ -2444,6 +2470,36 @@ describe('Pixel', () => {
     expect(screen.getByText('Saved edits')).toBeVisible()
     expect(screen.queryByText(/private-upstream-secret|False success/)).toBeNull()
     await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).status).toBe('error'))
+    expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(restored ? 0 : 1)
+  })
+
+  it.each([{restored:false}, {restored:true}, {restored:true,draft:'A newer draft'}])('restores a rejected model-transition draft without resuming execution (%j)', async ({restored,draft}) => {
+    const frames = [JSON.stringify({error:{type:'pixel_dashboard_error',code:'transition_in_progress',message:'private-secret'}}),'[DONE]']
+    if (restored) localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
+      schema:1,chatId:'rejected-chat',requestId:'rejected-attempt',inFlight:true,draft,
+      messages:[{role:'user',content:'Keep this request'},{role:'assistant',content:''}],
+    }))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/chat/stream') return sseResponse(frames)
+      if (url === '/api/pixel/chat/result') return response({state:'rejected',events:frames.map(frame=>'data: '+frame+'\n\n').join('')})
+      return response({available:true})
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    if (!restored) {
+      fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Keep this request'}})
+      fireEvent.click(screen.getByTitle('Send'))
+    }
+    await waitFor(()=>expect(screen.getByRole('textbox').value).toBe(draft || 'Keep this request'))
+    await waitFor(()=>{
+      const saved=JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(saved.requestId).toBeFalsy()
+      expect(saved.interrupted).toBe(false)
+      expect(saved.inFlight).toBe(false)
+      expect(saved.messages[0]).toMatchObject({role:'user',content:'Keep this request'})
+      expect(saved.messages.at(-1).content).toContain('This message was not started.')
+    })
+    expect(screen.queryByText(/could not complete|Check saved work|private-secret/)).toBeNull()
     expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(restored ? 0 : 1)
   })
 

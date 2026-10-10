@@ -144,6 +144,7 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
     }
   }
 
+  const modelPending = status?.available === true && status?.pending && status?.reason === 'model-transition-pending'
   const disabled = changing || stale || !status?.available || status?.busy || !status?.revision
   return <section aria-labelledby="pixel-access-title" className="rounded-xl border border-white/10 bg-white/[0.03] p-5 space-y-3">
     <div className="flex items-center justify-between gap-4">
@@ -157,13 +158,16 @@ export default function PixelAccessCard({ showHeading = true, active = true }) {
       <dt>Effective</dt><dd>{!stale && verifiedMode(status) ? modeName(status.effective_mode) : 'Not verified'}</dd>
       <dt>Agent runtime</dt><dd>{!stale && status.available === true ? surfaceName(status.surface) : 'Not verified'}</dd>
     </dl> : !error ? <p role="status">Checking Portal permissions…</p> : null}
-    {!status?.available && status ? <p role="status">{status.reason === 'managed-installation-incomplete'
+    {!status?.available && status && !modelPending ? <p role="status">{status.reason === 'managed-installation-incomplete'
       ? 'The Portal installation or update has not completed its runtime verification. Resume the ODS installer on the agent host, then refresh this status. Permission changes remain unavailable until verification completes.'
       : status.pending
       ? 'Checking Portal while the access transition is unfinished. Controls return when the running gateway can be verified.'
       : 'The access controller is unavailable on the agent runtime. Install or repair the managed runtime integration before changing permissions.'}</p> : null}
     {status?.busy ? <p role="status">Portal is working. Access changes wait until its runs and tools finish.</p> : null}
-    {status?.pending ? <p role="alert">The access transition is unfinished and new work is held. Restore Sandbox if recovery is required.</p> : null}
+    {modelPending ? <p role="status">A model transition is holding new messages. Check model update progress before restoring Sandbox if recovery is required.</p>
+      : status?.pending ? <p role="alert">{status.reason === 'model-transition-recovery-required'
+        ? 'The model update needs recovery and new work is held. Restore Sandbox if recovery is required.'
+        : 'The access transition is unfinished and new work is held. Restore Sandbox if recovery is required.'}</p> : null}
     {error ? <p role="alert">{error}</p> : null}
     <div className="flex flex-wrap gap-3">
       <button type="button" disabled={disabled} onClick={() => { void change('sandboxed') }} className="rounded-lg border border-white/20 px-3 py-2 disabled:opacity-40">

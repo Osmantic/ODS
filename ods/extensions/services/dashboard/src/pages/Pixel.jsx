@@ -46,7 +46,7 @@ import { conversationProject } from '../lib/conversationProjects'
 import PortalStreamingText from '../components/PortalStreamingText'
 import PortalResponseActions from '../components/PortalResponseActions'
 import PortalResponseError from '../components/PortalResponseError'
-import {isProviderRateLimit, portalResponseFailure} from '../lib/portalResponseFailure'
+import {isProviderRateLimit, isAdmissionRejected, portalResponseFailure} from '../lib/portalResponseFailure'
 import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
@@ -473,6 +473,7 @@ function retainedResult(events) {
   let done = false
   let failed = false
   let failureMessage = ''
+  let admissionRejected = false
   for (const line of events.split('\n')) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
@@ -484,7 +485,8 @@ function retainedResult(events) {
         failed = true
         // Only a known public code changes the recovered text; any other
         // failure keeps the wording it had before.
-        if (isProviderRateLimit(frame.error)) failureMessage = portalResponseFailure(frame.error)
+        admissionRejected = isAdmissionRejected(frame.error)
+        if (isProviderRateLimit(frame.error) || admissionRejected) failureMessage = portalResponseFailure(frame.error)
         continue
       }
       if (isCleanContextRecoveryFrame(frame)) {
@@ -505,7 +507,16 @@ function retainedResult(events) {
     } catch { /* The same bounded SSE boundary applies to retained results. */ }
   }
   if (failureMessage) content = content ? `${content}\n\n_${failureMessage}_` : failureMessage
-  return { content, preview: done && !failed ? preview : null, artifacts: done && !failed ? artifacts : null, task, questions: done && !failed ? questions : null, done, failed }
+  return { content, preview: done && !failed ? preview : null, artifacts: done && !failed ? artifacts : null, task, questions: done && !failed ? questions : null, done, failed, admissionRejected }
+}
+
+function restoreRejectedDraft(source) {
+  const user = source.messages.at(-2)
+  if (source.messages.at(-1)?.role !== 'assistant' || user?.role !== 'user'
+    || typeof user.content !== 'string' || source.draft && source.draft !== user.content) return {}
+  // Retain the saved transcript's custody and preserve any newer draft. The
+  // rejected turn is inert history; recovery never submits it to the agent.
+  return {draft:user.content}
 }
 
 function loadStoredChat(selected) {
@@ -774,7 +785,7 @@ export default function Pixel({ systemStatus = null }) {
               timer = globalThis.setTimeout(checkActivity, 2000)
               return
             }
-            if (['complete', 'interrupted', 'cancelled'].includes(result.state)) {
+            if (['complete', 'interrupted', 'cancelled', 'rejected'].includes(result.state)) {
               // Recovery changes only the exact request's result, using the
               // latest saved record so stream progress and other metadata are
               // retained. An unsaved local edit must remain available to export.
@@ -793,7 +804,7 @@ export default function Pixel({ systemStatus = null }) {
                 const before = [...source.messages].reverse().find(message => message.publication?.relativeDirectory === publication?.relativeDirectory)?.publication || null
                 const writer = createConversationWriter(source)
                 try {
-                  const saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
+                  let saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
                     messages:replaceLastAssistant(source.messages, {
                       content: result.state === 'cancelled' ? stoppedContent(recovered.content)
                         : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
@@ -805,6 +816,12 @@ export default function Pixel({ systemStatus = null }) {
                     }),
                     ...(publication ? {preview:publication, workspaceOpen:true} : {}),
                   })
+                  if (result.state === 'rejected' && recovered.admissionRejected && recovered.done) {
+                    // Draft edits follow the exact receipt recovery as a new
+                    // checked revision; do not weaken the recovery handoff.
+                    const draft = restoreRejectedDraft(source)
+                    if (draft.draft !== undefined && draft.draft !== saved.draft) saved = writer({...saved, ...draft})
+                  }
                   chat = loadStoredChat(saved)
                 } catch (error) {
                   setPersistenceError(error?.code === 'conversation-changed' ? error.message
@@ -949,6 +966,8 @@ export default function Pixel({ systemStatus = null }) {
           ? 'available'
           : data.state === 'model_switching'
             ? 'switching'
+            : data.state === 'model_transition_pending'
+              ? 'held'
             : 'unavailable')
         setModelActivation(modelActivationStatus(data.modelActivation))
         setStatusDetail(typeof data.detail === 'string' ? data.detail : '')
@@ -1124,6 +1143,7 @@ export default function Pixel({ systemStatus = null }) {
       let assistantText = ''
       let receivedDone = false
       let receivedError = false
+      let admissionRejected = false
       let recoveryEligible = false
       let verifiedPreview = null
       let verifiedArtifacts = null
@@ -1189,12 +1209,6 @@ export default function Pixel({ systemStatus = null }) {
 
         reader = response.body?.getReader()
         if (!reader) throw new Error('stream unavailable')
-        if (!extensionInstallationStarted) {
-          extensionInstallationStarted = true
-          startExtensionInstallation(trimmed, controller.signal, { chatId, requestId })
-          startGithubExtensionRequest(trimmed, { chatId, requestId }, controller.signal)
-        }
-
         const decoder = new TextDecoder()
         let buffer = ''
 
@@ -1225,12 +1239,20 @@ export default function Pixel({ systemStatus = null }) {
               if (receivedError) continue
               if (frame?.error) {
                 receivedError = true
+                admissionRejected = !assistantText && isAdmissionRejected(frame.error)
                 const failureMessage = portalResponseFailure(frame.error)
                 setMessages(previous => replaceLastAssistant(previous, {
                   content: assistantText ? `${assistantText}\n\n_${failureMessage}_` : failureMessage,
                   status: 'error',
                 }))
                 continue
+              }
+              // Dashboard HTTP 200 can still contain an Edge admission
+              // refusal. Do not start auxiliary work until an accepted frame.
+              if (!extensionInstallationStarted) {
+                extensionInstallationStarted = true
+                startExtensionInstallation(trimmed, controller.signal, { chatId, requestId })
+                startGithubExtensionRequest(trimmed, { chatId, requestId }, controller.signal)
               }
               if (isCleanContextRecoveryFrame(frame)) recoveryEligible = true
               const candidatePreview = parseVerifiedPreviewFrame(frame)
@@ -1259,6 +1281,12 @@ export default function Pixel({ systemStatus = null }) {
           }
         }
 
+        if (admissionRejected && receivedDone) {
+          requestIdRef.current = null
+          setInterrupted(false)
+          setModelStatusRefresh(value => value + 1)
+          return {kind:'rejected'}
+        }
         return {
           kind: 'complete',
           assistantText,
@@ -1309,6 +1337,11 @@ export default function Pixel({ systemStatus = null }) {
     try {
       let attempt = await streamAttempt(chatIdRef.current, conversation, fullHistory)
       if (!isCurrentTurn()) return
+      if (attempt.kind === 'rejected') {
+        setInput(current => current || trimmed)
+        contextStartRef.current = originalContextStart
+        return
+      }
       if (attempt.kind === 'switching') {
         setStatus('switching')
         setStatusDetail(attempt.detail)
@@ -1350,6 +1383,11 @@ export default function Pixel({ systemStatus = null }) {
         // current user message remains the active task in the legacy request.
         attempt = await streamAttempt(retryChatId, [userMessage], fullHistory)
         if (!isCurrentTurn()) return
+        if (attempt.kind === 'rejected') {
+          setInput(current => current || trimmed)
+          contextStartRef.current = originalContextStart
+          return
+        }
         if (attempt.kind === 'switching') {
           contextStartRef.current = originalContextStart
           setMessages(messages)
@@ -1624,6 +1662,8 @@ export default function Pixel({ systemStatus = null }) {
       ? (readinessView.attention ? 'Needs attention' : 'Available')
       : status === 'switching'
         ? 'Switching model...'
+      : status === 'held'
+        ? 'Model transition pending'
       : status === 'loading'
         ? 'Connecting...'
         : 'Degraded'
@@ -1727,6 +1767,7 @@ export default function Pixel({ systemStatus = null }) {
       </header>
       {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
       <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
+      {status === 'held' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail}</p>}
       {status === 'available' && modelSupport && (
         <p role="status" aria-label="Model capability" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">
           {modelSupport.detail}
@@ -1889,6 +1930,8 @@ export default function Pixel({ systemStatus = null }) {
               ? `Message ${displayName}...`
               : status === 'switching'
                 ? 'Waiting for model switch...'
+                : status === 'held'
+                  ? 'Messages are held during a model transition'
                 : `${displayName} is unavailable`}
             disabled={isDisabled}
             rows={1}
