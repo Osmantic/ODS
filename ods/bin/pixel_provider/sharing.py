@@ -99,7 +99,13 @@ class SharingStore(ProviderStore):
         device = {name: settings[name] for name in settings if name != 'ttlSeconds'}
         device.update(id='device-' + secrets.token_hex(8), tokenHash=hashlib.sha256(key.encode()).hexdigest(),
                       createdAt=stamp, expiresAt=stamp + settings['ttlSeconds'], revoked=False)
-        saved = self._change(expected_revision, lambda doc: doc['devices'].append(device))
+        def admit(doc):
+            # Only live grants consume capacity. Prune inside the same locked,
+            # revision-checked transaction that publishes the replacement.
+            doc['devices'] = [item for item in doc['devices']
+                              if not item['revoked'] and item['expiresAt'] > stamp]
+            doc['devices'].append(device)
+        saved = self._change(expected_revision, admit)
         return {'configuration': public_sharing(saved), 'credential': {'id': device['id'], 'key': key},
                 'model': PUBLIC_MODEL}
 

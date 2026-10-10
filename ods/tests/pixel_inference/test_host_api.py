@@ -76,6 +76,66 @@ def test_owner_issue_enable_revoke_cas_and_no_secret_readback(owner):
         store.authenticate(key)
 
 
+def test_owner_can_rotate_device_keys_beyond_lifetime_record_limit(owner):
+    revision = 0
+    old_keys = []
+    for _ in range(65):
+        status, issued, _ = request(owner, 'issue', {'expectedRevision': revision, 'settings': settings()})
+        assert status == 200, issued
+        old_keys.append(issued['credential']['key'])
+        revision = issued['configuration']['revision']
+        status, revoked, _ = request(owner, 'revoke', {
+            'expectedRevision': revision, 'deviceId': issued['credential']['id'],
+        })
+        assert status == 200
+        revision = revoked['configuration']['revision']
+    status, replacement, _ = request(owner, 'issue', {'expectedRevision': revision, 'settings': settings()})
+    assert status == 200
+    assert len(replacement['configuration']['devices']) == 1
+    from pixel_provider.sharing import SharingStore
+    from pixel_provider.store import StoreError
+    store = SharingStore(owner[0].DATA_DIR / 'pixel-inference')
+    assert request(owner, 'enable', {'expectedRevision': revision + 1, 'enabled': True})[0] == 200
+    assert store.authenticate(replacement['credential']['key'])['id'] == replacement['credential']['id']
+    for key in old_keys:
+        with pytest.raises(StoreError, match='invalid-credential'):
+            store.authenticate(key)
+
+
+def test_owner_issuance_reclaims_expired_records_and_preserves_live_credentials(owner):
+    from pixel_provider.sharing import SharingStore
+    directory = owner[0].DATA_DIR / 'pixel-inference'
+    directory.mkdir(mode=0o700)
+    store = SharingStore(directory)
+    live = store.issue(settings(), expected_revision=0)
+    for revision in range(1, 64):
+        # Use the actual producer with an elapsed TTL, rather than fabricating
+        # persisted records. Expiration is evaluated during the HTTP issuance.
+        store.issue(settings(), expected_revision=revision, now=1)
+    before = store.read_snapshot()['devices'][0]
+    path = directory / 'inference-sharing.json'
+    before_bytes = path.read_bytes()
+    assert request(owner, 'issue', {'expectedRevision': 63, 'settings': settings()})[0] == 409
+    assert path.read_bytes() == before_bytes
+    status, replacement, _ = request(owner, 'issue', {'expectedRevision': 64, 'settings': settings()})
+    assert status == 200
+    assert len(replacement['configuration']['devices']) == 2
+    assert store.read_snapshot()['devices'][0] == before
+    assert request(owner, 'enable', {'expectedRevision': 65, 'enabled': True})[0] == 200
+    assert store.authenticate(live['credential']['key'])['id'] == live['credential']['id']
+
+
+def test_owner_full_live_capacity_and_stale_revision_preserve_exact_state(owner):
+    for revision in range(64):
+        assert request(owner, 'issue', {'expectedRevision': revision, 'settings': settings()})[0] == 200
+    path = owner[0].DATA_DIR / 'pixel-inference/inference-sharing.json'
+    before = path.read_bytes()
+    assert request(owner, 'issue', {'expectedRevision': 64, 'settings': settings()})[0] != 200
+    assert path.read_bytes() == before
+    assert request(owner, 'issue', {'expectedRevision': 63, 'settings': settings()})[0] == 409
+    assert path.read_bytes() == before
+
+
 def test_owner_auth_and_validation_before_persistence(owner):
     assert request(owner,token='bad')[0] == 403
     assert request(owner,'issue',{},token='bad')[0] == 403
