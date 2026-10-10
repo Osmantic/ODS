@@ -233,3 +233,29 @@ def test_measured_evidence_beats_unmeasured_candidates():
     ]
     assert ranked[0]["measured_tps"] == 77.0
     assert ranked[0]["selection_status"] == "MEASURED"
+
+
+
+def test_icd_preserves_extended_cafe_parameter_dimensions():
+    candidate = make_candidate()
+
+    configs = candidate.inference_configurations({
+        "cache_type_v": ["q8_0"],
+        "host_moe": [True],
+        "ssd_streaming": [False],
+        "draft_gpu_layers": [8],
+        "spec_draft_p_min": [0.75],
+        "fit_target": [512],
+        "numa": ["distribute"],
+    })
+
+    assert len(configs) == 1
+    configuration = configs[0].to_dict()["configuration"]
+
+    assert configuration["cache_type_v"] == "q8_0"
+    assert configuration["host_moe"] is True
+    assert configuration["ssd_streaming"] is False
+    assert configuration["draft_gpu_layers"] == 8
+    assert configuration["spec_draft_p_min"] == 0.75
+    assert configuration["fit_target"] == 512
+    assert configuration["numa"] == "distribute"
