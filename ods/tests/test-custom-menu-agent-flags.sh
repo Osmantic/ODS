@@ -57,6 +57,7 @@ run_case() (
     ai() { :; }; ai_bad() { return 1; }; ai_warn() { :; }; log() { :; }
     warn() { :; }; success() { :; }; chapter() { :; }; bootline() { :; }
     signal() { :; }
+    ods_sudo_available() { return 0; }
     ods_pixel_resolve_enablement() { printf 'pixel\n'; }
     ods_pixel_model_route_class() { printf 'managed-gateway\n'; }
     # Phase 03 resolves Pixel's web search provider and asks whether Portal

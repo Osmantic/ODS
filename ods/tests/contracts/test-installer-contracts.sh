@@ -657,6 +657,9 @@ for svc in litellm; do
     || { echo "[FAIL] $svc compose is not gated by Pixel or Recommended services in $features_phase"; exit 1; }
 done
 
+echo "[contract] Pixel privilege preflight follows selected feature"
+bash tests/test-pixel-early-sudo-preflight.sh
+
 echo "[contract] SearXNG follows web search consumers, not only --recommended"
 bash tests/test-pixel-support-services.sh
 bash tests/test-pixel-search-provider-resolution.sh
