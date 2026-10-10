@@ -25,15 +25,15 @@ def make_candidate():
         "id": "cafe-test",
         "runtime": "cafe-llama.cpp",
         "runtime_revision": "test",
-        "kernel": "ptq1-mmV",
-        "quantization": "PTQ1_0",
+        "kernel": "baseline",
+        "quantization": "Q4_K_M",
         "context_length": 8192,
         "gpu_layers": 99,
         "kv_cache": "f16",
         "flash_attention": True,
-        "offload": "host-moe",
-        "speculation": "draft-mtp",
-        "draft_tokens": 2,
+        "offload": "none",
+        "speculation": "none",
+        "draft_tokens": 0,
         "batch": 1,
     }
 
@@ -107,37 +107,53 @@ def test_cafe_configuration_maps_to_environment():
         "MAX_CONTEXT": "8192",
         "LLAMA_ARG_CACHE_TYPE_K": "f16",
         "LLAMA_ARG_FLASH_ATTN": "on",
-        "LLAMA_ARG_SPEC_TYPE": "draft-mtp",
-        "LLAMA_ARG_SPEC_DRAFT_N_MAX": "2",
-        "LLAMA_ARG_HOST_MOE": "on",
+        "LLAMA_ARG_SPEC_TYPE": "none",
+        "LLAMA_ARG_SPEC_DRAFT_N_MAX": "0",
     }
 
 
-def test_cafe_rejects_invalid_configurations():
+def test_cafe_rejects_unverified_capabilities():
     candidate = make_candidate()
     configuration = candidate.inference_configurations()[0].configuration
 
-    turbo_without_flash = dict(configuration)
-    turbo_without_flash["kv_cache"] = "turbo4"
-    turbo_without_flash["flash_attention"] = False
-
-    with pytest.raises(ValueError, match="turbo KV"):
-        validate_cafe_configuration(turbo_without_flash)
-
-    missing_draft_tokens = dict(configuration)
-    missing_draft_tokens["speculation"] = "draft-mtp"
-    missing_draft_tokens["draft_tokens"] = 0
-
-    with pytest.raises(ValueError, match="draft-mtp"):
-        validate_cafe_configuration(missing_draft_tokens)
+    for dimension, unsupported in (
+        ("kernel", "ptq1-mmV"),
+        ("kv_cache", "turbo4"),
+        ("offload", "host-moe"),
+        ("speculation", "draft-mtp"),
+    ):
+        invalid = dict(configuration)
+        invalid[dimension] = unsupported
+        with pytest.raises(ValueError, match=f"unsupported cafe configuration value for {dimension}"):
+            validate_cafe_configuration(invalid)
 
 
-def test_icd_expands_runtime_capabilities_deterministically():
+def test_cafe_rejects_invalid_scalar_values():
+    candidate = make_candidate()
+    configuration = candidate.inference_configurations()[0].configuration
+
+    invalid_context = dict(configuration)
+    invalid_context["context"] = 0
+    with pytest.raises(ValueError, match="context"):
+        validate_cafe_configuration(invalid_context)
+
+    invalid_layers = dict(configuration)
+    invalid_layers["gpu_layers"] = -1
+    with pytest.raises(ValueError, match="gpu_layers"):
+        validate_cafe_configuration(invalid_layers)
+
+    invalid_draft = dict(configuration)
+    invalid_draft["draft_tokens"] = 2
+    with pytest.raises(ValueError, match="draft tokens"):
+        validate_cafe_configuration(invalid_draft)
+
+
+def test_icd_expands_only_verified_runtime_capabilities_deterministically():
     candidate = make_candidate()
 
     configs = candidate.inference_configurations(CAPABILITIES)
 
-    assert len(configs) == 160
+    assert len(configs) == 4
 
     ids = [item.configuration_id for item in configs]
 
@@ -153,6 +169,7 @@ def test_icd_expands_runtime_capabilities_deterministically():
         assert data["measurement_required"] is True
         assert data["execution_authorized"] is False
         assert "measured_tps" not in data["configuration"]
+        validate_cafe_configuration(data["configuration"])
 
 
 def test_measured_evidence_beats_unmeasured_candidates():
@@ -161,8 +178,8 @@ def test_measured_evidence_beats_unmeasured_candidates():
 
     candidate_dicts = [item.to_dict() for item in discovered]
 
-    winner = candidate_dicts[7]
-    runner_up = candidate_dicts[11]
+    winner = candidate_dicts[1]
+    runner_up = candidate_dicts[2]
 
     measurements = [
         {
@@ -176,7 +193,7 @@ def test_measured_evidence_beats_unmeasured_candidates():
             "measured_tps": 12.0,
         },
         {
-            "configuration_id": candidate_dicts[20]["configuration_id"],
+            "configuration_id": candidate_dicts[3]["configuration_id"],
             "evidence_type": "estimated",
             "measured_tps": 999.0,
         },
