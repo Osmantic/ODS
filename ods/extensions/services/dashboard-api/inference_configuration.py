@@ -119,9 +119,12 @@ def discover_configurations(
 
     candidates: list[ConfigurationCandidate] = []
     for profile in runtime_profiles:
-        runtime = profile.get("runtime") or profile.get("runtime_id") or profile.get("backend")
-        if not runtime:
+        # Backend (e.g. nvidia/cpu) identifies hardware, not an inference
+        # runtime. Never silently promote it to runtime identity.
+        runtime = profile.get("runtime") or profile.get("runtime_id")
+        if not isinstance(runtime, str) or not runtime.strip():
             continue
+        runtime = runtime.strip()
         base = {
             "runtime": runtime,
             "runtime_revision": profile.get("runtime_revision") or profile.get("revision"),
