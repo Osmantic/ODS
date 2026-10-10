@@ -3,6 +3,8 @@ import {socketRequest} from './workspace-preview.mjs';
 import {dockerWorkspacePreviewRequest} from './workspace-preview-docker.mjs';
 
 export const ARTIFACT_TOOL = 'pixel_ods_workspace_artifact';
+export const WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE =
+  'Complete any requested file creation or edits first, then the requested checks. For unsupported source-code files (such as .py) or code projects, create a ZIP preserving filenames and bytes; never rename source to .txt. If zip is unavailable, use Python zipfile. Verify archive contents, integrity and the 4 MiB limit. Use supported files directly. Creating a file is not delivery: call tool_call with id pixel_ods_workspace_artifact and args {"relativePath":"<exact workspace-relative path>"}. Obtain its verified receipt BEFORE the final reply; never invent a link or leave an empty Download heading.';
 export const ARTIFACT_BOUNDARY = 'Create-only single-file snapshot from the configured Pixel workspace; byte integrity only, no execution or document-quality claim.';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).sort().join(',') === keys.split(',').sort().join(',');
