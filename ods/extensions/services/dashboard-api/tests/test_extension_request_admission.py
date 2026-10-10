@@ -17,6 +17,12 @@ import test_pixel_chat_results as result_tests
 store = result_tests.store
 COMMAND = '/extensions inspect https://github.com/owner/repo'
 REJECTION = {'error': 'pixel_transition_in_progress'}
+GATEWAY_REFUSAL = b'data: {"error":{"type":"pixel_ingress_error","code":"gateway_connect_refused"}}\n\n'
+
+
+@pytest.fixture(params=['transition_in_progress', 'gateway_connect_refused'])
+def rejection_kind(request):
+    return request.param
 
 
 @pytest.fixture
@@ -66,16 +72,31 @@ def refusal(payload=REJECTION):
     return FakeResponse(status=409, chunks=[json.dumps(payload).encode()])
 
 
+def trusted_refusal(kind):
+    if kind == 'gateway_connect_refused':
+        return FakeResponse(content_type='text/event-stream', chunks=[GATEWAY_REFUSAL, b'data: [DONE]\n\n'])
+    return refusal()
+
+
 @pytest.mark.parametrize('predecessor', [False, True])
-def test_trusted_rejection_removes_actionable_routing_but_preserves_audit(store, monkeypatch, directory, predecessor):
+def test_trusted_rejection_removes_actionable_routing_but_preserves_audit(store, monkeypatch, directory, predecessor, rejection_kind):
     if predecessor:
         routing.create_request(directory, OWNER, 'chat-test', 'previous', COMMAND)
         routing.bind_integration(directory, OWNER, 'chat-test', 'previous',
                                  {'extensionId': 'widget', 'definitionDigest': 'c' * 64})
         before = saved(directory, 'previous')
-    data, (visible, _) = asyncio.run(submit(store, monkeypatch, directory, refusal()))
+    previous_identity = (*IDENTITY[:2], 'completed-previous')
+    store.reserve(previous_identity, 'previous-input')
+    store.append(previous_identity, FINAL)
+    store.finish(previous_identity, 'complete')
+    previous_receipt = (store.get(previous_identity), store.chunks(previous_identity))
+    cancel = AsyncMock(side_effect=AssertionError('No agent run exists to cancel'))
+    monkeypatch.setattr(pixel, '_cancel_edge_run', cancel)
+    data, (visible, _) = asyncio.run(submit(store, monkeypatch, directory, trusted_refusal(rejection_kind)))
     assert visible['requestId'] == 'attempt-one' and visible['state'] == 'pending'
-    assert b'"code": "transition_in_progress"' in data
+    assert json.dumps({'error': {'type': 'pixel_dashboard_error', 'code': rejection_kind}}).encode() in data
+    cancel.assert_not_called()
+    assert (store.get(previous_identity), store.chunks(previous_identity)) == previous_receipt
     assert store.get(IDENTITY)['state'] == 'rejected' and not store.has_pending(IDENTITY[:2])
     rejected = saved(directory)
     assert rejected['state'] == 'cancelled' and rejected['repository'] == 'https://github.com/owner/repo'
@@ -84,6 +105,7 @@ def test_trusted_rejection_removes_actionable_routing_but_preserves_audit(store,
         assert saved(directory, 'previous') == before
     else:
         assert routing.active_chat_request(directory, OWNER, 'chat-test') is None
+    assert store.reserve((*IDENTITY[:2], 'manual-new-attempt'), 'new-input')
 
 
 def test_successful_admission_keeps_registration_visible_and_context_bound(store, monkeypatch, directory):
@@ -122,10 +144,10 @@ def test_slash_cancellation_restores_predecessor_only_after_trusted_refusal(stor
 
 
 @pytest.mark.parametrize('command,request_id', [(COMMAND, 'attempt-one'), ('please continue', 'previous')])
-def test_rejection_does_not_cancel_preexisting_identity_or_ordinary_followup(store, monkeypatch, directory, command, request_id):
+def test_rejection_does_not_cancel_preexisting_identity_or_ordinary_followup(store, monkeypatch, directory, command, request_id, rejection_kind):
     routing.create_request(directory, OWNER, 'chat-test', request_id, COMMAND)
     before = snapshot(directory)
-    asyncio.run(submit(store, monkeypatch, directory, refusal(), command=command))
+    asyncio.run(submit(store, monkeypatch, directory, trusted_refusal(rejection_kind), command=command))
     assert store.get(IDENTITY)['state'] == 'rejected'
     assert snapshot(directory) == before
 
@@ -196,11 +218,31 @@ def test_unrelated_owner_and_chat_mutations_do_not_lose_predecessor(store, monke
     assert routing.read_request(directory, OWNER, 'other-chat', 'later')['state'] == 'pending'
 
 
-def test_failed_rollback_never_publishes_safe_to_resend_receipt(store, monkeypatch, directory):
-    monkeypatch.setattr(extensions, 'rollback_chat_extension_request', AsyncMock(side_effect=OSError('private path')))
-    data, _ = asyncio.run(submit(store, monkeypatch, directory, refusal()))
+def test_failed_rollback_never_publishes_safe_to_resend_receipt(store, monkeypatch, directory, rejection_kind):
+    async def fail_rollback(*_args):
+        # The producer cannot expose the safe-to-resend event before rollback.
+        assert not any(b'gateway_connect_refused' in chunk['data'] for chunk in store.chunks(IDENTITY))
+        raise OSError('private path')
+    monkeypatch.setattr(extensions, 'rollback_chat_extension_request', fail_rollback)
+    data, _ = asyncio.run(submit(store, monkeypatch, directory, trusted_refusal(rejection_kind)))
     assert store.get(IDENTITY)['state'] == 'unresolved' and store.has_pending(IDENTITY[:2])
-    assert b'transition_in_progress' not in data and b'private path' not in data
+    assert rejection_kind.encode() not in data and b'private path' not in data
+    assert saved(directory)['state'] == 'pending'
+
+
+@pytest.mark.parametrize('frames', [
+    GATEWAY_REFUSAL,  # A truncated stream is not an acknowledged refusal.
+    b'data: {"error":{"type":"pixel_dashboard_error","code":"gateway_connect_refused"}}\n\ndata: [DONE]\n\n',
+    GATEWAY_REFUSAL.replace(b'"gateway_connect_refused"', b'"gateway_connect_refused","message":"extra"') + b'data: [DONE]\n\n',
+    b'data: {"choices":[{"delta":{"content":"ran"}}]}\n\n' + GATEWAY_REFUSAL + b'data: [DONE]\n\n',
+    GATEWAY_REFUSAL + b'data: {"activity":{"status":"running"}}\n\ndata: [DONE]\n\n',
+])
+def test_invalid_gateway_refusal_never_rolls_back_or_restores_a_draft(store, monkeypatch, directory, frames):
+    monkeypatch.setattr(pixel, '_cancel_edge_run', AsyncMock(return_value=False))
+    data, _ = asyncio.run(submit(store, monkeypatch, directory,
+        FakeResponse(content_type='text/event-stream', chunks=[frames])))
+    assert store.get(IDENTITY)['state'] != 'rejected'
+    assert b'"type": "pixel_dashboard_error", "code": "gateway_connect_refused"' not in data
     assert saved(directory)['state'] == 'pending'
 
 

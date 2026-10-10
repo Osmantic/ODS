@@ -1479,14 +1479,15 @@ describe('Pixel', () => {
     expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/extensions/github/requests'))).toHaveLength(0)
   })
 
-  it('shows a retained model hold without claiming that activation is still running', async () => {
+  it.each([null,{active:false,outcome:'rolled_back',failureCode:'runtime_load_failed'}])('shows a retained model hold and keeps model recovery evidence (%j)', async modelActivation => {
     const detail = 'A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions.'
-    globalThis.fetch.mockResolvedValue(response({available:false,model:null,state:'model_transition_pending',detail}))
+    globalThis.fetch.mockResolvedValue(response({available:false,model:null,state:'model_transition_pending',detail,modelActivation}))
     render(<Pixel />)
     expect(await screen.findByText('Model transition pending')).toBeVisible()
     expect(screen.getByText(detail)).toBeVisible()
     expect(screen.getByRole('textbox')).toBeDisabled()
     expect(screen.queryByText('Portal is switching models')).toBeNull()
+    if (modelActivation) expect(screen.getByText('Model switch failed; previous model restored')).toBeVisible()
     expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(0)
   })
 
@@ -2473,8 +2474,9 @@ describe('Pixel', () => {
     expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(restored ? 0 : 1)
   })
 
-  it.each([{restored:false}, {restored:true}, {restored:true,draft:'A newer draft'}])('restores a rejected model-transition draft without resuming execution (%j)', async ({restored,draft}) => {
-    const frames = [JSON.stringify({error:{type:'pixel_dashboard_error',code:'transition_in_progress',message:'private-secret'}}),'[DONE]']
+  it.each(['transition_in_progress','gateway_connect_refused'].flatMap(code =>
+    [{restored:false}, {restored:true}, {restored:true,draft:'A newer draft'}].map(item => ({...item,code}))))('restores a rejected draft without resuming execution (%j)', async ({restored,draft,code}) => {
+    const frames = [JSON.stringify({error:{type:'pixel_dashboard_error',code,message:'private-secret'}}),'[DONE]']
     if (restored) localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
       schema:1,chatId:'rejected-chat',requestId:'rejected-attempt',inFlight:true,draft,
       messages:[{role:'user',content:'Keep this request'},{role:'assistant',content:''}],
@@ -2497,7 +2499,8 @@ describe('Pixel', () => {
       expect(saved.interrupted).toBe(false)
       expect(saved.inFlight).toBe(false)
       expect(saved.messages[0]).toMatchObject({role:'user',content:'Keep this request'})
-      expect(saved.messages.at(-1).content).toContain('This message was not started.')
+      expect(saved.messages.at(-1).content).toContain(code === 'gateway_connect_refused'
+        ? 'Portal did not start this attempt because its gateway was unavailable.' : 'This message was not started.')
     })
     expect(screen.queryByText(/could not complete|Check saved work|private-secret/)).toBeNull()
     expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(restored ? 0 : 1)

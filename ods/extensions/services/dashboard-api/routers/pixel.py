@@ -955,6 +955,10 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     stopped = False
     rejected = False
     admission_rejected = False
+    admission_code = "transition_in_progress"
+    gateway_refusal_confirmed = False
+    gateway_refusal_line = None
+    upstream_event_seen = False
     routing_rollback_failed = False
     extension_preparation: dict = {}
     oversized_image = False
@@ -994,11 +998,30 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                             if len(line.rstrip(b"\r\n")) > _MAX_SSE_LINE_BYTES:
                                 raise ResultCapacity("SSE line limit")
                             stripped = line.rstrip(b"\r\n")
+                            if gateway_refusal_line is not None and stripped != b"data: [DONE]":
+                                if not stripped or stripped.startswith(b":"):
+                                    continue
+                                # Extra upstream data invalidates the exact no-run
+                                # receipt. Keep the ordinary uncertain-error path.
+                                store.append(identity, gateway_refusal_line)
+                                gateway_refusal_line = None
+                                terminal_error_seen = True
+                                failed = True
                             if stripped.startswith(b"data: ") and stripped != b"data: [DONE]":
                                 try:
                                     event = json.loads(stripped[6:])
                                 except (json.JSONDecodeError, UnicodeDecodeError):
                                     event = None
+                                if not upstream_event_seen and event == {"error": {
+                                        "type": "pixel_ingress_error", "code": "gateway_connect_refused"}}:
+                                    # This exact trusted ingress receipt is usable
+                                    # only with its terminator and no prior run
+                                    # evidence. Withhold it until owned extension
+                                    # preparation is rolled back in finally.
+                                    gateway_refusal_line = line
+                                    upstream_event_seen = True
+                                    continue
+                                upstream_event_seen = True
                                 if isinstance(event, dict):
                                     if "error" in event:
                                         # The admission receipt namespace is
@@ -1024,6 +1047,14 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                             ):
                                                 answer_seen = True
                             if stripped == b"data: [DONE]":
+                                if gateway_refusal_line is not None:
+                                    admission_rejected = True
+                                    admission_code = "gateway_connect_refused"
+                                    gateway_refusal_confirmed = True
+                                    terminal_error_seen = True
+                                    failed = True
+                                    done_seen = True
+                                    break
                                 if not answer_seen and not terminal_error_seen:
                                     # Live Pixel Edge cancellations can end with only
                                     # [DONE]. The host session reports zero output and
@@ -1079,13 +1110,13 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
         try:
-            if not done_seen:
+            if not done_seen or gateway_refusal_confirmed:
                 text = ("Portal was stopped." if cancelled else
                         "This image turn exceeds the 16 MiB encoded limit. Reduce attachments or conversation text." if oversized_image else
                         "Portal did not accept this turn. Check the conversation's context status before continuing." if rejected else
                         "Portal could not complete the response. Check saved work before continuing.")
                 if admission_rejected:
-                    event = {"error": {"type": "pixel_dashboard_error", "code": "transition_in_progress"}}
+                    event = {"error": {"type": "pixel_dashboard_error", "code": admission_code}}
                     data = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode()
                 else:
                     data = _error_event(text) + b"data: [DONE]\n\n"
