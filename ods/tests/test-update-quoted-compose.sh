@@ -13,7 +13,15 @@ log_info(){ :; };log_ok(){ :; };log_warn(){ :; };log_error(){ :; }
 get_current_version(){ printf 2.6.0; };ensure_source_checkout_for_update(){ return 0; };snapshot_pre_update(){ printf '%s' "$TMP/snapshot"; }
 resolve_compose_flags(){ printf '%s' "-f 'custom stack/compose.yaml'"; }
 _restore_snapshot(){ return 0; }
-git(){ case "$1" in branch) printf main;; describe) printf v2.6.0;; esac; }
+# Remote Git operations execute through env, which cannot invoke a shell
+# function. Stub the command boundary for both direct and env-wrapped calls.
+mkdir -p "$TMP/bin"
+cat > "$TMP/bin/git" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in branch) printf main;; describe) printf v2.6.0;; esac
+EOF
+chmod +x "$TMP/bin/git"
+export PATH="$TMP/bin:$PATH"
 validate_compose(){
  local -a args=("$@")
  [[ ${args[0]} == -f && ${args[1]} == 'custom stack/compose.yaml' ]] || return 1

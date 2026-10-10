@@ -257,13 +257,20 @@ docker(){
    echo '{"services":{"app":{"image":"app:v1"}}}'
  fi
 }
-git(){ case "$1" in branch) echo main;;describe) echo v2.6.0;;esac; }
 wait_for_healthy(){ return 0; }
 cmd_update
 [[ -f "$REACHED" ]]
 '''
     import os
-    env = {**os.environ, 'SOURCE': str(ROOT / 'ods-update.sh'), 'FIXTURE': str(install),
+    # The updater launches remote Git through env; use an executable stub so
+    # both direct and env-wrapped calls stay inside this isolated fixture.
+    git_bin = tmp_path / 'bin'
+    git_bin.mkdir()
+    git_stub = git_bin / 'git'
+    git_stub.write_text('#!/usr/bin/env bash\ncase "$1" in branch) echo main;;describe) echo v2.6.0;;esac\n')
+    git_stub.chmod(0o755)
+    env = {**os.environ, 'PATH': str(git_bin) + os.pathsep + os.environ['PATH'],
+           'SOURCE': str(ROOT / 'ods-update.sh'), 'FIXTURE': str(install),
            'REACHED': str(tmp_path / 'snapshot'), 'GUARD': str(ROOT / 'scripts/source-update-preflight.py')}
     result = subprocess.run(['bash', '-c', program], cwd=caller, env=env, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr
