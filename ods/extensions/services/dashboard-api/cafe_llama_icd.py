@@ -27,6 +27,7 @@ _DIMENSION_VOCABULARY = {
     "kv_cache": CAPABILITIES["kv_cache"],
     "offload": ["none", *CAPABILITIES["moe_placement"]],
     "speculation": CAPABILITIES["speculation"],
+    "flash_attention": [True, False],
 }
 
 
@@ -34,10 +35,12 @@ def validate_cafe_configuration(
     configuration: dict[str, Any],
     runtime_capabilities: dict[str, list[Any]] | None = None,
 ) -> None:
-    """Validate the proposal against the broad catalog and, when supplied, a probed build.
+    """Validate a proposal against the catalog and optionally a probed build.
 
     Without runtime_capabilities, validation means 'known to the catalog',
     not 'safe to execute'. The ICD candidate remains execution_authorized=False.
+    When capabilities are supplied, every populated discovery dimension must
+    be explicitly advertised by that exact runtime build (fail closed).
     """
     if configuration.get("runtime") != RUNTIME_ID:
         raise ValueError("configuration is not a cafe-llama.cpp configuration")
@@ -58,8 +61,8 @@ def validate_cafe_configuration(
         raise ValueError("flash_attention must be boolean")
 
     kv_cache = str(configuration.get("kv_cache") or "").lower()
-    if kv_cache.startswith("turbo") and flash_attention is False:
-        raise ValueError("Turbo KV requires flash attention")
+    if kv_cache.startswith("turbo") and flash_attention is not True:
+        raise ValueError("Turbo KV requires explicitly enabled flash attention")
 
     context = configuration.get("context")
     if context is not None and (
