@@ -5280,6 +5280,66 @@ def _make_body(raw_text: str, backup: bool = True) -> bytes:
     return json.dumps({"raw_text": raw_text, "backup": backup}).encode("utf-8")
 
 
+def test_env_revision_refuses_second_writer_without_backup_or_secret_loss(env_update_env):
+    install_dir, data_dir = env_update_env
+    env_path = install_dir / ".env"
+    revision = hashlib.sha256(env_path.read_text(encoding="utf-8").encode()).hexdigest()
+
+    def request(text):
+        handler = _FakeHandler(json.dumps({"raw_text": text, "backup": True,
+                                         "expected_revision": revision}).encode())
+        _mod.AgentHandler._handle_env_update(handler)
+        return handler
+
+    first = request("ODS_AGENT_KEY=first-save\n")
+    assert first.response_code == 200
+    stale = request("ODS_AGENT_KEY=stale-save\n")
+    assert stale.response_code == 409
+    assert env_path.read_text(encoding="utf-8") == "ODS_AGENT_KEY=first-save\n"
+    assert len(list((data_dir / "config-backups").iterdir())) == 1
+    assert not _mod._model_activate_lock.locked()
+
+
+def test_env_revision_is_compared_under_write_lock_before_backup(env_update_env, monkeypatch):
+    install_dir, data_dir = env_update_env
+    env_path = install_dir / ".env"
+    revision = hashlib.sha256(env_path.read_text(encoding="utf-8").encode()).hexdigest()
+
+    class ChangingLock:
+        released = False
+
+        def acquire(self, blocking):
+            env_path.write_text("ODS_AGENT_KEY=concurrent-save\n", encoding="utf-8")
+            return True
+
+        def release(self):
+            self.released = True
+
+    lock = ChangingLock()
+    monkeypatch.setattr(_mod, "_model_activate_lock", lock)
+    handler = _FakeHandler(json.dumps({"raw_text": "ODS_AGENT_KEY=stale-save\n",
+                                     "backup": True, "expected_revision": revision}).encode())
+    _mod.AgentHandler._handle_env_update(handler)
+
+    assert handler.response_code == 409
+    assert env_path.read_text(encoding="utf-8") == "ODS_AGENT_KEY=concurrent-save\n"
+    assert not (data_dir / "config-backups").exists()
+    assert lock.released
+
+
+@pytest.mark.parametrize("revision", [None, "", "not-a-revision", 5])
+def test_env_invalid_revision_refuses_mutation(env_update_env, revision):
+    install_dir, data_dir = env_update_env
+    env_path = install_dir / ".env"
+    before = env_path.read_bytes()
+    handler = _FakeHandler(json.dumps({"raw_text": "ODS_AGENT_KEY=stale-save\n",
+                                     "expected_revision": revision}).encode())
+    _mod.AgentHandler._handle_env_update(handler)
+    assert handler.response_code == 400
+    assert env_path.read_bytes() == before
+    assert not (data_dir / "config-backups").exists()
+
+
 class TestExtensionConfiguration:
     def setup_recipe(self, env_update_env, keys=('DEMO_PASSWORD',)):
         import yaml

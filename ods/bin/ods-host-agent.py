@@ -11698,6 +11698,13 @@ class AgentHandler(BaseHTTPRequestHandler):
             logger.warning("env_update rejected: raw_text missing/empty from %s", client_ip)
             json_response(self, 400, {"error": "raw_text required"})
             return
+        expected_revision = body.get("expected_revision")
+        if "expected_revision" in body and (
+            not isinstance(expected_revision, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_revision)
+        ):
+            json_response(self, 400, {"error": "Invalid environment revision"})
+            return
         enforced_values = {}
         if _network_auth_required(parse_env_text(raw_text)):
             raw_text = _upsert_env_text(raw_text, "WEBUI_AUTH", "true")
@@ -11756,6 +11763,12 @@ class AgentHandler(BaseHTTPRequestHandler):
         env_path = INSTALL_DIR / ".env"
         backup_relative_path = None
         try:
+            if expected_revision is not None:
+                current_text = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+                current_revision = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+                if expected_revision != current_revision:
+                    json_response(self, 409, {"error": "Configuration changed since this editor loaded. Reload the environment editor before saving."})
+                    return
             if backup and env_path.exists():
                 backup_dir = DATA_DIR / "config-backups"
                 backup_path = _copy_unique_env_backup(env_path, backup_dir)
