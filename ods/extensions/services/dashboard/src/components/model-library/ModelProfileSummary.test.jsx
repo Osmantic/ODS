@@ -57,11 +57,28 @@ test('shows what the running model was measured to do, and on which runtime', as
 })
 
 test('a chat-only model says so plainly and links to help', async () => {
-  profileBody.profile = profile({...capable, tools: false, thinking: {control: 'always'}})
+  profileBody.profile = profile({...capable, tools: false, thinking: {control: 'always', works: true}})
   await show()
   expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
   expect(screen.getByText('Always thinks before it answers')).toBeVisible()
   expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+})
+
+test.each(['always', 'enable_thinking', 'none'])('a failed thinking check does not claim the template capability (%s)', async control => {
+  profileBody.profile = profile({...capable, thinking: {control, works: false, separated: false}})
+  await show()
+  expect(screen.getByText('Thinking check did not pass')).toBeVisible()
+  expect(screen.queryByText('Always thinks before it answers')).toBeNull()
+  expect(screen.queryByText('Thinking can be turned off')).toBeNull()
+  expect(screen.queryByText('Answers without a thinking step')).toBeNull()
+  expect(screen.getByText('Answers chat')).toBeVisible()
+})
+
+test.each([null, undefined])('an unknown thinking check is not presented as measured (%s)', async works => {
+  profileBody.profile = profile({...capable, thinking: {control: 'always', works}})
+  await show()
+  expect(screen.getByText('Thinking not verified')).toBeVisible()
+  expect(screen.queryByText('Always thinks before it answers')).toBeNull()
 })
 
 test('a model not measured yet says when it will be', async () => {
