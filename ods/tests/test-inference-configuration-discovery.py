@@ -134,7 +134,13 @@ def test_catalog_exposes_documented_and_build_dependent_capabilities():
     with pytest.raises(ValueError, match="does not advertise offload"):
         validate_cafe_configuration(
             moe,
-            runtime_capabilities={"offload": ["none"]},
+            runtime_capabilities={
+                "kernel": ["baseline"],
+                "kv_cache": ["f16", "q8_0"],
+                "flash_attention": [True, False],
+                "offload": ["none"],
+                "speculation": ["none"],
+            },
         )
 
 
