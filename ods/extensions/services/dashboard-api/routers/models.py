@@ -2330,6 +2330,15 @@ def _call_agent_model(
             raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
         if exc.status_code == 400:
             raise HTTPException(status_code=400, detail=_agent_http_detail(exc)) from exc
+        detail = _agent_http_detail(exc)
+        if (path == "/v1/model/delete" and exc.status_code == 500
+                and isinstance(detail, dict)
+                and detail.get("code") in {
+                    "model_delete_recovery_required", "model_delete_cleanup_pending", "model_delete_status_update_failed",
+                }):
+            # Keep the existing gateway status while carrying the deletion
+            # outcome and recovery instruction to the Library consumer.
+            raise HTTPException(status_code=502, detail=detail) from exc
         if exc.status_code == 507:
             raise HTTPException(
                 status_code=507,

@@ -8613,6 +8613,236 @@ class TestModelDeleteSafety:
         assert status["model"] == ""
         assert not any(part in json.dumps(status) for part in parts)
 
+    def _split_fixture(self, tmp_path, monkeypatch):
+        install, models = self._setup(tmp_path, monkeypatch)
+        parts = [models / f"split-{i:05d}-of-00002.gguf" for i in (1, 2)]
+        for i, part in enumerate(parts):
+            part.write_bytes(f"part-{i}".encode())
+        (install / "config/model-library.json").write_text(json.dumps({"models": [{
+            "gguf_file": parts[0].name, "gguf_parts": [{"file": p.name} for p in parts],
+        }]}))
+        status = install / "data/model-download-status.json"
+        status.write_text(json.dumps({"status": "complete", "model": parts[0].name}))
+        monkeypatch.setattr(_mod, "_live_runtime_has_model", lambda *_args: False)
+        return models, parts, status
+
+    def test_split_failure_restores_all_shards_and_allows_retry(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_status = status.read_bytes()
+        original = Path.rename
+        original_unlink = Path.unlink
+
+        def fail_second(path, destination):
+            if path == parts[1]:
+                raise OSError("second shard is busy")
+            return original(path, destination)
+
+        # Old code unlinks: fail at the equivalent public operation boundary.
+        def fail_second_unlink(path, *args, **kwargs):
+            if path == parts[1]:
+                raise OSError("second shard is busy")
+            return original_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "rename", fail_second)
+            patch.setattr(Path, "unlink", fail_second_unlink)
+            handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+            _mod.AgentHandler._handle_model_delete(handler)
+            assert handler.response_code == 500
+            assert [p.read_bytes() for p in parts] == [b"part-0", b"part-1"]
+            assert status.read_bytes() == original_status
+            assert not list(models.glob(".ods-model-delete-*"))
+        retry = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(retry)
+        assert retry.response_code == 200
+        assert not any(p.exists() for p in parts)
+        assert not list(models.glob(".ods-model-delete-*"))
+
+    def test_split_failed_restore_retains_recovery_shard(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_status = status.read_bytes()
+        original = Path.rename
+
+        def fail_move_and_restore(path, destination):
+            if path == parts[1]:
+                raise OSError("filesystem unavailable")
+            return original(path, destination)
+
+        def fail_restore(*_args, **_kwargs):
+            raise OSError("filesystem unavailable during restore")
+
+        monkeypatch.setattr(Path, "rename", fail_move_and_restore)
+        monkeypatch.setattr(os, "link", fail_restore)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        recovery = models / response["recoveryDirectory"]
+        assert (recovery / parts[0].name).read_bytes() == b"part-0"
+        assert parts[1].read_bytes() == b"part-1"
+        assert status.read_bytes() == original_status
+
+    def test_split_cleanup_failure_is_reported_and_retains_staged_file(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original = Path.unlink
+
+        def fail_cleanup(path, *args, **kwargs):
+            if path.parent.name.startswith(".ods-model-delete-") and path.name == parts[1].name:
+                raise OSError("cleanup unavailable")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_cleanup)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_cleanup_pending"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "free disk space" in response["error"]
+        assert response["deletionCommitted"] is True
+        recovery = models / response["recoveryDirectory"]
+        assert (recovery / parts[1].name).read_bytes() == b"part-1"
+        assert not any(p.exists() for p in parts)
+        assert json.loads(status.read_text())["status"] == "idle"
+
+    @pytest.mark.parametrize("refusal", ["lifecycle", "active", "unavailable"])
+    def test_split_refusal_preserves_every_shard(self, tmp_path, monkeypatch, refusal):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        before = status.read_bytes()
+        if refusal == "lifecycle":
+            monkeypatch.setattr(_mod, "_begin_model_lifecycle", lambda *_args: (False, {"operation": "model_download"}))
+        else:
+            monkeypatch.setattr(_mod, "_live_runtime_has_model", lambda *_args: True if refusal == "active" else None)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == (503 if refusal == "unavailable" else 409)
+        assert [p.read_bytes() for p in parts] == [b"part-0", b"part-1"]
+        assert status.read_bytes() == before
+        assert not list(models.glob(".ods-model-delete-*"))
+
+    @pytest.mark.parametrize("cleanup_fails", [False, True])
+    @pytest.mark.parametrize("status_failure", ["helper", "invalid_status_unlink", "status_list", "status_null"])
+    def test_split_status_failure_reports_committed_deletion(
+        self, tmp_path, monkeypatch, cleanup_fails, status_failure,
+    ):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_unlink = Path.unlink
+        if status_failure == "invalid_status_unlink":
+            status.write_text("{invalid status", encoding="utf-8")
+        elif status_failure in {"status_list", "status_null"}:
+            status.write_text("[]" if status_failure == "status_list" else "null", encoding="utf-8")
+        else:
+            def fail_status_write(*_args, **_kwargs):
+                raise OSError("status writer failed")
+            monkeypatch.setattr(_mod, "_write_model_status", fail_status_write)
+
+        def fail_cleanup_or_status(path, *args, **kwargs):
+            if status_failure == "invalid_status_unlink" and path == status:
+                raise PermissionError("status file cannot be removed")
+            if cleanup_fails and path.parent.name.startswith(".ods-model-delete-") and path.name == parts[1].name:
+                raise PermissionError("staged cleanup unavailable")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_cleanup_or_status)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        response = handler.parse_response()
+        assert handler.response_code == 500
+        assert response["code"] == "model_delete_status_update_failed"
+        assert response["deletionCommitted"] is True
+        assert not any(part.exists() for part in parts)
+        if cleanup_fails:
+            assert response["cleanupPending"] is True
+            assert response["recoveryDirectory"] in response["error"]
+            assert "free disk space" in response["error"]
+            assert (models / response["recoveryDirectory"] / parts[1].name).read_bytes() == b"part-1"
+        else:
+            assert "recoveryDirectory" not in response
+            assert not list(models.glob(".ods-model-delete-*"))
+
+    def test_split_restore_does_not_overwrite_recreated_name(self, tmp_path, monkeypatch):
+        models, parts, _status = self._split_fixture(tmp_path, monkeypatch)
+        original = Path.rename
+
+        def recreate_then_fail(path, destination):
+            if path == parts[1]:
+                parts[0].write_bytes(b"foreign replacement")
+                raise OSError("second shard busy")
+            return original(path, destination)
+
+        monkeypatch.setattr(Path, "rename", recreate_then_fail)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        assert parts[0].read_bytes() == b"foreign replacement"
+        assert (models / response["recoveryDirectory"] / parts[0].name).read_bytes() == b"part-0"
+        assert parts[1].read_bytes() == b"part-1"
+
+    def test_split_restore_atomically_preserves_racing_replacement(self, tmp_path, monkeypatch):
+        models, parts, _status = self._split_fixture(tmp_path, monkeypatch)
+        original_rename = Path.rename
+        original_link = os.link
+
+        def fail_stage_or_race_restore(path, destination):
+            if path == parts[1]:
+                raise OSError("second shard busy")
+            if path.parent.name.startswith(".ods-model-delete-"):
+                Path(destination).write_bytes(b"racing foreign model")
+            return original_rename(path, destination)
+
+        def race_link(source, destination, *args, **kwargs):
+            Path(destination).write_bytes(b"racing foreign model")
+            return original_link(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "rename", fail_stage_or_race_restore)
+        monkeypatch.setattr(os, "link", race_link)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        assert parts[0].read_bytes() == b"racing foreign model"
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        assert (models / response["recoveryDirectory"] / parts[0].name).read_bytes() == b"part-0"
+        assert parts[1].read_bytes() == b"part-1"
+
+    def test_split_restore_link_cleanup_failure_retains_both_names(self, tmp_path, monkeypatch):
+        models, parts, _status = self._split_fixture(tmp_path, monkeypatch)
+        original_rename = Path.rename
+        original_unlink = Path.unlink
+
+        def fail_stage(path, destination):
+            if path == parts[1]:
+                raise OSError("second shard busy")
+            return original_rename(path, destination)
+
+        def fail_retirement(path, *args, **kwargs):
+            if path.parent.name.startswith(".ods-model-delete-"):
+                raise OSError("staged-name cleanup unavailable")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "rename", fail_stage)
+        monkeypatch.setattr(Path, "unlink", fail_retirement)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        assert [p.read_bytes() for p in parts] == [b"part-0", b"part-1"]
+        retained = models / response["recoveryDirectory"] / parts[0].name
+        assert retained.read_bytes() == b"part-0"
+        assert retained.samefile(parts[0])
+
     def test_delete_refuses_persisted_active_model_without_touching_status(
         self, tmp_path, monkeypatch,
     ):

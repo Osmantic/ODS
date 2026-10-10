@@ -3293,6 +3293,57 @@ def test_external_api_host_keeps_only_host_and_port(url, host):
     assert models_router._external_api_host(url) == host
 
 
+@pytest.mark.parametrize("code,cleanup_pending", [
+    ("model_delete_recovery_required", False),
+    ("model_delete_cleanup_pending", True),
+    ("model_delete_status_update_failed", False),
+    ("model_delete_status_update_failed", True),
+])
+def test_delete_api_preserves_recovery_detail(test_client, monkeypatch, tmp_path, code, cleanup_pending):
+    models_router, install, data = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install, [])
+    (data / "models/inactive.gguf").write_bytes(b"inactive model")
+    message = "Recover files in model store directory .ods-model-delete-receipt"
+    payload: dict[str, object] = {
+        "error": message,
+        "code": code,
+        "recoveryDirectory": ".ods-model-delete-receipt",
+    }
+    if code in {"model_delete_cleanup_pending", "model_delete_status_update_failed"}:
+        payload["deletionCommitted"] = True
+    if cleanup_pending:
+        payload["cleanupPending"] = True
+    elif code == "model_delete_status_update_failed":
+        payload.pop("recoveryDirectory")
+
+    def failure(method, path, **_kwargs):
+        assert method == "POST" and path == "/v1/model/delete"
+        raise models_router.AgentHTTPError(500, message, json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", failure)
+    response = test_client.delete("/api/models/inactive", headers=test_client.auth_headers)
+    assert response.status_code == 502
+    assert response.json()["detail"] == payload
+
+
+@pytest.mark.parametrize("path,code", [
+    ("/v1/model/delete", "unrelated_failure"),
+    ("/v1/model/activate", "model_delete_cleanup_pending"),
+    ("/v1/model/activate", "model_delete_status_update_failed"),
+])
+def test_model_agent_generic_failure_mapping_stays_unchanged(monkeypatch, path, code):
+    import routers.models as models_router
+    message = "generic failure"
+    payload = {"error": message, "code": code, "deletionCommitted": True}
+
+    def failure(*_args, **_kwargs):
+        raise models_router.AgentHTTPError(500, message, json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", failure)
+    with pytest.raises(models_router.HTTPException) as error:
+        models_router._call_agent_model(path, {})
+    assert error.value.status_code == 502
+    assert error.value.detail == "generic failure"
 def test_huggingface_quantization_names_mxfp4_artifacts():
     import routers.models as models_router
 

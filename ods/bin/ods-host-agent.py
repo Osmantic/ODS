@@ -15307,19 +15307,89 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 409, {'error': 'Model artifacts are shared or changed; deletion was refused',
                                           'code': 'model_artifact_shared'})
                 return
-            for pf in parts_to_delete:
-                pf.unlink()
+            # Move the complete group out of discovery on this filesystem
+            # before retiring any bytes. A later busy shard must not destroy
+            # the earlier shards of an otherwise usable split model.
+            staging = Path(tempfile.mkdtemp(prefix=".ods-model-delete-", dir=models_dir))
+            staged = []
+            try:
+                for pf in parts_to_delete:
+                    retired = staging / pf.name
+                    pf.rename(retired)
+                    staged.append((pf, retired))
+            except OSError:
+                restore_failed = False
+                for original, retired in reversed(staged):
+                    try:
+                        # Atomic no-replacement restore: an external writer
+                        # can recreate the name at any instant. Hard-link
+                        # creation refuses an existing destination; only then
+                        # retire the staging name. Neither failure loses bytes.
+                        os.link(retired, original, follow_symlinks=False)
+                        retired.unlink()
+                    except OSError:
+                        restore_failed = True
+                if restore_failed:
+                    json_response(self, 500, {
+                        "error": (f"Model deletion stopped. Restore the preserved shards from '{staging.name}' "
+                                  "inside this model's store directory before retrying; do not overwrite existing files."),
+                        "code": "model_delete_recovery_required",
+                        "recoveryDirectory": staging.name,
+                    })
+                    return
+                staging.rmdir()
+                raise
+
+            cleanup_pending = False
+            try:
+                for _original, retired in staged:
+                    retired.unlink()
+                staging.rmdir()
+            except OSError:
+                # The whole model is already retired. Remaining shards are
+                # retained for cleanup; do not report the disk space freed.
+                cleanup_pending = True
 
             status_path = INSTALL_DIR / "data" / "model-download-status.json"
-            if status_path.exists():
-                try:
-                    status_data = json.loads(status_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    status_path.unlink(missing_ok=True)
-                else:
-                    status_model = _download_status_model_token(status_data.get("model"))
-                    if status_model in deleted_names:
-                        _write_model_status(status_path, "idle", "", 0, 0)
+            try:
+                if status_path.exists():
+                    try:
+                        status_data = json.loads(status_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        status_path.unlink(missing_ok=True)
+                    else:
+                        if not isinstance(status_data, dict):
+                            raise ValueError("Model download status must be an object")
+                        status_model = _download_status_model_token(status_data.get("model"))
+                        if status_model in deleted_names:
+                            _write_model_status(status_path, "idle", "", 0, 0)
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                # Retirement already committed. A metadata error must not hide
+                # that fact or the location of bytes still awaiting cleanup.
+                payload = {
+                    "error": "Model was removed from the library, but download status could not be updated",
+                    "code": "model_delete_status_update_failed",
+                    "deletionCommitted": True,
+                }
+                if cleanup_pending:
+                    payload.update(
+                        cleanupPending=True,
+                        recoveryDirectory=staging.name,
+                        error=("Model was removed from the library, but download status could not be updated. "
+                               f"Disk cleanup is also incomplete. Remove the remaining files in '{staging.name}' "
+                               "inside this model's store directory to free disk space."),
+                    )
+                json_response(self, 500, payload)
+                return
+            if cleanup_pending:
+                json_response(self, 500, {
+                    "error": (f"Model was removed from the library, but disk cleanup is incomplete. Remove the remaining "
+                              f"files in '{staging.name}' inside this model's store directory to free disk space."),
+                    "code": "model_delete_cleanup_pending",
+                    "deletionCommitted": True,
+                    "recoveryDirectory": staging.name,
+                })
+                return
             json_response(self, 200, {"status": "deleted", "gguf_file": gguf_file})
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             json_response(self, 500, {"error": f"Failed to delete: {exc}"})
