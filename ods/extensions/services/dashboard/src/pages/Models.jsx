@@ -377,6 +377,7 @@ export default function Models({ compact = false }) {
         gpu={gpu}
         externalApi={externalApi}
         showProfile={canActivateModels}
+        lifecycleActive={Boolean(modelLifecycle?.active || modelActivation?.active || activationLoading || runtimeActionLoading)}
       />
 
       {!currentModel && !loadedModel && configuredModel && !externalApi && (
@@ -508,7 +509,7 @@ export default function Models({ compact = false }) {
   )
 }
 
-function CurrentModelPanel({ model, currentModel, gpu, compact = false, externalApi = null, showProfile = false }) {
+function CurrentModelPanel({ model, currentModel, gpu, compact = false, externalApi = null, showProfile = false, lifecycleActive = false }) {
   if (externalApi) return <ExternalApiPanel compact={compact} externalApi={externalApi} />
   const modelLabel = currentModel || model?.id
   const speed = getSpeedDisplay(model)
@@ -522,7 +523,7 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false, external
       <div className="models-active-name"><MetalMetricIcon icon={Box} size={22}/><strong title={modelLabel}>{model?.name || modelLabel || 'No model running'}</strong></div>
       {currentModel && <>
         <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}</dl>
-        {showProfile && model?.id && <ModelProfileSummary modelId={model.id}/>}
+        {showProfile && model?.id && <ModelProfileSummary modelId={model.id} lifecycleActive={lifecycleActive}/>}
       </>}
     </section>
   )
@@ -545,7 +546,7 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false, external
               {memory && <span>{memory.label} VRAM ({memory.percent}%)</span>}
               <span>{context} context</span>
             </div>
-            {showProfile && currentModel && model?.id && <ModelProfileSummary modelId={model.id} />}
+            {showProfile && currentModel && model?.id && <ModelProfileSummary modelId={model.id} lifecycleActive={lifecycleActive} />}
           </div>
         </div>
 
