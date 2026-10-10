@@ -920,6 +920,7 @@ test("requested document delivery receives a prioritized route on full and compa
     'Deliver the existing archive.zip.',
     'Do not download old.zip; attach current.pdf instead.',
     'Attach the existing "docs/report.docx".',
+    'Create a small Python project, run the tests and give me the downloadable project with its original source filenames.',
   ]) {
     assert.equal(selects([], prompt), true, prompt);
     for (const configuredLeanPrompt of [false, true]) {
@@ -929,6 +930,12 @@ test("requested document delivery receives a prioritized route on full and compa
       assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
         ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
       assert.match(result.prependContext, /Complete any requested file creation or edits first/);
+      assert.match(result.prependContext, /source-code files.*code projects.*ZIP/);
+      assert.match(result.prependContext, /preserving filenames and bytes/);
+      assert.match(result.prependContext, /never rename source to \.txt/);
+      assert.match(result.prependContext, /4 MiB/);
+      assert.match(result.prependContext, /Creating a file is not delivery/);
+      assert.match(result.prependContext, /verified receipt BEFORE the final reply/);
     }
   }
   assert.ok(guide.length < 700);
