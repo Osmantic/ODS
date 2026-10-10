@@ -203,6 +203,48 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+# Settings ODS tells the owner to put in .env that no installer writes: the
+# dashboard's n8n API key (routers/workflows.py), the Hugging Face token for
+# gated downloads (routers/models.py), the Intel Arc image override
+# (docker-compose.arc.yml), Open WebUI's speech settings (tts/README.md) and
+# whether apps use measured model profiles (ODS_MODEL_PROFILES,
+# docs/MODEL-MANAGEMENT.md).
+# Same list as ODS_OWNER_ENV_KEYS in installers/lib/extension-env-carry.sh.
+# Installer-managed keys must not be listed: an old value would override the
+# installer's new choice.
+$script:ODS_OWNER_ENV_KEYS = @(
+    "N8N_API_KEY"
+    "HF_TOKEN"
+    "LLAMA_ARC_IMAGE"
+    "AUDIO_TTS_ENGINE"
+    "AUDIO_TTS_MODEL"
+    "AUDIO_TTS_VOICE"
+    "AUDIO_TTS_OPENAI_API_BASE_URL"
+    "AUDIO_TTS_OPENAI_API_KEY"
+    "ODS_MODEL_PROFILES"
+)
+
+function Get-ODSCarriedEnvLines {
+    <# Return, for each key the new .env content lacks, its last assignment line
+       in the previous .env, as it is when .env is read. Keys match exactly. #>
+    param(
+        [AllowEmptyCollection()][string[]]$PreviousLines,
+        [AllowEmptyString()][string]$NewContent,
+        [string[]]$Keys
+    )
+    $carried = @()
+    foreach ($key in $Keys) {
+        $prefix = "$key="
+        if ($NewContent -cmatch ("(?m)^" + [regex]::Escape($prefix))) { continue }
+        $last = $null
+        foreach ($line in $PreviousLines) {
+            if ($line.StartsWith($prefix, [StringComparison]::Ordinal)) { $last = $line }
+        }
+        if ($null -ne $last) { $carried += $last }
+    }
+    return $carried
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -247,9 +289,11 @@ function New-ODSEnv {
 
     # Preserve existing secrets on re-install (mirrors Linux _env_get logic)
     $existingEnv = @{}
+    $previousEnvLines = @()
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path $envPath) {
-        Get-Content $envPath | ForEach-Object {
+        $previousEnvLines = @(Get-Content $envPath)
+        $previousEnvLines | ForEach-Object {
             if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
                 $existingEnv[$Matches[1]] = $Matches[2]
             }
@@ -836,6 +880,14 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
 
     # NOTE: No VIDEO_GID, RENDER_GID, HSA_OVERRIDE_GFX_VERSION on Windows
     # Those are Linux-only for AMD ROCm container device access
+
+    # The template above replaces .env; keep the owner's own settings.
+    $ownerLines = @(Get-ODSCarriedEnvLines -PreviousLines $previousEnvLines `
+        -NewContent $envContent -Keys $script:ODS_OWNER_ENV_KEYS)
+    if ($ownerLines.Count -gt 0) {
+        $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+        $envContent += "$nl$nl#=== Owner settings (kept from the previous .env) ===$nl" + ($ownerLines -join $nl)
+    }
 
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path -LiteralPath $envPath -PathType Container) {
