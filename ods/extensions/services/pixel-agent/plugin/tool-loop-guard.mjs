@@ -1,4 +1,4 @@
-import {validDeliveredArtifact} from './workspace-artifact.mjs';
+import {validDeliveredArtifact, WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -4615,7 +4615,7 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
   ).join(' ');
   return /\b(?:download(?:able)?|attach(?:ment)?|deliver(?:y)?)\b/i.test(positive) &&
     (/\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)\b/i.test(positive) ||
-      (/\b(?:documents?|files?|archives?)\b/i.test(positive) &&
+      (/\b(?:documents?|files?|archives?|projects?|source\s+(?:code|filenames?))\b/i.test(positive) &&
         !/\b(?:images?|photos?|audio|video|websites?|webpages?|html)\b|\.(?:png|jpe?g|gif|svg|mp3|mp4|wav|webm|html?)\b/i.test(positive)));
 }
 
@@ -11815,6 +11815,17 @@ export function createToolLoopGuard({
     const failedToolResult = message.isError === true || Boolean(compactNativeVerification) ||
       compactCoreResult?.details?.result?.isError === true ||
       validatedToolSearchEnvelope(message.details, WORKSPACE_PREVIEW_TOOL, "pixel-ods")?.result?.isError === true;
+    // A successful archive command (or test run) only creates workspace bytes.
+    // Coach the actual publication on an exactly bound terminal exec receipt,
+    // including native exec; deferred-core compaction alone misses that route.
+    const artifactDeliveryPending = state?.workspaceDocumentDeliveryRequested &&
+      !state.workspaceArtifacts?.length && workspaceArtifactUnavailableReason({
+        agentId, runId, sessionId: state.currentSessionId, sessionKey: state.currentSessionKey,
+      }) === undefined;
+    const artifactStageInstruction = artifactDeliveryPending && !failedToolResult &&
+      executionGuidance && syntaxReceipt?.details?.exitCode === 0 &&
+      state.latestVerificationStatus !== 'failed'
+      ? `[ODS Pixel next step] ${WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE}` : undefined;
     const workspaceStageInstruction = (() => {
       if (failedToolResult) return undefined;
       if (!compactCoreResult || !state || state.progressBudget.laneExhausted('workspace')) return undefined;
@@ -11847,6 +11858,7 @@ export function createToolLoopGuard({
         return `[ODS Pixel next step] ${FAILED_TEST_READ_REPAIR_REASON}`;
       }
       if (state.latestVerificationStatus === "passed") {
+        if (artifactDeliveryPending) return undefined;
         return (
           "[ODS Pixel next step] Verification passed. Give the owner the concise final " +
           "result now; do not call another tool."
@@ -12016,6 +12028,7 @@ export function createToolLoopGuard({
       !compactWebResult &&
       !compactNativeWebResult &&
       !nativeFetchGuidance &&
+      !artifactStageInstruction &&
       !previewStageInstruction &&
       !controlNameRepair &&
       !sandboxPathCorrection &&
@@ -12064,6 +12077,9 @@ export function createToolLoopGuard({
       content.push({type:'text',text:redirectOrderNote});
     if (workspaceStageInstruction && coachingDue('workspace', workspaceStageInstruction)) {
       content.push({ type: "text", text: workspaceStageInstruction });
+    }
+    if (artifactStageInstruction && coachingDue('artifact', artifactStageInstruction)) {
+      content.push({ type: 'text', text: artifactStageInstruction });
     }
     if (sandboxPathCorrection) content.push({type:'text',text:sandboxPathCorrection});
     if (researchBudgetGuidance) content.push({type:'text',text:researchBudgetGuidance});
@@ -12892,9 +12908,19 @@ export function createToolLoopGuard({
     return !reason || reason === 'publication-attempt-limit' ? runs.get(scope.runId) : undefined;
   }
   function deliveryVerificationForRun(runId) {
-    const result=baseDeliveryVerificationForRun(runId);
+    let result=baseDeliveryVerificationForRun(runId);
     const state=runs.get(runId);
     const artifacts=state?.workspaceArtifacts;
+    // Passing tests or creating an archive cannot stand in for its download
+    // receipt. Keep pending questions, cancellation and existing failure facts.
+    if (state?.workspaceDocumentDeliveryRequested && state.artifactOwnerInteractive &&
+        !state.managedTeamWorker && !state.clientCancelled && !artifacts?.length &&
+        ['none','passed','failed'].includes(result.status)) {
+      const missing = 'The requested download was not attached: ODS did not receive a verified artifact publication receipt. A workspace file or passing tests alone does not provide a download.';
+      result = {...result, status: 'failed', text: result.text
+        ? `${missing}\n\n${result.text}`.slice(0, MAX_INGRESS_VERIFICATION_TEXT) : missing};
+      delete result.deliveryMode;
+    }
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
       ? {...result,artifacts:structuredClone(artifacts)} : result;
   }

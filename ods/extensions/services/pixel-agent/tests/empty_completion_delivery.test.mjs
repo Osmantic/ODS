@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createIngressServer } from '../host/pixel_ingress.mjs';
+import { createToolLoopGuard } from '../plugin/tool-loop-guard.mjs';
 
 const RUN_ID = 'chatcmpl_e5261a35-a837-4170-b2a1-0023b46e312c';
 const CHAT_ID = 'ods-tower3-missing-preview-8860-20260923b';
@@ -103,6 +104,22 @@ function assertOneUnchangedRequest(f) {
   assert.equal(f.observed.submissions[0].stream, false, 'only terminal upstream completion');
   assert.equal(f.observed.submissions[0].messages.at(-1).content, PROMPT);
 }
+
+for (const stream of [false, true]) test(`missing requested project attachment reaches Portal as incomplete, stream=${stream}`,async t=>{
+  const prompt='Create a Python project and give me the downloadable project with original source filenames.';
+  const guard=createToolLoopGuard();
+  guard.observeRun({agentId:'pixel',trigger:'user',runId:RUN_ID,sessionId:'project-session',
+    sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)},'pixel',{prompt});
+  const verification={...guard.deliveryVerificationForRun(RUN_ID),task:TASK};
+  const f=await fixture(t,{content:'Project complete. Download:',verification});
+  const result=await complete(f,{stream,prompt});
+  assert.equal(result.response.status,200);
+  assert.match(result.text,/requested download was not attached/);
+  assert.doesNotMatch(result.text,/Project complete|Download:$/);
+  if(stream) assert.equal(result.terminal.pixel_outcome.status,'failed');
+  assert.equal(f.observed.submissions.length,1,'no replay or automatic publication');
+  assert.equal(f.observed.submissions[0].messages.at(-1).content,prompt);
+});
 
 for (const content of SILENT) {
   for (const stream of [false, true]) {
