@@ -929,6 +929,10 @@ test("requested document delivery receives a prioritized route on full and compa
       assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
         ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
       assert.match(result.prependContext, /Complete any requested file creation or edits first/);
+      assert.match(result.prependContext, /source-code files.*code projects.*ZIP/);
+      assert.match(result.prependContext, /preserving filenames and bytes/);
+      assert.match(result.prependContext, /never rename source to \.txt/);
+      assert.match(result.prependContext, /4 MiB/);
     }
   }
   assert.ok(guide.length < 700);
