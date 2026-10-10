@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root "installers\windows\lib\native-llama-args.ps1")
+. (Join-Path $root "installers\windows\lib\native-llama-legacy.ps1")
 
 $onWindows = ($env:OS -eq "Windows_NT")
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) "ods-native-checkpoint-$([Guid]::NewGuid().ToString('N'))"
@@ -85,13 +86,37 @@ try {
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "" -FallbackFormat "none") @("--reasoning", "off") "b9014 default"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "auto" -FallbackFormat "auto") @("--reasoning", "auto") "b9014 auto"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "deepseek" -FallbackFormat "deepseek") @("--reasoning-format", "deepseek") "format name"
-    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "OFF" -FallbackFormat "OFF") @("--reasoning-format", "OFF") "case-sensitive mode"
+    # Modes are case-insensitive, as in ods-host-agent.py and bootstrap-upgrade.sh.
+    # A case-sensitive mode here turned OFF into the fallback format alone:
+    # b9014's default --reasoning auto then kept thinking on in the reply.
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "OFF" -FallbackFormat "none") @("--reasoning", "off") "b9014 OFF"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "Auto" -FallbackFormat "Auto") @("--reasoning", "auto") "b9014 Auto"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "Off" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 Off"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 off"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 default"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "on" -FallbackFormat "deepseek") @("--reasoning-format", "deepseek") "b8248 on"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $formatOnly -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "no budget flag"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $removed -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "removed flag"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $failing -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "help exits non-zero"
+
+    # The launchers take the mode and fallback format from
+    # native-llama-legacy.ps1. An uppercase mode must still map to llama.cpp's
+    # lowercase format, or a binary without --reasoning gets
+    # --reasoning-format OFF and exits.
+    foreach ($case in @(
+        @{ Mode = "OFF"; Format = "none" },
+        @{ Mode = "On"; Format = "deepseek" },
+        @{ Mode = "AUTO"; Format = "auto" },
+        @{ Mode = ""; Format = "none" }
+    )) {
+        $choice = Get-ODSNativeLlamaLegacyReasoning @{ LLAMA_REASONING = $case.Mode }
+        if ($choice.Format -cne $case.Format) {
+            throw "legacy '$($case.Mode)': expected format '$($case.Format)', got '$($choice.Format)'"
+        }
+    }
+    $choice = Get-ODSNativeLlamaLegacyReasoning @{ LLAMA_REASONING = "OFF" }
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $formatOnly -Mode $choice.Mode -FallbackFormat $choice.Format) @("--reasoning-format", "none") "legacy OFF without --reasoning"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode $choice.Mode -FallbackFormat $choice.Format) @("--reasoning", "off") "legacy OFF with --reasoning"
 
     # Every Windows launch goes through the probes: install-windows.ps1 and
     # ods.ps1 start llama-server only through native-llama-legacy.ps1, and the
