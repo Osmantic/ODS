@@ -9862,6 +9862,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
             self._handle_llm_status()
+        elif path == "/v1/llm/health":
+            self._handle_llm_health()
         elif path == "/v1/webui/selection":
             self._handle_webui_selection(change=False)
         elif path == "/v1/service/health":
@@ -10422,6 +10424,29 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired,
                 ValueError, TypeError, RuntimeError) as exc:
             json_response(self, 503, {"error": f"Docker health snapshot failed: {exc}"})
+
+    def _handle_llm_health(self):
+        """Fresh runtime health without waiting on optional telemetry or its lock."""
+        if not check_auth(self):
+            return
+        env = load_env(INSTALL_DIR / ".env")
+        if not _host_llm_runtime(env):
+            json_response(self, 501, {"error": "Host inference health is unsupported for this runtime"})
+            return
+        try:
+            # Use the same authenticated, owned-router transport as runtime
+            # proofs. Do not reuse a previous telemetry sample as live health.
+            value = json.loads(_runtime_http(env, "/health") or "{}")
+            status = value.get("status") if isinstance(value, dict) else None
+            if isinstance(value, dict) and isinstance(value.get("error"), dict) and value["error"].get("code") == 503:
+                status = "loading"
+            if not isinstance(status, str) or status not in {"ok", "loading", "error"}:
+                raise ValueError("Runtime health response is not recognized")
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            json_response(self, 503, {"error": "Host inference health could not be verified"})
+            return
+        json_response(self, 200, {"schema_version": "ods.host-llm-health.v1",
+                                  "health": {"status": status}, "sampled_at": _iso_now()})
 
     def _handle_llm_status(self):
         """Bridge host-native inference telemetry the dashboard cannot read."""
