@@ -172,10 +172,10 @@ AGENT_PLIST_EOF
         return 1
     fi
 
-    # Recovery pins a verified socket. launchd does not inherit that environment;
-    # without this, model/extension actions could use a different Docker engine.
-    if [[ -n "${DOCKER_HOST:-}" ]]; then
-        if ! "$AGENT_PYTHON" - "$ODS_AGENT_PLIST" <<'AGENT_DOCKER_ENV_PY'
+    # Older retained agents do not export their own Python for resolver children.
+    # Pin the venv that just proved its dependencies, including outside recovery.
+    # Recovery also pins a verified socket; launchd inherits neither setting.
+    if ! "$AGENT_PYTHON" - "$ODS_AGENT_PLIST" "$AGENT_PYTHON" <<'AGENT_DOCKER_ENV_PY'
 import os
 from pathlib import Path
 import plistlib
@@ -185,8 +185,10 @@ import tempfile
 path = Path(sys.argv[1])
 document = plistlib.loads(path.read_bytes())
 environment = document["EnvironmentVariables"]
-for key in ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
-    environment[key] = os.environ.get(key, "")
+environment["ODS_PYTHON_CMD"] = sys.argv[2]
+if os.environ.get("DOCKER_HOST"):
+    for key in ("DOCKER_HOST", "DOCKER_CONFIG", "DOCKER_CONTEXT", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        environment[key] = os.environ.get(key, "")
 with tempfile.TemporaryDirectory(prefix=".ods-host-agent-", dir=path.parent) as temporary:
     staged = Path(temporary) / "agent.plist"
     with staged.open("xb") as stream:
@@ -196,10 +198,9 @@ with tempfile.TemporaryDirectory(prefix=".ods-host-agent-", dir=path.parent) as 
         os.fsync(stream.fileno())
     os.replace(staged, path)
 AGENT_DOCKER_ENV_PY
-        then
-            ai_err "Could not preserve the selected Docker transport for the host agent."
-            return 1
-        fi
+    then
+        ai_err "Could not preserve the host-agent Python and Docker environment."
+        return 1
     fi
 
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true

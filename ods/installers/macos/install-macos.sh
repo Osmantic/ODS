@@ -1148,6 +1148,10 @@ fi
 if ! $PREFLIGHT_ONLY && ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
     ai_err "Existing native Pixel installation detected. The base installer cannot migrate it or disable it safely."
     ai "Your configuration is unchanged. Keep data/pixel-native; use the qualified native migration/update path when available."
+    if [[ -f "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" ]]; then
+        ai "For interrupted native Pixel setup, keep this installation and run:"
+        printf '  curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | ODS_INSTALL_DIR=%q bash -s -- --recover\n' "$INSTALL_DIR"
+    fi
     exit 1
 fi
 
@@ -1156,8 +1160,13 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     if ! $NON_INTERACTIVE && ! $DRY_RUN; then
         _pixel_install_args+=(--prompt-for-sudo)
     fi
-    /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
-        --preflight-only || exit 1
+    if ! /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" --preflight-only; then
+        if [[ -e "${INSTALL_DIR}/data/pixel-native/preparation/activation.json" ]]; then
+            ai "For interrupted native Pixel setup, keep this installation and run:"
+            printf '  curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | ODS_INSTALL_DIR=%q bash -s -- --recover\n' "$INSTALL_DIR"
+        fi
+        exit 1
+    fi
     ENABLE_HERMES=false
 fi
 
@@ -3006,6 +3015,8 @@ for service in (data.get("services") or {}).values():
                 echo "${COMPOSE_FLAGS[*]} ${_pixel_compose_fragments[*]}" > "${INSTALL_DIR}/.compose-flags"
             fi
             ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
+            ai "Continue this installation with the supported recovery command:"
+            printf '  curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | ODS_INSTALL_DIR=%q bash -s -- --recover\n' "$INSTALL_DIR"
             exit 1
         fi
         COMPOSE_FLAGS+=("${_pixel_compose_fragments[@]}")

@@ -22,6 +22,12 @@ on:
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
       - 'ods/tests/test_macos_pixel_native_recover.py'
+      - 'ods/tests/test_macos_pixel_recovery_python.py'
+      - 'ods/tests/test_macos_pixel_recovery_resolver.py'
+      - 'ods/tests/test_macos_install_progress.py'
+      - 'ods/tests/test_macos_install_resume.py'
+      - 'ods/tests/test_macos_resume_integration.py'
+      - 'ods/tests/test_macos_recovery_entrypoints.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
@@ -59,6 +65,12 @@ on:
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
       - 'ods/tests/test_macos_pixel_native_recover.py'
+      - 'ods/tests/test_macos_pixel_recovery_python.py'
+      - 'ods/tests/test_macos_pixel_recovery_resolver.py'
+      - 'ods/tests/test_macos_install_progress.py'
+      - 'ods/tests/test_macos_install_resume.py'
+      - 'ods/tests/test_macos_resume_integration.py'
+      - 'ods/tests/test_macos_recovery_entrypoints.py'
       - 'ods/tests/test_macos_pixel_access_install.py'
       - 'ods/tests/test_macos_pixel_runtime_upgrade.py'
       - 'ods/tests/test_pixel_startup_reproof.py'
@@ -104,7 +116,7 @@ jobs:
       - name: Verify saved macOS bootstrap resume arguments
         run: bash ods/tests/test-macos-bootstrap-resume.sh
       - name: Verify the one-line bootstrap runs under the system Bash
-        run: python -m pytest -q ods/tests/test_bootstrap_system_bash.py
+        run: python -m pytest -q ods/tests/test_bootstrap_system_bash.py ods/tests/test_macos_recovery_entrypoints.py
       - name: Verify native retirement precedes destructive uninstall
         run: bash ods/tests/test-macos-uninstall-launchagents.sh
       - name: Verify bridge admission and real HTTP forwarding
@@ -124,6 +136,11 @@ jobs:
           ods/tests/test_macos_pixel_controller_held_proof.py
           ods/tests/test_macos_pixel_native_finalize.py
           ods/tests/test_macos_pixel_native_recover.py
+          ods/tests/test_macos_pixel_recovery_python.py
+          ods/tests/test_macos_pixel_recovery_resolver.py
+          ods/tests/test_macos_install_progress.py
+          ods/tests/test_macos_install_resume.py
+          ods/tests/test_macos_resume_integration.py
           ods/tests/test_macos_pixel_access_install.py
           ods/tests/test_macos_pixel_runtime_upgrade.py
           ods/tests/test_pixel_startup_reproof.py

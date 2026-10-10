@@ -271,6 +271,8 @@ def resume_model_upgrade(install_dir, compose_files, process_env, *, verify_sele
     if existing.returncode != 1:
         raise ValueError('native-model-upgrade-process-check-failed')
     environment = {key: process_env[key] for key in ('HOME', 'PATH', 'DOCKER_HOST', 'DOCKER_CONFIG')}
+    if 'ODS_PYTHON_CMD' in process_env:
+        environment['ODS_PYTHON_CMD'] = process_env['ODS_PYTHON_CMD']
     environment['TMPDIR'] = tempfile.gettempdir()
     pid_path = install_dir / 'data/bootstrap-upgrade.pid'
     pid_before = owned_snapshot(pid_path)
@@ -344,6 +346,8 @@ def _run_owner_setup(install_dir, process_env, *, stage, script, extra_env=None,
                 or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1):
             raise ValueError('private-native-continuation-log-required')
         environment = {key: process_env[key] for key in ('HOME', 'PATH', 'DOCKER_HOST', 'DOCKER_CONFIG')}
+        if 'ODS_PYTHON_CMD' in process_env:
+            environment['ODS_PYTHON_CMD'] = process_env['ODS_PYTHON_CMD']
         environment['ODS_CONTINUATION_LOG_FD'] = str(stream.fileno())
         environment.update(extra_env or {})
         result = subprocess.run(['/bin/bash', '-c', """
