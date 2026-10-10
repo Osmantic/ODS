@@ -79,14 +79,14 @@ PARAMETERS: dict[str, dict[str, Any]] = {
 # expanded as a Cartesian product; ICD should choose bounded sweeps per model.
 CAPABILITY_VOCABULARY = {
     "kv_cache": ["f16","f32","q8_0","q5_0","q5_1","q4_0","q4_1","q2_k","q3_k","q4_k","q5_k","q6_k","turbo2","turbo3","turbo4"],
-    "moe_placement": ["gpu","host-pinned","cpu-ram","ssd-mmap","layer-limited"],
+    "moe_placement": ["gpu","host-pinned","cpu-ram","ssd-mmap","layer-limited","host-moe","cpu-moe","ssd"],
     "speculation": ["none","draft-mtp","ngram-mod","combined-mtp-ngram"],
     "draft_placement": ["gpu-layers","host-moe","cpu-moe"],
     "memory_fit": ["manual","auto-fit","fit-target","fit-context"],
     "checkpoint_input": ["gguf","safetensors","safetensors-native"],
     "multimodal": ["text","vision-mmproj","video"],
     "device_split": ["none","layer","row","tensor"],
-    "kernel_tuning": ["baseline","tensor-buffer-overrides","build-specific-ptq1-mmV"],
+    "kernel_tuning": ["baseline","tensor-buffer-overrides","ptq1-mmV","build-specific-ptq1-mmV"],
 }
 
 # Only bounded dimensions should be enumerated automatically by ICD.
