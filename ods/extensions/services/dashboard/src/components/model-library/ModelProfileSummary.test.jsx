@@ -38,7 +38,10 @@ beforeEach(() => {
 })
 
 const offer = {id: 'qwen-tools-fix', reason: 'Its own template drops tool calls.', active: false, supported: true}
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
 
 async function show() {
   await act(async () => { render(<ModelProfileSummary modelId="qwen3.5-9b"/>) })
@@ -53,7 +56,7 @@ test('shows what the running model was measured to do, and on which runtime', as
   expect(region).toHaveTextContent('About 75 tokens/s')
   expect(region).toHaveTextContent('on llama.cpp b11429')
   expect(screen.queryByRole('link', {name: 'Get help on Discord'})).toBeNull()
-  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile', {cache: 'no-store'})
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile', {cache: 'no-store', signal: expect.any(AbortSignal)})
 })
 
 test('a chat-only model says so plainly and links to help', async () => {
@@ -175,4 +178,76 @@ test('a runtime that cannot use the fixed template says so, with help and no act
 test('the activation notice names the first-time check', () => {
   render(<MemoryRouter><ModelActivationNotice value={{active: true, phase: 'profiling', failureCode: null}}/></MemoryRouter>)
   expect(screen.getByText('Checking what this model can do (first time only)')).toBeVisible()
+})
+
+test('refreshes a delayed first profile after the model lifecycle settles without rechecking', async () => {
+  profileBody.profile = null
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={true}/>)
+  await act(async () => {})
+  expect(fetch).toHaveBeenCalledTimes(1)
+  profileBody.profile = profile(capable)
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText('Calls tools (Pixel and agents)')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+})
+
+test('a replaced model ignores a late previous profile response', async () => {
+  let resolveOld
+  fetch.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+  const view = render(<ModelProfileSummary modelId="old-model"/>)
+  profileBody = {mode: 'observe', modelId: 'new-model', profile: profile({...capable, tools: false}, {modelId: 'new-model'})}
+  view.rerender(<ModelProfileSummary modelId="new-model"/>)
+  await act(async () => {})
+  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
+  await act(async () => { resolveOld({ok: true, json: async () => ({mode: 'observe', modelId: 'old-model', profile: profile(capable, {modelId: 'old-model'})})}) })
+  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
+  expect(screen.queryByText('Calls tools (Pixel and agents)')).toBeNull()
+})
+
+test('an initial active lifecycle defers its read and an unchanged idle card does not poll', async () => {
+  vi.useFakeTimers()
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => { await vi.advanceTimersByTimeAsync(20000) })
+  expect(fetch).not.toHaveBeenCalled()
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(fetch).toHaveBeenCalledTimes(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(300000) })
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+test('a stalled profile body reaches its read deadline and ignores a late result', async () => {
+  vi.useFakeTimers()
+  let resolveBody
+  fetch.mockResolvedValueOnce({ok: true, json: () => new Promise(resolve => { resolveBody = resolve })})
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  const signal = fetch.mock.calls[0][1].signal
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+  expect(signal.aborted).toBe(true)
+  await act(async () => { resolveBody(profileBody) })
+  expect(view.container).toBeEmptyDOMElement()
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+test('a late recheck of an unmounted model does not launch another read or change the replacement', async () => {
+  await show()
+  let resolveRecheck
+  fetch.mockImplementationOnce(() => new Promise(resolve => { resolveRecheck = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  // Unmount the old surface while its owner-requested POST is pending.
+  const {cleanup} = await import('@testing-library/react')
+  cleanup()
+  profileBody = {mode: 'observe', modelId: 'new-model', profile: profile({...capable, tools: false}, {modelId: 'new-model'})}
+  render(<ModelProfileSummary modelId="new-model"/>)
+  await act(async () => {})
+  expect(fetch).toHaveBeenCalledTimes(3)
+  await act(async () => { resolveRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
 })

@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useState} from 'react'
+import {useCallback, useEffect, useRef, useState} from 'react'
 import {Loader2, RefreshCw, Wrench} from 'lucide-react'
 import HelpLink from '../HelpLink'
 
@@ -45,28 +45,63 @@ const TONES = {
 }
 
 /** Advisory: what the running model was measured to do on this machine. */
-export default function ModelProfileSummary({modelId}) {
+export default function ModelProfileSummary({modelId, lifecycleActive = false}) {
+  return <ProfileForModel key={modelId} modelId={modelId} lifecycleActive={lifecycleActive}/>
+}
+
+function ProfileForModel({modelId, lifecycleActive}) {
   const [data, setData] = useState(null)
   const [failed, setFailed] = useState(false)
   const [rechecking, setRechecking] = useState(false)
   const [applying, setApplying] = useState(false)
   const [notice, setNotice] = useState('')
+  const readScope = useRef({active: false, serial: 0, controller: null})
 
   const load = useCallback(async () => {
+    const scope = readScope.current
+    if (!scope.active) return
+    scope.controller?.abort()
+    const controller = new AbortController()
+    scope.controller = controller
+    const serial = ++scope.serial
+    const current = () => scope.active && scope.serial === serial
+    let timer
     try {
-      const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/profile`, {cache: 'no-store'})
-      const body = await readJson(response)
-      if (!response.ok || !body || typeof body.mode !== 'string') throw new Error('unavailable')
+      const body = await Promise.race([
+        (async () => {
+          const response = await fetch(`/api/models/${encodeURIComponent(modelId)}/profile`, {cache: 'no-store', signal: controller.signal})
+          const value = await readJson(response)
+          if (!response.ok || !value || typeof value.mode !== 'string' || value.modelId !== modelId
+            || (value.profile?.modelId && value.profile.modelId !== modelId)) throw new Error('unavailable')
+          return value
+        })(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => { controller.abort(); reject(new Error('unavailable')) }, 15000)
+        }),
+      ])
+      if (!current()) return
       setData(body)
       setFailed(false)
     } catch {
-      setFailed(true)
+      if (current()) setFailed(true)
+    } finally {
+      clearTimeout(timer)
+      if (scope.controller === controller) scope.controller = null
     }
   }, [modelId])
 
   useEffect(() => {
-    if (modelId) load()
-  }, [modelId, load])
+    const scope = readScope.current
+    scope.active = Boolean(modelId) && !lifecycleActive
+    // First activation records its profile before the lifecycle settles.
+    // Re-read that result, never start a new probe battery automatically.
+    if (scope.active) load()
+    return () => {
+      scope.active = false
+      scope.serial++
+      scope.controller?.abort()
+    }
+  }, [modelId, lifecycleActive, load])
 
   const recheck = async () => {
     setRechecking(true)
@@ -107,7 +142,7 @@ export default function ModelProfileSummary({modelId}) {
     }
   }
 
-  if (!modelId || failed || !data || data.mode === 'off') return null
+  if (!modelId || lifecycleActive || failed || !data || data.mode === 'off') return null
   const recheckButton = (
     <button
       type="button"
