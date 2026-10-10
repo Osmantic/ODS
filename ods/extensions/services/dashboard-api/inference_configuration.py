@@ -62,10 +62,18 @@ def validate_configuration(configuration: dict[str, Any]) -> None:
     if not configuration.get("model_ref"):
         raise ValueError("configuration requires model_ref")
     if "context" in configuration and configuration["context"] is not None:
-        if isinstance(configuration["context"], bool) or int(configuration["context"]) <= 0:
+        if (
+            isinstance(configuration["context"], bool)
+            or not isinstance(configuration["context"], int)
+            or configuration["context"] <= 0
+        ):
             raise ValueError("context must be a positive integer")
     if "draft_tokens" in configuration and configuration["draft_tokens"] is not None:
-        if isinstance(configuration["draft_tokens"], bool) or int(configuration["draft_tokens"]) < 0:
+        if (
+            isinstance(configuration["draft_tokens"], bool)
+            or not isinstance(configuration["draft_tokens"], int)
+            or configuration["draft_tokens"] < 0
+        ):
             raise ValueError("draft_tokens must be a non-negative integer")
 
 
