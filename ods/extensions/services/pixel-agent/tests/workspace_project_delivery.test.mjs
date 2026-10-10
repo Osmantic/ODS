@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {ARTIFACT_TOOL, ARTIFACT_BOUNDARY, createWorkspaceArtifactAdmission, createWorkspaceArtifactTool} from '../plugin/workspace-artifact.mjs';
 import {createAskUserTool} from '../plugin/ask-user.mjs';
+import {mkdirSync,mkdtempSync,writeFileSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 const {createToolLoopGuard, userMessageRequestsWorkspaceDocumentDelivery} = await import(
   process.env.ODS_PROJECT_DELIVERY_GUARD_MODULE || '../plugin/tool-loop-guard.mjs');
 
@@ -11,9 +14,15 @@ const prompt = 'Create a small Python project named reading_time_v2 with a CLI t
 const context = {trigger:'user',agentId:'pixel',runId:'project-run',sessionId:'project-session',
   sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
 
-function fixture({deferred=false, request=prompt, scope=context}={}) {
+function fixture(t,{deferred=false, request=prompt, scope=context}={}) {
+  const root=mkdtempSync(path.join(tmpdir(),'ods-project-delivery-'));
+  t.after(()=>{
+    assert.equal(path.dirname(root),path.resolve(tmpdir()));
+    assert.ok(path.basename(root).startsWith('ods-project-delivery-'));
+    rmSync(root,{recursive:true,force:true});
+  });
   const guard=createToolLoopGuard();
-  guard.observeRun(scope,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:'/home/owner/.openclaw/workspace-pixel'});
+  guard.observeRun(scope,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:root});
   let count=0;
   function call(name,args,{exitCode=0,text='',persistScope={},persistId,details={},beforePersist}={}) {
     const toolName=deferred?'tool_call':name,toolCallId=`call-${++count}`;
@@ -22,6 +31,11 @@ function fixture({deferred=false, request=prompt, scope=context}={}) {
     const decision=guard.beforeToolCall({toolName,toolCallId,params},ctx);
     assert.notEqual(decision?.block,true,decision?.blockReason);
     params=decision?.params ?? params;
+    if(name==='write') {
+      const value=deferred?params.args:params, target=path.resolve(root,value.path);
+      assert.ok(target.startsWith(root+path.sep));
+      mkdirSync(path.dirname(target),{recursive:true});writeFileSync(target,value.content);
+    }
     const result={...(exitCode?{isError:true}:{}),content:[{type:'text',text}],
       details:{status:'completed',exitCode,aggregated:text,...details}};
     const tool={id:`openclaw:core:${name}`,name,source:'openclaw',sourceName:'core'};
@@ -48,8 +62,8 @@ test('exact live request and project synonyms require artifact delivery, without
     assert.equal(userMessageRequestsWorkspaceDocumentDelivery([],text),false,text);
 });
 
-for(const deferred of [false,true]) test(`passing tests and ZIP creation require verified publication (${deferred?'deferred':'native'})`,async()=>{
-  const {guard,call}=fixture({deferred});
+for(const deferred of [false,true]) test(`passing tests and ZIP creation require verified publication (${deferred?'deferred':'native'})`,async t=>{
+  const {guard,call}=fixture(t,{deferred});
   call('write',{path:'Playground/reading_time_v2/test_reading_time.py',content:'import unittest\nclass ReadingTime(unittest.TestCase):\n def test_valid(self): self.assertEqual(12+25+8,45)\n'});
   const testResult=call('exec',{command:'python3 -m unittest -v',workdir:'/workspace/Playground/reading_time_v2'},
     {text:'test_valid ... ok\n\nRan 1 test in 0.001s\n\nOK'});
@@ -87,9 +101,10 @@ for(const deferred of [false,true]) test(`passing tests and ZIP creation require
   assert.doesNotMatch(after,/Creating a file is not delivery/);
 });
 
-test('publication coaching requires a current, exactly bound successful terminal exec',()=>{
+test('publication coaching requires a current, exactly bound successful terminal exec',t=>{
   for(const variant of ['good','wrong-run','wrong-session','wrong-call','background','failed','ended','superseded','exhausted-attempts']) {
-    const {guard,call}=fixture();
+    const {guard,call}=fixture(t);
+    call('write',{path:'Playground/reading_time_v2/main.py',content:'print(45)\n'});
     if(variant==='exhausted-attempts') for(let i=0;i<4;i++) assert.equal(guard.reserveWorkspaceArtifact(context),true);
     const value=call('exec',{command:'python3 -m zipfile -t reading_time_v2.zip',workdir:'/workspace/Playground'}, {
       persistScope:variant==='wrong-run'?{runId:'foreign'}:variant==='wrong-session'?{sessionId:'foreign'}:{},
@@ -104,14 +119,14 @@ test('publication coaching requires a current, exactly bound successful terminal
   }
 });
 
-test('owner cancellation retains its own terminal cause instead of a missing-download verdict',async()=>{
-  const {guard}=fixture();
+test('owner cancellation retains its own terminal cause instead of a missing-download verdict',async t=>{
+  const {guard}=fixture(t);
   await guard.abortUserRun('ods-'+'a'.repeat(64));
   assert.doesNotMatch(guard.deliveryVerificationForRun(context.runId).text??'',/requested download was not attached/);
 });
 
-test('pending owner question remains pending before requested project delivery',async()=>{
-  const {guard}=fixture({request:'Ask me which Python version before creating the downloadable project.'});
+test('pending owner question remains pending before requested project delivery',async t=>{
+  const {guard}=fixture(t,{request:'Ask me which Python version before creating the downloadable project.'});
   const questions=[{id:'version',question:'Which Python version?',options:['3.11','3.12']}];
   const result=await createAskUserTool().execute('ask',{questions});
   guard.afterToolCall({toolName:'pixel_ods_ask_user',result},{...context,toolCallId:'ask'});
@@ -121,10 +136,10 @@ test('pending owner question remains pending before requested project delivery',
   assert.doesNotMatch(verification.text,/requested download was not attached/);
 });
 
-test('missing attachment does not manufacture delivery obligations for source-only/background turns',()=>{
+test('missing attachment does not manufacture delivery obligations for source-only/background turns',t=>{
   for(const options of [{request:'Create a Python project and run the tests.'},
     {scope:{...context,trigger:'cron'}}, {scope:{...context,sessionKey:'agent:pixel:subagent:worker'}}]) {
-    const {guard}=fixture(options);
+    const {guard}=fixture(t,options);
     assert.doesNotMatch(guard.deliveryVerificationForRun(context.runId).text??'',/requested download was not attached/);
   }
 });
