@@ -462,6 +462,10 @@ async def forward(full_path: str, request: Request) -> Response:
         "X-ODS-Provider-Model": upstream_request.provider_model,
     }
     observation = CompletionObservation(route)
+    # HTTPX's read timeout restarts for every body read. Also bound the
+    # complete response, including waiting for headers, against slow drips.
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + UPSTREAM_TIMEOUT_SECONDS
     try:
         if upstream_request.stream:
             req = client.build_request(
@@ -472,11 +476,26 @@ async def forward(full_path: str, request: Request) -> Response:
                 timeout=UPSTREAM_TIMEOUT_SECONDS,
                 extensions=extensions,
             )
-            upstream = await client.send(req, stream=True)
+            upstream = await asyncio.wait_for(
+                client.send(req, stream=True), timeout=max(0, deadline - loop.time())
+            )
 
             async def stream_body() -> AsyncIterator[bytes]:
                 try:
-                    async for chunk in upstream.aiter_bytes():
+                    iterator = upstream.aiter_bytes().__aiter__()
+                    while True:
+                        remaining = deadline - loop.time()
+                        if remaining <= 0:
+                            return
+                        try:
+                            chunk = await asyncio.wait_for(iterator.__anext__(), timeout=remaining)
+                        except StopAsyncIteration:
+                            break
+                        except (TimeoutError, httpx.TimeoutException):
+                            # Headers may already have reached the caller. End
+                            # the partial stream without inventing a success
+                            # marker or recording a completed usage sample.
+                            return
                         if 200 <= upstream.status_code < 300:
                             observation.feed(chunk)
                         yield chunk
@@ -502,8 +521,10 @@ async def forward(full_path: str, request: Request) -> Response:
             timeout=UPSTREAM_TIMEOUT_SECONDS,
             extensions=extensions,
         )
-        upstream = await client.send(req)
-    except httpx.TimeoutException:
+        upstream = await asyncio.wait_for(
+            client.send(req), timeout=max(0, deadline - loop.time())
+        )
+    except (TimeoutError, httpx.TimeoutException):
         return _error_response(
             EgressError(504, "upstream_timeout", "remote provider timed out")
         )
