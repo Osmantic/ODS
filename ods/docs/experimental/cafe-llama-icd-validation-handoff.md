@@ -41,3 +41,10 @@ The separate LEONES staging implementation must be reconciled before claiming Ca
 5. Confirm the default `llama-server` activation path is unchanged.
 
 No throughput or hardware-support claim should be made until a real target-host benchmark captures model/artifact identity, configuration ID, workload, hardware, and measured results.
+
+
+## Additional boundary fixes
+
+- ICD now requires an explicit `runtime` or `runtime_id` on each profile. A hardware backend such as `nvidia` or `cpu` is not treated as an inference runtime.
+- The shared ICD validator requires `context` and `draft_tokens` to be actual positive/non-negative integers (not booleans, numeric strings, or floats).
+- Regression tests for both cases are included in `test_cafe_llama_capability_gates.py`.
