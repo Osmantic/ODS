@@ -42,7 +42,11 @@ services:
       - --n-gpu-layers
       - "${N_GPU_LAYERS:-99}"
       - --ctx-size
-      - "${CTX_SIZE:-32768}"
+      # 64K = Hermes Agent's minimum context floor (tests/test-hermes-context-floor.sh).
+      # The old 32K default put this overlay below the floor, which made Hermes
+      # fail its minimum-context check (or worse, accept and thrash) even when
+      # the installer-side floor logic had correctly chosen 64K in .env.
+      - "${CTX_SIZE:-65536}"
       # Compose replaces `command` wholesale rather than merging it, so the
       # documented runtime tunables have to be repeated here or they go inert
       # on this overlay.

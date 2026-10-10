@@ -1175,6 +1175,10 @@ patch_hermes_yaml_in_container() {
     # executables (for example /opt/data/config.yaml becomes
     # C:/Program Files/Git/opt/data/config.yaml).  That path belongs inside
     # the container, so keep the docker argv byte-for-byte on every host.
+    # NOTE: this helper must stay a single docker invocation (no post-hoc
+    # container greps here — tests/test-bootstrap-upgrade-hotswap-contract.sh
+    # pins the docker argv boundary). Callers verify the rewrite landed;
+    # the docker swap path re-greps and retries patch_hermes_yaml_in_container.
     MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes sed -i \
         "${sed_args[@]}" \
         /opt/data/config.yaml
@@ -2117,6 +2121,40 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
                 log "WARNING: Could not patch Hermes /opt/data/config.yaml (non-fatal — operator can hand-edit and 'docker restart ods-hermes')"
             log "Recreating Hermes to pick up model change..."
             compose_recreate_hermes 2>&1 || log "WARNING: Hermes recreate failed (non-fatal — hand-recreate with 'docker compose up -d --force-recreate --no-deps hermes')"
+
+            # End-of-swap Hermes context verification. A failed patch above used
+            # to vanish into a WARNING while .env was already promoted, leaving
+            # Hermes pinned at the bootstrap context (64K) with no retry until
+            # the operator noticed. Verify the promoted context_length landed;
+            # on mismatch retry the container patch once, then surface a loud
+            # error with the exact repair command if it still doesn't stick.
+            _hermes_ctx_verified=false
+            for _hermes_ctx_attempt in 1 2; do
+                if MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes \
+                    grep -Fq "  context_length: ${FULL_MAX_CONTEXT}" /opt/data/config.yaml 2>/dev/null \
+                    && MSYS_NO_PATHCONV=1 $DOCKER_CMD exec ods-hermes \
+                        grep -Fq "    context_length: ${FULL_MAX_CONTEXT}" /opt/data/config.yaml 2>/dev/null; then
+                    _hermes_ctx_verified=true
+                    break
+                fi
+                if [[ "$_hermes_ctx_attempt" == "2" ]]; then
+                    log "Hermes context still below ${FULL_MAX_CONTEXT} after retry; see repair command below."
+                else
+                    log "Hermes context verification failed (attempt ${_hermes_ctx_attempt}/2); retrying container config patch..."
+                    patch_hermes_yaml_in_container \
+                        "$_hermes_new_model" "$FULL_MAX_CONTEXT" "$_hermes_base_url" "$_hermes_request_timeout" true \
+                        2>&1 || log "WARNING: Hermes config patch retry failed"
+                fi
+            done
+            if [[ "$_hermes_ctx_verified" != "true" ]]; then
+                log "ERROR: Hermes is not running with the promoted context (${FULL_MAX_CONTEXT})."
+                log "  Hermes stays at the bootstrap context size and will hit 'context length exceeded'"
+                log "  loops once the 64K floor checks fail. Repair with:"
+                log "    docker exec ods-hermes sed -i 's|^  context_length: .*|  context_length: ${FULL_MAX_CONTEXT}|; s|^    context_length: .*|    context_length: ${FULL_MAX_CONTEXT}|' /opt/data/config.yaml"
+                log "    docker restart ods-hermes"
+            else
+                log "Hermes context verified at ${FULL_MAX_CONTEXT} after swap."
+            fi
 
             # Pre-warm the freshly-swapped LLM + Hermes's 14K-token system prompt.
             #
