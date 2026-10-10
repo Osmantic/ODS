@@ -22,11 +22,11 @@ jobs:
     outputs:
       artifact: ods-source-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6
         with:
           python-version: '3.11'
       - name: Verify signed tag and archive only its committed source
@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python .github/scripts/release_source.py prepare --output "$RUNNER_TEMP/ods-release"
       - name: Generate source dependency SBOM
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: ${{ runner.temp }}/ods-release/source
           format: spdx-json
@@ -44,7 +44,7 @@ jobs:
           upload-release-assets: false
       - name: Bind source identity, archive hashes and SBOM
         run: python .github/scripts/release_source.py finalize --output "$RUNNER_TEMP/ods-release"
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ods-source-${{ github.run_attempt }}
           if-no-files-found: error
@@ -67,7 +67,7 @@ jobs:
     outputs:
       artifact: ods-attested-source-${{ github.run_attempt }}
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ needs.prepare.outputs.artifact }}
           path: ${{ runner.temp }}/ods-release
@@ -88,7 +88,7 @@ jobs:
         env:
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: cp -- "$BUNDLE" "$RUNNER_TEMP/ods-release/provenance.sigstore.jsonl"
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ods-attested-source-${{ github.run_attempt }}
           if-no-files-found: error
