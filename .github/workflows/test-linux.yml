@@ -85,6 +85,10 @@ jobs:
         run: python -m pip install -r extensions/services/pixel-inference/requirements.txt -r extensions/services/model-router/requirements.txt 'pytest>=8,<9'
       - name: Installer image selection contracts
         run: python -m pytest tests/test_image_pull_plan.py -q
+      - name: Installer Hugging Face fallback storage and failure handling
+        run: |
+          python -m pip install 'filelock>=3.0,<4'
+          python -m pytest tests/test_hf_download_helper.py -q
       - name: mDNS publication recovery contracts
         run: python -m pytest tests/test_mdns_refresh_recovery.py tests/test_mdns_subdomains.py -q
       - name: Dashboard sign-in link command
