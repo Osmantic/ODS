@@ -86,9 +86,43 @@ different runtime, then asks the host agent to download and verify every file.
 Community imports are labelled as unvalidated until they have been benchmarked
 on the local machine; they are not added to the ODS recommended catalog.
 
+#### Checks before download
+
+When you open a repository, ODS reads the GGUF metadata header of one of its
+files with HTTP range requests (usually 1–16 MB, never the model weights) and
+reports, before anything is downloaded:
+
+- **Runtime support.** Each llama.cpp build ODS pins can load a fixed set of
+  model architectures (`config/llama-cpp-architectures.json`, generated from
+  llama.cpp's own source). A model whose architecture the build on this machine
+  does not list is refused: loading it would fail after the download. If you
+  know better, **Import anyway** imports it after an explicit warning; the
+  switch then proves whether it loads and returns to your current model if it
+  does not.
+- **Model kind.** Embedding, reranking, speech and image models, and vision
+  projector files on their own, are not chat models. ODS refuses them as the
+  chat model and names the service that runs that kind of model instead.
+- **Memory fit.** The header's attention layout feeds the same estimate the
+  installer uses, per quantization: fits at the context ODS would serve, fits
+  below the 64K that ODS Talk needs, or too large. Layouts ODS cannot size
+  precisely are labelled as a rough estimate.
+- **Template signals.** Whether the file's own chat template describes tool
+  calls and thinking. These are hints from the file; how the model behaves
+  shows only once you use it.
+- **Disk space.** An import is refused before it starts when the model store
+  would keep less than 2 GB or 5% of its drive, whichever is larger.
+
+These checks never block on missing information: when Hugging Face does not
+answer (for example a rate limit), the dialog says which checks could not run
+and the import stays available. Each header read counts as one download in
+the repository's Hugging Face statistics, so ODS reads one file per repository
+you open and nothing for search results.
+
 ODS requests the Hub's parsed GGUF metadata together with the repository and
-uses its declared context window when available. After download, the context
-stored in the local GGUF header takes precedence over Hub and catalog values.
+uses its declared context window when available. The selected file's own
+header, read before download, takes precedence over the Hub summary, and after
+download the context stored in the local GGUF header takes precedence over Hub
+and catalog values.
 Some community repositories do not publish parseable context metadata. ODS
 labels that limit as unknown instead of presenting a guessed maximum, starts
 from a conservative 8K runtime default, and still permits an explicit context
@@ -568,6 +602,9 @@ Common causes:
 - The model needs more VRAM or unified memory than the machine has.
 - Context length is too high; lower `CTX_SIZE` / `MAX_CONTEXT`.
 - The GGUF is not compatible with the active backend.
+- The model's architecture is newer than this machine's llama.cpp build. The
+  Hugging Face browser checks this before download; a model imported with
+  **Import anyway** can still fail here.
 
 ### Open WebUI or another app still shows the old model
 

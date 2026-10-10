@@ -768,6 +768,17 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     if runtime_profile:
         image = str(runtime_profile.get("llama_server_image") or "")
     image = image or str(model.get("llama_server_image") or "")
+    # A saved image is an explicit runtime pin, even when it currently equals
+    # the catalog default. Carry it only with the same retained local model
+    # and GPU backend; a backend/native-route change must choose its own image.
+    saved_backend = normalize_key(env.get("GPU_BACKEND"))
+    if (
+        reuse_env_runtime and not host_native and not env.get("NATIVE_LLM_BASE_URL")
+        and env.get("LLM_BACKEND") == "llama-server"
+        and saved_backend in {"nvidia", "amd", "cpu", "intel", "sycl", "jetson"}
+        and saved_backend == normalize_key(args.backend)
+    ):
+        image = env.get("LLAMA_SERVER_IMAGE") or image
     if image and not re.fullmatch(r"[A-Za-z0-9._/@:+-]{1,300}", image):
         return None
 

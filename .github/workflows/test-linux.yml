@@ -94,7 +94,7 @@ jobs:
       - name: GPU assignment capacity contracts
         run: python -m pytest tests/test-assign-gpus.py tests/test_gpu_spare_capacity.py -q
       - name: macOS TCP bridge lifecycle contracts
-        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py -q
+        run: python -m pytest tests/test_macos_llm_bridge.py tests/test_macos_upsert_env_value.py tests/test_macos_pixel_ops_python.py tests/test_macos_pixel_access_timeout.py tests/test_macos_pixel_native_bootstrap.py -q
       - name: Sharing credential and owner control tests
         run: python -m pytest tests/pixel_inference -q
       - name: Inference perimeter and cancellation tests
@@ -222,6 +222,9 @@ jobs:
       - name: Fleet Host Lock Contract
         run: bash tests/test-fleet-host-lock.sh
 
+      - name: Pre-download interactive and non-interactive input
+        run: bash tests/test-pre-download-tier-noninteractive.sh
+
       # SECURITY_AUDIT.md presents these as the project's standing security
       # checks, so CI has to be what runs them. No workflow invokes `make
       # test`, so Makefile wiring alone would leave them unenforced.
@@ -270,6 +273,9 @@ jobs:
       - name: Model Catalog Artifact Pins
         run: python3 tests/test-model-library-pinned-urls.py
 
+      - name: Installer Tier Maps Use Catalog Pins
+        run: python3 tests/test-tier-map-catalog-pins.py
+
       - name: README Model Tables Match the Selector
         run: python3 tests/test-readme-model-tables.py
 
@@ -317,6 +323,7 @@ jobs:
       - name: Validate Manifests Tests
         run: |
           bash tests/test-validate-manifests.sh
+          python3 tests/test-cli-config-validation.py -v
           bash tests/test-validate-manifest-schema.sh
 
       - name: Health Check Tests

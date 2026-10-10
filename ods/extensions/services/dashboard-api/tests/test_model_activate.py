@@ -6885,6 +6885,65 @@ class TestModelActivateRollback:
         assert recreates[0][0]["LLAMA_SERVER_IMAGE"] == "host.example/llama:custom"
         assert _mod.load_env(env_path)["LLAMA_SERVER_IMAGE"] == "host.example/llama:custom"
 
+    @pytest.mark.parametrize("image_owner", ["entry", "runtime_profile"])
+    def test_in_container_activation_drops_an_image_the_previous_model_selected(
+        self, tmp_path, monkeypatch, image_owner,
+    ):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        previous_image = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:" + "f" * 64
+        catalog_path = install_dir / "config" / "model-library.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        previous = {
+            "id": "previous-model",
+            "gguf_file": "old-model.gguf",
+            "gguf_url": "https://example.test/old-model.gguf",
+            "gguf_sha256": "0" * 64,
+            "llm_model_name": "old-model",
+            "context_length": 4096,
+        }
+        if image_owner == "entry":
+            previous["llama_server_image"] = previous_image
+        else:
+            previous["runtime_profiles"] = [{"id": "p", "llama_server_image": previous_image}]
+        catalog["models"].append(previous)
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8")
+            + f"MAX_CONTEXT=2048\nLLAMA_SERVER_IMAGE={previous_image}\n",
+            encoding="utf-8",
+        )
+        recreates = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install_dir))
+        monkeypatch.setattr(
+            _mod,
+            "_recreate_llama_server",
+            lambda env, override_image="": recreates.append((dict(env), override_image)),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        # target-model names no image: it runs the NVIDIA default again
+        # instead of inheriting the previous model's pinned build.
+        assert recreates[0][1].startswith("ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:")
+        assert "LLAMA_SERVER_IMAGE" not in recreates[0][0]
+        assert "LLAMA_SERVER_IMAGE" not in _mod.load_env(env_path)
+
+    def test_catalog_model_images_collects_entry_and_profile_images(self):
+        library = [
+            {"id": "a", "llama_server_image": " image/a:1 "},
+            {"id": "b", "runtime_profiles": [{"llama_server_image": "image/b:1"}, "bad", {}]},
+            {"id": "c", "llama_server_image": None, "runtime_profiles": "bad"},
+            {"id": "d"},
+        ]
+
+        assert _mod._catalog_model_images(library) == frozenset({"image/a:1", "image/b:1"})
+
     def test_pre_snapshot_failure_does_not_overwrite_configs(self, tmp_path, monkeypatch):
         install_dir, env_path, env_text, models_ini, ini_text, _yaml, _yaml_text = (
             _write_model_activation_fixture(tmp_path)

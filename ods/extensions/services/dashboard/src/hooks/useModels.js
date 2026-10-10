@@ -317,7 +317,11 @@ export function useModels({observe=true} = {}) {
     const controller = new AbortController()
     const cancel = () => controller.abort()
     signal?.addEventListener('abort', cancel, { once: true })
-    const timeout = setTimeout(() => controller.abort(), MODELS_FETCH_TIMEOUT_MS)
+    let timedOut = false
+    const timeout = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, MODELS_FETCH_TIMEOUT_MS)
     try {
       const response = await fetch('/api/models', { signal: controller.signal })
       if (!response.ok) throw new Error('Failed to fetch models')
@@ -362,7 +366,9 @@ export function useModels({observe=true} = {}) {
       if (signal?.aborted) return null
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
-        setFetchError(err.message)
+        setFetchError(timedOut
+          ? 'Could not refresh model status within 30 seconds. ODS may still be working; wait for status confirmation before retrying a model change.'
+          : err.message)
         setModelActivation(null)
         setModelManagement(normalizeModelManagement(null))
       }

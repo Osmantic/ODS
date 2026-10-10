@@ -6,6 +6,7 @@ supply the selected Pixel ref.
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import uuid
 
@@ -141,20 +143,37 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def download(package, destination):
     opener = urllib.request.build_opener(NoRedirect())
-    digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
-    with opener.open(package['url'], timeout=60) as response, destination.open('xb') as output:
-        for block in iter(lambda: response.read(1024 * 1024), b''):
-            count += len(block)
-            if count > 64 * 1024 * 1024:
-                raise BootstrapError('pinned-package-too-large')
-            digest.update(block)
-            integrity.update(block)
-            output.write(block)
-        output.flush()
-        os.fsync(output.fileno())
-    if (digest.hexdigest() != package['sha256']
-            or 'sha512-' + base64.b64encode(integrity.digest()).decode() != package['integrity']):
-        raise BootstrapError('pinned-package-checksum-mismatch')
+    for attempt in range(3):
+        digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
+        created = False
+        try:
+            with destination.open('xb') as output:
+                created = True
+                with opener.open(package['url'], timeout=60) as response:
+                    for block in iter(lambda: response.read(1024 * 1024), b''):
+                        count += len(block)
+                        if count > 64 * 1024 * 1024:
+                            raise BootstrapError('pinned-package-too-large')
+                        digest.update(block)
+                        integrity.update(block)
+                        output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            if (digest.hexdigest() != package['sha256']
+                    or 'sha512-' + base64.b64encode(integrity.digest()).decode() != package['integrity']):
+                raise BootstrapError('pinned-package-checksum-mismatch')
+            return
+        except BootstrapError:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
+        except (OSError, urllib.request.URLError, http.client.HTTPException) as error:
+            if not created:
+                raise
+            destination.unlink(missing_ok=True)
+            if attempt == 2:
+                raise BootstrapError('pinned-package-download-failed') from error
+            time.sleep(attempt + 1)
 
 
 def probe_plugins(node, runtime, plugins, temporary, env, *, entrypoint='node_modules/openclaw/openclaw.mjs'):

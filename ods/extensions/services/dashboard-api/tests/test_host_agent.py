@@ -8377,6 +8377,156 @@ class TestModelDownloadCatalogUnavailable:
         assert body["error"] == "Model not in library catalog"
 
 
+class TestModelDownloadDiskSpace:
+    """A download that cannot leave the model store its margin is refused first."""
+
+    GIB = 1024 ** 3
+
+    def _setup(self, tmp_path, monkeypatch, *, size_bytes, free_bytes, total_bytes):
+        install_dir = tmp_path / "install"
+        (install_dir / "config").mkdir(parents=True)
+        (install_dir / "data" / "models").mkdir(parents=True)
+        (install_dir / "config" / "model-library.json").write_text(json.dumps({"models": [{
+            "id": "test-model",
+            "gguf_file": "test-model.gguf",
+            "gguf_url": "https://example.com/test-model.gguf",
+            "size_bytes": size_bytes,
+        }]}), encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_directory", lambda: install_dir / "data" / "models")
+        storage = {
+            "freeBytes": free_bytes,
+            "totalBytes": total_bytes,
+            "marginBytes": _mod._download_disk_margin(total_bytes),
+        }
+        monkeypatch.setattr(_mod, "_model_storage_status", lambda _path: dict(storage))
+        return install_dir
+
+    def _body(self):
+        return json.dumps({
+            "gguf_file": "test-model.gguf",
+            "gguf_url": "https://example.com/test-model.gguf",
+        }).encode("utf-8")
+
+    def _no_lifecycle(self, monkeypatch):
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("a refused download must not take the model lifecycle")
+        monkeypatch.setattr(_mod, "_begin_model_lifecycle", refuse)
+
+    def test_insufficient_space_returns_507_before_the_lifecycle(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
+                    free_bytes=11 * self.GIB, total_bytes=100 * self.GIB)
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 507
+        body = handler.parse_response()
+        assert body["code"] == "insufficient_disk_space"
+        assert body["requiredBytes"] == 10 * self.GIB
+        assert body["freeBytes"] == 11 * self.GIB
+        assert body["marginBytes"] == 5 * self.GIB
+
+    def test_exact_margin_passes_the_space_check(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
+                    free_bytes=12 * self.GIB, total_bytes=20 * self.GIB)
+        monkeypatch.setattr(
+            _mod, "_begin_model_lifecycle",
+            lambda *_args, **_kwargs: (False, {"operation": "model_activation"}),
+        )
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        # The space check passed; the next gate (the lifecycle) answered.
+        assert handler.response_code == 409
+
+    def test_artifact_already_on_disk_at_its_size_needs_no_space(self, tmp_path, monkeypatch):
+        install_dir = self._setup(tmp_path, monkeypatch, size_bytes=5,
+                                  free_bytes=0, total_bytes=100 * self.GIB)
+        (install_dir / "data" / "models" / "test-model.gguf").write_bytes(b"12345")
+        monkeypatch.setattr(
+            _mod, "_model_storage_status",
+            lambda _path: (_ for _ in ()).throw(AssertionError("no space check is needed")),
+        )
+        monkeypatch.setattr(
+            _mod, "_begin_model_lifecycle",
+            lambda *_args, **_kwargs: (False, {"operation": "model_activation"}),
+        )
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 409
+
+    def test_unreadable_free_space_is_a_409(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=10, free_bytes=0, total_bytes=0)
+
+        def fail(_path):
+            raise OSError("no such volume")
+
+        monkeypatch.setattr(_mod, "_model_storage_status", fail)
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 409
+        assert handler.parse_response()["error"] == "Free space on the model store could not be checked"
+
+    def test_margin_is_two_gib_or_five_percent(self):
+        assert _mod._download_disk_margin(10 * self.GIB) == 2 * self.GIB
+        assert _mod._download_disk_margin(100 * self.GIB) == 5 * self.GIB
+
+    def test_bytes_needed_skips_present_and_unsized_artifacts(self, tmp_path):
+        present = tmp_path / "present.gguf"
+        present.write_bytes(b"abc")
+        wrong_size = tmp_path / "partial.gguf"
+        wrong_size.write_bytes(b"a")
+        artifacts = [
+            {"file": "present.gguf", "size_bytes": 3},
+            {"file": "partial.gguf", "size_bytes": 4},
+            {"file": "missing.gguf", "size_bytes": 7},
+            {"file": "unsized.gguf", "size_bytes": None},
+        ]
+        paths = {name: tmp_path / name for name in (
+            "present.gguf", "partial.gguf", "missing.gguf", "unsized.gguf")}
+
+        assert _mod._download_bytes_needed(artifacts, paths) == 11
+
+    def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path):
+        status = _mod._model_storage_status(tmp_path / "not" / "created" / "yet")
+
+        assert status["totalBytes"] > 0
+        assert status["freeBytes"] >= 0
+        assert status["marginBytes"] == _mod._download_disk_margin(status["totalBytes"])
+
+    def test_storage_endpoint_reports_the_download_volume(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_directory", lambda: tmp_path)
+        handler = _FakeHandler(b"")
+
+        _mod.AgentHandler._handle_model_storage(handler)
+
+        assert handler.response_code == 200
+        assert set(handler.parse_response()) == {"freeBytes", "totalBytes", "marginBytes"}
+
+    def test_storage_endpoint_is_409_when_the_directory_cannot_be_verified(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+
+        def unverified():
+            raise RuntimeError("Windows runtime model-store ownership changed")
+
+        monkeypatch.setattr(_mod, "_model_download_directory", unverified)
+        handler = _FakeHandler(b"")
+
+        _mod.AgentHandler._handle_model_storage(handler)
+
+        assert handler.response_code == 409
+
+
 class TestModelDeleteSafety:
 
     def _setup(self, tmp_path, monkeypatch, *, active="other.gguf"):

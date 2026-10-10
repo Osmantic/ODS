@@ -204,6 +204,9 @@ export const PENDING_EXEC_LOOP_ABORT_REASON =
 export const PHANTOM_PROCESS_REASON =
   "No background process is running in this response. Every command so far has completed, and its output is in the corresponding exec result. Continue with that output instead of calling process.";
 
+const NATIVE_DELEGATION_WAIT_REASON =
+  'This owner response has accepted native subagents with completion events still pending. The process tool controls background exec sessions; it cannot wait for native subagents. Call tool_describe with {"id":"openclaw:core:sessions_yield"}, then tool_call with {"id":"openclaw:core:sessions_yield","args":{}} to end this turn and receive their completion events. This is a native tool call, not process(action="yield") or a shell command. This refused process call ran nothing.';
+
 // Per run and per kind of corrective answer (see recordFreeCorrection): how
 // many answers are recorded without consuming the failure budget.
 export const FREE_CORRECTIONS_PER_KIND = 2;
@@ -5948,10 +5951,17 @@ function hasExplicitWorkspacePreviewDirective(text) {
   // A requested delivery action can follow a diagnosis or code repair. Do not
   // mistake a subordinate "why we should publish" for that owner command.
   const commands = text.matchAll(
-    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now)\s+)\s*(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\s+([^!?;\n]{1,512})/gi
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then|now|instead)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:try\s+to\s+)?(display|preview|publish|republish|serve|open|show|view)\b/gi
   );
   return [...commands].some((match) => {
-    const target = match[2].split(/\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0];
+    // Do not consume this target in matchAll: it may contain a later command
+    // such as "Open README.md, then publish demo/index.html".
+    const target = text.slice(match.index + match[0].length, match.index + match[0].length + 512)
+      .split(/[!?;\n]|\.(?=\s|$)|\b(?:and|then|but|however|instead)\b/i)[0].trim();
+    // An explicit publication command can refer to a previously named HTML
+    // file's folder. Questions about what that file shows are not commands.
+    if (/^(?:publish|republish|preview|serve)$/i.test(match[1]) &&
+      /\b(?:folder|directory)\b/i.test(target) && hasWorkspaceHtmlTarget(text)) return true;
     if (hasWorkspaceHtmlTarget(target)) return true;
     const visualTargetPattern = /\b(?:website|site|web\s*page|frontend|dashboard|preview|animation|illustration|scene|game|chart|diagram|svg)\b/i;
     const visualTarget = visualTargetPattern.test(target);
@@ -5964,6 +5974,9 @@ function hasExplicitWorkspacePreviewDirective(text) {
     // command. Bind that pronoun within this clause, not an earlier topic.
     const precedingClause = text.slice(0, match.index)
       .split(/[!?;\n]|\.(?=\s|$)/).at(-1);
+    if (!target.trim() && /^(?:publish|republish|preview|serve)$/i.test(match[1])) {
+      return hasWorkspaceHtmlTarget(precedingClause);
+    }
     return /^(?:it|this|that)(?:\s|[.!?;]|$)/i.test(target.trim()) &&
       (hasWorkspaceHtmlTarget(precedingClause) ||
         (/\b(?:browser|preview)\b/i.test(target) &&
@@ -6206,12 +6219,8 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   ) return false;
   const directPreview =
     explicitDelivery ||
-    // A dot inside index.html is part of the requested filename, not a
-    // sentence boundary between the preview action and its target.
-    // Delivery verbs in a rejected list ("do not edit, publish, or run")
-    // are constraints, even when another clause names an HTML file.
-    (hasWorkspaceHtmlTarget(actionText) &&
-      /\b(?:preview|publish|serve|open|show|view)\b/i.test(actionText)) ||
+    // An HTML filename plus "what does it show?" is a read-only question.
+    // Bind delivery to an owner command above, not any nearby verb.
     /\b(?:preview|publish|republish|serve)\b[^.!?;\n]{0,96}\b(?:artworks?|illustrations?|charts?|diagrams?|animations?|games?|sites?|websites?|web\s*pages?|frontends?)\b/i.test(actionText) ||
     /\b(?:site|website|web\s*page|frontend)\b[^.!?;\n]{0,96}\b(?:preview|publish|republish|serve)\b/i.test(actionText);
   const unreachableLocalPreview =
@@ -6389,12 +6398,32 @@ function freshWorkspaceCreationRequested(text) {
   );
 }
 
+function workspaceVisualRepairIntent(text) {
+  const owner = ownerLaneText(text);
+  // Read-only explanations and quoted instructions cannot require an edit.
+  if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:edit|modify|change|write|overwrite)\s+(?:any\s+)?(?:files?|anything|source)\b|\bno\s+(?:file|source)\s+changes\b/i.test(owner)) return undefined;
+  const commands = owner.matchAll(
+    /(?:^|[.!?;\n]|\b(?:and(?:\s+then)?|then)\s+)\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:fix|repair|correct)\s+(?:only\s+)?([^!?;\n]{1,512})/gi
+  );
+  const paths = new Set();
+  let visual = false;
+  for (const command of commands) {
+    const target = command[1];
+    const file = /^(?:the\s+)?[`"']?(?:\/workspace\/)?([A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?)[`"']?(?=$|[\s:,.!?;])/i.exec(target);
+    if (file && file[1].split('/').every(part => WORKSPACE_PATH_COMPONENT.test(part))) paths.add(file[1]);
+    if (/^(?:(?:the|this|that|existing|previous|current)\s+)+(?:corrected\s+|repaired\s+|fixed\s+)?(?:app|page|preview|site|website)\b/i.test(target)) visual = true;
+  }
+  if (paths.size > 1) return undefined;
+  return paths.size === 1 ? {path:[...paths][0]} : visual ? {} : undefined;
+}
+
 export function userMessageRequestsWorkspaceVisualContinuation(
   messages,
   prompt = undefined
 ) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return false;
+  if (workspaceVisualRepairIntent(text) && !freshWorkspaceCreationRequested(text)) return true;
   if (userMessageRequestsWorkspaceContinuation([], text)) return false;
   // Keeping an app as-is is preservation, not a request to edit a prior preview.
   // Other change verbs in the same request still identify a visual revision.
@@ -7666,8 +7695,13 @@ export function createToolLoopGuard({
   // Publication currency across later calls (see preview-revalidation.mjs).
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
-  function beforeToolCall(event, context, agentId = "pixel") {
-    const decision = decideToolCall(event, context, agentId);
+  function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
+    const originalDecision = decideToolCall(event, context, agentId);
+    // Only refine an already-proven phantom process refusal. Real exec
+    // sessions, earlier denials, correction allowances and failure fuses keep
+    // their existing decisions. Fixed text preserves identical-outcome checks.
+    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
@@ -9785,13 +9819,19 @@ export function createToolLoopGuard({
         const verificationContinuationRequested = userMessageRequestsWorkspaceVerificationContinuation(
           event?.messages, event?.prompt
         );
+        const repairPath = workspaceVisualRepairIntent(ownerIntent)?.path;
+        // A named repair inherits only the verified project it actually names.
+        // Unrelated files remain on the ordinary workspace path, not redirected
+        // into the last preview merely because this session has one.
+        const repairMatchesPreview = !repairPath ||
+          repairPath.startsWith(`${previousPreview?.relativeDirectory}/`);
         // Verification intent survives a gateway restart; it requires fresh
         // evidence but cannot confer a previous project's continuation scope.
         // A host-authored delivery retry in this same run must not erase the
         // original owner's verification obligation.
         state.workspacePreviewVerificationRequested ||= verificationContinuationRequested;
         const trustedSessionPreview =
-          (visualContinuationRequested || verificationContinuationRequested) && typeof sessionId === "string" && sessionId
+          (visualContinuationRequested || verificationContinuationRequested) && repairMatchesPreview && typeof sessionId === "string" && sessionId
             ? sessionPreviews.get(sessionId)
             : undefined;
         const previewRequested = namedPreviewRequested || userMessageRequestsWorkspacePreview(

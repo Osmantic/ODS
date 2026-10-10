@@ -29,6 +29,12 @@
    the HIP backend shares CUDA's split code. ODS maps tensor and hybrid
    assignments to layer split on NVIDIA and AMD.
 
+4. config/llama-cpp-architectures.json, which the Models page uses to refuse
+   a Hugging Face model the host's llama.cpp cannot load, names the same
+   build for every backend as BACKEND_BUILDS and the macOS native pin, and
+   lists architectures for exactly those builds (regenerate it with
+   scripts/generate-llama-architectures.py --write after a pin change).
+
 Run from ods/:  python3 tests/contracts/test-llama-cpp-compat.py
 """
 
@@ -244,6 +250,53 @@ def check_other_backends(errors: list[str]) -> None:
         errors.append("06-directories.sh: must not write SYCL_CACHE_PERSISTENT")
 
 
+# Key in config/llama-cpp-architectures.json -> BACKEND_BUILDS keys it must equal.
+ARCHITECTURE_POLICY_SOURCES = {
+    "nvidia": ("nvidia",),
+    "cpu": ("cpu",),
+    "amd": ("amd-vulkan", "amd-rocm"),
+    "intel": ("intel",),
+    "sycl": ("arc",),
+    "windows-native": ("windows-native",),
+}
+
+
+def check_architecture_lists(errors: list[str]) -> None:
+    """The pre-download architecture gate reads the builds the pins ship."""
+    path = ROOT_DIR / "config/llama-cpp-architectures.json"
+    policy = json.loads(path.read_text(encoding="utf-8"))
+    backend_builds = policy.get("backendBuilds", {})
+    builds = policy.get("builds", {})
+    for key, sources in ARCHITECTURE_POLICY_SOURCES.items():
+        for source in sources:
+            if backend_builds.get(key) != BACKEND_BUILDS[source]:
+                errors.append(
+                    f"llama-cpp-architectures.json: backendBuilds.{key} must be {BACKEND_BUILDS[source]} "
+                    f"(the {source} release policy), got {backend_builds.get(key)!r}"
+                )
+    macos = re.search(
+        r'^LLAMA_CPP_RELEASE_TAG="(b\d+)"',
+        (ROOT_DIR / "installers/macos/lib/constants.sh").read_text(encoding="utf-8"),
+        re.M,
+    )
+    if not macos or backend_builds.get("apple") != macos.group(1):
+        errors.append("llama-cpp-architectures.json: backendBuilds.apple must be the macOS native pin in constants.sh")
+    unknown_keys = set(backend_builds) - set(ARCHITECTURE_POLICY_SOURCES) - {"apple"}
+    if unknown_keys:
+        errors.append(f"llama-cpp-architectures.json: backendBuilds has keys without a pin: {sorted(unknown_keys)}")
+    if set(builds) != set(backend_builds.values()):
+        errors.append(
+            "llama-cpp-architectures.json: builds must list exactly the builds backendBuilds names; "
+            "run scripts/generate-llama-architectures.py --write"
+        )
+    for tag, entry in sorted(builds.items()):
+        names = entry.get("architectures") if isinstance(entry, dict) else None
+        if not isinstance(names, list) or not names or names != sorted(set(names)):
+            errors.append(f"llama-cpp-architectures.json: {tag} needs a sorted, unique, non-empty architecture list")
+        if not re.fullmatch(r"[0-9a-f]{40}", str((entry or {}).get("commit", ""))):
+            errors.append(f"llama-cpp-architectures.json: {tag} needs its full release commit")
+
+
 def bash_case(text: str, anchor: str, variables: dict[str, str], result: str) -> str:
     """Run the `case` statement that starts at `anchor` with the given inputs."""
     start = text.index(anchor)
@@ -277,12 +330,13 @@ def main() -> int:
     check_pins(errors)
     check_other_backends(errors)
     check_split_mode(errors)
+    check_architecture_lists(errors)
     if errors:
         print("[FAIL] llama.cpp image pin / split-mode contract")
         for error in errors:
             print(f"  - {error}")
         return 1
-    print("[PASS] llama.cpp images are tag@digest pinned and copies agree; each backend matches its explicit release policy; no GPU uses row split")
+    print("[PASS] llama.cpp images are tag@digest pinned and copies agree; each backend matches its explicit release policy; no GPU uses row split; the architecture gate lists every pinned build")
     return 0
 
 

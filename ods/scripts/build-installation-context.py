@@ -399,8 +399,9 @@ def build_soul(
     # so we can write the real file in its place. Caught when re-running
     # /ods-fleet-test on mac-mini after a prior failed install.
     if output_path.exists() and not output_path.is_file():
-        import shutil
-        shutil.rmtree(output_path)
+        if output_path.is_symlink() or any(output_path.iterdir()):
+            raise OSError(f"Refusing to overwrite non-empty or symlinked directory: {output_path}")
+        output_path.rmdir()
     previous = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
     if previous == assembled:
         return False
@@ -459,7 +460,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: template not found at {args.template}", file=sys.stderr)
         return 2
 
-    changed = build_soul(args.template, args.env, args.output, profile=args.profile)
+    try:
+        changed = build_soul(args.template, args.env, args.output, profile=args.profile)
+    except OSError as err:
+        print(f"ERROR: {err}", file=sys.stderr)
+        return 1
     print("changed" if changed else "unchanged")
     return 0
 

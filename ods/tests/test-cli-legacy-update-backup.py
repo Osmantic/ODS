@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Run ods update through its real fallback backup before a controlled pull failure."""
-import json
+"""Check legacy backup routing around a controlled update pull failure."""
 import os
 from pathlib import Path
 import shutil
@@ -48,7 +47,7 @@ echo "Unexpected fixture Docker command: $*" >&2
 exit 91
 """)
         (self.binary / "docker").chmod(0o755)
-        self.env = dict(os.environ, ODS_HOME=str(self.install), HOME=str(self.root),
+        self.env = dict(os.environ, INSTALL_DIR=str(self.install), ODS_HOME=str(self.install), HOME=str(self.root),
                         PATH=f"{self.binary}:{os.environ['PATH']}", NO_COLOR="1")
         self.env.pop("ODS_DIR", None)
 
@@ -59,29 +58,18 @@ exit 91
         self.assertIn("fixture pull stopped after backup", result.stdout + result.stderr)
         return result.stdout + result.stderr
 
-    def test_fallback_creates_restorable_user_data_with_a_description(self):
-        output = self.update()
-        manifests = list((self.install / ".backups").glob("*/manifest.json"))
-        self.assertEqual(len(manifests), 1, output)
-        manifest = json.loads(manifests[0].read_text())
-        self.assertEqual(manifest["backup_type"], "user-data")
-        self.assertRegex(manifest["description"], r"^pre-update-\d{8}-\d{6}$")
-        backup = manifests[0].parent
-        self.assertEqual((backup / "data/open-webui/notes.txt").read_bytes(), self.payload)
-        self.assertEqual((self.install / "data/open-webui/notes.txt").read_bytes(), self.payload)
-        self.assertNotIn("Pre-update backup failed", output)
-
-        restored = self.root / "restored"
-        (restored / "lib").mkdir(parents=True)
-        (restored / "data").mkdir()
-        for helper in ("rsync.sh", "backup-paths.sh"):
-            shutil.copy2(ODS / "lib" / helper, restored / "lib" / helper)
-        shutil.copytree(backup, restored / ".backups" / backup.name)
-        restore_env = dict(self.env, ODS_DIR=str(restored))
-        result = subprocess.run(["bash", str(ODS / "ods-restore.sh"), "-f", backup.name],
-                                env=restore_env, capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual((restored / "data/open-webui/notes.txt").read_bytes(), self.payload)
+    def test_user_data_backup_cannot_substitute_for_update_snapshot(self):
+        before_env = (self.install / ".env").read_bytes()
+        before_flags = (self.install / ".compose-flags").read_bytes()
+        result = subprocess.run(["bash", str(ODS / "ods-cli"), "update", "--force"],
+                                env=self.env, capture_output=True, text=True, timeout=30)
+        output = result.stdout + result.stderr
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ods-update.sh is missing or not executable", output)
+        self.assertNotIn("fixture pull stopped after backup", output)
+        self.assertFalse((self.install / ".backups").exists())
+        self.assertEqual((self.install / ".env").read_bytes(), before_env)
+        self.assertEqual((self.install / ".compose-flags").read_bytes(), before_flags)
 
     def test_preferred_snapshot_script_keeps_its_existing_label_contract(self):
         snapshot = self.install / "ods-update.sh"

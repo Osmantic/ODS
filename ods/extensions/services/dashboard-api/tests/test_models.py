@@ -776,6 +776,69 @@ def test_huggingface_restricted_import_requires_token_before_registry_write(
     assert not (tmp_path / "model-imports.json").exists()
 
 
+def test_agent_disk_refusal_becomes_a_plain_507(monkeypatch):
+    import routers.models as models_router
+
+    agent_body = {
+        "error": "Not enough free disk space for this model",
+        "code": "insufficient_disk_space",
+        "requiredBytes": 10 * 1024 ** 3,
+        "freeBytes": 11 * 1024 ** 3,
+        "marginBytes": 5 * 1024 ** 3,
+    }
+
+    def refuse(*_args, **_kwargs):
+        raise models_router.AgentHTTPError(507, "insufficient storage", json.dumps(agent_body))
+
+    monkeypatch.setattr(models_router, "request_agent_json", refuse)
+
+    with pytest.raises(models_router.HTTPException) as raised:
+        models_router._call_agent_model("/v1/model/download", {"gguf_file": "m.gguf"})
+
+    assert raised.value.status_code == 507
+    detail = raised.value.detail
+    assert isinstance(detail, dict)
+    assert detail["code"] == "insufficient_disk_space"
+    assert detail["requiredBytes"] == agent_body["requiredBytes"]
+    assert detail["message"] == (
+        "Not enough free disk space for this model. It needs 10.0 GB, ODS keeps 5.0 GB "
+        "free, and 11.0 GB is free now. Delete models you no longer use or free up space "
+        "on this drive, then retry."
+    )
+
+
+def test_huggingface_import_disk_refusal_is_definitively_not_started(
+    test_client, monkeypatch, tmp_path,
+):
+    import routers.models as models_router
+
+    async def fake_details(_repo_id):
+        return _hf_import_details()
+
+    def refuse(_path, _payload):
+        raise models_router.HTTPException(
+            status_code=507,
+            detail=models_router._insufficient_disk_detail({
+                "requiredBytes": 1024, "freeBytes": 0, "marginBytes": 2 * 1024 ** 3,
+            }),
+        )
+
+    monkeypatch.setattr(models_router, "DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "_hf_repo_details", fake_details)
+    monkeypatch.setattr(models_router, "_call_agent_model", refuse)
+    monkeypatch.setattr(models_router, "_bootstrap_upgrade_download_conflict", lambda: None)
+
+    response = test_client.post(
+        "/api/models/huggingface/import",
+        headers=test_client.auth_headers,
+        json={"repoId": "org/repo", "artifactId": "d" * 20},
+    )
+
+    assert response.status_code == 507
+    assert response.headers["X-ODS-Import-Started"] == "false"
+    assert response.json()["detail"]["code"] == "insufficient_disk_space"
+
+
 def test_huggingface_preparation_failure_is_definitively_not_started(test_client, monkeypatch):
     import routers.models as models_router
 

@@ -5,6 +5,7 @@ on:
     paths:
       - 'ods/bin/ods-macos-llm-bridge.py'
       - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_macos_upsert_env_value.py'
       - 'ods/tests/test_bridge_denied_admission.py'
       - 'ods/installers/macos/**'
       - 'ods/installers/lib/pixel-workspace-guidance.py'
@@ -16,6 +17,7 @@ on:
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
       - 'ods/ods-uninstall.sh'
       - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_migration_source_proof.py'
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
@@ -40,6 +42,7 @@ on:
     paths:
       - 'ods/bin/ods-macos-llm-bridge.py'
       - 'ods/tests/test_macos_llm_bridge.py'
+      - 'ods/tests/test_macos_upsert_env_value.py'
       - 'ods/tests/test_bridge_denied_admission.py'
       - 'ods/installers/macos/**'
       - 'ods/installers/lib/pixel-workspace-guidance.py'
@@ -51,6 +54,7 @@ on:
       - 'ods/tests/test-macos-uninstall-launchagents.sh'
       - 'ods/ods-uninstall.sh'
       - 'ods/tests/test_macos_pixel_native_update.py'
+      - 'ods/tests/test_macos_pixel_migration_source_proof.py'
       - 'ods/tests/test_macos_pixel_controller_repair.py'
       - 'ods/tests/test_macos_pixel_controller_held_proof.py'
       - 'ods/tests/test_macos_pixel_native_finalize.py'
@@ -105,6 +109,8 @@ jobs:
         run: bash ods/tests/test-macos-uninstall-launchagents.sh
       - name: Verify bridge admission and real HTTP forwarding
         run: python -m pytest -q ods/tests/test_bridge_denied_admission.py ods/tests/test_macos_llm_bridge.py
+      - name: Verify private environment rollback custody
+        run: python -m pytest -q ods/tests/test_macos_upsert_env_value.py
       - name: Verify native installer, update and startup contracts
         run: >-
           python -m pytest -q
@@ -112,6 +118,7 @@ jobs:
           ods/tests/test_macos_pixel_native_uninstall.py
           ods/tests/test_macos_pixel_ops_account.py
           ods/tests/test_macos_pixel_native_update.py
+          ods/tests/test_macos_pixel_migration_source_proof.py
           ods/tests/test_pixel_workspace_guidance.py
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py

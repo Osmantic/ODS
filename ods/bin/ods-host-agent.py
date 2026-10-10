@@ -1018,6 +1018,49 @@ def _artifact_expected_size(metadata: dict) -> int | None:
     return None
 
 
+_DOWNLOAD_DISK_MARGIN_MIN_BYTES = 2 * 1024 ** 3
+_DOWNLOAD_DISK_MARGIN_FRACTION = 0.05
+
+
+def _download_disk_margin(total_bytes: int) -> int:
+    """Free space a download must leave on the model store volume."""
+    return max(_DOWNLOAD_DISK_MARGIN_MIN_BYTES, int(total_bytes * _DOWNLOAD_DISK_MARGIN_FRACTION))
+
+
+def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path]) -> int:
+    """Bytes still to fetch: sized artifacts not already on disk at that size.
+
+    An artifact of unknown size is not counted; the download verifies it.
+    """
+    needed = 0
+    for artifact in artifacts:
+        expected = artifact.get("size_bytes")
+        if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
+            continue
+        target = paths.get(artifact["file"])
+        try:
+            if target is not None and target.stat().st_size == expected:
+                continue
+        except OSError:
+            # Not present, or not readable here: it still has to be fetched.
+            pass
+        needed += expected
+    return needed
+
+
+def _model_storage_status(models_dir: Path) -> dict:
+    """Free and total bytes of the volume that holds models_dir."""
+    probe = Path(models_dir)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    return {
+        "freeBytes": int(usage.free),
+        "totalBytes": int(usage.total),
+        "marginBytes": _download_disk_margin(int(usage.total)),
+    }
+
+
 def _model_download_manifest(model: dict) -> dict | None:
     """Build the complete integrity manifest for one catalog model."""
     gguf_file = str(model.get("gguf_file") or "").strip()
@@ -9634,6 +9677,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_status()
         elif path == "/v1/model/management":
             self._handle_model_management()
+        elif path == "/v1/model/storage":
+            self._handle_model_storage()
         elif path == "/v1/model/external-observation":
             self._handle_retired_lemonade_endpoint()
         elif path == "/v1/model/recovery":
@@ -12768,6 +12813,17 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     # ── Model management handlers ──
 
+    def _handle_model_storage(self):
+        """Report free space where model downloads land, for download preflight."""
+        if not check_auth(self):
+            return
+        try:
+            storage = _model_storage_status(_model_download_directory())
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+            json_response(self, 409, {"error": "The model download directory could not be checked"})
+            return
+        json_response(self, 200, storage)
+
     def _handle_model_list(self):
         """Return model library catalog + on-disk GGUFs + active model."""
         if not check_auth(self):
@@ -12944,6 +13000,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 500, {"error": "Model catalog contains an unsafe filename"})
                 return
             artifact_paths[artifact["file"]] = target
+
+        needed_bytes = _download_bytes_needed(manifest["artifacts"], artifact_paths)
+        if needed_bytes:
+            try:
+                storage = _model_storage_status(models_dir)
+            except OSError:
+                json_response(self, 409, {"error": "Free space on the model store could not be checked"})
+                return
+            if storage["freeBytes"] < needed_bytes + storage["marginBytes"]:
+                json_response(self, 507, {
+                    "error": "Not enough free disk space for this model",
+                    "code": "insufficient_disk_space",
+                    "requiredBytes": needed_bytes,
+                    "freeBytes": storage["freeBytes"],
+                    "marginBytes": storage["marginBytes"],
+                })
+                return
 
         lifecycle_acquired, active = _begin_model_lifecycle("model_download", gguf_file)
         if not lifecycle_acquired:
@@ -13682,6 +13755,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         if requested_context_length is not None:
             context_length = requested_context_length
         llama_server_image = model.get("llama_server_image")
+        catalog_images = _catalog_model_images(library)
 
         # Verify GGUF exists on disk (with path traversal protection)
         target = _installed_model_file(gguf_file)
@@ -14365,6 +14439,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # images name another backend's (CUDA) build.
                 if llama_server_image and gpu_backend not in {"apple", "amd"}:
                     updates["LLAMA_SERVER_IMAGE"] = llama_server_image
+                elif (
+                    gpu_backend not in {"apple", "amd"}
+                    and str(env_pre.get("LLAMA_SERVER_IMAGE") or "").strip() in catalog_images
+                ):
+                    # A catalog entry's or runtime profile's image belongs to
+                    # the model that selected it. A model without its own image
+                    # runs the backend default again; a host or owner image that
+                    # no catalog model names is kept.
+                    remove_keys.add("LLAMA_SERVER_IMAGE")
                 new_lines = []
                 seen = set()
                 for line in lines:
@@ -18650,6 +18733,26 @@ def _default_runtime_incompatibility(model: dict, env: dict) -> str | None:
         return None
     note = str(verdict.get("userNote") or "").strip()
     return note or "This model needs a newer llama.cpp runtime than ODS ships by default."
+
+
+def _catalog_model_images(library: list[dict]) -> frozenset[str]:
+    """Images that a catalog entry or one of its runtime profiles selects."""
+    images = set()
+    for entry in library:
+        profiles = entry.get("runtime_profiles")
+        candidates = [entry.get("llama_server_image")]
+        if isinstance(profiles, list):
+            candidates.extend(
+                profile.get("llama_server_image")
+                for profile in profiles
+                if isinstance(profile, dict)
+            )
+        images.update(
+            candidate.strip()
+            for candidate in candidates
+            if isinstance(candidate, str) and candidate.strip()
+        )
+    return frozenset(images)
 
 
 def _select_runtime_profile(model: dict, env: dict) -> dict | None:
