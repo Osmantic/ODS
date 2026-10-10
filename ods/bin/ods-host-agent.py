@@ -4608,6 +4608,50 @@ def _recover_pixel_model_transaction(config: dict, *, release_unverified: bool =
         return pending
 
 
+def _held_local_repair_matches_switchboard(config: dict, target: dict, before: dict, current: dict) -> bool:
+    """Admit only a complete local route record; live proof is still required."""
+    name = 'data/model-state.json'
+    if (_switchboard_state is None or set(before) != set(current)
+            or {key for key in current if current[key] != before[key]} != {name}
+            or any(not isinstance(value, str) or re.fullmatch('[a-f0-9]{64}', value) is None
+                   for value in (before.get(name), current.get(name)))):
+        return False
+    try:
+        with _switchboard_state_path().open('rb') as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != current[name]:
+            return False
+        doc = json.loads(raw)
+        if _switchboard_state.validate_state(doc):
+            return False
+        active = doc['active']
+        if not isinstance(active, dict):
+            return False
+        catalog, _ = _catalog_model_for_current_env(config)
+        catalog_ids = {catalog, config.get('LLM_MODEL'), config.get('GGUF_FILE')} - {None, ''}
+        return bool(
+            doc.get('operation') is None
+            and doc['availability'] == {'mode': 'serve_active', 'queueDeadline': None}
+            and doc['desired'] == {'catalogId': active['catalogId']}
+            and doc['seq'] >= doc['routeSeq'] >= 1
+            and active['routeSeq'] == doc['routeSeq']
+            and active['catalogId'] in catalog_ids
+            and active['publicModel'] == 'ods/current'
+            and active['backend'].get('kind') == 'llama-server'
+            and active['backend'].get('endpointId') == 'llama-server-default'
+            and active['backend'].get('nativeRoute') is None
+            and active['contextLength'] == target['contextLength']
+            and active['capabilities']['chat'] is True
+            and active.get('reconstructed') is not True
+            and isinstance(active['verifiedAt'], str) and active['verifiedAt']
+            and active['proof']['completion'] is True
+            and _pixel_local_identity_matches(config, active['runtimeModelId'], target['model'])
+            and _pixel_local_identity_matches(config, active['proof']['identity'], target['model'])
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict:
     """Explicitly align a held native route with unchanged, proven Mac inference.
 
@@ -4625,7 +4669,8 @@ def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict
             or 'routeFingerprint' in journal['previous']):
         raise RuntimeError('Current-local repair requires the original held Mac local transaction')
     current = _pixel_model_config_digests()
-    if ('unavailable' in current.values() or current != journal['before']
+    switchboard_drift = current != journal['before']
+    if ('unavailable' in current.values()
             or journal['after'] not in (None, current)):
         raise RuntimeError('Model configuration changed; current-local repair refused')
     # Read the environment inside the captured digest window, never from an
@@ -4650,6 +4695,8 @@ def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict
         raise RuntimeError('Current-local repair target is invalid')
     if journal['target'] is not None and journal['target'] != target:
         raise RuntimeError('Saved repair target differs from current local inference')
+    if switchboard_drift and not _held_local_repair_matches_switchboard(config, target, journal['before'], current):
+        raise RuntimeError('Changed configuration is not a verified current local switchboard route; repair refused')
     transaction = _PixelModelTransaction(config)
     transaction.id = transaction_id
     transaction.previous = journal['previous']
@@ -4665,6 +4712,8 @@ def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict
     if not _prove_pixel_model_contract(config, target):
         raise RuntimeError('Current local inference did not prove the repair target')
     _verify_litellm_route(config)
+    if switchboard_drift:
+        _verify_litellm_route(config, model='ods/current')
     status_after = _runtime_model_control('model-status', config=config)
     if status_after != status:
         raise RuntimeError('Native model recovery state changed during proof')
@@ -4682,6 +4731,8 @@ def _repair_held_pixel_local_route(config: dict, *, transaction_id: str) -> dict
     if (not _prove_pixel_model_contract(config, target)
             or _pixel_model_config_digests() != current):
         raise RuntimeError('Current local inference changed during native repair')
+    if switchboard_drift:
+        _verify_litellm_route(config, model='ods/current')
     transaction.verify_held()
     if (_pixel_model_config_digests() != current
             or _read_pixel_model_journal() != transaction.journal):
