@@ -1144,7 +1144,7 @@ test('verification after gateway restart requires fresh publication and browser 
   assert.equal(guard.beforeAgentFinalize({},next),undefined);
 });
 
-test('verified preview delivery retains storage scope beside contradictory model prose',()=>{
+test('verified preview delivery replaces a contradictory storage guarantee with scoped evidence',()=>{
   const {guard,preview}=setup();
   const observed=inspection(guard,plan(preview));
   guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
@@ -1152,10 +1152,34 @@ test('verified preview delivery retains storage scope beside contradictory model
   const modelText='For actual persistence, open it in your regular browser.';
   const event={runId:'run',kind:'final',payload:{text:modelText}};
   const delivered=guard.replyPayloadSending(event).payload;
-  assert.ok(delivered.text.startsWith(modelText));
+  assert.doesNotMatch(delivered.text,/For actual persistence/);
+  assert.match(delivered.text,/Reload persistence has not been verified/);
   assert.ok(delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
   assert.ok(delivered.text.includes(preview.url));
   assert.equal(guard.replyPayloadSending({...event,payload:delivered}).payload.text,delivered.text);
+});
+
+test('OpenAI finalization binds unsupported storage claims to the current preview without a retry',()=>{
+  const {guard,preview}=setup();
+  const observed=inspection(guard,plan(preview));
+  guard.afterToolCall({...observed.event,result:observed.result},observed.ctx);
+  const answer='The inspection tool runs in an isolated browser session, so I cannot directly verify cross-reload persistence in this environment. However, the localStorage implementation is standard and will persist the book list across page reloads in a normal browser.';
+  const final=text=>({lastAssistantMessage:{role:'assistant',content:[{type:'text',text}]}});
+  assert.equal(guard.beforeAgentFinalize(final(answer),context),undefined);
+  const delivered=guard.deliveryVerificationForRun('run');
+  assert.equal(delivered.status,'failed');
+  assert.equal(delivered.deliveryMode,undefined,'private ingress must replace the unsupported prose');
+  assert.equal(delivered.preview.sha256,preview.sha256);
+  assert.match(delivered.text,/Reload persistence has not been verified/);
+  assert.ok(delivered.text.includes(preview.url));
+  assert.doesNotMatch(delivered.text,/will persist/);
+  guard.beforeAgentFinalize(final('Reload persistence is unverified.'),{...context,sessionId:'foreign-session'});
+  assert.equal(guard.deliveryVerificationForRun('run').status,'failed','foreign session cannot clear the bound finding');
+  guard.beforeAgentFinalize(final('Reload persistence is unverified.'),context);
+  assert.equal(guard.deliveryVerificationForRun('run').deliveryMode,'append','honest later final remains useful');
+  guard.beforeAgentFinalize({...final(answer),runId:'foreign-run'},context);
+  assert.equal(guard.deliveryVerificationForRun('run').deliveryMode,'append','foreign final cannot create a finding');
+  assert.equal(guard.deliveryVerificationForRun('unrelated-run').preview,undefined);
 });
 
 test('published but unverified interactions still disclose temporary preview input',()=>{
