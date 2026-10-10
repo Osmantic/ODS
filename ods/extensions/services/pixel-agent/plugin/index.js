@@ -45,6 +45,7 @@ import {
 } from "./projection.mjs";
 import { promptContractForAgent } from "./prompt-contract.mjs";
 import { executionContext } from "./completion-assurance.mjs";
+import {usesSmallContextPrompt, smallContextExecutionContext} from './small-context-prompt.mjs';
 import { createAskUserTool } from "./ask-user.mjs";
 import {
   appsToolText,
@@ -429,7 +430,8 @@ export default definePluginEntry({
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
       const deliveryContext = delegationDelivery.promptContext(context);
       const prependContext = [contract?.prependContext,cancelContext,deliveryContext].filter(Boolean).join('\n\n');
-      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
+      const smallContext = usesSmallContextPrompt(context, configuredContextWindow);
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${smallContext ? smallContextExecutionContext(new Date(), executionHost) : `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)}`} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${smallContext ? "" : executionContext()} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
