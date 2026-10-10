@@ -610,6 +610,20 @@ def test_preflight_counts_the_projector_in_fit_and_disk(test_client, preflight_e
     assert body["artifacts"]["b" * 20]["disk"] == "insufficient"
 
 
+def test_preflight_reports_disk_for_an_import_without_the_projector(test_client, preflight_env):
+    _router, state = preflight_env
+    state["details"] = _vision_details()
+    # 20 GiB free, 5 GiB margin: 15 GiB weights fit alone, not with the 1 GiB projector.
+    state["details"]["artifacts"][1]["sizeBytes"] = 15 * GIB
+    state["details"]["artifacts"][1]["files"][0]["sizeBytes"] = 15 * GIB
+
+    artifacts = _preflight(test_client).json()["artifacts"]
+
+    assert artifacts["b" * 20]["disk"] == "insufficient"
+    assert artifacts["b" * 20]["diskWithoutProjector"] == "ok"
+    assert artifacts["a" * 20]["diskWithoutProjector"] == "ok"
+
+
 def test_a_windows_launcher_without_vision_support_imports_the_weights_alone(test_client, monkeypatch):
     import routers.models as models_router
 

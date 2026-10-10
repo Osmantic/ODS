@@ -119,7 +119,7 @@ weights offers **Include vision**. ODS then downloads the projector with the
 chosen weights (F16 first, then BF16, F32 or Q8_0, or the repository's only
 one), verifies it like the weights, and loads it with the model so the model
 can read images; the memory and disk checks include it. Unticking it imports
-the weights alone. Deleting the model also removes its projector unless another
+the weights alone, and the disk check then counts the weights alone. Deleting the model also removes its projector unless another
 installed model uses it. While a projector is loaded, llama.cpp does not reuse
 cached prompt chunks (`--cache-reuse`).
 

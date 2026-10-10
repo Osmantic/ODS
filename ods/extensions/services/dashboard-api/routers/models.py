@@ -1373,10 +1373,12 @@ async def _hf_preflight(details: dict[str, Any]) -> dict[str, Any]:
     projector_bytes = int(projector["sizeBytes"]) if projector else 0
     artifacts = {}
     for artifact in details.get("artifacts") or []:
-        needed = 0 if artifact.get("installed") else _hf_artifact_size(artifact) + projector_bytes
+        weights = 0 if artifact.get("installed") else _hf_artifact_size(artifact)
         artifacts[artifact["id"]] = {
             "fit": _hf_artifact_fit(artifact, layout, declared_context, gpu_info, projector_bytes),
-            "disk": model_preflight.disk_status(needed, storage),
+            "disk": model_preflight.disk_status(weights + projector_bytes if weights else 0, storage),
+            # An import with Include vision unticked downloads the weights alone.
+            "diskWithoutProjector": model_preflight.disk_status(weights, storage),
             "tensors": _hf_artifact_tensors(gate, artifact),
         }
     return {

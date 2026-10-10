@@ -227,6 +227,24 @@ test('unticking Include vision imports the weights alone', async () => {
   expect(importBodies()[0]).toEqual({repoId: 'org/model', artifactId: 'q4', includeVision: false})
 })
 
+test('unticking Include vision frees an import that only the projector pushed past the disk', async () => {
+  detailsBody = {
+    ...repo, artifacts,
+    projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8, precision: 'F16'}],
+    defaultProjectorId: 'p1',
+  }
+  preflightBody = preflight({artifacts: {
+    q4: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'ok'},
+    q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'insufficient'},
+  }})
+  const dialog = await open()
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(2)
+  await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(1)
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true})) })
+  expect(importBodies()).toEqual([{repoId: 'org/model', artifactId: 'q4', includeVision: false}])
+})
+
 test('a repository without a projector shows no vision choice', async () => {
   const dialog = await open()
   expect(dialog.queryByRole('checkbox', {name: /Include vision/})).toBeNull()

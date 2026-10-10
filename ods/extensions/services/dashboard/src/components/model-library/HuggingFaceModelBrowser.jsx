@@ -570,6 +570,7 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
                         artifact={artifact}
                         gpu={gpu}
                         check={preflight?.artifacts?.[artifact.id] || null}
+                        projectorSkipped={Boolean(projector) && !includeVision}
                         checking={preflightLoading}
                         refusal={refusal}
                         busy={downloadBusy || Boolean(importingArtifact)}
@@ -596,12 +597,14 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
   )
 }
 
-function ArtifactRow({ artifact, gpu, check, checking, refusal: repositoryRefusal, busy, importing, runtimeCompatible, onImport }) {
+function ArtifactRow({ artifact, gpu, check, projectorSkipped, checking, refusal: repositoryRefusal, busy, importing, runtimeCompatible, onImport }) {
   // A repository refusal applies to every file; a tensor-type refusal to this file only.
   const refusal = repositoryRefusal || check?.tensors?.refusal || null
   const [confirmingOverride, setConfirmingOverride] = useState(false)
   const memory = artifactMemory(artifact, gpu, check, checking)
-  const diskShort = check?.disk === 'insufficient' && !artifact.installed
+  // check.disk counts the default projector; with Include vision unticked only the weights download.
+  const disk = projectorSkipped ? check?.diskWithoutProjector : check?.disk
+  const diskShort = disk === 'insufficient' && !artifact.installed
   const blocked = !runtimeCompatible || (refusal && !refusal.overridable)
   const needsOverride = Boolean(refusal?.overridable) && !blocked
   const label = importing ? 'Starting'
