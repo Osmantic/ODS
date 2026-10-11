@@ -184,10 +184,11 @@ def test_icd_expands_only_verified_runtime_capabilities_deterministically():
     ids = [item.configuration_id for item in configs]
 
     assert len(ids) == len(set(ids))
-    assert ids == [
+    repeated_ids = [
         item.configuration_id
-        for item in candidate.inference_configurations(CAPABILITIES)
+        for item in candidate.inference_configurations(DISCOVERY_CAPABILITIES)
     ]
+    assert ids == repeated_ids
 
     for item in configs:
         data = item.to_dict()
