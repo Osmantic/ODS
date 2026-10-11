@@ -41,6 +41,7 @@ tests/test-bootstrap-upgrade-windows-native-llama.sh
 tests/test-catalog-invalid-manifest.py
 tests/test-cli-bootstrap-compose-wait.sh
 tests/test-cli-macos-native-llama.sh
+tests/test-cli-caller-relative-paths.sh
 tests/test-cli-preset-restore-user-extensions.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
