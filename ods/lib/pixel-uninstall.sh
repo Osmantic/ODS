@@ -3007,6 +3007,23 @@ PY
         log_error "ODS-managed Pixel owner artifact cleanup was incomplete"
         return 1
     fi
+    # The sandbox containers that used ODS's AppArmor profile are gone; unload it
+    # and remove it so it does not load again at boot.
+    local apparmor_profile="${ODS_PIXEL_UNINSTALL_APPARMOR_DIR:-/etc/apparmor.d}/ods-pixel-sandbox"
+    local apparmor_parser=""
+    if [[ -e "$apparmor_profile" || -L "$apparmor_profile" ]]; then
+        for apparmor_parser in /usr/sbin/apparmor_parser /sbin/apparmor_parser; do
+            [[ -x "$apparmor_parser" ]] && break
+        done
+        if [[ -x "$apparmor_parser" ]] && ! sudo "$apparmor_parser" -R "$apparmor_profile"; then
+            log_warn "Could not unload the ODS Pixel sandbox AppArmor profile; it is removed from disk"
+        fi
+        sudo rm -f -- "$apparmor_profile"
+        if [[ -e "$apparmor_profile" || -L "$apparmor_profile" ]]; then
+            log_error "ODS Pixel sandbox AppArmor profile cleanup was incomplete"
+            return 1
+        fi
+    fi
     rm -f -- "$marker"
     [[ ! -e "$marker" && ! -L "$marker" ]] || {
         log_error "ODS-managed Pixel marker cleanup was incomplete"

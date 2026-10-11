@@ -475,7 +475,8 @@ PY
     }
     _ods_pixel_refresh_plugin_registry() { printf '%s\n' registry-refresh >> "$repair_messages"; }
     for stub in _ods_pixel_existing_gateway_port_matches _ods_pixel_secure_plugin_tree \
-        _ods_pixel_install_exec_control _ods_pixel_wait_model_gateway _ods_pixel_wait_http \
+        _ods_pixel_install_exec_control _ods_pixel_install_sandbox_apparmor_profile \
+        _ods_pixel_wait_model_gateway _ods_pixel_wait_http \
         ods_linux_node_tools_available _ods_pixel_write_extension_catalog \
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
