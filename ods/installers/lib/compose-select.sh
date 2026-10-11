@@ -142,13 +142,23 @@ ods_host_native_assert_no_managed_llama() {
     return 0
 }
 
+# Supply the early checks' placeholder GID to Compose. On a fresh install Phase
+# 05 selects "sudo docker compose" because the new docker group does not apply
+# to the running session yet, and sudo does not pass exported variables, so
+# hand the value to Compose explicitly. Call only inside a subshell function.
+_ods_compose_placeholder_pixel_gid() {
+    [[ -z "${PIXEL_INGRESS_GID:-}" ]] || return 0
+    export PIXEL_INGRESS_GID=1
+    if [[ "${DOCKER_COMPOSE_CMD:-}" == "sudo "* ]]; then
+        DOCKER_COMPOSE_CMD="sudo env PIXEL_INGRESS_GID=$PIXEL_INGRESS_GID ${DOCKER_COMPOSE_CMD#sudo }"
+    fi
+}
+
 # Before image pulls, Pixel's ingress group has not been created yet. Supply
 # an ephemeral numeric GID only for Compose's read-only service selection.
 # Phase 11 still validates the installed identity and uses the strict helper.
 ods_host_native_assert_no_managed_llama_before_pixel_identity() (
-    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
-        export PIXEL_INGRESS_GID=1
-    fi
+    _ods_compose_placeholder_pixel_gid
     ods_host_native_assert_no_managed_llama "$@"
 )
 
@@ -170,8 +180,6 @@ ods_compose_assert_no_webui() {
 # within this read-only early check. Phase 11 validates the real installed GID
 # before starting containers and repeats the no-WebUI check.
 ods_compose_assert_no_webui_before_pixel_identity() (
-    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
-        export PIXEL_INGRESS_GID=1
-    fi
+    _ods_compose_placeholder_pixel_gid
     ods_compose_assert_no_webui "$@"
 )
