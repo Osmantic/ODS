@@ -2,7 +2,7 @@
 
 **Status:** experimental enable path  
 **Upstream:** https://github.com/quimmedes/cafe-llama.cpp  
-**Design / evidence rules:** https://github.com/robertosantosx2/LEONES/pull/96
+
 
 ## Role in ODS
 
@@ -85,7 +85,9 @@ a compatible release archive configured through `CAFE_LLAMA_RELEASE_URL`.
 | `CAFE_LLAMA_ENABLED` | Opt-in marker (does not change `LLM_BACKEND`) |
 | `EXT_CAFE_LLAMA_PORT` | Host port for the loopback-published API |
 | `CAFE_LLAMA_MODEL` | Activation-managed path under `/models`; leave blank in `.env` |
-| `CAFE_LLAMA_RELEASE_URL` | Optional CPU-compatible release archive URL; required for CPU builds |\n| `CAFE_LLAMA_SERVER` | Optional in-container binary override |\n| `CAFE_LLAMA_EXTRA_ARGS` | Raw extra CLI flags |
+| `CAFE_LLAMA_RELEASE_URL` | Optional CPU-compatible release archive URL; required for CPU builds |
+| `CAFE_LLAMA_SERVER` | Optional in-container binary override |
+| `CAFE_LLAMA_EXTRA_ARGS` | Raw extra CLI flags |
 | `LLAMA_ARG_HOST_MOE` / `LLAMA_ARG_N_HOST_MOE` | Host MoE offload |
 | `LLAMA_ARG_CPU_MOE` / `LLAMA_ARG_N_CPU_MOE` | CPU MoE offload |
 | `LLAMA_ARG_SSD_STREAMING` / `LLAMA_ARG_N_SSD` | SSD expert streaming |
