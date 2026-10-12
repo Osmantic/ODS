@@ -3,88 +3,215 @@
   "$id": "https://osmantic.dev/schemas/ods.model-state.v1.json",
   "title": "ODS Model Switchboard state record (v1)",
   "type": "object",
-  "required": ["schema", "seq", "routeSeq", "desired", "active", "history", "availability"],
+  "required": [
+    "schema",
+    "seq",
+    "routeSeq",
+    "desired",
+    "active",
+    "history",
+    "availability"
+  ],
   "additionalProperties": false,
   "properties": {
-    "schema": { "const": "ods.model-state.v1" },
-    "seq": { "type": "integer", "minimum": 0 },
-    "routeSeq": { "type": "integer", "minimum": 0 },
+    "schema": {
+      "const": "ods.model-state.v1"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "routeSeq": {
+      "type": "integer",
+      "minimum": 0
+    },
     "operation": {
       "oneOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
-          "required": ["id", "phase", "requestedModelId", "startedAt"],
+          "required": [
+            "id",
+            "phase",
+            "requestedModelId",
+            "startedAt"
+          ],
           "additionalProperties": false,
           "properties": {
-            "id": { "type": "string", "minLength": 1 },
-            "phase": {
-              "enum": ["requested", "staging", "verifying", "publishing", "flipping", "serving", "failed", "rolling_back"]
+            "id": {
+              "type": "string",
+              "minLength": 1
             },
-            "requestedModelId": { "type": "string" },
-            "startedAt": { "type": "string" },
-            "error": { "type": ["string", "null"] }
+            "phase": {
+              "enum": [
+                "requested",
+                "staging",
+                "verifying",
+                "publishing",
+                "flipping",
+                "serving",
+                "failed",
+                "rolling_back"
+              ]
+            },
+            "requestedModelId": {
+              "type": "string"
+            },
+            "startedAt": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         }
       ]
     },
     "desired": {
       "oneOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
-          "required": ["catalogId"],
+          "required": [
+            "catalogId"
+          ],
           "additionalProperties": false,
-          "properties": { "catalogId": { "type": "string", "minLength": 1 } }
+          "properties": {
+            "catalogId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       ]
     },
     "active": {
       "oneOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
-          "required": ["routeSeq", "catalogId", "runtimeModelId", "publicModel", "backend", "contextLength", "capabilities", "verifiedAt", "proof"],
+          "required": [
+            "routeSeq",
+            "catalogId",
+            "runtimeModelId",
+            "publicModel",
+            "backend",
+            "contextLength",
+            "capabilities",
+            "verifiedAt",
+            "proof"
+          ],
           "additionalProperties": false,
           "properties": {
-            "routeSeq": { "type": "integer", "minimum": 0 },
-            "catalogId": { "type": "string", "minLength": 1 },
-            "runtimeModelId": { "type": "string", "minLength": 1 },
-            "publicModel": { "type": "string", "minLength": 1 },
+            "routeSeq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "catalogId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "runtimeModelId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "publicModel": {
+              "type": "string",
+              "minLength": 1
+            },
             "backend": {
               "type": "object",
-              "required": ["kind", "endpointId"],
+              "required": [
+                "kind",
+                "endpointId"
+              ],
               "additionalProperties": false,
               "properties": {
                 "kind": {
-                  "enum": ["llama-server", "lemonade", "hipfire", "unknown"],
+                  "enum": [
+                    "llama-server",
+                    "lemonade",
+                    "hipfire",
+                    "unknown",
+                    "cafe-llama"
+                  ],
                   "description": "lemonade names a pre-round-F route: readable for one release so the host agent can replace it, never written"
                 },
-                "endpointId": { "type": "string", "minLength": 1 },
-                "nativeRoute": { "type": ["string", "null"] }
+                "endpointId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "nativeRoute": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
               }
             },
-            "contextLength": { "type": "integer", "minimum": 0 },
+            "contextLength": {
+              "type": "integer",
+              "minimum": 0
+            },
             "capabilities": {
               "type": "object",
-              "required": ["chat", "tools", "vision", "agentViable"],
+              "required": [
+                "chat",
+                "tools",
+                "vision",
+                "agentViable"
+              ],
               "additionalProperties": false,
               "properties": {
-                "chat": { "type": "boolean" },
-                "tools": { "type": "boolean" },
-                "vision": { "type": "boolean" },
-                "agentViable": { "type": "boolean" }
+                "chat": {
+                  "type": "boolean"
+                },
+                "tools": {
+                  "type": "boolean"
+                },
+                "vision": {
+                  "type": "boolean"
+                },
+                "agentViable": {
+                  "type": "boolean"
+                }
               }
             },
-            "verifiedAt": { "type": ["string", "null"] },
-            "reconstructed": { "type": "boolean" },
+            "verifiedAt": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reconstructed": {
+              "type": "boolean"
+            },
             "proof": {
               "type": "object",
-              "required": ["identity", "completion"],
+              "required": [
+                "identity",
+                "completion"
+              ],
               "additionalProperties": false,
               "properties": {
-                "identity": { "type": ["string", "null"] },
-                "completion": { "type": "boolean" }
+                "identity": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "completion": {
+                  "type": "boolean"
+                }
               }
             }
           }
@@ -96,23 +223,53 @@
       "maxItems": 10,
       "items": {
         "type": "object",
-        "required": ["routeSeq", "catalogId", "runtimeModelId", "verifiedAt"],
+        "required": [
+          "routeSeq",
+          "catalogId",
+          "runtimeModelId",
+          "verifiedAt"
+        ],
         "additionalProperties": true,
         "properties": {
-          "routeSeq": { "type": "integer", "minimum": 0 },
-          "catalogId": { "type": "string" },
-          "runtimeModelId": { "type": "string" },
-          "verifiedAt": { "type": ["string", "null"] }
+          "routeSeq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "catalogId": {
+            "type": "string"
+          },
+          "runtimeModelId": {
+            "type": "string"
+          },
+          "verifiedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
         }
       }
     },
     "availability": {
       "type": "object",
-      "required": ["mode", "queueDeadline"],
+      "required": [
+        "mode",
+        "queueDeadline"
+      ],
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["serve_active", "queue"] },
-        "queueDeadline": { "type": ["string", "null"] }
+        "mode": {
+          "enum": [
+            "serve_active",
+            "queue"
+          ]
+        },
+        "queueDeadline": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       }
     }
   }

@@ -1,0 +1,9 @@
+{
+  "name": "cafe-llama.cpp",
+  "repository": "https://github.com/quimmedes/cafe-llama.cpp",
+  "license": "MIT",
+  "homepage": "https://github.com/quimmedes/cafe-llama.cpp",
+  "releases": "https://github.com/quimmedes/cafe-llama.cpp/releases",
+  "notes": "Optional advanced llama.cpp fork. ODS builds a thin wrapper from the recorded Ubuntu build base and downloads a release archive pinned by the Dockerfile's release URL; it does not replace core llama-server.",
+  "build_image": "ubuntu:24.04"
+}

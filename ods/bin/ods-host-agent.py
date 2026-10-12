@@ -4395,10 +4395,17 @@ def _publish_activation_route(env: dict, model_id: str, proof: dict, capabilitie
             or not isinstance(proof.get("contextLength"), int)
             or proof["contextLength"] <= 0):
         raise RuntimeError("Cannot publish an unverified model-router target")
+    runtime_kind = str(proof.get("runtimeKind") or "llama-server")
+    if runtime_kind == "cafe-llama":
+        backend_kind = "cafe-llama"
+        endpoint_id = "cafe-llama-default"
+    else:
+        backend_kind = "llama-server"
+        endpoint_id = "llama-server-default"
     return _switchboard_state.record_verified_route(
         INSTALL_DIR / "data" / "model-state.json", catalog_id=str(model_id),
         runtime_model_id=proof["identity"], proof_identity=proof["identity"],
-        backend_kind="llama-server", endpoint_id="llama-server-default",
+        backend_kind=backend_kind, endpoint_id=endpoint_id,
         native_route=None, context_length=proof["contextLength"],
         capabilities=capabilities,
     )
@@ -14301,8 +14308,29 @@ class AgentHandler(BaseHTTPRequestHandler):
                     rollback_env,
                     override_image=_container_llama_rollback_image(rollback_env),
                 )
+            elif runtime_restart_strategy == "compose-cafe-llama":
+                _compose_stop_cafe_llama_server()
+                if _active_model_state_backend_kind() == "cafe-llama":
+                    previous_model_name = Path(str(rollback_env.get("GGUF_FILE") or "")).name
+                    if not previous_model_name:
+                        raise RuntimeError("Previous cafe-llama model identity is unavailable for rollback")
+                    rollback_env["CAFE_LLAMA_ENABLED"] = "true"
+                    rollback_env["CAFE_LLAMA_MODEL"] = f"/models/{previous_model_name}"
+                    rollback_env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "true"
+                    _compose_restart_cafe_llama_server(rollback_env)
+                else:
+                    _compose_restart_llama_server(rollback_env)
             elif runtime_restart_strategy == "compose-llama":
-                _compose_restart_llama_server(rollback_env)
+                if _active_model_state_backend_kind() == "cafe-llama":
+                    previous_model_name = Path(str(rollback_env.get("GGUF_FILE") or "")).name
+                    if not previous_model_name:
+                        raise RuntimeError("Previous cafe-llama model identity is unavailable for rollback")
+                    rollback_env["CAFE_LLAMA_ENABLED"] = "true"
+                    rollback_env["CAFE_LLAMA_MODEL"] = f"/models/{previous_model_name}"
+                    rollback_env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "true"
+                    _compose_restart_cafe_llama_server(rollback_env)
+                else:
+                    _compose_restart_llama_server(rollback_env)
             elif runtime_restart_strategy is not None:
                 raise RuntimeError(
                     f"Unknown model activation restart strategy: {runtime_restart_strategy}"
@@ -14446,6 +14474,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if router_target_published:
                     # Readers reject regressed sequences: publish a newly proven
                     # rollback route instead of restoring stale model-state bytes.
+                    previous_backend = (
+                        previous_router_active.get("backend")
+                        if isinstance(previous_router_active, dict) else None
+                    )
+                    previous_proof = dict(previous_proof)
+                    previous_proof["runtimeKind"] = (
+                        previous_backend.get("kind")
+                        if isinstance(previous_backend, dict) else "llama-server"
+                    )
                     _publish_activation_route(
                         rollback_env, previous_router_active.get("catalogId") or previous_model,
                         previous_proof, previous_router_active.get("capabilities") or {})
@@ -14852,7 +14889,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # Windows server and proved the new one, so no stale runtime
                 # can answer an early probe. The other native runtimes keep
                 # the original fixed-delay cadence.
-                if runtime_restart_strategy in {"compose-llama", "container-llama", "windows-native-llama"}:
+                if runtime_restart_strategy in {"compose-llama", "compose-cafe-llama", "container-llama", "windows-native-llama"}:
                     return {"fast_poll_seconds": _MODEL_READINESS_FAST_POLL_SECONDS}
                 return {}
 
@@ -14883,7 +14920,53 @@ class AgentHandler(BaseHTTPRequestHandler):
             _set_model_activation_phase('loading')
             runtime_stage_started = time.time()
 
-            if wsl_managed.get('managed') is True:
+            cafe_requested = _cafe_llama_enabled(env)
+            if not cafe_requested:
+                # An explicit llama candidate overrides the previously active
+                # cafe route while its replacement is staged and verified.
+                env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "false"
+            if cafe_requested:
+                if str(env.get("ODS_MODE") or "local").strip().lower() != "local":
+                    raise RuntimeError("cafe-llama activation is supported only in ODS_MODE=local")
+                if _normal_switchboard_mode(env) != "enabled":
+                    raise RuntimeError(
+                        "cafe-llama requires the model switchboard so route publication is proof-gated"
+                    )
+                cafe_backend = str(env.get("GPU_BACKEND") or "nvidia").strip().lower()
+                if (
+                    platform.system().lower() != "linux"
+                    or _in_container
+                    or wsl_managed.get("managed") is True
+                    or windows_host_lemonade
+                    or windows_native_llama
+                    or cafe_backend not in {"nvidia", "cpu"}
+                    or _uses_lemonade_runtime(env)
+                ):
+                    raise RuntimeError(
+                        "cafe-llama activation currently requires a host-native Linux "
+                        "Compose agent with NVIDIA or explicitly configured CPU builds"
+                    )
+                if cafe_backend == "cpu" and not str(env.get("CAFE_LLAMA_RELEASE_URL") or "").strip():
+                    raise RuntimeError(
+                        "CPU cafe-llama requires CAFE_LLAMA_RELEASE_URL to select a CPU-compatible build"
+                    )
+                if _switchboard_adapters is None or not hasattr(_switchboard_adapters, "CafeLlamaAdapter"):
+                    raise RuntimeError("cafe-llama adapter is unavailable; refusing unverified activation")
+                model_name = Path(str(gguf_file)).name
+                if not model_name or model_name in {".", ".."}:
+                    raise RuntimeError("Selected model has no safe filename for the cafe-llama mount")
+                env["CAFE_LLAMA_MODEL"] = f"/models/{model_name}"
+                env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "true"
+                env["LLM_API_URL"] = "http://cafe-llama:8081/v1"
+                runtime_restart_strategy = "compose-cafe-llama"
+                switchboard_adapter = _switchboard_adapters.CafeLlamaAdapter(
+                    restart=_compose_restart_cafe_llama_server,
+                    wait_ready=_sb_wait_ready,
+                    expected_gguf=gguf_file,
+                    context_length=int(context_length),
+                    capabilities=switchboard_capabilities,
+                )
+            elif wsl_managed.get('managed') is True:
                 runtime_restart_strategy = 'wsl-native-llama'
 
                 # A launcher from before vision support (Windows setup not
@@ -15065,6 +15148,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     gguf_file=gguf_file,
                     context_length=int(context_length),
                 )
+                if _cafe_llama_enabled(env):
+                    _ensure_cafe_router_endpoint(INSTALL_DIR)
 
                 if _normal_switchboard_mode(env) == "enabled":
                     route_proof = switchboard_run or _wait_for_model_readiness(
@@ -15671,6 +15756,44 @@ def _runtime_uses_router_transport(env: dict) -> bool:
     return _wsl_runtime.candidate(env)
 
 
+def _cafe_llama_enabled(env: dict) -> bool:
+    """Return true only for an explicit, persisted opt-in."""
+    return str(env.get("CAFE_LLAMA_ENABLED") or "").strip().lower() == "true"
+
+
+def _active_model_state_backend_kind() -> str:
+    """Return the backend recorded by the last verified model-state route."""
+    try:
+        state = json.loads((INSTALL_DIR / "data" / "model-state.json").read_text(encoding="utf-8"))
+        active = state.get("active") if isinstance(state, dict) else None
+        backend = active.get("backend") if isinstance(active, dict) else None
+        return str(backend.get("kind") or "") if isinstance(backend, dict) else ""
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return ""
+
+
+def _cafe_llama_runtime_selected(env: dict) -> bool:
+    """Use cafe for an explicit candidate or a previously verified active route."""
+    candidate = str(env.get("_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE") or "").lower()
+    if candidate == "true":
+        return True
+    if candidate == "false":
+        return False
+    try:
+        state = json.loads((INSTALL_DIR / "data" / "model-state.json").read_text(encoding="utf-8"))
+        active = state.get("active") if isinstance(state, dict) else None
+        backend = active.get("backend") if isinstance(active, dict) else None
+        proof = active.get("proof") if isinstance(active, dict) else None
+        return bool(
+            isinstance(backend, dict)
+            and backend.get("kind") == "cafe-llama"
+            and isinstance(proof, dict)
+            and proof.get("completion") is True
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+
+
 def _runtime_endpoint(env: dict) -> tuple[str, str]:
     """Return ``(origin, transport)`` of the configured llama-server runtime.
 
@@ -15681,6 +15804,9 @@ def _runtime_endpoint(env: dict) -> tuple[str, str]:
     origin. Every other runtime is reached ``direct``: the container by
     Docker DNS or its published port, a host-native server on loopback.
     """
+    if _cafe_llama_runtime_selected(env):
+        port = str(env.get("EXT_CAFE_LLAMA_PORT") or "8081")
+        return f"http://127.0.0.1:{port}", "direct"
     if _runtime_uses_router_transport(env):
         return _native_llm_container_origin(env), "router"
     if _is_windows_host_llama_server(env):
@@ -17109,7 +17235,9 @@ def _normal_switchboard_mode(env: dict) -> str:
 
 
 def _runtime_llama_api_base(env: dict) -> str:
-    """Container-visible OpenAI base (``.../v1``) of the managed llama-server."""
+    """Container-visible OpenAI base (``.../v1``) of the managed runtime."""
+    if _cafe_llama_runtime_selected(env):
+        return "http://cafe-llama:8081/v1"
     if _runtime_uses_router_transport(env) or _is_windows_host_llama_server(env):
         return f"{_native_llm_container_origin(env)}/v1"
     configured = str(env.get("LLM_API_URL") or "").strip()
@@ -17129,6 +17257,34 @@ def _runtime_api_key_env(env: dict) -> str:
 
 def _litellm_render_key(env: dict) -> str:
     return str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
+
+
+def _ensure_cafe_router_endpoint(install_dir: Path) -> None:
+    """Keep the default llama endpoint intact and add the verified cafe endpoint."""
+    path = install_dir / "config" / "model-router" / "endpoints.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot verify model-router endpoints before cafe publication: {exc}") from exc
+    endpoints = document.get("endpoints") if isinstance(document, dict) else None
+    if not isinstance(endpoints, list):
+        raise RuntimeError("Model-router endpoint document has no endpoints list")
+    default_found = False
+    cafe_found = False
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        if endpoint.get("id") == "llama-server-default":
+            endpoint["baseUrl"] = "http://llama-server:8080"
+            default_found = True
+        elif endpoint.get("id") == "cafe-llama-default":
+            endpoint["baseUrl"] = "http://cafe-llama:8081"
+            cafe_found = True
+    if not default_found:
+        endpoints.append({"id": "llama-server-default", "baseUrl": "http://llama-server:8080"})
+    if not cafe_found:
+        endpoints.append({"id": "cafe-llama-default", "baseUrl": "http://cafe-llama:8081"})
+    _atomic_write_text(path, json.dumps(document, indent=2) + "\n", mode=0o644)
 
 
 def _render_model_router_runtime_configs(
@@ -20105,6 +20261,94 @@ def _failed_llama_server_log_excerpt(container: str = "ods-llama-server") -> str
         return ""
 
 
+def _compose_restart_cafe_llama_server(env: dict):
+    """Build and start the explicitly selected cafe-llama service on host Linux.
+
+    This deliberately uses the installed service recipe, not the curated-library
+    source directory. It never changes llama-server's Compose service.
+    """
+    service_dir = INSTALL_DIR / "extensions" / "services" / "cafe-llama"
+    compose_file = service_dir / "compose.yaml"
+    if not compose_file.is_file():
+        raise RuntimeError(
+            "cafe-llama is enabled but its installed service recipe is missing; "
+            "install the cafe-llama extension first"
+        )
+    model_name = Path(str(env.get("CAFE_LLAMA_MODEL") or "")).name
+    if not model_name or model_name in {".", ".."}:
+        raise RuntimeError("CAFE_LLAMA_MODEL must resolve to a model under /models")
+    host_model = INSTALL_DIR / "data" / "models" / model_name
+    if not host_model.is_file():
+        raise RuntimeError(
+            f"cafe-llama model is not present in the mounted model store: {host_model}"
+        )
+    try:
+        port = int(str(env.get("EXT_CAFE_LLAMA_PORT") or "8081"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("EXT_CAFE_LLAMA_PORT must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("EXT_CAFE_LLAMA_PORT must be between 1 and 65535")
+
+    compose_flags = resolve_compose_flags()
+    if not compose_flags:
+        raise RuntimeError("Cannot safely switch to cafe-llama without the managed Compose stack flags")
+    stop_result = subprocess.run(
+        ["docker", "compose"] + compose_flags + ["stop", "llama-server"],
+        cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=120,
+    )
+    if stop_result.returncode != 0:
+        raise RuntimeError(
+            "Could not stop llama-server before cafe-llama activation: "
+            + (stop_result.stderr or stop_result.stdout or "").strip()[:400]
+        )
+
+    compose_env = os.environ.copy()
+    compose_env["CAFE_LLAMA_ENABLED"] = "true"
+    compose_env["CAFE_LLAMA_MODEL"] = f"/models/{model_name}"
+    compose_env["EXT_CAFE_LLAMA_PORT"] = str(port)
+    release_url = str(env.get("CAFE_LLAMA_RELEASE_URL") or "").strip()
+    if release_url:
+        compose_env["CAFE_LLAMA_RELEASE_URL"] = release_url
+    compose_files = ["-f", str(compose_file.relative_to(INSTALL_DIR))]
+    nvidia_overlay = service_dir / "compose.nvidia.yaml"
+    if str(env.get("GPU_BACKEND") or "").strip().lower() == "nvidia":
+        if not nvidia_overlay.is_file():
+            raise RuntimeError("NVIDIA cafe-llama Compose overlay is missing")
+        compose_files.extend(["-f", str(nvidia_overlay.relative_to(INSTALL_DIR))])
+
+    argv = ["docker", "compose", *compose_files, "up", "-d", "--build", "--force-recreate", "cafe-llama"]
+    try:
+        result = subprocess.run(
+            argv, cwd=str(INSTALL_DIR), env=compose_env,
+            capture_output=True, text=True, timeout=900,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("cafe-llama build/start exceeded 900 seconds") from exc
+    if result.returncode != 0:
+        raise RuntimeError(
+            "cafe-llama Compose start failed: "
+            + (result.stderr or result.stdout or "").strip()[:500]
+        )
+    logger.info("cafe-llama started on host port %s for %s", port, model_name)
+
+
+def _compose_stop_cafe_llama_server():
+    """Stop the optional cafe runtime without touching the default llama-server."""
+    service_dir = INSTALL_DIR / "extensions" / "services" / "cafe-llama"
+    compose_file = service_dir / "compose.yaml"
+    if not compose_file.is_file():
+        return
+    argv = ["docker", "compose", "-f", str(compose_file.relative_to(INSTALL_DIR)), "stop", "cafe-llama"]
+    result = subprocess.run(
+        argv, cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "cafe-llama Compose stop failed: "
+            + (result.stderr or result.stdout or "").strip()[:400]
+        )
+
+
 def _compose_restart_llama_server(env: dict):
     """Restart llama-server via docker compose (host-native path).
 
@@ -20120,6 +20364,8 @@ def _compose_restart_llama_server(env: dict):
     surface the error immediately instead of waiting for the health-check loop.
     """
     gpu_backend = env.get("GPU_BACKEND", "nvidia")
+    if _active_model_state_backend_kind() == "cafe-llama":
+        _compose_stop_cafe_llama_server()
     compose_flags = resolve_compose_flags()
 
     def _run(argv, timeout):

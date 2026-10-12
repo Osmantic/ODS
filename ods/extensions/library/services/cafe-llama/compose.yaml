@@ -1,0 +1,50 @@
+services:
+  cafe-llama:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Override for non-CUDA hosts, e.g.:
+        # CAFE_LLAMA_RELEASE_URL=https://github.com/quimmedes/cafe-llama.cpp/releases/download/0.75/llama-bin-ubuntu-x64-cpu.zip
+        CAFE_LLAMA_RELEASE_URL: ${CAFE_LLAMA_RELEASE_URL:-https://github.com/quimmedes/cafe-llama.cpp/releases/download/0.75/llama-bin-ubuntu-x64-cuda-12.4.zip}
+    image: ods-cafe-llama:local
+    container_name: ods-cafe-llama
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${EXT_CAFE_LLAMA_PORT:-8081}:8081"
+    volumes:
+      - ../../../data/models:/models:ro
+    environment:
+      - CAFE_LLAMA_HOST=0.0.0.0
+      - CAFE_LLAMA_PORT=8081
+      - CAFE_LLAMA_MODEL=${CAFE_LLAMA_MODEL:-}
+      - CAFE_LLAMA_SERVER=${CAFE_LLAMA_SERVER:-}
+      - CAFE_LLAMA_EXTRA_ARGS=${CAFE_LLAMA_EXTRA_ARGS:-}
+      - LLAMA_ARG_HOST_MOE=${LLAMA_ARG_HOST_MOE:-}
+      - LLAMA_ARG_N_HOST_MOE=${LLAMA_ARG_N_HOST_MOE:-}
+      - LLAMA_ARG_CPU_MOE=${LLAMA_ARG_CPU_MOE:-}
+      - LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE:-}
+      - LLAMA_ARG_SSD_STREAMING=${LLAMA_ARG_SSD_STREAMING:-}
+      - LLAMA_ARG_N_SSD=${LLAMA_ARG_N_SSD:-}
+      - LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-}
+      - LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-}
+      - LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-}
+      - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-}
+      - LLAMA_ARG_SPEC_DRAFT_N_MAX=${LLAMA_ARG_SPEC_DRAFT_N_MAX:-}
+      - LLAMA_ARG_PIPELINE_PARALLEL=${LLAMA_ARG_PIPELINE_PARALLEL:-}
+      - LLAMA_ARG_NO_NGRAM=${LLAMA_ARG_NO_NGRAM:-}
+      - LLAMA_ARG_NGRAM_SSD=${LLAMA_ARG_NGRAM_SSD:-}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - ods-network
+
+networks:
+  ods-network:
+    external: true

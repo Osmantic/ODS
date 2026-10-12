@@ -51,7 +51,7 @@ def test_all_catalog_definitions_project_only_bounded_declared_guidance():
     ods = Path(__file__).resolve().parents[4]
     catalog = json.loads((ods / 'config/extensions-catalog.json').read_text(encoding='utf-8'))
     rows = catalog if isinstance(catalog, list) else catalog['extensions']
-    assert len(rows) == len({row['id'] for row in rows}) == 198
+    assert len(rows) == len({row['id'] for row in rows}) == 199
     count = 0
     for row in rows:
         result = integration_guidance(row['id'], [ods / 'extensions/services', ods / 'extensions/library/services'])

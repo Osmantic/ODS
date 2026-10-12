@@ -1,0 +1,104 @@
+schema_version: ods.services.v1
+
+compatibility:
+  ods_min: "2.0.0"
+
+service:
+  id: cafe-llama
+  name: cafe-llama (advanced llama.cpp)
+  aliases: [cafe-llama-cpp, cafe-llamacpp]
+  container_name: ods-cafe-llama
+  host_env: CAFE_LLAMA_HOST
+  default_host: cafe-llama
+  port: 8081
+  external_port_env: EXT_CAFE_LLAMA_PORT
+  external_port_default: 8081
+  health: /health
+  health_timeout: 30
+  type: docker
+  startup_timeout: 120
+  gpu_backends: [nvidia, cpu]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: "Optional advanced llama.cpp runtime (MoE host/CPU/SSD offload, Turbo KV, MTP). Does not replace core llama-server."
+  setup_hook: setup.sh
+  env_vars:
+    - key: CAFE_LLAMA_ENABLED
+      required: false
+      default: "false"
+      description: Opt-in marker for cafe-llama (does not change LLM_BACKEND)
+    - key: CAFE_LLAMA_MODEL
+      required: false
+      default: ""
+      description: Selected GGUF filename under the ODS model store; supplied by the activation agent
+    - key: CAFE_LLAMA_RELEASE_URL
+      required: false
+      default: ""
+      description: Optional release archive URL; required to select a CPU-compatible build.
+    - key: CAFE_LLAMA_SERVER
+      required: false
+      default: ""
+      description: Optional in-container path or command for the cafe-compatible server binary.
+    - key: CAFE_LLAMA_EXTRA_ARGS
+      required: false
+      default: ""
+      description: Extra cafe-llama CLI flags (advanced)
+    - key: EXT_CAFE_LLAMA_PORT
+      required: false
+      default: "8081"
+      format: integer
+      description: Host port for cafe-llama OpenAI-compatible API
+    - key: LLAMA_ARG_HOST_MOE
+      required: false
+      description: Pinned host MoE offload (-hmoe) when supported
+    - key: LLAMA_ARG_N_HOST_MOE
+      required: false
+      format: integer
+      description: Host-MoE for first N layers (-nhmoe)
+    - key: LLAMA_ARG_CPU_MOE
+      required: false
+      description: System-RAM MoE offload (-cmoe) when supported
+    - key: LLAMA_ARG_N_CPU_MOE
+      required: false
+      format: integer
+      description: CPU MoE for first N layers (-ncmoe / --n-cpu-moe)
+    - key: LLAMA_ARG_SSD_STREAMING
+      required: false
+      description: SSD mmap expert streaming (-ssd)
+    - key: LLAMA_ARG_N_SSD
+      required: false
+      format: integer
+      description: SSD-stream first N layers (-nssd)
+    - key: LLAMA_ARG_CACHE_TYPE_K
+      required: false
+      description: KV cache K type (q8_0, turbo4, ...)
+    - key: LLAMA_ARG_CACHE_TYPE_V
+      required: false
+      description: KV cache V type (q8_0, turbo4, ...)
+    - key: LLAMA_ARG_FLASH_ATTN
+      required: false
+      description: Flash attention (required for turbo KV)
+    - key: LLAMA_ARG_SPEC_TYPE
+      required: false
+      description: Speculative mode (e.g. draft-mtp)
+    - key: LLAMA_ARG_SPEC_DRAFT_N_MAX
+      required: false
+      format: integer
+      description: Speculative draft depth (recommended 4 for MTP)
+
+features:
+  - id: cafe-llama-advanced-runtime
+    name: cafe-llama Advanced Runtime
+    description: Optional MoE / Turbo KV / MTP runtime alongside core llama-server
+    icon: Cpu
+    category: ai
+    requirements:
+      services: [cafe-llama]
+      vram_gb: 0
+    enabled_services_all: [cafe-llama]
+    setup_time: ~3 minutes
+    priority: 12
+    gpu_backends: [nvidia, cpu]
+    launch:
+      type: none

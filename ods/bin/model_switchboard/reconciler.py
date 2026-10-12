@@ -62,12 +62,14 @@ def run_runtime_activation(
     and proof timestamp. ``phase`` is the last phase attempted. Health-style
     success without the complete proof contract cannot satisfy verification.
     """
+    adapter_kind = str(getattr(adapter, "kind", "") or "unknown").strip()
     proof: dict[str, Any] = {
         "identity": None,
         "contextLength": None,
         "contextVerified": None,
         "capabilities": None,
         "verifiedAt": None,
+        "runtimeKind": adapter_kind,
     }
     for phase in PHASES:
         try:
@@ -109,12 +111,14 @@ def run_runtime_activation(
                 "contextVerified": bool(outcome["contextVerified"]),
                 "capabilities": dict(outcome["capabilities"]),
                 "verifiedAt": str(outcome["verifiedAt"]),
+                "runtimeKind": adapter_kind,
             }
             stable_fields = (
                 "identity",
                 "contextLength",
                 "contextVerified",
                 "capabilities",
+                "runtimeKind",
             )
             if phase == "verify_completion" and any(
                 outcome_proof[field] != proof[field] for field in stable_fields

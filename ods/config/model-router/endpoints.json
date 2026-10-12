@@ -7,6 +7,10 @@
     {
       "id": "lemonade-default",
       "baseUrl": "http://llama-server:8080/api"
+    },
+    {
+      "id": "cafe-llama-default",
+      "baseUrl": "http://cafe-llama:8081"
     }
   ]
 }

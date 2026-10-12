@@ -249,3 +249,13 @@ class FakeAdapter:
 
     def rollback(self, env: dict[str, str]) -> dict[str, Any]:
         return self._next("rollback")
+
+
+class CafeLlamaAdapter(ContainerLlamaAdapter):
+    """Opt-in cafe-llama runtime; host agent supplies restart and proof callbacks.
+
+    It is intentionally a distinct runtime kind. It is not a default alias for
+    the standard llama-server adapter and is only selected by explicit opt-in.
+    """
+
+    kind = "cafe-llama"

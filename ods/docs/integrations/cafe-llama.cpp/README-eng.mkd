@@ -1,0 +1,66 @@
+# cafe-llama.cpp integration proposal for ODS (English summary)
+
+**Source:** LEONES `docs/integrations/cafe-llama.cpp/README-eng.mkd`  
+**Project:** LEONES → ODS  
+**Date:** 2026-10-06  
+**Status:** Architecture summary mirrored into ODS fork  
+**Upstream:** https://github.com/quimmedes/cafe-llama.cpp  
+**LEONES design:** https://github.com/robertosantosx2/LEONES/blob/ods-evolution/docs/integrations/cafe-llama.cpp/README.md  
+**ODS scaffold:** `ods/docs/CAFE-LLAMA.md`, `ods/services/cafe-llama/`
+
+## Executive summary
+
+cafe-llama.cpp is a llama.cpp fork focused on real capacity for large MoE models and long contexts on modest hardware. Key additions:
+
+- First-class MoE offload to pinned host RAM (`-hmoe`), system RAM (`-cmoe`) or SSD streaming (`-ssd`)
+- Turbo low-bit KV cache (turbo4/3/2) with mandatory flash-attention
+- Qwen 3.8 Flash Next PLE / N-gram table controls
+- Strong MTP speculative decoding (`--spec-type draft-mtp`, recommended `--spec-draft-n-max 4`)
+- Native safetensors loading (no intermediate GGUF)
+- Linux x64 prebuilt binaries are available; other build targets require a compatible release archive and are not enabled by the ODS activation hook.
+
+**Role in ODS:** optional advanced runtime that remains API- and GGUF-compatible with the existing `llama-server`. It expands the configuration space that Inference Configuration Discovery (ICD) can explore; it does not replace the baseline runtime.
+
+## Integration shape
+
+```text
+ods/services/cafe-llama/
+├── manifest.yaml
+├── entrypoint.sh
+└── README.md
+```
+
+Expose priority flags in Dashboard advanced settings and `LLAMA_ARG_*` / Model Switchboard:
+
+- `-ngl`, `-hmoe`/`-nhmoe`, `-cmoe`/`-ncmoe`, `-ssd`/`-nssd`
+- `-c`, `-ctk`/`-ctv` (incl. turbo*), `-fa`
+- `--spec-type`, `--spec-draft-n-max`, `-md`
+- `--no-ngram` / `--ngram-ssd`
+- batch / threads / parallel
+
+Activation: explicit `CAFE_LLAMA_ENABLED=true` plus a model activation request, after the curated service recipe is installed. The host agent currently supports host-native Linux NVIDIA or explicitly configured CPU builds; the standard `llama-server` remains the default.
+
+## Evidence rules (LEONES)
+
+Only **MEASURED** results on target hardware may be used to claim local performance. Upstream numbers and community posts are **REPORTED** or **OBSERVED**.
+
+## Relation to other runtimes
+
+| Runtime | Role |
+|---------|------|
+| llama-server | Baseline, wide compatibility |
+| **cafe-llama.cpp** | Advanced MoE / Turbo KV / MTP drop-in |
+| TensorFold | Family-specific kernels + exact speculative |
+| Strata / heterogeneous | >VRAM placement |
+| Bonsai-style kernels | Extreme quant evidence |
+
+## Next steps
+
+1. ~~Land design doc in LEONES~~ (done)
+2. ~~Scaffold service + operator docs in ODS fork~~ (done)
+3. Wire `ods enable cafe-llama`, health/status, and Dashboard parameter surface
+4. Add recommended hardware profiles and ICD candidate generation
+5. Propose upstream to Osmantic/ODS when implementation is solid
+
+Full Spanish proposal (LEONES): `docs/integrations/cafe-llama.cpp/README.md`  
+ODS operator doc: `ods/docs/CAFE-LLAMA.md`

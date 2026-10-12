@@ -168,7 +168,7 @@ def _accelerator(compose_name):
 
 # Curated recipes whose backend overlay reserves the accelerator. The resolver
 # used to drop exactly these overlays, so the services started without a GPU.
-NVIDIA_GPU_RECIPES = ["audiocraft", "bark", "forge", "frigate", "invokeai", "ollama",
+NVIDIA_GPU_RECIPES = ["audiocraft", "bark", "cafe-llama", "forge", "frigate", "invokeai", "ollama",
                       "rvc", "text-generation-webui", "xtts"]
 AMD_GPU_RECIPES = ["invokeai", "ollama", "rvc", "text-generation-webui", "xtts"]
 
@@ -632,3 +632,15 @@ def test_library_install_names_the_overlay_that_may_hold_the_gpu(tmp_path, monke
     assert rejected.value.status_code == 400
     assert "(compose.multigpu-nvidia.yaml)" in rejected.value.detail
     assert "only from compose.nvidia.yaml" in rejected.value.detail
+
+
+def test_shared_model_store_mount_is_allowed_only_for_trusted_cafe_recipe():
+    shared_mount = ["../../../data/models:/models:ro"]
+    trusted = extensions._compose_policy_volume_problems(
+        "cafe-llama", shared_mount, builtin=False, namespace=None
+    )
+    untrusted = extensions._compose_policy_volume_problems(
+        "cafe-llama", shared_mount, builtin=False, namespace="cafe-llama"
+    )
+    assert trusted == []
+    assert any("escaping the project directory" in problem for problem in untrusted)

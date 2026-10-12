@@ -588,3 +588,35 @@ def _isolation(monkeypatch, tmp_path, request):
     )
     monkeypatch.setattr(tma._mod, "_opencode_installed", lambda: False)
     yield
+
+
+def test_cafe_runtime_requires_explicit_opt_in_and_verified_selection(monkeypatch, tmp_path):
+    agent = _tma._mod
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+    assert agent._cafe_llama_enabled({"CAFE_LLAMA_ENABLED": "false"}) is False
+    assert agent._cafe_llama_enabled({}) is False
+    assert agent._cafe_llama_runtime_selected({"CAFE_LLAMA_ENABLED": "true"}) is False
+    assert agent._cafe_llama_runtime_selected({
+        "CAFE_LLAMA_ENABLED": "true",
+        "_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE": "true",
+    }) is True
+
+    state_dir = tmp_path / "data"
+    state_dir.mkdir()
+    (state_dir / "model-state.json").write_text(json.dumps({
+        "active": {
+            "backend": {"kind": "cafe-llama"},
+            "proof": {"completion": True},
+        }
+    }), encoding="utf-8")
+    assert agent._cafe_llama_runtime_selected({"CAFE_LLAMA_ENABLED": "true"}) is True
+
+
+def test_cafe_route_publication_rejects_missing_runtime_proof():
+    with pytest.raises(RuntimeError, match="unverified"):
+        _tma._mod._publish_activation_route(
+            {"CAFE_LLAMA_ENABLED": "true"},
+            "test-model",
+            {"runtimeKind": "cafe-llama"},
+            {"chat": True, "tools": False, "vision": False, "agentViable": False},
+        )

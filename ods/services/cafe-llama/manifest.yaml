@@ -1,0 +1,104 @@
+# cafe-llama.cpp optional runtime — service contract (scaffold)
+# Design: https://github.com/robertosantosx2/LEONES/pull/96
+# Upstream: https://github.com/quimmedes/cafe-llama.cpp
+
+name: cafe-llama
+kind: inference-runtime
+status: experimental
+optional: true
+replaces_default: false
+
+upstream:
+  repository: https://github.com/quimmedes/cafe-llama.cpp
+  releases: https://github.com/quimmedes/cafe-llama.cpp/releases
+  license: MIT
+
+api:
+  openai_compatible: true
+  binary_name: llama-server
+  # Default listen — must not collide with managed llama-server when both exist
+  default_host: 127.0.0.1
+  default_port: 8081
+
+capabilities:
+  gguf: true
+  safetensors_native: true
+  moe_host_offload: true
+  moe_cpu_offload: true
+  moe_ssd_streaming: true
+  turbo_kv: true
+  mtp_speculative: true
+  ple_ngram_control: true
+  family_specific: false
+
+# Priority flags to surface in Dashboard advanced / LLAMA_ARG_* mapping
+parameters:
+  - name: n_gpu_layers
+    flag: "-ngl"
+    type: integer
+    existing: true
+  - name: host_moe
+    flag: "-hmoe"
+    type: boolean
+    description: Keep all MoE expert weights in pinned host memory
+  - name: n_host_moe
+    flag: "-nhmoe"
+    type: integer
+    description: Host-MoE for the first N layers
+  - name: cpu_moe
+    flag: "-cmoe"
+    type: boolean
+  - name: n_cpu_moe
+    flag: "-ncmoe"
+    type: integer
+  - name: ssd_streaming
+    flag: "-ssd"
+    type: boolean
+  - name: n_ssd_streaming
+    flag: "-nssd"
+    type: integer
+  - name: ctx_size
+    flag: "-c"
+    type: integer
+    existing: true
+  - name: cache_type_k
+    flag: "-ctk"
+    type: string
+    examples: ["q8_0", "turbo4", "turbo3", "turbo2"]
+  - name: cache_type_v
+    flag: "-ctv"
+    type: string
+    examples: ["q8_0", "turbo4", "turbo3", "turbo2"]
+  - name: flash_attn
+    flag: "-fa"
+    type: boolean
+    notes: Required when using turbo KV types
+  - name: spec_type
+    flag: "--spec-type"
+    type: string
+    examples: ["draft-mtp"]
+  - name: spec_draft_n_max
+    flag: "--spec-draft-n-max"
+    type: integer
+    recommended: 4
+  - name: draft_model
+    flag: "-md"
+    type: path
+  - name: no_ngram
+    flag: "--no-ngram"
+    type: boolean
+  - name: ngram_ssd
+    flag: "--ngram-ssd"
+    type: boolean
+  - name: pipeline_parallel
+    flag: "--pipeline-parallel"
+    type: boolean
+
+evidence:
+  default_class: OBSERVED
+  allowed_classes: [REPORTED, OBSERVED, ESTIMATED, MEASURED]
+  measured_required_for_performance_claims: true
+
+enable:
+  cli: "ods enable cafe-llama"
+  notes: Install the curated cafe-llama service first, then opt in with CAFE_LLAMA_ENABLED=true. Runtime activation is proof-gated and limited to host-native Linux NVIDIA or explicitly configured CPU builds; llama-server remains the default.
