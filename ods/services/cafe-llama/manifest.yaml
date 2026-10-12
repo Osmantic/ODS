@@ -1,5 +1,4 @@
 # cafe-llama.cpp optional runtime — service contract (scaffold)
-# Design: https://github.com/robertosantosx2/LEONES/pull/96
 # Upstream: https://github.com/quimmedes/cafe-llama.cpp
 
 name: cafe-llama
