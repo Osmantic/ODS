@@ -54,11 +54,10 @@ Only **MEASURED** results on target hardware may be used to claim local performa
 
 ## Next steps
 
-1. ~~Land design doc in LEONES~~ (done)
-2. ~~Scaffold service + operator docs in ODS fork~~ (done)
-3. Wire `ods enable cafe-llama`, health/status, and Dashboard parameter surface
+1. ~~Document the integration contract in ODS~~ (done)
+2. ~~Add the curated recipe, proof-gated host-agent activation, route publication, and rollback path~~ (implemented; hardware validation remains)
+3. Add Dashboard advanced-parameter controls and runtime status presentation
 4. Add recommended hardware profiles and ICD candidate generation
-5. Propose upstream to Osmantic/ODS when implementation is solid
+5. Validate activation and rollback on target Linux/NVIDIA hardware and publish measured evidence
 
-Full Spanish proposal (LEONES): `docs/integrations/cafe-llama.cpp/README.md`  
 ODS operator doc: `ods/docs/CAFE-LLAMA.md`
