@@ -10,6 +10,12 @@ vi.mock('../pages/Settings', () => ({ default: ({activeSection}) => <div><p>{act
 beforeEach(() => { HTMLDialogElement.prototype.showModal = function () { this.open = true } })
 afterEach(() => { cleanup(); vi.restoreAllMocks(); delete HTMLDialogElement.prototype.showModal })
 
+const selectSection = (name) => {
+  const trigger = screen.getByRole('combobox', { name: 'Settings section' })
+  fireEvent.click(trigger)
+  fireEvent.click(screen.getByRole('option', { name: new RegExp(name, 'i') }))
+}
+
 it('renders inline, filters sections, and preserves form state across navigation', () => {
   const show = vi.spyOn(HTMLDialogElement.prototype, 'showModal').mockImplementation(function () { this.open = true })
   render(<SettingsModal onClose={() => {}} />)
@@ -17,14 +23,15 @@ it('renders inline, filters sections, and preserves form state across navigation
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(screen.getByRole('region', {name:'ODS settings'})).toBeVisible()
   expect(screen.queryByRole('heading', {name:'General',exact:true})).toBeNull()
-  expect(screen.getByRole('button', {name:'General',exact:true})).toBeVisible()
+  expect(screen.getByRole('combobox', {name:'Settings section'})).toBeVisible()
   fireEvent.change(screen.getByLabelText('Draft'), {target:{value:'Unsaved'}})
-  fireEvent.click(screen.getByRole('button', {name:'Storage',exact:true}))
+  selectSection('Storage')
   expect(screen.getByText('storage content')).toBeVisible()
   expect(screen.getByLabelText('Draft')).toHaveValue('Unsaved')
   fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:'portal'}})
-  expect(screen.queryByRole('button', {name:'Storage',exact:true})).toBeNull()
-  expect(screen.getByRole('button', {name:'Portal access'})).toBeVisible()
+  fireEvent.click(screen.getByRole('combobox', {name:'Settings section'}))
+  expect(screen.queryByRole('option', {name:/Storage/i})).toBeNull()
+  expect(screen.getByRole('option', {name:/Portal access/i})).toBeInTheDocument()
 })
 
 it('leaves closing and collapsing to the workspace panel header', () => {
@@ -38,7 +45,7 @@ it('leaves closing and collapsing to the workspace panel header', () => {
 
 it('provides mascot controls in their own settings section',()=>{
   render(<SettingsModal/>)
-  fireEvent.click(screen.getByRole('button',{name:'Portal mascot',exact:true}))
+  selectSection('Portal mascot')
   expect(screen.getByRole('heading',{name:'Portal mascot'})).toBeVisible()
   expect(screen.getByLabelText('Sleep after inactivity')).toBeVisible()
   expect(screen.getByRole('button',{name:'Thinking',exact:true})).toHaveAttribute('aria-pressed','true')
@@ -47,23 +54,23 @@ it('provides mascot controls in their own settings section',()=>{
 it('opens the editable profile section without losing another settings draft',()=>{
   render(<SettingsModal/>)
   fireEvent.change(screen.getByLabelText('Draft'),{target:{value:'Unsaved'}})
-  fireEvent.click(screen.getByRole('button',{name:'Profile',exact:true}))
+  selectSection('Profile')
   expect(screen.getByRole('textbox',{name:'Display name'})).toBeVisible()
   expect(screen.getByRole('textbox',{name:'Assistant display name'})).toBeVisible()
   expect(screen.getByRole('button',{name:'Save name'})).toBeVisible()
-  fireEvent.click(screen.getByRole('button',{name:'General',exact:true}))
+  selectSection('General')
   expect(screen.getByLabelText('Draft')).toHaveValue('Unsaved')
 })
 
 it('offers integrations and remote GPU inside settings without losing remote drafts', async () => {
   render(<SettingsModal />)
-  fireEvent.click(screen.getByRole('button', {name:'Remote model',exact:true}))
+  selectSection('Remote model')
   const draft = await screen.findByLabelText('Remote draft')
   fireEvent.change(draft, {target:{value:'Unsaved remote'}})
-  fireEvent.click(screen.getByRole('button', {name:'Service map',exact:true}))
+  selectSection('Service map')
   expect(await screen.findByText('Integration details')).toBeVisible()
   expect(draft).not.toBeVisible()
-  fireEvent.click(screen.getByRole('button', {name:'Remote model',exact:true}))
+  selectSection('Remote model')
   expect(draft).toBeVisible()
   expect(draft).toHaveValue('Unsaved remote')
 })
@@ -72,6 +79,8 @@ it('finds the remote model section by what people search for', () => {
   render(<SettingsModal />)
   for (const query of ['api', 'API key', 'provider', 'gpu']) {
     fireEvent.change(screen.getByLabelText('Search settings'), {target:{value:query}})
-    expect(screen.getByRole('button', {name:'Remote model',exact:true})).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('combobox', {name:'Settings section'}))
+    expect(screen.getByRole('option', {name:/Remote model/i})).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('combobox', {name:'Settings section'}))
   }
 })

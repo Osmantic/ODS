@@ -80,10 +80,11 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-chat-header-actions { display:flex; flex:1; min-width:0; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:4px; }
 .pixel-chat-header-actions > * { flex-shrink:0; }
 .pixel-chat-header-actions .pixel-chat-model { flex-shrink:1; max-width:180px; }
-@container pixel-chat-column (max-width:720px) {
+@container pixel-chat-column (max-width:900px) {
   .pixel-chat-header { padding:12px 16px; }
   .pixel-chat-header-actions { flex-basis:100%; justify-content:flex-start; }
   .pixel-chat-header-actions .pixel-chat-model { max-width:150px; }
+  .pixel-chat-options-menu { right: auto; left: 0; }
 }
 .pixel-chat textarea { background:#1e1f20; border-radius:12px; }
 .pixel-chat form { background:transparent; }
@@ -231,6 +232,8 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .pixel-chat-options > summary { list-style:none; padding:5px 10px; cursor:pointer; border-radius:6px; color:#969aa2; }
 .pixel-chat-options > summary:hover { background:#232426; color:#ddd; }
 .pixel-chat-options-menu { position:absolute; right:0; top:100%; width:220px; padding:8px; display:flex; flex-direction:column; gap:6px; border:1px solid #323438; border-radius:10px; background:#1b1c1e; z-index:40; box-shadow:0 10px 30px #0004; }
+.pixel-chat-options.align-left .pixel-chat-options-menu,
+.pixel-chat-options[data-align="left"] .pixel-chat-options-menu { right:auto; left:0; }
 .pixel-chat-options-menu > button { text-align:left; width:100%; border:0; }
 .pixel-welcome { width:min(100%,740px); padding:64px 16px 24px; }
 .pixel-welcome h2 { font-size:28px; color:#dedfe3; letter-spacing:-.04em; margin:12px 0 8px; }
@@ -283,9 +286,14 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .portal-side-panel > header button:hover { background:#292b2b; }
 .portal-panel-content { min-height:0; overflow:auto; flex:1; }
 .portal-panel-content[hidden] { display:none; }
-.portal-panel-content > div { padding:18px; }
-.portal-panel-content .grid { grid-template-columns:minmax(0,1fr); }
-.portal-panel-content .grid > * { min-width:0; grid-column:auto; }
+.portal-panel-content .grid:not(.model-context-options-grid) { grid-template-columns:minmax(0,1fr); }
+.portal-panel-content .grid:not(.model-context-options-grid) > * { min-width:0; grid-column:auto; }
+.portal-panel-content .model-context-options-grid,
+.model-context-options-grid {
+  display:grid !important;
+  grid-template-columns:repeat(3, minmax(0, 1fr)) !important;
+  gap:8px !important;
+}
 .portal-panel-content h1 { font-size:18px; }
 .portal-model-tabs { display:flex; gap:4px; flex-wrap:wrap; border-bottom:1px solid #303232; padding-bottom:10px; margin-bottom:14px; }
 .portal-model-tabs button { padding:8px; border-radius:6px; font-size:12px; }
@@ -390,9 +398,12 @@ select option, select optgroup { background-color:rgb(var(--theme-card)); color:
 .ods-talk .border-red-200 { border-color:#674047; }
 .ods-settings-modal.ods-settings-panel { display:flex; flex-direction:column; width:100%; height:100%; margin:0; border:0; border-radius:0; background:transparent; }
 .ods-settings-panel .ods-settings-nav { display:flex; flex-direction:column; flex-shrink:0; padding:14px; border-right:0; border-bottom:1px solid #303232; }
-.ods-settings-panel .ods-settings-search { margin:0 0 16px; }
-.ods-settings-panel .ods-settings-nav nav { display:flex; overflow-x:auto; gap:4px; padding-bottom:10px; scrollbar-width:thin; scrollbar-color:#484b4b transparent; }
-.ods-settings-panel .ods-settings-nav nav button { width:auto; white-space:nowrap; padding:8px 10px; font-size:12px; }
+.ods-settings-panel .ods-settings-search { margin:0 0 10px; }
+.ods-settings-select-group { display:flex; flex-direction:column; gap:6px; }
+.ods-settings-nav .panel-select > button { font-size:13px; height:38px; min-height:38px; padding:0 12px; border-radius:8px; border-color:#383a3c; background:#191a1b; color:#d8dcde; }
+.ods-settings-nav .panel-select > button:hover:not(:disabled) { border-color:#4b4e52; }
+.ods-settings-nav .panel-select-options { border-color:#383a3c; background:#1b1c1e; }
+.ods-settings-empty { font-size:12px; color:var(--theme-text-muted, #8e949a); padding:6px 2px; }
 .ods-settings-panel .ods-settings-content { flex:1; min-height:0; padding:18px; }
 .compact-dashboard { display:flex; flex-direction:column; min-height:100%; padding:14px 14px 8px; font-size:12px; }
 .compact-dashboard > * { flex-shrink:0; }
