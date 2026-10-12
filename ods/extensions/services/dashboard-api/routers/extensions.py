@@ -972,7 +972,7 @@ def _compose_policy_volume_problems(name, volumes, *, builtin, namespace):
             source = volume.rsplit(":", 1)[0] if volume.count(":") > 1 else volume
         if source.startswith(("/", "~")) or _COMPOSE_POLICY_WINDOWS_PATH_RE.match(source):
             problems.append(f"service '{name}' bind-mounts absolute host path '{source}'")
-        elif ".." in source.replace("\\", "/").split("/") and not (
+        elif (
             name == "cafe-llama"
             and namespace is None
             and source.replace("\\", "/") == "../../../data/models"
@@ -980,6 +980,8 @@ def _compose_policy_volume_problems(name, volumes, *, builtin, namespace):
             # The curated cafe-llama recipe is the sole exception: it needs the
             # shared ODS model store, and trusted recipe staging still protects
             # this mount from imported/user-supplied extensions.
+            pass
+        elif ".." in source.replace("\\", "/").split("/"):
             problems.append(
                 f"service '{name}' bind-mounts relative host path '{source}' escaping the project directory")
         elif host_path:
