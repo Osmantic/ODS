@@ -8,8 +8,8 @@ service:
   name: cafe-llama (advanced llama.cpp)
   aliases: [cafe-llama-cpp, cafe-llamacpp]
   container_name: ods-cafe-llama
-  host_env: CAFE_LLAMA_HOST
-  default_host: cafe-llama
+  host_env: BIND_ADDRESS
+  default_host: 127.0.0.1
   port: 8081
   external_port_env: EXT_CAFE_LLAMA_PORT
   external_port_default: 8081
