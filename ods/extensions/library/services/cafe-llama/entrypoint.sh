@@ -27,6 +27,14 @@ if [[ -z "${MODEL}" ]]; then
 fi
 
 args=(-m "${MODEL}" --host "${HOST}" --port "${PORT}")
+CTX_SIZE="${CAFE_LLAMA_CTX_SIZE:-}"
+if [[ -n "${CTX_SIZE}" ]]; then
+  if [[ ! "${CTX_SIZE}" =~ ^[0-9]+$ ]] || (( CTX_SIZE < 1 )); then
+    echo "cafe-llama: CAFE_LLAMA_CTX_SIZE must be a positive integer" >&2
+    exit 1
+  fi
+  args+=(--ctx-size "${CTX_SIZE}")
+fi
 
 # Map structured env → flags when set (cafe-capable builds)
 truthy() { case "${1:-}" in 1|true|TRUE|on|ON|yes|YES) return 0;; *) return 1;; esac; }
