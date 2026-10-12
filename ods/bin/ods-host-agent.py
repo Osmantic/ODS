@@ -14323,6 +14323,18 @@ class AgentHandler(BaseHTTPRequestHandler):
                         raise RuntimeError("Previous cafe-llama model identity is unavailable for rollback")
                     rollback_env["CAFE_LLAMA_ENABLED"] = "true"
                     rollback_env["CAFE_LLAMA_MODEL"] = f"/models/{previous_model_name}"
+                    previous_route_context = (
+                        previous_router_active.get("contextLength")
+                        if isinstance(previous_router_active, dict) else None
+                    )
+                    rollback_context = _positive_int(
+                        previous_route_context
+                        or rollback_env.get("CTX_SIZE")
+                        or rollback_env.get("MAX_CONTEXT")
+                        or 32768
+                    ) or 32768
+                    rollback_env["CTX_SIZE"] = str(rollback_context)
+                    rollback_env["_ODS_CAFE_LLAMA_CONTEXT_LENGTH"] = str(rollback_context)
                     rollback_env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "true"
                     _compose_restart_cafe_llama_server(rollback_env)
                 else:
@@ -14334,6 +14346,18 @@ class AgentHandler(BaseHTTPRequestHandler):
                         raise RuntimeError("Previous cafe-llama model identity is unavailable for rollback")
                     rollback_env["CAFE_LLAMA_ENABLED"] = "true"
                     rollback_env["CAFE_LLAMA_MODEL"] = f"/models/{previous_model_name}"
+                    previous_route_context = (
+                        previous_router_active.get("contextLength")
+                        if isinstance(previous_router_active, dict) else None
+                    )
+                    rollback_context = _positive_int(
+                        previous_route_context
+                        or rollback_env.get("CTX_SIZE")
+                        or rollback_env.get("MAX_CONTEXT")
+                        or 32768
+                    ) or 32768
+                    rollback_env["CTX_SIZE"] = str(rollback_context)
+                    rollback_env["_ODS_CAFE_LLAMA_CONTEXT_LENGTH"] = str(rollback_context)
                     rollback_env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "true"
                     _compose_restart_cafe_llama_server(rollback_env)
                 else:
@@ -14970,6 +14994,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if not model_name or model_name in {".", ".."}:
                     raise RuntimeError("Selected model has no safe filename for the cafe-llama mount")
                 env["CAFE_LLAMA_MODEL"] = f"/models/{model_name}"
+                # Verify the selected context even when .env has no CTX_SIZE.
+                env["CTX_SIZE"] = str(context_length)
+                env["_ODS_CAFE_LLAMA_CONTEXT_LENGTH"] = str(context_length)
                 env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = "true"
                 env["LLM_API_URL"] = "http://cafe-llama:8081/v1"
                 runtime_restart_strategy = "compose-cafe-llama"
@@ -20325,6 +20352,14 @@ def _compose_restart_cafe_llama_server(env: dict):
     compose_env = os.environ.copy()
     compose_env["CAFE_LLAMA_ENABLED"] = "true"
     compose_env["CAFE_LLAMA_MODEL"] = f"/models/{model_name}"
+    context_length = _positive_int(
+        env.get("_ODS_CAFE_LLAMA_CONTEXT_LENGTH")
+        or env.get("CTX_SIZE")
+        or env.get("MAX_CONTEXT")
+    )
+    if context_length is None:
+        raise RuntimeError("cafe-llama requires a positive selected context length")
+    compose_env["CAFE_LLAMA_CTX_SIZE"] = str(context_length)
     compose_env["EXT_CAFE_LLAMA_PORT"] = str(port)
     release_url = str(env.get("CAFE_LLAMA_RELEASE_URL") or "").strip()
     if release_url:
