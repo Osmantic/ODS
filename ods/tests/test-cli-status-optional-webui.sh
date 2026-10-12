@@ -18,6 +18,10 @@ helper_src="$(sed -n '/^_ods_cli_service_not_installed()/,/^}/p' "$CLI")"
 [[ -n "$helper_src" ]] || fail "could not extract _ods_cli_service_not_installed from ods-cli"
 eval "$helper_src"
 
+INSTALL_DIR="$(mktemp -d)"
+trap 'rm -rf "$INSTALL_DIR"' EXIT
+mkdir -p "$INSTALL_DIR/extensions/services/dashboard" "$INSTALL_DIR/extensions/services/open-webui"
+
 export ENABLE_OPEN_WEBUI=false
 _ods_cli_service_not_installed open-webui || fail "disabled Open WebUI is still treated as installed"
 _ods_cli_service_not_installed dashboard && fail "a disabled Open WebUI flag hid another core service"
@@ -28,6 +32,15 @@ _ods_cli_service_not_installed open-webui && fail "enabled Open WebUI was skippe
 unset ENABLE_OPEN_WEBUI
 _ods_cli_service_not_installed open-webui && fail "an install without the flag must keep checking Open WebUI"
 pass "enabled or unset Open WebUI is still checked"
+
+relay="$INSTALL_DIR/extensions/services/pixel-model-relay"
+mkdir -p "$relay"
+: > "$relay/compose.yaml.disabled"
+_ods_cli_service_not_installed pixel-model-relay || fail "a core service with a disabled compose file is still treated as installed"
+_ods_cli_service_not_installed dashboard && fail "a core service without a compose file was skipped"
+: > "$relay/compose.yaml"
+_ods_cli_service_not_installed pixel-model-relay && fail "an enabled core extension was skipped"
+pass "core extensions the installer left disabled are left out of status"
 
 for fn in cmd_status cmd_status_json; do
     body="$(sed -n "/^${fn}()/,/^}/p" "$CLI")"

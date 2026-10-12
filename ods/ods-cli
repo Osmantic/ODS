@@ -1334,9 +1334,13 @@ _ods_cli_pull_external_images() {
 # A core service the installation deliberately left out is not part of the
 # stack, so status must not report it as "not responding". Lean and
 # gateway-only installs set ENABLE_OPEN_WEBUI=false; Open WebUI is then an
-# optional Library add-back rather than a missing core service.
+# optional Library add-back rather than a missing core service. A core
+# extension whose compose file the installer left disabled (Pixel Model Relay
+# on an install without Pixel) is likewise not part of the stack.
 _ods_cli_service_not_installed() {
-    [[ "$1" == "open-webui" && "${ENABLE_OPEN_WEBUI:-true}" == "false" ]]
+    local service_dir="${INSTALL_DIR}/extensions/services/$1"
+    [[ "$1" == "open-webui" && "${ENABLE_OPEN_WEBUI:-true}" == "false" ]] && return 0
+    [[ -f "$service_dir/compose.yaml.disabled" && ! -f "$service_dir/compose.yaml" ]]
 }
 
 _ods_cli_service_health() {
