@@ -14368,6 +14368,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                     pixel_transaction.verify_held()
                 restore_backups()
                 rollback_env = previous_runtime_env()
+                # Readiness must follow the captured prior route even if the
+                # candidate route was already published before a later failure.
+                rollback_env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = (
+                    "true"
+                    if _previous_verified_backend_kind(previous_router_active) == "cafe-llama"
+                    else "false"
+                )
                 previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
                 previous_model = str(
                     rollback_env.get("LLM_MODEL")
