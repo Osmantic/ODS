@@ -16,7 +16,9 @@ compose_log="$work/compose.log"
 
 # Exercise the actual functions without dispatching the full CLI.
 for name in _ods_cli_macos_native_llama _ods_cli_macos_llama cmd_stop cmd_start cmd_restart; do
-    source <(sed -n "/^${name}() {/,/^}/p" "$root/ods-cli")
+    fn_src="$work/fn_$name.sh"
+    sed -n "/^${name}() {/,/^}/p" "$root/ods-cli" > "$fn_src"
+    source "$fn_src"
 done
 RED=""
 NC=""
@@ -116,5 +118,76 @@ grep -qF 'The macOS service CLI is missing' "$work/err" || fail "a missing macOS
 grep -qF 'Re-run the installer' "$work/err" || fail "a missing macOS CLI gave no recovery step"
 grep -qF 'discord.gg/' "$work/err" || fail "a missing macOS CLI gave no help link"
 [[ ! -s "$compose_log" ]] || fail "a missing macOS CLI fell back to Compose"
+
+# macOS CLI (ods-macos.sh): stopping native llama-server or llama must work
+# when Docker Desktop is down. Other services and whole-stack stop keep the
+# Docker gate.
+macos_fixture="$work/macos_fixture"
+macos_bin="$macos_fixture/bin"
+macos_install="$macos_fixture/install"
+mkdir -p "$macos_bin" "$macos_install/installers/macos/lib" "$macos_install/data"
+touch "$macos_install/docker-compose.base.yml"
+printf '%s\n' 'GPU_BACKEND=apple' "ODS_INSTALL_DIR=$macos_install" > "$macos_install/.env"
+
+# Hermetic shims: docker info fails (Docker down); launchctl reports no active
+# job; native-llama-service.sh stop records invocations and succeeds.
+cat > "$macos_bin/docker" <<'EOF'
+#!/bin/sh
+if [ "$1" = "info" ] || [ "$1" = "compose" ]; then
+    echo "Cannot connect to the Docker daemon" >&2
+    exit 1
+fi
+exit 0
+EOF
+chmod +x "$macos_bin/docker"
+
+cat > "$macos_bin/launchctl" <<'EOF'
+#!/bin/sh
+exit 113
+EOF
+chmod +x "$macos_bin/launchctl"
+
+native_stop_log="$macos_fixture/native_stop.log"
+cat > "$macos_install/installers/macos/lib/native-llama-service.sh" <<EOF
+#!/bin/sh
+if [ "\$1" = "stop" ]; then
+    printf '%s\n' "native-llama-service stopped" >> '$native_stop_log'
+    exit 0
+fi
+exit 0
+EOF
+chmod +x "$macos_install/installers/macos/lib/native-llama-service.sh"
+
+run_macos_stop() {
+    local target="${1:-}"
+    local args=(stop)
+    [[ -z "$target" ]] || args+=("$target")
+    PATH="$macos_bin:$PATH" INSTALL_DIR="$macos_install" ODS_INSTALL_DIR="$macos_install" ODS_HOME="$macos_install" \
+        bash "$root/installers/macos/ods-macos.sh" "${args[@]}"
+}
+
+# Native stop succeeds and triggers native service shutdown without Docker.
+: > "$native_stop_log"
+run_macos_stop llama-server 2>"$work/err" || fail "ods-macos.sh stop llama-server failed with Docker down: $(cat "$work/err")"
+grep -qF 'native-llama-service stopped' "$native_stop_log" || fail "ods-macos.sh stop llama-server did not run native stop"
+
+: > "$native_stop_log"
+run_macos_stop llama 2>"$work/err" || fail "ods-macos.sh stop llama failed with Docker down: $(cat "$work/err")"
+grep -qF 'native-llama-service stopped' "$native_stop_log" || fail "ods-macos.sh stop llama did not run native stop"
+
+# Other services and whole-stack stop still require Docker.
+rc=0; run_macos_stop open-webui >"$work/out" 2>&1 || rc=$?
+[[ "$rc" -eq 1 ]] || fail "ods-macos.sh stop open-webui did not fail when Docker is down (rc $rc)"
+grep -qF 'Docker Desktop is not running' "$work/out" || fail "ods-macos.sh stop open-webui did not enforce Docker gate: $(cat "$work/out")"
+
+rc=0; run_macos_stop "" >"$work/out" 2>&1 || rc=$?
+[[ "$rc" -eq 1 ]] || fail "ods-macos.sh stop (whole stack) did not fail when Docker is down (rc $rc)"
+grep -qF 'Docker Desktop is not running' "$work/out" || fail "ods-macos.sh stop (whole stack) did not enforce Docker gate: $(cat "$work/out")"
+
+# Missing install directory is rejected.
+rc=0; PATH="$macos_bin:$PATH" INSTALL_DIR="$macos_fixture/missing" ODS_INSTALL_DIR="$macos_fixture/missing" ODS_HOME="$macos_fixture/missing" \
+    bash "$root/installers/macos/ods-macos.sh" stop llama-server >"$work/out" 2>&1 || rc=$?
+[[ "$rc" -eq 1 ]] || fail "ods-macos.sh stop llama-server with missing install dir returned rc $rc"
+grep -qF 'ODS not found at' "$work/out" || fail "missing install dir did not report ODS not found: $(cat "$work/out")"
 
 printf '%s\n' 'PASS: macOS llama-server lifecycle goes to the native service; other paths keep Compose'

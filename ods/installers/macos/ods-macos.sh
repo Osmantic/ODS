@@ -1027,6 +1027,12 @@ cmd_start() {
 
 cmd_stop() {
     local service="${1:-}"
+    if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+        test_install_dir
+        cd "$INSTALL_DIR"
+        stop_native_llama
+        return $?
+    fi
     test_install
     cd "$INSTALL_DIR"
 
