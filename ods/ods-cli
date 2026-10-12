@@ -3068,6 +3068,24 @@ cmd_audit() {
 # Track visited services during recursive enable to prevent circular deps
 declare -a _ENABLE_VISITED=()
 
+# Host services (manifest type host-systemd) run outside Compose, so the
+# selection helper has no compose.yaml to move and would fail with "No Compose
+# selection file". Say what to do instead, matching the Dashboard's extension
+# detail for OpenCode. A shadowing user extension that ships Compose files
+# goes through the normal selection path.
+_ods_cli_reject_host_service() {
+    local service_id="$1" action="$2" ext_dir="$3"
+    [[ "${SERVICE_TYPES[$service_id]:-docker}" == "host-systemd" ]] || return 0
+    [[ -e "$ext_dir/compose.yaml" || -e "$ext_dir/compose.yaml.disabled" ]] && return 0
+    log_error "$service_id runs on the host, not as a Compose extension; 'ods $action' does not apply to it."
+    if [[ "$service_id" == "opencode" ]]; then
+        log "Open the OpenCode page in the ODS dashboard (/apps/opencode)."
+        log "Start OpenCode there when it is stopped; on Linux, set it up there when it is not installed."
+        log "Or re-run the ODS installer with --opencode to add it, or --no-opencode to remove it."
+    fi
+    exit 1
+}
+
 cmd_enable() {
     check_install
     sr_load
@@ -3099,6 +3117,7 @@ cmd_enable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
+    _ods_cli_reject_host_service "$service_id" enable "$ext_dir"
 
     if [[ "$service_id" == "ods-proxy" ]]; then
         _ods_cli_require_proxy_auth
@@ -3227,6 +3246,7 @@ cmd_disable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
+    _ods_cli_reject_host_service "$service_id" disable "$ext_dir"
 
     # A preliminary check avoids resolving Compose with known dependents.
     # The helper repeats the check and holds its selection lock through the

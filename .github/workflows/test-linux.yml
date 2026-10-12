@@ -387,6 +387,9 @@ jobs:
       - name: CLI Enable Compose Reconciliation Tests
         run: bash tests/test-cli-enable-compose-reconciliation.sh
 
+      - name: CLI Host Service Enable Tests
+        run: bash tests/test-cli-host-service-enable.sh
+
       - name: CLI Link Refresh Tests
         run: bash tests/test-cli-link-refresh.sh
 
