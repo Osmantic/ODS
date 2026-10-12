@@ -1143,18 +1143,46 @@ _compose_run_with_summary() {
 
     # Connect failed services to logs and recovery steps if not in test stub mode
     if [[ -z "${DOCKER_STUB_MODE:-}" ]]; then
-        local -a _compose_args=()
-        local _arg
+        local -a _compose_args=() _target_services=()
+        local _arg _seen_verb=false _skip_value=false
         for _arg in "$@"; do
-            [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]] && break
-            _compose_args+=("$_arg")
+            if ! $_seen_verb; then
+                if [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]]; then
+                    _seen_verb=true
+                else
+                    _compose_args+=("$_arg")
+                fi
+                continue
+            fi
+            if $_skip_value; then
+                _skip_value=false
+                continue
+            fi
+            case "$_arg" in
+                --pull|--timeout|-t|--scale|--wait-timeout|--exit-code-from|--attach|--no-attach) _skip_value=true ;;
+                -*) ;;
+                *) _target_services+=("$_arg") ;;
+            esac
         done
 
         local _failed_candidates=()
         local _c
-        while read -r _c; do
-            [[ -n "$_c" ]] && _failed_candidates+=("$_c")
-        done < <(grep -oE 'ods-[a-zA-Z0-9_-]+' "$_compose_log" | sort -u || true)
+        if (( ${#_target_services[@]} > 0 )); then
+            # Targeted command: only the targeted services' containers are
+            # evidence. Names elsewhere in the log (e.g. compose's "Found
+            # orphan containers" warning) belong to unrelated services.
+            # A ps failure only loses optional evidence; the compose error
+            # above is already surfaced.
+            while read -r _c; do
+                [[ -n "$_c" ]] && _failed_candidates+=("$_c")
+            done < <(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" "${_target_services[@]}" 2>/dev/null | sort -u || true)
+        else
+            # Full-stack command: scan the log, excluding the orphan warning,
+            # which lists stale containers that are not part of this run.
+            while read -r _c; do
+                [[ -n "$_c" ]] && _failed_candidates+=("$_c")
+            done < <(grep -viE 'found orphan containers' "$_compose_log" | grep -oE 'ods-[a-zA-Z0-9_-]+' | sort -u || true)
+        fi
 
         local _failed_containers=()
         if (( ${#_failed_candidates[@]} > 0 )); then

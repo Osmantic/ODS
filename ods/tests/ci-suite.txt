@@ -49,6 +49,7 @@ tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
 tests/test-comfyui-user-dir-persisted.sh
+tests/test-compose-failure-evidence.sh
 tests/test-compose-image-discovery.sh
 tests/test-custom-menu-agent-flags.sh
 tests/test-dashboard-approval-terminal-proxy.py
