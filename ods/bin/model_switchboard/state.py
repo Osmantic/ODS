@@ -33,7 +33,7 @@ HISTORY_LIMIT = 10
 PUBLIC_MODEL_DEFAULT = "ods/current"
 STATE_FILE_MODE = 0o644
 
-_WRITABLE_BACKEND_KINDS = {"llama-server", "hipfire", "unknown"}
+_WRITABLE_BACKEND_KINDS = {"llama-server", "hipfire", "cafe-llama", "unknown"}
 # Readable for one release only: records written before round F carry the
 # retired Lemonade route until the host agent rewrites and re-proves them.
 _LEGACY_BACKEND_KINDS = {"lemonade"}
