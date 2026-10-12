@@ -324,7 +324,7 @@ validate_backup() {
 
     local missing_any=false
     for p in "${expected_data[@]}"; do
-        if [[ ! -d "$backup_dir/$p" ]]; then
+        if [[ ! -e "$backup_dir/$p" ]]; then
             missing_any=true
             break
         fi
@@ -351,14 +351,14 @@ dry_run_preview() {
     if [[ "$restore_data" == "true" ]]; then
         echo "User Data to Restore:"
         echo "───────────────────────────────────────────────────────────────────"
-        local data_dirs=("${ODS_USER_DATA_PATHS[@]}")
-        for dir in "${data_dirs[@]}"; do
-            if [[ -d "$backup_dir/$dir" ]]; then
+        local dir
+        while IFS= read -r dir; do
+            if [[ -e "$backup_dir/$dir" ]]; then
                 local size
                 size=$(du -sh "$backup_dir/$dir" 2>/dev/null | cut -f1)
                 echo "  ✓ $dir ($size)"
             fi
-        done
+        done < <(ods_backup_data_paths "$backup_dir")
         echo ""
 
         # Cache tier (full backups only): models and model caches.
@@ -484,11 +484,22 @@ _restore_selected_paths() (
     local dir file parent workspace i changes transfer_status completed=false recovery_failed=false
     shopt -s nullglob
     if [[ "$restore_data" == true ]]; then
-        for dir in "${ODS_USER_DATA_PATHS[@]}" "models" "${ODS_BACKUP_CACHE_PATHS[@]}"; do
-            [[ -d "$backup_dir/$dir" ]] || continue
+        local -a data_paths=()
+        while IFS= read -r dir; do
+            data_paths+=("$dir")
+        done < <(ods_backup_data_paths "$backup_dir")
+        for dir in "${data_paths[@]}" "models" "${ODS_BACKUP_CACHE_PATHS[@]}"; do
+            if [[ -d "$backup_dir/$dir" && ! -L "$backup_dir/$dir" ]]; then
+                merge_data+=(true)
+            elif [[ -f "$backup_dir/$dir" && ! -L "$backup_dir/$dir" ]]; then
+                # Single-file state (dashboard-password.json) is replaced
+                # whole; cp -a keeps its 0600 mode.
+                merge_data+=(false)
+            else
+                continue
+            fi
             sources+=("$backup_dir/$dir")
             destinations+=("$ODS_DIR/$dir")
-            merge_data+=(true)
         done
     fi
     if [[ "$restore_configuration" == true ]]; then
