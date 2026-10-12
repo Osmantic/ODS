@@ -68,7 +68,7 @@ def test_rollback_backend_comes_from_captured_pre_transaction_route():
     import sys
     from pathlib import Path
 
-    agent_path = Path(__file__).resolve().parents[2] / "ods-host-agent.py"
+    agent_path = Path(__file__).resolve().parents[1] / "ods-host-agent.py"
     spec = importlib.util.spec_from_file_location(
         "_ods_host_agent_rollback_contract", agent_path
     )
