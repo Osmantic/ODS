@@ -141,6 +141,43 @@ except OSError:
 PY
 }
 
+# Mark a "running" task whose pid is dead as "interrupted" (e.g. after a host
+# reboot). A live pid is left alone.
+# Usage: bg_task_mark_interrupted <task_id>
+bg_task_mark_interrupted() {
+    local task_id="$1"
+    [[ -f "$BG_TASK_REGISTRY" ]] || return 0
+
+    python3 - "$BG_TASK_REGISTRY" "$task_id" <<'PY'
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+registry_path = Path(sys.argv[1])
+task_id = sys.argv[2]
+tasks = json.loads(registry_path.read_text())
+task = next((t for t in tasks if t.get("id") == task_id), None)
+if task is None or task.get("status") != "running":
+    sys.exit(0)
+pid = task.get("pid")
+if isinstance(pid, int) and pid > 0:
+    try:
+        os.kill(pid, 0)
+        sys.exit(0)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        sys.exit(0)  # pid exists under another user: still alive
+task["status"] = "interrupted"
+fd, tmp_path = tempfile.mkstemp(dir=str(registry_path.parent), suffix=".tmp")
+with os.fdopen(fd, "w") as f:
+    json.dump(tasks, f, indent=2)
+os.replace(tmp_path, str(registry_path))
+PY
+}
+
 # Wait for a background task to complete with timeout
 # Usage: bg_task_wait <task_id> <timeout_seconds> [check_interval]
 # Returns: 0 if completed successfully, 1 if failed, 2 if timeout
