@@ -27,7 +27,7 @@
       "name": "HTTP Request",
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.ODS_URL || 'http://host.docker.internal:8000' }}/health",
+        "url": "http://dashboard-api:3002/health",
         "options": {
           "continueOnFail": true,
           "timeout": 30000

@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.TEXT_GEN_WEBUI_HOST || 'localhost') + ':' + ($env.TEXT_GEN_WEBUI_API_PORT || '5001') + '/v1/models' }}",
+        "url": "http://text-generation-webui:5001/v1/models",
         "method": "GET",
         "options": {
           "timeout": 30000

@@ -7,6 +7,7 @@
   "nodes": [
     {
       "parameters": {
+        "authentication": "headerAuth",
         "httpMethod": "POST",
         "path": "langflow-run",
         "options": {}
@@ -18,11 +19,17 @@
       "position": [
         250,
         300
-      ]
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\nconst headers = $json.headers || {};\n\nconst expectedKey = $env.LANGFLOW_API_KEY;\nconst providedKey = headers['x-api-key'] || headers['X-API-Key'];\n\n// Reject keys exceeding max length to prevent truncation attacks\nconst MAX_KEY_LENGTH = 128;\n\nfunction safeCompare(a, b) {\n  // Reject keys exceeding max length first (length is not secret)\n  if (a.length > MAX_KEY_LENGTH || b.length > MAX_KEY_LENGTH) {\n    return false;\n  }\n\n  // Constant-time comparison: always iterate MAX_KEY_LENGTH times\n  // to prevent timing attacks that could leak the expected key length\n  let result = a.length ^ b.length;  // Non-zero if lengths differ\n\n  for (let i = 0; i < MAX_KEY_LENGTH; i++) {\n    // When index exceeds string length, use 0 (null byte) to avoid out-of-bounds\n    const charA = i < a.length ? a.charCodeAt(i) : 0;\n    const charB = i < b.length ? b.charCodeAt(i) : 0;\n    result |= charA ^ charB;\n  }\n  return result === 0;\n}\n\nif (expectedKey && expectedKey.length > 0) {\n  if (!providedKey) {\n    return [{ json: { error: 'Authentication required', code: 401 } }];\n  }\n  if (!safeCompare(expectedKey, providedKey)) {\n    return [{ json: { error: 'Invalid API key', code: 403 } }];\n  }\n}\n\nconst flowId = body.flowId || $env.LANGFLOW_DEFAULT_FLOW_ID;\nif (!flowId) {\n  return [{ json: { error: 'flowId required', code: 400 } }];\n}\n\n// Validate flowId format (UUID v4 or alphanumeric with hyphens only)\nconst validIdPattern = /^[a-zA-Z0-9-]+$/;\nif (!validIdPattern.test(flowId)) {\n  return [{ json: { error: 'Invalid flowId format', code: 400 } }];\n}\n\nreturn [{\n  json: {\n    input_value: body.input || body.message || body.prompt || 'Hello',\n    flowId: flowId,\n    input_type: body.input_type || 'chat',\n    output_type: body.output_type || 'chat',\n    tweaks: body.tweaks || {}\n  }\n}];"
+        "jsCode": "const body = $json.body || $json;\n\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst flowId = body.flowId;\nif (!flowId) {\n  return [{ json: { error: 'flowId required', code: 400 } }];\n}\n\n// Validate flowId format (UUID v4 or alphanumeric with hyphens only)\nconst validIdPattern = /^[a-zA-Z0-9-]+$/;\nif (!validIdPattern.test(flowId)) {\n  return [{ json: { error: 'Invalid flowId format', code: 400 } }];\n}\n\nreturn [{\n  json: {\n    input_value: body.input || body.message || body.prompt || 'Hello',\n    flowId: flowId,\n    input_type: body.input_type || 'chat',\n    output_type: body.output_type || 'chat',\n    tweaks: body.tweaks || {}\n  }\n}];"
       },
       "id": "validate-request",
       "name": "Validate Request",
@@ -35,7 +42,7 @@
     },
     {
       "parameters": {
-        "url": "={{ ($env.LANGFLOW_INTERNAL_URL || 'http://langflow:7860') + '/api/v1/run/' + encodeURIComponent($json.flowId) }}",
+        "url": "={{ 'http://langflow:7860' + '/api/v1/run/' + encodeURIComponent($json.flowId) }}",
         "method": "POST",
         "headers": {
           "list": [

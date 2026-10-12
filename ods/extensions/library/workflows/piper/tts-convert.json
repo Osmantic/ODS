@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.PIPER_HOST || 'localhost') + ':' + ($env.PIPER_PORT || '10200') + '/api/tts' }}",
+        "url": "http://piper-audio:10200/api/tts",
         "method": "POST",
         "headers": {
           "list": [

@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.SILLYTAVERN_HOST || 'localhost') + ':' + ($env.SILLYTAVERN_PORT || '8001') + '/' }}",
+        "url": "http://sillytavern:8000/",
         "method": "GET",
         "options": {
           "timeout": 30000
