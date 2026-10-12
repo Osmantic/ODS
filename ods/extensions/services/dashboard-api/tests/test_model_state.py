@@ -704,3 +704,19 @@ class TestObserveHook:
             return_proof=True,
             cancel_event=cancel_event,
         ) == {}
+
+
+def test_cafe_llama_can_be_recorded_as_a_verified_backend(tmp_path):
+    path = tmp_path / "model-state.json"
+    doc = _record(
+        path,
+        model="cafe-model",
+        runtime="/models/test.gguf",
+        backend="cafe-llama",
+        endpoint="cafe-llama-default",
+        context=4096,
+    )
+    assert doc["active"]["backend"]["kind"] == "cafe-llama"
+    assert doc["active"]["backend"]["endpointId"] == "cafe-llama-default"
+    assert doc["active"]["proof"]["completion"] is True
+    assert sb.validate_state(doc) == []
