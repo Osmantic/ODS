@@ -31,6 +31,7 @@ tests/test-ape-data-ownership.sh
 tests/test-backup-delete-status.sh
 tests/test-backup-macos-appledouble.sh
 tests/test-backup-restore-cli.sh
+tests/contracts/test-backup-id-guidance.sh
 tests/test-bash32-guards.sh
 tests/test_dashboard_published_readiness.py
 tests/test-bind-address-sweep.sh

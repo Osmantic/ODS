@@ -112,15 +112,15 @@ Older user-data-only archives can lack both native-state metadata and configurat
 This utility cannot detect their past native Pixel omissions or certify completeness.
 
 BACKUP_ID:
-    The backup identifier to restore from (e.g., 20260212-071500)
+    The backup identifier to restore from (e.g., backup-12345-20260212-071500; shown by -l)
     If not provided, shows interactive selection
 
 EXAMPLES:
     $(basename "$0") -l                          # List all backups
-    $(basename "$0") 20260212-071500             # Restore specific backup
-    $(basename "$0") -f 20260212-071500          # Force restore without prompts
-    $(basename "$0") -d 20260212-071500          # Dry run (preview only)
-    $(basename "$0") --data-only 20260212-071500 # Restore only user data
+    $(basename "$0") backup-12345-20260212-071500             # Restore specific backup
+    $(basename "$0") -f backup-12345-20260212-071500          # Force restore without prompts
+    $(basename "$0") -d backup-12345-20260212-071500          # Dry run (preview only)
+    $(basename "$0") --data-only backup-12345-20260212-071500 # Restore only user data
 
 EOF
 }
