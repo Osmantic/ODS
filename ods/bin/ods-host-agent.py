@@ -14282,6 +14282,13 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         def restore_previous_runtime():
             rollback_env = previous_runtime_env()
+            # model-state.json may already contain the candidate if a later
+            # dependent restart failed after route publication. Roll back from
+            # the captured pre-transaction route, not the now-mutated state.
+            previous_backend_kind = _previous_verified_backend_kind(previous_router_active)
+            rollback_env["_ODS_CAFE_LLAMA_ACTIVATION_CANDIDATE"] = (
+                "true" if previous_backend_kind == "cafe-llama" else "false"
+            )
             if runtime_restart_strategy == "wsl-native-llama":
                 if wsl_changed_digest is None:
                     # No response proved which plan was written. A read may
@@ -14310,7 +14317,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
             elif runtime_restart_strategy == "compose-cafe-llama":
                 _compose_stop_cafe_llama_server()
-                if _active_model_state_backend_kind() == "cafe-llama":
+                if previous_backend_kind == "cafe-llama":
                     previous_model_name = Path(str(rollback_env.get("GGUF_FILE") or "")).name
                     if not previous_model_name:
                         raise RuntimeError("Previous cafe-llama model identity is unavailable for rollback")
@@ -14321,7 +14328,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 else:
                     _compose_restart_llama_server(rollback_env)
             elif runtime_restart_strategy == "compose-llama":
-                if _active_model_state_backend_kind() == "cafe-llama":
+                if previous_backend_kind == "cafe-llama":
                     previous_model_name = Path(str(rollback_env.get("GGUF_FILE") or "")).name
                     if not previous_model_name:
                         raise RuntimeError("Previous cafe-llama model identity is unavailable for rollback")
@@ -15770,6 +15777,12 @@ def _active_model_state_backend_kind() -> str:
         return str(backend.get("kind") or "") if isinstance(backend, dict) else ""
     except (OSError, UnicodeError, json.JSONDecodeError):
         return ""
+
+def _previous_verified_backend_kind(active_route: object) -> str:
+    """Read the captured pre-transaction backend, never the candidate route."""
+    backend = active_route.get("backend") if isinstance(active_route, dict) else None
+    kind = str(backend.get("kind") or "") if isinstance(backend, dict) else ""
+    return kind if kind in {"cafe-llama", "llama-server"} else "llama-server"
 
 
 def _cafe_llama_runtime_selected(env: dict) -> bool:
