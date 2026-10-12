@@ -1,11 +1,9 @@
 # cafe-llama.cpp integration proposal for ODS (English summary)
 
-**Source:** LEONES `docs/integrations/cafe-llama.cpp/README-eng.mkd`  
-**Project:** LEONES → ODS  
+**Project:** ODS  
 **Date:** 2026-10-06  
 **Status:** Architecture summary mirrored into ODS fork  
 **Upstream:** https://github.com/quimmedes/cafe-llama.cpp  
-**LEONES design:** https://github.com/robertosantosx2/LEONES/blob/ods-evolution/docs/integrations/cafe-llama.cpp/README.md  
 **ODS scaffold:** `ods/docs/CAFE-LLAMA.md`, `ods/services/cafe-llama/`
 
 ## Executive summary
@@ -40,7 +38,7 @@ Expose priority flags in Dashboard advanced settings and `LLAMA_ARG_*` / Model S
 
 Activation: explicit `CAFE_LLAMA_ENABLED=true` plus a model activation request, after the curated service recipe is installed. The host agent currently supports host-native Linux NVIDIA or explicitly configured CPU builds; the standard `llama-server` remains the default.
 
-## Evidence rules (LEONES)
+## Evidence rules
 
 Only **MEASURED** results on target hardware may be used to claim local performance. Upstream numbers and community posts are **REPORTED** or **OBSERVED**.
 
