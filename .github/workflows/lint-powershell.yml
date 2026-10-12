@@ -80,6 +80,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-comfyui-standalone.ps1
 
+      - name: Windows .env reader keeps UTF-8 values (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-env-utf8.ps1
+
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
