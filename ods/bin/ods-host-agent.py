@@ -14399,6 +14399,12 @@ class AgentHandler(BaseHTTPRequestHandler):
                     if _previous_verified_backend_kind(previous_router_active) == "cafe-llama"
                     else "false"
                 )
+                captured_context = _positive_int(
+                    previous_router_active.get("contextLength")
+                    if isinstance(previous_router_active, dict) else None
+                )
+                if captured_context is not None:
+                    rollback_env["CTX_SIZE"] = str(captured_context)
                 previous_gguf = str(rollback_env.get("GGUF_FILE") or "")
                 previous_model = str(
                     rollback_env.get("LLM_MODEL")
