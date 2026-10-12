@@ -265,6 +265,32 @@ INSTALL_DIR="$TEST_ROOT/ods"
 PIXEL_SOURCE_REF="$(printf 'b%.0s' {1..40})"
 ODS_PIXEL_GATEWAY_UNIT_PATH="$TEST_ROOT/openclaw-gateway.service"
 export INSTALL_DIR PIXEL_SOURCE_REF ODS_PIXEL_GATEWAY_UNIT_PATH
+# The access coordinator rejects a ~/.config others can write
+# (model-marker-unsafe). Under Ubuntu's default umask 0002 the installer, which
+# runs as the owner, must neither create nor keep a group-writable ~/.config.
+coordinator_accepts_config() {
+    python3 - "$1" <<'PY'
+import os, stat, sys, pathlib
+marker = pathlib.Path(sys.argv[1]) / ".config/ods/pixel-managed.json"
+for directory, unsafe_bits in ((marker.parent.parent, 0o022), (marker.parent, 0o077)):
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & unsafe_bits:
+        raise SystemExit(f"model-marker-unsafe: {directory} {oct(stat.S_IMODE(info.st_mode))}")
+PY
+}
+for umask_case in fresh group-writable; do
+    umask_home="$TEST_ROOT/umask-$umask_case-home"
+    mkdir -p "$umask_home"
+    [[ "$umask_case" == group-writable ]] && install -d -m 0775 "$umask_home/.config"
+    if ( umask 0002; _ods_pixel_assert_managed_state "$owner" "$umask_home" ) >/dev/null 2>&1 \
+        && coordinator_accepts_config "$umask_home"; then
+        pass "umask 0002 leaves a $umask_case ~/.config the access coordinator accepts"
+    else
+        fail "umask 0002 leaves a $umask_case ~/.config the access coordinator rejects"
+    fi
+done
+check test "$(stat -c '%a' "$TEST_ROOT/umask-fresh-home/.config")" = 755
+
 _ods_pixel_assert_managed_state "$owner" "$home"
 marker="$home/.config/ods/pixel-managed.json"
 check test "$(stat -c '%a' "$marker")" = 600

@@ -268,6 +268,20 @@ _ods_pixel_assert_managed_state() {
     marker_dir="${marker%/*}"
     pixel_install="$home/.local/share/pixel"
     local gateway_unit="${ODS_PIXEL_GATEWAY_UNIT_PATH:-/etc/systemd/system/openclaw-gateway.service}"
+    local config_dir="${marker_dir%/*}"
+    # The access coordinator trusts the marker only when ~/.config is owned by
+    # the owner and not writable by others (model-marker-unsafe otherwise).
+    # The installer runs as the owner with Ubuntu's default umask 0002, which
+    # would create ~/.config as 0775, and other tools may have done the same.
+    if [[ -e "$config_dir" || -L "$config_dir" ]]; then
+        [[ -d "$config_dir" && ! -L "$config_dir" ]] || return 1
+        [[ "$(stat -c '%u' -- "$config_dir")" == "$(id -u "$owner")" ]] || return 1
+        if (( (8#$(stat -c '%a' -- "$config_dir") & 0022) != 0 )); then
+            ods_pixel_run_as_owner "$owner" "$home" chmod go-w -- "$config_dir" || return 1
+        fi
+    else
+        ods_pixel_run_as_owner "$owner" "$home" install -d -m 0755 -- "$config_dir" || return 1
+    fi
     if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
         [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
         [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
