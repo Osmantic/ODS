@@ -113,14 +113,13 @@ LLAMA_ARG_SPEC_DRAFT_N_MAX=4
 | **REPORTED** | Cifras publicadas por el proyecto o terceros |
 | **OBSERVED** | Capacidad verificada en README / releases / código |
 | **ESTIMATED** | Inferencia de viabilidad antes de ejecutar |
-| **MEASURED** | Resultado producido por LEONES en hardware objetivo |
+| **MEASURED** | Result produced on target hardware under a controlled workload |
 
 Only **MEASURED** results justify local performance claims.
 
 ## Out of scope (follow-ups)
 
 - Installer auto-promotion of cafe-llama as a first-class `LLM_BACKEND` value
-- Full merge of the schema fragment into root `.env.schema.json`
 - Automatic ICD sweeps / recommended profiles
 - Replacement of default `llama-server` paths
 
@@ -129,4 +128,3 @@ Only **MEASURED** results justify local performance claims.
 - https://github.com/quimmedes/cafe-llama.cpp
 - https://github.com/quimmedes/cafe-llama.cpp/releases
 - https://huggingface.co/quimmedes/Qwen3.8-Flash-Next-MTP-GGUF
-- LEONES design PR: https://github.com/robertosantosx2/LEONES/pull/96
