@@ -60,3 +60,29 @@ def test_cafe_adapter_fails_closed_when_runtime_proof_is_missing():
 
     assert outcome["ok"] is False
     assert outcome["phase"] == "verify_identity"
+
+def test_rollback_backend_comes_from_captured_pre_transaction_route():
+    # Import the host agent by path: the hyphenated script name is not a
+    # normal Python module. Importing it does not start the agent process.
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    agent_path = Path(__file__).resolve().parents[2] / "ods-host-agent.py"
+    spec = importlib.util.spec_from_file_location(
+        "_ods_host_agent_rollback_contract", agent_path
+    )
+    assert spec is not None and spec.loader is not None
+    agent = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = agent
+    spec.loader.exec_module(agent)
+
+    assert agent._previous_verified_backend_kind(
+        {"backend": {"kind": "cafe-llama"}}
+    ) == "cafe-llama"
+    assert agent._previous_verified_backend_kind(
+        {"backend": {"kind": "llama-server"}}
+    ) == "llama-server"
+    # Missing/unrecognized prior state must fail safe to the ODS default.
+    assert agent._previous_verified_backend_kind({}) == "llama-server"
+
