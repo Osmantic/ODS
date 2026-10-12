@@ -46,7 +46,7 @@ docker build \
 
 Set `CAFE_LLAMA_RELEASE_URL` in `.env` before requesting model activation.
 
-## Evidence rules (LEONES)
+## Evidence and performance claims
 
 | Class     | Meaning                                      |
 |-----------|----------------------------------------------|
@@ -60,4 +60,4 @@ Only **MEASURED** results justify local performance claims.
 ## Docs
 
 - Operator: `docs/CAFE-LLAMA.md`
-- Design / ICD: LEONES `docs/integrations/cafe-llama.cpp/README.md`
+- Integration notes: `docs/integrations/cafe-llama.cpp/README-eng.mkd`
