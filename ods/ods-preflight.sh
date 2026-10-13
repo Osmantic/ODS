@@ -60,6 +60,15 @@ detect_backend() {
     for _v in /sys/class/drm/card*/device/vendor; do
         [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] && _nvidia_hw=true && break
     done
+    # Headless servers without nvidia-drm.ko expose no DRM card, but the PCI
+    # device remains: accept vendor 0x10de with display class 0x03xxxx.
+    # Keep identical to installers/lib/detection.sh detect_gpu().
+    if ! $_nvidia_hw; then
+        for _v in "${ODS_PCI_SYS:-/sys/bus/pci/devices}"/*/vendor; do
+            [[ "$(cat "$_v" 2>/dev/null)" == "0x10de" ]] || continue
+            [[ "$(cat "${_v%/vendor}/class" 2>/dev/null)" == 0x03* ]] && _nvidia_hw=true && break
+        done
+    fi
     # WSL2 passes the host GPU through its paravirtualized nvidia-smi bridge and
     # normally exposes no matching /sys/class/drm vendor node, so a successful,
     # non-empty query is the hardware witness there. This is the same rule
