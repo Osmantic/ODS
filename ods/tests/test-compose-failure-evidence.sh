@@ -19,6 +19,11 @@ cat > "$TMP/bin/docker" <<'STUB'
 args="$*"
 case "$args" in
     "compose "*" ps -a --format {{.Name}} searxng") echo "ods-searxng" ;;
+    "compose "*" ps -a --format {{.Name}} open-webui") echo "ods-open-webui" ;;
+    "compose "*" up "*" open-webui")
+        echo "time=x level=warning msg=\"Found orphan containers ([ods-n8n]) for this project.\""
+        echo "dependency failed to start: container ods-llama-server is unhealthy"
+        exit 1 ;;
     "compose "*" ps -a --format {{.Name}}"*) printf 'ods-n8n\nods-searxng\nods-llama-server\n' ;;
     "compose "*" up "*)
         echo "time=x level=warning msg=\"Found orphan containers ([ods-n8n]) for this project.\""
@@ -27,6 +32,7 @@ case "$args" in
     "inspect "*)
         case "${args##* }" in
             ods-n8n|ods-searxng) echo "exited none" ;;
+            ods-llama-server) echo "running unhealthy" ;;
             *) echo "running healthy" ;;
         esac ;;
     "logs "*) echo "LOGS-OF ${args##* }" ;;
@@ -60,5 +66,13 @@ rc=0
 out=$(_compose_run_with_summary "Restarting all services" -f base.yml up -d --force-recreate 2>&1) || rc=$?
 check "full-stack: orphan ods-n8n not reported" "$out" "container ods-n8n (evidence)" absent
 check "full-stack: failed ods-searxng logs shown" "$out" "LOGS-OF ods-searxng" present
+
+# Targeted restart failing on an unhealthy depends_on service: the
+# dependency named in compose's error is evidence; the orphan is not.
+rc=0
+out=$(_compose_run_with_summary "Restarting open-webui" -f base.yml up -d --force-recreate --no-build open-webui 2>&1) || rc=$?
+check "dependency: unhealthy ods-llama-server logs shown" "$out" "LOGS-OF ods-llama-server" present
+check "dependency: recovery hint shown" "$out" "ods doctor" present
+check "dependency: orphan ods-n8n not reported" "$out" "container ods-n8n (evidence)" absent
 
 exit "$fail"

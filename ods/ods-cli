@@ -1167,22 +1167,21 @@ _compose_run_with_summary() {
 
         local _failed_candidates=()
         local _c
+        # Names in compose's "Found orphan containers" warning belong to
+        # stale, unrelated containers, so that line is never evidence. Other
+        # log names stay: a targeted service can fail on an unhealthy
+        # dependency ("dependency failed to start: container ods-x ...").
+        local _log_names _target_names=""
+        _log_names=$(grep -viE 'found orphan containers' "$_compose_log" | grep -oE 'ods-[a-zA-Z0-9_-]+' || true)  # no match = no names
         if (( ${#_target_services[@]} > 0 )); then
-            # Targeted command: only the targeted services' containers are
-            # evidence. Names elsewhere in the log (e.g. compose's "Found
-            # orphan containers" warning) belong to unrelated services.
-            # A ps failure only loses optional evidence; the compose error
-            # above is already surfaced.
-            while read -r _c; do
-                [[ -n "$_c" ]] && _failed_candidates+=("$_c")
-            done < <(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" "${_target_services[@]}" 2>/dev/null | sort -u || true)
-        else
-            # Full-stack command: scan the log, excluding the orphan warning,
-            # which lists stale containers that are not part of this run.
-            while read -r _c; do
-                [[ -n "$_c" ]] && _failed_candidates+=("$_c")
-            done < <(grep -viE 'found orphan containers' "$_compose_log" | grep -oE 'ods-[a-zA-Z0-9_-]+' | sort -u || true)
+            # Targeted command: also include the targeted services' own
+            # containers. A ps failure only loses optional evidence; the
+            # compose error above is already surfaced.
+            _target_names=$(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" "${_target_services[@]}" 2>/dev/null || true)
         fi
+        while read -r _c; do
+            [[ -n "$_c" ]] && _failed_candidates+=("$_c")
+        done < <(printf '%s\n%s\n' "$_log_names" "$_target_names" | sort -u)
 
         local _failed_containers=()
         if (( ${#_failed_candidates[@]} > 0 )); then
