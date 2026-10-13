@@ -8770,3 +8770,150 @@ class TestAutomaticTemplateRetry:
 
         assert results[0] == results[1]
         assert "templateRetry" not in json.dumps(results[0][1])
+
+
+class TestModelActivationJournal:
+    """An agent killed mid-activation restores the previous runtime on next start."""
+
+    @pytest.fixture(autouse=True)
+    def _quiet_runtime(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
+        monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
+        monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
+        monkeypatch.setattr(_mod, "check_auth", lambda _handler: True)
+
+    @staticmethod
+    def _interrupted_install(tmp_path, monkeypatch):
+        """State left by a SIGTERM during the llama-server recreate."""
+        install, env_path, env_text, models_ini, ini_text, *_ = _write_model_activation_fixture(tmp_path)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        _mod._write_model_activation_journal("target-model", "compose-llama", {
+            "env": _mod._snapshot_text_file(env_path),
+            "models_ini": _mod._snapshot_text_file(models_ini),
+            "activation_receipt": _mod._snapshot_text_file(install / "data" / "model-activation-receipt.json"),
+        })
+        env_path.write_text(env_text.replace("old-model", "new-model"), encoding="utf-8")
+        models_ini.write_text("[new-model]\nfilename = new-model.gguf\n", encoding="utf-8")
+        return install, env_path, env_text, models_ini, ini_text
+
+    def test_journal_is_written_before_mutation_and_cleared_on_success(self, tmp_path, monkeypatch):
+        install, env_path, env_text, models_ini, ini_text, *_ = _write_model_activation_fixture(tmp_path)
+        journal_path = install / "data" / "model-activation-transaction.json"
+        original_bytes = env_path.read_bytes().decode("utf-8")
+        seen = []
+        real_write = _mod._write_model_activation_journal
+
+        def write_journal(*args, **kwargs):
+            assert env_path.read_text(encoding="utf-8") == env_text
+            assert models_ini.read_text(encoding="utf-8") == ini_text
+            real_write(*args, **kwargs)
+
+        def restart(env):
+            journal = json.loads(journal_path.read_text(encoding="utf-8"))
+            seen.append((env["GGUF_FILE"], journal["strategy"], journal["files"]["env"]["text"]))
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setattr(_mod, "_write_model_activation_journal", write_journal)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", restart)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200, handler.parse_response()
+        assert seen == [("new-model.gguf", "compose-llama", original_bytes)]
+        assert not journal_path.exists()
+
+    def test_completed_rollback_clears_the_journal(self, tmp_path, monkeypatch):
+        install, env_path, env_text, *_ = _write_model_activation_fixture(tmp_path)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_staged_llama_load_failure_probe", lambda *_args: None)
+        monkeypatch.setattr(_mod, "_failed_llama_server_log_excerpt", lambda *_args: "")
+        monkeypatch.setattr(
+            _mod, "_wait_for_model_readiness",
+            lambda *a, **kw: False if kw.get("gguf_file") == "new-model.gguf" else _mock_verified_readiness(*a, **kw))
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.parse_response()["rolled_back"] is True
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert not (install / "data" / "model-activation-transaction.json").exists()
+
+    def test_startup_restores_previous_runtime_and_clears_journal(self, tmp_path, monkeypatch):
+        install, env_path, env_text, models_ini, ini_text = self._interrupted_install(tmp_path, monkeypatch)
+        restarts, statuses = [], []
+
+        def restart(env):
+            restarts.append(env["GGUF_FILE"])
+            statuses.append(_mod._model_activation_recovery_status()["phase"])
+            assert _mod._model_lifecycle_status()["activeOperation"] == "model_recovery"
+
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", restart)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+
+        _mod._startup_recover_interrupted_model_activation()
+
+        assert restarts == ["old-model.gguf"]
+        assert statuses == ["activation_recovering"]
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert models_ini.read_text(encoding="utf-8") == ini_text
+        assert not (install / "data" / "model-activation-transaction.json").exists()
+        assert _mod._model_lifecycle_status().get("lifecycleActive") is None
+        # Idempotent: a second start with no journal does nothing.
+        _mod._startup_recover_interrupted_model_activation()
+        assert restarts == ["old-model.gguf"]
+
+    def test_failed_recovery_keeps_journal_and_reports_pending(self, tmp_path, monkeypatch):
+        install, env_path, env_text, *_ = self._interrupted_install(tmp_path, monkeypatch)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", lambda *_a, **_kw: False)
+
+        _mod._startup_recover_interrupted_model_activation()  # logs, never raises
+
+        assert (install / "data" / "model-activation-transaction.json").exists()
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert _mod._model_lifecycle_status().get("lifecycleActive") is None
+        handler = _ResponseHandler()
+        _mod.AgentHandler._handle_model_recovery_status(handler)
+        assert handler.parse_response() == {
+            "pending": True,
+            "phase": "activation_recovery_failed",
+            "transactionId": None,
+            "reason": "interrupted-model-activation",
+            "targetModelId": "target-model",
+        }
+        # The next start retries from the same journal and finishes.
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        _mod._startup_recover_interrupted_model_activation()
+        assert not (install / "data" / "model-activation-transaction.json").exists()
+
+    def test_no_journal_means_no_recovery_and_idle_status(self, tmp_path, monkeypatch):
+        install, *_ = _write_model_activation_fixture(tmp_path)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setattr(
+            _mod, "_compose_restart_llama_server",
+            lambda _env: pytest.fail("no journal must not restart the runtime"))
+
+        assert _mod._recover_interrupted_model_activation() == "none"
+        handler = _ResponseHandler()
+        _mod.AgentHandler._handle_model_recovery_status(handler)
+        assert handler.parse_response() == {"pending": False, "phase": "idle", "transactionId": None}
+
+    def test_native_runtime_journal_is_kept_for_explicit_recovery(self, tmp_path, monkeypatch):
+        install, env_path, *_ = _write_model_activation_fixture(tmp_path)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        _mod._write_model_activation_journal("target-model", "wsl-native-llama", {
+            "env": _mod._snapshot_text_file(env_path)})
+        monkeypatch.setattr(
+            _mod, "_compose_restart_llama_server",
+            lambda _env: pytest.fail("native runtimes are not restarted by compose"))
+
+        _mod._startup_recover_interrupted_model_activation()
+
+        assert (install / "data" / "model-activation-transaction.json").exists()
