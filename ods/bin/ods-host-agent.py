@@ -17174,7 +17174,7 @@ def _render_switchboard_for_install_mode(install_dir: Path, env: dict) -> bool:
     model activation. Windows starts this agent before docker compose up.
     """
     ods_mode = _normalize_ods_mode(env.get("ODS_MODE"))
-    if ods_mode in ("cloud", "hybrid") or _normal_switchboard_mode(env) != "enabled":
+    if ods_mode in ("cloud", "hybrid", "unknown") or _normal_switchboard_mode(env) != "enabled":
         return False
     rendered = _render_runtime_config(
         install_dir,

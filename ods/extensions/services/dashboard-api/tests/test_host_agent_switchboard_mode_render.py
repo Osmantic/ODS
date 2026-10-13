@@ -59,6 +59,7 @@ def test_local_install_drops_hybrid_cloud_routes(install, mode):
     _env(ODS_MODE="hybrid"),
     _env(ODS_MODE="cloud"),
     _env(ODS_MODEL_SWITCHBOARD="observe"),
+    _env(ODS_MODE="not-a-mode"),
 ])
 def test_hybrid_cloud_and_non_switchboard_installs_are_untouched(install, env):
     root, target = install
