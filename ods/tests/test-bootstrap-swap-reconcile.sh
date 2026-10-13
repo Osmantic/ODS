@@ -41,6 +41,8 @@ mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/scripts" \
 cp "$ROOT_DIR/scripts/reconcile-bootstrap-swap.sh" "$INSTALL_DIR/scripts/" \
     || fail "scripts/reconcile-bootstrap-swap.sh is missing"
 cp "$ROOT_DIR/installers/lib/background-tasks.sh" "$INSTALL_DIR/installers/lib/"
+cp "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh" "$INSTALL_DIR/installers/lib/"
+export ODS_MODEL_LIFECYCLE_LOCK_ROOT="$TMP/locks"
 cp "$ROOT_DIR/ods-cli" "$INSTALL_DIR/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$INSTALL_DIR/lib/"
 : > "$INSTALL_DIR/docker-compose.base.yml"
@@ -75,7 +77,7 @@ DEAD_PID=$!
 wait "$DEAD_PID"
 
 write_fixture() {
-    local env_model="$1"
+    local env_model="$1" updated_at="${2:-2026-10-01T00:00:00Z}"
     cat > "$INSTALL_DIR/.env" <<EOF
 ODS_VERSION=2.0.0
 GPU_BACKEND=nvidia
@@ -84,7 +86,7 @@ GGUF_FILE=$env_model
 SHIELD_API_KEY=test-fixture-key
 EOF
     cat > "$INSTALL_DIR/data/bootstrap-status.json" <<EOF
-{"status": "swapping", "model": "$FULL_MODEL", "percent": 100, "bytesDownloaded": 100, "bytesTotal": 100, "speedBytesPerSec": 0, "eta": "", "updatedAt": "2026-10-01T00:00:00Z"}
+{"status": "swapping", "model": "$FULL_MODEL", "percent": 100, "bytesDownloaded": 100, "bytesTotal": 100, "speedBytesPerSec": 0, "eta": "", "updatedAt": "$updated_at"}
 EOF
     cat > "$INSTALL_DIR/logs/background-tasks.json" <<EOF
 [{"id": "full-model-download", "pid": $DEAD_PID, "description": "Full model download", "log_file": "x", "status": "running"}]
@@ -126,14 +128,44 @@ grep -q 'DOCKER_ARGS: start ods-llama-server' "$DOCKER_LOG" || fail "Created lla
     || fail "dead background task still recorded as running"
 pass "interrupted swap: container started, status complete, task interrupted"
 
-# 3. Not yet promoted, container exited -> started and marked failed/interrupted.
+# 3. Not yet promoted, container exited (maybe `ods stop`) -> left alone,
+#    status settled failed/interrupted.
 write_fixture "$BOOT_MODEL"
 FAKE_LLAMA_STATE=exited run_reconcile
-grep -q 'DOCKER_ARGS: start ods-llama-server' "$DOCKER_LOG" || fail "exited llama-server was not started"
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
-    || fail "unpromoted swap was not marked failed"
+grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "exited llama-server was started against a possible ods stop"
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]]     || fail "unpromoted swap was not marked failed"
 grep -q 'interrupted' "$INSTALL_DIR/data/bootstrap-status.json" || fail "failed status lacks interrupted message"
-pass "unpromoted interrupted swap: container started, status failed (interrupted)"
+[[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == interrupted ]]     || fail "dead background task still recorded as running (exited case)"
+pass "exited container: not started, status failed (interrupted), task settled"
+
+# 3b. Fresh active status, no visible process (installer child not in ps yet).
+write_fixture "$BOOT_MODEL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+FAKE_LLAMA_STATE=created run_reconcile
+grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "reconcile started llama-server for a fresh status"
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]]     || fail "reconcile settled a fresh active status"
+[[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == running ]]     || fail "reconcile rewrote the task record for a fresh status"
+pass "fresh active status without a process: untouched"
+
+# 3c. Stale active status, no process, no container -> settled.
+write_fixture "$BOOT_MODEL"
+FAKE_LLAMA_STATE="" run_reconcile
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]]     || fail "stale active status was not settled"
+pass "stale active status without a process: settled"
+
+# 3d. Model lifecycle lock held by another operation -> no action.
+if [[ "$(uname -s)" == "Linux" ]] && command -v flock >/dev/null 2>&1; then
+    write_fixture "$FULL_MODEL"
+    # shellcheck source=../installers/lib/model-lifecycle-lock.sh
+    lock_file="$(. "$ROOT_DIR/installers/lib/model-lifecycle-lock.sh"; ods_model_lifecycle_lock_file "$INSTALL_DIR")"
+    mkdir -p "$(dirname "$lock_file")"
+    exec {held_fd}>"$lock_file"
+    flock -x "$held_fd"
+    FAKE_LLAMA_STATE=created run_reconcile
+    exec {held_fd}>&-
+    grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "reconcile started llama-server while the lifecycle lock was held"
+    [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]]         || fail "reconcile rewrote status while the lifecycle lock was held"
+    pass "lifecycle lock busy: no action"
+fi
 
 # 4. Live upgrade process: nothing is touched.
 write_fixture "$FULL_MODEL"

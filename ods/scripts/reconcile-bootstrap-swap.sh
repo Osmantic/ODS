@@ -7,14 +7,29 @@
 #          start, the container stays "Created" (restart policies never start
 #          those), data/bootstrap-status.json stays active forever and the
 #          background task registry keeps a dead pid as "running".
-#          This script repairs that state once no upgrade process is alive.
+#          This script repairs that state once no upgrade process is alive
+#          and the active status is stale.
+#
+#          Only a "created" llama-server is started: that is the interrupted
+#          recreate signature (never started; `docker stop` cannot produce
+#          it). An "exited" container may have been stopped on purpose
+#          (`ods stop`), so it is left for the next `ods start`; the status
+#          file and task record are still settled.
 #
 # Expects: $1 = install dir. docker, python3.
-# Provides: exit 0 when nothing to do or the state was reconciled.
+# Provides: exit 0 when nothing to do, another operation owns the state, or
+#           the state was reconciled.
 #
 # Modder notes:
-#   Called by the host agent at boot and by `ods start`. It never acts while a
-#   bootstrap-upgrade.sh process (or the recorded task pid) is alive.
+#   Called by the host agent at boot and by `ods start`. It never acts while:
+#   - a bootstrap-upgrade.sh process (or the recorded task pid) is alive;
+#   - the active status is younger than ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS
+#     (default 900). Same knob and default as
+#     _ods_cli_bootstrap_upgrade_status_is_stale in ods-cli; keep them in sync.
+#     This covers the installer having written the status before its
+#     systemd-run/nohup child is visible in ps;
+#   - another model lifecycle operation holds the lifecycle lock
+#     (installers/lib/model-lifecycle-lock.sh, taken non-blocking here).
 # ============================================================================
 
 set -euo pipefail
@@ -25,6 +40,9 @@ ENV_FILE="$INSTALL_DIR/.env"
 LLAMA_CONTAINER="${ODS_LLAMA_CONTAINER:-ods-llama-server}"
 BG_TASK_REGISTRY="$INSTALL_DIR/logs/background-tasks.json"
 BG_TASK_ID="full-model-download"
+# Same knob/default as _ods_cli_bootstrap_upgrade_status_is_stale (ods-cli).
+STALE_SECONDS="${ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS:-900}"
+[[ "$STALE_SECONDS" =~ ^[0-9]+$ ]] || STALE_SECONDS=900
 
 log() { printf '[bootstrap-reconcile] %s\n' "$*"; }
 
@@ -34,6 +52,36 @@ import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8")).get(sys.argv[2])
 print("" if value is None else value)
 PY
+}
+
+# Exit 0 when updatedAt is older than STALE_SECONDS. A missing or unparsable
+# updatedAt is not stale, matching the ods-cli helper.
+status_is_stale() {
+    python3 - "$STATUS_FILE" "$STALE_SECONDS" <<'PY'
+import calendar, json, sys, time
+updated = json.load(open(sys.argv[1], encoding="utf-8")).get("updatedAt")
+try:
+    epoch = calendar.timegm(time.strptime(updated, "%Y-%m-%dT%H:%M:%SZ"))
+except (TypeError, ValueError):
+    sys.exit(1)
+sys.exit(0 if time.time() - epoch > int(sys.argv[2]) else 1)
+PY
+}
+
+# Take the model lifecycle lock without waiting (the shared acquire helper
+# blocks). Returns 1 when another lifecycle operation (bootstrap-upgrade.sh,
+# dashboard activation) holds it. The fd stays open until this script exits,
+# which releases the lock.
+try_model_lifecycle_lock() {
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    # shellcheck source=../installers/lib/model-lifecycle-lock.sh
+    . "$INSTALL_DIR/installers/lib/model-lifecycle-lock.sh"
+    local lock_file lock_fd
+    lock_file="$(ods_model_lifecycle_lock_file "$INSTALL_DIR")"
+    (umask 077 && mkdir -p "$(dirname "$lock_file")")
+    exec {lock_fd}>"$lock_file"
+    flock -xn "$lock_fd"
 }
 
 upgrade_process_running() {
@@ -102,11 +150,23 @@ if [[ -n "$model" ]] && upgrade_process_running "$model"; then
     exit 0
 fi
 
+if ! status_is_stale; then
+    log "Status '$status' updated within ${STALE_SECONDS}s; the upgrade may still be starting. Leaving it alone."
+    exit 0
+fi
+
+if ! try_model_lifecycle_lock; then
+    log "Another model lifecycle operation holds the lock; leaving status '$status' alone."
+    exit 0
+fi
+
 # Container state, scoped to the exact name; empty when it does not exist.
 llama_state="$(docker ps -a --filter "name=^${LLAMA_CONTAINER}\$" --format '{{.State}}')"
-if [[ "$llama_state" == "created" || "$llama_state" == "exited" ]]; then
-    log "Starting $LLAMA_CONTAINER left '$llama_state' by an interrupted model upgrade..."
+if [[ "$llama_state" == "created" ]]; then
+    log "Starting $LLAMA_CONTAINER left 'created' by an interrupted model upgrade..."
     docker start "$LLAMA_CONTAINER" >/dev/null
+elif [[ -n "$llama_state" && "$llama_state" != "running" ]]; then
+    log "$LLAMA_CONTAINER is '$llama_state'; leaving it for 'ods start'."
 fi
 
 total="$(status_field bytesTotal)"
