@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "url": "http://piper-audio:10200/api/tts",
+        "url": "http://tts:8880/v1/audio/speech",
         "method": "POST",
         "headers": {
           "list": [
@@ -27,20 +27,22 @@
             }
           ]
         },
-        "body": "={{ JSON.stringify({\n  text: $json.text || $json.message || 'Default text',\n  speaker_id: $json.speaker || 'default',\n  speed: parseFloat($json.speed || '1.0')\n}) }}",
+        "body": "={{ JSON.stringify({\n  model: 'kokoro',\n  input: $json.body?.text || $json.text || $json.message || 'Default text',\n  voice: $json.body?.voice || $json.voice || 'af_heart',\n  response_format: 'wav',\n  speed: parseFloat($json.body?.speed || $json.speed || '1.0')\n}) }}",
         "options": {
           "timeout": 60000
-        }
+        },
+        "responseFormat": "file",
+        "dataPropertyName": "data"
       },
       "id": "piper-tts-api",
-      "name": "Piper TTS API",
+      "name": "OpenAI-compatible TTS API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 1,
       "position": [450, 300]
     },
     {
       "parameters": {
-        "jsCode": "// Process TTS audio response\nconst body = $json;\nconst audioBase64 = body.audio || body.audio_base64 || '';\nconst duration = body.duration || 0;\nconst speaker = body.speaker || 'default';\n\nreturn [{\n  json: {\n    success: audioBase64.length > 0,\n    speaker: speaker,\n    duration_seconds: duration,\n    audio_size_bytes: audioBase64.length,\n    timestamp: new Date().toISOString()\n  },\n  binary: {\n    data: {\n      data: audioBase64,\n      mimeType: 'audio/wav'\n    }\n  }\n}];"
+        "jsCode": "// Pass the synthesized WAV through with a small summary\nconst item = $input.first();\nconst audio = item.binary && item.binary.data ? item.binary.data : null;\nconst source = $('TTS Webhook Trigger').first().json;\nconst req = source.body || source;\n\nreturn [{\n  json: {\n    success: audio !== null,\n    speaker: req.voice || 'af_heart',\n    duration_seconds: 0,\n    audio_size_bytes: audio && audio.fileSize ? audio.fileSize : 0,\n    channel: req.channel || '#general',\n    timestamp: new Date().toISOString()\n  },\n  binary: audio ? { data: audio } : {}\n}];"
       },
       "id": "process-tts-response",
       "name": "Process TTS Response",
@@ -58,6 +60,18 @@
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
       "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "content": "## Why this calls the core TTS service\nThe `piper-audio` extension speaks the Wyoming TCP protocol on port 10200 (used by Home Assistant), not HTTP, so n8n's HTTP Request node cannot reach it.\n\nThis template uses the core ODS `tts` service (Kokoro, OpenAI-compatible `/v1/audio/speech` on port 8880) instead. Enable it with `ods enable tts`.",
+        "height": 220,
+        "width": 420
+      },
+      "id": "sticky-piper-wyoming",
+      "name": "Piper uses Wyoming, not HTTP",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [400, 60]
     }
   ],
   "connections": {
@@ -65,14 +79,14 @@
       "main": [
         [
           {
-            "node": "Piper TTS API",
+            "node": "OpenAI-compatible TTS API",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Piper TTS API": {
+    "OpenAI-compatible TTS API": {
       "main": [
         [
           {

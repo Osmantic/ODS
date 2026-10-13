@@ -24,7 +24,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nreturn [{ json: { error: 'Authentication required', code: 401 } }];\n  }\n  if (!timingSafeEqual(expectedKey, providedKey)) {\n    return [{ json: { error: 'Invalid API key', code: 403 } }];\n  }\n} else if (providedKey) {\n  return [{ json: { error: 'Server not configured for API key auth', code: 401 } }];\n}\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'local-model',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
+        "jsCode": "const body = $json.body || $json;\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'local-model',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
       },
       "id": "validate-and-auth",
       "name": "Validate and Auth",

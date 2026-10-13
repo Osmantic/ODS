@@ -43,7 +43,7 @@
     },
     {
       "parameters": {
-        "url": "http://whisper:8000/inference",
+        "url": "http://whisper:8000/v1/audio/transcriptions",
         "method": "POST",
         "headers": {
           "list": [

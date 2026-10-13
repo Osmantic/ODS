@@ -39,12 +39,20 @@ to the request node.
 
 ## Credentials
 
-Templates never embed secrets. After import, create these n8n credentials:
+Templates never embed secrets, so their credential references ship with an
+empty `id`. **Create these credentials in n8n (Credentials → Add credential →
+Header Auth) and select them in each node before activating a workflow**;
+otherwise the node has no credential and the workflow fails to activate:
 
 - **ODS Webhook Header Auth** (Header Auth): the header name and value callers must
-  send to the template's webhook.
+  send to the template's webhook, for example `X-API-Key: <long random value>`.
+  Once set, every webhook that uses it rejects requests without that header
+  (HTTP 403), so this credential is the webhook's only access control.
 - **Form Storage API Key** (Header Auth): used by `form-processing.json` to call your
   storage endpoint.
+
+The same applies to the ComfyUI, Flowise, Langflow and Whisper templates in the
+sibling directories: their webhooks also use **ODS Webhook Header Auth**.
 
 URLs on `example.invalid` are placeholders; a sticky note in the workflow marks
 them. Replace them with your own endpoint before activating the workflow.
