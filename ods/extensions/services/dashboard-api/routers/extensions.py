@@ -3708,6 +3708,93 @@ def _scan_installed_compose(service_id: str, ext_dir: Path, compose_path: Path, 
         raise HTTPException(status_code=400, detail=f"{lost} {exc.detail}") from None
 
 
+_PORT_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}")
+
+
+def _resolve_port_part(value: str) -> str:
+    """Resolve a ``${VAR:-default}`` port part the way Compose would here."""
+    match = _PORT_EXPANSION.fullmatch(value)
+    if match is None:
+        return value
+    return os.environ.get(match.group(1)) or (match.group(2) or "")
+
+
+def _published_ports(service: dict) -> set[tuple[str, str]]:
+    """Return the (host_ip, host_port) pairs a compose service publishes."""
+    published = set()
+    ports = service.get("ports")
+    for entry in ports if isinstance(ports, list) else []:
+        if isinstance(entry, dict):
+            host, port = str(entry.get("host_ip") or ""), str(entry.get("published") or "")
+        else:
+            host, rest = _split_port_host(str(entry))
+            if ":" not in rest:
+                continue  # container-only port: Docker picks a free host port
+            # The host port may itself be "${VAR:-7100}", whose ":-" is not a separator.
+            end = rest.find("}") + 1 if rest.startswith("${") else 0
+            host, port = host or "", rest[:end] + rest[end:].split(":", 1)[0]
+        host, port = _resolve_port_part(host), _resolve_port_part(port).split("/", 1)[0]
+        if port.isdigit():
+            published.add((host or "0.0.0.0", port))
+    return published
+
+
+def _compose_claims(compose_path: Path) -> dict[str, set]:
+    """Service names, container names and host ports a compose file claims."""
+    data = yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+    services = data.get("services") if isinstance(data, dict) else None
+    claims: dict[str, set] = {"service": set(), "container": set(), "port": set()}
+    if not isinstance(services, dict):
+        return claims
+    for name, service in services.items():
+        claims["service"].add(str(name))
+        if not isinstance(service, dict):
+            continue
+        if isinstance(service.get("container_name"), str):
+            claims["container"].add(service["container_name"].lower())
+        claims["port"] |= _published_ports(service)
+    return claims
+
+
+def _ports_overlap(a: tuple[str, str], b: tuple[str, str]) -> bool:
+    return a[1] == b[1] and (a[0] == b[0] or "0.0.0.0" in (a[0], b[0]))
+
+
+def _reject_installed_collisions(service_id: str, compose_path: Path) -> None:
+    """Refuse a definition whose names or host ports another enabled extension owns.
+
+    Compose refuses the whole merged stack when two services share a
+    container name, and ``up`` fails when two bind the same host port, so
+    one colliding extension would keep every service, core included, down.
+    """
+    candidate = _compose_claims(compose_path)
+    for root in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
+        if not root.is_dir():
+            continue
+        for ext_dir in sorted(root.iterdir()):
+            other = ext_dir / "compose.yaml"
+            if ext_dir.name.startswith(".") or ext_dir.name == service_id or not other.is_file():
+                continue
+            try:
+                owned = _compose_claims(other)
+            except (OSError, yaml.YAMLError) as exc:
+                # The resolver skips an unreadable definition, so it owns nothing.
+                logger.warning("Skipping collision check against %s: %s", ext_dir.name, exc)
+                continue
+            clash = (
+                [f"service name '{n}'" for n in sorted(candidate["service"] & owned["service"])]
+                + [f"container name '{n}'" for n in sorted(candidate["container"] & owned["container"])]
+                + [f"host port {ip}:{port}" for ip, port in sorted(candidate["port"])
+                   if any(_ports_overlap((ip, port), p) for p in owned["port"])]
+            )
+            if clash:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(f"Extension '{service_id}' conflicts with installed extension "
+                            f"'{ext_dir.name}': {clash[0]} is already in use"),
+                )
+
+
 @contextlib.contextmanager
 def _staged_library_extension(service_id: str, dest: Path):
     """Yield a validated, rewritten library copy on the destination filesystem."""
@@ -3895,6 +3982,7 @@ def _install_from_library(service_id: str, *, operation_id: str | None = None) -
         return
 
     with _staged_library_extension(service_id, dest) as (staged, source_digest):
+        _reject_installed_collisions(service_id, staged / "compose.yaml")
         installed_digest = _extension_tree_digest(staged)
         _write_library_receipt(
             staged,
@@ -4304,6 +4392,7 @@ def update_extension(
         disabled = not enabled
 
         with _staged_library_extension(service_id, dest) as (staged, source_digest):
+            _reject_installed_collisions(service_id, staged / "compose.yaml")
             if not _set_extension_compose_state(staged, enabled=enabled):
                 raise HTTPException(
                     status_code=409,

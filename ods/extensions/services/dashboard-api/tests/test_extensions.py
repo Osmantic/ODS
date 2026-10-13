@@ -1178,6 +1178,40 @@ class TestInstallExtension:
         assert resp.status_code == 400
         assert "unsupported extra_hosts" in resp.json()["detail"]
 
+    @pytest.mark.parametrize("second, conflict", [
+        ("services:\n  other:\n    image: t:1\n    container_name: ods-shared\n",
+         "container name 'ods-shared'"),
+        ("services:\n  other:\n    image: t:1\n    ports:\n      - \"127.0.0.1:${OTHER_PORT:-7100}:80\"\n",
+         "host port 127.0.0.1:7100"),
+        ("services:\n  first:\n    image: t:1\n", "service name 'first'"),
+        ("services:\n  other:\n    image: t:1\n    container_name: ods-other\n"
+         "    ports:\n      - \"127.0.0.1:7101:80\"\n", None),
+    ])
+    def test_install_rejects_collision_with_installed_extension(
+        self, test_client, monkeypatch, tmp_path, second, conflict,
+    ):
+        """Two extensions sharing a container name or host port break the whole stack."""
+        first = ("services:\n  first:\n    image: t:1\n    container_name: ods-shared\n"
+                 "    ports:\n      - \"127.0.0.1:7100:80\"\n")
+        lib_dir = _setup_library_ext(tmp_path, "ext-a", compose_content=first)
+        _setup_library_ext(tmp_path, "ext-b", compose_content=second)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+        monkeypatch.delenv("OTHER_PORT", raising=False)
+
+        assert test_client.post("/api/extensions/ext-a/install",
+                                headers=test_client.auth_headers).status_code == 200
+        resp = test_client.post("/api/extensions/ext-b/install",
+                                headers=test_client.auth_headers)
+
+        if conflict is None:
+            assert resp.status_code == 200
+            assert (tmp_path / "user" / "ext-b" / "compose.yaml").is_file()
+        else:
+            assert resp.status_code == 409
+            assert "'ext-a'" in resp.json()["detail"]
+            assert conflict in resp.json()["detail"]
+            assert not (tmp_path / "user" / "ext-b").exists()
+
 
 # --- Enable endpoint ---
 
@@ -4347,6 +4381,26 @@ class TestUpdateExtension:
         assert (installed / "manifest.yaml").read_text() == "release: two\n"
         assert (user_dir / ".backups" / "my-ext").is_dir()
         assert ext_mod._library_update_state("my-ext")["update_status"] == "current"
+
+    def test_update_rejects_container_name_owned_by_other_extension(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        _ext_mod, lib_dir, user_dir, installed = self._prepare(monkeypatch, tmp_path)
+        other = user_dir / "other-ext"
+        other.mkdir()
+        (other / "compose.yaml").write_text(
+            "services:\n  other:\n    image: t:1\n    container_name: ods-shared\n")
+        original = (installed / "compose.yaml").read_text()
+        (lib_dir / "my-ext" / "compose.yaml").write_text(
+            "services:\n  svc:\n    image: t:2\n    container_name: ods-shared\n")
+
+        response = test_client.post(
+            "/api/extensions/my-ext/update", headers=test_client.auth_headers,
+        )
+
+        assert response.status_code == 409
+        assert "'other-ext'" in response.json()["detail"]
+        assert (installed / "compose.yaml").read_text() == original
 
     def test_update_blocks_local_changes_without_force(
         self, test_client, monkeypatch, tmp_path,
