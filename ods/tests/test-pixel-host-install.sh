@@ -75,26 +75,35 @@ else
 fi
 
 mkdir -p "$TEST_ROOT/group-bin"
+# Like util-linux sg (Ubuntu 26.04), each call replaces the primary group and
+# keeps no earlier one, so PIXEL_TEST_PRIMARY is the only group a command has.
 cat > "$TEST_ROOT/group-bin/sg" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$2" == -c ]]
 [[ "${PIXEL_TEST_DENY_GROUP:-}" != "$1" ]] || exit 73
-export PIXEL_TEST_REFRESHED="${PIXEL_TEST_REFRESHED:-}${1} "
+export PIXEL_TEST_REFRESHED="${PIXEL_TEST_REFRESHED:-}${1} " PIXEL_TEST_PRIMARY="$1"
 exec bash -c "$3"
 SH
 chmod +x "$TEST_ROOT/group-bin/sg"
-for group_case in pixel both current unregistered denied denied_inner denied_outer; do
+for group_case in pixel docker both both_pixel_socket current unregistered unsupported \
+    denied denied_inner denied_outer; do
     if (
-        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED=''
-        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel '
+        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED='' PIXEL_TEST_PRIMARY=''
+        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel |ods-pixel'
         case "$group_case" in
-            both) current=users; expected='docker ods-pixel ' ;;
-            current) current="$account"; expected='' ;;
-            unregistered) account="$current"; expected='' ;;
+            docker) current='users ods-pixel'; expected='docker |docker' ;;
+            both) current=users; expected='ods-pixel docker |docker' ;;
+            both_pixel_socket)
+                current=users; expected='docker ods-pixel |ods-pixel'
+                export ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel
+                ;;
+            current) current="$account"; expected='|' ;;
+            unregistered) account="$current"; expected='|' ;;
+            unsupported) current=users; export ODS_PIXEL_OWNER_PRIMARY_GROUP=wheel ;;
             denied) export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
-            denied_inner) current=users; export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
-            denied_outer) current=users; export PIXEL_TEST_DENY_GROUP=docker ;;
+            denied_inner) current=users; export PIXEL_TEST_DENY_GROUP=docker ;;
+            denied_outer) current=users; export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
         esac
         id() {
             if [[ "$1" == -un ]]; then command id -un
@@ -106,16 +115,37 @@ for group_case in pixel both current unregistered denied denied_inner denied_out
         tricky_arg="space ' \" ; touch $TEST_ROOT/UNEXPECTED"
         result=0
         actual="$(ods_pixel_run_as_owner "$owner" "$TEST_ROOT" python3 -c \
-            'import os,sys; print(os.environ["PIXEL_TEST_REFRESHED"] + "|" + sys.argv[1] + "|" + os.environ["HOME"])' \
+            'import os,sys; print(os.environ["PIXEL_TEST_REFRESHED"] + "|" + os.environ["PIXEL_TEST_PRIMARY"] + "|" + sys.argv[1] + "|" + os.environ["HOME"])' \
             "$tricky_arg")" || result=$?
         if [[ "$group_case" == denied* ]]; then
             [[ "$result" == 73 && -z "$actual" ]]
+        elif [[ "$group_case" == unsupported ]]; then
+            [[ "$result" == 1 && -z "$actual" ]]
         else
             [[ "$result" == 0 && "$actual" == "$expected|$tricky_arg|$TEST_ROOT" && ! -e "$TEST_ROOT/UNEXPECTED" ]]
         fi
     ); then pass "owner runtime group refresh: $group_case"
     else fail "owner runtime group refresh: $group_case"; fi
 done
+
+if (
+    inspection_calls="$TEST_ROOT/inspection-owner-calls"
+    INSTALL_DIR="$TEST_ROOT/inspection-install"
+    ods_pixel_run_as_owner() {
+        printf '%s %s\n' "${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}" "$5" >>"$inspection_calls"
+        [[ "$5" != build ]] || printf '%s\n' '{}'
+    }
+    ods_sudo() {
+        [[ "$*" != *" health" ]] \
+            || printf '%s\n' '{"schemaVersion":1,"kind":"ods-pixel-preview-inspection","status":"ready"}'
+    }
+    _ods_pixel_install_preview_inspection "$owner" "$TEST_ROOT" "$TEST_ROOT/inspection-source"
+    [[ "$(cat "$inspection_calls")" == $'docker build\nods-pixel wait-owner-socket' ]]
+); then
+    pass "preview inspection builds with Docker and probes its root:ods-pixel socket with ods-pixel"
+else
+    fail "preview inspection owner calls did not get the group each one needs"
+fi
 
 probe_program="$TEST_ROOT/manager-probe.py"
 probe_counter="$TEST_ROOT/manager-probe.count"
