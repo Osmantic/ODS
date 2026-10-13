@@ -209,6 +209,68 @@ MOCK
     assert_failure
 }
 
+# ── detect_gpu NVIDIA hardware witness (native Linux) ─────────────────────────
+
+_setup_native_nvidia_smi() {
+    mkdir -p "$BATS_TEST_TMPDIR/bin" "$BATS_TEST_TMPDIR/sys/class/drm" "$BATS_TEST_TMPDIR/sys/bus/pci/devices"
+    cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"--query-gpu=name,memory.total"* ]]; then
+    echo "NVIDIA H100 PCIe, 81559 MiB"
+elif [[ "$*" == "-L" ]]; then
+    echo "GPU 0: NVIDIA H100 PCIe (UUID: GPU-0)"
+fi
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/nvidia-smi"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    echo "6.8.0-generic" > "$BATS_TEST_TMPDIR/osrelease"
+    export ODS_OSRELEASE_FILE="$BATS_TEST_TMPDIR/osrelease"
+    export ODS_DRM_SYS="$BATS_TEST_TMPDIR/sys/class/drm"
+    export ODS_PCI_SYS="$BATS_TEST_TMPDIR/sys/bus/pci/devices"
+}
+
+_add_pci_device() {
+    local dir="$ODS_PCI_SYS/$1"
+    mkdir -p "$dir"
+    echo "$2" > "$dir/vendor"
+    echo "$3" > "$dir/class"
+}
+
+@test "detect_gpu: NVIDIA 3D controller on PCI without nvidia_drm DRM card is detected" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "detect_gpu uses GNU grep -oP"
+    _setup_native_nvidia_smi
+    _add_pci_device 0000:01:00.0 0x10de 0x030200
+
+    detect_gpu
+    assert_equal "$GPU_BACKEND" "nvidia"
+    assert_equal "$GPU_NAME" "NVIDIA H100 PCIe"
+}
+
+@test "detect_gpu: stray nvidia-smi on AMD-only native Linux is not trusted and warns" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "detect_gpu uses GNU grep -oP"
+    _setup_native_nvidia_smi
+    _add_pci_device 0000:03:00.0 0x1002 0x030000
+    # Non-display NVIDIA function (e.g. audio) must not count as a GPU witness
+    _add_pci_device 0000:04:00.1 0x10de 0x040300
+    warn() { echo "WARN: $*" >> "$BATS_TEST_TMPDIR/warn.log"; }
+
+    # No AMD DRM card is mocked, so detect_gpu returns 1 (no GPU); only the
+    # backend choice and the warning matter here.
+    detect_gpu || true
+    [[ "$GPU_BACKEND" != "nvidia" ]]
+    grep -q "nvidia-smi lists GPUs but no NVIDIA PCI/DRM device" "$BATS_TEST_TMPDIR/warn.log"
+}
+
+@test "detect_gpu: NVIDIA DRM card path is still detected on native Linux" {
+    [[ "$(uname -s)" == "Darwin" ]] && skip "detect_gpu uses GNU grep -oP"
+    _setup_native_nvidia_smi
+    mkdir -p "$ODS_DRM_SYS/card0/device"
+    echo "0x10de" > "$ODS_DRM_SYS/card0/device/vendor"
+
+    detect_gpu
+    assert_equal "$GPU_BACKEND" "nvidia"
+}
+
 # ── detect_gpu AMD APU path ──────────────────────────────────────────────────
 
 _setup_amd_sysfs() {
