@@ -712,6 +712,39 @@ while IFS=$'\t' read -r a b rank ltype; do
   LINK_TYPE["$b,$a"]=$ltype
 done < <(jq -r '.links[] | [.gpu_a, .gpu_b, .rank, .link_type] | @tsv' "$TOPOLOGY_FILE")
 
+# llama-server memory the GPU planner must cover: weights plus KV cache and
+# overhead at the configured MAX_CONTEXT. The selector sized MAX_CONTEXT
+# against the summed VRAM of every GPU, so planning on the GGUF size alone
+# gives llama-server too few GPUs for that context (KV allocation fails at
+# start). Same contract as the model-swap replanner (ods-host-agent.py).
+# Falls back to LLM_MODEL_SIZE_MB when the model is not a catalog entry.
+llama_required_mb() {
+  local need_mb="${LLM_MODEL_SIZE_MB:-0}" fit_json="" required_mb="" free_mb python=""
+  if declare -F ods_catalog_fit_check >/dev/null 2>&1 \
+      && [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] \
+      && [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
+    python="$(ods_model_selector_python)"
+  fi
+  if [[ -n "$python" && "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT > 0 )); then
+    # Exit 3 (does not fit) still reports required_gb; any other failure
+    # keeps the GGUF-size fallback.
+    fit_json=$(ods_catalog_fit_check "$python" "${GGUF_FILE:-${LLM_MODEL:-}}" \
+      "$MAX_CONTEXT" "${MODEL_RUNTIME_PROFILE:-}" 2>>"${LOG_FILE:-/dev/null}") \
+      || [[ $? -eq 3 ]] || fit_json=""
+    [[ -n "$fit_json" ]] && required_mb=$(jq -r '(.required_gb // 0) * 1024 | ceil' <<< "$fit_json")
+  fi
+  if [[ "$required_mb" =~ ^[0-9]+$ ]] && (( required_mb > need_mb )); then
+    need_mb=$required_mb
+  fi
+  # Never ask the planner for more than all GPUs together offer; the
+  # selector already accepted this pick against that total.
+  free_mb=$(jq '[.gpus[] | (.memory_free_gb // .memory_gb) * 1024] | add | floor' "$TOPOLOGY_FILE")
+  if (( need_mb > free_mb )); then
+    need_mb=$free_mb
+  fi
+  echo "$need_mb"
+}
+
 # Automatic assignment
 run_automatic() {
   echo ""
@@ -719,9 +752,10 @@ run_automatic() {
   echo -e "  ${GRN}Running topology-aware assignment...${NC}"
   echo ""
 
-  local result
+  local result llama_need_mb
+  llama_need_mb=$(llama_required_mb)
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "$llama_need_mb" 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
