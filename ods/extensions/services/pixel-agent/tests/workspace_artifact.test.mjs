@@ -116,6 +116,31 @@ test('known document publisher failures retain the bounded category without atta
  }
 });
 
+test('unavailable publication preserves the requested path until an explicit corrected nested-path call',async()=>{
+ const basenameArgs={relativePath:'report.md'};
+ const nestedArgs={relativePath:'workspace-pixel/report.md'};
+ const nestedReceipt={...receipt,...nestedArgs};
+ const requests=[];
+ const f=fixture(async request=>{
+  requests.push(structuredClone(request));
+  return request.relativePath===nestedArgs.relativePath
+   ? {...host,...nestedReceipt}
+   : {...hostFailure,errorCode:'unavailable'};
+ });
+ f.admission.before({toolName:ARTIFACT_TOOL,params:basenameArgs},context);
+ const failed=await f.tool.execute(context.toolCallId,basenameArgs);
+ assert.equal(failed.details.hostErrorCode,'unavailable');
+ assert.match(failed.content[0].text,/exact workspace-relative path.*file you wrote or verified.*file exists there/);
+ assert.match(failed.content[0].text,/preserve every directory component/);
+ assert.match(failed.content[0].text,/does not establish a missing file or a file-permission problem/);
+ assert.deepEqual(requests,[normalizeWorkspaceArtifact(basenameArgs)]);
+ assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+ f.admission.before({toolName:ARTIFACT_TOOL,params:nestedArgs},context);
+ assert.equal((await f.tool.execute(context.toolCallId,nestedArgs)).isError,undefined);
+ assert.deepEqual(requests,[normalizeWorkspaceArtifact(basenameArgs),normalizeWorkspaceArtifact(nestedArgs)]);
+ assert.deepEqual(f.guard.deliveryVerificationForRun('run').artifacts,[nestedReceipt]);
+});
+
 test('malformed, unrelated and unknown host failures retain strict receipt rejection and never reflect host text',async()=>{
  const secret='PRIVATE_HOST_RESPONSE_CANARY';
  const {boundary,...missingBoundary}=hostFailure;

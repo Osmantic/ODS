@@ -18,7 +18,7 @@ const HOST_FAILURE_MESSAGES = {
   unsafe_file: 'The publication host rejected the source file. Check the exact workspace file for its type, size, ownership, permissions, or links. Do not relax permissions or change unrelated files.',
   unsafe_directory: 'The publication host rejected the source directory. Check the exact workspace-relative path, directory ownership, permissions, and links. Do not relax permissions or change unrelated directories.',
   unsupported_file_type: 'The publication host rejected the document format. Use a supported document format, or create and verify a ZIP preserving the original filenames and bytes for source code; do not rename files to bypass validation.',
-  unavailable: 'The publication host could not complete or verify this publication. This does not establish a file-permission problem; inspect the publication service before another attempt.',
+  unavailable: 'The publication host could not complete or verify this publication. Check that relativePath is the exact workspace-relative path of the file you wrote or verified and that the file exists there; preserve every directory component. If the path and file are correct, inspect the publication service before another attempt. This does not establish a missing file or a file-permission problem; do not relax permissions.',
 };
 function artifactHostFailureCode(value) {
   // The shared publisher uses its preview failure envelope for document calls.
