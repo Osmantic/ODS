@@ -152,6 +152,115 @@ test('document receipt survives JSON history and SSE replay only on the terminal
  assert.deepEqual(receipts[0].pixel_artifacts,first.value.pixel_artifacts);
  assert.equal(f.calls.filter(x=>x.path==='/v1/chat/completions').length,1);
 });
+
+const fleetArtifact={...artifact,relativePath:'workspace-pixel/fleet-check.txt',file:{path:'fleet-check.txt',bytes:73,sha256:'2f04ae05f1d8d14be14f26dec03ca48e3b804ea67d8353d654e391b0235ce3e0'}};
+const inventedDownload='https://portal.openclaw.ai/fleet-check.txt';
+const fileReply="The file has been created and verified. Here's your download link:\n\n**fleet-check.txt** (73 bytes)\n\nDownload: "+inventedDownload+'\n\nThe file contains exactly the three lines you requested:\n- Maya: quote Thursday\n- Luis: testing Friday\n- CSV: owner and date unassigned';
+test('actual artifact download reply uses its verified card in JSON and cached SSE without losing task prose',async t=>{
+ const f=await fixture(t,{status:'none',artifacts:[fleetArtifact]});f.setAnswer(fileReply);
+ const first=await f.chat('file-url',[u('Create fleet-check.txt and give me a download link')]);
+ assert.equal(first.status,200);
+ const text=first.value.choices[0].message.content;
+ assert.doesNotMatch(text,/portal\.openclaw\.ai/);
+ assert.match(text,/Use the Download button in Delivered files for fleet-check\.txt/);
+ assert.match(text,/CSV: owner and date unassigned/);
+ assert.deepEqual(first.value.pixel_artifacts.artifacts,[fleetArtifact]);
+ const cached=await f.chat('file-url',[u('Create fleet-check.txt and give me a download link')]);
+ assert.deepEqual(cached,first);
+ const stream=await f.stream('file-url',[u('Create fleet-check.txt and give me a download link')]);
+ assert.equal(stream.status,200);assert.doesNotMatch(stream.text,/portal\.openclaw\.ai/);
+ assert.match(stream.text,/Use the Download button/);
+ assert.equal(f.calls.filter(x=>x.path==='/v1/chat/completions').length,1);
+});
+test('fresh SSE normalizes a receipt-bound Markdown download and retains unrelated source links',async t=>{
+ const f=await fixture(t,{status:'none',artifacts:[fleetArtifact]});
+ f.setAnswer(`[Download fleet-check.txt](${inventedDownload})\n\nSource: [Python documentation](https://docs.python.org/3/library/pathlib.html)`);
+ const stream=await f.stream('fresh-file-url',[u('Deliver fleet-check.txt')]);
+ assert.equal(stream.status,200);assert.doesNotMatch(stream.text,/portal\.openclaw\.ai/);
+ assert.match(stream.text,/Use the Download button/);assert.match(stream.text,/docs\.python\.org/);
+ const frames=stream.text.split('\n').filter(x=>x.startsWith('data: {')).map(x=>JSON.parse(x.slice(6)));
+ assert.deepEqual(frames.find(x=>x.pixel_artifacts).pixel_artifacts.artifacts,[fleetArtifact]);
+});
+test('download normalization requires a trusted receipt and exact filename binding',async t=>{
+ for(const [verification,answer] of [
+  [{status:'none'},fileReply],
+  [{status:'none',artifacts:[artifact]},fileReply],
+  [{status:'none',artifacts:[fleetArtifact]},'Download: https://example.org/other-fleet-check.txt'],
+  [{status:'none',artifacts:[fleetArtifact]},'Download: https://example.org/FLEET-CHECK.txt'],
+ ]) {
+  const f=await fixture(t,verification);f.setAnswer(answer);
+  const result=await f.chat('no-binding',[u('A document task')]);
+  assert.equal(result.status,200);assert.equal(result.value.choices[0].message.content,answer);
+  assert.equal(Boolean(result.value.pixel_artifacts),Boolean(verification.artifacts));
+ }
+});
+test('explicit Markdown and autolink claims bind by exact name, not a hardcoded hostname',async t=>{
+ for(const answer of [
+  'Download: <https://files.example.org/fleet-check.txt?token=untrusted>',
+  '[Download](https://files.example.org/fleet%2Dcheck.txt)',
+  '[Download fleet-check.txt](https://files.example.org/opaque-id)',
+  'Download: [fleet-check.txt](https://files.example.org/opaque-id)',
+ ]) {
+  const f=await fixture(t,{status:'none',artifacts:[fleetArtifact]});f.setAnswer(answer);
+  const result=await f.chat('bound-link',[u('A document task')]);
+  assert.equal(result.status,200);assert.doesNotMatch(result.value.choices[0].message.content,/files\.example\.org/);
+  assert.match(result.value.choices[0].message.content,/Download button.*fleet-check\.txt/);
+ }
+});
+test('artifact correction preserves genuine citations, examples and a verified website in a mixed response',async t=>{
+ const siteId='site-'+'c'.repeat(24);
+ const preview={schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'site',siteId,sha256:'c'.repeat(64),port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:1,bytes:1,entrySha256:'d'.repeat(64)};
+ const preserved=[
+  'Source: [fleet-check.txt](https://source.example.org/fleet-check.txt)',
+  'Documentation: https://source.example.org/fleet-check.txt',
+  '> Download: https://quoted.example.org/fleet-check.txt',
+  '`Download: https://inline.example.org/fleet-check.txt`',
+  '```text\nDownload: https://code.example.org/fleet-check.txt\n```',
+  '    Download: https://indented.example.org/fleet-check.txt',
+  '[Open website]('+preview.url+')',
+  '[Download fleet-check.txt]('+preview.url+')',
+ ].join('\n\n');
+ const f=await fixture(t,{status:'passed',text:'The website snapshot is published.',deliveryMode:'append',preview,artifacts:[fleetArtifact]});
+ f.setAnswer(`The Python tests failed; this task is incomplete.\n\n${preserved}\n\nDownload: ${inventedDownload}`);
+ const result=await f.chat('mixed',[u('Build a website and deliver a document')]);
+ assert.equal(result.status,200,JSON.stringify(result.value));
+ const text=result.value.choices[0].message.content;
+ assert.match(text,/tests failed; this task is incomplete/);assert.ok(text.includes(preserved),text);
+ assert.match(text,/website snapshot is published/);assert.doesNotMatch(text,/portal\.openclaw\.ai/);
+ assert.deepEqual(result.value.pixel_artifacts.artifacts,[fleetArtifact]);
+});
+test('same-name artifacts and conflicting link labels never select one download arbitrarily',async t=>{
+ const second={...fleetArtifact,relativePath:'other/fleet-check.txt',siteId:'site-'+'e'.repeat(24),sha256:'e'.repeat(64),file:{...fleetArtifact.file,bytes:74,sha256:'f'.repeat(64)}};
+ for(const [artifacts,answer] of [
+  [[fleetArtifact,second],`Download: ${inventedDownload}`],
+  [[fleetArtifact,artifact],`[Download report.md](${inventedDownload})`],
+ ]) {
+  const f=await fixture(t,{status:'none',artifacts});f.setAnswer(answer);
+  const result=await f.chat('ambiguous',[u('Deliver both files')]);
+  assert.equal(result.status,200);assert.match(result.value.choices[0].message.content,/filename alone is ambiguous/);
+  assert.doesNotMatch(result.value.choices[0].message.content,/portal\.openclaw\.ai/);
+  assert.deepEqual(result.value.pixel_artifacts.artifacts,artifacts);
+ }
+});
+test('a Download prefix does not relabel later same-basename source links on that line',async t=>{
+ const source='[source](https://docs.example/fleet-check.txt)';
+ const f=await fixture(t,{status:'none',artifacts:[fleetArtifact]});
+ f.setAnswer(`Download: [fleet-check.txt](${inventedDownload}). See ${source}.`);
+ const result=await f.chat('same-line-source',[u('Deliver the file and cite its source')]);
+ assert.equal(result.status,200);
+ const text=result.value.choices[0].message.content;
+ assert.doesNotMatch(text,/portal\.openclaw\.ai/);assert.ok(text.includes(source),text);
+});
+test('an undelivered filename label cannot borrow a different file receipt from its URL',async t=>{
+ const f=await fixture(t,{status:'none',artifacts:[fleetArtifact]});
+ f.setAnswer(`[Download other-report.txt](${inventedDownload})`);
+ const result=await f.chat('contradictory-name',[u('Deliver my document')]);
+ assert.equal(result.status,200);
+ const text=result.value.choices[0].message.content;
+ assert.match(text,/does not match the verified file receipt/);
+ assert.doesNotMatch(text,/portal\.openclaw\.ai|for fleet-check\.txt|for other-report\.txt/);
+ assert.deepEqual(result.value.pixel_artifacts.artifacts,[fleetArtifact]);
+});
 test('raw MEDIA and upstream-supplied artifact metadata cannot become delivered receipts',async t=>{
  const f=await fixture(t);f.setAnswer('MEDIA:project/report.md');f.setSpoof({schemaVersion:1,artifacts:[artifact]});
  const result=await f.chat('fake',[u('Report')]);assert.equal(result.status,200);assert.equal(result.value.pixel_artifacts,undefined);
