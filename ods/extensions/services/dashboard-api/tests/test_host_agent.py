@@ -6009,10 +6009,30 @@ class TestModelActivationOwnership:
         self._profiled_install(tmp_path, monkeypatch, mode="enabled", summary=self.SUMMARY)
         payload = {"status": "idle"}
         _mod._project_switchboard_agent_viability(payload)
-        assert payload["activeModelProfile"] == {"state": "measured", "tools": False, "thinkingControl": "always"}
+        assert payload["activeModelProfile"] == {
+            "state": "measured", "tools": False, "toolsStreamed": False, "thinkingControl": "always"}
         # The route was recorded agent-viable before profiles were on (an upgrade):
         # the failed tool check narrows it now, not at the next switch.
         assert payload["activeAgentViable"] is False
+
+    @pytest.mark.parametrize("streamed, expected", [
+        ({"toolsStreamed": False}, False),
+        ({"toolsStreamed": True}, True),
+        ({"toolsStreamed": None}, None),
+        ({}, None),  # A cached profile from before P4 was recorded.
+        ({"toolsStreamed": "false"}, None),
+        ({"toolsStreamed": 0}, None),
+    ])
+    def test_model_status_preserves_stored_streamed_result_without_changing_viability(
+        self, tmp_path, monkeypatch, streamed, expected,
+    ):
+        summary = {"tools": True, "thinking": {"control": "none"}, **streamed}
+        self._profiled_install(tmp_path, monkeypatch, mode="enabled", summary=summary)
+        payload = {"status": "idle"}
+        _mod._project_switchboard_agent_viability(payload)
+        assert payload["activeModelProfile"] == {
+            "state": "measured", "tools": True, "toolsStreamed": expected, "thinkingControl": "none"}
+        assert payload["activeAgentViable"] is True
 
     def test_a_verified_catalog_model_stays_agent_viable_in_status(self, tmp_path, monkeypatch):
         install_dir = self._profiled_install(tmp_path, monkeypatch, mode="enabled", summary=self.SUMMARY)
@@ -6041,7 +6061,8 @@ class TestModelActivationOwnership:
         self._profiled_install(tmp_path, monkeypatch, mode="enabled", last_model=last_model, summary=summary)
         payload: dict = {}
         _mod._project_switchboard_agent_viability(payload)
-        assert payload["activeModelProfile"] == {"state": "not-profiled", "tools": None, "thinkingControl": None}
+        assert payload["activeModelProfile"] == {
+            "state": "not-profiled", "tools": None, "toolsStreamed": None, "thinkingControl": None}
 
     def test_an_unreadable_profile_store_reads_as_not_profiled(self, tmp_path, monkeypatch):
         install_dir = self._profiled_install(tmp_path, monkeypatch, mode="enabled", summary=self.SUMMARY)

@@ -8008,8 +8008,8 @@ class TestProfileTraits:
                "thinking": {"control": "always", "separated": True, "works": True}}
 
     @pytest.mark.parametrize("mode, status, expected", [
-        ("enabled", "recorded", {"tools": True, "vision": None, "control": "always"}),
-        ("enabled", "cached", {"tools": True, "vision": None, "control": "always"}),
+        ("enabled", "recorded", {"tools": True, "toolsStreamed": True, "vision": None, "control": "always"}),
+        ("enabled", "cached", {"tools": True, "toolsStreamed": True, "vision": None, "control": "always"}),
         ("enabled", "error", None),
         ("enabled", "skipped", None),
         ("observe", "recorded", None),
@@ -8023,7 +8023,7 @@ class TestProfileTraits:
         summary = {**self.SUMMARY, "thinking": {"control": "always", "separated": None, "works": False}}
         assert _mod._summary_traits(summary)["control"] == "none"
         assert _mod._summary_traits({"thinking": {"control": "bogus"}})["control"] is None
-        assert _mod._summary_traits(None) == {"tools": None, "vision": None, "control": None}
+        assert _mod._summary_traits(None) == {"tools": None, "toolsStreamed": None, "vision": None, "control": None}
 
     @pytest.mark.parametrize("tools, verified, expected", [
         (True, False, {"chat": True, "tools": True, "vision": True, "agentViable": True}),
