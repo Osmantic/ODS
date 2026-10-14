@@ -13,6 +13,22 @@ const component = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9.
 const safePath = value => typeof value === 'string' && value.length >= 1 && value.length <= 512 &&
   value.split('/').length <= 12 && value.split('/').every(component);
 const allowed = value => /\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(value);
+const HOST_FAILURE_BOUNDARY = 'Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.';
+const HOST_FAILURE_MESSAGES = {
+  unsafe_file: 'The publication host rejected the source file. Check the exact workspace file for its type, size, ownership, permissions, or links. Do not relax permissions or change unrelated files.',
+  unsafe_directory: 'The publication host rejected the source directory. Check the exact workspace-relative path, directory ownership, permissions, and links. Do not relax permissions or change unrelated directories.',
+  unsupported_file_type: 'The publication host rejected the document format. Use a supported document format, or create and verify a ZIP preserving the original filenames and bytes for source code; do not rename files to bypass validation.',
+  unavailable: 'The publication host could not complete or verify this publication. This does not establish a file-permission problem; inspect the publication service before another attempt.',
+};
+function artifactHostFailureCode(value) {
+  // The shared publisher uses its preview failure envelope for document calls.
+  // Accept only categories that publish_artifact can return, never host prose.
+  return exact(value, 'schemaVersion,kind,status,error,errorCode,boundary') &&
+    value.schemaVersion === 1 && value.kind === 'ods-pixel-workspace-preview' && value.status === 'failed' &&
+    value.error === 'ODS workspace preview publication failed' && value.boundary === HOST_FAILURE_BOUNDARY &&
+    typeof value.errorCode === 'string' && Object.hasOwn(HOST_FAILURE_MESSAGES, value.errorCode)
+    ? value.errorCode : undefined;
+}
 export function normalizeWorkspaceArtifact(value) {
   if (!exact(value,'relativePath') || !safePath(value.relativePath) || !allowed(value.relativePath)) throw new Error('invalid-artifact-path');
   return {schemaVersion:1,action:'publish-artifact',relativePath:value.relativePath};
@@ -120,6 +136,11 @@ export function createWorkspaceArtifactTool(context, {admission,reserve,accept,u
         response=await request(payload,{signal});
       } catch {
         return fail(signal?.aborted?'publication-cancelled':'publication-unavailable','No verified document receipt was returned by the publication transport. Publication may have completed on the host, but no download is attached. Preserve the file; this does not establish a file-permission problem. Do not relax permissions or invent a download URL.');
+      }
+      const hostErrorCode = artifactHostFailureCode(response);
+      if (hostErrorCode) {
+        const result = fail('publication-rejected', `${HOST_FAILURE_MESSAGES[hostErrorCode]} No verified download is attached. Preserve the workspace file and do not claim delivery.`);
+        return {...result, details:{...result.details, hostErrorCode}};
       }
       let result;
       try {

@@ -7,6 +7,10 @@ const context={trigger:'user',agentId:'pixel',runId:'run',sessionId:'session',se
 const args={relativePath:'project/report.md'}, payload=normalizeWorkspaceArtifact(args);
 const receipt={schemaVersion:1,kind:'ods-pixel-workspace-artifact',...args,siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),file:{path:'report.md',bytes:10,sha256:'b'.repeat(64)}};
 const host={...receipt,status:'succeeded',httpStatus:200,readbackVerified:true,executable:false,overwritten:false,boundary:ARTIFACT_BOUNDARY};
+// Exact failure envelope produced by workspace_preview.py _error_result.
+const hostFailure={schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'failed',
+ error:'ODS workspace preview publication failed',errorCode:'unsafe_file',
+ boundary:'Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.'};
 function fixture(request=async()=>host) {
  const guard=createToolLoopGuard();guard.observeRun(context,'pixel',{prompt:'Deliver the report as a document.'});
  const admission=createWorkspaceArtifactAdmission();
@@ -96,6 +100,52 @@ test('four failed attempts consume the bound and forged receipts never attach',a
  let calls=0;const f=fixture(async()=>{calls++;return {...host,readbackVerified:false};});
  for(let i=0;i<6;i++){f.admission.before(f.event,context);assert.equal((await f.tool.execute(context.toolCallId,args)).isError,true);}
  assert.equal(calls,4);assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+});
+
+test('known document publisher failures retain the bounded category without attaching a download',async()=>{
+ for(const code of ['unsafe_file','unsafe_directory','unsupported_file_type','unavailable']) {
+  const f=fixture(async()=>({...hostFailure,errorCode:code}));
+  f.admission.before(f.event,context);
+  const result=await f.tool.execute(context.toolCallId,args);
+  assert.equal(result.isError,true);
+  assert.deepEqual(result.details,{status:'failed',kind:'ods-pixel-workspace-artifact',code:'publication-rejected',hostErrorCode:code});
+  assert.match(result.content[0].text,/No verified download is attached/);
+  assert.match(result.content[0].text,/Preserve the workspace file/);
+  assert.doesNotMatch(result.content[0].text,/receipt.*not.*valid|file corruption/);
+  assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+ }
+});
+
+test('malformed, unrelated and unknown host failures retain strict receipt rejection and never reflect host text',async()=>{
+ const secret='PRIVATE_HOST_RESPONSE_CANARY';
+ const {boundary,...missingBoundary}=hostFailure;
+ for(const response of [null,[],missingBoundary,{...hostFailure,schemaVersion:true},
+  {...hostFailure,kind:'foreign'},{...hostFailure,status:'succeeded'},
+  {...hostFailure,error:secret},{...hostFailure,errorCode:secret},
+  {...hostFailure,errorCode:'__proto__'},{...hostFailure,errorCode:'missing_entry'},
+  {...hostFailure,boundary:secret},{...hostFailure,extra:secret},
+  {...hostFailure,artifactError:{path:secret,line:1,column:1}}]) {
+  const f=fixture(async()=>response);f.admission.before(f.event,context);
+  const result=await f.tool.execute(context.toolCallId,args);
+  assert.equal(result.details.code,'receipt-unverified');
+  assert.equal(result.details.hostErrorCode,undefined);
+  assert.doesNotMatch(JSON.stringify(result),new RegExp(secret));
+  assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+ }
+});
+
+test('publisher rejection still consumes the publication budget and does not bypass admission',async()=>{
+ let calls=0;const f=fixture(async()=>{calls++;return hostFailure});
+ assert.equal((await f.tool.execute(context.toolCallId,args)).details.code,'admission-unavailable');
+ assert.equal(calls,0);
+ for(let i=0;i<4;i++) {
+  f.admission.before(f.event,context);
+  assert.equal((await f.tool.execute(context.toolCallId,args)).details.hostErrorCode,'unsafe_file');
+ }
+ f.admission.before(f.event,context);
+ assert.equal((await f.tool.execute(context.toolCallId,args)).details.code,'publication-attempt-limit');
+ assert.equal(calls,4);
+ assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
 });
 
 test('owner Stop invalidates a pending broker receipt even when transport completes',async()=>{
