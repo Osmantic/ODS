@@ -165,6 +165,34 @@ if sys.argv[2] == "no_refresh":
     else fail "owner refresh lost requested access or granted an unlisted group: $primary_case"; fi
 done
 
+for owner_group_case in stale both_missing current unregistered denied invalid; do
+    if (
+        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED=''
+        export PIXEL_TEST_PRIMARY=docker ODS_PIXEL_OWNER_PRIMARY_GROUP=owner
+        current=docker; account='users docker ods-pixel'; owner_group=users
+        expected='users |users'; expected_status=0
+        case "$owner_group_case" in
+            both_missing) current=ods-pixel; export PIXEL_TEST_PRIMARY=ods-pixel; expected='docker users |users' ;;
+            current) current='users docker'; export PIXEL_TEST_PRIMARY=users; expected='|users' ;;
+            unregistered) account='docker ods-pixel'; expected='|docker' ;;
+            denied) export PIXEL_TEST_DENY_GROUP=users; expected_status=73; expected='' ;;
+            invalid) owner_group='users;false'; expected_status=1; expected='' ;;
+        esac
+        id() {
+            if [[ "$1" == -un ]]; then command id -un
+            elif [[ "$1" == -gn && "$2" == "$owner" ]]; then printf '%s\n' "$owner_group"
+            elif [[ "$1" == -nG && "$#" == 1 ]]; then printf '%s\n' "$current"
+            elif [[ "$1" == -nG && "$2" == "$owner" ]]; then printf '%s\n' "$account"
+            else command id "$@"; fi
+        }
+        result=0
+        actual="$(ods_pixel_run_as_owner "$owner" "$TEST_ROOT" python3 -c \
+            'import os; print(os.environ["PIXEL_TEST_REFRESHED"] + "|" + os.environ["PIXEL_TEST_PRIMARY"])')" || result=$?
+        [[ "$result" == "$expected_status" && "$actual" == "$expected" ]]
+    ); then pass "owner primary group socket access: $owner_group_case"
+    else fail "owner primary group socket access: $owner_group_case"; fi
+done
+
 if (
     inspection_calls="$TEST_ROOT/inspection-owner-calls"
     INSTALL_DIR="$TEST_ROOT/inspection-install"
@@ -182,6 +210,37 @@ if (
     pass "preview inspection builds with Docker and probes its root:ods-pixel socket with ods-pixel"
 else
     fail "preview inspection owner calls did not get the group each one needs"
+fi
+
+promoter_probe="$TEST_ROOT/promoter-owner-health.py"
+cat > "$promoter_probe" <<'PY'
+import json, os
+
+# The real daemon's root:owner-group 0710 parent rejects Docker-only access.
+# Keep this consumer check independent of the helper's refresh sequence.
+if os.environ["PIXEL_TEST_PRIMARY"] != "users":
+    raise SystemExit(1)
+print(json.dumps({
+    "schemaVersion": 1, "kind": "ods-pixel-download-promotion", "status": "ok",
+    "boundary": "Verified create-only promotion from Pixel Operations quarantine into the configured owner workspace; no arbitrary source, overwrite, execution, or path traversal authority.",
+}))
+PY
+if (
+    export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED='' PIXEL_TEST_PRIMARY=docker
+    unset ODS_PIXEL_OWNER_PRIMARY_GROUP
+    id() {
+        if [[ "$1" == -un ]]; then command id -un
+        elif [[ "$1" == -gn && "$2" == "$owner" ]]; then printf '%s\n' users
+        elif [[ "$1" == -nG && "$#" == 1 ]]; then printf '%s\n' docker
+        elif [[ "$1" == -nG && "$2" == "$owner" ]]; then printf '%s\n' 'users docker ods-pixel'
+        else command id "$@"; fi
+    }
+    _ods_pixel_wait_artifact_promoter_probe "$owner" "$TEST_ROOT" "$promoter_probe" 1 0 || exit 1
+    [[ ! -v ODS_PIXEL_OWNER_PRIMARY_GROUP ]]
+); then
+    pass "promoter readiness selects owner group from Docker-only entry without changing the default"
+else
+    fail "promoter readiness lost owner group traversal or changed the default"
 fi
 
 probe_program="$TEST_ROOT/manager-probe.py"

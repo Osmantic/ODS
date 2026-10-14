@@ -123,6 +123,11 @@ ods_pixel_run_as_owner() {
     case "${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}" in
         docker) group_order=(ods-pixel docker) ;;
         ods-pixel) group_order=(docker ods-pixel) ;;
+        owner)
+            group="$(id -gn "$owner")" || return 1
+            [[ "$group" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,63}$ ]] || return 1
+            group_order=(docker "$group")
+            ;;
         *)
             printf '%s\n' 'error: unsupported Pixel owner primary group' >&2
             return 1
@@ -153,8 +158,8 @@ ods_pixel_run_as_owner() {
             # primary group. shadow's sg also keeps the outer groups, but
             # util-linux sg (Ubuntu 26.04) only replaces the primary group, so
             # the innermost one is the only group sure to survive. Owner
-            # commands need Docker there; only the root-owned inspection socket
-            # needs ods-pixel, and its caller asks for it.
+            # commands need Docker there. Socket probes select the group that
+            # protects their parent directory: ods-pixel or the owner's group.
             # Caller arguments remain JSON in the environment, never shell code.
             if ! command -v sg >/dev/null 2>&1 \
                 || ! command -v python3 >/dev/null 2>&1; then
@@ -4790,7 +4795,8 @@ _ods_pixel_wait_artifact_promoter_probe() {
         && "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 60 \
         && "$delay" =~ ^[0-9]+$ && "$delay" -le 5 ]] || return 1
     for ((attempt = 1; attempt <= attempts; attempt++)); do
-        if response="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 \
+        if response="$(ODS_PIXEL_OWNER_PRIMARY_GROUP=owner \
+            ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 \
             "$program" health /run/ods-pixel-artifact-promoter/promoter.sock 2>/dev/null)" \
             && jq -e '.schemaVersion == 1
                 and .kind == "ods-pixel-download-promotion"
