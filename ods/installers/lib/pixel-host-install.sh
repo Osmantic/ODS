@@ -140,6 +140,13 @@ ods_pixel_run_as_owner() {
             fi
         done
         if (( ${#refresh_groups[@]} > 0 )); then
+            # Refreshing another group can replace the requested group's only
+            # current membership (its primary GID). Reassert it innermost even
+            # when id -nG already included it, but never grant an unlisted group.
+            group="${group_order[1]}"
+            if [[ "$account_groups" == *" $group "* && " ${refresh_groups[*]} " != *" $group "* ]]; then
+                refresh_groups+=("$group")
+            fi
             # A first install may have just granted Docker and Pixel socket
             # access. Refresh each missing runtime group with nested sg rather
             # than another sudo pseudo-terminal. The innermost sg sets the

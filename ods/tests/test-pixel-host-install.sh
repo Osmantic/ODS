@@ -75,8 +75,8 @@ else
 fi
 
 mkdir -p "$TEST_ROOT/group-bin"
-# Like util-linux sg (Ubuntu 26.04), each call replaces the primary group and
-# keeps no earlier one, so PIXEL_TEST_PRIMARY is the only group a command has.
+# Like util-linux sg (Ubuntu 26.04), each call replaces the primary group;
+# any supplementary groups remain unchanged.
 cat > "$TEST_ROOT/group-bin/sg" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -90,7 +90,7 @@ for group_case in pixel docker both both_pixel_socket current unregistered unsup
     denied denied_inner denied_outer; do
     if (
         export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED='' PIXEL_TEST_PRIMARY=''
-        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel |ods-pixel'
+        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel docker |docker'
         case "$group_case" in
             docker) current='users ods-pixel'; expected='docker |docker' ;;
             both) current=users; expected='ods-pixel docker |docker' ;;
@@ -126,6 +126,43 @@ for group_case in pixel docker both both_pixel_socket current unregistered unsup
         fi
     ); then pass "owner runtime group refresh: $group_case"
     else fail "owner runtime group refresh: $group_case"; fi
+done
+
+for primary_case in docker_primary docker_supplementary pixel_primary no_refresh unregistered; do
+    if (
+        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED=''
+        export PIXEL_TEST_PRIMARY=docker PIXEL_TEST_SUPPLEMENTARY=users
+        export ODS_PIXEL_OWNER_PRIMARY_GROUP=docker
+        account='users docker ods-pixel'; expected_access=true
+        case "$primary_case" in
+            docker_supplementary)
+                export PIXEL_TEST_PRIMARY=users PIXEL_TEST_SUPPLEMENTARY='users docker'
+                ;;
+            pixel_primary)
+                export PIXEL_TEST_PRIMARY=ods-pixel ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel
+                ;;
+            no_refresh) export PIXEL_TEST_SUPPLEMENTARY='users ods-pixel' ;;
+            unregistered)
+                export PIXEL_TEST_PRIMARY=users
+                account='users ods-pixel'; expected_access=false
+                ;;
+        esac
+        id() {
+            if [[ "$1" == -un ]]; then command id -un
+            elif [[ "$1" == -nG && "$#" == 1 ]]; then printf '%s %s\n' "$PIXEL_TEST_PRIMARY" "$PIXEL_TEST_SUPPLEMENTARY"
+            elif [[ "$1" == -nG && "$2" == "$owner" ]]; then printf '%s\n' "$account"
+            else command id "$@"; fi
+        }
+        ods_sudo() { return 99; }
+        ods_pixel_run_as_owner "$owner" "$TEST_ROOT" python3 -c '
+import os, sys
+groups = {os.environ["PIXEL_TEST_PRIMARY"], *os.environ["PIXEL_TEST_SUPPLEMENTARY"].split()}
+assert (os.environ["ODS_PIXEL_OWNER_PRIMARY_GROUP"] in groups) == (sys.argv[1] == "true")
+if sys.argv[2] == "no_refresh":
+    assert os.environ["PIXEL_TEST_REFRESHED"] == ""
+' "$expected_access" "$primary_case"
+    ); then pass "owner refresh preserves requested access: $primary_case"
+    else fail "owner refresh lost requested access or granted an unlisted group: $primary_case"; fi
 done
 
 if (
