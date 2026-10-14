@@ -570,6 +570,16 @@ export default function Extensions({ compact = false }) {
     )
   }
 
+  if (!catalog && error) {
+    return (
+      <div className="p-6" role="alert">
+        <h2 className="text-sm font-semibold text-theme-text">Extension catalog unavailable</h2>
+        <p className="mt-2 text-sm text-theme-text-secondary">{error}. The extension list could not be read.</p>
+        <button className="mt-3 underline" onClick={fetchCatalog}>Retry</button> · <HelpLink />
+      </div>
+    )
+  }
+
   const allExtensions = catalog?.extensions || []
   const extensions = allExtensions.filter(ext => !['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
   const webuiCanAdd = webuiSelection?.supported === true && webuiSelection.enabled === false
