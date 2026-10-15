@@ -61,6 +61,10 @@ if [[ "${1:-}" == "compose" ]]; then
     shift
     args=("$@")
     joined=" ${args[*]} "
+    if [[ "$joined" == *" config --format json "* ]]; then
+        printf '%s\n' '{"services":{"dashboard":{"ports":[{"target":3001,"published":"3001","host_ip":"127.0.0.1"}]}}}'
+        exit 0
+    fi
     if [[ "$joined" == *" pull "* ]]; then
         count_file="${TEST_DOCKER_PULL_COUNT:-}"
         count=0
