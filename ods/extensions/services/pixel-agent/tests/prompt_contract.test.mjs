@@ -30,6 +30,24 @@ import {
 } from "../plugin/prompt-contract.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "../plugin/agent-skills.mjs";
 import { workspacePreviewMode } from "../plugin/tool-loop-guard.mjs";
+import { RESPONSE_LANGUAGE_CONTRACT } from '../plugin/response-language.mjs';
+import { createAskUserTool } from '../plugin/ask-user.mjs';
+
+test('language fallback reaches website and ordinary requests on full, lean and small-context routes', () => {
+  for (const options of [
+    {configuredContextWindow:65536},
+    {configuredContextWindow:65536, configuredLeanPrompt:true},
+    {configuredContextWindow:16384},
+  ]) {
+    for (const executionHost of ['sandbox', 'gateway']) {
+      for (const prompt of ['Build a website for me.', 'Crie um site para mim.', 'Reply in Portuguese and build a website.', 'OK']) {
+        const contract = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {...options, executionHost}).appendSystemContext;
+        assert.ok(contract.includes(RESPONSE_LANGUAGE_CONTRACT));
+      }
+    }
+  }
+  assert.ok(createAskUserTool().description.includes(RESPONSE_LANGUAGE_CONTRACT));
+});
 
 test('framework workspace guidance requires real build output and nested-path asset verification', () => {
   assert.match(AGENT_SKILLS.workspace, /run the framework's real build/);
@@ -287,7 +305,8 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.deepEqual(plain, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
   });
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 3800);
+  // Allow the 345-character language rule while keeping a fixed compact ceiling.
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4200);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /run the requested focused verification/);
@@ -482,7 +501,7 @@ test("restores the full September 16 operating core while retaining compact fall
   // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa.
   assert.equal(createHash('sha256').update(ODS_SEPTEMBER16_CONVERSATION_CONTRACT).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_RUNTIME_CONTRACT.length + 1));
+  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
     '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
@@ -892,6 +911,7 @@ test('team reviewers and coordinators do not receive the website implementation 
     const value=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:`Identity: Portal\n\nYou are the ${role} in the owner's Portal team.\nOwner request: build and publish a website.`});
     assert.equal(value.appendSystemContext.includes(ODS_WORKSPACE_PREVIEW_CONTRACT),false);
     assert.match(value.appendSystemContext,role==='Coordinator'?/JSON/:/read-only/);
+    if (role === 'Reviewer') assert.ok(value.appendSystemContext.includes(RESPONSE_LANGUAGE_CONTRACT));
   }
 });
 

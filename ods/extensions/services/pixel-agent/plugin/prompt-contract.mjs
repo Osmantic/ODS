@@ -3,6 +3,7 @@
 // This is trusted plugin text. Dynamic route values are limited to guard-
 // parsed canonical URLs, extension IDs, peer hostnames, and numeric ports;
 // untrusted projection or tool-result fields are never interpolated here.
+import { RESPONSE_LANGUAGE_CONTRACT } from './response-language.mjs';
 
 import {
   managedTeamRole,
@@ -116,7 +117,7 @@ const CURRENT_OPERATING_COMPATIBILITY = [
   PREVIEW_RUNTIME_CONTRACT,
 ];
 export const ODS_CONVERSATION_CONTRACT =
-  [ODS_SEPTEMBER16_CONVERSATION_CONTRACT, ...CURRENT_OPERATING_COMPATIBILITY].join(" ");
+  [ODS_SEPTEMBER16_CONVERSATION_CONTRACT, ...CURRENT_OPERATING_COMPATIBILITY, RESPONSE_LANGUAGE_CONTRACT].join(" ");
 
 // Preserve the current compact fallback, with the same preview runtime supplement.
 // The historical full core above is restored without undoing current task routes.
@@ -134,6 +135,7 @@ export const ODS_COMPACT_CONVERSATION_CONTRACT = [
   "Load pixel_ods_skill when detailed ODS guidance is useful: extensions, workspace, research or verification. Choose the relevant topic; do not load everything. Recover earlier requirements with pixel_ods_history after compaction.",
   "Keep conversation and actions consistent with observed state. Prior explicit authorization remains valid within scope. If you ask for missing input or permission, wait without starting the dependent action. If work is running, report its state rather than asking to start it. Draft requested text in chat unless an artifact was requested.",
   "Ask before irreversible or high-consequence external effects. If input or capability is missing, explain or ask. Finish concisely when verified or blocked.",
+  RESPONSE_LANGUAGE_CONTRACT,
   PREVIEW_RUNTIME_CONTRACT,
 ].join(" ");
 
@@ -335,7 +337,7 @@ export function promptContractForAgent(
   const teamRole=managedTeamRole(event);
   if(teamRole==='Coordinator')return {appendSystemContext:'Plan the team size only. Choose the smallest useful number of workers, from 1 to 6. Honor an explicitly requested number within that limit. Return only JSON with one integer field, count. Do not perform the task, ask questions, or use tools.'};
   if(teamRole && teamRole!=='Builder')return {appendSystemContext:
-    `You are a read-only ${teamRole} in the owner's managed team. Analyze the supplied request and earlier teammates' actual reports. Return concise findings in the owner's language. Do not repeat the earlier answer: identify concrete corrections, unsupported claims and remaining limitations. For research or current factual claims, consult primary sources with web search/fetch and cite what you actually verified. A teammate's prose is not proof. Subjective rankings require explicit criteria, not a purported objective winner. Do not carry out the Builder's implementation again. Do not create files, run commands, publish previews, or operate services: those tools are unavailable to your role. For a purely creative writing task, review the supplied text directly. If a necessary owner preference is missing, use pixel_ods_ask_user and wait. Never invent tool results or claim verification you did not perform.`};
+    `You are a read-only ${teamRole} in the owner's managed team. Analyze the supplied request and earlier teammates' actual reports. Return concise findings. ${RESPONSE_LANGUAGE_CONTRACT} Do not repeat the earlier answer: identify concrete corrections, unsupported claims and remaining limitations. For research or current factual claims, consult primary sources with web search/fetch and cite what you actually verified. A teammate's prose is not proof. Subjective rankings require explicit criteria, not a purported objective winner. Do not carry out the Builder's implementation again. Do not create files, run commands, publish previews, or operate services: those tools are unavailable to your role. For a purely creative writing task, review the supplied text directly. If a necessary owner preference is missing, use pixel_ods_ask_user and wait. Never invent tool results or claim verification you did not perform.`};
   const recovery = needsLoopRecovery(event?.messages)
     ? ` ${ODS_LOOP_RECOVERY_CONTRACT}`
     : "";
