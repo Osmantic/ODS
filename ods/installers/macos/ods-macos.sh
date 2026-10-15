@@ -76,6 +76,7 @@ source "${LIB_DIR}/ui.sh"
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"
 source "${LIB_DIR}/detection.sh"
+source "${LIB_DIR}/service-ports.sh"
 
 unset ODS_SCRIPT_HINT
 
@@ -915,8 +916,10 @@ cmd_status() {
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
     # Parallel arrays (Bash 3.2 compatible)
+    local dashboard_port webui_port
+    dashboard_port="$(macos_service_port "$INSTALL_DIR/.env" DASHBOARD_PORT 3001)" || return 1
     local ep_names=("$CLI_LLM_NAME" "Dashboard")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3001")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:$dashboard_port")
     # OpenCode is opt-in; lean installs never create its LaunchAgent, so only
     # an installed one is expected to answer.
     if [[ -e "$OPENCODE_PLIST" ]]; then
@@ -924,8 +927,9 @@ cmd_status() {
         ep_urls+=("http://127.0.0.1:3003")
     fi
     if webui_is_selected "$flags"; then
+        webui_port="$(macos_service_port "$INSTALL_DIR/.env" WEBUI_PORT 3000)" || return 1
         ep_names+=("Chat UI (Open WebUI)")
-        ep_urls+=("http://127.0.0.1:3000")
+        ep_urls+=("http://127.0.0.1:$webui_port")
     else
         local selection_rc=$?
         if [[ "$selection_rc" == 2 ]]; then
