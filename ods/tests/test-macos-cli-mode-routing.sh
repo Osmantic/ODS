@@ -70,6 +70,9 @@ MOCK_CURL
 cat > "$MOCK_BIN/docker" <<'MOCK_DOCKER'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [[ "$*" == *'config --format json' ]]; then
+    printf '%s\n' '{"services":{"dashboard":{"ports":[{"target":3001,"published":"3001","host_ip":"127.0.0.1"}]}}}'
+fi
 exit 0
 MOCK_DOCKER
 chmod +x "$MOCK_BIN/jq" "$MOCK_BIN/curl" "$MOCK_BIN/docker"

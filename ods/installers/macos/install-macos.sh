@@ -3211,20 +3211,26 @@ if ! $ALL_HEALTHY; then
 fi
 
 # Use the same published ports as Compose for both probes and completion links.
-_summary_dashboard_port="$(macos_service_port "$INSTALL_DIR/.env" DASHBOARD_PORT 3001)"
-_summary_api_port="$(macos_service_port "$INSTALL_DIR/.env" DASHBOARD_API_PORT 3002)"
+_summary_port_services="dashboard dashboard-api"
+$ENABLE_OPEN_WEBUI && _summary_port_services+=" open-webui"
+$CLOUD_MODE && _summary_port_services+=" litellm"
+$ENABLE_PERPLEXICA && _summary_port_services+=" perplexica"
+$ENABLE_WORKFLOWS && _summary_port_services+=" n8n"
+macos_load_service_ports "$INSTALL_DIR" "$_summary_port_services" "${COMPOSE_FLAGS[@]}"
+_summary_dashboard_port="$(macos_service_port dashboard)"
+_summary_api_port="$(macos_service_port dashboard-api)"
 _summary_webui_port=3000
 if $ENABLE_OPEN_WEBUI; then
-    _summary_webui_port="$(macos_service_port "$INSTALL_DIR/.env" WEBUI_PORT 3000)"
+    _summary_webui_port="$(macos_service_port open-webui)"
 fi
 if $CLOUD_MODE; then
-    _summary_litellm_port="$(macos_service_port "$INSTALL_DIR/.env" LITELLM_PORT 4000)"
+    _summary_litellm_port="$(macos_service_port litellm)"
 fi
 if $ENABLE_PERPLEXICA; then
-    _summary_perplexica_port="$(macos_service_port "$INSTALL_DIR/.env" PERPLEXICA_PORT 3004)"
+    _summary_perplexica_port="$(macos_service_port perplexica)"
 fi
 if $ENABLE_WORKFLOWS; then
-    _summary_n8n_port="$(macos_service_port "$INSTALL_DIR/.env" N8N_PORT 5678)"
+    _summary_n8n_port="$(macos_service_port n8n)"
 fi
 {
     printf 'Dashboard|http://127.0.0.1:%s|ods-dashboard|http://localhost:%s\n' "$_summary_dashboard_port" "$_summary_dashboard_port"
