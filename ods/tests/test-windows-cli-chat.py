@@ -19,14 +19,14 @@ POWERSHELL = shutil.which("powershell.exe")
 class WindowsChatTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
-        self.catalog = {"data": [{"id": "user.selected", "checkpoint": "selected.gguf"}]}
+        self.response_status = 200
         seen = self.requests
         fixture = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 seen.append((self.path, None, self.headers.get("Authorization")))
-                self.reply({"version": "10.0.0"} if self.path.endswith("/health") else fixture.catalog)
+                self.reply({"data": []})
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
@@ -34,7 +34,7 @@ class WindowsChatTests(unittest.TestCase):
                 self.reply({"choices": [{"message": {"content": "fixture reply"}}]})
 
             def reply(self, value):
-                self.send_response(200)
+                self.send_response(fixture.response_status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.end_headers()
                 self.wfile.write(json.dumps(value).encode("utf-8"))
@@ -52,11 +52,12 @@ class WindowsChatTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
 
     def chat(self, values, message="hello"):
-        values = {"GPU_BACKEND": "amd", "LLM_BACKEND": "lemonade",
+        values = {"GPU_BACKEND": "amd", "LLM_BACKEND": "llama-server",
+                  "LLAMA_SERVER_API_KEY": "fixture-native",
                   "AMD_INFERENCE_PORT": str(self.server.server_port), **values}
         Path(self.directory.name, ".env").write_text(
             "".join(f"{key}={value}\n" for key, value in values.items()), encoding="utf-8")
-        env = {**os.environ, "ODS_HOME": self.directory.name}
+        env = {**os.environ, "ODS_HOME": self.directory.name, "INSTALL_DIR": self.directory.name}
         result = subprocess.run(
             [POWERSHELL, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(ROOT / "installers/windows/ods.ps1"), "chat", message],
@@ -66,48 +67,65 @@ class WindowsChatTests(unittest.TestCase):
 
     def test_enabled_switchboard_uses_current_alias_and_saved_credentials(self):
         self.chat({"ODS_MODEL_SWITCHBOARD": "enabled", "LITELLM_PORT": str(self.server.server_port),
-                   "LITELLM_KEY": "fixture-gateway", "LEMONADE_MODEL": "other-model"})
+                   "LITELLM_KEY": "fixture-gateway", "GGUF_FILE": "other-model.gguf"})
         self.assertEqual(len(self.requests), 1)
         path, body, authorization = self.requests[0]
         self.assertEqual(path, "/v1/chat/completions")
         self.assertEqual(body["model"], "ods/current")
         self.assertEqual(authorization, "Bearer fixture-gateway")
 
-    def test_legacy_lemonade_uses_persisted_model_and_unicode_prompt(self):
+    def test_native_llama_uses_persisted_alias_key_and_unicode_prompt(self):
         message = "Xin ch\u00e0o \U0001f600"
-        self.chat({"LEMONADE_MODEL": "user.selected", "LITELLM_LEMONADE_API_KEY": "fixture-native"}, message)
-        path, body, authorization = self.requests[-1]
-        self.assertEqual(path, "/api/v1/chat/completions")
-        self.assertEqual(body["model"], "user.selected")
+        self.chat({"GGUF_FILE": "selected.gguf"}, message)
+        self.assertEqual(len(self.requests), 1)
+        path, body, authorization = self.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(body["model"], "selected.gguf")
         self.assertEqual(body["messages"][0]["content"], message)
         self.assertEqual(authorization, "Bearer fixture-native")
 
-    def test_legacy_lemonade_resolves_catalog_when_model_id_is_absent(self):
-        self.chat({"GGUF_FILE": "selected.gguf"})
-        self.assertEqual(self.requests[0][0], "/api/v1/models")
-        self.assertEqual(self.requests[-1][1]["model"], "user.selected")
+    def test_native_llama_retains_default_model_without_saved_alias(self):
+        self.chat({})
+        self.assertEqual(self.requests[-1][1]["model"], "default")
+        self.assertEqual(self.requests[-1][2], "Bearer fixture-native")
 
-    def test_legacy_lemonade_supports_explicit_server_key(self):
-        self.chat({"LEMONADE_MODEL": "user.selected", "LEMONADE_API_KEY": "fixture-server",
-                   "LITELLM_LEMONADE_API_KEY": "other-generated-key"})
-        self.assertEqual(self.requests[-1][2], "Bearer fixture-server")
-
-    def test_missing_lemonade_identity_refuses_implicit_default_load(self):
-        output = self.chat({})
+    def test_native_llama_without_key_refuses_unauthenticated_request(self):
+        output = self.chat({"LLAMA_SERVER_API_KEY": ""})
         self.assertEqual(self.requests, [])
-        self.assertIn(b"LEMONADE_MODEL", output)
+        self.assertIn(b"LLAMA_SERVER_API_KEY", output)
 
-    def test_legacy_lemonade_retains_version_specific_catalog_fallback(self):
-        self.catalog = {"data": []}
-        self.chat({"GGUF_FILE": "selected.gguf"})
-        self.assertEqual(self.requests[0][0], "/api/v1/models")
-        self.assertEqual(self.requests[-1][1]["model"], "extra.selected.gguf")
+    def test_failed_switchboard_request_does_not_bypass_selected_route(self):
+        self.response_status = 401
+        output = self.chat({"ODS_MODEL_SWITCHBOARD": "enabled",
+                            "LITELLM_PORT": str(self.server.server_port),
+                            "LITELLM_KEY": "fixture-gateway"})
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0][1]["model"], "ods/current")
+        self.assertEqual(self.requests[0][2], "Bearer fixture-gateway")
+        self.assertIn(b"Chat request failed", output)
+
+    def test_failed_native_request_does_not_retry_other_route(self):
+        self.response_status = 503
+        output = self.chat({"GGUF_FILE": "selected.gguf"})
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0][1]["model"], "selected.gguf")
+        self.assertIn(b"Chat request failed", output)
 
     def test_legacy_llama_retains_default_model(self):
         self.chat({"GPU_BACKEND": "nvidia", "LLM_BACKEND": "llama-server",
                    "OLLAMA_PORT": str(self.server.server_port)})
         self.assertEqual(self.requests[-1][0], "/v1/chat/completions")
         self.assertEqual(self.requests[-1][1]["model"], "default")
+        self.assertIsNone(self.requests[-1][2])
+
+    def test_docker_llama_respects_saved_port_and_api_path(self):
+        self.chat({"GPU_BACKEND": "nvidia", "OLLAMA_PORT": str(self.server.server_port),
+                   "LLM_API_BASE_PATH": "/custom/v1", "GGUF_FILE": "native-only.gguf"})
+        self.assertEqual(len(self.requests), 1)
+        path, body, authorization = self.requests[0]
+        self.assertEqual(path, "/custom/v1/chat/completions")
+        self.assertEqual(body["model"], "default")
+        self.assertIsNone(authorization)
 
     def test_enabled_switchboard_without_key_refuses_to_bypass_route(self):
         output = self.chat({"ODS_MODEL_SWITCHBOARD": "enabled",

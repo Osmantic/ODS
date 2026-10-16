@@ -2524,15 +2524,11 @@ function Invoke-Chat {
             $llmEndpoint = @{ ChatCompletionsUrl = "http://127.0.0.1:$port/v1/chat/completions" }
             $modelId = "ods/current"
             $headers.Authorization = "Bearer $key"
-        } elseif ($llmEndpoint.Backend -eq "lemonade") {
-            $modelId = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("LEMONADE_MODEL")
-            if (-not $modelId) {
-                $ggufFile = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("GGUF_FILE")
-                if (-not $ggufFile) { throw "Configure LEMONADE_MODEL or GGUF_FILE in .env before chatting." }
-                $modelId = Resolve-ODSLemonadeModelId -Port ([int]$llmEndpoint.Port) -GgufFile $ggufFile
-            }
-            $key = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("LEMONADE_API_KEY", "LITELLM_LEMONADE_API_KEY")
-            if ($key) { $headers.Authorization = "Bearer $key" }
+        } elseif ($llmEndpoint.Backend -eq "native-llama-server") {
+            $key = [string]$llmEndpoint.ApiKey
+            if (-not $key) { throw "Native chat requires LLAMA_SERVER_API_KEY in .env." }
+            $modelId = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("GGUF_FILE") -Default "default"
+            $headers.Authorization = "Bearer $key"
         }
         $body = @{
             model = $modelId
