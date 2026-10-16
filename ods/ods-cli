@@ -1571,12 +1571,15 @@ cmd_status_json() {
     local -a flags
     read -ra flags <<< "$flags_str"
 
-    # Capture running services for optional-service checks (best-effort)
-    local running_services=""
-    if docker compose "${flags[@]}" ps --format "{{.Service}}" >/dev/null 2>&1; then
-        running_services=$(docker compose "${flags[@]}" ps --format "{{.Service}}")
+    # Keep one snapshot and its success separate: a stopped stack has valid,
+    # empty ps output. Only a failed read leaves container state unknown.
+    local running_services="" container_state_known="false"
+    if running_services=$(docker compose "${flags[@]}" ps --format "{{.Service}}" 2>/dev/null); then
+        container_state_known="true"
     elif command -v docker-compose >/dev/null 2>&1; then
-        running_services=$(docker-compose ps --services --filter "status=running" 2>/dev/null || true)
+        if running_services=$(docker-compose "${flags[@]}" ps --services --filter "status=running" 2>/dev/null); then
+            container_state_known="true"
+        fi
     fi
 
     # Temp file to accumulate per-service JSON objects
@@ -1608,9 +1611,9 @@ cmd_status_json() {
         local container_status="unknown"
         local status="unknown"
 
-        # Determine container status (running/stopped) when we have ps output
-        if [[ -n "$running_services" ]]; then
-            if grep -qE "(^|[[:space:]])${sid}([[:space:]]|$)" <<<"$running_services"; then
+        # An empty successful snapshot still proves no service is running.
+        if [[ "$container_state_known" == "true" ]]; then
+            if grep -Fxq -- "$sid" <<<"$running_services"; then
                 container_status="running"
             else
                 container_status="stopped"
