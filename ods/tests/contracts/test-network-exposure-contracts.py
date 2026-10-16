@@ -223,8 +223,27 @@ def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
     talk = next(block for block in blocks if block.startswith("    location ^~ /api/talk/"))
     assert_true("DASHBOARD_API_KEY" not in talk, "ODS Talk must not receive the dashboard admin key")
     assert_true(
-        "listen 3011;" in nginx_conf and '"__ODS_LOCAL_LISTENER__:1:0" 1;' in nginx_conf,
+        "listen 3011;" in nginx_conf and '"__ODS_LOCAL_LISTENER__:1:1:0" 1;' in nginx_conf,
         "only the loopback-published listener may skip sign-in, and only for loopback hosts without forwarding",
+    )
+    trusted_map = re.search(r'(?s)map "([^"]+)" \$ods_trusted_local \{(.*?)\n\}', nginx_conf)
+    assert_true(trusted_map is not None, "the dashboard gate must define $ods_trusted_local")
+    assert_true(
+        trusted_map.group(1) == "$server_port:$ods_loopback_peer:$ods_loopback_host:$ods_forwarded",
+        "the no-sign-in decision must include the connection's peer address, not only headers and port",
+    )
+    peer_geo = re.search(r"(?s)geo \$ods_loopback_peer \{(.*?)\n\}", nginx_conf)
+    assert_true(peer_geo is not None, "the peer check must use nginx geo on $remote_addr")
+    peer_lines = [line.strip() for line in peer_geo.group(1).strip().splitlines()]
+    assert_true(
+        peer_lines == ["default 0;", "__ODS_LOOPBACK_PEER__ 1;"],
+        "only the docker-proxy gateway may be trusted; other ods-network containers must sign in",
+    )
+    assert_true(
+        "/proc/net/route" in entrypoint
+        and 's|__ODS_LOOPBACK_PEER__|${LOOPBACK_PEER}|g' in entrypoint
+        and 'LOOPBACK_PEER="${LOOPBACK_PEER:-192.0.2.1}"' in entrypoint,
+        "the entrypoint must template the container gateway and fail closed without one",
     )
     assert_true(
         "- ODS_DASHBOARD_BIND=127.0.0.1" in compose
