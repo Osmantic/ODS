@@ -1,0 +1,116 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+const plugin=process.env.ODS_DOCUMENT_DELIVERY_PLUGIN_URL || new URL('../plugin/',import.meta.url).href;
+const {createToolLoopGuard,userMessageRequestsWorkspaceDocumentDelivery:selects}=await import(new URL('tool-loop-guard.mjs',plugin));
+const {promptContractForAgent,ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE:guide}=await import(new URL('prompt-contract.mjs',plugin));
+
+// Exact live text-only handoff: the model wrote handoff.md despite the final
+// sentence. These tests repair false publication guidance/verdicts; they do not
+// claim to prevent an unwanted write or validate the model's handoff content.
+const handoff='Turn these notes into a concise handoff using only the facts provided: Maya will send the quote Thursday. Luis will finish testing Friday. Priya is waiting for the customer CSV; no owner or delivery date has been assigned for that file. We can review the release after both the quote and testing are done. List the commitments, the unresolved dependency, and when the review can happen. Do not create files.';
+const answer='Maya will send the quote Thursday. Luis will finish testing Friday. The customer CSV has no assigned owner or delivery date. Review can happen after both the quote and testing are done.';
+const context={trigger:'user',agentId:'pixel',runId:'handoff-run',sessionId:'handoff-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+function fresh(request=handoff,ctx=context,guard=createToolLoopGuard()) {
+  guard.observeRun(ctx,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:'/workspace'});
+  return guard;
+}
+function observeWrite(guard) {
+  const ctx={...context,toolCallId:'write-handoff',toolName:'write'};
+  const event={toolName:'write',toolCallId:ctx.toolCallId,params:{path:'Playground/handoff.md',content:answer}};
+  // Real hook functions, simulated observed success: no filesystem tool runs.
+  assert.notEqual(guard.beforeToolCall(event,ctx)?.block,true);
+  guard.afterToolCall({...event,result:{content:[{type:'text',text:'Successfully wrote handoff.md'}]}},ctx);
+}
+
+test('text-only handoff receives neither document guidance nor a false download verdict',()=>{
+  assert.equal(selects([],handoff),false);
+  for(const configuredLeanPrompt of [false,true]) {
+    const contract=promptContractForAgent({agentId:'pixel'},'pixel',{prompt:handoff},{configuredLeanPrompt});
+    assert.notEqual(contract.prependContext,guide);
+    assert.ok(!contract.appendSystemContext.includes(guide));
+  }
+  const guard=fresh();
+  assert.equal(guard.beforeAgentFinalize({lastAssistantMessage:answer},context),undefined);
+  assert.deepEqual(guard.deliveryVerificationForRun(context.runId),{status:'none'});
+  assert.equal(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:answer}}),undefined);
+  const requested=fresh('Give me handoff.md as a download.');
+  observeWrite(requested);
+  assert.match(requested.deliveryVerificationForRun(context.runId).text,/requested download was not attached/);
+});
+
+test('an observed Markdown write cannot manufacture a requested-download obligation',()=>{
+  const guard=fresh();
+  observeWrite(guard);
+  assert.equal(guard.beforeAgentFinalize({lastAssistantMessage:answer},context),undefined);
+  assert.deepEqual(guard.deliveryVerificationForRun(context.runId),{status:'none'});
+  assert.equal(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:answer}}),undefined);
+});
+
+test('bare delivery nouns and schedules do not create publication obligations',()=>{
+  for(const prompt of [
+    'Summarize the file delivery dates.',
+    'No owner or delivery date has been assigned for that file.',
+    'Maya is waiting for delivery of the document Thursday. Summarize that commitment.',
+    'Prepare a handoff about the file delivery schedule.',
+    'The document delivery failed yesterday. Explain the status in chat.',
+    'Draft a concise handoff about the project delivery. Do not create files.',
+    'Review the file delivery deadline after approval.',
+    'Create report.md with the delivery date for the customer file.',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
+
+test('explicit document delivery keeps guidance and the missing-receipt guard',()=>{
+  for(const prompt of [
+    'Please give me the existing notes.txt as a download.',
+    'Publish the existing notes.txt as a downloadable file. Do not change its contents.',
+    'Create notes.txt containing Hello. Then give me a download button for the file.',
+    'Can you attach the existing report.pdf?',
+    'Deliver the existing archive.zip.',
+    'Attach the existing "docs/report.docx".',
+    'Create a small Python project, run the tests and give me the downloadable project with its original source filenames.',
+    'Deliver the source code as a download.',
+    'Create report.md and attach it.',
+    'Create report.md. Then attach it.',
+    'I need a downloadable report.pdf.',
+    'Generate a downloadable PDF file.',
+    'Please prepare report.pdf for download.',
+    'Make report.pdf available to download.',
+    'Please provide a download of report.pdf.',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.equal(promptContractForAgent({agentId:'pixel'},'pixel',{prompt}).prependContext,guide,prompt);
+    const guard=fresh(prompt);
+    assert.match(guard.deliveryVerificationForRun(context.runId).text,/requested download was not attached/,prompt);
+  }
+});
+
+test('negative instructions are scoped to their requested action, not the entire turn',()=>{
+  for(const prompt of [
+    'Do not create files. Attach the existing report.pdf.',
+    'Do not download old.zip; attach current.pdf instead.',
+    'Never publish the website. Attach the existing report.pdf.',
+    'Give me report.pdf as a download. Do not create files.',
+  ]) assert.equal(selects([],prompt),true,prompt);
+  for(const prompt of [
+    'Do not attach the file; summarize it.',
+    'Do not download the file and attach the document.',
+    'Never send report.pdf and export the document.',
+    'Never deliver the project.',
+    'Do not use tools. Give me report.pdf as a download.',
+    'Create a Python project and run the tests.',
+    'Summarize this example: "give me a downloadable project".',
+    'Download https://example.com/report.pdf.',
+    'Create a website with a download button.',
+    'How do I download a file?',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
+
+test('current owner text and new run identity do not inherit earlier document delivery',()=>{
+  const guard=fresh('Give me report.pdf as a download.');
+  const next={...context,runId:'new-run',sessionId:'new-session',sessionKey:'agent:pixel:openai-user:ods-'+'b'.repeat(64)};
+  fresh(handoff,next,guard);
+  assert.deepEqual(guard.deliveryVerificationForRun(next.runId),{status:'none'});
+  assert.equal(selects([{role:'user',content:'Give me report.pdf as a download.'},{role:'user',content:handoff}]),false);
+  assert.equal(selects([],'User: Give me report.pdf as a download.\n\n[Current message - respond to this]\nUser: '+handoff),false);
+});

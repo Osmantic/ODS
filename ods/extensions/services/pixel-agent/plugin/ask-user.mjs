@@ -43,7 +43,9 @@ export function createAskUserTool() {
       type:'object', additionalProperties:false, required:['questions'],
       properties:{questions:{type:'array',minItems:1,maxItems:3,items:{
         type:'object',additionalProperties:false,required:['id','question','options'],
-        properties:{id:{type:'string'},question:{type:'string'},options:{type:'array',minItems:2,maxItems:4,items:{type:'string'}}},
+        properties:{id:{type:'string',minLength:1,maxLength:40,pattern:'^[a-z][a-z0-9_]{0,39}$',
+          description:'Unique within this questions array. Start with a lowercase letter, followed by lowercase letters, digits or underscores.'},
+        question:{type:'string'},options:{type:'array',minItems:2,maxItems:4,items:{type:'string'}}},
       }}},
     },
     async execute(_id,params) {

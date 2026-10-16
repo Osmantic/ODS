@@ -252,7 +252,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       if (detailsRequestRef.current !== requestId || importLock.current !== owner || downloadBusyRef.current) return
       const refusal = check?.refusal || check?.tensors?.refusal
       if (refusal && !(refusal.overridable && allowUnsupportedRuntime)) return
-      if (check?.disk === 'insufficient' && !artifact.installed) return
+      // Use the vision choice captured before the selected-artifact check began.
+      const disk = request.includeVision === false ? check?.diskWithoutProjector : check?.disk
+      if (disk === 'insufficient' && !artifact.installed) return
       if (!confirmedUnknown && check?.header.status !== 'read') {
         setArtifactCheckIssue({
           repoId: repository.id, revision: repository.sha, artifactId: artifact.id, unknown: true, allowUnsupportedRuntime,
@@ -660,6 +662,7 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
                         artifact={artifact}
                         gpu={gpu}
                         check={preflight?.artifacts?.[artifact.id] || null}
+                        projectorSkipped={Boolean(projector) && !includeVision}
                         checking={preflightLoading}
                         checkingHeader={checkingArtifact === artifact.id}
                         checkIssue={artifactCheckIssue?.artifactId === artifact.id ? artifactCheckIssue : null}
@@ -688,12 +691,14 @@ function ArtifactDialog({ model, details, loading, error, preflight, preflightLo
   )
 }
 
-function ArtifactRow({ artifact, gpu, check, checking, checkingHeader, checkIssue, refusal: artifactRefusal, busy, importing, runtimeCompatible, onImport }) {
+function ArtifactRow({ artifact, gpu, check, projectorSkipped, checking, checkingHeader, checkIssue, refusal: artifactRefusal, busy, importing, runtimeCompatible, onImport }) {
   const artifactPath = artifact.files?.[0]?.filename || artifact.label
   const refusal = artifactRefusal || check?.tensors?.refusal || null
   const [confirmingOverride, setConfirmingOverride] = useState(false)
   const memory = artifactMemory(artifact, gpu, check, checking)
-  const diskShort = check?.disk === 'insufficient' && !artifact.installed
+  // check.disk counts the default projector; with Include vision unticked only the weights download.
+  const disk = projectorSkipped ? check?.diskWithoutProjector : check?.disk
+  const diskShort = disk === 'insufficient' && !artifact.installed
   const blocked = !runtimeCompatible || (refusal && !refusal.overridable)
   const needsOverride = Boolean(refusal?.overridable) && !blocked
   const label = checkingHeader ? 'Checking file…' : importing ? 'Starting'

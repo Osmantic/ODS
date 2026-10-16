@@ -411,6 +411,107 @@ async def test_huggingface_search_returns_stale_cache_on_transient_hub_failure(m
     assert result == {**cached, "stale": True}
 
 
+@pytest.mark.asyncio
+async def test_huggingface_exact_repository_works_without_search_index(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    calls = []
+
+    async def metadata(path, **kwargs):
+        calls.append((path, kwargs))
+        assert path == "/api/models/owner/Model-GGUF", "The unavailable search index must not be called"
+        return {
+            "id": "owner/model-GGUF", "downloads": 12,
+            "siblings": [{"rfilename": "model-Q4_K_M.gguf"}],
+        }, {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    result = await models_router.search_huggingface_models(
+        q=" owner/Model-GGUF ", sort="downloads", limit=20, api_key="test",
+    )
+    assert [item["id"] for item in result["models"]] == ["owner/model-GGUF"]
+    assert result["models"][0]["ggufFileCount"] == 1
+    assert result["authenticated"] is False
+    assert calls == [("/api/models/owner/Model-GGUF", {"timeout_seconds": 6.0, "connect_timeout_seconds": 3.0})]
+
+
+@pytest.mark.asyncio
+async def test_huggingface_repository_prefix_falls_back_only_when_not_found(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    calls = []
+
+    async def metadata(path, **kwargs):
+        calls.append(path)
+        if path == "/api/models/owner/partial":
+            raise models_router.HTTPException(status_code=404, detail="Not found")
+        assert kwargs["params"]["search"] == "owner/partial"
+        return [{"id": "owner/partial-GGUF", "siblings": [{"rfilename": "model.gguf"}]}], {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    result = await models_router.search_huggingface_models(
+        q="owner/partial", sort="downloads", limit=20, api_key="test",
+    )
+    assert calls == ["/api/models/owner/partial", "/api/models"]
+    assert result["models"][0]["id"] == "owner/partial-GGUF"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 502, 504])
+async def test_huggingface_exact_repository_preserves_access_and_transient_errors(monkeypatch, status):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    calls = []
+
+    async def metadata(path, **_kwargs):
+        calls.append(path)
+        raise models_router.HTTPException(status_code=status, detail="Hub refused")
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    with pytest.raises(models_router.HTTPException) as error:
+        await models_router.search_huggingface_models(q="owner/model", sort="downloads", limit=20, api_key="test")
+    assert error.value.status_code == status
+    assert calls == ["/api/models/owner/model"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository", [[], {"id": "another/model"}, {}])
+async def test_huggingface_exact_repository_rejects_unrelated_metadata(monkeypatch, repository):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+
+    async def metadata(*_args, **_kwargs):
+        return repository, {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    with pytest.raises(models_router.HTTPException) as error:
+        await models_router.search_huggingface_models(q="owner/model", sort="downloads", limit=20, api_key="test")
+    assert error.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_huggingface_exact_repository_keeps_gguf_only_filter(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+
+    async def metadata(*_args, **_kwargs):
+        return {"id": "owner/model", "siblings": [{"rfilename": "model.safetensors"}]}, {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    result = await models_router.search_huggingface_models(q="owner/model", sort="downloads", limit=20, api_key="test")
+    assert result["models"] == []
+
+
 def test_huggingface_cache_identity_changes_without_exposing_token(monkeypatch):
     import routers.models as models_router
 
