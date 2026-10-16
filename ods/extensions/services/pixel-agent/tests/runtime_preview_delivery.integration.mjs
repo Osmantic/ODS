@@ -111,7 +111,7 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
     catch(error){throw new Error(error.message+'\n'+JSON.stringify(toolResults)+'\n'+body+'\n'+log);}
     assert.equal(publications,'Playground/signal-garden\n'.repeat(refresh?2:1),JSON.stringify(toolResults)+'\n'+body+'\n'+log);
     const verdicts=readFileSync(join(root,'verdicts.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
-    assert.equal(verdicts.at(-1).verification.status,publishFails?'failed':'passed',JSON.stringify(verdicts));
+    assert.equal(verdicts.at(-1).verification.status,'failed',JSON.stringify(verdicts));
     const frames=body.split(/\r?\n/).filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
     if(publishFails){
       assert.equal(frames.at(-1).pixel_outcome.status,'failed');
@@ -120,13 +120,15 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
       assert.match(log,/revision after potential side effects/);
       return;
     }
-    // The OpenAI-compatible endpoint retains model text. ODS ingress consumes
-    // this separate host-authoritative projection to append its preview card.
+    // The OpenAI-compatible endpoint skips channel delivery hooks. Its private
+    // verification projection must replace the unsupported storage guarantee.
     assert.match(verdicts.at(-1).verification.text,/Open preview/);
-    assert.equal(verdicts.at(-1).verification.deliveryMode,'append');
+    assert.equal(verdicts.at(-1).verification.deliveryMode,undefined);
     assert.equal(verdicts.at(-1).verification.preview.kind,'ods-pixel-workspace-preview');
     assert.match(body,/Open preview/);
     assert.match(body,/Inputs in the embedded preview may be lost on reload/);
+    assert.match(body,/Reload persistence has not been verified/);
+    assert.doesNotMatch(body,/For actual persistence, open it in your regular browser/);
     assert.match(body,/Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data/);
     assert.doesNotMatch(body,/Opening the same preview in a new tab does not change this/);
     assert.equal(frames.at(-1).pixel.preview.kind,'ods-pixel-workspace-preview');
