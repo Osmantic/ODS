@@ -191,6 +191,21 @@ test('a gated repository says how to get access, once, and cannot be imported ye
   expect(dialog.queryByRole('button', {name: /^Import/})).toBeNull()
 })
 
+test('an unavailable header check names the failure, tells the user how to recover, and links to Discord', async () => {
+  preflightBody = preflight({
+    header: {
+      status: 'unavailable',
+      file: 'model-Q4_K_M.gguf',
+      reason: 'unreachable',
+      message: "reading the model file's header timed out",
+    },
+    template: {present: null, tools: null, thinking: 'unknown'},
+  })
+  const dialog = await open()
+  expect(dialog.getByText(/Some checks could not run: reading the model file's header timed out\. Close and reopen this list to try again\./)).toBeVisible()
+  expect(dialog.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+})
+
 test('a repository ODS does not run as a chat model links to help without a pre-download check', async () => {
   repo.runtimeCompatible = false
   detailsBody = {...repo, sha: 'c'.repeat(40), artifacts, runtimeCompatible: false, runtimeReason: 'Text Ranking requires a dedicated ODS runtime'}
