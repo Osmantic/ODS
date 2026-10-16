@@ -127,7 +127,7 @@ test('a running model never checked can be checked from its card', async () => {
   await show()
   profileBody.profile = profile(capable)
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
-  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST'})
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST', signal: expect.any(AbortSignal)})
   await waitFor(() => expect(screen.getByRole('region', {name: 'What this model can do'}))
     .toHaveTextContent('Tool-call check passed'))
 })
@@ -155,7 +155,7 @@ test('nothing shows when profiles are off or the check is unavailable', async ()
 test('Check again re-measures, and a refusal is shown in words', async () => {
   await show()
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
-  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST'})
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST', signal: expect.any(AbortSignal)})
   recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Only the running model can be checked; run it first'}}}
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only the running model can be checked'))
@@ -281,4 +281,84 @@ test('a late recheck of an unmounted model does not launch another read or chang
   await act(async () => { resolveRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
   expect(fetch).toHaveBeenCalledTimes(3)
   expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+})
+
+test('a lost recheck response explains uncertainty, refreshes saved results and allows manual recovery', async () => {
+  await show()
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+  recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Another model operation is active; wait for it to finish.'}}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(2)
+  expect(screen.getByRole('status')).toHaveTextContent('Another model operation is active')
+  recheckResponse = {ok: true, status: 200, body: {status: 'recorded'}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(3)
+  expect(screen.queryByRole('status')).toBeNull()
+})
+
+test('failed recovery reads preserve the last visible capability check', async () => {
+  await show()
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  fetch.mockRejectedValueOnce(new TypeError('Still offline'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+})
+
+test.each(['headers', 'body'])('a stalled recheck %s reaches its deadline and ignores a late response', async stage => {
+  vi.useFakeTimers()
+  await show()
+  let settle
+  fetch.mockImplementationOnce(() => stage === 'headers'
+    ? new Promise(resolve => { settle = resolve })
+    : Promise.resolve({ok: true, json: () => new Promise(resolve => { settle = resolve })}))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  await act(async () => {})
+  const signal = fetch.mock.calls[1][1].signal
+  await act(async () => { await vi.advanceTimersByTimeAsync(194999) })
+  expect(screen.getByRole('button', {name: 'Checking…'})).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(signal.aborted).toBe(true)
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(3)
+  await act(async () => { settle(stage === 'headers'
+    ? {ok: false, json: async () => ({detail: 'late refusal'})}
+    : {status: 'error'}) })
+  expect(screen.getByRole('status')).not.toHaveTextContent('late refusal')
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+test('a successful recheck with an unavailable saved result preserves the previous card', async () => {
+  await show()
+  fetch.mockResolvedValueOnce({ok: true, json: async () => ({status: 'recorded'})})
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('status')).toHaveTextContent(/could not refresh/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+})
+
+test('unmount aborts the local recheck request and removes its deadline without launching another probe', async () => {
+  vi.useFakeTimers()
+  let settle
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  fetch.mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  const signal = fetch.mock.calls[1][1].signal
+  view.unmount()
+  expect(signal.aborted).toBe(true)
+  expect(vi.getTimerCount()).toBe(0)
+  await act(async () => { settle({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(2)
 })
