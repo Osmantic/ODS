@@ -1,5 +1,6 @@
 """Tests for the ODS Talk mobile portal API."""
 
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -2174,3 +2175,98 @@ async def test_talk_reads_no_manifest_for_a_service_outside_the_library(monkeypa
     monkeypatch.setattr(talk, "load_extension_manifests", unexpected)
 
     assert await talk._service_state("livekit") == {"configured": False, "status": "not_configured"}
+
+def _streamed_multipart(counter, total_mib, filename="a.webm", content_type="audio/webm"):
+    chunk = b"\0" * (1 << 20)
+
+    def body():
+        yield (
+            b'--B\r\nContent-Disposition: form-data; name="file"; filename="' + filename.encode()
+            + b'"\r\nContent-Type: ' + content_type.encode() + b"\r\n\r\n"
+        )
+        for _ in range(total_mib):
+            counter["n"] += len(chunk)
+            yield chunk
+        yield b"\r\n--B--\r\n"
+
+    return body()
+
+
+@pytest.mark.parametrize("path", ["/api/talk/audio-message", "/api/talk/attachment"])
+def test_talk_upload_without_session_is_rejected_before_body_is_read(test_client, path):
+    sent = {"n": 0}
+    resp = test_client.post(
+        path,
+        content=_streamed_multipart(sent, 200),
+        headers={"Content-Type": "multipart/form-data; boundary=B"},
+    )
+    assert resp.status_code == 401
+    assert sent["n"] < 30 << 20
+
+
+@pytest.mark.parametrize("path", ["/api/talk/audio-message", "/api/talk/attachment"])
+def test_talk_oversized_streamed_upload_stops_at_cap(signed_talk_cookie, path):
+    # Drive the ASGI app directly: TestClient buffers the whole request body
+    # on the first receive(), which would hide whether the server stops early.
+    from main import app
+
+    chunk = bytes(1 << 20)
+    head = (b'--B\r\nContent-Disposition: form-data; name="file"; filename="a.png"\r\n'
+            b"Content-Type: image/png\r\n\r\n")
+    pulled = {"n": 0}
+    sent = []
+
+    async def receive():
+        if pulled["n"] >= 200 << 20:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        pulled["n"] += len(chunk)
+        return {"type": "http.request", "body": head + chunk if pulled["n"] == len(chunk) else chunk,
+                "more_body": True}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+        "scheme": "http", "path": path, "raw_path": path.encode(), "query_string": b"",
+        "root_path": "", "client": ("127.0.0.1", 1), "server": ("testserver", 80),
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"multipart/form-data; boundary=B"),
+            (b"cookie", b"ods-session=" + signed_talk_cookie.encode()),
+        ],
+    }
+    asyncio.run(app(scope, receive, send))
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 413
+    assert pulled["n"] < 30 << 20
+
+
+def test_talk_upload_rejects_declared_oversized_length(talk_client):
+    resp = talk_client.post(
+        "/api/talk/audio-message",
+        content=b"x",
+        headers={"Content-Type": "multipart/form-data; boundary=B", "Content-Length": str(200 << 20)},
+    )
+    assert resp.status_code == 413
+
+
+def test_talk_image_attachment_with_caption_still_parses(talk_client, monkeypatch):
+    seen = {}
+
+    async def fake_route():
+        return ("http://vision", "model", {})
+
+    async def fake_stream(data, content_type, prompt_text, route):
+        seen.update(data=data, content_type=content_type, prompt=prompt_text)
+        yield b"event: done\ndata: {}\n\n"
+
+    monkeypatch.setattr("routers.talk._vision_route", fake_route)
+    monkeypatch.setattr("routers.talk._stream_vision_chat", fake_stream)
+    resp = talk_client.post(
+        "/api/talk/attachment",
+        files={"file": ("pic.png", b"\x89PNGfake", "image/png")},
+        data={"text": "what is this?"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen == {"data": b"\x89PNGfake", "content_type": "image/png", "prompt": "what is this?"}

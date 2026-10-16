@@ -17,8 +17,9 @@ import os
 from typing import Any, AsyncIterator
 
 import httpx
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.requests import ClientDisconnect
 
 import hermes_bridge
@@ -959,6 +960,46 @@ async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, 
     return {"accepted": True, "choice": payload["choice"]}
 
 
+# Multipart framing (boundaries, part headers, caption field) on top of the
+# largest file part. Generous, but bounded.
+_MULTIPART_OVERHEAD_BYTES = 64 * 1024 + MAX_MESSAGE_CHARS * 4
+
+
+async def _read_capped_form(request: Request, max_body: int) -> Any:
+    """Collect at most ``max_body`` request bytes, then parse the multipart form.
+
+    FastAPI ``File(...)`` parameters spool the whole body before the handler
+    (and therefore the session and size checks) runs. Callers verify the
+    session first; this rejects declared or streamed bodies past the cap
+    without reading the remainder.
+    """
+    length = request.headers.get("content-length")
+    if length is not None:
+        if not length.isascii() or not length.isdecimal():
+            raise HTTPException(status_code=400, detail="Invalid upload content length.")
+        if len(length) > 12 or int(length) > max_body:
+            raise HTTPException(status_code=413, detail="Upload is too large.")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > max_body:
+            raise HTTPException(status_code=413, detail="Upload is too large.")
+        body.extend(chunk)
+    payload = bytes(body)
+    body.clear()
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    return await Request(request.scope, receive).form()
+
+
+def _form_file(form: Any) -> UploadFile:
+    file = form.get("file")
+    if not isinstance(file, StarletteUploadFile):
+        raise HTTPException(status_code=422, detail="A file upload is required.")
+    return file
+
+
 def _classify_attachment(file: UploadFile) -> str:
     """Return one of: ``image``, ``text``, or raise 415.
 
@@ -997,11 +1038,7 @@ def _image_content_type(file: UploadFile) -> str:
 
 
 @router.post("/api/talk/attachment")
-async def talk_attachment(
-    request: Request,
-    file: UploadFile = File(...),
-    text: str = Form(""),
-) -> StreamingResponse:
+async def talk_attachment(request: Request) -> StreamingResponse:
     """Multipart attachment endpoint. Returns the same SSE event shape as
     ``/api/talk/message/stream`` so the SPA can use a single rendering path.
 
@@ -1019,6 +1056,11 @@ async def talk_attachment(
     PDF/docx aren't in scope for v1 (no parser dependency yet).
     """
     session_key, _expires_at = _require_session(request)
+    form = await _read_capped_form(request, max(MAX_IMAGE_BYTES, MAX_DOC_BYTES) + _MULTIPART_OVERHEAD_BYTES)
+    file = _form_file(form)
+    text = form.get("text") or ""
+    if not isinstance(text, str):
+        raise HTTPException(status_code=422, detail="Caption must be text.")
     kind = _classify_attachment(file)
 
     caption = (text or "").strip()
@@ -1071,8 +1113,9 @@ async def talk_attachment(
 
 
 @router.post("/api/talk/audio-message")
-async def talk_audio_message(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+async def talk_audio_message(request: Request) -> dict[str, Any]:
     session_key, _expires_at = _require_session(request)
+    file = _form_file(await _read_capped_form(request, MAX_AUDIO_BYTES + _MULTIPART_OVERHEAD_BYTES))
     await _require_hermes_talk_compatible()
     data = await file.read(MAX_AUDIO_BYTES + 1)
     if len(data) > MAX_AUDIO_BYTES:
