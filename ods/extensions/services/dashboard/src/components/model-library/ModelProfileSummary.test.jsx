@@ -348,6 +348,54 @@ test('a successful recheck with an unavailable saved result preserves the previo
   expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
 })
 
+test('a recheck response during the active lifecycle defers its read without reporting a failure', async () => {
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  let finishRecheck
+  fetch.mockImplementationOnce(() => new Promise(resolve => { finishRecheck = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => { finishRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(2)
+  profileBody.profile = profile({...capable, tokensPerSecond: 39})
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText('About 39 tokens/s')).toBeVisible()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test.each(['abort', 'late response'])('a superseded recheck read (%s) does not warn after the settled lifecycle reads the saved check', async outcome => {
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  fetch.mockResolvedValueOnce({ok: true, json: async () => ({status: 'recorded'})})
+  let finishRead
+  fetch.mockImplementationOnce((url, {signal}) => new Promise((resolve, reject) => {
+    finishRead = () => resolve({ok: true, json: async () => profileBody})
+    if (outcome === 'abort') signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {once: true})
+  }))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch).toHaveBeenCalledTimes(3)
+  const signal = fetch.mock.calls[2][1].signal
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => {})
+  expect(signal.aborted).toBe(true)
+  profileBody.profile = profile({...capable, tokensPerSecond: 39})
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  // A fetch implementation may still deliver a response after abort; the
+  // completed lifecycle's newer read owns the visible measurements.
+  await act(async () => { finishRead() })
+  expect(screen.getByText('About 39 tokens/s')).toBeVisible()
+  expect(screen.getByText('Streaming tool check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(fetch).toHaveBeenCalledTimes(4)
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
 test('unmount aborts the local recheck request and removes its deadline without launching another probe', async () => {
   vi.useFakeTimers()
   let settle

@@ -93,7 +93,10 @@ function ProfileForModel({modelId, lifecycleActive}) {
       setFailed(false)
       return true
     } catch {
-      if (current() && !preserveOnError) setFailed(true)
+      // Lifecycle transitions can cancel or supersede this read. Only a
+      // failed current read reports failure to the recheck action.
+      if (!current()) return
+      if (!preserveOnError) setFailed(true)
       return false
     } finally {
       clearTimeout(timer)
@@ -159,7 +162,7 @@ function ProfileForModel({modelId, lifecycleActive}) {
       if (recheckRequest.current === request) {
         const refreshed = await load({preserveOnError: true})
         if (recheckRequest.current === request) {
-          if (!refreshed) setNotice(previous => previous || 'The saved check could not refresh. Previous results are still shown; reload the page to read the latest result.')
+          if (refreshed === false) setNotice(previous => previous || 'The saved check could not refresh. Previous results are still shown; reload the page to read the latest result.')
           recheckRequest.current = null
           setRechecking(false)
         }
