@@ -236,8 +236,8 @@ def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
     assert_true(peer_geo is not None, "the peer check must use nginx geo on $remote_addr")
     peer_lines = [line.strip() for line in peer_geo.group(1).strip().splitlines()]
     assert_true(
-        peer_lines == ["default 0;", "__ODS_LOOPBACK_PEER__ 1;"],
-        "only the docker-proxy gateway may be trusted; other ods-network containers must sign in",
+        [l for l in peer_lines if not l.startswith("#")] == ["default 0;", "__ODS_LOOPBACK_PEER__ 1;", "127.0.0.1 1;", "::1 1;"],
+        "only the gateway and loopback (unroutable from peers) may be trusted; other ods-network containers must sign in",
     )
     assert_true(
         "/proc/net/route" in entrypoint

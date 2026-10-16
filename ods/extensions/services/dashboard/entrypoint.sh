@@ -60,11 +60,16 @@ fi
 # on ods-network connect from their own addresses, so only the gateway may
 # skip sign-in. Without a default IPv4 gateway nothing is trusted.
 # /proc/net/route stores the gateway as little-endian hex.
-LOOPBACK_PEER=$(awk '$2 == "00000000" && $3 != "00000000" {
-    g = $3
-    printf "%d.%d.%d.%d", ("0x" substr(g, 7, 2)) + 0, ("0x" substr(g, 5, 2)) + 0, ("0x" substr(g, 3, 2)) + 0, ("0x" substr(g, 1, 2)) + 0
+# Docker Desktop (vpnkit/gvisor on macOS and Windows) and rootless Docker
+# (rootlesskit) still end at docker-proxy inside the VM or rootless netns, so
+# the container also sees the gateway there. The publish is 127.0.0.1 only,
+# so no IPv6 gateway is needed. ODS_NET_ROUTE_FILE exists for tests.
+LOOPBACK_PEER=$(awk 'function byte(h) { return index("0123456789ABCDEF", substr(h, 1, 1)) * 16 + index("0123456789ABCDEF", substr(h, 2, 1)) - 17 }
+$2 == "00000000" && $3 != "00000000" {
+    g = toupper($3)
+    printf "%d.%d.%d.%d", byte(substr(g, 7, 2)), byte(substr(g, 5, 2)), byte(substr(g, 3, 2)), byte(substr(g, 1, 2))
     exit
-}' /proc/net/route)
+}' "${ODS_NET_ROUTE_FILE:-/proc/net/route}")
 case "$LOOPBACK_PEER" in
     *[!0-9.]*|'')
         LOOPBACK_PEER=""
