@@ -58,6 +58,13 @@ async def _upstream_chat(request):
     if data.get("trigger_error"):
         return web.json_response({"error": "upstream-secret-path-/private/token"}, status=500)
 
+    if data.get("trigger_incomplete_payload"):
+        resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await resp.prepare(request)
+        # A real truncated chunked response, with no terminal HTTP chunk/SSE.
+        request.transport.close()
+        return resp
+
     if data.get("trigger_detached_native"):
         stop = asyncio.Event()
         task = asyncio.create_task(stop.wait())
@@ -1751,6 +1758,43 @@ class TestSSE(BaseEdgeTest):
 # ---------------------------------------------------------------------------
 
 class TestSanitizedErrors(BaseEdgeTest):
+    async def test_incomplete_payload_logs_only_attempt_uuid_and_preserves_error_bytes(self):
+        request_id = "11111111-2222-4333-8444-555555555555"
+        log = io.StringIO()
+        with patch("sys.stderr", log):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(), timeout=2,
+                json={"model": "pixel/default", "user": "private-chat", "request_id": request_id,
+                      "messages": [{"role": "user", "content": "private prompt"}], "stream": True,
+                      "trigger_incomplete_payload": True},
+            ) as resp:
+                self.assertEqual(resp.status, 200)
+                self.assertEqual(await resp.read(), b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
+        lines = [line for line in log.getvalue().splitlines() if line.startswith("pixel-edge stream failed ")]
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(json.loads(lines[0].split("failed ", 1)[1]), {
+            "requestId": request_id, "stage": "sse_forward", "error": "payload_error", "abort": "none"})
+        self.assertNotIn("private", lines[0])
+        # A synthetic error terminator is not confirmation that the native run ended.
+        self.assertEqual(self.edge_app[self.pe._CHAT_ACTIVITY_KEY].get("private-chat"), "unknown")
+        self.assertEqual(len(self.up_runner.app["chat_requests"]), 1)
+
+    async def test_stream_diagnostic_identity_and_sink_are_not_delivery_authority(self):
+        from aiohttp import ClientPayloadError
+        for value in [None, "private-id", {"secret": "private"}, "11111111-2222-4333-8444-555555555555\n"]:
+            with self.subTest(value=value), patch("sys.stderr", new_callable=io.StringIO) as log:
+                self.pe._log_stream_failure(ClientPayloadError("private error /credential"), value)
+                record = json.loads(log.getvalue().split("failed ", 1)[1])
+                self.assertEqual(record, {"requestId": "unavailable", "stage": "sse_forward",
+                                          "error": "payload_error", "abort": "none"})
+        with patch("builtins.print", side_effect=OSError("broken sink")):
+            async with self.client.post(
+                "http://localhost/v1/chat/completions", headers=self.auth(), timeout=2,
+                json={"model": "pixel/default", "messages": [], "stream": True,
+                      "trigger_incomplete_payload": True},
+            ) as resp:
+                self.assertEqual(await resp.read(), b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
+
     async def test_upstream_error_body_is_not_forwarded(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",
