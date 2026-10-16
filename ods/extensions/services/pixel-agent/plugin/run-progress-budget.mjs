@@ -103,10 +103,10 @@ export function createRunProgressBudget() {
 // uniq, and the last step is a bare lookup. None of the other steps can exit 1,
 // so exit 1 still means a search came up empty. OpenClaw merges stdout and
 // stderr, and an error in any step disqualifies the command. rg 13 prints some
-// errors with no recognisable prefix, so rg may only be the last step, where
-// its own exit status tells an error from an empty search. Options that run
-// programs or write files (rg --pre, git grep -O, sort -o, sed -i) disqualify it
-// too. One literal `cd DIR &&` may lead. Redirections, substitutions, `||`,
+// errors with no recognisable prefix, and grep -s suppresses errors, so these
+// may only be the last step, where their own exit status distinguishes errors.
+// Options that run programs or write files (rg --pre, git grep -O, sort -o,
+// sed -i) disqualify it too. One literal `cd DIR &&` may lead. Redirections, substitutions, `||`,
 // background jobs and escapes outside quotes stay ordinary failures, as does
 // every other exit code.
 const LOOKUP_CD = /^cd[ \t]+(?:'[^'\r\n]*'|"[^"$`\\\r\n]*"|[A-Za-z0-9._/-]+)[ \t]*&&[ \t]*/;
@@ -178,6 +178,14 @@ function isLookup([program, ...args]) {
   return ['grep', 'egrep', 'fgrep', 'which'].includes(program);
 }
 
+function lookupNeedsOwnExitStatus([program, ...args]) {
+  if (program === 'rg') return true;
+  // Quotes have already been removed. Include clustered short flags and GNU's
+  // abbreviated --no-messages; conservatively decline option-shaped operands.
+  return ['grep', 'egrep', 'fgrep'].includes(program) &&
+    args.some(arg => /^-[^-]*s/.test(arg) || /^--no-m/.test(arg));
+}
+
 function isLookupCompanion([program, ...args]) {
   if (program === 'echo') return true;
   // GNU sed reads options after operands too, so no operand may look like one.
@@ -199,7 +207,7 @@ export function lookupFoundNothing(command, result) {
   if (!steps || !steps.every(([first, ...sinks]) =>
     (isLookup(first) || isLookupCompanion(first)) && sinks.every(isLookupSink))) return false;
   const last = steps.at(-1);
-  if (last.length !== 1 || !isLookup(last[0]) || steps.slice(0, -1).some(([[program]]) => program === 'rg')) return false;
+  if (last.length !== 1 || !isLookup(last[0]) || steps.slice(0, -1).some(([first]) => lookupNeedsOwnExitStatus(first))) return false;
   const details = result?.details;
   if (!details || typeof details !== 'object' || details.status !== 'completed' || details.exitCode !== 1 ||
       Object.hasOwn(details, 'sessionId')) return false;

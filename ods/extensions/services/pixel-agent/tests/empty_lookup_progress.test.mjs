@@ -90,6 +90,15 @@ for (const wrapped of [false, true]) {
     assert.equal(run.exhausted(), true);
   });
 
+  test(`${transport}: an earlier grep with suppressed errors is charged`, () => {
+    const run = harness({wrapped});
+    for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
+      assert.equal(run.exhausted(), false);
+      run.grep(`grep -ns x missing${i}.js; grep -n z ui.js`, NO_MATCH);
+    }
+    assert.equal(run.exhausted(), true);
+  });
+
   test(`${transport}: the empty-search allowance is bounded per run`, () => {
     const run = harness({wrapped});
     for (let i = 0; i < FREE_EMPTY_LOOKUPS_PER_RUN; i++) { run.edit(i); run.grep(`grep -rn "name${i}" Playground/elf-of-doom`); }
