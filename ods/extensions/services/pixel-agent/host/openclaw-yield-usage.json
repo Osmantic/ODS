@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "0c9ce1028d7716ee14b091d790ee44f1cab952119bfca3d2963b5779877ebc96",
-  "patchedSha256": "d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8",
+  "patchedSha256": "c273cb2cec4c4df657bcafeaf676537d0b536f612b5c42fa4d87b8f46a3018ac",
   "replacements": [
     [
       "const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);",
@@ -38,6 +38,18 @@
     [
       "\t\t\t} finally {\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)",
       "\t\t\t} finally {\n\t\t\t\t// Flush a pending precheck failure on every terminal recovery exit,\n\t\t\t\t// including thrown errors, aborts and exhausted compaction. A real\n\t\t\t\t// later attempt end clears it before publishing its own outcome.\n\t\t\t\tconst emitPreflightFailure = deferredPreflightAgentEnd;\n\t\t\t\tdeferredPreflightAgentEnd = void 0;\n\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)"
+    ],
+    [
+      "const basePrompt = nextAttemptPromptOverride ?? (provider === \"anthropic\" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);",
+      "const attemptPromptOverride = nextAttemptPromptOverride;\n\t\t\t\t\tconst basePrompt = attemptPromptOverride ?? (provider === \"anthropic\" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);"
+    ],
+    [
+      "\t\t\t\t\tif (contextOverflowError) {\n\t\t\t\t\t\tconst overflowDiagId",
+      "\t\t\t\t\tif (contextOverflowError) {\n\t\t\t\t\t\t// An initial precheck never submitted the continuation. A provider\n\t\t\t\t\t\t// overflow may retain it only with explicit native no-work proof.\n\t\t\t\t\t\t// Neither case may reconstruct this unpersisted revision from a summary.\n\t\t\t\t\t\tconst initialPrecheck = promptErrorSource === \"precheck\" && preflightRecovery\n\t\t\t\t\t\t\t&& preflightRecovery.source === void 0\n\t\t\t\t\t\t\t&& [\"compact_only\", \"compact_then_truncate\"].includes(preflightRecovery.route);\n\t\t\t\t\t\tconst providerOverflow = !timedOut && !preflightRecovery\n\t\t\t\t\t\t\t&& contextOverflowError.source === \"assistantError\"\n\t\t\t\t\t\t\t&& currentAttemptAssistant?.stopReason === \"error\";\n\t\t\t\t\t\tconst providerRejectedBeforeWork = providerOverflow\n\t\t\t\t\t\t\t&& attempt.replayMetadata.replaySafe === true\n\t\t\t\t\t\t\t&& attempt.replayMetadata.hadPotentialSideEffects === false\n\t\t\t\t\t\t\t&& attempt.toolMetas.length === 0 && attempt.itemLifecycle.startedCount === 0\n\t\t\t\t\t\t\t&& !hasAttemptTerminalState(attempt);\n\t\t\t\t\t\tif (initialPrecheck || providerRejectedBeforeWork) nextAttemptPromptOverride = attemptPromptOverride;\n\t\t\t\t\t\telse if (providerOverflow && attempt.toolMetas.length > 0) continueFromCurrentTranscript();\n\t\t\t\t\t\tconst overflowDiagId"
+    ],
+    [
+      "\t\t\t\t\t\t\t\t\tnextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;",
+      "\t\t\t\t\t\t\t\t\tnextAttemptPromptOverride ??= MID_TURN_PRECHECK_CONTINUATION_PROMPT;"
     ]
   ],
   "previousReplacements": {
@@ -65,6 +77,94 @@
       [
         "import { n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";",
         "import { i as hasNonzeroUsage, n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";"
+      ]
+    ],
+    "d00804f960d617b6b3e2ae6b1691f3aa9866029c8da8772f236a35a6033b37f8": [
+      [
+        "const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);",
+        "// A yield has no visible final assistant; its attempt-bound native model\n\t\t\t\t\t// message excludes projected nested tool calls and historical turns.\n\t\t\t\t\tconst yieldAssistant = attempt.yieldDetected ? currentAttemptAssistant : void 0;\n\t\t\t\t\tconst yieldUsage = normalizeUsage(yieldAssistant?.usage);\n\t\t\t\t\tconst lastAssistantUsage = attempt.yieldDetected ? hasNonzeroUsage(yieldUsage) ? yieldUsage : void 0 : normalizeUsage(sessionLastAssistant?.usage);"
+      ],
+      [
+        "lastRunPromptUsage = lastAssistantUsage ?? attemptUsage;",
+        "lastRunPromptUsage = lastAssistantUsage ?? (attempt.yieldDetected ? void 0 : attemptUsage);"
+      ],
+      [
+        "lastTurnTotal = lastAssistantUsage?.total ?? attemptUsage?.total;",
+        "lastTurnTotal = lastAssistantUsage?.total ?? (attempt.yieldDetected ? void 0 : attemptUsage?.total);"
+      ],
+      [
+        "lastAssistantUsage: sessionLastAssistant?.usage,",
+        "lastAssistantUsage: attempt.yieldDetected ? lastAssistantUsage : sessionLastAssistant?.usage,"
+      ],
+      [
+        "\t\t\t\t\tconst reportedModelRef = resolveReportedModelRef({",
+        "\t\t\t\t\t// A yielded turn without measured context must not fabricate one from billing.\n\t\t\t\t\tif (attempt.yieldDetected) usageMeta.lastCallUsage = lastAssistantUsage;\n\t\t\t\t\tconst reportedModelRef = resolveReportedModelRef({"
+      ],
+      [
+        "import { n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";",
+        "import { i as hasNonzeroUsage, n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";"
+      ],
+      [
+        "\t\t\ttry {\n\t\t\t\tconst resolveActiveHookContext",
+        "\t\t\tlet deferredPreflightAgentEnd;\n\t\t\ttry {\n\t\t\t\tconst resolveActiveHookContext"
+      ],
+      [
+        "\t\t\t\t\tconst rawAttempt = await runEmbeddedAttemptWithBackend({",
+        "\t\t\t\t\tconst rawAttempt = await runEmbeddedAttemptWithBackend({\n\t\t\t\t\t\tdeferPreflightAgentEnd: (emit) => { deferredPreflightAgentEnd = emit; },"
+      ],
+      [
+        "\t\t\t} finally {\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)",
+        "\t\t\t} finally {\n\t\t\t\t// Flush a pending precheck failure on every terminal recovery exit,\n\t\t\t\t// including thrown errors, aborts and exhausted compaction. A real\n\t\t\t\t// later attempt end clears it before publishing its own outcome.\n\t\t\t\tconst emitPreflightFailure = deferredPreflightAgentEnd;\n\t\t\t\tdeferredPreflightAgentEnd = void 0;\n\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)"
+      ]
+    ],
+    "71eefa582f753745f85f6f853900bb661a96ff8a31db107ed8b890c07c2b4fdc": [
+      [
+        "const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);",
+        "// A yield has no visible final assistant; its attempt-bound native model\n\t\t\t\t\t// message excludes projected nested tool calls and historical turns.\n\t\t\t\t\tconst yieldAssistant = attempt.yieldDetected ? currentAttemptAssistant : void 0;\n\t\t\t\t\tconst yieldUsage = normalizeUsage(yieldAssistant?.usage);\n\t\t\t\t\tconst lastAssistantUsage = attempt.yieldDetected ? hasNonzeroUsage(yieldUsage) ? yieldUsage : void 0 : normalizeUsage(sessionLastAssistant?.usage);"
+      ],
+      [
+        "lastRunPromptUsage = lastAssistantUsage ?? attemptUsage;",
+        "lastRunPromptUsage = lastAssistantUsage ?? (attempt.yieldDetected ? void 0 : attemptUsage);"
+      ],
+      [
+        "lastTurnTotal = lastAssistantUsage?.total ?? attemptUsage?.total;",
+        "lastTurnTotal = lastAssistantUsage?.total ?? (attempt.yieldDetected ? void 0 : attemptUsage?.total);"
+      ],
+      [
+        "lastAssistantUsage: sessionLastAssistant?.usage,",
+        "lastAssistantUsage: attempt.yieldDetected ? lastAssistantUsage : sessionLastAssistant?.usage,"
+      ],
+      [
+        "\t\t\t\t\tconst reportedModelRef = resolveReportedModelRef({",
+        "\t\t\t\t\t// A yielded turn without measured context must not fabricate one from billing.\n\t\t\t\t\tif (attempt.yieldDetected) usageMeta.lastCallUsage = lastAssistantUsage;\n\t\t\t\t\tconst reportedModelRef = resolveReportedModelRef({"
+      ],
+      [
+        "import { n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";",
+        "import { i as hasNonzeroUsage, n as derivePromptTokens, o as normalizeUsage } from \"./usage-C67Kbb7n.js\";"
+      ],
+      [
+        "\t\t\ttry {\n\t\t\t\tconst resolveActiveHookContext",
+        "\t\t\tlet deferredPreflightAgentEnd;\n\t\t\ttry {\n\t\t\t\tconst resolveActiveHookContext"
+      ],
+      [
+        "\t\t\t\t\tconst rawAttempt = await runEmbeddedAttemptWithBackend({",
+        "\t\t\t\t\tconst rawAttempt = await runEmbeddedAttemptWithBackend({\n\t\t\t\t\t\tdeferPreflightAgentEnd: (emit) => { deferredPreflightAgentEnd = emit; },"
+      ],
+      [
+        "\t\t\t} finally {\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)",
+        "\t\t\t} finally {\n\t\t\t\t// Flush a pending precheck failure on every terminal recovery exit,\n\t\t\t\t// including thrown errors, aborts and exhausted compaction. A real\n\t\t\t\t// later attempt end clears it before publishing its own outcome.\n\t\t\t\tconst emitPreflightFailure = deferredPreflightAgentEnd;\n\t\t\t\tdeferredPreflightAgentEnd = void 0;\n\t\t\t\temitPreflightFailure?.();\n\t\t\t\tif (params.isFinalFallbackAttempt !== false)"
+      ],
+      [
+        "const basePrompt = nextAttemptPromptOverride ?? (provider === \"anthropic\" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);",
+        "const attemptPromptOverride = nextAttemptPromptOverride;\n\t\t\t\t\tconst basePrompt = attemptPromptOverride ?? (provider === \"anthropic\" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt);"
+      ],
+      [
+        "\t\t\t\t\tif (contextOverflowError) {\n\t\t\t\t\t\tconst overflowDiagId",
+        "\t\t\t\t\tif (contextOverflowError) {\n\t\t\t\t\t\t// The initial precheck compiled this continuation but never submitted\n\t\t\t\t\t\t// it. Preserve its exact revision across native recovery; a summary\n\t\t\t\t\t\t// cannot reconstruct instructions that were never persisted.\n\t\t\t\t\t\tif (promptErrorSource === \"precheck\" && preflightRecovery\n\t\t\t\t\t\t\t&& preflightRecovery.source === void 0\n\t\t\t\t\t\t\t&& [\"compact_only\", \"compact_then_truncate\"].includes(preflightRecovery.route))\n\t\t\t\t\t\t\tnextAttemptPromptOverride = attemptPromptOverride;\n\t\t\t\t\t\tconst overflowDiagId"
+      ],
+      [
+        "\t\t\t\t\t\t\t\t\tnextAttemptPromptOverride = MID_TURN_PRECHECK_CONTINUATION_PROMPT;",
+        "\t\t\t\t\t\t\t\t\tnextAttemptPromptOverride ??= MID_TURN_PRECHECK_CONTINUATION_PROMPT;"
       ]
     ]
   }

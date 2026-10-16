@@ -50,6 +50,7 @@ jobs:
             --openclaw-bin "$package/openclaw.mjs" --state-dir "$runtime/repair-state" --image-envelope
           echo "OPENCLAW_TOOL_SEARCH_MODULE=$package/dist/tool-search-BInRpkE3.js" >> "$GITHUB_ENV"
           echo "OPENCLAW_AGENT_GATEWAY_MODULE=$package/dist/agent-Dme3RrGI.js" >> "$GITHUB_ENV"
+          echo "OPENCLAW_EMBEDDED_AGENT_MODULE=$package/dist/embedded-agent-CJx-nG3W.js" >> "$GITHUB_ENV"
           echo "OPENCLAW_PACKAGE_DIR=$package" >> "$GITHUB_ENV"
           echo "OPENCLAW_STATE_DIR=$runtime/state" >> "$GITHUB_ENV"
           echo "ODS_TEST_GRAMMAR_WORKSPACE=$runtime/workspace" >> "$GITHUB_ENV"
