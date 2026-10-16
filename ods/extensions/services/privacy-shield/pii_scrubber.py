@@ -99,7 +99,8 @@ class PIIDetector:
     # token -> original, in LRU order, bounded by max_entries.
     pii_map: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
     counter: int = field(default=0)
-    max_entries: int = field(default_factory=lambda: MAX_PII_ENTRIES)
+    # None = unbounded (request-local maps, which die with the request).
+    max_entries: Optional[int] = field(default_factory=lambda: MAX_PII_ENTRIES)
 
     # Stable session token (persisted, doesn't change on restart)
     session_token: str = field(default_factory=lambda: secrets.token_hex(16))
@@ -133,7 +134,7 @@ class PIIDetector:
         self.pii_map[token] = match
         self._reverse[match] = token
         self._max_token_len = max(self._max_token_len, len(token))
-        while len(self.pii_map) > self.max_entries:
+        while self.max_entries is not None and len(self.pii_map) > self.max_entries:
             _, evicted = self.pii_map.popitem(last=False)
             del self._reverse[evicted]
         return token
@@ -286,8 +287,8 @@ class PrivacyShield:
     Wraps API calls to scrub/restore PII transparently.
     """
 
-    def __init__(self, backend_client=None):
-        self.detector = PIIDetector()
+    def __init__(self, backend_client=None, max_entries: Optional[int] = MAX_PII_ENTRIES):
+        self.detector = PIIDetector(max_entries=max_entries)
         self.backend = backend_client  # e.g., OpenAI client
 
     def process_request(self, prompt: str) -> Tuple[str, Dict]:

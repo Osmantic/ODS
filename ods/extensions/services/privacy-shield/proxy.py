@@ -20,7 +20,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from functools import lru_cache
 from cachetools import TTLCache
 
-from pii_scrubber import PrivacyShield, StreamRestorer
+from pii_scrubber import MAX_PII_ENTRIES, PrivacyShield, StreamRestorer
 from key_management import resolve_shield_api_key
 
 logger = logging.getLogger("privacy-shield")
@@ -126,12 +126,21 @@ SESSION_MAXSIZE = int(os.getenv("SHIELD_SESSION_MAXSIZE", "10000"))
 SESSION_TTL = int(os.getenv("SHIELD_SESSION_TTL", "3600"))
 sessions = TTLCache(maxsize=SESSION_MAXSIZE, ttl=SESSION_TTL)
 
+# Cumulative counters for /stats. Request-local maps are discarded after each
+# request, so summing live session maps alone would report ~0.
+_counters = {"requests_scrubbed": 0, "pii_replaced": 0}
+
+
+def _record_scrub(pii_count: int) -> None:
+    _counters["requests_scrubbed"] += 1
+    _counters["pii_replaced"] += pii_count
+
 
 class CachedPrivacyShield(PrivacyShield):
     """PrivacyShield with LRU cache for PII patterns."""
 
-    def __init__(self, backend_client=None):
-        super().__init__(backend_client)
+    def __init__(self, backend_client=None, max_entries=MAX_PII_ENTRIES):
+        super().__init__(backend_client, max_entries=max_entries)
         if CACHE_ENABLED:
             self._scrub_cached = lru_cache(maxsize=CACHE_SIZE)(self._scrub_impl)
 
@@ -168,7 +177,10 @@ def get_session(request: Request) -> CachedPrivacyShield:
     """
     session_id = request.headers.get(SESSION_HEADER, "")
     if not session_id:
-        return CachedPrivacyShield()
+        # Request-local map: no LRU cap, so eviction can never drop a token
+        # this same request still has to restore. Memory is bounded by the
+        # request body, and the map is freed when the request ends.
+        return CachedPrivacyShield(max_entries=None)
 
     auth = request.headers.get("Authorization", "")
     # SHA256 for deterministic, stable keying (hash() varies across restarts).
@@ -207,7 +219,14 @@ def scrub_body(shield: PrivacyShield, body_str: str) -> tuple[str, dict]:
         # Nothing found: forward the client's exact bytes.
         out = body_str
     else:
-        out = json.dumps(scrubbed, ensure_ascii=False)
+        # Keep non-ASCII as-is; match compact vs default spacing of the input
+        # so typical OpenAI-client bodies keep their shape.
+        compact = ": " not in body_str and ", " not in body_str
+        out = json.dumps(
+            scrubbed,
+            ensure_ascii=False,
+            separators=(",", ":") if compact else (", ", ": "),
+        )
     return out, {"pii_count": detector.get_stats()["unique_pii_count"]}
 
 
@@ -287,16 +306,13 @@ async def health(request: Request):
 
 @app.get("/stats", dependencies=[Depends(verify_api_key)])
 async def stats():
-    """Session statistics."""
-    total_pii = sum(
-        s.detector.get_stats()['unique_pii_count']
-        for s in sessions.values()
-    )
+    """Process-lifetime scrub statistics (shape is backward compatible)."""
     return {
         "cache_enabled": CACHE_ENABLED,
         "cache_size": CACHE_SIZE,
         "active_sessions": len(sessions),
-        "total_pii_scrubbed": total_pii,
+        "total_pii_scrubbed": _counters["pii_replaced"],
+        "requests_scrubbed": _counters["requests_scrubbed"],
     }
 
 
@@ -346,7 +362,11 @@ async def proxy(request: Request, path: str):
         outbound = raw_body
         metadata = {"pii_count": 0}
     else:
+        before = len(shield.detector.pii_map)
         scrubbed_body, metadata = scrub_body(shield, body_str)
+        if body_str:
+            # Count only entries this request added (header sessions reuse).
+            _record_scrub(max(0, len(shield.detector.pii_map) - before))
         outbound = scrubbed_body.encode("utf-8")
 
     target_url = f"{TARGET_API_BASE}/{path}"
