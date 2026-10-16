@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-export async function registeredPixelTools({inspection = true, project = true} = {}) {
+export async function registeredPixelTools({inspection = true, project = true, contextWindow, executionHost = 'gateway', onHook = () => {}} = {}) {
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = await readFile(entry, 'utf8');
   const isolated = source.replace(/from\s+(['"])([^'"]+)\1/g, (match, quote, specifier) => {
@@ -30,10 +30,11 @@ export async function registeredPixelTools({inspection = true, project = true} =
   const context = {agentId: 'pixel', sessionKey: `agent:pixel:openai-user:ods-${'a'.repeat(64)}`};
   plugin.register({
     registrationMode: 'discovery',
-    config: {agents: {list: [{id: 'pixel', sandbox: {mode: 'off'}, tools: {exec: {host: 'gateway'}}}]}},
-    pluginConfig: {...(inspection ? {workspacePreviewInspectionTransport:'unix'} : {}),
+    config: {agents: {list: [{id: 'pixel', sandbox: {mode: executionHost === 'gateway' ? 'off' : 'all'}, tools: {exec: {host: executionHost}}}]}},
+    pluginConfig: {...(contextWindow ? {modelContextWindow:contextWindow} : {}),
+      ...(inspection ? {workspacePreviewInspectionTransport:'unix'} : {}),
       ...(project ? {projectBuildSocket:'/var/lib/ods-pixel-project/control.sock'} : {})},
-    logger: {warn() {}}, on() {}, registerHttpRoute() {},
+    logger: {warn() {}}, on: onHook, registerHttpRoute() {},
     registerTool(factory, options) {
       const tool = typeof factory === 'function' ? factory(context) : factory;
       assert.ok(tool, `registration returned no tool: ${options?.names}`);
