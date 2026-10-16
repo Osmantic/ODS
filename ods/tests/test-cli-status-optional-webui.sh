@@ -38,6 +38,18 @@ mkdir -p "$relay"
 : > "$relay/compose.yaml.disabled"
 _ods_cli_service_not_installed pixel-model-relay || fail "a core service with a disabled compose file is still treated as installed"
 _ods_cli_service_not_installed dashboard && fail "a core service without a compose file was skipped"
+# Native macOS Pixel deliberately selects this disabled-named fragment. Its
+# filename is not evidence of absence when the actual stack includes it.
+_ods_cli_service_not_installed pixel-model-relay -f docker-compose.base.yml \
+    -f extensions/services/pixel-model-relay/compose.yaml.disabled \
+    && fail "native Pixel's selected disabled-named relay was skipped"
+_ods_cli_service_not_installed pixel-model-relay -f "$relay/compose.yaml.disabled" \
+    && fail "an absolute selected relay fragment was skipped"
+_ods_cli_service_not_installed pixel-model-relay -f ./extensions/services/pixel-model-relay/compose.yaml.disabled \
+    && fail "a dot-relative selected relay fragment was skipped"
+_ods_cli_service_not_installed pixel-model-relay -f extensions/services/another/compose.yaml.disabled \
+    || fail "an unrelated fragment incorrectly enabled the relay health check"
+pass "selected disabled-named native Pixel fragments remain visible in status"
 : > "$relay/compose.yaml"
 _ods_cli_service_not_installed pixel-model-relay && fail "an enabled core extension was skipped"
 pass "core extensions the installer left disabled are left out of status"
@@ -45,7 +57,7 @@ pass "core extensions the installer left disabled are left out of status"
 for fn in cmd_status cmd_status_json; do
     body="$(sed -n "/^${fn}()/,/^}/p" "$CLI")"
     [[ -n "$body" ]] || fail "could not extract $fn from ods-cli"
-    grep -q '_ods_cli_service_not_installed "\$sid" && continue' <<<"$body" \
+    grep -qF '_ods_cli_service_not_installed "$sid" "${flags[@]}" && continue' <<<"$body" \
         || fail "$fn does not skip services the installation left out"
 done
 pass "ods status and ods status --json both skip services the installation left out"

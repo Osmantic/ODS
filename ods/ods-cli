@@ -1340,7 +1340,20 @@ _ods_cli_pull_external_images() {
 _ods_cli_service_not_installed() {
     local service_dir="${INSTALL_DIR}/extensions/services/$1"
     [[ "$1" == "open-webui" && "${ENABLE_OPEN_WEBUI:-true}" == "false" ]] && return 0
-    [[ -f "$service_dir/compose.yaml.disabled" && ! -f "$service_dir/compose.yaml" ]]
+    [[ -f "$service_dir/compose.yaml.disabled" && ! -f "$service_dir/compose.yaml" ]] || return 1
+    shift
+    # Native Pixel intentionally selects disabled-named fragments. Use the
+    # same resolved stack as status instead of hiding an installed service.
+    local previous="" argument selected
+    for argument in "$@"; do
+        if [[ "$previous" == "-f" ]]; then
+            selected="$argument"
+            [[ "$selected" == /* ]] || selected="$INSTALL_DIR/$selected"
+            [[ "$selected" -ef "$service_dir/compose.yaml.disabled" ]] && return 1
+        fi
+        previous="$argument"
+    done
+    return 0
 }
 
 _ods_cli_service_health() {
@@ -1433,7 +1446,7 @@ cmd_status() {
         if ods_status_skips_managed_inference "$sid"; then
             continue
         fi
-        _ods_cli_service_not_installed "$sid" && continue
+        _ods_cli_service_not_installed "$sid" "${flags[@]}" && continue
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
         local default_port="${SERVICE_PORTS[$sid]}"
@@ -1548,7 +1561,7 @@ cmd_status_json() {
         if ods_status_skips_managed_inference "$sid"; then
             continue
         fi
-        _ods_cli_service_not_installed "$sid" && continue
+        _ods_cli_service_not_installed "$sid" "${flags[@]}" && continue
         local cat="${SERVICE_CATEGORIES[$sid]}"
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
