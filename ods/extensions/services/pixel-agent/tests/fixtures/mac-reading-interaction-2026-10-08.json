@@ -1,0 +1,377 @@
+{
+  "timestamp": "2026-10-08T21:47:40.942Z",
+  "params": {
+    "siteId": "site-6e8c8218ebddacf40c997ab9",
+    "sha256": "6e8c8218ebddacf40c997ab959464605161ca15a9a07cecfdb6c712c734026b8",
+    "viewport": {
+      "width": 1280,
+      "height": 720
+    },
+    "steps": [
+      {
+        "action": "assert-text",
+        "locator": {
+          "selector": "#total-count"
+        },
+        "expectedText": "2"
+      },
+      {
+        "action": "assert-text",
+        "locator": {
+          "selector": "#read-count"
+        },
+        "expectedText": "0"
+      },
+      {
+        "action": "click",
+        "locator": {
+          "selector": "#book-list li:nth-child(1) .remove-btn"
+        }
+      },
+      {
+        "action": "assert-text",
+        "locator": {
+          "selector": "#total-count"
+        },
+        "expectedText": "1"
+      },
+      {
+        "action": "click",
+        "locator": {
+          "selector": ".add-btn"
+        }
+      },
+      {
+        "action": "fill",
+        "locator": {
+          "selector": "#book-input"
+        },
+        "value": "1984"
+      },
+      {
+        "action": "click",
+        "locator": {
+          "selector": ".add-btn"
+        }
+      },
+      {
+        "action": "assert-text",
+        "locator": {
+          "selector": "#total-count"
+        },
+        "expectedText": "2"
+      },
+      {
+        "action": "click",
+        "locator": {
+          "selector": "#book-list li:nth-child(1) .read-checkbox"
+        }
+      },
+      {
+        "action": "assert-text",
+        "locator": {
+          "selector": "#read-count"
+        },
+        "expectedText": "1"
+      }
+    ]
+  },
+  "receipt": {
+    "blockedRequests": [],
+    "diagnostics": {
+      "hiddenUntilFoundCount": 0,
+      "renderedHiddenAttributeCount": 0
+    },
+    "kind": "ods-pixel-preview-inspection",
+    "planSha256": "f2796373a3284ccc5647cca9b744fbc9364faac0a5e9f6b5e7d970edccf8d6eb",
+    "schemaVersion": 1,
+    "scope": "Only the listed CSS layout visibility, normalized visible-text assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Native non-sensitive text and number fields were filled only with explicit synthetic values; number constraint flags are observations, not a claim of form validity. This does not test keyboard behavior or submit forms.",
+    "sha256": "6e8c8218ebddacf40c997ab959464605161ca15a9a07cecfdb6c712c734026b8",
+    "siteId": "site-6e8c8218ebddacf40c997ab9",
+    "status": "passed",
+    "steps": [
+      {
+        "action": "assert-text",
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "text": {
+            "actual": "2",
+            "truncated": false
+          },
+          "visibility": "visible",
+          "visible": true
+        },
+        "expectedText": "2",
+        "index": 0,
+        "locator": {
+          "selector": "#total-count"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "assert-text",
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "text": {
+            "actual": "0",
+            "truncated": false
+          },
+          "visibility": "visible",
+          "visible": true
+        },
+        "expectedText": "0",
+        "index": 1,
+        "locator": {
+          "selector": "#read-count"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "click",
+        "after": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "index": 2,
+        "locator": {
+          "selector": "#book-list li:nth-child(1) .remove-btn"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "assert-text",
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "text": {
+            "actual": "1",
+            "truncated": false
+          },
+          "visibility": "visible",
+          "visible": true
+        },
+        "expectedText": "1",
+        "index": 3,
+        "locator": {
+          "selector": "#total-count"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "click",
+        "after": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "index": 4,
+        "locator": {
+          "selector": ".add-btn"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "fill",
+        "after": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "input": {
+            "disabled": false,
+            "eligible": true,
+            "matches": true,
+            "readOnly": false
+          },
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "input": {
+            "disabled": false,
+            "eligible": true,
+            "matches": false,
+            "readOnly": false
+          },
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "index": 5,
+        "locator": {
+          "selector": "#book-input"
+        },
+        "stable": true,
+        "status": "passed",
+        "value": "1984"
+      },
+      {
+        "action": "click",
+        "after": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "index": 6,
+        "locator": {
+          "selector": ".add-btn"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "assert-text",
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "text": {
+            "actual": "2",
+            "truncated": false
+          },
+          "visibility": "visible",
+          "visible": true
+        },
+        "expectedText": "2",
+        "index": 7,
+        "locator": {
+          "selector": "#total-count"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "click",
+        "after": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "visibility": "visible",
+          "visible": true
+        },
+        "index": 8,
+        "locator": {
+          "selector": "#book-list li:nth-child(1) .read-checkbox"
+        },
+        "stable": true,
+        "status": "passed"
+      },
+      {
+        "action": "assert-text",
+        "before": {
+          "count": 1,
+          "display": "block",
+          "hidden": false,
+          "hiddenUntilFound": false,
+          "opacity": "1",
+          "rectCount": 1,
+          "text": {
+            "actual": "1",
+            "truncated": false
+          },
+          "visibility": "visible",
+          "visible": true
+        },
+        "expectedText": "1",
+        "index": 9,
+        "locator": {
+          "selector": "#read-count"
+        },
+        "stable": true,
+        "status": "passed"
+      }
+    ],
+    "viewport": {
+      "height": 720,
+      "width": 1280
+    }
+  }
+}

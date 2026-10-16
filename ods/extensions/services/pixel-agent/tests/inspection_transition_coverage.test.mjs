@@ -561,6 +561,8 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   assert.ok(start >= 0 && end > start, 'expected the inspection tool registration block');
   let registered;
   const asked = [];
+  const behaviorAsked = [];
+  let requestedTransition = true;
   const run = capsule(TOWER2, TOWER2_PAGE);
   vm.runInNewContext(source.slice(start, end + close.length), {
     api: {pluginConfig: {workspacePreviewInspectionTransport: 'unix'}},
@@ -568,7 +570,10 @@ test('the registered inspection tool asks the run guard about exactly its own ca
     createWorkspacePreviewInspectTool: options => createWorkspacePreviewInspectTool({...options, request: async request => run(request)}),
     toolLoopGuard: {previewInspectionTransition: (id, params) => {
       asked.push([id, params]);
-      return {target: OWNER_PHRASE, outline: outlineOf(TOWER2, TOWER2_PUBLISH).outline, initiallyHidden: true};
+      return requestedTransition ? {target: OWNER_PHRASE, outline: outlineOf(TOWER2, TOWER2_PUBLISH).outline, initiallyHidden: true} : undefined;
+    }, previewInspectionBehavior: (id, params) => {
+      behaviorAsked.push([id, params]);
+      return true;
     }},
   });
   assert.deepEqual(registered.names, [PREVIEW_INSPECTION_TOOL]);
@@ -576,4 +581,11 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   assert.deepEqual(asked, [['call-1', TOWER2_INSPECT.arguments]]);
   assert.ok(result.content[0].text.startsWith(INCOMPLETE), result.content[0].text);
   assert.deepEqual(nextArgs(result.content[0].text).steps, transition(TOWER2_TARGET));
+  assert.deepEqual(behaviorAsked, [], 'an explicit visibility duty keeps its existing feedback');
+  requestedTransition = false;
+  const staticPlan = {...TOWER2_INSPECT.arguments, steps:TOWER2_INSPECT.arguments.steps.slice(0,1)};
+  const behavior = await registered.tool.execute('call-2', staticPlan);
+  assert.deepEqual(behaviorAsked, [['call-2', staticPlan]]);
+  assert.equal(behavior.details.errorCode, 'interaction_untested');
+  assert.match(behavior.content[0].text, /contains no interaction/);
 });
