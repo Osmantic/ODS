@@ -86,16 +86,20 @@ export PIXEL_TEST_REFRESHED="${PIXEL_TEST_REFRESHED:-}${1} " PIXEL_TEST_PRIMARY=
 exec bash -c "$3"
 SH
 chmod +x "$TEST_ROOT/group-bin/sg"
-for group_case in pixel docker both both_pixel_socket current unregistered unsupported \
+for group_case in pixel docker both both_pixel_socket existing_pixel_socket current unregistered unsupported \
     denied denied_inner denied_outer; do
     if (
         export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED='' PIXEL_TEST_PRIMARY=''
-        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel |ods-pixel'
+        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel docker |docker'
         case "$group_case" in
             docker) current='users ods-pixel'; expected='docker |docker' ;;
             both) current=users; expected='ods-pixel docker |docker' ;;
             both_pixel_socket)
                 current=users; expected='docker ods-pixel |ods-pixel'
+                export ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel
+                ;;
+            existing_pixel_socket)
+                current='users ods-pixel'; expected='docker ods-pixel |ods-pixel'
                 export ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel
                 ;;
             current) current="$account"; expected='|' ;;

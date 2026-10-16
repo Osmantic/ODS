@@ -116,11 +116,12 @@ PY
 }
 
 ods_pixel_run_as_owner() {
-    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command
+    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command primary_group
     local -a refresh_groups=() group_order=()
     shift 2
     # The last group listed becomes the command's primary group (see below).
-    case "${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}" in
+    primary_group="${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}"
+    case "$primary_group" in
         docker) group_order=(ods-pixel docker) ;;
         ods-pixel) group_order=(docker ods-pixel) ;;
         *)
@@ -140,6 +141,13 @@ ods_pixel_run_as_owner() {
             fi
         done
         if (( ${#refresh_groups[@]} > 0 )); then
+            # A requested group already present as the primary group can be
+            # lost when sg refreshes another missing group. Reapply it last
+            # even when it did not itself need refreshing.
+            if [[ "$account_groups" == *" $primary_group "* \
+                && "${refresh_groups[${#refresh_groups[@]}-1]}" != "$primary_group" ]]; then
+                refresh_groups+=("$primary_group")
+            fi
             # A first install may have just granted Docker and Pixel socket
             # access. Refresh each missing runtime group with nested sg rather
             # than another sudo pseudo-terminal. The innermost sg sets the
