@@ -515,6 +515,13 @@ def add_account(database: Path, email: str, password_hash: str, active: bool = T
 
 
 def run_published(data: Path, app: Path) -> int:
+    with pytest.MonkeyPatch.context() as env:
+        env.setenv("WEBUI_ADMIN_EMAIL", "owner@example.test")
+        env.setenv("WEBUI_ADMIN_PASSWORD", "test-only")
+        return run_published_unclaimed(data, app)
+
+
+def run_published_unclaimed(data: Path, app: Path) -> int:
     return prepare.main(["--data-dir", str(data), "--app-dir", str(app), "--published-on-network"], now=NOW)
 
 
@@ -562,3 +569,37 @@ def test_a_malformed_hash_is_not_the_default_password():
     assert prepare.is_default_password("not a hash") is False
     assert prepare.is_default_password("") is False
     assert prepare.is_default_password(None) is False
+
+
+@pytest.mark.parametrize("database", [False, True])
+def test_a_published_start_is_refused_while_the_first_signup_would_become_administrator(
+        tmp_path, monkeypatch, database):
+    monkeypatch.delenv("WEBUI_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("WEBUI_ADMIN_PASSWORD", raising=False)
+    app = new_image(tmp_path)
+    data = data_dir(tmp_path, recorded="0.11.4", revision=V0114_HEAD, database=database)
+    with pytest.raises(SystemExit) as refused:
+        run_published_unclaimed(data, app)
+    message = str(refused.value)
+    assert "no accounts" in message and "WEBUI_ADMIN_EMAIL" in message and "Nothing was changed" in message
+    assert not (data / prepare.BACKUP_DIR).exists()
+
+
+@pytest.mark.parametrize("case", ["admin-env", "existing-account", "local-only"])
+def test_an_unclaimed_open_webui_starts_when_the_first_signup_cannot_take_it_over(tmp_path, monkeypatch, case):
+    monkeypatch.delenv("WEBUI_ADMIN_EMAIL", raising=False)
+    monkeypatch.delenv("WEBUI_ADMIN_PASSWORD", raising=False)
+    app = new_image(tmp_path)
+    data = data_dir(tmp_path, recorded="0.11.4", revision=V0114_HEAD)
+    if case == "admin-env":
+        monkeypatch.setenv("WEBUI_ADMIN_EMAIL", "owner@example.test")
+        monkeypatch.setenv("WEBUI_ADMIN_PASSWORD", "test-only")
+    if case == "existing-account":
+        add_account(data / prepare.DATABASE, "owner@example.test", "$2b$04$notthedefaultpasswordhash")
+    assert (run(data, app) if case == "local-only" else run_published_unclaimed(data, app)) == 0
+
+
+def test_compose_passes_the_bootstrap_administrator_to_open_webui():
+    block = service_block((ODS / "docker-compose.base.yml").read_text(encoding="utf-8"))
+    assert '      WEBUI_ADMIN_EMAIL: "${WEBUI_ADMIN_EMAIL:-}"\n' in block
+    assert '      WEBUI_ADMIN_PASSWORD: "${WEBUI_ADMIN_PASSWORD:-}"\n' in block
