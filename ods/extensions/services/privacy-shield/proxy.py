@@ -5,6 +5,7 @@ FastAPI-based proxy with connection pooling and PII caching.
 """
 
 import codecs
+import json
 import logging
 import os
 import re
@@ -147,21 +148,67 @@ class CachedPrivacyShield(PrivacyShield):
         return self._scrub_impl(text)
 
 
-def get_session(request: Request) -> CachedPrivacyShield:
-    """Get or create session-specific PrivacyShield."""
-    # Use Authorization header or IP as session key
-    auth = request.headers.get("Authorization", "")
-    # Use SHA256 for deterministic, stable session keying (hash() is not deterministic across restarts)
-    if auth:
-        session_key = hashlib.sha256(auth.encode()).hexdigest()
-    else:
-        client_info = str(request.client.host if request.client else "default")
-        session_key = hashlib.sha256(client_info.encode()).hexdigest()
+# Opt-in header for a PII mapping that persists across requests. Every client
+# authenticates with the same SHIELD_API_KEY, so the bearer alone cannot tell
+# clients apart; keying on it would let one client's response restore another
+# client's PII. Without this header each request gets a fresh, request-local
+# map (scrub and restore happen inside one request/response).
+SESSION_HEADER = "X-Shield-Session"
 
+
+def get_session(request: Request) -> CachedPrivacyShield:
+    """Return the PrivacyShield whose PII map serves this request.
+
+    Default: a new request-local shield, so tokens issued for one request can
+    never be restored into another request's response. Chat clients resend
+    the full history every turn, so multi-turn consistency within a request
+    is preserved. A client that needs a mapping stable across requests sends
+    ``X-Shield-Session: <opaque id>``; the map is then keyed on the
+    Authorization header *and* that id.
+    """
+    session_id = request.headers.get(SESSION_HEADER, "")
+    if not session_id:
+        return CachedPrivacyShield()
+
+    auth = request.headers.get("Authorization", "")
+    # SHA256 for deterministic, stable keying (hash() varies across restarts).
+    session_key = hashlib.sha256(f"{auth}:{session_id}".encode()).hexdigest()
     if session_key not in sessions:
         sessions[session_key] = CachedPrivacyShield()
-
     return sessions[session_key]
+
+
+def _scrub_json(value, scrub):
+    """Recursively scrub every string (values and object keys) in *value*."""
+    if isinstance(value, str):
+        return scrub(value)
+    if isinstance(value, list):
+        return [_scrub_json(item, scrub) for item in value]
+    if isinstance(value, dict):
+        return {scrub(k): _scrub_json(v, scrub) for k, v in value.items()}
+    return value
+
+
+def scrub_body(shield: PrivacyShield, body_str: str) -> tuple[str, dict]:
+    r"""Scrub a request body, decoding JSON first when it parses.
+
+    A raw-text regex over JSON misses escaped PII (``alice\u0040corp.com``)
+    and can swallow the letter of an escape such as ``\n`` into a match,
+    producing invalid JSON. Parsing first scrubs the real string values;
+    only non-JSON bodies fall back to raw text.
+    """
+    try:
+        parsed = json.loads(body_str)
+    except ValueError:
+        return shield.process_request(body_str)
+    detector = shield.detector
+    scrubbed = _scrub_json(parsed, detector.scrub)
+    if scrubbed == parsed:
+        # Nothing found: forward the client's exact bytes.
+        out = body_str
+    else:
+        out = json.dumps(scrubbed, ensure_ascii=False)
+    return out, {"pii_count": detector.get_stats()["unique_pii_count"]}
 
 
 def _token_valid(token: str | None) -> bool:
@@ -299,7 +346,7 @@ async def proxy(request: Request, path: str):
         outbound = raw_body
         metadata = {"pii_count": 0}
     else:
-        scrubbed_body, metadata = shield.process_request(body_str)
+        scrubbed_body, metadata = scrub_body(shield, body_str)
         outbound = scrubbed_body.encode("utf-8")
 
     target_url = f"{TARGET_API_BASE}/{path}"
