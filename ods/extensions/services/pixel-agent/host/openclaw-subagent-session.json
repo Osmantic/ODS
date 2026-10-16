@@ -1,0 +1,20 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "5b8a606ca08bd3fd782172c5f4eb87bac68b206926ae75cfa4a91122fff5a639",
+  "patchedSha256": "d853f599577710c2b96de7c951bc46c92c42d3033b9987b25defb930f6971096",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "\t\t\t\tconst now = Date.now();\n\t\t\t\tconst resetPolicy = resolveSessionResetPolicy({",
+      "\t\t\t\tconst now = Date.now();\n\t\t\t\t// ODS native child completions continue an existing owner turn. An\n\t\t\t\t// automatic daily/idle reset here would replace that turn's session\n\t\t\t\t// before its exact spawn/session admission proof can be checked.\n\t\t\t\t// Keep normal owner requests, explicit resets, and missing/changed\n\t\t\t\t// session identities under the existing lifecycle/admission checks.\n\t\t\t\tconst odsNativeSubagentContinuation = canUseInternalRuntimeHandoff\n\t\t\t\t\t&& /^agent:pixel:openai-user:ods-[a-f0-9]{64}$/.test(canonicalKey)\n\t\t\t\t\t&& inputProvenance?.kind === \"inter_session\"\n\t\t\t\t\t&& inputProvenance.sourceTool === \"subagent_announce\"\n\t\t\t\t\t&& /^agent:pixel:subagent:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(inputProvenance.sourceSessionKey ?? \"\")\n\t\t\t\t\t&& runId?.startsWith(`announce:v1:${inputProvenance.sourceSessionKey}:`)\n\t\t\t\t\t&& /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId.slice(`announce:v1:${inputProvenance.sourceSessionKey}:`.length));\n\t\t\t\tconst resetPolicy = resolveSessionResetPolicy({"
+    ],
+    [
+      "Boolean(entry?.sessionId) && (freshness?.fresh ?? false) && !failedSessionTranscriptMissing",
+      "Boolean(entry?.sessionId) && ((freshness?.fresh ?? false) || odsNativeSubagentContinuation) && !failedSessionTranscriptMissing"
+    ],
+    [
+      "Boolean(freshEntry?.sessionId) && (freshFreshness?.fresh ?? false) && !freshFailedSessionTranscriptMissing",
+      "Boolean(freshEntry?.sessionId) && ((freshFreshness?.fresh ?? false) || odsNativeSubagentContinuation && !freshSessionRotatedSinceLoad) && !freshFailedSessionTranscriptMissing"
+    ]
+  ]
+}

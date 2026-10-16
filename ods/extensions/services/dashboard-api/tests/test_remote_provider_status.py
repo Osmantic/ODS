@@ -132,6 +132,15 @@ def test_overall_status_requires_a_proven_consumer_activation():
         },
     ) == "degraded"
 
+    # A route is used only in cloud mode: drift on a local or hybrid install
+    # is an installer (or `ods mode`) pause, not a fault (fleet, laptop).
+    drift = {"valid": False, "proven": False, "reason": "consumer_drift"}
+    assert rps._overall_status(route, egress, drift, "local") == "paused"
+    assert rps._overall_status(route, {"reachable": False}, drift, "hybrid") == "paused"
+    assert rps._overall_status(route, egress, drift, "cloud") == "degraded"
+    assert rps._overall_status(route, egress, drift) == "degraded"
+    assert rps._overall_status({**route, "enabled": False}, egress, drift, "local") == "disabled"
+
 
 def test_activation_status_rejects_incomplete_ready_claim(monkeypatch, tmp_path):
     from routers import remote_provider_status as rps
@@ -1132,6 +1141,32 @@ def test_remote_provider_status_invalid_state_is_diagnostic(
     assert body["routeState"]["errors"]
 
 
+def test_remote_provider_status_reports_a_route_paused_by_a_local_install(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    state_path = tmp_path / "routing-state.json"
+    state_path.write_text(json.dumps(_route_state()), encoding="utf-8")
+    rps = _patch_state_path(monkeypatch, state_path)
+
+    async def fake_fetch():
+        return {"reachable": True, "valid": True, "ready": True, "status": "ok",
+                "secret": {"configured": True, "bytes": 26}, "resolution": None}
+
+    async def drifted(_activation):
+        return {"valid": False, "proven": False, "reason": "consumer_drift", "pixel": "drifted"}
+
+    monkeypatch.setattr(rps, "_fetch_egress_health", fake_fetch)
+    monkeypatch.setattr(rps, "_reconcile_activation_with_host", drifted)
+    monkeypatch.setattr(rps, "read_live_env_value", lambda key, default="": "local" if key == "ODS_MODE" else default)
+
+    resp = test_client.get("/api/remote-provider/status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "paused"
+
+
 def test_remote_provider_status_reports_unreachable_egress(
     test_client,
     monkeypatch,
@@ -1250,7 +1285,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
 ):
     from routers import remote_provider_status as rps
 
-    calls = []
+    calls: list[tuple[object, ...]] = []
     agent_calls = []
 
     class FakeResponse:
@@ -1300,11 +1335,14 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
         async def __aexit__(self, *_args):
             return False
 
-        async def post(self, url):
-            calls.append(("post", url))
+        async def post(self, url, headers=None):
+            calls.append(("post", url, headers))
             return FakeResponse()
 
     monkeypatch.setattr(rps, "EGRESS_URL", "http://egress.internal:8091/")
+    # The egress admits only the LiteLLM gateway key, read live from .env.
+    monkeypatch.setattr(rps, "read_live_env_value",
+                        lambda key, default="": "sk-ods-gateway" if key == "LITELLM_KEY" else default)
     monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)
     async def fake_agent_request(method, path, *, payload, timeout):
         agent_calls.append((method, path, payload, timeout))
@@ -1371,7 +1409,7 @@ def test_remote_provider_probe_posts_to_egress_and_sanitizes_receipt(
     }
     assert calls == [
         ("timeout", 60.0),
-        ("post", "http://egress.internal:8091/probe"),
+        ("post", "http://egress.internal:8091/probe", {"Authorization": "Bearer sk-ods-gateway"}),
     ]
     assert agent_calls == [
         (
@@ -1444,7 +1482,7 @@ def test_remote_provider_probe_reports_nonfatal_proof_record_failure(
         async def __aexit__(self, *_args):
             return False
 
-        async def post(self, _url):
+        async def post(self, _url, headers=None):
             return FakeResponse()
 
     async def fake_agent_request(*_args, **_kwargs):
@@ -1503,7 +1541,7 @@ def test_remote_provider_probe_preserves_sanitized_egress_errors(
         async def __aexit__(self, *_args):
             return False
 
-        async def post(self, _url):
+        async def post(self, _url, headers=None):
             return FakeResponse()
 
     monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)

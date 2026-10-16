@@ -35,7 +35,6 @@ Environment variables (set in `.env`):
 | `LLM_MODEL` | `qwen3:30b-a3b` | Active model name shown in dashboard |
 | `KOKORO_URL` | `http://tts:8880` | Kokoro TTS URL |
 | `N8N_URL` | `http://n8n:5678` | n8n workflow URL |
-| `OPENCLAW_TOKEN` | *(empty)* | OpenClaw agent auth token |
 
 ## API Endpoints
 
@@ -67,7 +66,6 @@ Environment variables (set in `.env`):
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `GET` | `/api/service-tokens` | Yes | Service auth tokens (e.g. OpenClaw) |
 | `GET` | `/api/external-links` | Yes | Sidebar links from service manifests |
 | `GET` | `/api/storage` | Yes | Storage breakdown (models, vector DB, total) |
 

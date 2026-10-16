@@ -21,24 +21,33 @@ are intentionally accepting admin-owned files under your user profile. The
 Windows preflight warns because `.opencode`, `.env`, and `data/` should normally
 belong to your regular account.
 
-### Lemonade MSI fails during an AMD install
+### llama.cpp (`llama-server.exe`) fails during an AMD install
 
-Keep the ODS installer in a normal PowerShell session. ODS installs the
-Lemonade runtime for the current user under `%LOCALAPPDATA%\lemonade_server`;
-it does not require an Administrator shell or an all-users `Program Files`
-installation. The installer writes a verbose MSI log under the ODS install directory:
+Keep the ODS installer in a normal PowerShell session. On an AMD GPU, setup
+downloads the pinned llama.cpp Vulkan build into `%LOCALAPPDATA%\ODS\llama.cpp`
+for the current user and checks that it runs before it changes anything; it
+does not need an Administrator shell. When the check fails, setup stops with
+the reason:
 
-```text
-<ODS install directory>\logs\lemonade-msi-install.log
-```
+- **A DLL is missing (0xC0000135).** Install the Microsoft Visual C++
+  2015-2022 Redistributable (x64), for example with
+  `winget install Microsoft.VCRedist.2015+.x64`, then rerun the installer.
+- **Smart App Control or Windows Defender Application Control blocks it.**
+  The llama.cpp binaries are not signed; ODS pins them by SHA-256 instead.
+  Setup names the policy it found and never changes it (Windows Security >
+  App & browser control).
+- **No usable Vulkan device.** Update the AMD Adrenalin driver from
+  amd.com/support and restart Windows. A new install continues on the CPU
+  and says so; an existing install stops without changing anything.
+- **A llama.cpp file is missing or changed**, often after antivirus
+  quarantine. ODS checks every file against its SHA-256 before each start;
+  rerun the installer to restore it.
 
-With the default location this is `%USERPROFILE%\ods\logs\lemonade-msi-install.log`.
-If the installer was run with `-InstallDir`, use that directory instead.
-
-If Lemonade still fails, attach the installer output plus that log after
-reviewing it for local paths. ODS falls back to native Vulkan `llama-server`
-when Lemonade cannot be installed, but the installer output will make the
-Lemonade failure explicit.
+llama-server's own output is in `llama-server.log`, under
+`%LOCALAPPDATA%\ODS\native-runtime` for the native installer and under
+`%LOCALAPPDATA%\ODS\lemonade\portal-runtime` for the Portal. Installs that ran
+Lemonade Server before move to llama.cpp on a rerun; see
+[AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
 
 ---
 
@@ -558,7 +567,7 @@ docker info
 
 ### Where to Get Help
 
-1. **ODS Discord:** https://discord.gg/clawd
+1. **ODS Discord:** https://discord.gg/4ntNp9MAwC
 2. **GitHub Issues:** https://github.com/Osmantic/ODS/issues
 
 ### What to Include When Asking for Help

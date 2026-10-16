@@ -12,7 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
     ('ODS_MODE=cloud\r\n', "cloud"),
     ('ODS_MODE="cloud"\n', "cloud"),
     ("ODS_MODE='hybrid'\n", "hybrid"),
-    ('  ODS_MODE = lemonade  # existing remote server\r\n', "lemonade"),
+    ('  ODS_MODE = hybrid  # existing remote server\r\n', "hybrid"),
+    # The retired Lemonade mode reads as local for one release; the Lemonade
+    # migration rewrites it before anything else runs.
+    ('  ODS_MODE = lemonade  # existing remote server\r\n', "local"),
     ('ODS_MODE="cloud" # operator comment', "cloud"),
     ("ODS_MODE='hybrid'\t# comment\n", "hybrid"),
     ('ODS_MODE=cloud#not-a-comment\n', "local"),

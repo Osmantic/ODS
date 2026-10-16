@@ -584,6 +584,41 @@ def test_scoped_app_compatibility_applies_only_to_matching_runtime():
     assert lemonade_amd["agentViability"]["status"] == "unknown"
 
 
+def test_unmigrated_lemonade_env_reads_as_llama_server(tmp_path, monkeypatch):
+    # Round F serves the model through llama-server before the installer
+    # rewrites a Lemonade-era .env: llama-server evidence applies to it, and
+    # evidence recorded on Lemonade never does (contract section 6.6).
+    for key in ("ODS_MODE", "LLM_BACKEND", "GPU_BACKEND"):
+        monkeypatch.delenv(key, raising=False)
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text(
+        "ODS_MODE=lemonade\nGPU_BACKEND=amd\nLLM_BACKEND=lemonade\n", encoding="utf-8",
+    )
+    model = {
+        "id": "scoped-model",
+        "app_compatibility": {
+            "hermes_talk": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Talk probe failed on llama-server",
+                "llmBackendScope": ["llama-server"],
+            },
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Perplexica probe failed through Lemonade",
+                "llmBackendScope": ["lemonade"],
+            },
+        },
+    }
+
+    context = model_compatibility_runtime_context(install_dir=install_dir)
+    verdicts = model_app_compatibility(model, runtime_context=context)
+
+    assert (context["llmBackend"], context["runtime"], context["odsMode"]) == ("llama-server", "llama-server", "local")
+    assert verdicts["hermesTalk"]["status"] == "unsupported_until_revalidated"
+    assert verdicts["perplexica"]["status"] == "unknown"
+
+
 def test_host_scoped_app_compatibility_applies_only_to_matching_host():
     model = {
         "id": "granite4.1-3b-q4",
@@ -680,24 +715,18 @@ def test_host_scoped_positive_override_must_be_current_and_dated():
     assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == "verified"
 
 
-def test_real_smollm3_strixy_revalidation_is_not_global():
+def test_real_smollm3_strixy_verdict_recorded_on_lemonade_no_longer_applies():
+    # The Strixy Perplexica proof ran through Lemonade; round F invalidates
+    # evidence recorded on it (contract section 6.6), so the global verdict
+    # holds on every host until Strixy is revalidated on llama-server.
     model = next(
         model for model in _official_model_catalog() if model["id"] == "smollm3-3b-q4"
     )
-    strixy = model_app_compatibility(
-        model, runtime_context={"hosts": ["strixy"], "llmBackend": "lemonade"},
-    )
-    windows = model_app_compatibility(
-        model, runtime_context={"hosts": ["windows-laptop"], "llmBackend": "llama-server"},
-    )
-    tower2 = model_app_compatibility(
-        model, runtime_context={"hosts": ["tower2"], "llmBackend": "lemonade"},
-    )
-
-    assert strixy["perplexica"]["status"] == "verified"
-    assert "r391/cycle-001/strixy-wsl-beta" in strixy["perplexica"]["evidence"]
-    assert windows["perplexica"]["status"] == "unsupported_until_revalidated"
-    assert tower2["perplexica"]["status"] == "unsupported_until_revalidated"
+    assert "scopedOverrides" not in model["app_compatibility"]["perplexica"]
+    for hosts, backend in ((["strixy"], "llama-server"), (["strixy"], "lemonade"),
+                           (["windows-laptop"], "llama-server"), (["tower2"], "llama-server")):
+        verdict = model_app_compatibility(model, runtime_context={"hosts": hosts, "llmBackend": backend})
+        assert verdict["perplexica"]["status"] == "unsupported_until_revalidated", (hosts, backend)
 
 
 def test_pixel_compatibility_is_explicit_and_host_scoped():
@@ -848,6 +877,45 @@ def test_model_payload_applies_host_scoped_app_compatibility_from_install_env(da
     assert windows_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "not_agent_viable"
     assert strixy_payload["models"][0]["appCompatibility"]["hermesTalk"]["status"] == "unknown"
     assert strixy_payload["models"][0]["appCompatibility"]["agentViability"]["status"] == "unknown"
+
+
+def test_host_scope_ignores_a_machine_name_that_matches_a_fleet_host(monkeypatch, tmp_path):
+    # A user's machine that happens to share a fleet host's name gets no
+    # fleet-scoped verdicts; only an explicit identity selects them.
+    import performance_oracle
+
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    (install_dir / ".env").write_text("ODS_DEVICE_NAME=strixy\n", encoding="utf-8")
+    for key in ("ODS_FLEET_HOST_ID", "ODS_COMPATIBILITY_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOSTNAME", "strixy")
+    monkeypatch.setenv("COMPUTERNAME", "strixy")
+    monkeypatch.setattr(performance_oracle.platform, "node", lambda: "strixy")
+    model = {
+        "id": "scoped-model",
+        "app_compatibility": {
+            "perplexica": {
+                "status": "unsupported_until_revalidated",
+                "reason": "Global block",
+                "scopedOverrides": [{
+                    "status": "verified", "reason": "Fleet proof", "hostScope": ["strixy"],
+                    "expiresAt": "2999-01-01T00:00:00Z",
+                }],
+            },
+        },
+    }
+
+    context = model_compatibility_runtime_context(install_dir)
+    assert context["hosts"] == [] and context["host"] == ""
+    assert model_app_compatibility(model, runtime_context=context)["perplexica"]["status"] == (
+        "unsupported_until_revalidated"
+    )
+
+    (install_dir / ".env").write_text("ODS_COMPATIBILITY_HOST=strixy\n", encoding="utf-8")
+    explicit = model_compatibility_runtime_context(install_dir)
+    assert explicit["hosts"] == ["strixy"]
+    assert model_app_compatibility(model, runtime_context=explicit)["perplexica"]["status"] == "verified"
 
 
 def test_real_catalog_gemma_perplexica_block_is_global():
@@ -1844,8 +1912,8 @@ def test_windows_amd_host_runtime_uses_install_ram_when_gpu_probe_is_unavailable
     (models_dir / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf").write_text("placeholder", encoding="utf-8")
     (install_dir / ".env").write_text(
         "GPU_BACKEND=amd\n"
-        "LLM_BACKEND=lemonade\n"
-        "AMD_INFERENCE_RUNTIME=lemonade\n"
+        "LLM_BACKEND=llama-server\n"
+        "AMD_INFERENCE_RUNTIME=llama-server\n"
         "AMD_INFERENCE_LOCATION=host\n"
         "SYSTEM_RAM_GB=128\n"
         "MODEL_RECOMMENDATION_POLICY=context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1\n",
@@ -2324,6 +2392,28 @@ def test_talk_verdict_follows_the_context_the_model_is_served_at():
     assert "32K" in served_low["userMessage"] and "64K" in served_low["userMessage"]
     # Without a known context the catalog verdict stands.
     assert model_app_compatibility(model)["hermesTalk"]["status"] == "verified"
+
+
+def test_a_failed_tool_check_adds_a_talk_advisory_not_a_block():
+    # Any-model WP4.4 (owner decision: advisory only, no lockout).
+    model = {
+        "id": "import", "context_length": 65536, "max_context_length": 131072,
+        "app_compatibility": {"hermes_talk": {"status": "verified"}},
+    }
+    measured = model_app_compatibility(model, context_length=65536, profile_tools=False)
+    assert measured["hermesTalk"]["status"] == "verified"
+    assert measured["hermesTalkAdvisory"] == {"code": "tools-unavailable"}
+    unchanged = model_app_compatibility(model, context_length=65536)
+    assert "hermesTalkAdvisory" not in unchanged
+    assert unchanged == {key: value for key, value in measured.items() if key != "hermesTalkAdvisory"}
+    assert "hermesTalkAdvisory" not in model_app_compatibility(model, context_length=65536, profile_tools=True)
+
+
+def test_a_talk_block_keeps_priority_over_the_tools_advisory():
+    model = {"id": "import", "context_length": 65536, "max_context_length": 131072}
+    blocked = model_app_compatibility(model, context_length=32768, profile_tools=False)
+    assert blocked["hermesTalk"]["code"] == "context_below_hermes_minimum"
+    assert "hermesTalkAdvisory" not in blocked
 
 
 def test_talk_verdict_names_a_native_context_limit():

@@ -21,8 +21,6 @@ Windows WSL path also uses). The macOS installer does not have it.
   check.
 - Downloads `nomic-embed-text-v1.5.Q4_K_M.gguf` and writes the `.offline-mode`
   marker only after that file validates.
-- Writes a legacy OpenClaw offline config if the deprecated OpenClaw extension
-  is enabled.
 
 ### What it does not change
 
@@ -61,7 +59,6 @@ cost-map fetch, n8n and the Whisper Hugging Face client.
 | Portal (Pixel) | ⚠️ | Default agent on qualified hosts; chat works, web search and fetch need the network |
 | Hermes Agent | ✅ | On with Full Stack, `--all` or `--hermes`; local LLM only |
 | n8n workflows | ⚠️ | Local execution, but many integrations need internet |
-| OpenClaw | ⚠️ | Deprecated; only if explicitly enabled with `--openclaw` |
 
 ## Post-Installation
 
@@ -107,33 +104,13 @@ An offline install downloads, while it is still online:
 
 Web search needs the internet. Offline, use local documents instead.
 
-### Option 1: Pre-Load Knowledge Base
+### Pre-Load a Knowledge Base
 
 ```bash
 # Index local documents into Qdrant
 curl -X POST http://localhost:6333/collections/knowledge/points \
   -H "Content-Type: application/json" \
   -d '{...your documents...}'
-```
-
-### Option 2: Legacy OpenClaw
-
-This applies only to installs that explicitly keep the deprecated OpenClaw path
-enabled with `--openclaw`. New installs use Portal on qualified hosts.
-
-For those installs, `--offline` writes `config/openclaw/openclaw-m1.yaml`,
-which turns off OpenClaw's web search and points it at local inference:
-
-```yaml
-memorySearch:
-  enabled: true
-
-webSearch:
-  enabled: false
-
-inference:
-  provider: local
-  baseUrl: http://llama-server:8080/v1
 ```
 
 ## Troubleshooting
@@ -181,9 +158,6 @@ Air-gapped operation provides:
 ods/
 ├── .offline-mode              # Marker file
 ├── .env                       # Updated with offline settings
-├── config/
-│   └── openclaw/
-│       └── openclaw-m1.yaml   # Legacy OpenClaw offline config, if enabled
 └── models/
     └── embeddings/
         └── nomic-embed-text-v1.5.Q4_K_M.gguf
@@ -192,4 +166,3 @@ ods/
 ---
 
 *Part of M5: Clonable ODS Setup Server*
-*Integrates findings from M1: Fully Local OpenClaw*

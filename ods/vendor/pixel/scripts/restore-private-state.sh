@@ -274,7 +274,7 @@ if [[ -n "$receipt" ]]; then
   source_pixel=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1]).get("pixelVersion","")[:64])' "$audit")
   target_pixel=$(pixel_read_release_version "$ROOT")
   [[ "$source_pixel" == "3.2.2" ]] || pixel_die "Source Pixel version is not 3.2.2"
-  [[ "$target_pixel" == "4.3.28" ]] || pixel_die "Target Pixel version is not 4.3.28"
+  [[ "$target_pixel" == "4.3.31" ]] || pixel_die "Target Pixel version is not 4.3.31"
 fi
 
 mapfile -d '' roots < <(python3 - "$manifest_file" <<'PY'

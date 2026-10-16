@@ -3,9 +3,10 @@
 # ODS Installer — GUI Progress Protocol
 # ============================================================================
 # Part of: installers/lib/
-# Purpose: Emit structured progress events for the Tauri GUI installer
+# Purpose: Emit structured progress events for a graphical front end
+#          (none ships today; the Tauri desktop installer was removed)
 #
-# Expects: ODS_INSTALLER_GUI (optional env var, set by Tauri)
+# Expects: ODS_INSTALLER_GUI (optional env var, set by such a front end)
 # Provides: ods_progress()
 #
 # Modder notes:

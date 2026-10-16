@@ -21,17 +21,19 @@ def model_runtime(monkeypatch, tmp_path):
     install = tmp_path / "ods"
     data = install / "data"
     data.mkdir(parents=True)
-    (install / ".env").write_text("ODS_MODE=lemonade\n", encoding="utf-8")
+    # A migrated WSL Portal: llama-server.exe on Windows, behind the bridge.
+    (install / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
     monkeypatch.setattr(router, "INSTALL_DIR", str(install))
     monkeypatch.setattr(router, "DATA_DIR", str(data))
     monkeypatch.setattr(router, "_ENV_PATH", install / ".env")
     monkeypatch.setattr(router, "_LIBRARY_PATH", install / "config" / "model-library.json")
     monkeypatch.setattr(router, "_MODELS_DIR", data / "models")
     monkeypatch.setattr(helpers, "_PERF_FILE", data / "performance.json")
-    monkeypatch.setattr(router, "ODS_MODE_EFFECTIVE", "lemonade")
-    monkeypatch.setattr(router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(router, "ODS_MODE_EFFECTIVE", "local")
+    monkeypatch.setattr(router, "LLM_BACKEND", "llama-server")
     monkeypatch.setattr(router, "read_live_env_values", lambda _keys: {
-        "LLM_BACKEND": "lemonade", "LEMONADE_EXTERNAL": "true",
+        "LLM_BACKEND": "llama-server", "ODS_HOST_LLM_TRANSPORT": "model-router",
+        "AMD_INFERENCE_RUNTIME_MODE": "windows-portal-llama-server",
     })
     monkeypatch.setattr(router, "get_gpu_info", lambda: None)
     monkeypatch.setattr(router, "get_loaded_model", AsyncMock(return_value=None))
@@ -67,7 +69,8 @@ def test_catalog_exposes_verified_management(test_client, model_runtime, monkeyp
     response = test_client.get("/api/models", headers=test_client.auth_headers)
 
     assert response.status_code == 200
-    assert response.json()["externalLemonade"] is True
+    assert response.json()["hostRuntime"] is True
+    assert "externalLemonade" not in response.json()
     assert response.json()["modelManagement"] == capability
     assert calls == [("GET", "/v1/model/management", {"timeout": 20})]
 
@@ -128,10 +131,10 @@ def test_management_preserves_safe_reason_and_omits_agent_internals(model_runtim
 
 
 def test_nonexternal_catalog_never_requests_management(test_client, model_runtime, monkeypatch):
-    monkeypatch.setattr(model_runtime, "_external_lemonade_runtime", lambda: False)
+    monkeypatch.setattr(model_runtime, "_windows_hosted_runtime", lambda: False)
     response = test_client.get("/api/models", headers=test_client.auth_headers)
     assert response.status_code == 200
-    assert response.json()["externalLemonade"] is False
+    assert response.json()["hostRuntime"] is False
     assert response.json().get("modelManagement") is None
     assert model_runtime._model_management() == UNMANAGED
 

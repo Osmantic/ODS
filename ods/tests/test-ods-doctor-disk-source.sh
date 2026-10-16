@@ -34,14 +34,21 @@ docker() {
 }
 
 EXTERNAL_LLM_URL=http://host.example:8080
-LEMONADE_EXTERNAL=false
+NATIVE_LLM_BASE_URL=
 ODS_MODE=local
 _doctor_select_disk
 [[ "$DOCTOR_HOME_DISK_GB" == 13 && "$DISK_GB" == 54 \
     && "$DOCTOR_DISK_SOURCE" == /var/lib/docker ]] \
     || fail 'external inference must check the observable Docker data-root filesystem'
 
+# The Windows Portal's llama-server keeps its model on Windows too.
 EXTERNAL_LLM_URL=
+NATIVE_LLM_BASE_URL=http://localhost:8080
+_doctor_select_disk
+[[ "$DISK_GB" == 54 && "$DOCTOR_DISK_SOURCE" == /var/lib/docker ]] \
+    || fail 'a host-native llama-server must check the Docker data-root filesystem'
+
+NATIVE_LLM_BASE_URL=
 _doctor_select_disk
 [[ "$DISK_GB" == 13 && "$DOCTOR_DISK_SOURCE" == /fixture/home ]] \
     || fail 'managed local inference must retain the HOME filesystem check'

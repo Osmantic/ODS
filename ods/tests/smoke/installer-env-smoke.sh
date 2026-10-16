@@ -55,7 +55,7 @@ echo "── .env generation ──"
 TMPDIR_SMOKE="$(mktemp -d)"
 INSTALL_DIR="$TMPDIR_SMOKE/ods"
 mkdir -p "$INSTALL_DIR"/{config,data,models}
-mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
+mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,searxng}
 
 # Copy source inputs so phase 06 can find compose files and schemas. Exclude
 # local frontend build artifacts; copying node_modules across WSL/NTFS can turn
@@ -83,7 +83,6 @@ export ENABLE_VOICE=true
 export ENABLE_WORKFLOWS=true
 export ENABLE_RAG=true
 export ENABLE_HERMES=true
-export ENABLE_OPENCLAW=true
 
 # Source required libraries (same order as install-core.sh)
 source installers/lib/constants.sh
@@ -134,7 +133,6 @@ if bash -c "
     export ENABLE_WORKFLOWS=true
     export ENABLE_RAG=true
     export ENABLE_HERMES=true
-export ENABLE_OPENCLAW=true
     export EMBEDDING_MODEL=BAAI/bge-m3
     export RAG_EMBEDDING_MODEL=
     export RAG_OPENAI_API_BASE_URL=https://embeddings.example.test/v1
@@ -370,8 +368,6 @@ QDRANT_GRPC_PORT=6334
 QDRANT_API_KEY=test
 LITELLM_PORT=4000
 LITELLM_KEY=test
-OPENCLAW_PORT=7860
-OPENCLAW_TOKEN=test
 SEARXNG_PORT=8888
 DASHBOARD_API_KEY=test
 LIVEKIT_API_KEY=test

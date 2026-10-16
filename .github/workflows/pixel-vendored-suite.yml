@@ -40,5 +40,7 @@ jobs:
           node-version: '22'
       - name: Install suite tools
         run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck jq age > /dev/null
+      - name: Operations inventory startup readiness
+        run: python3 -m unittest discover -s tests -p test_ops_broker_readiness.py -v
       - name: Pixel end-to-end suite (fake Docker and systemd)
         run: bash tests/e2e.sh

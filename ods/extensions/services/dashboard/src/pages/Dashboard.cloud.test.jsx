@@ -70,6 +70,21 @@ describe('Dashboard cloud inference', () => {
     vi.unstubAllGlobals()
   })
 
+  it('names the API model on the chat card instead of a local model', async () => {
+    // Fleet row 33: the card said "Chat with your local AI model" in API mode.
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (String(url).includes('/api/features')) {
+        return { ok: true, json: async () => ({ features: [{ id: 'chat', name: 'AI Chat',
+          description: 'Chat with your local AI model', icon: 'MessageSquare', status: 'enabled',
+          launch: { type: 'service', service: 'open-webui' } }], suggestions: [], summary: { progress: 0 } }) }
+      }
+      return { ok: true, json: async () => ({ services: [] }) }
+    }))
+    render(<Dashboard status={cloudStatus} loading={false} />)
+    expect(await screen.findByText('Chat with remote-model through your model API')).toBeVisible()
+    expect(screen.queryByText('Chat with your local AI model')).toBeNull()
+  })
+
   it('hides GPU metrics and multi-GPU summary in full dashboard', async () => {
     render(<Dashboard status={cloudStatus} loading={false} />)
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))

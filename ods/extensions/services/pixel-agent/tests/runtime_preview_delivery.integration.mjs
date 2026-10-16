@@ -25,7 +25,7 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
         function:{name:'pixel_ods_workspace_preview',arguments:JSON.stringify({relativeDirectory:'Playground/signal-garden'})}}]}
       : refresh && round===2 ? {role:'assistant',tool_calls:[{index:0,id:'check-game',type:'function',
         function:{name:'exec',arguments:JSON.stringify({command:"node -e \"require('fs').appendFileSync('check-count','1');console.log('checked once')\"",workdir:workspace})}}]}
-      : {role:'assistant',content:'The file is ready. Would you like a preview?'};
+      : {role:'assistant',content:'For actual persistence, open it in your regular browser.'};
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason:null}]})+'\n\n');
     res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:delta.tool_calls?'tool_calls':'stop'}]})+'\n\ndata: [DONE]\n\n');
@@ -126,6 +126,9 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
     assert.equal(verdicts.at(-1).verification.deliveryMode,'append');
     assert.equal(verdicts.at(-1).verification.preview.kind,'ods-pixel-workspace-preview');
     assert.match(body,/Open preview/);
+    assert.match(body,/Inputs in the embedded preview may be lost on reload/);
+    assert.match(body,/Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data/);
+    assert.doesNotMatch(body,/Opening the same preview in a new tab does not change this/);
     assert.equal(frames.at(-1).pixel.preview.kind,'ods-pixel-workspace-preview');
     assert.doesNotMatch(log,/revision after potential side effects/);
   } finally {

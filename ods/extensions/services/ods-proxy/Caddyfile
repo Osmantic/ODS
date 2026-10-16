@@ -172,5 +172,7 @@ http://hermes.{$ODS_DEVICE_NAME:ods}.local {
 # can edit this block or front the proxy with their own routing.
 # ---------------------------------------------------------------------
 http://{$ODS_DEVICE_NAME:ods}.local {
-	redir http://chat.{$ODS_DEVICE_NAME:ods}.local{uri} 302
+	# The container always listens on :80. Preserve its published host port
+	# when sending the browser to the chat hostname.
+	redir http://chat.{$ODS_DEVICE_NAME:ods}.local:{$ODS_PROXY_PORT:80}{uri} 302
 }

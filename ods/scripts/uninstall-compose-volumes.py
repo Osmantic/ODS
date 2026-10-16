@@ -2,7 +2,7 @@
 """Account for Compose-owned volumes before removing an ODS installation.
 
 Compose only knows the currently selected files. This helper accounts for
-selected and disabled-extension volumes before removing any of them.
+selected and unselected-extension volumes before removing any of them.
 """
 
 from __future__ import annotations
@@ -20,6 +20,13 @@ VOLUME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
 CONTAINER_RE = re.compile(r"[a-f0-9]{64}\Z")
 PROJECT_LABEL = "com.docker.compose.project"
 VOLUME_LABEL = "com.docker.compose.volume"
+# Volumes the AMD overlay declared for the retired Lemonade runtime. No current
+# recipe declares them, so after the llama.cpp upgrade no container mounts
+# them. The Lemonade migration records them in this installation's data
+# directory; that record, the project label and the project-prefixed name
+# stand in for the container mount that proves the other volumes.
+RETIRED_VOLUME_KEYS = frozenset({"lemonade-cache", "lemonade-llama", "lemonade-recipe"})
+RETIRED_VOLUME_RECORD = "data/lemonade-retired-volumes.json"
 
 
 def docker(root: Path, *args: str) -> str:
@@ -118,15 +125,28 @@ def trusted_plain_volume_keys(root: Path, disabled_only: bool = False,
     return {key for key, values in states.items() if values == {"owned"}}
 
 
-def disabled_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+def unselected_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+    """Bind leftover mounts to installed recipes even when selection failed.
+
+    A failed native activation can leave an enabled extension running while
+    uninstall falls back to base Compose files. Its recipe path and service
+    must still match the mounted container, just as for disabled extensions.
+    """
     found: dict[str, set[tuple[str, str]]] = {}
+    enabled_keys = trusted_plain_volume_keys(root)
+    trusted_enabled_keys = trusted_plain_volume_keys(trusted_root)
     for directory in ("extensions/services", "extensions/library/services"):
-        for suffix in ("*.yaml.disabled", "*.yml.disabled"):
+        for suffix in ("*.yaml.disabled", "*.yml.disabled", "*.yaml", "*.yml"):
             for path in (root / directory).glob(f"*/compose{suffix}"):
                 enabled_name = path.name.removesuffix(".disabled")
                 enabled_path = path.with_name(enabled_name)
                 candidate_path = trusted_root / path.relative_to(root).with_name(enabled_name)
                 for key in trusted_plain_volume_keys(root, only_file=path):
+                    if (not path.name.endswith(".disabled") and
+                            (key not in enabled_keys or key not in trusted_enabled_keys)):
+                        # An enabled override declaring this key external or
+                        # custom-named must not be bypassed by the base recipe.
+                        continue
                     if (trusted_root != root and
                             key not in trusted_plain_volume_keys(
                                 trusted_root, only_file=candidate_path)):
@@ -134,11 +154,76 @@ def disabled_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[
                     found.setdefault(key, set()).add(
                         (path.parent.name, str(enabled_path.resolve()))
                     )
+    for key, owners in native_stack_volume_provenance(root, trusted_root).items():
+        found.setdefault(key, set()).update(owners)
     return found
 
 
-def disabled_volume_keys(root: Path, trusted_root: Path) -> set[str]:
-    return set(disabled_volume_provenance(root, trusted_root))
+# install-macos.sh runs the native-Pixel stack with these ODS-shipped recipes
+# in their .disabled form, including the shared edge transition-state volume.
+# A native install that stops after starting the stack never adds these files
+# to .compose-flags, so ownership must also use the containers' recipe paths.
+NATIVE_STACK_RECIPES = (
+    "installers/macos/pixel-native.compose.yaml.disabled",
+    "extensions/services/pixel-edge/compose.yaml.disabled",
+)
+SERVICE_DECLARATION_RE = re.compile(r"^  ([a-z0-9][a-z0-9_-]*):\s*$")
+
+
+def compose_service_names(path: Path) -> set[str]:
+    """Top-level service names declared in a plain Compose recipe."""
+    names: set[str] = set()
+    in_services = False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line == "services:":
+            in_services = True
+            continue
+        if in_services and line and not line[0].isspace():
+            break
+        match = SERVICE_DECLARATION_RE.fullmatch(line) if in_services else None
+        if match:
+            names.add(match.group(1))
+    return names
+
+
+def native_stack_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+    found: dict[str, set[tuple[str, str]]] = {}
+    for relative in NATIVE_STACK_RECIPES:
+        path = root / relative
+        if path.is_symlink() or not path.is_file():
+            continue
+        services = compose_service_names(path)
+        for key in trusted_plain_volume_keys(root, only_file=path):
+            if (trusted_root != root and
+                    key not in trusted_plain_volume_keys(trusted_root, only_file=trusted_root / relative)):
+                continue
+            found.setdefault(key, set()).update(
+                (service, str(path.resolve())) for service in services
+            )
+    return found
+
+
+def unselected_volume_keys(root: Path, trusted_root: Path) -> set[str]:
+    return set(unselected_volume_provenance(root, trusted_root))
+
+
+def retired_volume_keys(root: Path) -> set[str]:
+    """Retired Lemonade volume keys this installation's migration recorded."""
+    path = root / RETIRED_VOLUME_RECORD
+    if not os.path.lexists(path):
+        return set()
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{RETIRED_VOLUME_RECORD} is not a regular file")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    keys = record.get("volumeKeys") if isinstance(record, dict) else None
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
+            record.get("installDir") != str(root) or not isinstance(keys, list) or
+            any(not isinstance(key, str) or key not in RETIRED_VOLUME_KEYS for key in keys)):
+        raise ValueError(
+            f"{RETIRED_VOLUME_RECORD} does not belong to this installation; remove the "
+            "retired Lemonade volumes yourself with 'docker volume rm', or rerun with --keep-data"
+        )
+    return set(keys)
 
 
 def project_containers(
@@ -197,30 +282,33 @@ def project_containers(
 
 def install_root_containers(root: Path) -> set[str]:
     """Find Compose containers still tied to this tree across project renames."""
-    ids = docker(root, "ps", "--all", "--quiet", "--no-trunc", "--filter",
-                 f"label={PROJECT_LABEL}").split()
-    if any(not CONTAINER_RE.fullmatch(value) for value in ids):
-        raise ValueError("Docker returned invalid container identity")
+    # This scan only blocks removal; project_containers separately inspects
+    # every resource whose ownership can authorize cleanup. Read path labels
+    # from the list response so an uninspectable, unrelated Desktop record
+    # cannot prevent retiring this installation. Never suppress inspect errors
+    # for the selected project or ignore a renamed project using this tree.
+    template = (
+        '{"Id":{{json .ID}},'
+        '"workingDir":{{json (.Label "com.docker.compose.project.working_dir")}},'
+        '"configFiles":{{json (.Label "com.docker.compose.project.config_files")}}}'
+    )
+    listing = docker(root, "ps", "--all", "--no-trunc", "--filter",
+                     f"label={PROJECT_LABEL}", "--format", template)
     base_files = {str((root / name).resolve()) for name in
                   ("docker-compose.base.yml", "docker-compose.yml")}
     found = set()
-    for offset in range(0, len(ids), 100):
-        batch = ids[offset:offset + 100]
-        inspected = rows(docker(root, "inspect", *batch), "container")
-        if len(inspected) != len(batch) or {row.get("Id") for row in inspected} != set(batch):
-            raise ValueError("Docker container inspection changed during preflight")
-        for row in inspected:
-            labels = (row.get("Config") or {}).get("Labels") or {}
-            if not isinstance(labels, dict):
-                raise ValueError("Docker returned invalid container labels")
-            working_dir = labels.get("com.docker.compose.project.working_dir")
-            files = labels.get("com.docker.compose.project.config_files")
-            first_file = files.split(",")[0] if isinstance(files, str) else None
-            if ((isinstance(working_dir, str) and os.path.isabs(working_dir)
-                 and os.path.realpath(working_dir) == str(root)) or
-                (first_file is not None and os.path.isabs(first_file)
-                 and os.path.realpath(first_file) in base_files)):
-                found.add(row["Id"])
+    for line in listing.splitlines():
+        row = json.loads(line)
+        if (not isinstance(row, dict) or set(row) != {"Id", "workingDir", "configFiles"}
+                or not isinstance(row["Id"], str) or not CONTAINER_RE.fullmatch(row["Id"])
+                or not isinstance(row["workingDir"], str)
+                or not isinstance(row["configFiles"], str)):
+            raise ValueError("Docker returned invalid container path listing")
+        working_dir = row["workingDir"]
+        first_file = row["configFiles"].split(",")[0]
+        if ((os.path.isabs(working_dir) and os.path.realpath(working_dir) == str(root))
+                or (os.path.isabs(first_file) and os.path.realpath(first_file) in base_files)):
+            found.add(row["Id"])
     return found
 
 
@@ -329,7 +417,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         return
     volumes = project_volumes(root, project)
     resumed, resumed_anonymous = resume_record(root, project)
-    disabled = disabled_volume_provenance(root, trusted_root)
+    unselected = unselected_volume_provenance(root, trusted_root)
     expected_names = set(selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
     } | {
@@ -355,6 +443,10 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     owned = {}
     anonymous = {}
     trusted_used = set()
+    # Read only when a retired volume exists: without one the record is moot.
+    retired = retired_volume_keys(root) if any(
+        row["Labels"][VOLUME_LABEL] in RETIRED_VOLUME_KEYS for row in volumes.values()
+    ) else set()
     for name, row in volumes.items():
         key = row["Labels"][VOLUME_LABEL]
         if name in external:
@@ -372,15 +464,22 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
                 "uninstall may have removed that proof. Rerun with --keep-data to keep the "
                 "volumes and remove the rest of the installation"
             )
-        disabled_owned = (
-            name in mounted and key in disabled and
+        unselected_owned = (
+            name in mounted and key in unselected and
             name == f"{project}_{key}" and
-            bool(mount_provenance.get(name, set()) & disabled[key])
+            bool(mount_provenance.get(name, set()) & unselected[key])
         )
-        if name in selected or disabled_owned:
+        retired_owned = key in retired and name == f"{project}_{key}"
+        if name in selected or unselected_owned or retired_owned:
             owned[name] = fingerprint(row)
-            if name not in selected:
+            if name not in selected and unselected_owned:
                 trusted_used.add(key)
+        elif key in RETIRED_VOLUME_KEYS and name == f"{project}_{key}":
+            raise ValueError(
+                f"Volume {name} is a retired Lemonade volume this installation did not record; "
+                "purge refused. Remove it yourself with 'docker volume rm' if it is yours, "
+                "or rerun with --keep-data"
+            )
         else:
             raise ValueError(f"Volume {name} is not linked to this installation; purge refused")
     other_mounts = mounted - set(volumes) - set(external)
@@ -467,7 +566,7 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
             current_selected != record.get("selected") or
             current_external != record.get("external") or
             not set(record.get("trustedUsed", [])).issubset(
-                disabled_volume_keys(root, trusted_root))):
+                unselected_volume_keys(root, trusted_root))):
         raise ValueError("Compose ownership changed during uninstall; installation retained")
     current_expected = set(current_selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)

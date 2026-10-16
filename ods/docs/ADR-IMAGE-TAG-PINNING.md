@@ -5,8 +5,9 @@
 **Historical decision:** Retain `:latest` tags for selected third-party images
 
 Reviewed 2026-09-24 against main promotion `1bc5e1cb`. The current source pins
-OpenClaw to `2026.3.8`, SearXNG to `2026.3.8-a563127a2`, and Whisper's default
-CPU image to `0.9.0-rc.3-cpu`. The decision below describes the March baseline,
+SearXNG to `2026.3.8-a563127a2` and Whisper's default CPU image to
+`0.9.0-rc.3-cpu`. The legacy OpenClaw service, pinned to `2026.3.8` at that
+review, has since been removed from ODS. The decision below describes the March baseline,
 not the current Compose files. Use the actual service definitions and
 [`dependency-lock.json`](../config/dependency-lock.json) for current pins; version tags
 are not immutable digests. This record does not authorize reverting those pins.

@@ -8,6 +8,11 @@ $reportPath = Join-Path $root "installers\windows\lib\install-report.ps1"
 . (Join-Path $root "installers\windows\lib\llm-endpoint.ps1")
 . (Join-Path $root "installers\windows\lib\detection.ps1")
 . (Join-Path $root "installers\windows\lib\env-generator.ps1")
+# The generator sizes NVIDIA memory and CPU budgets from `docker info`; keep
+# the Docker daemon out of this test.
+function Get-ODSDockerMemoryGB { return 0 }
+function Get-LlamaCpuBudget { return @{ Limit = "4.0"; Reservation = "1.0"; Available = "4.0" } }
+function docker { throw "docker must not run in this test" }
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -33,7 +38,7 @@ if ($phaseText -notmatch [regex]::Escape('if ($NonInteractive -and -not $Force -
 foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
-    "Test-WindowsODSLemonadeOwnsPort",
+    "Test-WindowsODSNativeLlmOwnsPort",
     "Get-WindowsODSSelectedPortConflicts",
     "Assert-WindowsODSSelectedPortAvailability"
 )) {
@@ -99,8 +104,8 @@ try {
     Remove-Item Env:WEBUI_PORT
 
     Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd") 8080 "AMD default"
-    Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd" -LemonadeDefaultPort 18081) `
-        18081 "AMD contract default"
+    Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd" -NativeDefaultPort 18081) `
+        18081 "AMD native default"
     Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "nvidia") 11434 "Docker default"
     Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd" -CloudMode) 0 "Cloud mode"
 
@@ -282,18 +287,39 @@ try {
         }
     }
 
-    $managedProcesses = @(
-        [pscustomobject]@{ ProcessId = 4101; Name = "lemonade-server.exe" }
+    # Only this installation's own model runtime may already hold the AMD port:
+    # proven by its exact executable, or by the ODS-owned Lemonade task's exact
+    # command line, never by a process name.
+    $ownedInstall = Join-Path ([IO.Path]::GetTempPath()) "ods-port-owner-$([Guid]::NewGuid().ToString('N'))"
+    $publishedExe = Join-Path (Join-Path $ownedInstall "llama-server") "llama-server.exe"
+    $lemonadeExe = "C:\Users\fixture\AppData\Local\lemonade_server\bin\lemonade-server.exe"
+    $lemonadeLine = '"' + $lemonadeExe + '" serve --port 8080 --host 127.0.0.1'
+    $script:ownerNodes = @(
+        [pscustomobject]@{ ProcessId = 4101; ParentProcessId = 1; ExecutablePath = $publishedExe; CommandLine = "" },
+        [pscustomobject]@{ ProcessId = 4102; ParentProcessId = 1; ExecutablePath = "C:\Tools\llama.cpp\llama-server.exe"; CommandLine = "" },
+        [pscustomobject]@{ ProcessId = 4201; ParentProcessId = 1; ExecutablePath = $lemonadeExe; CommandLine = $lemonadeLine },
+        [pscustomobject]@{ ProcessId = 4202; ParentProcessId = 4201; ExecutablePath = "C:\Users\fixture\AppData\Local\lemonade_server\bin\lemonade-router.exe"; CommandLine = "router" },
+        [pscustomobject]@{ ProcessId = 4301; ParentProcessId = 1; ExecutablePath = "C:\Program Files\Lemonade Server\bin\LemonadeServer.exe"; CommandLine = "LemonadeServer.exe" }
     )
-    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4101 } `
-        -LemonadeProcesses $managedProcesses) $true "Managed Lemonade listener"
-    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4102 } `
-        -LemonadeProcesses $managedProcesses) $false "Foreign listener"
-    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $false; ProcessId = 0 } `
-        -LemonadeProcesses $managedProcesses) $false "Free port"
+    function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) return $script:ownerNodes }
+    function Get-ODSNativeLlamaLegacyProfileExecutable { param($InstallDir, $EnvMap) return "" }
+    $script:ownedLemonade = [pscustomobject]@{ Owned = $true; ExecutablePath = $lemonadeExe; CommandLines = @($lemonadeLine) }
+    function Get-ODSLegacyLemonadeRuntime { param($InstallDir, $Port) return $script:ownedLemonade }
+    foreach ($case in @(
+        @{ Pid = 4101; Expected = $true; Label = "This installation's published llama-server" },
+        @{ Pid = 4102; Expected = $false; Label = "Another llama-server.exe" },
+        @{ Pid = 4202; Expected = $true; Label = "The ODS-owned Lemonade task's router" },
+        @{ Pid = 4301; Expected = $false; Label = "A user's own Lemonade (same product, not ODS's task)" }
+    )) {
+        Assert-Equal (Test-WindowsODSNativeLlmOwnsPort -PortResult @{ InUse = $true; ProcessId = $case.Pid } `
+            -InstallDir $ownedInstall -Port 8080) $case.Expected $case.Label
+    }
+    $script:ownedLemonade = [pscustomobject]@{ Owned = $false; Reason = "its action is not one ODS wrote" }
+    Assert-Equal (Test-WindowsODSNativeLlmOwnsPort -PortResult @{ InUse = $true; ProcessId = 4202 } `
+        -InstallDir $ownedInstall -Port 8080) $false "A Lemonade task ODS cannot prove it owns"
+    Assert-Equal (Test-WindowsODSNativeLlmOwnsPort -PortResult @{ InUse = $false; ProcessId = 0 } `
+        -InstallDir $ownedInstall -Port 8080) $false "Free port"
+    $script:ownedLemonade = [pscustomobject]@{ Owned = $true; ExecutablePath = $lemonadeExe; CommandLines = @($lemonadeLine) }
 } finally {
     if ($null -eq $savedAmdPort) { Remove-Item Env:AMD_INFERENCE_PORT -ErrorAction SilentlyContinue } else { $env:AMD_INFERENCE_PORT = $savedAmdPort }
     if ($null -eq $savedOllamaPort) { Remove-Item Env:OLLAMA_PORT -ErrorAction SilentlyContinue } else { $env:OLLAMA_PORT = $savedOllamaPort }
@@ -343,16 +369,20 @@ Assert-Equal $aborted $true "Non-interactive install fails closed on actual sele
 Assert-Equal (Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive -DryRun) `
     $false "Dry-run reports actual selected-port collision without stopping the owner"
 
-function Get-WindowsODSLemonadeProcesses {
-    return @([pscustomobject]@{ ProcessId = 4242; Name = "LemonadeServer.exe" })
-}
-$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
-$amdPort = [ordered]@{ "Lemonade (LLM)" = 8080 }
-Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
-    0 "Native AMD installation reuses its own Lemonade listener"
-$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4343; ProcessName = "OtherServer" }
-Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
-    1 "Native AMD installation rejects a foreign listener"
+$amdPort = [ordered]@{ "llama-server (LLM)" = 8080 }
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4101; ProcessName = "llama-server" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -NativeLlmService "llama-server (LLM)" -InstallDir $ownedInstall).Count `
+    0 "Native AMD installation replaces its own llama-server"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4202; ProcessName = "lemonade-router" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -NativeLlmService "llama-server (LLM)" -InstallDir $ownedInstall).Count `
+    0 "Native AMD installation retires the Lemonade runtime its own task started"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4301; ProcessName = "LemonadeServer" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -NativeLlmService "llama-server (LLM)" -InstallDir $ownedInstall).Count `
+    1 "A user's own Lemonade on the port is a conflict, not ODS's runtime"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4101; ProcessName = "llama-server" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort).Count `
+    1 "Without the native AMD runtime no listener is exempt"
+$script:mockListeners.Remove(8080)
 
 function Remove-VoiceSeedDir {
     param([string]$Path)
@@ -396,7 +426,7 @@ function Get-PhaseVoicePort {
     $gpuInfo = @{ Backend = $Backend }
     $cloudMode = $Cloud
     $installDir = $InstallDir
-    $_usesNativeLemonade = ($Backend -eq "amd" -and -not $Cloud)
+    $_usesNativeLlm = ($Backend -eq "amd" -and -not $Cloud)
     $_portsToCheck = [ordered]@{}
     . $voiceBlock
     return ,$_portsToCheck
@@ -430,10 +460,6 @@ function Get-GeneratorWhisperPort {
     $savedWhisper = $env:WHISPER_PORT
     try {
         if ($ProcessPort) { $env:WHISPER_PORT = $ProcessPort }
-        function Write-WindowsODSLemonadeLiteLlmConfig {
-            param($InstallDir, $ModelId, $Port, $ApiKey)
-            return (Join-Path $InstallDir "config\\litellm\\lemonade.yaml")
-        }
         $null = New-ODSEnv -InstallDir $dir -TierConfig $tierConfig -Tier "3" `
             -GpuBackend $Backend -AmdInferenceRuntime $Runtime `
             -AmdInferenceLocation $Location
@@ -494,11 +520,22 @@ Assert-VoiceEqual $ports["Whisper (STT)"] 9000 "phase free 9000 default"
 Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia") "9000" `
     "generator free 9000 default"
 
-# 5. Managed AMD (lemonade/host) default -> 9100
+# 5. Native AMD (llama-server.exe) has no Lemonade router on 9000 -> 9000
 $ports = Get-PhaseVoicePort -Backend "amd"
-Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase managed amd default 9100"
-Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "lemonade" -Location "host") "9100" `
-    "generator managed amd default 9100"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9000 "phase native amd default 9000"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "llama-server" -Location "host") "9000" `
+    "generator native amd default 9000"
+# 5b. A former managed Lemonade install keeps its persisted 9100
+$seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9100"
+try {
+    $script:mockListeners.Remove(9100)
+    $ports = Get-PhaseVoicePort -Backend "amd" -InstallDir $seedDir
+    Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase migrated amd keeps 9100"
+    Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "llama-server" -Location "host" -SeedEnv "WHISPER_PORT=9100") "9100" `
+        "generator migrated amd keeps 9100"
+} finally {
+    Remove-VoiceSeedDir $seedDir
+}
 
 # 6. Persisted custom 9182 is preserved
 $seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9182"

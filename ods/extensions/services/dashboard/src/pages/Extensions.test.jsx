@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Extensions from './Extensions' // eslint-disable-line no-unused-vars
 
@@ -48,6 +48,231 @@ const installFetchMock = (catalogFixture, templates = [], webuiSelection = { ena
   return fetchMock
 }
 
+it.each([false, true])('shows LiteLLM as an API service without an unsupported Admin UI launch (compact=%s)', async compact => {
+  installFetchMock({
+    agent_available: true,
+    extensions: [
+      { id: 'litellm', name: 'LiteLLM (API Gateway)', source: 'core', status: 'enabled', port: 4000, ui_path: '/ui/', features: [baseFeature] },
+      { id: 'it-tools', name: 'IT-Tools', source: 'user', status: 'enabled', port: 8080, external_port: 8089, ui_path: '/', features: [baseFeature] },
+    ],
+    summary: baseSummary({ total: 2, installed: 2 }),
+  })
+  render(<Extensions compact={compact} />)
+  const gateway = within((await screen.findByText('LiteLLM (API Gateway)')).closest('article'))
+  expect(gateway.getByText('API service')).toBeVisible()
+  expect(gateway.queryByRole('link')).toBeNull()
+  expect(gateway.getByRole('button', { name: 'Logs' })).toBeEnabled()
+
+  // Actual web applications retain their published launch port.
+  const webApp = within(screen.getByText('IT-Tools').closest('article'))
+  expect(webApp.getByRole('link', { name: ':8089' })).toHaveAttribute('href', 'http://localhost:8089')
+  expect(webApp.getByRole('button', { name: 'Logs' })).toBeEnabled()
+
+  fireEvent.click(gateway.getByRole('button', { name: 'Details for LiteLLM (API Gateway)' }))
+  const details = within(screen.getByRole('dialog', { name: 'LiteLLM (API Gateway)' }))
+  expect(details.getByText('4000')).toBeVisible()
+  expect(details.queryByRole('link')).toBeNull()
+  fireEvent.click(details.getByRole('button', { name: 'Close extension details' }))
+  expect(gateway.getByRole('button', { name: 'Logs' })).toBeEnabled()
+})
+
+it.each([false, true])('an initial catalog timeout is unavailable, not an empty result, and Retry recovers (compact=%s)', async compact => {
+  const catalog = {agent_available: true, extensions: [{id: 'known', name: 'Known extension', status: 'not_installed', features: [baseFeature]}], summary: baseSummary()}
+  const fetchMock = installFetchMock(catalog)
+  fetchMock.mockRejectedValueOnce(new DOMException('timed out', 'AbortError'))
+  render(<Extensions compact={compact} />)
+  expect(await screen.findByRole('alert')).toHaveTextContent('Extension catalog unavailable')
+  expect(screen.queryByRole('button', {name: 'All 0'})).toBeNull()
+  expect(screen.queryByText('No extensions match')).toBeNull()
+  expect(screen.queryByText(/Try adjusting your search/)).toBeNull()
+  fireEvent.click(screen.getByRole('button', {name: 'Retry'}))
+  expect(await screen.findByText('Known extension')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'All 1'})).toBeVisible()
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(fetchMock.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+})
+
+it('a failed refresh retains the accepted catalog and its counts', async () => {
+  const catalog = {agent_available: true, extensions: [{id: 'known', name: 'Known extension', status: 'not_installed', features: [baseFeature]}], summary: baseSummary()}
+  const fetchMock = installFetchMock(catalog)
+  render(<Extensions compact />)
+  expect(await screen.findByText('Known extension')).toBeVisible()
+  fetchMock.mockRejectedValueOnce(new DOMException('timed out', 'AbortError'))
+  fireEvent.click(screen.getByRole('button', {name: /refresh/i}))
+  expect(await screen.findByText(/Request timed out/)).toBeVisible()
+  expect(screen.getByText('Known extension')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'All 1'})).toBeVisible()
+  expect(screen.queryByText('Extension catalog unavailable')).toBeNull()
+  expect(screen.queryByText('No extensions match')).toBeNull()
+})
+
+describe('catalog response ordering', () => {
+  const deferred = () => {
+    let resolve, reject
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+    return { promise, resolve, reject }
+  }
+  const catalogWithStatus = status => ({
+    agent_available: true,
+    extensions: [
+      { id: 'it-tools', name: 'IT-Tools', source: 'user', status, features: [baseFeature] },
+      { id: 'other', name: 'Other install', source: 'user', status: 'installing', features: [baseFeature] },
+    ],
+    summary: baseSummary({ total: 2 }),
+  })
+  const setupRequests = () => {
+    const requests = []
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/extensions/catalog') {
+        const response = deferred()
+        requests.push(response)
+        return response.promise
+      }
+      if (url === '/api/extensions/it-tools/disable' && options.method === 'POST') {
+        return makeJsonResponse({ action: 'disabled', message: 'IT-Tools disabled' })
+      }
+      if (url === '/api/extensions/other/progress') return makeJsonResponse({ status: 'idle' })
+      if (url === '/api/webui/selection') return makeJsonResponse({ enabled: false, supported: false })
+      if (url === '/api/templates') return makeJsonResponse({ templates: [] })
+      throw new Error(`Unmocked fetch: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    return { requests, fetchMock }
+  }
+  const answer = async (request, status) => {
+    await act(async () => request.resolve(makeJsonResponse(catalogWithStatus(status))))
+  }
+  const disable = async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Disable IT-Tools' }))
+    await act(async () => fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Disable' })))
+  }
+
+  afterEach(() => vi.useRealTimers())
+
+  it.each(['refresh', 'progress'])('ignores an older %s catalog after the disable catalog is accepted', async source => {
+    vi.useFakeTimers()
+    const { requests, fetchMock } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    if (source === 'refresh') {
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh extensions' }))
+    } else {
+      // Use the real progress interval and catalog fetch, without waiting three seconds.
+      await act(async () => vi.advanceTimersByTimeAsync(3000))
+    }
+    expect(requests).toHaveLength(2)
+    await disable()
+    expect(requests).toHaveLength(3)
+    await answer(requests[2], 'disabled')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    await answer(requests[1], 'stopped')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Disable IT-Tools' })).toBeNull()
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+  })
+
+  it('does not let an older failure replace a successful disable refresh with an error', async () => {
+    vi.useFakeTimers()
+    const { requests } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh extensions' }))
+    await disable()
+    await answer(requests[2], 'disabled')
+    await act(async () => requests[1].reject(new DOMException('timed out', 'AbortError')))
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    expect(screen.queryByText(/Request timed out/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Refresh extensions' })).toBeEnabled()
+  })
+
+  it('accepts a slow background catalog across multiple progress ticks without overlapping catalog reads', async () => {
+    vi.useFakeTimers()
+    const { requests, fetchMock } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    expect(requests).toHaveLength(2)
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/extensions/other/progress')).toHaveLength(2)
+    expect(requests).toHaveLength(2)
+    await answer(requests[1], 'disabled')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    // Completion releases the slot for the next background health read.
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    expect(requests).toHaveLength(3)
+    await answer(requests[2], 'disabled')
+  })
+
+  it('does not let progress polls supersede a pending foreground refresh', async () => {
+    vi.useFakeTimers()
+    const { requests } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh extensions' }))
+    await act(async () => vi.advanceTimersByTimeAsync(6000))
+    expect(requests).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Refresh extensions' })).toBeDisabled()
+    await answer(requests[1], 'disabled')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Refresh extensions' })).toBeEnabled()
+  })
+
+  it.each(['network', 'http'])('releases a failed background %s read for the next progress tick', async failure => {
+    vi.useFakeTimers()
+    const { requests } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    await act(async () => {
+      if (failure === 'network') requests[1].reject(new Error('offline'))
+      else requests[1].resolve(makeJsonResponse({}, { ok: false, status: 503 }))
+    })
+    expect(screen.getByRole('button', { name: 'Disable IT-Tools' })).toBeVisible()
+    expect(screen.queryByText(/Failed to load extensions catalog/)).toBeNull()
+    await act(async () => vi.advanceTimersByTimeAsync(3000))
+    expect(requests).toHaveLength(3)
+    await answer(requests[2], 'disabled')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+  })
+
+  it('keeps the latest refresh busy when an older request finishes first', async () => {
+    vi.useFakeTimers()
+    const { requests } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh extensions' }))
+    await disable()
+    await answer(requests[1], 'stopped')
+    expect(screen.getByRole('button', { name: 'Refresh extensions' })).toBeDisabled()
+    expect(screen.queryByText('stopped')).toBeNull()
+    await answer(requests[2], 'disabled')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Refresh extensions' })).toBeEnabled()
+  })
+
+  it('retains the accepted catalog on the latest failure, ignores an older success, and lets manual retry recover', async () => {
+    vi.useFakeTimers()
+    const { requests } = setupRequests()
+    render(<Extensions compact />)
+    await answer(requests[0], 'enabled')
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh extensions' }))
+    await disable()
+    await act(async () => requests[2].reject(new Error('offline')))
+    expect(screen.getByText(/Failed to load extensions catalog/)).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Disable IT-Tools' })).toBeVisible()
+    expect(screen.getByRole('button', { name: 'All 2' })).toBeVisible()
+    await answer(requests[1], 'stopped')
+    expect(screen.queryByText('stopped')).toBeNull()
+    expect(screen.getByText(/Failed to load extensions catalog/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh extensions' }))
+    expect(requests).toHaveLength(4)
+    await answer(requests[3], 'disabled')
+    expect(screen.getByRole('button', { name: 'Enable IT-Tools' })).toBeVisible()
+    expect(screen.queryByText(/Failed to load extensions catalog/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Refresh extensions' })).toBeEnabled()
+  })
+})
+
 it('hides unsupported extensions from results, categories and counts without hiding unhealthy services',async()=>{
   installFetchMock({agent_available:true,extensions:[
     {id:'supported',name:'Supported',status:'unhealthy',source:'user',features:[baseFeature]},
@@ -72,7 +297,12 @@ it('adds Open WebUI from the available library without offering generic core con
   const fetchMock = vi.fn(async (url, options = {}) => {
     const target = String(url)
     if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/extensions/open-webui/prepare' && options.method === 'POST') {
+      return makeJsonResponse({ status: 'ready', service_ids: ['open-webui'] })
+    }
     if (target === '/api/webui/selection' && options.method === 'POST') {
+      // The image is downloaded first; adding then starts from the local image.
+      expect(fetchMock).toHaveBeenCalledWith('/api/extensions/open-webui/prepare', expect.objectContaining({ method: 'POST' }))
       expect(JSON.parse(options.body)).toEqual({ enabled: true })
       enabled = true
       return makeJsonResponse({ enabled: true, action: 'enabled' })
@@ -163,6 +393,9 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
     if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
     if (target === '/api/webui/selection') return makeJsonResponse({enabled:true,supported:false})
     if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target.startsWith('/api/extensions/perplexica/prepare') && options.method === 'POST') {
+      return makeJsonResponse({status:'ready',service_ids:['perplexica']})
+    }
     if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
       return makeJsonResponse({detail:{missing_dependencies:['searxng']}}, {ok:false,status:400})
     }
@@ -207,6 +440,9 @@ it('refreshes healthy dependency cards after Enable All when progress is idle', 
     }
     if (target === '/api/webui/selection') return makeJsonResponse({ enabled: false, supported: false })
     if (target === '/api/templates') return makeJsonResponse({ templates: [] })
+    if (target.startsWith('/api/extensions/perplexica/prepare') && options.method === 'POST') {
+      return makeJsonResponse({ status: 'ready', service_ids: ['perplexica'] })
+    }
     if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
       return makeJsonResponse({ detail: { missing_dependencies: ['searxng'] } }, { ok: false, status: 400 })
     }
@@ -280,6 +516,7 @@ it('reports a failed bundled n8n start and refreshes to a retryable card', async
         summary:baseSummary({total:1,error:ext.status === 'error' ? 1 : 0})})
     }
     if (u.includes('/api/templates')) return makeJsonResponse({templates:[]})
+    if (u.endsWith('/api/extensions/n8n/prepare')) return makeJsonResponse({status:'ready',service_ids:['n8n']})
     if (u.endsWith('/api/extensions/n8n/enable')) {
       Object.assign(ext,{status:'error',library_selected:true,error_message:'Host agent failed to start extension.'})
       return makeJsonResponse({enabled_services:['n8n'],failed_services:['n8n'],restart_required:true})
@@ -648,4 +885,49 @@ describe('Extensions page — unhealthy + install derivations', () => {
     await screen.findByText('Rollback Extension')
     expect(screen.getByRole('button', { name: 'Rollback' })).toBeInTheDocument()
   })
+})
+
+it('adds Hermes and browser access together with its declared dependencies', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes Agent',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,external_port_default:0,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,external_port_default:9120,ui_path:'/auth/ods',features:[baseFeature]},
+    {id:'searxng',name:'SearXNG',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:3})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:false,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/hermes-proxy/prepare?auto_enable_deps=true' && options.method === 'POST') return makeJsonResponse({status:'ready',service_ids:['searxng','hermes','hermes-proxy']})
+    if (target === '/api/extensions/hermes-proxy/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({enabled_services:['searxng','hermes','hermes-proxy'],failed_services:[]})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Add Hermes with web access'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('required services including SearXNG')
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/hermes-proxy/enable?auto_enable_deps=true', expect.objectContaining({method:'POST'}),
+  ))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/hermes/enable', expect.anything())
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/searxng/enable', expect.anything())
+})
+
+it('opens enabled Hermes through its ODS authenticated proxy entry', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes Agent',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,external_port_default:0,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,external_port:9120,ui_path:'/auth/ods',features:[baseFeature]},
+  ],summary:baseSummary({total:2,installed:2})})
+  render(<Extensions compact />)
+  const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
+  expect(within(agentCard).getByRole('link',{name:':9120'})).toHaveAttribute(
+    'href','http://localhost:9120/auth/ods')
 })

@@ -154,7 +154,8 @@ ODS includes n8n for workflow automation. Access at `http://localhost:5678`.
 ### Creating Workflows
 
 1. Open n8n at http://localhost:5678
-2. Log in with the credentials from your `.env` (`N8N_USER` / `N8N_PASS`)
+2. Sign in with `N8N_USER` and `N8N_PASS` from `.env` (an owner someone
+   created earlier on n8n's first-run screen keeps working instead)
 3. Create a new workflow or import from the n8n template library
 4. Use the "HTTP Request" node pointed at `http://llama-server:8080/v1/chat/completions` (Docker-internal URL)
 
@@ -210,7 +211,7 @@ Key variables in `.env` (see [.env.example](../.env.example) for the full list):
 | `OLLAMA_PORT` | 11434 | llama-server external port (maps to internal 8080) |
 | `WEBUI_PORT` | 3000 | Open WebUI port |
 | `N8N_PORT` | 5678 | n8n workflows port |
-| `LLM_MODEL` | *(tier-dependent)* | Model name for OpenClaw/dashboard |
+| `LLM_MODEL` | *(tier-dependent)* | Model name used by the dashboard and model-aware services |
 | `CTX_SIZE` | 16384 | Context window size (tokens) |
 | `GGUF_FILE` | *(tier-dependent)* | GGUF model filename in data/models/ |
 

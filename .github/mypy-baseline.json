@@ -142,8 +142,6 @@
   "tests/test_host_agent_install_rollback.py [func-returns-value] \"append\" of \"list\" does not return a value (it only ever returns None)": 2,
   "tests/test_host_agent_opencode_app.py [func-returns-value] \"append\" of \"list\" does not return a value (it only ever returns None)": 1,
   "tests/test_huggingface_shard_names.py [func-returns-value] \"append\" of \"list\" does not return a value (it only ever returns None)": 1,
-  "tests/test_lemonade_client.py [assignment] Incompatible types in assignment (expression has type \"bytes\", target has type \"str\")": 1,
-  "tests/test_lemonade_client.py [operator] Unsupported operand types for in (\"bytes\" and \"str\")": 2,
   "tests/test_main.py [name-match] First argument to namedtuple() should be \"DiskUsageTuple\", not \"usage\"": 1,
   "tests/test_model_activate.py [arg-type] Argument 1 to \"append\" of \"list\" has incompatible type \"tuple[str, Any, Any]\"; expected \"str\"": 1,
   "tests/test_model_activate.py [arg-type] Argument 1 to \"append\" of \"list\" has incompatible type \"tuple[str, Any, dict[str, Any]]\"; expected \"tuple[str, Any, Any, Any]\"": 1,

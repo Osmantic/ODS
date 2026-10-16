@@ -93,6 +93,36 @@ def test_remote_route_without_fresh_fingerprint_cannot_preserve_vision_claim(con
     assert json.loads(answers.read_text())["modelImageInput"] == "unknown"
 
 
+@pytest.mark.parametrize("control", ["enable_thinking", "always", "none"])
+def test_thinking_control_is_kept_only_for_the_same_unambiguous_route(contract, control):
+    answers, args = contract
+    assert render(args).returncode == 0
+    value = json.loads(answers.read_text())
+    assert "modelThinkingControl" not in value
+    answers.write_text(json.dumps(dict(value, modelThinkingControl=control)))
+    assert render(args).returncode == 0
+    assert json.loads(answers.read_text())["modelThinkingControl"] == control
+    # A remote alias without a fresh fingerprint proof cannot keep it either.
+    answers.write_text(json.dumps(dict(value, modelThinkingControl=control, modelRouteFingerprint="a" * 64)))
+    assert render(args).returncode == 0
+    assert "modelThinkingControl" not in json.loads(answers.read_text())
+    answers.write_text(json.dumps(dict(value, modelThinkingControl=control)))
+    args[3] = "another-model"
+    assert render(args).returncode == 0
+    assert "modelThinkingControl" not in json.loads(answers.read_text())
+
+
+def test_thinking_control_invalid_existing_value_is_not_rewritten(contract):
+    answers, args = contract
+    assert render(args).returncode == 0
+    value = json.loads(answers.read_text())
+    answers.write_text(json.dumps(dict(value, modelThinkingControl="sometimes")))
+    before = answers.read_bytes()
+    result = render(args)
+    assert result.returncode != 0 and "thinking-control" in result.stderr
+    assert answers.read_bytes() == before
+
+
 def test_image_policy_invalid_existing_value_is_not_rewritten(contract):
     answers, args = contract
     assert render(args).returncode == 0
@@ -123,6 +153,30 @@ _ods_pixel_update_onboarding_model fixture "$2" "$3" "$4" 16384 4096 false "" "$
         assert value["modelImageInput"] == (policy or "unknown")
     before = answers.read_bytes()
     result = subprocess.run([*command, "true"], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert answers.read_bytes() == before
+
+
+def test_shell_model_switch_sets_and_clears_thinking_control(contract):
+    answers, args = contract
+    assert render(args).returncode == 0
+    script = '''
+source "$1/pixel-host-install.sh"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_update_onboarding_model fixture "$2" "$3" "$4" 16384 4096 true "" unknown "${5:-}"
+'''
+    # Each promoted model brings its own measured control or none at all.
+    for model, control in [("thinking-model", "always"), ("switch-model", "enable_thinking"), ("plain-model", None)]:
+        command = ["bash", "-eu", "-c", script, "onboarding-test", str(LIB), args[2], str(answers), model]
+        if control is not None:
+            command.append(control)
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        value = json.loads(answers.read_text())
+        assert value["modelName"] == f"ODS Current ({model})"
+        assert value.get("modelThinkingControl") == control
+    before = answers.read_bytes()
+    result = subprocess.run([*command, "sometimes"], capture_output=True, text=True)
     assert result.returncode != 0
     assert answers.read_bytes() == before
 

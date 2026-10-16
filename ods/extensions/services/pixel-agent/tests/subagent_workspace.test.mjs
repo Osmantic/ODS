@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import {pathToFileURL} from 'node:url';
 import {subagentCwd,withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
+import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 
@@ -31,8 +32,8 @@ function fixture(t) {
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
     projectRunControl:createProjectRunControl(),artifactAdmission:{before(){}},
-    delegationDelivery:{blocked(){},before(){}},
-    withPixelCronDeliveryDefault,withPixelSubagentWorkspace,
+    delegationDelivery:{blocked(){},before(){},hasPendingChildren(){return false; }},
+    withPixelCronDeliveryDefault,withPixelSubagentWorkspace,withCronCommandPayloadBlock,
     getSessionEntry:scope=>{assert.equal(scope.sessionKey,ctx.sessionKey);return session;},
     resolveStorePath:()=>'/fixture/session-store',
     resolveUserPath:value=>value==='~'?root:value.startsWith('~/')?path.join(root,value.slice(2)):path.resolve(value),

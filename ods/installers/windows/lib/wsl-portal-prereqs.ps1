@@ -91,11 +91,46 @@ function Assert-ODSPortalHostCapacity([bool]$WslReady) {
 
 # --------------------------------------------------------------- Docker Desktop
 
+function Get-ODSPortalDockerDesktopRoots {
+    # Desktop supports per-user, all-user and custom InstallLocation paths.
+    # Inspect only its fixed uninstall keys; never execute UninstallString or
+    # mistake an unrelated Docker CLI on PATH for a Desktop installation.
+    $roots = @()
+    foreach ($key in @(
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Docker Desktop')) {
+        # Each registration is optional; most hosts have only one of these keys.
+        $registration = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+        # Some registrations quote the value or keep surrounding spaces.
+        $location = if ($registration) { ([string]$registration.InstallLocation).Trim().Trim('"') } else { '' }
+        if ($location) { $roots += $location }
+    }
+    if ($env:LOCALAPPDATA) { $roots += Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop' }
+    if ($env:ProgramW6432) { $roots += Join-Path $env:ProgramW6432 'Docker\Docker' }
+    if ($env:ProgramFiles) { $roots += Join-Path $env:ProgramFiles 'Docker\Docker' }
+    return @($roots | Where-Object {
+        # Do not resolve relative paths or contact a remote share during discovery.
+        if ([IO.Path]::DirectorySeparatorChar -eq '\') { $_ -match '^[A-Za-z]:[\\/]' }
+        else { [IO.Path]::IsPathRooted($_) -and $_ -notmatch '^[\\/]{2}' }
+    } | Select-Object -Unique)
+}
+
 function Get-ODSPortalDockerDesktop {
-    $root = Join-Path $env:ProgramFiles 'Docker\Docker'
-    $exe = Join-Path $root 'Docker Desktop.exe'
-    $cli = Join-Path $root 'resources\bin\docker.exe'
-    return [pscustomobject]@{ Installed = (Test-Path -LiteralPath $exe); Exe = $exe; Cli = $cli }
+    $partial = @()
+    foreach ($root in @(Get-ODSPortalDockerDesktopRoots)) {
+        $exe = Join-Path $root 'Docker Desktop.exe'
+        $cli = Join-Path $root 'resources\bin\docker.exe'
+        if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+        if (Test-Path -LiteralPath $cli -PathType Leaf) {
+            return [pscustomobject]@{ Installed = $true; Exe = $exe; Cli = $cli }
+        }
+        $partial += $root
+    }
+    if ($partial.Count -gt 0) {
+        throw "Docker Desktop installation is incomplete: the bundled Docker CLI is missing under $($partial -join ', '). Repair that Docker Desktop installation, then rerun ODS setup."
+    }
+    return [pscustomobject]@{ Installed = $false; Exe = ''; Cli = '' }
 }
 
 function Invoke-ODSPortalDockerCli([string]$Cli, [string[]]$Arguments) {
@@ -128,9 +163,28 @@ function Install-ODSPortalDockerDesktop {
         & $winget.Source @arguments | Out-Host
         $code = $LASTEXITCODE
     } finally { $ErrorActionPreference = $previousPreference }
-    if ($code -ne 0 -or -not (Get-ODSPortalDockerDesktop).Installed) {
+    # winget return codes that mean Docker Desktop is already present. Each is
+    # trusted only after the complete rediscovery below. Do not classify
+    # localized console text or ignore any other installation error.
+    $alreadyInstalled = $code -in @(
+        -1978335189,  # 0x8A15002B UPDATE_NOT_APPLICABLE (install upgrades by default)
+        -1978335135,  # 0x8A150061 PACKAGE_ALREADY_INSTALLED
+        -1978334963,  # 0x8A15010D INSTALL_ALREADY_INSTALLED
+        -1978334962)  # 0x8A15010E INSTALL_DOWNGRADE (a newer version is installed)
+    # 0x8A150109 INSTALL_REBOOT_REQUIRED_TO_FINISH: installed; it finishes with
+    # the Windows restart setup already requests for a new Desktop.
+    $restartPending = $code -eq -1978334967
+    if ($code -ne 0 -and -not $alreadyInstalled -and -not $restartPending) {
         throw "Docker Desktop installation did not finish (winget exit $code). Install it from https://docs.docker.com/desktop/setup/install/windows-install/ , restart Windows, then rerun this command."
     }
+    $desktop = Get-ODSPortalDockerDesktop
+    if (-not $desktop.Installed) {
+        if ($alreadyInstalled) {
+            throw "winget reports Docker Desktop is already installed (exit $code), but ODS could not locate its application and bundled CLI. Open Docker Desktop from Start and share its installation folder with ODS support. Keep your existing Docker data."
+        }
+        throw 'winget finished, but ODS could not locate the Docker Desktop application and bundled CLI. Open Docker Desktop from Start and check its installation folder before rerunning ODS setup.'
+    }
+    return [pscustomobject]@{ AlreadyInstalled = $alreadyInstalled; Desktop = $desktop }
 }
 
 function Wait-ODSPortalDockerEngine($Desktop) {
@@ -214,12 +268,20 @@ function Register-ODSPortalDistro([string]$Distro) {
     if ($code -ne 0) { throw "$Distro could not finish its first start (exit $code). Open $Distro once from the Start menu, then rerun this command." }
 }
 
+function ConvertTo-ODSPortalProcessArgument([string]$Value) {
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    # Win32 command-line quoting also works with Windows PowerShell 5.1,
+    # where ProcessStartInfo.ArgumentList is unavailable.
+    return '"' + [regex]::Replace([regex]::Replace($Value, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+}
+
 function Invoke-ODSPortalWslInput([string]$Distro, [string[]]$Command, [string]$Text) {
     # Runs a fixed root command in the distro with $Text on stdin. Bytes are
     # written directly: Windows PowerShell pipes add CRLF and use the console
     # code page, which would change passwords.
     $info = [Diagnostics.ProcessStartInfo]::new((Get-Command wsl.exe -CommandType Application | Select-Object -First 1).Source)
-    $info.Arguments = '--distribution ' + $Distro + ' --user root --exec ' + ($Command -join ' ')
+    $target = @('--distribution', $Distro, '--user', 'root', '--exec') + $Command
+    $info.Arguments = ($target | ForEach-Object { ConvertTo-ODSPortalProcessArgument $_ }) -join ' '
     $info.UseShellExecute = $false
     $info.RedirectStandardInput = $true
     $info.RedirectStandardOutput = $true
@@ -241,11 +303,13 @@ function Invoke-ODSPortalWslInput([string]$Distro, [string[]]$Command, [string]$
 function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
     $exists = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', 'id', '-u', $Account.Name)
     if ($exists.Code -ne 0) {
-        $created = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', 'useradd', '--create-home', '--shell', '/bin/bash', '--groups', 'sudo', '--', $Account.Name)
+        # --exec bypasses the login shell; its PATH need not include /usr/sbin.
+        # Ubuntu's account tools must also work before the first interactive boot.
+        $created = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root', '--exec', '/usr/sbin/useradd', '--create-home', '--shell', '/bin/bash', '--groups', 'sudo', '--', $Account.Name)
         if ($created.Code -ne 0) { throw "Could not create the Ubuntu user $($Account.Name): $($created.Output) $($created.Error)" }
     }
     # The password travels only on chpasswd's stdin, never in arguments or logs.
-    $password = Invoke-ODSPortalWslInput $Distro @('chpasswd') ($Account.Name + ':' + $Account.Password)
+    $password = Invoke-ODSPortalWslInput $Distro @('/usr/sbin/chpasswd') ($Account.Name + ':' + $Account.Password)
     if ($password.Code -ne 0) { throw "Could not set the Ubuntu password for $($Account.Name). Open $Distro, run: sudo passwd $($Account.Name), then rerun this command." }
     $written = Set-ODSPortalWslConf $Distro @('user', 'default', $Account.Name, 'boot', 'systemd', 'true')
     if ($written.Code -ne 0) { throw "Could not make $($Account.Name) the default Ubuntu user: $($written.Output)" }
@@ -255,23 +319,16 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
 
 function Set-ODSPortalWslConf([string]$Distro, [string[]]$Settings) {
     # $Settings is section, key, value triples. Other /etc/wsl.conf settings
-    # are kept; WSL reads the file only when the distro starts again.
-    $config = @'
-import configparser, sys
-path = '/etc/wsl.conf'
-parser = configparser.ConfigParser(interpolation=None)
-parser.optionxform = str
-parser.read(path)
-values = sys.argv[1:]
-for index in range(0, len(values), 3):
-    section, key, value = values[index:index + 3]
-    if not parser.has_section(section):
-        parser.add_section(section)
-    parser.set(section, key, value)
-with open(path, 'w') as handle:
-    parser.write(handle)
-'@
-    return (Invoke-ODSPortalWslInput $Distro (@('python3', '-') + $Settings) $config)
+    # are kept. Fresh Ubuntu has not passed ODS preflight yet, so Python must
+    # not be a prerequisite for creating its first normal Linux account.
+    if ($Settings.Count -eq 0 -or $Settings.Count % 3 -ne 0) { throw 'Invalid WSL settings.' }
+    for ($index = 0; $index -lt $Settings.Count; $index += 3) {
+        $userSetting = $Settings[$index] -ceq 'user' -and $Settings[$index + 1] -ceq 'default' -and (Test-ODSPortalLinuxUsername $Settings[$index + 2])
+        $bootSetting = $Settings[$index] -ceq 'boot' -and $Settings[$index + 1] -ceq 'systemd' -and $Settings[$index + 2] -ceq 'true'
+        if (-not ($userSetting -or $bootSetting)) { throw 'Unsupported WSL account or boot setting.' }
+    }
+    $config = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'wsl-conf.sh') -Raw
+    return (Invoke-ODSPortalWslInput $Distro (@('/bin/sh', '-s', '--', '/etc/wsl.conf') + $Settings) $config)
 }
 
 function Enable-ODSPortalSystemd([string]$Distro) {

@@ -52,8 +52,7 @@ def probe_runtime(executable: Path | str) -> dict[str, Any]:
     flags = set(re.findall(r"(?<!\w)--[a-z][a-z0-9-]*", '\n'.join(
         line for line in result.stdout.splitlines() if line.lstrip().startswith('-'))))
     return {**parse_runtime_capability(result.stdout),
-        "loadModeArguments": ["--load-mode", "mmap"] if "--load-mode" in flags else ["--mmap"] if "--mmap" in flags else [],
-        "lemonade10MmapCompatible": {"--mmap", "--no-mmap"}.issubset(flags)}
+        "loadModeArguments": ["--load-mode", "mmap"] if "--load-mode" in flags else ["--mmap"] if "--mmap" in flags else []}
 
 
 def validate_runtime_command(command: list[str]) -> None:
@@ -94,7 +93,12 @@ def recommend_mtp(evidence: Any, signature: str) -> dict[str, Any]:
 
 
 def qualify_memory_fit(evidence: Any, qualification: dict[str, Any]) -> dict[str, Any]:
-    """Accept a completed isolated native run, never infer fit from file size."""
+    """Accept a completed isolated native run, never infer fit from file size.
+
+    The evidence must come from the native llama-server launch ODS performs
+    (``launchMode`` / ``runtimeMode`` ``native``). Fits measured through the
+    retired Lemonade launch, with its injected flags, are not accepted.
+    """
     profile = qualification.get("profile", {})
     signature = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()
     if (not isinstance(evidence, dict) or evidence.get("status") != "completed"
@@ -109,17 +113,18 @@ def qualify_memory_fit(evidence: Any, qualification: dict[str, Any]) -> dict[str
     execution_body = {key:value for key,value in execution.items() if key != "signature"}
     if (execution.get("signature") != hashlib.sha256(json.dumps(execution_body, sort_keys=True).encode()).hexdigest()
             or execution.get("qualificationSignature") != signature
-            or execution.get("runtimeMode") != "lemonade" or execution.get("gpuLayers") != "99"
-            or profile.get("launchMode") != "lemonade" or profile.get("gpuLayers") != "99"
+            or execution.get("runtimeMode") != "native" or profile.get("launchMode") != "native"
+            or not re.fullmatch(r"auto|all|[0-9]{1,4}", str(profile.get("gpuLayers", "")))
+            or execution.get("gpuLayers") != profile.get("gpuLayers")
             or execution.get("backend") not in {"vulkan", "rocm", "metal", "cpu", "cuda"}
             or execution.get("context") != profile.get("context") or execution.get("cacheType") != "q4_0"
             or execution.get("draftTokens") != profile.get("draftTokens")
             or execution.get("visionProjectorSha256") != profile.get("visionProjectorSha256")
             or not re.fullmatch(r"[0-9a-f]{64}", str(execution.get("visionProjectorSha256", "")))
             or not re.fullmatch(r"[\w.-]+\.gguf", str(execution.get("visionProjectorFile", "")))):
-        raise ValueError("Memory evidence was not collected with the actual Lemonade launch parameters")
+        raise ValueError("Memory evidence was not collected with the actual native launch parameters")
     conditions = evidence.get("conditions", {})
-    if not isinstance(conditions, dict) or conditions.get("isolatedFromLemonade") is not True or conditions.get("visionProjectorLoaded") is not True:
+    if not isinstance(conditions, dict) or conditions.get("isolatedFromRuntime") is not True or conditions.get("visionProjectorLoaded") is not True:
         raise ValueError("Memory evidence does not prove an isolated multimodal model load")
     hardware = evidence.get("hardware", {})
     if (not isinstance(hardware, dict) or not isinstance(hardware.get("name"), str) or not hardware["name"]
@@ -138,7 +143,7 @@ def qualify_memory_fit(evidence: Any, qualification: dict[str, Any]) -> dict[str
                 or type(row.get("memoryUsedMB")) is not int or not 0 < row["memoryUsedMB"] <= hardware["memoryTotalMB"] + 256):
             raise ValueError("Memory telemetry is missing or inconsistent")
     return {"schemaVersion":1, "source":"measured-native", "qualificationSignature":signature,
-        "executionSignature":execution["signature"], "runtimeMode":"lemonade", "runtimeBackend":execution["backend"], "gpuLayers":"99",
+        "executionSignature":execution["signature"], "runtimeMode":"native", "runtimeBackend":execution["backend"], "gpuLayers":profile["gpuLayers"],
         "modelSha256":profile["modelSha256"], "runtimeSha256":profile["runtimeSha256"],
         "contextLength":profile["context"], "draftTokens":profile["draftTokens"],
         "visionProjectorFile":execution["visionProjectorFile"], "visionProjectorSha256":execution["visionProjectorSha256"],

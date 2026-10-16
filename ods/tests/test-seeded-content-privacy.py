@@ -6,11 +6,11 @@ files as instructions; the agent and stack templates are offered to every user.
 None of them may carry a maintainer's name, test machines, private workflow
 terms, personal home paths or LAN addresses.
 
-The installer's guidance migration (installers/lib/pixel-workspace-guidance.py)
-removes one exact retired block from AGENTS.md and MEMORY.md before Pixel reads
-them, so those two files are checked as the migration leaves them. The retired
-block is tolerated only while it stays byte-exact; it leaves the template with
-the next Pixel source release (see vendor/PIXEL-SOURCE-PROVENANCE.md).
+Pixel 4.3.29 removed the retired block that earlier templates carried in
+AGENTS.md and MEMORY.md (see vendor/PIXEL-SOURCE-PROVENANCE.md). The installer's
+guidance migration (installers/lib/pixel-workspace-guidance.py) still removes it
+from workspaces created from older releases. The shipped template must already
+be what that migration produces: it fails here if the migration would change it.
 """
 import base64
 import importlib.util
@@ -76,10 +76,10 @@ def main():
                 relative = path.relative_to(ODS).as_posix()
                 body = path.read_bytes()
                 if relative in MIGRATED:
-                    body, status = guidance.transform(name, body)
-                    if status not in ('migrated', 'current', 'unchanged'):
-                        failures.append(f'{relative}: the installer migration no longer recognizes '
-                                        f'the retired block ({status})')
+                    status = guidance.transform(name, body)[1]
+                    if status not in ('current', 'unchanged'):
+                        failures.append(f'{relative}: the installer migration would change the shipped '
+                                        f'template ({status}); the retired block must not return')
                         continue
                 checked += 1
                 for number, label in findings(body.decode('utf-8', errors='replace')):

@@ -14,6 +14,8 @@ param(
     [switch]$OpenPortal,
     [string]$StateRoot = "",
     [string]$ReportPath = "$env:TEMP\\ods-windows-preflight.json",
+    # Linux flags for a new installation only; a rerun keeps the installed selection.
+    [string[]]$NewInstallationArgs = @(),
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$PassthroughArgs
 )
@@ -227,6 +229,14 @@ if ($lifetimeRequired) {
     # an installation (every uninstall removes .env, even with --keep-data).
     & wsl.exe --distribution $Distro --exec /usr/bin/test -e "$($lifetimeIdentity.installRoot)/.env"
     $newInstallation = $LASTEXITCODE -eq 1
+    # Portal setup's -NewInstallationArgs apply to a new installation only. A
+    # rerun leaves them out, so install-core keeps the owner's current
+    # selection (for example Hermes added from the Extensions Library).
+    if ($newInstallation -and $NewInstallationArgs) {
+        $PassthroughArgs = @($PassthroughArgs | Where-Object { $null -ne $_ }) + @($NewInstallationArgs | Where-Object { $_ -cnotin $PassthroughArgs })
+        $wslCommand = New-ODSWslInstallerCommand $repoRootWsl $PassthroughArgs $lifetimeIdentity.installRoot
+        Write-Host "New installation: the Linux installer also gets $($NewInstallationArgs -join ' ')"
+    }
 }
 
 Write-Section "Running installer in WSL"

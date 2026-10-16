@@ -63,7 +63,7 @@ ods_model_lifecycle_lock_acquire() {
     if ! flock -xn "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
         _ods_model_lifecycle_log "Waiting for another model lifecycle operation before $actor..."
         if ! flock -x "$ODS_MODEL_LIFECYCLE_LOCK_FD"; then
-            exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&- 2>/dev/null || true
+            { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
             ODS_MODEL_LIFECYCLE_LOCK_FD=""
             return 1
         fi
@@ -77,7 +77,9 @@ ods_model_lifecycle_lock_release() {
     [[ -n "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] || return 0
 
     flock -u "$ODS_MODEL_LIFECYCLE_LOCK_FD" 2>/dev/null || true
-    exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&- 2>/dev/null || true
+    # Scope stderr suppression to closing the descriptor. A bare exec with
+    # 2>/dev/null would hide every subsequent installer/helper diagnostic.
+    { exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; } 2>/dev/null || true
     ODS_MODEL_LIFECYCLE_LOCK_FD=""
     ODS_MODEL_LIFECYCLE_LOCK_FILE=""
 }

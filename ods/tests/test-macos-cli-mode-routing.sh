@@ -51,6 +51,13 @@ MOCK_JQ
 cat > "$MOCK_BIN/curl" <<'MOCK_CURL'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CURL_LOG"
+# Credentials reach curl in a header file (-H @file), never as an argument;
+# record the headers it would send on lines of their own.
+for arg in "$@"; do
+    if [[ "$arg" == @* && "$arg" != @- ]]; then
+        printf 'header-file: %s\n' "$(cat "${arg#@}")" >> "$CURL_LOG"
+    fi
+done
 for arg in "$@"; do
     if [[ "$arg" == "-w" ]]; then
         printf '200'
@@ -115,8 +122,11 @@ run_cli chat "cloud route" >/dev/null
 assert_log_contains "$CURL_LOG" \
     'http://127.0.0.1:4010/v1/chat/completions' \
     "cloud chat did not use the host-published LiteLLM port"
-assert_log_contains "$CURL_LOG" 'Authorization: Bearer sk-test-cloud-key' \
+assert_log_contains "$CURL_LOG" 'header-file: Authorization: Bearer sk-test-cloud-key' \
     "cloud chat did not authenticate with LITELLM_KEY"
+if grep -v '^header-file: ' "$CURL_LOG" | grep -Fq 'sk-test-cloud-key'; then
+    fail "cloud chat put the LiteLLM key on the curl command line"
+fi
 pass "cloud chat uses authenticated LiteLLM"
 
 grep -v '^LITELLM_KEY=' "$INSTALL_DIR/.env" > "$TMP_DIR/cloud-no-key.env"
@@ -140,8 +150,11 @@ write_cloud_env
 cloud_status="$(run_cli status)"
 assert_log_contains "$CURL_LOG" 'http://127.0.0.1:4010/v1/models' \
     "cloud status did not probe authenticated LiteLLM"
-assert_log_contains "$CURL_LOG" 'Authorization: Bearer sk-test-cloud-key' \
+assert_log_contains "$CURL_LOG" 'header-file: Authorization: Bearer sk-test-cloud-key' \
     "cloud status did not authenticate its LiteLLM probe"
+if grep -v '^header-file: ' "$CURL_LOG" | grep -Fq 'sk-test-cloud-key'; then
+    fail "cloud status put the LiteLLM key on the curl command line"
+fi
 grep -Fq 'LiteLLM cloud gateway' <<< "$cloud_status" \
     || fail "cloud status did not identify the active cloud backend"
 if grep -Fq 'native Metal): not running' <<< "$cloud_status"; then

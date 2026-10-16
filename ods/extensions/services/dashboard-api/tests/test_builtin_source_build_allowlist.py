@@ -208,8 +208,11 @@ def test_dangerous_bind_still_rejected_after_helper_approval(tree):
 
 def _single_service(tree):
     compose = tree / "langfuse" / "compose.yaml.disabled"
-    svc = _svc_defs(compose)["langfuse-minio"]
-    compose.write_text(yaml.safe_dump({"services": {"langfuse-minio": svc}}))
+    document = yaml.safe_load(compose.read_text(encoding="utf-8"))
+    svc = document["services"]["langfuse-minio"]
+    # Keep the networks the service joins declared, as Compose requires.
+    compose.write_text(yaml.safe_dump({"services": {"langfuse-minio": svc},
+                                       "networks": document["networks"]}))
     return compose, svc
 
 

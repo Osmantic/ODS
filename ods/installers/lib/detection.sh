@@ -8,7 +8,7 @@
 #
 # Expects: SCRIPT_DIR, LOG_FILE, CAPABILITY_PROFILE_FILE, color codes,
 #           INTERACTIVE, TIER, OFFLINE_MODE, ENABLE_VOICE, ENABLE_WORKFLOWS,
-#           ENABLE_RAG, ENABLE_OPENCLAW (all used by fix_nvidia_secure_boot),
+#           ENABLE_RAG, ENABLE_HERMES (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
 # Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
 #           ods_windows_host_port_in_use(),
@@ -229,16 +229,20 @@ ods_container_label() {
     fi
 }
 
+# The Vulkan llama.cpp image needs only a render node; the ROCm image
+# (AMD_INFERENCE_BACKEND=rocm) also needs the ROCm compute device /dev/kfd.
 amd_gpu_missing_runtime_devices() {
     local root="${ODS_AMD_DEVICE_ROOT:-/dev}"
     local kfd="$root/kfd"
     local dri="$root/dri"
     local missing=()
 
-    if [[ -n "${ODS_AMD_DEVICE_ROOT:-}" ]]; then
-        [[ -e "$kfd" ]] || missing+=("$kfd")
-    else
-        [[ -c "$kfd" ]] || missing+=("$kfd")
+    if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
+        if [[ -n "${ODS_AMD_DEVICE_ROOT:-}" ]]; then
+            [[ -e "$kfd" ]] || missing+=("$kfd")
+        else
+            [[ -c "$kfd" ]] || missing+=("$kfd")
+        fi
     fi
 
     if [[ ! -d "$dri" ]]; then
@@ -279,7 +283,6 @@ show_amd_gpu_device_guidance() {
 
 apply_cpu_gpu_fallback() {
     local reason="${1:-AMD GPU runtime devices are unavailable.}"
-    local external="${LEMONADE_EXTERNAL:-false}" managed="${AMD_INFERENCE_MANAGED:-}"
     ai_warn "$reason"
     ai "Using CPU mode so installation can complete without GPU passthrough."
 
@@ -290,20 +293,9 @@ apply_cpu_gpu_fallback() {
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
     HAS_NPU=false
-    # A missing GPU device in WSL changes the container backend, not the
-    # Windows-owned Lemonade inference route. Only managed Lemonade needs the
-    # local llama-server CPU fallback.
-    if [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
-        case "${external,,}" in
-            true|1|yes|on) ;;
-            *)
-                if [[ "${AMD_INFERENCE_RUNTIME:-}" != "lemonade" \
-                   || "${managed,,}" != "false" ]]; then
-                    ODS_MODE="local"
-                fi
-                ;;
-        esac
-    fi
+    # A missing GPU device in WSL changes the container backend, not a
+    # Windows-hosted (host-native) llama-server route, which keeps
+    # ODS_MODE=local and NATIVE_LLM_BASE_URL.
     BACKEND_ID="cpu"
     CAP_LLM_BACKEND="cpu"
     CAP_GPU_VENDOR="cpu"
@@ -486,14 +478,24 @@ detect_gpu() {
         done
     fi
 
-    # Try AMD GPUs (discrete RDNA + APU) via sysfs
-    local amd_card_dirs=()
+    # Try AMD GPUs (discrete RDNA + APU) via sysfs. An integrated GPU next to
+    # a discrete AMD GPU (a desktop Ryzen's 2-CU Radeon) is not an inference
+    # GPU: llama.cpp runs on the discrete one (installers/lib/amd-topo.sh).
+    declare -F amd_inference_card_dirs >/dev/null 2>&1 \
+        || . "$(dirname "${BASH_SOURCE[0]}")/amd-topo.sh"
+    local amd_card_dirs=() _amd_all_cards=0 _amd_idx _amd_dir
     for card_dir in "$_drm_sys"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
-        [[ "$vendor" == "0x1002" ]] && amd_card_dirs+=("$card_dir")
+        [[ "$vendor" == "0x1002" ]] && _amd_all_cards=$((_amd_all_cards + 1))
     done
+    while IFS=$'\t' read -r _amd_idx _amd_dir; do
+        [[ -n "$_amd_dir" ]] && amd_card_dirs+=("$_amd_dir")
+    done < <(ODS_DRM_SYS="$_drm_sys" amd_inference_card_dirs)
+    if (( _amd_all_cards > ${#amd_card_dirs[@]} )); then
+        log "GPU: leaving out $(( _amd_all_cards - ${#amd_card_dirs[@]} )) integrated AMD GPU(s) next to the discrete AMD GPU; llama.cpp runs on the discrete GPU"
+    fi
 
     if [[ ${#amd_card_dirs[@]} -gt 0 ]]; then
         GPU_BACKEND="amd"
@@ -503,26 +505,23 @@ detect_gpu() {
         local has_apu=false has_discrete=false
 
         for card_dir in "${amd_card_dirs[@]}"; do
-            local vram_bytes gtt_bytes device_id
+            local vram_bytes device_id
             vram_bytes=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_bytes=0
-            gtt_bytes=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_bytes=0
             device_id=$(cat "$card_dir/device" 2>/dev/null) || device_id="unknown"
 
             local vram_mb=$(( vram_bytes / 1048576 ))
-            local gtt_gb=$(( gtt_bytes / 1073741824 ))
-            local vram_gb=$(( vram_bytes / 1073741824 ))
             total_vram_mb=$(( total_vram_mb + vram_mb ))
 
-            # Classify: APU has small VRAM + large GTT, or very large unified pool.
-            # GTT is the reliable signal — it represents system RAM available to
-            # the GPU and is large on APUs (Strix Halo). VRAM alone is not a
-            # safe gate: a future discrete 32 GB+ AMD card would be misidentified
-            # as unified memory if vram_gb >= 32 were kept as an OR branch.
-            if [[ $gtt_gb -ge 16 && $vram_gb -le 4 ]] || [[ $gtt_gb -ge 32 ]]; then
-                has_apu=true
-            else
-                has_discrete=true
-            fi
+            # Classify: gpu_metrics tells an APU from a discrete GPU when the
+            # kernel publishes it (amd_card_memory_type). Without it, an APU
+            # has small VRAM + large GTT, or a very large unified pool: GTT
+            # represents system RAM available to the GPU and is large on APUs
+            # (Strix Halo). VRAM alone is not a safe gate: a discrete 32 GB+
+            # AMD card would be misidentified as unified memory.
+            case "$(amd_card_memory_type "$card_dir")" in
+                unified) has_apu=true ;;
+                *) has_discrete=true ;;
+            esac
 
             # Get marketing name
             local name
@@ -560,7 +559,7 @@ detect_gpu() {
             fi
         fi
 
-        # Check for NPU (Ryzen AI) for Lemonade hybrid mode
+        # Report a Ryzen AI NPU. Nothing in ODS runs on it; llama.cpp uses the GPU.
         HAS_NPU=false
         if [[ -d /sys/class/misc/amdnpu ]] || lspci 2>/dev/null | grep -qi 'AMD.*NPU\|AMD.*IPU'; then
             HAS_NPU=true
@@ -581,10 +580,10 @@ detect_gpu() {
     GPU_COUNT=0
     GPU_BACKEND="cpu"
     GPU_MEMORY_TYPE="none"
-    if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
-        # Windows under WSL: the GPU is used by Lemonade on the host, not here.
-        ai "No GPU inside this Linux environment; the model runs on ${LEMONADE_GPU_NAME} through Lemonade."
-        log "Model inference uses the external Lemonade GPU: ${LEMONADE_GPU_NAME}."
+    if [[ -n "${NATIVE_LLM_BASE_URL:-}" && -n "${NATIVE_LLM_GPU_NAME:-}" ]]; then
+        # Windows under WSL: the GPU is used by llama-server on the host, not here.
+        ai "No GPU inside this Linux environment; the model runs on ${NATIVE_LLM_GPU_NAME} through llama-server on Windows."
+        log "Model inference uses the host-native llama-server GPU: ${NATIVE_LLM_GPU_NAME}."
     else
         warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
         log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
@@ -721,6 +720,9 @@ nvidia_kernel_module_flavor() {
 }
 
 validate_nvidia_blackwell_open_modules() {
+    # WSL uses the Windows display driver through /dev/dxg. Linux module
+    # metadata does not apply there, and installing a Linux driver breaks it.
+    ods_is_wsl_host && return 0
     nvidia_blackwell_hardware_detected || return 0
 
     local flavor
@@ -747,6 +749,11 @@ validate_nvidia_blackwell_open_modules() {
 }
 
 fix_nvidia_secure_boot() {
+    if ods_is_wsl_host; then
+        ai_warn "NVIDIA GPU access is unavailable in WSL. Check the NVIDIA Windows driver and Docker Desktop GPU integration."
+        ai "Do not install NVIDIA drivers or change Secure Boot inside WSL."
+        return 1
+    fi
     # Step 1: Is there even NVIDIA hardware on this machine?
     if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
         return 1  # No hardware — nothing to fix
@@ -913,7 +920,6 @@ fix_nvidia_secure_boot() {
     $ENABLE_WORKFLOWS && resume_args="$resume_args --workflows"
     $ENABLE_RAG && resume_args="$resume_args --rag"
     $ENABLE_HERMES && resume_args="$resume_args --hermes"
-    $ENABLE_OPENCLAW && resume_args="$resume_args --openclaw"
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
     [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"

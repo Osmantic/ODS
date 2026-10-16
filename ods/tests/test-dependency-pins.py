@@ -242,13 +242,46 @@ def test_external_pins_cannot_be_bypassed_by_lock_or_latest_exception() -> None:
         assert any('complete @sha256 digest' in error for error in module.validate_refs([ref], lock))
 
 
-def test_rocm_default_digest_is_resolved_and_override_is_explicit() -> None:
+def test_amd_overlays_pin_official_llama_cpp_images_mirrored_in_lock_and_contract() -> None:
+    """AMD pulls upstream llama.cpp by digest; no local build, no variable image."""
     module = load_module()
-    path = ROOT / 'extensions/services/llama-server/Dockerfile.amd'
-    refs = module._dockerfile_image_refs(path)
-    builder = next(ref for ref in refs if ref.value.startswith('rocm/'))
-    assert builder.raw == 'rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete@${ROCM_IMAGE_DIGEST}'
-    assert builder.value == 'rocm/dev-ubuntu-24.04:7.2-complete@sha256:86e11093b4a7ec2a79b1b6701d10e840a6994f21c7e05929b51eb9be361c683a'
+    lock = json.loads((ROOT / "config" / "dependency-lock.json").read_text(encoding="utf-8"))
+    by_id = {entry["id"]: entry for entry in lock["entries"]}
+    contract = json.loads((ROOT / "config" / "backends" / "amd.json").read_text(encoding="utf-8"))
+    runtime = contract["runtime"]["llama_server"]
+    assert "lemonade" not in contract["runtime"]
+    for overlay, ident, key, tag in (
+        ("docker-compose.amd.yml", "amd.llama-server", "linux_image", "server-vulkan-b9014"),
+        ("docker-compose.amd-rocm.yml", "amd-rocm.llama-server", "linux_rocm_image", "server-rocm-b9014"),
+    ):
+        refs = module._compose_image_refs(ROOT / overlay)
+        assert [ref.raw for ref in refs] == [runtime[key]], overlay
+        assert runtime[key].startswith(f"ghcr.io/ggml-org/llama.cpp:{tag}@sha256:")
+        assert by_id[ident] == {"id": ident, "type": "image", "path": overlay, "value": runtime[key]}
+    windows = runtime["windows"]
+    assert windows["asset"] == f"llama-{windows['release_tag']}-bin-win-vulkan-x64.zip"
+    assert by_id["amd.llama-server-windows-vulkan"]["value"] == windows["sha256"]
+    assert by_id["amd.llama-server-windows-vulkan"]["type"] == "archive"
+    assert isinstance(windows["size"], int) and windows["size"] > 0
+    assert not any("ods-lemonade-server" in item["value"] for item in lock["allow_local_images"])
+
+
+def test_archive_entries_need_a_sha256_and_are_not_image_refs() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "pins.json").write_text('{"sha256": "' + "a" * 64 + '", "bad": "not-a-digest"}', encoding="utf-8")
+        good = {"id": "zip", "type": "archive", "path": "pins.json", "value": "a" * 64}
+        lock = {"version": 1, "entries": [good], "allow_latest": [],
+                "allow_local_images": [], "allow_variable_refs": []}
+        assert module._validate_lock_shape(lock, root) == []
+        assert module.validate_refs([], lock, root) == []
+        bad = dict(good, value="not-a-digest")
+        errors = module._validate_lock_shape(dict(lock, entries=[bad]), root)
+        assert any("must be a 64-character SHA-256" in error for error in errors)
+        unknown = dict(good, type="tarball")
+        errors = module._validate_lock_shape(dict(lock, entries=[unknown]), root)
+        assert any("unknown type" in error for error in errors)
 
 
 def test_repo_llama_cpp_pins_carry_digests() -> None:
@@ -304,7 +337,8 @@ def main() -> int:
         test_llama_cpp_images_require_tag_and_digest,
         test_repo_llama_cpp_pins_carry_digests,
         test_external_pins_cannot_be_bypassed_by_lock_or_latest_exception,
-        test_rocm_default_digest_is_resolved_and_override_is_explicit,
+        test_amd_overlays_pin_official_llama_cpp_images_mirrored_in_lock_and_contract,
+        test_archive_entries_need_a_sha256_and_are_not_image_refs,
         test_extension_library_sha_tags_are_rejected,
         test_dockerfile_heredocs_are_not_image_instructions,
         test_dockerfile_directives_continuations_and_stage_scope,

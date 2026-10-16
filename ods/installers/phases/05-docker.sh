@@ -6,7 +6,8 @@
 # Purpose: Install Docker, Docker Compose, and NVIDIA Container Toolkit
 #
 # Expects: SKIP_DOCKER, DRY_RUN, INTERACTIVE, GPU_COUNT, GPU_BACKEND,
-#           LOG_FILE, MIN_DRIVER_VERSION, PKG_MANAGER,
+#           LOG_FILE, MIN_DRIVER_VERSION, PKG_MANAGER, ENABLE_PIXEL_RUNTIME,
+#           ods_pixel_check_owner_docker(),
 #           show_phase(), ai(), ai_ok(), ai_warn(), log(), warn(), error(),
 #           detect_pkg_manager(), pkg_install(), pkg_update(), pkg_resolve()
 # Provides: DOCKER_CMD, DOCKER_COMPOSE_CMD
@@ -640,4 +641,11 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
             $DRY_RUN && ai_ok "[DRY RUN] Would install NVIDIA Container Toolkit" || error "NVIDIA Container Toolkit installation failed — nvidia-container-cli not found after install."
         fi
     fi
+fi
+
+# Check after runtime/toolkit setup (which may restart Docker), but before
+# phase 06 writes configuration and phase 08 downloads/builds the images.
+# A successful sudo Docker probe does not establish Pixel owner's access.
+if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true && "$DRY_RUN" != true ]]; then
+    ods_pixel_check_owner_docker || return 1
 fi

@@ -305,7 +305,7 @@ LLM section (optional under `service`, required for LLM consumers):
 For the extension-author workflow and examples, see
 [SWAP-SAFE-EXTENSIONS.md](SWAP-SAFE-EXTENSIONS.md). Apps that speak the
 OpenAI protocol should use the gateway alias by default and avoid persisting
-GGUF filenames, Lemonade ids, or other concrete model names.
+GGUF filenames, catalog ids, or other concrete model names.
 
 ## Service Categories
 

@@ -193,58 +193,28 @@ def test_model_mismatch_rejected():
         assemble_chat_completion_sse(raw, MODEL)
 
 
-def test_lemonade_gguf_filename_identity_is_one_way_and_stream_consistent():
-    selected = "Qwen3.6-35B-A3B-UD-Q4_K_M"
-    wire = selected + ".gguf"
-    raw = b"".join([
-        _frame(_base(model=wire, choices=[{"index": 0, "delta": {
-            "role": "assistant"}, "finish_reason": None}])),
-        _frame(_base(model=wire, choices=[{"index": 0, "delta": {
-            "tool_calls": [{"index": 0, "id": "call-1", "type": "function",
-                            "function": {"name": "add_numbers",
-                                         "arguments": '{"a":1,"b":2}'}}]},
-            "finish_reason": None}])),
-        _frame(_base(model=wire, choices=[{"index": 0, "delta": {},
-                                          "finish_reason": "tool_calls"}])),
-        _done(),
-    ])
-    with pytest.raises(ValueError, match="model mismatch"):
-        assemble_chat_completion_sse(raw, selected)
-    complete = assemble_chat_completion_sse(
-        raw, selected, allow_gguf_filename_alias=True)
-    assert complete["model"] == selected
-    assert complete["choices"][0]["message"]["tool_calls"][0][
-        "function"]["name"] == "add_numbers"
-    with pytest.raises(ValueError, match="model mismatch"):
-        assemble_chat_completion_sse(
-            raw.replace(wire.encode(), b"OtherModel.gguf"),
-            selected, allow_gguf_filename_alias=True)
-    with pytest.raises(ValueError, match="model mismatch"):
-        assemble_chat_completion_sse(
-            raw.replace(wire.encode(), (selected + ".gguf.gguf").encode()),
-            selected, allow_gguf_filename_alias=True)
-    with pytest.raises(ValueError, match="model mismatch"):
-        assemble_chat_completion_sse(
-            raw.replace(wire.encode(), selected.encode()),
-            wire, allow_gguf_filename_alias=True)
-    with pytest.raises(ValueError, match="model changed within stream"):
-        assemble_chat_completion_sse(
-            raw.replace(wire.encode(), selected.encode(), 1),
-            selected, allow_gguf_filename_alias=True)
-
-
-def test_captured_strixy_lemonade_tool_stream_replays_with_selected_model():
+def test_gguf_alias_stream_identity_is_exact():
+    # A llama-server stream names the GGUF it serves under --alias, which is
+    # the runtime model id; no caller can relax that match.
     raw = (Path(__file__).parent / "fixtures" /
-           "strixy_lemonade_gguf_tool_stream.sse").read_bytes()
-    selected = "Qwen3.6-35B-A3B-UD-Q4_K_M"
-    complete = assemble_chat_completion_sse(
-        raw, selected, allow_gguf_filename_alias=True)
+           "strixy_gguf_tool_stream.sse").read_bytes()
+    selected = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+    complete = assemble_chat_completion_sse(raw, selected)
     assert complete["model"] == selected
     assert complete["choices"][0]["finish_reason"] == "tool_calls"
     call = complete["choices"][0]["message"]["tool_calls"][0]
     assert call["function"]["name"] == "add_numbers"
     assert json.loads(call["function"]["arguments"]) == {"a": 17, "b": 19}
     assert complete["usage"]["total_tokens"] == 336
+    with pytest.raises(ValueError, match="model mismatch"):
+        assemble_chat_completion_sse(raw, selected.removesuffix(".gguf"))
+    with pytest.raises(ValueError, match="model mismatch"):
+        assemble_chat_completion_sse(raw.replace(selected.encode(), b"OtherModel.gguf"), selected)
+    # One frame naming another model is a mismatch too.
+    with pytest.raises(ValueError, match="model mismatch"):
+        assemble_chat_completion_sse(raw.replace(selected.encode(), b"OtherModel.gguf", 1), selected)
+    with pytest.raises(TypeError):
+        assemble_chat_completion_sse(raw, selected, allow_gguf_filename_alias=True)
 
 
 def test_malformed_tool_arguments_rejected():

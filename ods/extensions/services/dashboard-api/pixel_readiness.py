@@ -15,6 +15,8 @@ def project_readiness(route_available, access, identity, access_issue="access-pr
     if access is not None:
         if access["pending"]:
             access_state, reason = "transitioning", "access-transition-pending"
+            if access.get("reason") == "model-transition-recovery-required":
+                reason = "model-transition-recovery-required"
         elif not access["available"]:
             access_state = "failed"
             reason = "access-inspection-failed" if access["reason"] == "inspection-failed" else "access-verification-failed"

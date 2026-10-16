@@ -58,6 +58,8 @@ def router(tmp_path, monkeypatch):
             "auth": request.headers.get("authorization"),
             "stream": bool(body.get("stream")),
         })
+        # The route header a pre-round-F Lemonade upstream sent; the router
+        # surfaces it nowhere.
         if body.get("stream"):
             sse = (
                 b'data: {"id":"c1","model":"Concrete.gguf","choices":[{"delta":{"content":"hi"}}]}\n\n'
@@ -193,7 +195,7 @@ class TestForwarding:
         assert resp.headers["X-ODS-Requested-Model"] == "ods/current"
         assert resp.headers["X-ODS-Routed-Model"] == "Concrete.gguf"
         assert resp.headers["X-ODS-Route-Seq"] == "7"
-        assert resp.headers["X-Lemonade-Route"] == "route-a"
+        assert "X-Lemonade-Route" not in resp.headers
 
     def test_chat_template_artifacts_stripped_from_json_content(self, router):
         mod, client, write_state, calls = router
@@ -242,8 +244,7 @@ class TestForwarding:
 
     def test_local_tool_stream_uses_completed_backend_decision(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         sent = []
 
         def handler(request):
@@ -301,8 +302,7 @@ class TestForwarding:
 
     def test_local_tool_stream_buffers_valid_tool_decision_and_usage(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         sent = []
 
         def frame(delta, finish=None, created=1, usage=None):
@@ -357,24 +357,25 @@ class TestForwarding:
                                       "completion_tokens": 8, "total_tokens": 28}
 
     @pytest.mark.parametrize("wrong_wire_model", [False, True])
-    def test_strixy_lemonade_gguf_stream_respects_pinned_selected_route(
+    def test_strixy_gguf_stream_respects_pinned_selected_route(
             self, router, wrong_wire_model):
         mod, client, write_state, _calls = router
-        selected = "Qwen3.6-35B-A3B-UD-Q4_K_M"
-        wire = selected + ".gguf"
-        write_state(runtime=selected, mutate=lambda state:
-                    state["active"]["backend"].update(kind="lemonade"))
+        # llama-server serves the GGUF under its --alias, the runtime model id.
+        selected = "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+        write_state(runtime=selected)
         raw = (Path(__file__).parent / "fixtures" /
-               "strixy_lemonade_gguf_tool_stream.sse").read_bytes()
+               "strixy_gguf_tool_stream.sse").read_bytes()
         if wrong_wire_model:
-            raw = raw.replace(wire.encode(), b"OtherModel.gguf")
+            raw = raw.replace(selected.encode(), b"OtherModel.gguf")
         sent = []
 
         def handler(request):
             sent.append(json.loads(request.content))
+            # Captured through Lemonade, which added its route header.
             return httpx.Response(
                 200, content=raw,
-                headers={"content-type": "text/event-stream"})
+                headers={"content-type": "text/event-stream",
+                         "x-lemonade-route": "llamacpp"})
 
         asyncio.run(mod.app.state.http.aclose())
         mod.app.state.http = httpx.AsyncClient(
@@ -391,6 +392,7 @@ class TestForwarding:
         })
         assert len(sent) == 1 and sent[0]["model"] == selected
         assert sent[0]["stream"] is True
+        assert "X-Lemonade-Route" not in response.headers
         if wrong_wire_model:
             assert response.status_code == 502
             assert response.json()["error"]["type"] == "response_identity_mismatch"
@@ -600,8 +602,7 @@ class TestForwarding:
 
     def test_tool_stream_disconnect_closes_upstream_before_decision(self, router):
         mod, _client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
 
         async def run():
             started = asyncio.Event()
@@ -652,18 +653,17 @@ class TestForwarding:
 
         asyncio.run(run())
 
-    def test_local_tool_stream_reports_lemonade_context_error_not_invalid_completion(self, router):
+    def test_local_tool_stream_passes_llama_server_context_error_through(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
+        # llama-server answers an oversized prompt with its own HTTP 400.
+        error = {"error": {
+            "code": 400, "type": "exceed_context_size_error",
+            "message": "the request exceeds the available context size, try increasing it",
+            "n_prompt_tokens": 9000, "n_ctx": 8192}}
 
         def handler(_request):
-            return httpx.Response(200, json={"error": {
-                "message": "llama-server request failed", "details": {
-                    "status_code": 400, "response": {"error": {
-                        "type": "exceed_context_size_error", "n_ctx": 8192,
-                        "n_prompt_tokens": 9000,
-                        "message": "untrusted backend detail"}}}}})
+            return httpx.Response(400, json=error)
 
         asyncio.run(mod.app.state.http.aclose())
         mod.app.state.http = httpx.AsyncClient(
@@ -676,18 +676,12 @@ class TestForwarding:
         })
 
         assert response.status_code == 400
-        assert response.json()["error"] == {
-            "message": "Request (9000 tokens) exceeds the available context size (8192 tokens)",
-            "type": "exceed_context_size_error", "code": "400",
-            "n_ctx": 8192, "n_prompt_tokens": 9000,
-        }
-        assert "untrusted backend detail" not in response.text
+        assert response.json() == error
         assert "[DONE]" not in response.text
 
     def test_complete_native_markup_uses_only_advertised_valid_tool(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         native = (
             "<tool_call>\n<function=pixel_ods_python_library_proposal>\n"
             "<parameter=repository>\nhttps://github.com/pypa/packaging\n</parameter>\n"
@@ -805,8 +799,7 @@ class TestForwarding:
 
     def test_invalid_complete_native_name_gets_one_completion_repair(self, router):
         mod, client, write_state, _calls = router
-        write_state(mutate=lambda state: state["active"]["backend"].update(
-            kind="lemonade"))
+        write_state()
         sent = []
         def handler(request):
             body = json.loads(request.content)
@@ -863,6 +856,34 @@ class TestForwarding:
                   for frame in response.text.split("\n\n")
                   if frame and frame != "data: [DONE]"]
         assert chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "web_fetch"
+
+    def test_repair_transport_error_hides_the_error_text(self, router):
+        mod, client, write_state, _calls = router
+        write_state()
+        sent = []
+        def handler(request):
+            body = json.loads(request.content)
+            sent.append(body)
+            if len(sent) > 1:
+                raise httpx.ConnectError("private backend detail", request=request)
+            native = ("<tool_call>\n<function=pixel_ods_web_fetch>\n"
+                      "<parameter=url>\nhttps://example.org\n</parameter>\n"
+                      "</function>\n</tool_call>")
+            return httpx.Response(200, json={"model": "Concrete.gguf", "choices": [{"index": 0,
+                "message": {"role": "assistant", "content": native}, "finish_reason": "stop"}]})
+        asyncio.run(mod.app.state.http.aclose())
+        mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        response = client.post("/v1/chat/completions", json={
+            "model": "ods/current", "stream": False,
+            "messages": [{"role": "user", "content": "fetch the URL"}],
+            "tools": [{"type": "function", "function": {"name": "web_fetch",
+                "parameters": {"type": "object", "required": ["url"],
+                    "properties": {"url": {"type": "string"}}}}}],
+        })
+        assert len(sent) == 2
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "upstream_unavailable"
+        assert "private backend detail" not in response.text
 
     def test_second_invalid_native_decision_returns_typed_error(self, router):
         mod, client, write_state, _calls = router
@@ -1432,6 +1453,7 @@ class TestModelsAndEvidence:
         assert record["routeSeq"] == 7
         assert record["responseModel"] == "Concrete.gguf"
         assert "messages" not in record and "content" not in record
+        assert "lemonadeRoute" not in record
 
     def test_completed_verified_stream_records_evidence(self, router):
         mod, client, write_state, calls = router

@@ -142,7 +142,6 @@ SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "data", "settings.json")
 
 _DEFAULT_SETTINGS = {
     "session_char_limit": 200_000,
-    "poll_interval_minutes": 5,
     "agents": {},
     "filters": {
         "enabled": False,
@@ -187,8 +186,22 @@ def _ensure_agent_in_settings(settings: dict, agent_name: str):
     if "agents" not in settings:
         settings["agents"] = {}
     if agent_name not in settings["agents"]:
-        settings["agents"][agent_name] = {"session_char_limit": None, "poll_interval_minutes": None}
+        settings["agents"][agent_name] = {"session_char_limit": None}
     return settings
+
+
+# Earlier versions stored the interval of the OpenClaw session-cleanup timer,
+# which was removed with that extension. Nothing reads it, so it is dropped
+# when settings load and disappears from disk on the next save.
+_RETIRED_SETTING_KEYS = ("poll_interval_minutes",)
+
+
+def _drop_retired_settings(settings: dict):
+    for key in _RETIRED_SETTING_KEYS:
+        settings.pop(key, None)
+        for agent_cfg in settings.get("agents", {}).values():
+            if isinstance(agent_cfg, dict):
+                agent_cfg.pop(key, None)
 
 
 def load_settings() -> dict:
@@ -200,6 +213,7 @@ def load_settings() -> dict:
         for k, v in _DEFAULT_SETTINGS.items():
             if k not in data:
                 data[k] = v
+        _drop_retired_settings(data)
         # Ensure current agent exists in settings
         data = _ensure_agent_in_settings(data, AGENT_NAME)
         return data
@@ -1691,7 +1705,6 @@ def api_get_settings():
     settings = load_settings()
     for agent_name, agent_cfg in settings.get("agents", {}).items():
         agent_cfg["_effective_session_char_limit"] = get_agent_setting(agent_name, "session_char_limit")
-        agent_cfg["_effective_poll_interval_minutes"] = get_agent_setting(agent_name, "poll_interval_minutes")
     return settings
 
 
@@ -1702,7 +1715,6 @@ async def api_update_settings(request: Request):
     Example body:
       {"session_char_limit": 150000}
       {"agents": {"my-agent": {"session_char_limit": 100000}}}
-      {"poll_interval_minutes": 3}
     """
     body = await request.json()
     settings = load_settings()
@@ -1714,14 +1726,6 @@ async def api_update_settings(request: Request):
             if val < 10000:
                 return JSONResponse({"error": "session_char_limit must be >= 10000"}, status_code=400)
         settings["session_char_limit"] = val
-
-    if "poll_interval_minutes" in body:
-        val = body["poll_interval_minutes"]
-        if val is not None:
-            val = int(val)
-            if val < 1 or val > 60:
-                return JSONResponse({"error": "poll_interval_minutes must be 1-60"}, status_code=400)
-        settings["poll_interval_minutes"] = val
 
     # Deep-merge filter settings (hot-reloadable)
     if "filters" in body:
@@ -1738,46 +1742,20 @@ async def api_update_settings(request: Request):
         for agent_name, agent_updates in body["agents"].items():
             if agent_name not in settings.get("agents", {}):
                 settings.setdefault("agents", {})[agent_name] = {}
-            for key in ("session_char_limit", "poll_interval_minutes"):
-                if key in agent_updates:
-                    val = agent_updates[key]
-                    if val is not None:
-                        val = int(val)
-                    settings["agents"][agent_name][key] = val
+            if "session_char_limit" in agent_updates:
+                val = agent_updates["session_char_limit"]
+                if val is not None:
+                    val = int(val)
+                settings["agents"][agent_name]["session_char_limit"] = val
             # Per-agent filter overrides
             if "filters" in agent_updates:
                 settings["agents"][agent_name]["filters"] = agent_updates["filters"]
 
     save_settings(settings)
 
-    new_poll = settings.get("poll_interval_minutes", 5)
-    _update_timer_interval(new_poll)
-
     log.info(f"[SETTINGS] Updated: {body}")
     return api_get_settings()
 
-
-def _update_timer_interval(minutes: int):
-    """Best-effort update of the systemd timer interval."""
-    import subprocess
-    timer_path = os.environ.get("SESSION_TIMER_PATH", "/etc/systemd/system/openclaw-session-cleanup.timer")
-    try:
-        with open(timer_path, "r") as f:
-            timer_content = f.read()
-        import re as _re
-        new_content = _re.sub(
-            r"OnUnitActiveSec=\d+min",
-            f"OnUnitActiveSec={minutes}min",
-            timer_content,
-        )
-        if new_content != timer_content:
-            with open(timer_path, "w") as f:
-                f.write(new_content)
-            subprocess.run(["systemctl", "daemon-reload"], capture_output=True)
-            subprocess.run(["systemctl", "restart", "openclaw-session-cleanup.timer"], capture_output=True)
-            log.info(f"[SETTINGS] Timer updated to {minutes}min")
-    except Exception as e:
-        log.warning(f"[SETTINGS] Could not update timer: {e} (may need sudo)")
 
 @app.get("/api/usage", dependencies=[Depends(verify_api_key)])
 def api_usage(agent: str | None = None, hours: int = 24, limit: int = 200):
@@ -1988,10 +1966,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         <label>Session char limit</label>
         <div><input type="number" id="set-global-limit" step="10000" min="10000" oninput="updateTokenHint(this,'set-global-limit-tok')"> <span class="unit">chars</span> <span id="set-global-limit-tok" class="unit" style="color:#58a6ff"></span></div>
       </div>
-      <div class="setting-row">
-        <label>Poll frequency</label>
-        <div><input type="number" id="set-global-poll" step="1" min="1" max="60"> <span class="unit">min</span></div>
-      </div>
     </div>
     <!-- Agent-specific settings will be inserted here dynamically -->
   </div>
@@ -2121,6 +2095,13 @@ function fmtCost(n) {
   return '$' + n.toFixed(4);
 }
 
+// Agent and model names come from API callers; escape them before any innerHTML.
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => (
+    {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]
+  ));
+}
+
 function recLabel(rec) {
   const labels = {
     healthy: 'Healthy', monitor: 'Monitor', compact_soon: 'Compact Soon',
@@ -2129,9 +2110,8 @@ function recLabel(rec) {
   return labels[rec] || rec;
 }
 
-async function resetSession(agent) {
+async function resetSession(agent, btn) {
   if (!confirm('Reset ' + agent + '? This will kill the active session and force a fresh start.')) return;
-  const btn = document.getElementById('reset-' + agent);
   if (btn) { btn.disabled = true; btn.textContent = 'Resetting...'; }
   try {
     const res = await _authFetch('/api/reset-session?agent=' + encodeURIComponent(agent), { method: 'POST' });
@@ -2156,13 +2136,13 @@ function renderSessionPanel(sessions) {
     const showReset = ['reset_recommended', 'compact_soon', 'monitor'].includes(rec);
     const isLocal = s.is_local_model;
     const cardClass = 'session-card' + (isLocal ? ' local-model' : '');
-    const agentLabel = s.agent + (isLocal ? '<span class="agent-type">\u26A1 Self-Hosted</span>' : '');
+    const agentLabel = esc(s.agent) + (isLocal ? '<span class="agent-type">\u26A1 Self-Hosted</span>' : '');
     const limit = s.session_char_limit || 200000;
     const pct = limit > 0 ? Math.round((s.current_history_chars / limit) * 100) : 0;
     const barColor = pct > 80 ? '#da3633' : pct > 60 ? '#9e6a03' : '#238636';
     const historyWarn = s.current_history_chars > limit;
     return '<div class="' + cardClass + '">' +
-      '<h3>' + agentLabel + ' <span class="status-badge status-' + rec + '">' + recLabel(rec) + '</span></h3>' +
+      '<h3>' + agentLabel + ' <span class="status-badge status-' + esc(rec) + '">' + esc(recLabel(rec)) + '</span></h3>' +
       '<div class="session-stat"><span class="label">Session turns</span><span>' + s.current_session_turns + '</span></div>' +
       '<div class="session-stat"><span class="label">History size</span><span' + (historyWarn ? ' style="color:#da3633;font-weight:600"' : '') + '>' + fmt(s.current_history_chars) + ' / ' + fmt(limit) + ' (' + pct + '%)</span></div>' +
       '<div class="session-stat" style="font-size:0.8em;color:#8b949e;margin-top:-4px"><span class="label"></span><span>~' + fmt(Math.round(s.current_history_chars / 4)) + ' / ' + fmt(Math.round(limit / 4)) + ' tokens</span></div>' +
@@ -2175,7 +2155,8 @@ function renderSessionPanel(sessions) {
         '<div class="session-stat"><span class="label">Cache write %</span><span>' + (s.cache_write_pct_last_5 * 100).toFixed(1) + '%</span></div>' +
         '<div class="session-stat"><span class="label">Session total cost</span><span class="cost">' + fmtCost(s.cost_since_last_reset) + '</span></div>'
       ) +
-      (showReset ? '<button class="reset-btn" id="reset-' + s.agent + '" onclick="resetSession(\\'' + s.agent + '\\')">Reset Session</button>' : '') +
+      // The handler reads the name from data-agent, so no caller text reaches inline JavaScript.
+      (showReset ? '<button class="reset-btn" data-agent="' + esc(s.agent) + '" onclick="resetSession(this.dataset.agent, this)">Reset Session</button>' : '') +
     '</div>';
   }).join('');
 }
@@ -2205,9 +2186,9 @@ function renderSummary(data) {
     '<div class="card"><h3>Cache Efficiency</h3><div class="value cache">' + cacheReadPct + '%</div><div class="sub">' + fmt(totalCacheRead) + ' reads / ' + fmt(totalCacheWrite) + ' writes</div></div>';
   data.forEach(d => {
     if (d.is_local_model) {
-      html += '<div class="card" style="border-color:#3fb95044;background:linear-gradient(135deg,#161b22,#0d1a12)"><h3>' + d.agent.toUpperCase() + ' <span style="color:#3fb950;font-size:10px;background:#3fb95018;border:1px solid #3fb95044;padding:2px 7px;border-radius:10px;font-weight:600;letter-spacing:0.5px">\u26A1 SELF-HOSTED</span></h3><div class="value">' + d.turns + ' turns</div><div class="sub" style="color:#3fb950">$0.00 \u2014 local GPU | ~' + fmt(d.avg_input_tokens) + ' tokens/turn</div></div>';
+      html += '<div class="card" style="border-color:#3fb95044;background:linear-gradient(135deg,#161b22,#0d1a12)"><h3>' + esc(d.agent.toUpperCase()) + ' <span style="color:#3fb950;font-size:10px;background:#3fb95018;border:1px solid #3fb95044;padding:2px 7px;border-radius:10px;font-weight:600;letter-spacing:0.5px">\u26A1 SELF-HOSTED</span></h3><div class="value">' + d.turns + ' turns</div><div class="sub" style="color:#3fb950">$0.00 \u2014 local GPU | ~' + fmt(d.avg_input_tokens) + ' tokens/turn</div></div>';
     } else {
-      html += '<div class="card"><h3>' + d.agent.toUpperCase() + '</h3><div class="value">' + d.turns + ' turns</div><div class="sub">' + fmtCost(d.total_cost) + ' | avg ' + fmt(d.avg_input_tokens) + ' in/turn</div></div>';
+      html += '<div class="card"><h3>' + esc(d.agent.toUpperCase()) + '</h3><div class="value">' + d.turns + ' turns</div><div class="sub">' + fmtCost(d.total_cost) + ' | avg ' + fmt(d.avg_input_tokens) + ' in/turn</div></div>';
     }
   });
   el.innerHTML = html;
@@ -2357,8 +2338,8 @@ function renderTable(usage) {
     const model = (u.model || '').startsWith('claude-') ? (u.model || '').replace('claude-', '').split('-2')[0] : (u.model || '');
     return '<tr>' +
       '<td>' + t + '</td>' +
-      '<td>' + u.agent + '</td>' +
-      '<td>' + model + '</td>' +
+      '<td>' + esc(u.agent) + '</td>' +
+      '<td>' + esc(model) + '</td>' +
       '<td class="tokens">' + fmt(u.input_tokens) + '</td>' +
       '<td class="tokens">' + fmt(u.output_tokens) + '</td>' +
       '<td class="cache">' + fmt(u.cache_read_tokens) + '</td>' +
@@ -2393,7 +2374,6 @@ async function loadSettingsUI() {
     const res = await _authFetch('/api/settings');
     const s = await res.json();
     document.getElementById('set-global-limit').value = s.session_char_limit || '';
-    document.getElementById('set-global-poll').value = s.poll_interval_minutes || '';
     window._scl = s.session_char_limit || 200000;
     // Dynamically build agent-specific settings
     const grid = document.getElementById('settings-grid');
@@ -2414,16 +2394,11 @@ async function loadSettingsUI() {
         '<div class="setting-row">' +
           '<label>Session char limit</label>' +
           '<div><input type="number" data-setting="limit" id="set-' + safeId + '-limit" step="10000" min="10000" placeholder="inherit" > <span class="unit">chars</span> <span id="set-' + safeId + '-limit-tok" class="unit" style="color:#58a6ff"></span></div>' +
-        '</div>' +
-        '<div class="setting-row">' +
-          '<label>Poll frequency</label>' +
-          '<div><input type="number" data-setting="poll" id="set-' + safeId + '-poll" step="1" min="1" max="60" placeholder="inherit"> <span class="unit">min</span></div>' +
         '</div>';
       div.querySelector('h4').textContent = agent + ' Override';
       grid.appendChild(div);
       // Set values
       document.getElementById('set-' + safeId + '-limit').value = cfg.session_char_limit != null ? cfg.session_char_limit : '';
-      document.getElementById('set-' + safeId + '-poll').value = cfg.poll_interval_minutes != null ? cfg.poll_interval_minutes : '';
       if (cfg.session_char_limit != null) {
         updateTokenHint(document.getElementById('set-' + safeId + '-limit'), 'set-' + safeId + '-limit-tok');
       }
@@ -2455,13 +2430,11 @@ async function saveSettings() {
     const agent = g.dataset.agent;
     agents[agent] = {
       session_char_limit: inputValue(g.querySelector('[data-setting="limit"]')),
-      poll_interval_minutes: inputValue(g.querySelector('[data-setting="poll"]')),
     };
   });
 
   const body = {
     session_char_limit: getVal('set-global-limit'),
-    poll_interval_minutes: getVal('set-global-poll'),
     agents: agents,
   };
 

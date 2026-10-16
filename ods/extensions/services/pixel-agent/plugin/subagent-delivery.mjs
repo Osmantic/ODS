@@ -174,6 +174,10 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       const previous = run.chain.children.get(result.childSessionKey);
       if (previous && previous.runId !== result.runId) {fail(run.chain); return;}
       if (!previous) run.chain.children.set(result.childSessionKey,{runId:result.runId,announced:false});
+      // A confirmed native child already owns work, even if the parent ends
+      // with a waiting message instead of calling sessions_yield. Keep the
+      // owner's response behind the same result/error/cancellation barrier.
+      run.chain.delegated = true;
     }
     if (name === 'sessions_yield' && result?.status === 'yielded') {
       run.yielded = true; run.candidate = null; run.chain.delegated = true;
@@ -262,6 +266,15 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     const chain=roots.get(runId);
     return chain && ownerMatches(chain,user) && valid(chain) ? chain.ready?.runId : undefined;
   }
+  function hasPendingChildren(context) {
+    const run = owned(context);
+    // Advice must have the same live owner custody as delivery. A prompt,
+    // provisional native hook, sparse context or superseded run is not proof.
+    if (!run || run.id !== run.chain.currentRun || context.sessionId !== run.chain.sessionId
+        || !context.sessionKey || context.sessionKey !== run.chain.sessionKey
+        || !ownerMatches(run.chain,context.sessionKey.slice(prefix.length))) return false;
+    return [...run.chain.children.values()].some(child=>!child.announced);
+  }
   function promptContext(context) {
     const run = owned(context);
     if (!run || run.id === run.chain.id || run.id !== run.chain.currentRun) return;
@@ -303,6 +316,19 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   }
   function blocked(context, event, beforeObserve=false) {
     if (context?.agentId !== agentId) return;
+    const provenance=context.inputProvenance;
+    if (provenance?.kind==='inter_session' && provenance.sourceTool==='subagent_interrupted_resume'
+        && typeof provenance.sourceSessionKey==='string' && provenance.sourceSessionKey.startsWith(prefix)) {
+      // Native orphan recovery replaces the run UUID, not the child session.
+      // A retained Portal owner/spawn binding can authorize a live child; an
+      // expired or restarted registry cannot reconstruct that authority.
+      const record=spawned.get(context.sessionKey);
+      const matches=[...roots.values()].filter(chain=>chain.sessionKey===provenance.sourceSessionKey
+        && (chain.children.has(context.sessionKey) || record?.chainId===chain.id) && valid(chain));
+      if (!childKey(context.sessionKey) || !UUID.test(context.runId ?? '') || record?.denied
+          || record?.parent!==provenance.sourceSessionKey || matches.length!==1
+          || !ownerMatches(matches[0],provenance.sourceSessionKey.slice(prefix.length))) return {block:true,blockReason:FAILED};
+    }
     // After restart/expiry there is no trusted owner request to continue. A
     // native announcement may still arrive, but cannot resume its mutations
     // solely because it carries an old session key. Other native chats retain
@@ -311,14 +337,14 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
         && typeof context.sessionKey==='string' && context.sessionKey.startsWith(prefix)
         && !beforeObserve && !runs.has(context.runId)) return {block:true,blockReason:FAILED};
     const provisional=spawned.get(context.sessionKey);
-    if (provisional?.denied && provisional.runId===context.runId) return {block:true,blockReason:FAILED};
-    if (provisional?.chainId && provisional.runId===context.runId) {
+    if (provisional?.denied) return {block:true,blockReason:FAILED};
+    if (provisional?.chainId) {
       const chain=roots.get(provisional.chainId);
       if (!chain || !valid(chain)) return {block:true,blockReason:FAILED};
     }
     for (const chain of roots.values()) {
       const child=chain.children.get(context.sessionKey);
-      const related=child?.runId===context.runId || context.sessionId===chain.sessionId &&
+      const related=Boolean(child) || context.sessionId===chain.sessionId &&
         (context.runId===chain.id || [...chain.children].some(([key,value])=>context.runId===`announce:v1:${key}:${value.runId}`));
       if (related && !valid(chain)) return {block:true,blockReason:FAILED};
     }
@@ -328,6 +354,6 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       return {block:true,blockReason:'No registered child completion event is pending. Review the current event and the earlier child results supplied in this run, then consolidate the owner response. This yield was not executed.'};
     }
   }
-  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,admission,
+  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,admission,hasPendingChildren,
     invalidate:() => {for (const chain of roots.values()) fail(chain);}};
 }

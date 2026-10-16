@@ -550,34 +550,29 @@ async def test_status_projects_local_identity_even_for_adaptive_model(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_lemonade_model_drift_blocks_pixel_status_and_chat(monkeypatch):
-    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
+async def test_recorded_route_needs_no_live_identity_probe(monkeypatch):
+    # llama-server serves the one model it started with and the router proves
+    # every response's model; an unmigrated Lemonade .env changes nothing.
+    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF.gguf",
                "contextLength": 65536}
 
     async def recorded_status(*_args, **_kwargs):
         return {"status": "idle", "activeRuntime": runtime}
 
-    async def physical_model():
-        return "Qwen3.5-2B-Q4_K_M"
+    async def no_probe():
+        raise AssertionError("Pixel status must not probe the loaded model")
 
     monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
     monkeypatch.setattr(pixel, "read_live_env_value",
                         lambda key: "lemonade" if key == "LLM_BACKEND" else "")
-    monkeypatch.setattr(pixel, "get_loaded_model", physical_model)
+    monkeypatch.setattr(pixel, "get_loaded_model", no_probe)
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
     with patch.object(pixel.httpx, "AsyncClient",
-                      side_effect=AssertionError("stale route reached Pixel edge")):
+                      return_value=FakeClient(FakeResponse(chunks=[body]))):
         status = await pixel.pixel_status()
-        body = pixel.ChatStreamRequest(
-            chat_id="drift-test", messages=[{"role": "user", "content": "hello"}]
-        )
-        with pytest.raises(HTTPException) as raised:
-            await pixel.pixel_chat_stream(ConnectedRequest(), body)
-    assert status == {
-        "available": False, "model": None, "state": "model_unavailable",
-        "detail": pixel._MODEL_IDENTITY_DETAIL,
-    }
-    assert raised.value.status_code == 409
-    assert raised.value.detail == pixel._MODEL_IDENTITY_DETAIL
+    assert status["available"] is True
+    assert status["runtime"] == runtime
+    assert not hasattr(pixel, "_MODEL_IDENTITY_DETAIL")
 
 
 @pytest.mark.asyncio
@@ -602,27 +597,6 @@ async def test_matching_lemonade_model_keeps_pixel_available(monkeypatch, loaded
         status = await pixel.pixel_status()
     assert status["available"] is True
     assert status["runtime"] == runtime
-
-
-@pytest.mark.asyncio
-async def test_lemonade_probe_failure_fails_closed_without_logging_endpoint(monkeypatch, caplog):
-    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
-               "contextLength": 65536}
-
-    async def recorded_status(*_args, **_kwargs):
-        return {"status": "idle", "activeRuntime": runtime}
-
-    async def failed_probe():
-        raise RuntimeError("private Lemonade origin and token")
-
-    monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
-    monkeypatch.setattr(pixel, "read_live_env_value",
-                        lambda key: "lemonade" if key == "LLM_BACKEND" else "")
-    monkeypatch.setattr(pixel, "get_loaded_model", failed_probe)
-    result = await pixel.pixel_status()
-    assert result["available"] is False
-    assert result["state"] == "model_unavailable"
-    assert "private Lemonade" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -762,6 +736,57 @@ async def test_status_keeps_adaptive_model_available_with_fixed_advisory(monkeyp
     assert "may be unreliable" in result["modelSupport"]["detail"]
     assert "ready" not in result["modelSupport"]["detail"]
     assert "adapt" not in result["modelSupport"]["detail"]
+
+
+_LOCAL_64K = {"source": "local-switchboard", "model": "model.gguf", "contextLength": 65536}
+
+
+@pytest.mark.parametrize("profile, runtime, viable, reason", [
+    # Any-model WP4.3: the measured profile names the advisory; the order is
+    # context, tools, not profiled, always thinking.
+    ({"state": "measured", "tools": False, "thinkingControl": "always"},
+     {**_LOCAL_64K, "contextLength": 8192}, False, "context-too-small"),
+    ({"state": "measured", "tools": False, "thinkingControl": "always"}, _LOCAL_64K, False, "tools-unavailable"),
+    ({"state": "not-profiled", "tools": None, "thinkingControl": None}, _LOCAL_64K, True, "not-profiled"),
+    ({"state": "measured", "tools": True, "thinkingControl": "always"}, _LOCAL_64K, True, "thinking-always-on"),
+])
+def test_profile_advisory_names_its_reason(profile, runtime, viable, reason):
+    status = {"activeModelProfile": profile, "activeRuntime": runtime, "activeAgentViable": viable}
+    support = pixel._model_support_from_status(status)
+    assert support == {"tier": "adaptive", "detail": pixel._MODEL_SUPPORT_REASONS[reason], "reason": reason}
+
+
+def test_a_measured_capable_model_gets_no_advisory():
+    profile = {"state": "measured", "tools": True, "thinkingControl": "enable_thinking"}
+    status = {"activeModelProfile": profile, "activeRuntime": _LOCAL_64K, "activeAgentViable": True}
+    assert pixel._model_support_from_status(status) is None
+    # Without a profile (observe, off) the advisory is today's.
+    assert pixel._model_support_from_status({"activeAgentViable": False}) == {
+        "tier": "adaptive", "detail": pixel._MODEL_CAPABILITY_DETAIL}
+
+
+def test_context_advisory_needs_a_local_route():
+    profile = {"state": "measured", "tools": True, "thinkingControl": "none"}
+    remote = {"source": "remote-provider", "model": "m", "contextLength": 8192, "maxTokens": 1024,
+              "reasoning": False}
+    assert pixel._model_support_from_status({"activeModelProfile": profile, "activeRuntime": remote}) is None
+
+
+@pytest.mark.asyncio
+async def test_a_profile_advisory_never_blocks_a_send(monkeypatch):
+    async def measured(*_args, **_kwargs):
+        return {"status": "idle", "activeAgentViable": False, "activeRuntime": _LOCAL_64K,
+                "activeModelProfile": {"state": "measured", "tools": False, "thinkingControl": "none"}}
+
+    monkeypatch.setattr(pixel, "request_agent_json", measured)
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
+    with patch.object(pixel.httpx, "AsyncClient", return_value=FakeClient(FakeResponse(chunks=[body]))):
+        result = await pixel.pixel_status()
+    assert result["available"] is True
+    support = result["modelSupport"]
+    assert isinstance(support, dict)
+    assert support["reason"] == "tools-unavailable"
+    assert await pixel._model_readiness_issue() is None
 
 
 @pytest.mark.asyncio
@@ -1231,3 +1256,12 @@ async def test_chat_activity_ambiguity_is_unknown_not_global_activity(response):
 async def test_chat_activity_transport_failure_is_sanitized():
     with patch.object(pixel.httpx, "AsyncClient", side_effect=pixel.httpx.ConnectError("private credential")):
         assert await pixel.pixel_chat_activity(pixel.ChatCancelRequest(chat_id="opaque_chat_1")) == {"state": "unknown"}
+
+
+def test_profile_advisory_texts_match_the_dashboard_copy():
+    # The dashboard shows its own copy per reason; API readers and older
+    # dashboards get the same words.
+    page = pathlib.Path(__file__).resolve().parents[2] / "dashboard" / "src" / "pages" / "Pixel.jsx"
+    source = page.read_text(encoding="utf-8")
+    for reason, text in pixel._MODEL_SUPPORT_REASONS.items():
+        assert f"['{reason}', '{text}']" in source

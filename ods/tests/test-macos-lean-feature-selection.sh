@@ -53,7 +53,7 @@ _macos_apply_fresh_feature_defaults
 
 reset_features() {
     ENABLE_RECOMMENDED=false ENABLE_PIXEL=true CLOUD_MODE=false
-    ENABLE_PERPLEXICA=false ENABLE_HERMES=false ENABLE_OPENCLAW=false
+    ENABLE_PERPLEXICA=false ENABLE_HERMES=false
     ENABLE_LITELLM=false ENABLE_SEARXNG=false ENABLE_WEB_SEARCH=false
     ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
     ENABLE_APE=false ENABLE_PRIVACY_SHIELD=false ENABLE_ODS_PROXY=false
@@ -136,4 +136,24 @@ _macos_sync_builtin_compose_states
     && -f "$INSTALL_DIR/extensions/services/searxng/compose.yaml" ]] \
     || { echo 'FAIL: selected recommended services were not restored' >&2; exit 1; }
 
-echo 'PASS: Mac gateway and optional search selection'
+# Custom selection must not offer Hermes while native Portal replaces it: the
+# answer would be overridden after the menu and the summary would contradict it.
+eval "$(sed -n '/^_macos_ask_hermes() {/,/^}/p' "$installer")"
+prompted="$scratch/hermes-prompted"
+# shellcheck disable=SC2162,SC2329  # records any prompt; called by the installer function
+read() { : > "$prompted"; builtin read "$@"; }
+ai() { printf '%s\n' "$*"; }
+ENABLE_PIXEL=true ENABLE_HERMES=true
+hermes_note="$(_macos_ask_hermes < /dev/null; printf 'ENABLE_HERMES=%s\n' "$ENABLE_HERMES")"
+unset -f read
+[[ ! -e "$prompted" ]] \
+    || { echo 'FAIL: custom selection asked about Hermes while Portal is the agent' >&2; exit 1; }
+[[ "$hermes_note" == *"ENABLE_HERMES=false"* && "$hermes_note" == *"--no-pixel"* ]] \
+    || { echo "FAIL: Portal selection did not explain why Hermes is off: $hermes_note" >&2; exit 1; }
+if [[ "$(grep -c 'Enable Hermes Agent' "$installer")" != 1 ]] \
+    || ! grep -q '^            _macos_ask_hermes$' "$installer"; then
+    echo 'FAIL: the custom menu asks about Hermes outside _macos_ask_hermes' >&2
+    exit 1
+fi
+
+echo 'PASS: Mac gateway, optional search and agent selection'

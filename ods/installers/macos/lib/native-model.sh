@@ -65,6 +65,18 @@ macos_model_store_compose_flags() {
     "$policy_python" "$helper" --install-dir "$INSTALL_DIR" --flags="$flags" --format flags
 }
 
+# An absolute artifact path the resolver's selection JSON names under $2, or nothing.
+macos_selection_path() {
+    printf '%s' "$1" | python3 -c '
+import json, sys
+from pathlib import Path
+value = json.load(sys.stdin).get(sys.argv[1]) or ""
+if value and (not Path(value).is_absolute() or any(c in value for c in "\x00\n\r")):
+    sys.exit("Invalid native launch artifact path")
+print(value)
+' "$2"
+}
+
 macos_resolve_native_model() {
     local install_dir="$1" default_binary="$2" default_context="$3" allow_missing_default="${4:-false}"
     local resolver="${install_dir}/scripts/resolve-model-store.py"
@@ -73,6 +85,11 @@ macos_resolve_native_model() {
     MACOS_NATIVE_CONTEXT="$default_context"
     MACOS_NATIVE_PROFILE=false
     MACOS_NATIVE_PROFILE_ARGS=()
+    # The vision projector the host agent's switch launches with (a qualified
+    # profile's or a vision import's own, WP2); empty when there is none.
+    MACOS_NATIVE_PROJECTOR_PATH=""
+    # The fixed chat template the active model runs with (WP5), hash-checked.
+    MACOS_NATIVE_CHAT_TEMPLATE_PATH=""
 
     if [[ ! -f "$resolver" ]]; then
         local store filename
@@ -141,6 +158,10 @@ except (ValueError, KeyError, TypeError, OSError) as error:
         MACOS_NATIVE_CONTEXT="${fields[2]:-$default_context}"
         MACOS_NATIVE_PROFILE="${fields[3]}"
         MACOS_NATIVE_PROFILE_ARGS=("${fields[@]:4}")
+        if ! MACOS_NATIVE_PROJECTOR_PATH="$(macos_selection_path "$selection" projectorPath)" \
+                || ! MACOS_NATIVE_CHAT_TEMPLATE_PATH="$(macos_selection_path "$selection" chatTemplatePath)"; then
+            return 1
+        fi
     fi
     if [[ ! -f "$MACOS_NATIVE_MODEL_PATH" ]] || { [[ ! -x "$MACOS_NATIVE_BINARY" ]] && [[ "$MACOS_NATIVE_PROFILE" == true || "$allow_missing_default" != true ]]; }; then
         echo "The selected model or native runtime is missing. Reconnect its drive or repair the installation before starting it." >&2

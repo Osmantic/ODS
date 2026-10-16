@@ -53,8 +53,13 @@ fi
 
 REPORT_FILE="${1:-/tmp/ods-doctor-report.json}"
 
-CAP_FILE="/tmp/ods-doctor-capabilities.json"
-PREFLIGHT_FILE="/tmp/ods-doctor-preflight.json"
+# Scratch files live in a private directory for this run only. Fixed names in
+# the shared /tmp let an earlier run by another user (sudo ods doctor) make
+# every later run fail before it wrote its report.
+DOCTOR_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ods-doctor.XXXXXX")"
+trap 'rm -rf -- "$DOCTOR_WORK_DIR"' EXIT
+CAP_FILE="$DOCTOR_WORK_DIR/capabilities.json"
+PREFLIGHT_FILE="$DOCTOR_WORK_DIR/preflight.json"
 DOCTOR_BASH_CMD="${BASH:-}"
 if [[ -z "$DOCTOR_BASH_CMD" || ! -x "$DOCTOR_BASH_CMD" ]]; then
     DOCTOR_BASH_CMD="$(command -v bash 2>/dev/null || printf '%s\n' bash)"
@@ -120,8 +125,9 @@ _doctor_disk_free_gb() {
 }
 
 _doctor_external_inference_enabled() {
+    # A host-native llama-server (Windows Portal) keeps its model on Windows.
     [[ -n "${EXTERNAL_LLM_URL:-}" \
-        || "${LEMONADE_EXTERNAL:-false}" == "true" \
+        || -n "${NATIVE_LLM_BASE_URL:-}" \
         || "${ODS_MODE:-local}" == "cloud" ]]
 }
 
@@ -185,6 +191,14 @@ COMPOSE_CLI="false"
 DASHBOARD_HTTP="false"
 WEBUI_HTTP="false"
 
+# Open WebUI is optional. ENABLE_OPEN_WEBUI is disabled only by the exact
+# case-sensitive literal "false"; unset or any other value keeps it enabled.
+# Keep this consistent with ods-cli's optional-service status check.
+WEBUI_ENABLED="true"
+if [[ "${ENABLE_OPEN_WEBUI:-}" == "false" ]]; then
+    WEBUI_ENABLED="false"
+fi
+
 # Extension diagnostics (JSON array of objects)
 EXT_DIAGNOSTICS="[]"
 
@@ -202,7 +216,8 @@ if command -v curl >/dev/null 2>&1; then
     if curl -sf --max-time 10 "http://127.0.0.1:${_DASHBOARD_PORT}" >/dev/null 2>&1; then
         DASHBOARD_HTTP="true"
     fi
-    if curl -sf --max-time 10 "http://127.0.0.1:${_WEBUI_PORT}" >/dev/null 2>&1; then
+    if [[ "$WEBUI_ENABLED" == "true" ]] \
+        && curl -sf --max-time 10 "http://127.0.0.1:${_WEBUI_PORT}" >/dev/null 2>&1; then
         WEBUI_HTTP="true"
     fi
 fi
@@ -237,7 +252,7 @@ LLM_RECOVERY=""
 _doctor_check_external_llm() {
     local url="$1" provider="$2" model="$3"
     local health_path
-    local lemonade_key="" probe_ok=false
+    local probe_ok=false
 
     LLM_URL="$url"
     LLM_PROVIDER="${provider:-external}"
@@ -248,25 +263,53 @@ _doctor_check_external_llm() {
     case "$provider" in
         ollama)     health_path="/api/tags" ;;
         lmstudio)   health_path="/v1/models" ;;
-        lemonade)
-            local api_path="${LEMONADE_API_BASE_PATH:-/api/v1}"
-            api_path="/${api_path#/}"
-            health_path="${api_path%/}/models"
-            lemonade_key="${LEMONADE_API_KEY:-${LEMONADE_ADMIN_API_KEY:-${LITELLM_LEMONADE_API_KEY:-}}}"
-            ;;
         *)          health_path="/v1/models" ;;  # OpenAI-compat fallback
     esac
 
-    if command -v curl >/dev/null 2>&1; then
-        if curl -sf --max-time 5 "${url%/}${health_path}" > /dev/null 2>&1; then
-            probe_ok=true
-        elif [[ "$provider" == lemonade && -n "$lemonade_key" ]] \
-                && curl -sf --max-time 5 -H "Authorization: Bearer ${lemonade_key}" \
-                    "${url%/}${health_path}" > /dev/null 2>&1; then
-            probe_ok=true
+    # API mode passes the key file the installer stored: a keyed API answers
+    # 401 without it, which is not "down". The key reaches curl as a header
+    # file, never as an argument. Other callers keep the plain probe.
+    local key_file="${4:-}" key="" status="000"
+    LLM_FAILURE=""
+    if [[ -n "$key_file" && -s "$key_file" && ! -r "$key_file" ]]; then
+        LLM_FAILURE="key-unreadable"
+    elif [[ -n "$key_file" ]] && command -v curl >/dev/null 2>&1; then
+        if [[ -s "$key_file" ]]; then
+            IFS= read -r key < "$key_file" || true  # a key without a final newline still reads
         fi
+        if [[ -n "$key" ]]; then
+            status="$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' \
+                -H @<(printf 'Authorization: Bearer %s\n' "$key") "${url%/}${health_path}" 2>/dev/null)" || true
+        else
+            status="$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' "${url%/}${health_path}" 2>/dev/null)" || true
+        fi
+        case "$status" in
+            2[0-9][0-9]) probe_ok=true ;;
+            401|403) if [[ -n "$key" ]]; then LLM_FAILURE="key-refused"; else LLM_FAILURE="key-required"; fi ;;
+            *) LLM_FAILURE="unreachable" ;;
+        esac
+        key=""
+    elif command -v curl >/dev/null 2>&1 \
+        && curl -sf --max-time 5 "${url%/}${health_path}" > /dev/null 2>&1; then
+        probe_ok=true
     fi
-    if [[ "$probe_ok" == true ]]; then
+    if [[ "$LLM_FAILURE" == key-unreadable ]]; then
+        LLM_STATUS="unknown"
+        log_warn "LLM backend: ${provider:-external} (external) — not checked: this user cannot read its stored API key"
+        log_info "  Endpoint : $url"
+        log_info "  Recovery : run ods doctor as the user that installed ODS"
+    elif [[ "$LLM_FAILURE" == key-refused || "$LLM_FAILURE" == key-required ]]; then
+        LLM_STATUS="fail"
+        if [[ "$LLM_FAILURE" == key-refused ]]; then
+            log_fail "LLM backend: ${provider:-external} (external) — the API refused the stored key (HTTP $status)"
+            LLM_RECOVERY="replace the API key: rerun the installer with --external-llm-key-file FILE (Windows: -ExternalLlmKeyFile FILE)"
+        else
+            log_fail "LLM backend: ${provider:-external} (external) — the API needs a key, and none is stored (HTTP $status)"
+            LLM_RECOVERY="add the API key: rerun the installer with --external-llm-key-file FILE (Windows: -ExternalLlmKeyFile FILE)"
+        fi
+        log_info "  Endpoint : $url"
+        log_info "  Recovery : $LLM_RECOVERY"
+    elif [[ "$probe_ok" == true ]]; then
         LLM_STATUS="ok"
         log_ok "LLM backend: ${provider:-external} (external) — responding"
         log_ok "  Endpoint : $url"
@@ -290,6 +333,52 @@ _doctor_check_external_llm() {
         esac
     fi
 
+    if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
+        LLM_LOCAL_WARNING="true"
+        log_warn "  Note     : Unused local llama-server container is running"
+    fi
+}
+
+# The Windows Portal's llama-server runs outside the stack. Its /health needs
+# no API key, so the probe sends none.
+_doctor_check_host_native_llm() {
+    local url="${NATIVE_LLM_BASE_URL%/}" reached=false
+    LLM_URL="$url"
+    LLM_PROVIDER="llama-server (Windows)"
+    LLM_MODEL="${GGUF_FILE:-}"
+    LLM_RECOVERY=""
+    LLM_LOCAL_WARNING="false"
+    if [[ "${ODS_HOST_LLM_TRANSPORT:-}" == model-router && -n "${NATIVE_LLM_CONTAINER_BASE_URL:-}" ]]; then
+        # Under WSL's default NAT networking this shell cannot reach Windows
+        # loopback; the Portal's route goes through model-router
+        # (host.docker.internal). Probe from that container, as LiteLLM and
+        # the router reach the server.
+        url="${NATIVE_LLM_CONTAINER_BASE_URL%/}"
+        LLM_URL="$url"
+        if [[ "${DOCKER_DAEMON:-false}" == "true" ]] && docker exec ods-model-router python -c \
+            'import sys, urllib.request; urllib.request.urlopen(sys.argv[1] + "/health", timeout=5)' \
+            "$url" >/dev/null 2>&1; then
+            reached=true
+        fi
+    elif command -v curl >/dev/null 2>&1 && curl -sf --max-time 5 "${url}/health" >/dev/null 2>&1; then
+        reached=true
+    fi
+    if $reached; then
+        LLM_STATUS="ok"
+        log_ok "LLM backend: llama-server on Windows (host-native) — responding"
+        log_ok "  Endpoint : $url"
+        [[ -z "$LLM_MODEL" ]] || log_ok "  Model    : $LLM_MODEL"
+    else
+        LLM_STATUS="fail"
+        LLM_RECOVERY="restart the llama-server task from the ODS Portal on Windows, then rerun setup there"
+        if [[ "${ODS_HOST_LLM_TRANSPORT:-}" == model-router ]]; then
+            LLM_RECOVERY="if ods-model-router is not running, run ods start; otherwise $LLM_RECOVERY"
+        fi
+        log_fail "LLM backend: llama-server on Windows (host-native) — not responding"
+        log_info "  Endpoint : $url"
+        log_info "  Recovery : $LLM_RECOVERY"
+    fi
+    # Informational only: a failed listing just omits the note.
     if [[ "$DOCKER_DAEMON" == "true" ]] && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'ods-llama-server'; then
         LLM_LOCAL_WARNING="true"
         log_warn "  Note     : Unused local llama-server container is running"
@@ -358,20 +447,10 @@ _doctor_check_llm_backend() {
 
     if [ -n "$ext_url" ]; then
         # External LLM mode — skip llama-server check
-        _doctor_check_external_llm "$ext_url" "$ext_provider" "$ext_model"
-    elif [[ "${LEMONADE_EXTERNAL:-false}" == "true" && ( "$mode" == "lemonade" || "${LLM_BACKEND:-}" == "lemonade" ) ]]; then
-        local lemonade_url="${LEMONADE_BASE_URL:-}"
-        if [[ -n "$lemonade_url" ]]; then
-            _doctor_check_external_llm "$lemonade_url" lemonade "${LEMONADE_MODEL:-}"
-        else
-            LLM_URL=""
-            LLM_PROVIDER="lemonade"
-            LLM_MODEL="${LEMONADE_MODEL:-}"
-            LLM_STATUS="fail"
-            LLM_RECOVERY="set LEMONADE_BASE_URL to the host-reachable Lemonade endpoint"
-            log_fail "LLM backend: lemonade (external) — host endpoint missing"
-            log_info "  Recovery : ${LLM_RECOVERY}"
-        fi
+        _doctor_check_external_llm "$ext_url" "$ext_provider" "$ext_model" \
+            "$ROOT_DIR/config/litellm/external-upstream.key"
+    elif [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; then
+        _doctor_check_host_native_llm
     elif [[ "$mode" == "cloud" ]]; then
         local cloud_url="${LLM_API_URL:-}"
         if [ -n "$cloud_url" ]; then
@@ -432,6 +511,7 @@ export LLM_MODEL
 export LLM_URL
 export LLM_LOCAL_WARNING
 export LLM_RECOVERY
+export LLM_FAILURE
 
 # STT model cache check: a common silent-failure mode is the installer's
 # pre-download failing, so Whisper's /health passes (service up) but the
@@ -690,7 +770,7 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$WEBUI_ENABLED" <<'PY'
 import json
 import os
 import pathlib
@@ -698,9 +778,9 @@ import re
 import shlex
 import sys
 from datetime import datetime, timezone
-from urllib import error, parse, request
+from urllib import error, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
@@ -746,30 +826,13 @@ def _env_bool(name):
     return _clean_env(name).lower() in {"1", "true", "yes", "on"}
 
 
-def _amd_health_url(runtime, location, port):
-    external_lemonade = (
-        _env_bool("LEMONADE_EXTERNAL")
-        or _clean_env("AMD_INFERENCE_RUNTIME_MODE").lower() == "external-lemonade"
-        or _clean_env("AMD_INFERENCE_MANAGED").lower() == "false"
-    )
-    if runtime == "lemonade" and external_lemonade:
-        lemonade_base = (_clean_env("LEMONADE_BASE_URL") or "").rstrip("/")
-        if lemonade_base:
-            for suffix in ("/api/v1", "/v1", "/api"):
-                if lemonade_base.endswith(suffix):
-                    lemonade_base = lemonade_base[: -len(suffix)]
-                    break
-            api_path = _clean_env("LEMONADE_API_BASE_PATH", _clean_env("LLM_API_BASE_PATH", "/api/v1")) or "/api/v1"
-            return _join_url(lemonade_base, _join_url(api_path, "health"))
-    if location == "container":
-        host_port = _clean_env("OLLAMA_PORT", port)
-    else:
-        host_port = port
-    base = f"http://127.0.0.1:{host_port}"
-    if runtime == "lemonade":
-        api_path = _clean_env("LLM_API_BASE_PATH", "/api/v1") or "/api/v1"
-        return _join_url(base, _join_url(api_path, "health"))
-    return _join_url(base, "health")
+def _amd_health_url(location, port):
+    """llama-server's /health: the Windows Portal's host-native server, or the container."""
+    native_base = _clean_env("NATIVE_LLM_BASE_URL").rstrip("/")
+    if location == "host" and native_base:
+        return _join_url(native_base, "health")
+    host_port = _clean_env("OLLAMA_PORT", port) if location == "container" else port
+    return _join_url(f"http://127.0.0.1:{host_port}", "health")
 
 
 def _probe_health(url):
@@ -805,10 +868,13 @@ def _amd_runtime_report():
             "AMD_INFERENCE_SUPPORTED_BACKENDS",
         )
     )
-    if gpu_backend != "amd" and not amd_env_present:
+    # In API mode the API serves the model and no AMD runtime runs here, so
+    # there is nothing to probe (Strixy in API mode reported it unreachable).
+    api_mode = bool(_clean_env("EXTERNAL_LLM_URL")) or _clean_env("LLM_BACKEND").lower() == "external"
+    if (gpu_backend != "amd" and not amd_env_present) or api_mode:
         return {
             "available": False,
-            "reason": "not_amd",
+            "reason": "api_mode" if api_mode else "not_amd",
             "runtime": "none",
             "location": "none",
             "runtimeMode": "none",
@@ -858,15 +924,35 @@ def _amd_runtime_report():
     health = "not_checked"
     version = "unknown"
     health_url = None
-    if runtime in {"lemonade", "llama-server"}:
-        health_url = _amd_health_url(runtime, location, port)
+    reason = None
+    if runtime == "llama-server" and location == "host" \
+            and _clean_env("ODS_HOST_LLM_TRANSPORT") == "model-router" \
+            and _clean_env("NATIVE_LLM_CONTAINER_BASE_URL"):
+        # Under WSL's default NAT networking this host cannot reach Windows
+        # loopback. The LLM backend check above already probed the server
+        # through ods-model-router, the path the stack uses; report that.
+        health_url = _join_url(_clean_env("NATIVE_LLM_CONTAINER_BASE_URL").rstrip("/"), "health")
+        if _clean_env("LLM_STATUS") == "ok":
+            health = "reachable"
+        else:
+            health = "unreachable"
+            warnings.append("health_unreachable")
+    elif runtime == "llama-server":
+        health_url = _amd_health_url(location, port)
         health, version, health_warning = _probe_health(health_url)
         if health_warning:
             warnings.append(health_warning)
+    elif runtime == "lemonade":
+        # Compatibility read for one release: an .env the Lemonade migration
+        # has not rewritten yet. ODS no longer ships that runtime.
+        reason = "runtime_retired"
+        warnings.append("amd_runtime_lemonade_retired")
+    else:
+        reason = "runtime_not_configured"
 
     return {
-        "available": runtime in {"lemonade", "llama-server"},
-        "reason": None if runtime in {"lemonade", "llama-server"} else "runtime_not_configured",
+        "available": runtime == "llama-server",
+        "reason": reason,
         "runtime": runtime,
         "location": location,
         "runtimeMode": runtime_mode,
@@ -1015,29 +1101,6 @@ def _looks_like_local_llama_route(value):
     )
 
 
-def _url_host(value):
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    candidate = raw if "://" in raw else f"http://{raw}"
-    try:
-        return (parse.urlparse(candidate).hostname or "").strip().lower()
-    except ValueError:
-        return ""
-
-
-def _is_loopback_host(host):
-    return host in {"localhost", "127.0.0.1", "::1"}
-
-
-def _is_host_gateway(host):
-    return host in {"host.docker.internal", "gateway.docker.internal"}
-
-
-def _looks_like_installer_generated_lemonade_key(value):
-    return str(value or "").strip().startswith("sk-ods-lemonade-")
-
-
 def _source(path):
     try:
         return path.relative_to(root_dir).as_posix()
@@ -1087,29 +1150,22 @@ def _collect_inference_contract():
     external_llm_url = env_get("EXTERNAL_LLM_URL", "")
     llm_api_url = env_get("LLM_API_URL", "")
     hermes_base_url = env_get("HERMES_LLM_BASE_URL", "")
-    lemonade_external = (
-        _truthy(env_get("LEMONADE_EXTERNAL"))
-        or env_get("AMD_INFERENCE_RUNTIME_MODE").strip().lower() == "external-lemonade"
-        or (
-            env_get("AMD_INFERENCE_RUNTIME").strip().lower() == "lemonade"
-            and env_get("AMD_INFERENCE_MANAGED").strip().lower() == "false"
-        )
-    )
-    lemonade_base_url = env_get("LEMONADE_BASE_URL", "")
-    lemonade_container_base_url = env_get("LEMONADE_CONTAINER_BASE_URL", "")
-    lemonade_base_host = _url_host(lemonade_base_url)
-    lemonade_container_host = _url_host(lemonade_container_base_url)
-    lemonade_auth_configured = any(
-        value and not _looks_like_installer_generated_lemonade_key(value)
-        for value in (
-            env_get("LEMONADE_API_KEY", ""),
-            env_get("LEMONADE_ADMIN_API_KEY", ""),
-            env_get("LITELLM_LEMONADE_API_KEY", ""),
-        )
+    # The Windows Portal's llama-server runs outside the stack; LiteLLM and
+    # model-router reach it with LLAMA_SERVER_API_KEY.
+    native_llm_url = env_get("NATIVE_LLM_BASE_URL", "")
+    host_native = bool(native_llm_url.strip())
+    native_key_configured = bool(env_get("LLAMA_SERVER_API_KEY", "").strip())
+    # Compatibility read for one release: Lemonade-era settings the migration
+    # has not rewritten yet (the installer runs it; `ods update` does not).
+    lemonade_era = (
+        ods_mode == "lemonade"
+        or llm_backend.strip().lower() == "lemonade"
+        or _truthy(env_get("LEMONADE_EXTERNAL"))
+        or env_get("AMD_INFERENCE_RUNTIME").strip().lower() == "lemonade"
     )
 
     cloud_overlay = _has_compose_file(compose_files, "docker-compose.cloud.yml")
-    lemonade_external_overlay = _has_compose_file(compose_files, "docker-compose.lemonade-external.yml")
+    host_native_overlay = _has_compose_file(compose_files, "docker-compose.host-native-llm.yml")
     local_inference_overlay = any(
         _has_compose_file(compose_files, name)
         for name in (
@@ -1124,22 +1180,27 @@ def _collect_inference_contract():
     )
 
     generic_external = bool(external_llm_url.strip()) or llm_backend.strip().lower() == "external"
-    external_inference = ods_mode == "cloud" or lemonade_external or generic_external
+    external_inference = ods_mode == "cloud" or generic_external
     expected_owner = "external" if external_inference else "ods"
-    expected_gateway = (
-        "litellm"
-        if external_inference or ods_mode == "lemonade" or gpu_backend == "amd"
-        else "llama-server"
-    )
+    expected_gateway = "litellm" if external_inference or host_native else "llama-server"
 
     issues = []
-    if ods_mode not in {"local", "cloud", "hybrid", "lemonade"}:
+    if lemonade_era:
+        issues.append(
+            _inference_issue(
+                "ODS-RUNTIME-LEMONADE-RETIRED",
+                "blocker",
+                ".env",
+                "The .env still selects the Lemonade runtime, which ODS no longer ships.",
+            )
+        )
+    elif ods_mode not in {"local", "cloud", "hybrid"}:
         issues.append(
             _inference_issue(
                 "ODS-RUNTIME-MODE-UNKNOWN",
                 "blocker",
                 ".env",
-                f"ODS_MODE={ods_mode!r} is not one of local/cloud/hybrid/lemonade.",
+                f"ODS_MODE={ods_mode!r} is not one of local/cloud/hybrid.",
             )
         )
 
@@ -1181,54 +1242,45 @@ def _collect_inference_contract():
                 )
             )
 
-    if lemonade_external:
+    if host_native:
         if compose_flags_exists and cloud_overlay:
             issues.append(
                 _inference_issue(
-                    "ODS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-CONFLICT",
+                    "ODS-RUNTIME-HOST-NATIVE-CLOUD-OVERLAY-CONFLICT",
                     "blocker",
                     ".compose-flags",
-                    "The cloud overlay disables model-router; external Lemonade must use its dedicated overlay so Pixel and model switching remain live.",
+                    "The cloud overlay disables model-router; the Windows llama-server route uses its own overlay so Pixel and model switching remain live.",
                 )
             )
-        if compose_flags_exists and not lemonade_external_overlay:
+        if compose_flags_exists and not host_native_overlay:
             issues.append(
                 _inference_issue(
-                    "ODS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING",
+                    "ODS-RUNTIME-HOST-NATIVE-OVERLAY-MISSING",
                     "warn",
                     ".compose-flags",
-                    "External Lemonade mode is active but docker-compose.lemonade-external.yml is not in the compose stack.",
+                    "NATIVE_LLM_BASE_URL is set but docker-compose.host-native-llm.yml is not in the compose stack.",
                 )
             )
         if _looks_like_local_llama_route(llm_api_url):
             issues.append(
                 _inference_issue(
-                    "ODS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE",
+                    "ODS-RUNTIME-HOST-NATIVE-LOCAL-ROUTE",
                     "blocker",
                     ".env",
-                    f"External Lemonade is configured, but LLM_API_URL points at local llama-server ({llm_api_url}).",
+                    f"The model runs in llama-server on Windows, but LLM_API_URL points at the in-stack llama-server ({llm_api_url}).",
                 )
             )
-        host_routed_lemonade = _is_host_gateway(lemonade_container_host)
-        network_lemonade = lemonade_base_host and not _is_loopback_host(lemonade_base_host)
-        if (host_routed_lemonade or network_lemonade) and not lemonade_auth_configured:
-            detail = (
-                "External Lemonade is routed through "
-                f"{lemonade_container_base_url or lemonade_base_url or 'an unknown host route'} "
-                "without a user-provided Lemonade API key. If the Lemonade daemon is bound "
-                "beyond loopback so Docker can reach it, that same daemon may also be reachable "
-                "from the LAN."
-            )
+        if not native_key_configured:
             issues.append(
                 _inference_issue(
-                    "ODS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE",
+                    "ODS-RUNTIME-HOST-NATIVE-KEY-MISSING",
                     "warn",
                     ".env",
-                    detail,
+                    "LLAMA_SERVER_API_KEY is empty, so LiteLLM and model-router send no key to the Windows llama-server, which requires one.",
                 )
             )
 
-    if ods_mode == "local" and not lemonade_external and not generic_external:
+    if ods_mode == "local" and not host_native and not generic_external and not lemonade_era:
         if compose_flags_exists and cloud_overlay:
             issues.append(
                 _inference_issue(
@@ -1238,13 +1290,13 @@ def _collect_inference_contract():
                     "ODS_MODE=local but docker-compose.cloud.yml is still in the compose stack.",
                 )
             )
-        if _looks_like_litellm_route(llm_api_url) and gpu_backend != "amd":
+        if _looks_like_litellm_route(llm_api_url):
             issues.append(
                 _inference_issue(
                     "ODS-RUNTIME-LOCAL-LITELLM-ROUTE",
                     "warn",
                     ".env",
-                    f"ODS_MODE=local on non-AMD usually routes directly to llama-server, but LLM_API_URL={llm_api_url}.",
+                    f"ODS_MODE=local routes directly to llama-server on every GPU, but LLM_API_URL={llm_api_url}.",
                 )
             )
 
@@ -1255,10 +1307,11 @@ def _collect_inference_contract():
         "ODS-RUNTIME-CLOUD-LLM-LOCAL-ROUTE": "Cloud mode still routes chat clients to local llama-server",
         "ODS-RUNTIME-CLOUD-HERMES-LOCAL-ROUTE": "Cloud mode still routes Hermes to local llama-server",
         "ODS-RUNTIME-CLOUD-GATEWAY-BYPASS": "Cloud mode bypasses the LiteLLM gateway",
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-CONFLICT": "External Lemonade incorrectly includes the cloud compose overlay",
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING": "External Lemonade is missing its compose overlay",
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE": "External Lemonade still routes clients to local llama-server",
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE": "External Lemonade host route has no user-provided API key",
+        "ODS-RUNTIME-LEMONADE-RETIRED": "Settings still select the retired Lemonade runtime",
+        "ODS-RUNTIME-HOST-NATIVE-CLOUD-OVERLAY-CONFLICT": "The Windows llama-server route incorrectly includes the cloud compose overlay",
+        "ODS-RUNTIME-HOST-NATIVE-OVERLAY-MISSING": "The Windows llama-server route is missing its compose overlay",
+        "ODS-RUNTIME-HOST-NATIVE-LOCAL-ROUTE": "The Windows llama-server route still sends clients to the in-stack llama-server",
+        "ODS-RUNTIME-HOST-NATIVE-KEY-MISSING": "The Windows llama-server route has no API key",
         "ODS-RUNTIME-LOCAL-CLOUD-OVERLAY": "Local mode still has the cloud compose overlay",
         "ODS-RUNTIME-LOCAL-LITELLM-ROUTE": "Local mode routes through LiteLLM unexpectedly",
     }
@@ -1278,28 +1331,29 @@ def _collect_inference_contract():
         "ODS-RUNTIME-CLOUD-GATEWAY-BYPASS": [
             "Route ODS services through LiteLLM so hosted, private-cloud, and auth behavior stay consistent.",
         ],
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-CLOUD-OVERLAY-CONFLICT": [
-            "Regenerate compose flags for external Lemonade without docker-compose.cloud.yml; its dedicated overlay disables only managed llama-server and retains model-router.",
+        "ODS-RUNTIME-LEMONADE-RETIRED": [
+            "Rerun the installer of this release to move the Lemonade-era settings to the llama.cpp runtime (`ods update` only refreshes images); your model files and active model are kept.",
         ],
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-OVERLAY-MISSING": [
-            "Include docker-compose.lemonade-external.yml when LEMONADE_EXTERNAL=true.",
+        "ODS-RUNTIME-HOST-NATIVE-CLOUD-OVERLAY-CONFLICT": [
+            "Regenerate compose flags without docker-compose.cloud.yml; docker-compose.host-native-llm.yml disables only the in-stack llama-server and keeps model-router.",
         ],
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-LOCAL-ROUTE": [
-            "Route external Lemonade clients through LiteLLM, usually http://litellm:4000.",
+        "ODS-RUNTIME-HOST-NATIVE-OVERLAY-MISSING": [
+            "Rerun setup from the ODS Portal so the compose stack includes docker-compose.host-native-llm.yml.",
         ],
-        "ODS-RUNTIME-EXTERNAL-LEMONADE-UNAUTHENTICATED-HOST-ROUTE": [
-            "Configure Lemonade with LEMONADE_API_KEY or LEMONADE_ADMIN_API_KEY, then reinstall with --lemonade-api-key.",
-            "Prefer binding Lemonade to a host-only or Docker-reachable interface instead of exposing it broadly on 0.0.0.0.",
-            "Keep firewall rules scoped to the Docker network subnet when host-routed Lemonade is required.",
+        "ODS-RUNTIME-HOST-NATIVE-LOCAL-ROUTE": [
+            "Route clients through LiteLLM, usually http://litellm:4000, which holds the Windows llama-server's key.",
+        ],
+        "ODS-RUNTIME-HOST-NATIVE-KEY-MISSING": [
+            "Rerun setup from the ODS Portal; it passes the llama-server key with --native-llm-api-key-env.",
         ],
         "ODS-RUNTIME-LOCAL-CLOUD-OVERLAY": [
             "Regenerate compose flags for local mode so local inference starts normally.",
         ],
         "ODS-RUNTIME-LOCAL-LITELLM-ROUTE": [
-            "If this is not an AMD/Lemonade install, set LLM_API_URL back to http://llama-server:8080.",
+            "Set LLM_API_URL back to http://llama-server:8080 unless you route local inference through LiteLLM on purpose.",
         ],
         "ODS-RUNTIME-MODE-UNKNOWN": [
-            "Set ODS_MODE to local, cloud, hybrid, or lemonade.",
+            "Set ODS_MODE to local, cloud, or hybrid.",
         ],
     }
     for issue in issues:
@@ -1321,17 +1375,16 @@ def _collect_inference_contract():
         "llm_backend": llm_backend,
         "expected_inference_owner": expected_owner,
         "expected_gateway": expected_gateway,
-        "external_lemonade": lemonade_external,
+        "host_native_llm": host_native,
         "llm_api_url": llm_api_url,
         "hermes_llm_base_url": hermes_base_url,
         "compose_files": compose_files,
         "signals": {
             "compose_flags_exists": compose_flags_exists,
             "cloud_overlay": cloud_overlay,
-            "lemonade_external_overlay": lemonade_external_overlay,
+            "host_native_overlay": host_native_overlay,
             "local_inference_overlay": local_inference_overlay,
-            "lemonade_auth_configured": lemonade_auth_configured,
-            "lemonade_host_routed": _is_host_gateway(lemonade_container_host),
+            "native_key_configured": native_key_configured,
         },
         "issues": issues,
         "issue_counts": {
@@ -1614,6 +1667,7 @@ report = {
         "docker_daemon": docker_daemon == "true",
         "compose_cli": compose_cli == "true",
         "dashboard_http": dashboard_http == "true",
+        "webui_enabled": webui_enabled == "true",
         "webui_http": webui_http == "true",
         "llm_backend": {
             "status": os.environ.get("LLM_STATUS", "unknown"),
@@ -1696,16 +1750,19 @@ if not runtime["compose_cli"]:
     fix_hints.append("Install Docker Compose v2 plugin (or docker-compose).")
 if runtime["docker_daemon"] and not runtime["dashboard_http"]:
     fix_hints.append(f"Run installer/start command, then verify dashboard on http://127.0.0.1:{dashboard_port}.")
-if runtime["docker_daemon"] and not runtime["webui_http"]:
+if runtime["docker_daemon"] and runtime["webui_enabled"] and not runtime["webui_http"]:
     fix_hints.append(f"Verify Open WebUI container and port {webui_port} mapping.")
 
 llm_status = os.environ.get("LLM_STATUS", "unknown")
 llm_recovery = os.environ.get("LLM_RECOVERY", "")
 llm_provider = os.environ.get("LLM_PROVIDER", "")
 llm_local_warn = os.environ.get("LLM_LOCAL_WARNING", "false") == "true"
+llm_failure = os.environ.get("LLM_FAILURE", "")
 
 if llm_status == "fail" and llm_recovery:
-    if llm_provider != "llama-server":
+    if llm_provider != "llama-server" and llm_failure in ("key-refused", "key-required"):
+        fix_hints.append(f"External LLM backend ({llm_provider}) answered but did not accept a stored API key. Hint: {llm_recovery}")
+    elif llm_provider != "llama-server":
         fix_hints.append(f"External LLM backend ({llm_provider}) is unreachable. Hint: {llm_recovery}")
     else:
         fix_hints.append(f"Local llama-server is unreachable. Hint: {llm_recovery}")
@@ -1843,7 +1900,7 @@ if amd_runtime.get("available"):
         f"{amd_runtime.get('runtime')} / {amd_runtime.get('selectedBackend')} / "
         f"{amd_runtime.get('location')} / {amd_runtime.get('health')}"
     )
-elif amd_runtime.get("reason") and amd_runtime.get("reason") != "not_amd":
+elif amd_runtime.get("reason") not in (None, "", "not_amd", "api_mode"):
     print(f"  AMD Runtime:   {amd_runtime.get('reason')}")
 
 hermes_workers = data.get("runtime", {}).get("hermes_slash_workers", {})
@@ -1867,4 +1924,9 @@ if hints:
     print("  Suggested fixes:")
     for hint in hints[:10]:
         print(f"    - {hint}")
+
+# The ODS community Discord (ODS_HELP_DISCORD_URL in installers/lib/constants.sh).
+if diagnoses or hints:
+    print("  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC")
+    print("    Attach a redacted support bundle: scripts/ods-support-bundle.sh")
 PY

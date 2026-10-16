@@ -40,7 +40,7 @@ python_fixture() { printf '%s\\n' "$@"; }
     assert result.stdout.splitlines() == [
         '/owner/ODS with spaces/installers/macos/lib/pixel-native-update.py',
         '--install-dir', '/owner/ODS with spaces', '--ods-source', '/owner/ODS with spaces',
-        '--prepare-only']
+        '--prompt-for-sudo', '--prepare-only']
     assert 'update-pixel) cmd_update_pixel "$@" ;;' in script
 
 

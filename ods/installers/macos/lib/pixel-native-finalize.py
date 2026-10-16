@@ -188,17 +188,19 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
         'activation': {**activation, **identities}}
 
 
-def compose_flags(install_dir, process_env):
+def compose_flags(install_dir, process_env, *, recovery=False):
     cache = install_dir / '.compose-flags'
-    if os.path.lexists(cache):
+    if not recovery and os.path.lexists(cache):
         raw = cache.read_text()
     else:
         # Extension changes invalidate this disposable cache. Resolve the saved
         # selection like ods-cli, without sourcing .env or publishing a new cache.
         environment = helper('pixel-native-env')
-        keys = {'TIER', 'GPU_BACKEND', 'GPU_COUNT', 'ODS_MODE',
+        # The resolver's selection inputs: the saved values replace any
+        # stale process environment.
+        keys = {'TIER', 'GPU_BACKEND', 'GPU_COUNT', 'ODS_MODE', 'ENABLE_OPEN_WEBUI',
             'ODS_SKIP_GPU_OVERLAYS', 'ODS_SKIP_GPU_OVERLAYS_FOR', 'WHISPER_ACCELERATION',
-            'LEMONADE_EXTERNAL', 'AMD_INFERENCE_RUNTIME', 'AMD_INFERENCE_MANAGED', 'EXTERNAL_LLM_URL'}
+            'NATIVE_LLM_BASE_URL', 'AMD_INFERENCE_BACKEND', 'EXTERNAL_LLM_URL'}
         saved = {}
         for line in environment.snapshot(install_dir / '.env')[0].decode('utf-8').splitlines():
             match = environment.ASSIGNMENT.fullmatch(line)
@@ -206,6 +208,11 @@ def compose_flags(install_dir, process_env):
                 if match[1] in saved:
                     raise ValueError('duplicate-compose-selection')
                 saved[match[1]] = environment.values.parse_env_value(match[2])
+        # Initial failure can precede the Compose cache; retain Core's no-WebUI
+        # choice instead of inheriting the recovery shell's stale selection.
+        saved['ENABLE_OPEN_WEBUI'] = saved.get('ENABLE_OPEN_WEBUI', 'true').strip().lower()
+        if saved['ENABLE_OPEN_WEBUI'] not in {'true', 'false'}:
+            raise ValueError('saved-compose-selection-required')
         backend = saved.get('GPU_BACKEND', '').strip().lower()
         tier = saved.get('TIER', '').strip() or '1'
         count = saved.get('GPU_COUNT', '').strip() or '1'
@@ -213,14 +220,19 @@ def compose_flags(install_dir, process_env):
         if (not re.fullmatch('[a-z][a-z0-9_-]*', backend)
                 or not re.fullmatch('[A-Za-z0-9_]+', tier)
                 or not re.fullmatch('[0-9]+', count)
-                or mode not in {'local', 'cloud', 'hybrid', 'lemonade'}):
+                or mode not in {'local', 'cloud', 'hybrid'}):
             raise ValueError('saved-compose-selection-required')
-        resolver = install_dir / 'scripts/resolve-compose-stack.sh'
+        # The retained installation can predate recovery support. Use the
+        # reviewed helper's resolver only for explicit recovery; do not modify
+        # installed source or trust a disposable cache from the failed attempt.
+        resolver_root = Path(__file__).resolve().parents[3] if recovery else install_dir
+        resolver = resolver_root / 'scripts/resolve-compose-stack.sh'
         if not resolver.is_file() or resolver.resolve(strict=True) != resolver:
             raise ValueError('installed-compose-resolver-required')
         resolver_env = {**process_env, **{key: saved.get(key, '') for key in keys}}
         raw = subprocess.run(['/bin/bash', str(resolver), '--script-dir', str(install_dir),
-            '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode],
+            '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode,
+            *(['--native-recovery'] if recovery else [])],
             cwd=install_dir, env=resolver_env, capture_output=True, text=True,
             check=True, timeout=30).stdout
     tokens = shlex.split(raw)

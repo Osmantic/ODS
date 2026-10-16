@@ -123,6 +123,19 @@ def test_switchboard_surface_gated_on_enabled_mode() -> None:
     assert switchboard["content"].count("http://model-router:9099/v1") == 4
 
 
+def test_switchboard_route_injects_no_thinking_settings() -> None:
+    # Any-model WP4.5: a model's thinking control reaches only the consumer that
+    # sends per-request kwargs (Pixel's rendered config). The switchboard route
+    # must pass requests through unchanged, whatever model is active.
+    enabled = run_renderer("--surface", "all", "--switchboard-mode", "enabled")
+    switchboard = file_by_surface(enabled, "litellm-switchboard")["content"]
+    shipped = (ROOT / "config" / "litellm" / "switchboard.yaml").read_text(encoding="utf-8")
+    for content in (switchboard, shipped):
+        assert "enable_thinking" not in content
+        assert "chat_template_kwargs" not in content
+        assert "reasoning_effort" not in content
+
+
 def test_local_profiles_allow_long_agent_streams() -> None:
     local = run_renderer("--surface", "litellm-local")
     local_config = file_by_surface(local, "litellm-local")["content"]
@@ -142,15 +155,19 @@ def test_all_selects_one_mode_config() -> None:
         "local": "litellm-local",
         "cloud": "litellm-cloud",
         "hybrid": "litellm-hybrid",
-        "lemonade": "litellm-lemonade",
+        # One release: the retired managed-AMD mode renders exactly as local.
+        "lemonade": "litellm-local",
     }
     all_mode_surfaces = set(expected.values())
     for mode, expected_surface in expected.items():
         payload = run_renderer("--surface", "all", "--ods-mode", mode)
         surfaces = {item["surface"] for item in payload["files"]}
         assert surfaces & all_mode_surfaces == {expected_surface}
+        assert "litellm-lemonade" not in surfaces
         mode_config = file_by_surface(payload, expected_surface)["content"]
         assert "model_name: ods/current" in mode_config
+        env_content = file_by_surface(payload, "env")["content"]
+        assert f"ODS_MODE={'local' if mode == 'lemonade' else mode}\n" in env_content
 
 
 def test_cloud_enabled_never_renders_local_switchboard() -> None:
@@ -195,7 +212,10 @@ def test_remote_cloud_projection_uses_internal_egress_and_state_receipt() -> Non
     assert 'model: "openai/qwen/remote:latest"' in cloud
     assert 'model_name: "qwen/remote:latest"' in cloud
     assert 'api_base: "http://remote-provider-egress:8091/v1"' in cloud
-    assert "api_key: not-needed" in cloud
+    # The egress admits only the LiteLLM gateway key (GHSA-4rpc); the value
+    # stays in LiteLLM's environment, never in the rendered file.
+    assert cloud.count("api_key: os.environ/LITELLM_MASTER_KEY") == 3
+    assert "not-needed" not in cloud
     assert "https://gpu.example.test" not in cloud
     assert "REMOTE_LLM_API_KEY" not in cloud
 
@@ -328,6 +348,54 @@ def test_native_local_projection_uses_host_route_and_concrete_model() -> None:
     assert "enable_thinking: false" in content
     assert "request_timeout: 900" in content
     assert "stream_timeout: 900" in content
+    # An unkeyed host-native server keeps the placeholder key.
+    assert content.count("api_key: not-needed") == 3
+
+
+def test_native_local_projection_references_the_runtime_key_by_name() -> None:
+    secret = "5e" * 32
+    env = os.environ.copy()
+    env["LLAMA_SERVER_API_KEY"] = secret
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--surface", "litellm-local-native", "--gguf-file", "Native-Model.gguf",
+         "--llm-base-url", "http://host.docker.internal:18080/v1", "--llm-api-key-env", "LLAMA_SERVER_API_KEY"],
+        cwd=ROOT, env=env, text=True, capture_output=True, check=True,
+    )
+    content = file_by_surface(json.loads(proc.stdout), "litellm-local-native")["content"]
+    assert content.count("api_key: os.environ/LLAMA_SERVER_API_KEY") == 3
+    assert "not-needed" not in content
+    assert secret not in proc.stdout + proc.stderr
+
+
+def test_api_key_env_must_be_a_variable_name() -> None:
+    for name in ("llama_server_api_key", "KEY=value", "$(touch x)", "5E" * 40):
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints", "--llm-api-key-env", name],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        assert proc.returncode != 0, name
+        assert "environment variable name" in proc.stderr
+
+
+def test_keyed_host_native_consumers_use_the_gateway() -> None:
+    payload = run_renderer(
+        "--surface", "all", "--switchboard-mode", "observe", "--gpu-backend", "amd",
+        "--gguf-file", "Native-Model.gguf", "--model", "native-model",
+        "--llm-base-url", "http://host.docker.internal:18080/v1",
+        "--llm-api-key-env", "LLAMA_SERVER_API_KEY", "--litellm-key", "sk-gateway",
+    )
+    # Consumers cannot hold the runtime key; they reach it through LiteLLM.
+    opencode = json.loads(file_by_surface(payload, "opencode")["content"])
+    assert opencode["baseURL"] == "http://litellm:4000/v1"
+    assert opencode["apiKey"] == "sk-gateway"
+    perplexica = json.loads(file_by_surface(payload, "perplexica")["content"])
+    openai_provider = model_provider_by_id(perplexica, "openai")
+    assert openai_provider["config"]["baseURL"] == "http://litellm:4000/v1"
+    assert perplexica["preferences"]["defaultChatModel"] == "Native-Model.gguf"
+    endpoints = json.loads(file_by_surface(payload, "model-router-endpoints")["content"])
+    assert endpoints == {"endpoints": [{"id": "llama-server-default",
+                                        "baseUrl": "http://host.docker.internal:18080",
+                                        "apiKeyEnv": "LLAMA_SERVER_API_KEY"}]}
 
 
 def test_checked_in_mode_configs_match_renderer() -> None:
@@ -415,57 +483,15 @@ def test_router_endpoints_strip_trailing_v1() -> None:
         "--surface", "model-router-endpoints",
         "--llm-base-url", "http://llama-server:8080/v1",
         "--gpu-backend", "amd",
+        # Retired flag, accepted and ignored for one release (R13).
         "--lemonade-api-base", "http://lemonade:8000/api/v1",
     )
-    import json as _json
-    content = _json.loads(payload["files"][0]["content"])
-    by_id = {e["id"]: e["baseUrl"] for e in content["endpoints"]}
-    assert by_id["llama-server-default"] == "http://llama-server:8080"
-    assert by_id["lemonade-default"] == "http://lemonade:8000/api"
+    content = json.loads(payload["files"][0]["content"])
+    # One managed runtime, one endpoint: no lemonade-default row on AMD.
+    assert content == {"endpoints": [{"id": "llama-server-default", "baseUrl": "http://llama-server:8080"}]}
 
 
-def test_lemonade_disables_thinking_and_uses_extra_alias() -> None:
-    payload = run_renderer(
-        "--surface",
-        "litellm-lemonade",
-        "--ods-mode",
-        "lemonade",
-        "--gpu-backend",
-        "amd",
-        "--gguf-file",
-        "Model.gguf",
-        "--litellm-key",
-        "sk-test",
-    )
-    content = file_by_surface(payload, "litellm-lemonade")["content"]
-    assert "model_name: ods/current" in content
-    assert "model: openai/extra.Model.gguf" in content
-    assert "api_key: sk-test" in content
-    assert "enable_thinking: false" in content
-
-
-def test_external_lemonade_uses_supplied_model_and_api_base() -> None:
-    payload = run_renderer(
-        "--surface",
-        "litellm-lemonade",
-        "--ods-mode",
-        "lemonade",
-        "--gpu-backend",
-        "amd",
-        "--lemonade-model-id",
-        "Qwen3-0.6B-GGUF",
-        "--lemonade-api-base",
-        "http://host.docker.internal:13305/api/v1",
-        "--litellm-key",
-        "lemonade-secret",
-    )
-    content = file_by_surface(payload, "litellm-lemonade")["content"]
-    assert "model: openai/Qwen3-0.6B-GGUF" in content
-    assert "api_base: http://host.docker.internal:13305/api/v1" in content
-    assert "api_key: lemonade-secret" in content
-
-
-def test_exact_lemonade_id_propagates_to_every_runtime_surface() -> None:
+def test_retired_lemonade_flags_are_accepted_and_ignored() -> None:
     payload = run_renderer(
         "--surface",
         "all",
@@ -477,24 +503,41 @@ def test_exact_lemonade_id_propagates_to_every_runtime_surface() -> None:
         "amd",
         "--gguf-file",
         "Modern-Model.gguf",
+        "--model",
+        "modern-model",
         "--lemonade-model-id",
-        "Modern-Model",
+        "extra.Modern-Model.gguf",
+        "--lemonade-api-base",
+        "http://host.docker.internal:13305/api/v1",
     )
 
+    surfaces = {item["surface"] for item in payload["files"]}
     env_content = file_by_surface(payload, "env")["content"]
-    litellm_content = file_by_surface(payload, "litellm-lemonade")["content"]
     hermes_content = file_by_surface(payload, "hermes")["content"]
     opencode = json.loads(file_by_surface(payload, "opencode")["content"])
     perplexica = json.loads(file_by_surface(payload, "perplexica")["content"])
 
-    assert "LEMONADE_MODEL=Modern-Model" in env_content
-    assert "model: openai/Modern-Model" in litellm_content
-    assert 'default: "Modern-Model"' in hermes_content
-    assert opencode["model"] == "Modern-Model"
-    assert perplexica["preferences"]["defaultChatModel"] == "Modern-Model"
+    assert "litellm-lemonade" not in surfaces and "litellm-local" in surfaces
+    assert "ODS_MODE=local\n" in env_content
+    assert "LLM_BACKEND=llama-server\n" in env_content
+    assert "LEMONADE" not in env_content
+    assert 'default: "Modern-Model.gguf"' in hermes_content
+    assert opencode["model"] == "modern-model"
+    assert perplexica["preferences"]["defaultChatModel"] == "Modern-Model.gguf"
+    assert "extra." not in json.dumps(payload)
+    assert "13305" not in json.dumps(payload)
 
 
-def test_amd_local_env_does_not_invent_a_lemonade_model() -> None:
+def test_litellm_lemonade_surface_is_retired() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--surface", "litellm-lemonade"],
+        cwd=ROOT, text=True, capture_output=True,
+    )
+    assert proc.returncode == 2
+    assert "litellm-lemonade" in proc.stderr
+
+
+def test_amd_local_env_has_no_lemonade_keys() -> None:
     payload = run_renderer(
         "--surface",
         "env",
@@ -507,18 +550,19 @@ def test_amd_local_env_does_not_invent_a_lemonade_model() -> None:
     )
 
     env_content = file_by_surface(payload, "env")["content"]
-    assert "LEMONADE_MODEL=\n" in env_content
-    assert "LEMONADE_MODEL=extra.Fallback-Model.gguf" not in env_content
+    assert "LEMONADE" not in env_content
+    assert "LLM_BACKEND=llama-server\n" in env_content
+    assert "GGUF_FILE=Fallback-Model.gguf\n" in env_content
 
 
-def test_hermes_uses_lemonade_model_id_for_amd() -> None:
+def test_hermes_uses_the_gguf_alias_for_amd() -> None:
     payload = run_renderer(
         "--surface",
         "hermes",
         "--switchboard-mode",
         "observe",
         "--ods-mode",
-        "lemonade",
+        "local",
         "--gpu-backend",
         "amd",
         "--gguf-file",
@@ -529,7 +573,7 @@ def test_hermes_uses_lemonade_model_id_for_amd() -> None:
         "65536",
     )
     content = file_by_surface(payload, "hermes")["content"]
-    assert 'default: "extra.Amd.gguf"' in content
+    assert 'default: "Amd.gguf"' in content
     assert 'base_url: "http://litellm:4000/v1"' in content
     assert "context_length: 65536" in content
     assert "max_tokens: 1024" in content
@@ -542,7 +586,7 @@ def test_perplexica_default_model_matches_route() -> None:
         "--switchboard-mode",
         "observe",
         "--ods-mode",
-        "lemonade",
+        "local",
         "--gpu-backend",
         "amd",
         "--gguf-file",
@@ -550,8 +594,8 @@ def test_perplexica_default_model_matches_route() -> None:
     )
     content = json.loads(file_by_surface(payload, "perplexica")["content"])
     openai_provider = model_provider_by_id(content, "openai")
-    assert content["preferences"]["defaultChatModel"] == "extra.Research.gguf"
-    assert openai_provider["chatModels"][0]["name"] == "extra.Research.gguf"
+    assert content["preferences"]["defaultChatModel"] == "Research.gguf"
+    assert openai_provider["chatModels"][0]["name"] == "Research.gguf"
 
 
 def test_write_mode_writes_under_output_root() -> None:
@@ -561,9 +605,7 @@ def test_write_mode_writes_under_output_root() -> None:
                 sys.executable,
                 str(SCRIPT),
                 "--surface",
-                "litellm-lemonade",
-                "--ods-mode",
-                "lemonade",
+                "litellm-local-native",
                 "--gpu-backend",
                 "amd",
                 "--gguf-file",
@@ -581,10 +623,10 @@ def test_write_mode_writes_under_output_root() -> None:
             check=True,
         )
         payload = json.loads(proc.stdout)
-        target = Path(tmp) / "config" / "litellm" / "lemonade.yaml"
+        target = Path(tmp) / "config" / "litellm" / "local.yaml"
         assert payload["mode"] == "write"
         assert target.exists()
-        assert "openai/extra.Written.gguf" in target.read_text(encoding="utf-8")
+        assert "openai/Written.gguf" in target.read_text(encoding="utf-8")
         if os.name != "nt":
             assert target.stat().st_mode & 0o777 == 0o644
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
@@ -663,9 +705,9 @@ def test_write_cli_defaults_to_secret_free_paths() -> None:
                 sys.executable,
                 str(SCRIPT),
                 "--surface",
-                "litellm-lemonade",
-                "--ods-mode",
-                "lemonade",
+                "opencode",
+                "--switchboard-mode",
+                "enabled",
                 "--gpu-backend",
                 "amd",
                 "--gguf-file",
@@ -682,16 +724,16 @@ def test_write_cli_defaults_to_secret_free_paths() -> None:
             check=True,
         )
         combined = proc.stdout + proc.stderr
-        target = Path(tmp) / "config" / "litellm" / "lemonade.yaml"
+        target = Path(tmp) / ".opencode" / "auth.json"
         assert secret not in combined
-        assert proc.stdout.strip() == "config/litellm/lemonade.yaml"
+        assert proc.stdout.strip() == ".opencode/auth.json"
         assert secret in target.read_text(encoding="utf-8")
 
 
 def test_atomic_write_failure_preserves_known_good_config() -> None:
     renderer = load_renderer_module()
     with tempfile.TemporaryDirectory() as tmp:
-        target = Path(tmp) / "lemonade.yaml"
+        target = Path(tmp) / "local.yaml"
         target.write_text("known-good\n", encoding="utf-8")
         original_replace = renderer.os.replace
         original_sleep = renderer.time.sleep
@@ -817,16 +859,19 @@ def main() -> int:
         test_remote_projection_rejects_unsafe_model_id,
         test_explicit_cloud_switchboard_render_fails_closed,
         test_native_local_projection_uses_host_route_and_concrete_model,
+        test_native_local_projection_references_the_runtime_key_by_name,
+        test_api_key_env_must_be_a_variable_name,
+        test_keyed_host_native_consumers_use_the_gateway,
         test_checked_in_mode_configs_match_renderer,
         test_enabled_env_exports_switchboard_webui_gateway,
         test_enabled_perplexica_uses_stable_alias,
         test_enabled_hermes_uses_stable_switchboard_alias,
         test_enabled_opencode_uses_stable_switchboard_alias,
-        test_lemonade_disables_thinking_and_uses_extra_alias,
-        test_external_lemonade_uses_supplied_model_and_api_base,
-        test_exact_lemonade_id_propagates_to_every_runtime_surface,
-        test_amd_local_env_does_not_invent_a_lemonade_model,
-        test_hermes_uses_lemonade_model_id_for_amd,
+        test_router_endpoints_strip_trailing_v1,
+        test_retired_lemonade_flags_are_accepted_and_ignored,
+        test_litellm_lemonade_surface_is_retired,
+        test_amd_local_env_has_no_lemonade_keys,
+        test_hermes_uses_the_gguf_alias_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
         test_write_cli_defaults_to_secret_free_paths,

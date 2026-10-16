@@ -208,7 +208,7 @@ def main(argv: list[str]) -> int:
             if scenario_id:
                 seen.append(scenario_id)
         issues.require(len(seen) == len(set(seen)), "$.scenarios", "scenario ids must be unique")
-        expected_ids = {"linux-nvidia", "windows-wsl2-nvidia", "windows-wsl2-amd-lemonade", "apple-silicon"}
+        expected_ids = {"linux-nvidia", "windows-wsl2-nvidia", "windows-wsl2-amd", "apple-silicon"}
         issues.require(set(seen) == expected_ids, "$.scenarios", f"must define exactly {sorted(expected_ids)}")
 
     issues.exit_if_any()

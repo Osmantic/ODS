@@ -171,11 +171,12 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 Setup installs ODS inside Ubuntu on WSL2; the runtime lives in `~/ods` inside
 Ubuntu.
 
-### Desktop Installer (unsupported)
+### Desktop Installer (removed)
 
-The Tauri source under `installer/` is not a supported install path: CI does
-not build it, no release ships it, and its installer arguments no longer match
-the current installers. See [`installer/README.md`](../../installer/README.md).
+The repository no longer carries the Tauri desktop installer that lived under
+`installer/`. It was never a supported install path: CI did not build it, no
+release shipped it, and its installer arguments no longer matched the current
+installers. Use the commands above.
 
 ## Inspect Before Running
 

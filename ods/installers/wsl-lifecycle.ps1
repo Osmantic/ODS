@@ -391,9 +391,20 @@ function Invoke-ODSWslRelayHolder([string]$Directory) {
     }
 }
 
+function Get-ODSWslAgentAddressFailureReason([string]$Output) {
+    if ($Output.Length -le 2048 -and $Output.TrimStart().StartsWith('{')) {
+        try {
+            $result=$Output | ConvertFrom-Json -ErrorAction Stop
+            if ($result -is [pscustomobject] -and $result.error -is [string] -and
+                $result.error -cmatch '\A[a-z][a-z-]{0,31}\z') { return $result.error }
+        } catch { }
+    }
+    'unknown'
+}
+
 function Update-ODSWslAgentAddress($Identity) {
     $program="$($Identity.installRoot)/lib/wsl-agent-address.py"
-    $raw=(Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/python3',$program,$Identity.installRoot) 60 -Mutation | Out-String)
+    $raw=(Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/python3',$program,$Identity.installRoot) 60 -Mutation -JsonErrorReason | Out-String)
     if ($raw.Length -gt 2048) { throw 'Oversized WSL agent address result' }
     $result=$raw | ConvertFrom-Json
     if ($result.mode -notin @('unmanaged','explicit','wsl-nat-bridge') -or $result.changed -isnot [bool]) {
@@ -602,7 +613,20 @@ function Get-ODSWslWindowsBootId {
     (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks.ToString()
 }
 
-function Assert-ODSWslCommandSettled($Identity,[switch]$ValidateOnly) {
+function Test-ODSWslLinuxBootId($Value) {
+    $Value -is [string] -and $Value -cmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z'
+}
+
+function Get-ODSWslLinuxBootId($Identity) {
+    # WSL2 runs every distribution in one VM. Its kernel draws a new boot_id
+    # each time that VM starts (wsl --shutdown, idle VM shutdown, Windows
+    # restart). Bounded and read-only; $null when WSL gives no clear answer.
+    try { $value=(Invoke-ODSWslBoundedCommand $Identity @('/bin/cat','/proc/sys/kernel/random/boot_id') 10 | Out-String).Trim() }
+    catch [IO.IOException], [TimeoutException] { return $null }
+    if (Test-ODSWslLinuxBootId $value) { $value } else { $null }
+}
+
+function Assert-ODSWslCommandSettled($Identity,[switch]$ValidateOnly,[switch]$MayStartDistribution) {
     $pending=Read-ODSWslJson (Join-Path $Identity.directory 'command-pending.json')
     if ($pending -and $pending.state -ne 'completed') {
         # A later full Windows boot proves the old WSL command cannot still be
@@ -615,7 +639,26 @@ function Assert-ODSWslCommandSettled($Identity,[switch]$ValidateOnly) {
             }
             return
         }
-        throw 'A previous WSL stack command has no confirmed Linux completion. No further stack operation was attempted. Restart Windows (not just sign out), then retry the requested lifecycle action; do not delete command-pending.json.'
+        # A later WSL VM boot proves the same when the record holds the boot id
+        # of the VM the command ran in. Reading the current id enters the
+        # distribution, and booting a stopped one starts its enabled ODS units,
+        # so only a start may boot it for this. Stop, release and uninstall
+        # read the id only from a distribution that is already running.
+        $linuxRecorded=$pending.id -ceq $Identity.id -and (Test-ODSWslLinuxBootId $pending.linuxBootId)
+        if ($linuxRecorded -and ($MayStartDistribution -or (@(Get-ODSWslRunningDistributions) -contains $Identity.distro))) {
+            $linuxBoot=Get-ODSWslLinuxBootId $Identity
+            if ($linuxBoot -and $linuxBoot -cne $pending.linuxBootId) {
+                if (-not $ValidateOnly) {
+                    Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') @{schemaVersion=1;state='completed';id=$Identity.id;reason='WSL VM restarted'}
+                }
+                return
+            }
+        }
+        # Offer only a remedy that this same action can then verify.
+        $remedy=if (-not $linuxRecorded) { 'Restart Windows (not just sign out)' }
+            elseif ($MayStartDistribution) { 'Run `wsl --shutdown` (or restart Windows)' }
+            else { 'Run `wsl --shutdown` and open ' + $Identity.distro + ' again (or restart Windows)' }
+        throw ('A previous WSL stack command has no confirmed Linux completion. No further stack operation was attempted. ' + $remedy + ', then retry the requested lifecycle action; do not delete command-pending.json.')
     }
 }
 
@@ -671,9 +714,10 @@ function Assert-ODSWslRootArguments([string[]]$Arguments) {
     }
 }
 
-function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Seconds=15,[switch]$AsRoot,[switch]$ListRunning,[switch]$Mutation) {
+function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Seconds=15,[switch]$AsRoot,[switch]$ListRunning,[switch]$Mutation,[switch]$JsonErrorReason) {
     Assert-ODSWslStartupStillWanted
     if ($ListRunning -and ($AsRoot -or $Arguments.Count -or $Mutation)) { throw 'Distribution listing accepts no executable arguments' }
+    if ($JsonErrorReason -and -not $Mutation) { throw 'JSON error reasons require a mutation command' }
     $target = @('--distribution',$Identity.distro)
     if ($AsRoot) {
         Assert-ODSWslRootArguments $Arguments
@@ -684,10 +728,15 @@ function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Second
     $token=[guid]::NewGuid().ToString('N')
     $completion='ODS_WSL_COMPLETED_' + $token
     if ($Mutation) {
-        Assert-ODSWslCommandSettled $Identity
-        Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') @{
+        Assert-ODSWslCommandSettled $Identity -MayStartDistribution
+        $pending=@{
             schemaVersion=1;state='pending';id=$Identity.id;token=$token;bootId=(Get-ODSWslWindowsBootId);startedUtc=(Get-ODSWslUtcNow).ToString('o')
         }
+        # Lets a later WSL VM boot settle a lost acknowledgement. Without a
+        # readable id, only a later Windows boot does (the original rule).
+        $linuxBootId=Get-ODSWslLinuxBootId $Identity
+        if ($linuxBootId) { $pending.linuxBootId=$linuxBootId }
+        Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') $pending
         $wrapper='/usr/bin/timeout --signal=TERM --kill-after=5s "$1" "${@:3}"; code=$?; printf "\n%s:%s\n" "$2" "$code"; exit "$code"'
         $target += @('--exec','/bin/bash','--noprofile','--norc','-c',$wrapper,'ods-wsl-command',([string]$Seconds),$completion) + $Arguments
     } else {
@@ -712,7 +761,15 @@ function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Second
         if ($Mutation) {
             $output=Complete-ODSWslCommand $Identity $token $output $process.ExitCode
         }
-        if ($process.ExitCode -ne 0) { throw [IO.IOException]::new('WSL startup command failed: ' + $errorOutput.Trim()) }
+        if ($process.ExitCode -ne 0) {
+            # Report the bounded helper reason only after the Linux completion
+            # acknowledgement has settled the mutation. Never expose raw output.
+            if ($JsonErrorReason) {
+                $reason=Get-ODSWslAgentAddressFailureReason $output
+                throw [IO.IOException]::new("WSL host-agent address preparation failed (reason: $reason).")
+            }
+            throw [IO.IOException]::new('WSL startup command failed: ' + $errorOutput.Trim())
+        }
         if ($cancelled) { throw $cancelled }
         Assert-ODSWslStartupStillWanted
         $output
@@ -763,7 +820,7 @@ function Invoke-ODSWslStartup([string]$Directory) {
         }
         if (-not $dockerReady) { throw "Docker did not become ready in this distribution within ten minutes; open Docker Desktop and run lifecycle start. Last probe error: $($status.error)" }
         $commandLock=Open-ODSPrivateLock (Join-Path $Directory 'command.lock')
-        Assert-ODSWslCommandSettled $identity
+        Assert-ODSWslCommandSettled $identity -MayStartDistribution
         Assert-ODSWslStartupStillWanted
         $status.state='starting-stack'; $status.error=$null
         Write-ODSWslJson (Join-Path $Directory 'startup-status.json') $status
@@ -1049,7 +1106,8 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
 
 function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly,[string]$DockerDesktopPath,[switch]$RetireRelay) {
     # Uninstall already supplies the installation's canonical distro. Never
-    # enter or even query WSL while withdrawing Windows sign-in permission.
+    # resolve or start WSL while withdrawing Windows sign-in permission; an
+    # unconfirmed stack command is checked only against an already running VM.
     if ($RetireRelay -and $Action -ne 'disable-startup') { throw 'RetireRelay is supported only for disable-startup' }
     if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly -RetireRelay:$RetireRelay }
     # Repair an already-managed installation's Windows sign-in task without
@@ -1091,7 +1149,7 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
         }
         $script:ODSWslStartupDeadline=(Get-ODSWslUtcNow).AddMinutes(20)
         $lock=Open-ODSWslCommandLock $identity
-        Assert-ODSWslCommandSettled $identity
+        Assert-ODSWslCommandSettled $identity -MayStartDistribution:($Action -in @('start','restart'))
         Assert-ODSWslStartupStillWanted
         if ($Action -eq 'release') { return (Stop-ODSWslLifetime $identity) }
         if ($Action -in @('stop','restart')) {
@@ -1124,6 +1182,9 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
+    # WSL interop can retain a PS7 parent's module path despite a child env override.
+    # Restrict this PS5 controller process before autoloading ACL/Scheduler modules.
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') }
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
     if ($Action -eq 'hold') { Invoke-ODSWslHolder $InstanceDirectory }
     elseif ($Action -eq 'relay-hold') { Invoke-ODSWslRelayHolder $InstanceDirectory }

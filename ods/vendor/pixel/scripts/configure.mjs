@@ -983,12 +983,14 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=exec
 User=${values.PIXEL_OPS_BROKER_USER}
 Group=${values.PIXEL_OPS_BROKER_GROUP}
 ExecStart=${systemdQuote(join(opsBrokerInstallDir, "broker.py"))}
 WorkingDirectory=${systemdPath(opsBrokerStateDir)}
 EnvironmentFile=${systemdPath(values.PIXEL_OPS_BROKER_ENV)}
+# Allow filesystem isolation setup to finish before the inventory wait begins.
+TimeoutStartSec=180
 Restart=always
 RestartSec=2
 TimeoutStopSec=30

@@ -412,6 +412,7 @@ state_limits = {
     "model-completed.json": 256 * 1024,
     "model-promotion-completed.json": 256 * 1024,
     "model-route-completed.json": 256 * 1024,
+    "source-overlay-completed.json": 8192,
     "settings-verified.json": 256 * 1024,
     "provider-root-plan.json": 8 * 1024 * 1024,
     "provider-root-managed.json": 8 * 1024 * 1024,
@@ -1525,10 +1526,14 @@ if workspace_preview_state.exists() or workspace_preview_state.is_symlink():
                     or child.st_uid != owner_uid or stat.S_IMODE(child.st_mode) != 0o700):
                 raise SystemExit("unsafe Pixel workspace preview state")
         for name in names:
-            child = (root_path / name).lstat()
+            path = root_path / name
+            child = path.lstat()
+            # Source capture owns one writable quota lock; publication bytes
+            # remain read-only. Do not extend this exception to other paths.
+            expected_mode = 0o600 if path == workspace_preview_state / '.review-sources/.quota.lock' else 0o400
             if (not stat.S_ISREG(child.st_mode) or stat.S_ISLNK(child.st_mode)
                     or child.st_nlink != 1 or child.st_uid != owner_uid
-                    or stat.S_IMODE(child.st_mode) != 0o400):
+                    or stat.S_IMODE(child.st_mode) != expected_mode):
                 raise SystemExit("unsafe Pixel workspace preview state")
 
 if gateway_unit.exists():
@@ -1844,7 +1849,8 @@ def owner_source(
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
             or info.st_nlink != 1 or info.st_uid != owner_uid
             or info.st_size > maximum or info.st_mode & write_mask
-            or (allow_owner_group_write and info.st_gid != owner_gid)
+            or (allow_owner_group_write and info.st_mode & 0o020
+                and info.st_gid != owner_gid)
             or (private and info.st_mode & 0o077)):
         raise SystemExit(f"unsafe ODS Pixel Operations source: {path}")
 
@@ -1994,8 +2000,10 @@ if exists(install_dir):
         # Early ODS checkouts inherited an owner-private group's cooperative
         # umask and can therefore carry 0664 here. That does not authorize the
         # source as a mutable deletion oracle: it must still be a regular,
-        # single-link, owner/primary-group file whose bytes exactly equal the
-        # root-owned 0755 executable below. New checkouts are created at 0644.
+        # single-link owner file, group-writable only by the owner's primary
+        # group, whose bytes exactly equal the root-owned 0755 executable
+        # below. New checkouts are created at 0644, under whatever group sg
+        # made primary when a first install refreshed a just-granted group.
         owner_source(expected_program, 2 * 1024 * 1024, allow_owner_group_write=True)
         if program.read_bytes() != expected_program.read_bytes():
             raise SystemExit("Pixel Operations Broker program drifted from the exact Pixel source")
@@ -2293,6 +2301,12 @@ PY
                 return 1
             }
         done
+    fi
+
+    # Nothing above changes the deployment. ods-uninstall.sh runs this pass
+    # before it changes Windows startup, then calls again to validate and remove.
+    if [[ "${ODS_PIXEL_UNINSTALL_VALIDATE_ONLY:-false}" == true ]]; then
+        return 0
     fi
 
     log_info "Removing the ODS-managed Pixel host deployment..."
@@ -2838,8 +2852,9 @@ for path in [root, *root.rglob("*")]:
         if stat.S_ISLNK(info.st_mode) or info.st_uid != owner_uid or stat.S_IMODE(info.st_mode) != 0o700:
             raise SystemExit("unsafe Pixel workspace preview cleanup directory")
     elif stat.S_ISREG(info.st_mode):
+        expected_mode = 0o600 if path == root / '.review-sources/.quota.lock' else 0o400
         if (stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
-                or info.st_uid != owner_uid or stat.S_IMODE(info.st_mode) != 0o400):
+                or info.st_uid != owner_uid or stat.S_IMODE(info.st_mode) != expected_mode):
             raise SystemExit("unsafe Pixel workspace preview cleanup file")
     else:
         raise SystemExit("unsafe Pixel workspace preview cleanup artifact")

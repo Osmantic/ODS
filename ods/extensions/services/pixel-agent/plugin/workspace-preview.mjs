@@ -177,6 +177,9 @@ function publishedPathFeedback(response) {
 // Informational only: empty files can be legitimate, so publication stands.
 export const EMPTY_PUBLISHED_FILES_PREFIX = "Published files that are empty (0 bytes): ";
 
+// Displayed with host-authoritative publication evidence, independently of model prose.
+export const PREVIEW_STORAGE_DISCLOSURE = "Inputs in the embedded preview may be lost on reload. Storage behavior can differ in a separate tab; publishing alone does not guarantee saved data.";
+
 function emptyPathFeedback(response) {
   const shown = response.publishedEmptyPaths ?? [];
   const omitted = response.publishedEmptyPathsOmitted ?? 0;
@@ -244,8 +247,8 @@ const FAILURE_MESSAGES = {
   missing_entry: "The selected directory needs a nonempty index.html at its root. Check the directory and entry file before retrying.",
   too_many_files: "The selected site exceeds 128 files. Keep dependencies, build caches, and unrelated files outside the published directory.",
   snapshot_too_large: "The selected site exceeds 16 MiB. Reduce or optimize its static assets before retrying.",
-  unsafe_file: "A project file failed validation. Check for an empty index.html or oversized files (4 MiB maximum each), symlinks, hard links, unsafe names, or ownership/permission problems. Files must belong to the workspace owner and must not be writable by group or others (for example, mode 0664 is rejected). Inspect the exact files; remove excessive write permissions only within the intended publication directory, never broaden access or blindly change ownership.",
-  unsafe_directory: "The selected directory failed validation. Check its path, ownership, permissions, and symlinks; do not blindly relax permissions.",
+  unsafe_file: "A project file failed validation. Each file must be a regular file (not a symlink, hard link, or special file) that belongs to the workspace owner and is at most 4 MiB, and index.html must not be empty. File names may use only ASCII letters (A-Z, a-z), digits, '.', '_', '-', '[' and ']' (at most 128 characters), must not start with '-', ']' or the reserved __ods_ prefix, and must not be exactly __pycache__; files starting with '.' are hidden and skipped, never published. Inspect the exact files; rename, regenerate, or move offending files outside the publication directory, never broaden access or blindly change ownership.",
+  unsafe_directory: "A folder failed validation. The selected directory, the folders on its path, and every folder inside it must belong to the workspace owner, be readable, and must not be a symlink or writable by group or others. Folder names inside the site may use only ASCII letters (A-Z, a-z), digits, '.', '_', '-', '[' and ']' (at most 128 characters) and must not start with '-', ']' or the reserved __ods_ prefix; folders starting with '.' are hidden and skipped, never published. Fix only the cause that applies. Rename a folder whose name breaks these rules (for example, one with spaces in its name) and update the references to it, or move an unrelated folder outside the site directory. If the selected directory or a folder inside it is writable by group or others, remove only those write bits from that folder (chmod go-w). Move a symlinked or foreign-owned folder outside the site and, if the site needs its files, copy them into a real folder the workspace owner owns. Leave folders on the path above the selected directory unchanged and tell the owner if one of them is the cause. Never delete files, broaden permissions, or blindly change ownership.",
 };
 
 function validArtifactError(value) {
@@ -335,6 +338,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
               publishedPathFeedback(response) +
               emptyPathFeedback(response) +
               "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works. " +
+              PREVIEW_STORAGE_DISCLOSURE + " Verify storage behavior at the exact URL and in the viewing mode the owner will use before claiming persistence. A successful reload or new-tab check does not guarantee permanent storage; try/catch only keeps the app working when storage fails. Describe only the storage behavior actually verified. " +
               "If the owner requested derived source files or process logs, publication does not verify their correspondence to executed files or output. If that comparison is missing or fails, repair from the final executed bytes and republish before claiming completion.",
           }],
           details: response,

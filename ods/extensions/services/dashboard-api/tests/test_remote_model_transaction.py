@@ -8,6 +8,10 @@ import pytest
 from test_host_agent import _mod, TestRemoteProviderLifecycle as _LifecycleFixtures
 
 
+# The real check, kept before the fixture replaces it.
+ACTIVE_RUNTIME=_mod._active_remote_provider_pixel_runtime
+
+
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
     root=tmp_path/'ods'
@@ -71,7 +75,7 @@ def runtime(tmp_path, monkeypatch):
         assert not state.held, 'pending native status must use transaction.previous'
         return deepcopy(state.native)
     monkeypatch.setattr(_mod,'_managed_pixel_runtime_contract',inspect)
-    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',lambda:None)
+    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',lambda **_:None)
     monkeypatch.setattr(_mod,'_capture_container_state',lambda *_:{'exists':True,'running':True})
     def restart(*_args,**_kwargs):
         assert state.held
@@ -323,3 +327,34 @@ def test_failed_egress_restore_does_not_release_maintenance(runtime,monkeypatch)
     with pytest.raises(_mod._PixelModelTransactionUncertain,match='Previous provider files could not be restored'):
         configure(runtime)
     assert runtime.held and 'finish-rollback' not in runtime.events
+
+
+def enable():
+    payload={'action':'enable'}
+    return _mod._apply_remote_provider_lifecycle_operation(payload,_mod._plan_remote_provider_lifecycle_operation(payload))
+
+
+def test_enable_of_the_active_route_reads_pixel_now_and_changes_nothing(runtime,monkeypatch):
+    # Fleet row 6 (Mac): configure rewrites the route state, which empties the
+    # poll cache; the first enable then missed this no-op, began a model
+    # transaction, and the controller refused it (409).
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',ACTIVE_RUNTIME)
+    monkeypatch.setattr(_mod,'_cached_managed_pixel_runtime_contract',lambda:None)
+    before=files(runtime.root)
+    runtime.events.clear()
+    result=enable()
+    assert result['applied'] and result['unchanged'] and not result['mutated']
+    assert runtime.events==[] and files(runtime.root)==before and not runtime.held
+
+
+def test_enable_runs_the_transaction_when_pixel_serves_another_model(runtime,monkeypatch):
+    configure(runtime)
+    monkeypatch.setattr(_mod,'_active_remote_provider_pixel_runtime',ACTIVE_RUNTIME)
+    def cached():pytest.fail('an action must not trust the poll cache')
+    monkeypatch.setattr(_mod,'_cached_managed_pixel_runtime_contract',cached)
+    runtime.native={'model':'local','contextLength':65536,'maxTokens':4096,'reasoning':False}
+    runtime.events.clear()
+    result=enable()
+    assert result['applied'] and not result.get('unchanged')
+    assert runtime.events.count('begin')==1 and runtime.events[-1]=='finish-commit' and not runtime.held

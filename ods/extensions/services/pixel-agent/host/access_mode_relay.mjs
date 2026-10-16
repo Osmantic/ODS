@@ -91,7 +91,10 @@ export async function handleModelControl(req, res, {ownerKey, request = requestA
     // model-status/begin/finish shapes differ from browser model switching.
     const controllerPayload={...payload,operation:payload.operation.replace(/^model-/, 'model-route-')};
     const result=await request(controllerPayload,{timeout:payload.operation === 'model-status' ? 20000 : 305000});
-    return reply(result.status,result.status === 200 ? publicModelControl(result.body) : {error:'model-change-unconfirmed'});
+    // The controller's own refusal code (a plain token such as
+    // model-runtime-mismatch) tells the owner what to fix; free text is never relayed.
+    const code=typeof result.body?.error === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(result.body.error) ? result.body.error : null;
+    return reply(result.status,result.status === 200 ? publicModelControl(result.body) : {error:code ?? 'model-change-unconfirmed'});
   } catch {return reply(503,{error:'model-control-unavailable'});}
 }
 

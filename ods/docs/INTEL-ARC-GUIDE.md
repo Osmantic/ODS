@@ -157,17 +157,17 @@ CTX_SIZE=32768        # ARC tier default
 
 ## Known Limitations vs NVIDIA / AMD
 
-| Feature | NVIDIA (CUDA) | AMD (ROCm) | Intel Arc (SYCL) |
+| Feature | NVIDIA (CUDA) | AMD (Vulkan; ROCm optional) | Intel Arc (SYCL) |
 |---------|--------------|-----------|-----------------|
 | Installer maturity | Tier B | Tier A | **Tier C (experimental)** |
-| llama.cpp backend | CUDA (native) | HIP/ROCm (native) | SYCL (via oneAPI) |
+| llama.cpp backend | CUDA (native) | Vulkan (default) or HIP/ROCm | SYCL (via oneAPI) |
 | SYCL kernel cache | — | — | JIT compile on every container start (~30 s). ODS does not set `SYCL_CACHE_PERSISTENT`: with the oneAPI 2025.3 runtime in the b9014 image it crashes llama-server. |
-| Multi-GPU | ✅ (native) | ✅ (ROCm multi) | ❌ Not supported. SYCL backend targets a single Arc GPU. |
+| Multi-GPU | ✅ (native) | ✅ (layer split) | ❌ Not supported. SYCL backend targets a single Arc GPU. |
 | ComfyUI (image gen) | ✅ CUDA overlay | ✅ ROCm overlay | ⚠️ No dedicated overlay. ComfyUI will use CPU fallback. |
 | Whisper STT | ✅ CUDA overlay | ✅ ROCm overlay | ⚠️ Runs on CPU (no Arc-accelerated Whisper image). |
 | Flash attention | ✅ | ✅ | ❌ llama.cpp SYCL does not yet implement Flash Attention. |
 | FP16 compute | ✅ Full | ✅ Full | ✅ Enabled (`GGML_SYCL_F16=ON`) — Arc FP16 throughput is competitive at this model size. |
-| Docker image size | ~6 GB | ~8 GB | **~15 GB** (oneAPI Base Toolkit is large). |
+| Docker image size | ~6 GB | ~0.2 GB compressed (Vulkan); ~7 GB (ROCm) | **~15 GB** (oneAPI Base Toolkit is large). |
 | First-run build time | Pull only | Pull only | **~10–20 min** (compiles llama.cpp from source). |
 | Windows support | ✅ WSL2 | ✅ WSL2 | ⚠️ Experimental. Arc drivers for WSL2 are less mature than NVIDIA's. |
 

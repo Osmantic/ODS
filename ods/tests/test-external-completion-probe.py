@@ -6,19 +6,20 @@ import json
 from pathlib import Path
 import sys
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 
 PHASE = Path(__file__).resolve().parents[1] / "installers/phases/12-health.sh"
 SOURCE = PHASE.read_text().split('exec -i "$dashboard_container" python -c \'', 1)[1]
-PROBE = compile(SOURCE.split('\' "$container_url" "$model"', 1)[0], str(PHASE), "exec")
+PROBE = compile(SOURCE.split('\' "$container_url" "$model" "ODS/', 1)[0], str(PHASE), "exec")
 
 
 class CompletionProbeTests(unittest.TestCase):
     def run_probe(self, body, key=""):
         response = io.StringIO(json.dumps(body))
         with (
-            patch.object(sys, "argv", ["probe", "http://provider:8080", "any-model"]),
+            patch.object(sys, "argv", ["probe", "http://provider:8080", "any-model", "ODS/9.9.9"]),
             patch("urllib.request.urlopen", return_value=response) as request,
             patch("sys.stdin", io.StringIO(key)),
             patch("sys.stdout", new_callable=io.StringIO) as output,
@@ -31,6 +32,8 @@ class CompletionProbeTests(unittest.TestCase):
                 request.call_args.args[0].get_header("Authorization"),
                 "Bearer " + key if key else None,
             )
+            # Some API front ends refuse Python's default User-Agent.
+            self.assertEqual(request.call_args.args[0].get_header("User-agent"), "ODS/9.9.9")
             return output.getvalue()
 
     @staticmethod
@@ -67,6 +70,19 @@ class CompletionProbeTests(unittest.TestCase):
         for body in cases:
             with self.subTest(body=body), self.assertRaises(SystemExit):
                 self.run_probe(body)
+
+    def test_http_error_names_the_status(self):
+        refused = urllib.error.HTTPError(
+            "http://provider:8080/v1/chat/completions", 403, "Forbidden", {},
+            io.BytesIO(b"error code: 1010"))
+        with (
+            patch.object(sys, "argv", ["probe", "http://provider:8080", "any-model", "ODS/9.9.9"]),
+            patch("urllib.request.urlopen", side_effect=refused),
+            patch("sys.stdin", io.StringIO("")),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            exec(PROBE, {})
+        self.assertEqual(str(stopped.exception), "API answered HTTP 403: error code: 1010")
 
 
 if __name__ == "__main__":

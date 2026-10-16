@@ -29,3 +29,10 @@ jobs:
           ruff check ods/ \
             --select E,F,W \
             --ignore E501,E701,E731,E741,E402
+
+      # This job runs Python 3.12, but the code does not: the host agent and
+      # installer helpers run on the host's python3 from 3.9, and service images
+      # use 3.11 or newer. Ruff reports syntax the target version cannot parse,
+      # such as a backslash inside an f-string expression (3.12 only).
+      - name: Check Python syntax against Python 3.9
+        run: ruff check ods/ --target-version py39 --select E9

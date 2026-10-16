@@ -11,7 +11,7 @@ Your agent -> Token Spy proxy -> Upstream API (Anthropic, OpenAI, etc.)
               SQLite DB <- Dashboard (charts, tables, settings)
                   ^
                   |
-           Session Manager (polls every N minutes, enforces limits)
+           Session Manager (optional, on your own timer; enforces limits)
 ```
 
 Point your agent's API base URL at Token Spy instead of the upstream provider. Clients authenticate to Token Spy with `TOKEN_SPY_API_KEY`. For external providers, Token Spy uses server-side `UPSTREAM_API_KEY` and never forwards its own Bearer token upstream. Local OpenAI-compatible backends such as llama-server or Ollama can still run without an upstream key.
@@ -32,7 +32,7 @@ schema.
 - **Session health monitoring** -- detects context bloat, recommends resets, can auto-kill sessions exceeding configurable character limits
 - **Multi-provider** -- Anthropic Messages API (`/v1/messages`) and OpenAI Chat Completions (`/v1/chat/completions`)
 - **Dual database backends** -- SQLite (zero-config default) and PostgreSQL/TimescaleDB for production
-- **Per-agent settings** -- configurable session limits and poll intervals, editable via dashboard or REST API
+- **Per-agent settings** -- configurable session limits, editable via dashboard or REST API
 - **Local model support** -- track self-hosted models (vLLM, Ollama) with $0 cost badges
 
 ## Standalone Usage

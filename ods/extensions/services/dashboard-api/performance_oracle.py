@@ -47,6 +47,8 @@ _EVIDENCE_PATH = Path(__file__).with_name("performance_evidence.json")
 _DEFAULT_RECOMMENDATION_POLICY = "catalog-fit-pre-download"
 _VRAM_FIT_TOLERANCE_GB = 0.25
 _MODEL_SELECTOR_POLICY = _SHARED_SELECTOR_POLICY
+# Retired Lemonade id forms, still matched for one release so persisted
+# receipts and performance rows keep naming their GGUF.
 _RUNTIME_MODEL_PREFIXES = ("extra.", "user.")
 _AGENT_MIN_LOCAL_TOKENS_PER_SEC = 2.0
 _MODEL_PUBLISHERS = (
@@ -151,14 +153,15 @@ def read_env_value(key: str, install_dir: str | Path) -> str:
     return read_env_file_value(key, install_dir)
 
 
-def read_env_file_value(key: str, install_dir: str | Path) -> str:
+def read_env_file_value(key: str, install_dir: str | Path, *, raise_on_error: bool = False) -> str:
     env_path = Path(install_dir) / ".env"
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
                 return parse_env_value(line.split("=", 1)[1])
     except OSError:
-        pass
+        if raise_on_error:
+            raise
     return ""
 
 
@@ -325,11 +328,21 @@ def model_compatibility_runtime_context(
         return os.environ.get(key, "")
 
     llm_backend = runtime or runtime_value("LLM_BACKEND")
+    ods_mode = runtime_value("ODS_MODE")
+    # Round F serves every managed model through llama-server: an unmigrated
+    # Lemonade .env reads as it, and evidence scoped to Lemonade never applies.
+    if normalize_key(llm_backend) == "lemonade":
+        llm_backend = "llama-server"
+    if normalize_key(ods_mode) == "lemonade":
+        ods_mode = "local"
     gpu_backend = (
         getattr(gpu_info, "gpu_backend", None)
         or runtime_value("GPU_BACKEND")
     )
-    explicit_host_values = {
+    # Host-scoped catalog evidence was recorded on named fleet machines. Match it
+    # only against an explicit identity, never the machine's own hostname, so a
+    # user's computer that happens to share a fleet name gets no fleet verdicts.
+    host_values = {
         normalize_key(value)
         for value in (
             runtime_value("ODS_FLEET_HOST_ID"),
@@ -337,21 +350,11 @@ def model_compatibility_runtime_context(
         )
         if normalize_key(value)
     }
-    host_values = explicit_host_values or {
-        normalize_key(value)
-        for value in (
-            runtime_value("ODS_DEVICE_NAME"),
-            runtime_value("COMPUTERNAME"),
-            runtime_value("HOSTNAME"),
-            platform.node(),
-        )
-        if normalize_key(value)
-    }
     return {
         "llmBackend": normalize_key(llm_backend),
         "runtime": normalize_key(llm_backend),
         "gpuBackend": normalize_key(gpu_backend),
-        "odsMode": normalize_key(runtime_value("ODS_MODE")),
+        "odsMode": normalize_key(ods_mode),
         "host": sorted(host_values)[0] if host_values else "",
         "hosts": sorted(host_values),
     }
@@ -454,7 +457,6 @@ _COMPATIBILITY_USER_COPY = {
 _COMPATIBILITY_APP_NAMES = {
     "litellm": "LiteLLM",
     "openWebui": "Open WebUI",
-    "openclaw": "OpenClaw",
     "opencode": "OpenCode",
     "perplexica": "Perplexica",
 }
@@ -681,11 +683,15 @@ def model_app_compatibility(
     performance: Optional[dict[str, Any]] = None,
     runtime_context: Optional[dict[str, Any]] = None,
     context_length: Optional[int] = None,
+    profile_tools: Optional[bool] = None,
 ) -> dict[str, Any]:
     """App verdicts for ``model``.
 
     ``context_length`` is the context the model is (or will be) served at;
     below the Hermes floor it rules ODS Talk out on its own.
+    ``profile_tools`` is the active model's measured tool-call result (ODS
+    Talk passes it with profiles enabled); a failure adds an advisory, never a
+    block, and a context or catalog block keeps priority.
     """
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
     hermes_talk = _app_compatibility_entry(
@@ -738,6 +744,12 @@ def model_app_compatibility(
             "reason": exact_speed_block["reason"],
             "userMessage": f"Too slow on this machine for Portal agent tasks ({speed}).",
         }
+    talk_blocked = any(
+        str(compatibility[key].get("status") or "").strip().lower() in _TALK_BLOCKING_STATUSES
+        for key in ("hermesTalk", "agentViability")
+    )
+    if profile_tools is False and not talk_blocked:
+        compatibility["hermesTalkAdvisory"] = {"code": "tools-unavailable"}
     return compatibility
 
 
@@ -1374,7 +1386,7 @@ def _recommendation_from_env(install_dir: str | Path) -> dict[str, Any]:
 def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) -> Optional[GPUInfo]:
     """Build a conservative GPU surrogate for Windows AMD native runtimes.
 
-    On Windows AMD installs, dashboard-api runs inside Docker while Lemonade or
+    On Windows AMD installs, dashboard-api runs inside Docker while
     llama-server runs on the host. The container often cannot inspect the host
     APU/GPU directly, so get_gpu_info() can be None even though the host runtime
     can load a downloaded model. Use the installer-written runtime contract
@@ -1389,13 +1401,12 @@ def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) 
 
     location = normalize_key(runtime_value("AMD_INFERENCE_LOCATION"))
     runtime = normalize_key(runtime_value("AMD_INFERENCE_RUNTIME"))
-    llm_backend = normalize_key(runtime_value("LLM_BACKEND"))
     managed = normalize_key(runtime_value("AMD_INFERENCE_MANAGED"))
     if location not in {"host", "local", ""}:
         return None
-    if runtime not in {"lemonade", "llama-server", ""} and llm_backend != "lemonade":
+    if runtime not in {"llama-server", ""}:
         return None
-    if managed in {"false", "no", "off"} and not runtime and llm_backend != "lemonade":
+    if managed in {"false", "no", "off"} and not runtime:
         return None
     profile_text = normalize_key(" ".join([
         runtime_value("MODEL_RUNTIME_PROFILE"),
@@ -1563,10 +1574,13 @@ def _measured_native_activation(model, path, data_root, install_dir, gpu_info, s
     value = lambda key: read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
     if (value("AMD_INFERENCE_LOCATION") != "host"
             or not value("AMD_INFERENCE_RUNTIME_MODE").startswith("windows-")
-            or value("LLM_BACKEND") != "lemonade"
-            or value("AMD_INFERENCE_MANAGED").lower() == "false"
-            or value("LEMONADE_EXTERNAL").lower() == "true"):
+            or value("LLM_BACKEND") != "llama-server"
+            or value("AMD_INFERENCE_MANAGED").lower() == "false"):
         return None
+    # The fit must describe the launch ODS performs: native llama-server with
+    # the configured GPU offload. Fits measured through Lemonade's launch
+    # (runtimeMode=lemonade) never qualify.
+    launch_gpu_layers = value("N_GPU_LAYERS").strip() or "auto"
     from model_stores import registered_stores, safe_artifact
     for store in registered_stores(data_root, container=Path("/.dockerenv").exists()):
         if store["path"].resolve() != path.parent.resolve():
@@ -1576,7 +1590,7 @@ def _measured_native_activation(model, path, data_root, install_dir, gpu_info, s
         fit = row.get("memoryQualification") if isinstance(row, dict) else None
         if not isinstance(fit, dict) or fit.get("source") != "measured-native" or fit.get("schemaVersion") != 1:
             continue
-        if (fit.get("runtimeMode") != "lemonade" or fit.get("gpuLayers") != "99"
+        if (fit.get("runtimeMode") != "native" or fit.get("gpuLayers") != launch_gpu_layers
                 or fit.get("runtimeBackend") != row.get("backend")
                 or fit.get("qualificationSignature") != row.get("qualificationSignature")
                 or any(not re.fullmatch(r"[0-9a-f]{64}", str(fit.get(key, ""))) for key in ("modelSha256", "runtimeSha256", "executionSignature", "visionProjectorSha256"))

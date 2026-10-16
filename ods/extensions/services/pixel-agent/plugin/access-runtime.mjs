@@ -235,6 +235,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   let state, failed = false, probeRun = null, proof = null, probeFailure = null;
   let maintenanceProof = null;
   let initializationStage = 'state-directory', initializationFailure = null;
+  let processClaim = null;
   let processTimer = null, processCheck = null;
   const isInternal = context => (probeRun !== null && context?.runId === probeRun) || internalRuns.has(context?.runId);
   // Construct only the SDK's scoped process-list reader. Never execute a shell,
@@ -277,7 +278,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     finally { if (fd !== undefined) fs.closeSync(fd); if (fs.existsSync(temporary)) fs.unlinkSync(temporary); }
   }
   function claimProcess() {
-    if (!['linux', 'darwin'].includes(process.platform)) return () => {};
+    if (!['linux', 'darwin'].includes(process.platform)) return {release() {}};
     // Linux requires util-linux /usr/bin/flock. The inherited descriptor shares
     // the parent's open file description, so its lock survives helper exit and
     // is released by close or gateway death, even during stale-record recovery.
@@ -295,9 +296,45 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
         const result = spawnSync('/usr/bin/flock', ['--exclusive', '--nonblock', '3'],
           {stdio: ['ignore', 'ignore', 'ignore', fd], timeout: 5000});
         if (result.error || result.status !== 0) throw new Error('process claim unavailable');
+        return {release: () => fs.closeSync(fd)};
       }
-      return () => fs.closeSync(fd);
+      if (!Number.isSafeInteger(opened.dev) || opened.dev < 0 ||
+          !Number.isSafeInteger(opened.ino) || opened.ino <= 0) throw new Error('process claim identity unavailable');
+      return {release: () => fs.closeSync(fd), identity: [String(opened.dev), String(opened.ino)]};
     } catch (error) { fs.closeSync(fd); throw error; }
+  }
+  function ownerStamp(lock) {
+    privateEntry(lock);
+    const entry = fs.statSync(lock, {bigint: true});
+    return [entry.dev, entry.ino, entry.birthtimeNs, entry.ctimeNs].map(value => value.toString());
+  }
+  const claimWitness = path.join(directory, 'process-claim.json');
+  function witnessedDarwinOwner(lock, previous) {
+    if (process.platform !== 'darwin' || !fs.existsSync(claimWitness)) return false;
+    if (privateEntry(claimWitness).size > 4096) throw new Error('oversized process claim witness');
+    const witness = JSON.parse(fs.readFileSync(claimWitness, 'utf8'));
+    const stamp = (value, size) => Array.isArray(value) && value.length === size &&
+      value.every(field => typeof field === 'string' && /^(0|[1-9][0-9]*)$/.test(field));
+    if (!witness || Object.keys(witness).sort().join(',') !== 'claim,owner,pid,version' ||
+        witness.version !== 1 || !Number.isSafeInteger(witness.pid) || witness.pid < 1 ||
+        !stamp(witness.claim, 2) || !stamp(witness.owner, 4)) throw new Error('invalid process claim witness');
+    // Older runtimes rewrite process.json but do not retain O_EXLOCK. Bind the
+    // witness to the exact file incarnation, not just its recycled PID. A
+    // stale witness after a downgrade cannot displace a live legacy gateway.
+    return previous && Object.keys(previous).join(',') === 'pid' && previous.pid === witness.pid &&
+      JSON.stringify(witness.claim) === JSON.stringify(processClaim.identity) &&
+      JSON.stringify(witness.owner) === JSON.stringify(ownerStamp(lock));
+  }
+  function saveClaimWitness(lock) {
+    if (process.platform !== 'darwin') return;
+    const value = {version: 1, pid: process.pid, claim: processClaim.identity, owner: ownerStamp(lock)};
+    const temporary = path.join(directory, `.claim-${revision()}`);
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try { fs.writeFileSync(fd, JSON.stringify(value)); fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
+    fs.renameSync(temporary, claimWitness);
+    const parent = fs.openSync(directory, 'r');
+    try { fs.fsyncSync(parent); } finally { fs.closeSync(parent); }
   }
   try {
     if (!fs.existsSync(directory)) fs.mkdirSync(directory, {mode: 0o700});
@@ -307,7 +344,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     // An inode check alone cannot prevent two stale claimants unlinking a new
     // live owner's record. Never unlink the reusable kernel-lock file.
     initializationStage = 'process-claim';
-    const releaseClaim = claimProcess();
+    processClaim = claimProcess();
     try {
       initializationStage = 'process-identity';
       const identity = process.platform === 'linux' ? linuxProcessIdentity(process.pid) : {pid: process.pid};
@@ -316,7 +353,9 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
         const entry = privateEntry(lock);
         if (entry.size > 4096) throw new Error('oversized process lock');
         const previous = JSON.parse(fs.readFileSync(lock, 'utf8'));
-        if (previousProcessAlive(previous, identity)) throw new Error('another runtime owns admission');
+        if (!witnessedDarwinOwner(lock, previous) && previousProcessAlive(previous, identity)) {
+          throw new Error('another runtime owns admission');
+        }
         const current = privateEntry(lock);
         if (current.dev !== entry.dev || current.ino !== entry.ino) throw new Error('process lock changed');
         fs.unlinkSync(lock);
@@ -324,7 +363,13 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
       const lockFd = fs.openSync(lock, 'wx', 0o600);
       try { fs.writeFileSync(lockFd, JSON.stringify(identity)); fs.fsyncSync(lockFd); }
       finally { fs.closeSync(lockFd); }
-    } finally { releaseClaim(); }
+      saveClaimWitness(lock);
+    } finally {
+      // Darwin has no /proc start identity. Keep its exact kernel claim until
+      // process exit, including when state is idle. Linux keeps its existing
+      // boot/invocation identity and short registration lock.
+      if (process.platform !== 'darwin') { processClaim.release(); processClaim = null; }
+    }
     initializationStage = 'state-read';
     if (fs.existsSync(filename)) {
       privateEntry(filename);
@@ -337,7 +382,10 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     // Restart invalidates every previous runtime proof, even at identical config.
     initializationStage = 'state-save';
     state.revision = revision(); save();
-  } catch { failed = true; initializationFailure = initializationStage; }
+  } catch {
+    if (processClaim !== null) { processClaim.release(); processClaim = null; }
+    failed = true; initializationFailure = initializationStage;
+  }
   const busy = () => runs.size + tools.size + detached.size > 0;
   function changed() { state.revision = revision(); save(); }
   function scheduleProcessCheck() {

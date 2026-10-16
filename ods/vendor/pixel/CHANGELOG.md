@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.3.31 - ODS-maintained candidate
+
+- Wait for Operations Broker executable startup before the inventory deadline
+  begins. Filesystem isolation setup has its own bounded startup window.
+- Preserve every existing sandbox, credential and reader-access boundary.
+
+## 4.3.30 - ODS-maintained candidate
+
+- Wait for an active Operations Broker to publish its inventory before applying
+  owner-reader ACLs. Slow Python startup gets a bounded sixty-second window;
+  failed services and missing inventories still stop installation.
+- Keep the regular-file, symlink and private-state access checks unchanged.
+
 ## 4.3.23 - Unreleased (candidate)
 
 - Preserve one exact terminal failed rollback outside the bounded staging namespace so

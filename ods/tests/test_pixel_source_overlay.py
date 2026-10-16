@@ -38,7 +38,8 @@ def held_overlay(tmp_path, monkeypatch):
     return make_held_overlay(tmp_path, monkeypatch)
 
 
-def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=False, new_project=False):
+def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=False, new_project=False,
+                      local_model='Qwen3.5-9B', thinking_control=None):
     uid, gid = os.getuid(), os.getgid()
     assert uid > 0, 'run these disposable fixtures as an ordinary user'
     home, installed, candidate = [tmp_path / name for name in ('home', 'installed', 'candidate')]
@@ -107,9 +108,9 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
     if provider == 'local':
         sandbox['models']['providers'] = {'ods-local': {'api': 'openai-completions',
             'apiKey': 'local-no-auth', 'baseUrl': 'http://127.0.0.1:11434/v1',
-            'models': [{'id': 'Qwen3.5-9B', 'name': 'ODS Local Qwen3.5-9B',
+            'models': [{'id': local_model, 'name': f'ODS Local {local_model}',
                 'contextWindow': 16384, 'maxTokens': 4096, 'reasoning': False}]}}
-        sandbox['agents']['list'][0]['model'] = 'ods-local/Qwen3.5-9B'
+        sandbox['agents']['list'][0]['model'] = f'ods-local/{local_model}'
         del sandbox['plugins']['entries']['pixel-ods']['config']['modelRouteFingerprint']
     if new_inspector:
         del sandbox['plugins']['entries']['pixel-ods']['config']['workspacePreviewInspectionTransport']
@@ -163,6 +164,8 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
                    modelName=route_model['name'], modelImageInput='unknown')
     if provider == 'cloud':
         answers['modelRouteFingerprint'] = 'f' * 64
+    if thinking_control is not None:
+        answers['modelThinkingControl'] = thinking_control
     answers_path = home / 'renderer-answers.json'
     save(answers_path, answers)
     renderer_args = [sys.executable, '-I', str(writer), str(config_path), '3004', str(answers_path), str(home / '.openclaw'), 'unix']
@@ -402,6 +405,43 @@ def test_local_route_change_is_not_a_runtime_overlay(tmp_path, monkeypatch):
     value = json.loads(f.config.read_bytes())
     value['models']['providers']['ods-local']['baseUrl'] = 'http://127.0.0.1:12345/v1'
     save(f.config, value)
+    f.bridge.config['config_sha256'] = upgrade.sha(f.config.read_bytes())
+    with pytest.raises(access.AccessError, match='source-overlay-not-derived'):
+        f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))
+    assert not any(call.endswith(':release') for call in f.bridge.calls)
+
+
+R11 = 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf'
+
+
+def test_measured_thinking_control_from_answers_is_derived(tmp_path, monkeypatch):
+    # The name says qwen, the measured profile says the template always thinks.
+    # The installer renders that from its answers file; the release carries no
+    # plugin key for it, so the proof must still derive this exact config.
+    f = make_held_overlay(tmp_path, monkeypatch, provider='local', local_model=R11, thinking_control='always')
+    value = json.loads(f.config.read_bytes())
+    agent = value['agents']['list'][0]
+    assert value['models']['providers']['ods-local']['models'][0]['reasoning'] is True
+    assert 'chat_template_kwargs' not in agent.get('params', {})
+    assert 'modelThinkingControl' not in value['plugins']['entries']['pixel-ods']['config']
+    anchor = (f.owner_state / 'access-release-config-after.json').read_bytes()
+    renderer = (ROOT / 'installers/lib/pixel-runtime-budget.py').read_bytes()
+    live = upgrade.sha(f.config.read_bytes())
+    # The name rule alone derives a different config (source-overlay-not-derived).
+    assert upgrade._render_overlay(renderer, anchor, f.bridge.home, os.getuid(), os.getgid()) != live
+    assert upgrade._render_overlay(renderer, anchor, f.bridge.home, os.getuid(), os.getgid(),
+                                   thinking_control='always') == live
+    assert f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))['status'] == 'released'
+
+
+def test_thinking_fields_no_renderer_policy_writes_are_not_derived(tmp_path, monkeypatch):
+    f = make_held_overlay(tmp_path, monkeypatch, provider='local', local_model=R11, thinking_control='always')
+    value = json.loads(f.config.read_bytes())
+    rendered = lambda document: (json.dumps(document, indent=2, sort_keys=True) + '\n').encode()
+    assert rendered(value) == f.config.read_bytes()  # only the content changes below
+    # Reasoning on with the switch off matches none of the four thinking policies.
+    value['agents']['list'][0].setdefault('params', {})['chat_template_kwargs'] = {'enable_thinking': False}
+    save(f.config, rendered(value))
     f.bridge.config['config_sha256'] = upgrade.sha(f.config.read_bytes())
     with pytest.raises(access.AccessError, match='source-overlay-not-derived'):
         f.bridge.model_finish(dict(transaction_id=TOKEN, outcome='applied'))

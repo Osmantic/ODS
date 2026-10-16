@@ -15,6 +15,11 @@
 #   Add new developer tools or change installation methods here.
 # ============================================================================
 
+# Isolated phase reuse (tests) gets the route predicate installers/lib/
+# native-llm.sh gives install-core: a host-native llama-server is in use.
+declare -F ods_native_llm_requested >/dev/null 2>&1 \
+    || ods_native_llm_requested() { [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; }
+
 ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
@@ -179,7 +184,8 @@ else
         if [[ -f "$INSTALL_DIR/.env" ]]; then
             [[ -z "${OLLAMA_PORT:-}" ]] && OLLAMA_PORT=$(grep -m1 '^OLLAMA_PORT=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             # Always re-read ODS_MODE from .env — Phase 06 may have changed it
-            # (e.g. "local" → "lemonade" for AMD) but the shell variable is stale.
+            # (e.g. to "local" for an external endpoint) but the shell variable
+            # is stale.
             ODS_MODE=$(grep -m1 '^ODS_MODE=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${ODS_MODEL_SWITCHBOARD:-}" ]] && ODS_MODEL_SWITCHBOARD=$(grep -m1 '^ODS_MODEL_SWITCHBOARD=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${LITELLM_KEY:-}" ]] && LITELLM_KEY=$(grep -m1 '^LITELLM_KEY=' "$INSTALL_DIR/.env" | cut -d= -f2-)
@@ -187,9 +193,10 @@ else
             [[ -z "${EXTERNAL_LLM_URL:-}" ]] && EXTERNAL_LLM_URL=$(grep -m1 '^EXTERNAL_LLM_URL=' "$INSTALL_DIR/.env" | cut -d= -f2-)
             [[ -z "${EXTERNAL_LLM_MODEL:-}" ]] && EXTERNAL_LLM_MODEL=$(grep -m1 '^EXTERNAL_LLM_MODEL=' "$INSTALL_DIR/.env" | cut -d= -f2-)
         fi
-        # Route through LiteLLM on AMD/Lemonade, direct to llama-server otherwise.
+        # Route through LiteLLM for the switchboard, an external endpoint and a
+        # host-native llama-server; direct to the in-stack llama-server otherwise.
         #
-        # The Lemonade branch hits LiteLLM at :4000. LiteLLM is NOT auth-disabled
+        # The gateway branches hit LiteLLM at :4000. LiteLLM is NOT auth-disabled
         # on this install — its container env carries LITELLM_MASTER_KEY from
         # .env (phase 06 wires it; the docker-compose for LiteLLM honors it),
         # and any request without a matching Authorization header gets 401.
@@ -202,9 +209,10 @@ else
         #   $ curl -sSI http://127.0.0.1:4000/v1/models   → 401
         #   $ curl -sSI -H "Authorization: Bearer $LITELLM_KEY" ... → 200
         #
-        # Use LITELLM_KEY (read above at line 122) on the lemonade branch.
-        # The llama-server-direct branch keeps "no-key" — llama.cpp's OpenAI-
-        # compat server doesn't validate the key.
+        # Use LITELLM_KEY (read above) on the gateway branches. The
+        # llama-server-direct branch keeps "no-key": the in-stack llama.cpp
+        # server does not validate the key. A host-native llama-server does
+        # (LLAMA_SERVER_API_KEY), and only LiteLLM holds that key.
         _opencode_model_id="${LLM_MODEL}"
         _opencode_model_name="${LLM_MODEL}"
         _opencode_provider_name="llama-server (local)"
@@ -224,9 +232,10 @@ else
             _opencode_model_id="$EXTERNAL_LLM_MODEL"
             _opencode_model_name="$EXTERNAL_LLM_MODEL"
             _opencode_provider_name="External LLM via ODS gateway"
-        elif [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
+        elif ods_native_llm_requested; then
             _opencode_url="http://127.0.0.1:${LITELLM_PORT:-4000}/v1"
-            _opencode_key="${LITELLM_KEY:-no-key}"
+            _opencode_key="${LITELLM_KEY:-}"
+            _opencode_provider_name="llama-server (Windows) via ODS gateway"
         else
             _opencode_url="http://127.0.0.1:${OLLAMA_PORT:-8080}/v1"
             _opencode_key="no-key"

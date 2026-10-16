@@ -17,8 +17,9 @@ see [MACOS-QUICKSTART.md](docs/MACOS-QUICKSTART.md),
 
 - Docker with Compose v2+
 - `curl` and `git`
-- NVIDIA Container Toolkit for NVIDIA GPUs, ROCm devices for AMD Strix Halo, or
-  Intel compute runtime for Arc
+- NVIDIA Container Toolkit for NVIDIA GPUs, the AMD GPU render node
+  (`/dev/dri`; also `/dev/kfd` for the optional ROCm image) for AMD, or Intel
+  compute runtime for Arc
 - 40 GB+ free disk space for models and container images
 
 **macOS:**
@@ -65,15 +66,19 @@ is the same folder as the default install directory `~/ods`.
 ### Windows
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 The Windows command guides Ubuntu/WSL2 preparation and requires Pixel, with no Hermes fallback. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done. See [Windows Quickstart](docs/WINDOWS-QUICKSTART.md).

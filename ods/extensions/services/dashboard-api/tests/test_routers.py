@@ -454,14 +454,6 @@ def test_api_external_links_authenticated(test_client):
         assert "icon" in link
 
 
-def test_api_service_tokens_authenticated(test_client):
-    """GET /api/service-tokens with auth → 200, returns service tokens."""
-    resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert isinstance(data, dict)
-
-
 # ---------------------------------------------------------------------------
 # Agents router
 # ---------------------------------------------------------------------------

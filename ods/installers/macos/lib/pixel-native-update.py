@@ -69,7 +69,7 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'manual-review-required'}
 
 
-def update(*, install_dir, ods_source, prepare_only=False):
+def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     install_dir, ods_source = Path(install_dir).resolve(strict=True), Path(ods_source).resolve(strict=True)
@@ -110,7 +110,7 @@ def update(*, install_dir, ods_source, prepare_only=False):
         preparation = work / 'preparation'
         helper('pixel-native-prepare').prepare_migration(source=source, ref=initial.DEFAULT_REF,
             node=node, runtime=runtime, docker=transport['docker'], ods_source=ods_source,
-            install_dir=install_dir, destination=preparation)
+            install_dir=install_dir, destination=preparation, prompt_for_sudo=prompt_for_sudo)
         prepared = config.private_json(preparation / 'preparation.json')
         command = activation_command(preparation, prepared, install_dir=install_dir,
             ods_source=ods_source, owner=owner, transport=transport)
@@ -134,10 +134,16 @@ def main():
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--ods-source', required=True)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--prompt-for-sudo', action='store_true',
+        help='Allow read-only protected verification to prompt on a controlling terminal')
     args = parser.parse_args()
     try:
         print(json.dumps(update(**vars(args))))
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        if str(error) == 'native-migration-proof-or-authorization-failed':
+            print('Protected runtime verification or sudo authorization failed. Retain the preparation; '
+                'review the protected runtime, or run sudo -v and retry from the same terminal. '
+                'Interactive updates may use --prompt-for-sudo.', file=sys.stderr)
         print('Native update stopped (' + type(error).__name__ +
             '); retain its preparation and protected recovery journal. Do not reinstall or delete state.', file=sys.stderr)
         return 1

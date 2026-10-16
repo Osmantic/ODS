@@ -109,6 +109,39 @@ def test_storage_failure_is_explicit_without_private_details(client, monkeypatch
     assert response.json() == {"detail": "Portal image storage is unavailable"}
 
 
+@pytest.mark.parametrize("operation", ["upload", "lifecycle"])
+@pytest.mark.parametrize("failure_kind,diagnostic", [
+    ("custody", "ImageStoreCustodyError; custody=database_mode"),
+    ("unknown-custody", "ImageStoreCustodyError; custody=unknown"),
+    ("other", "ValueError"),
+])
+def test_custody_logs_only_allowlisted_reason_and_keeps_public_response(
+    client, monkeypatch, caplog, operation, failure_kind, diagnostic,
+):
+    from pixel_image_store import ImageStoreCustodyError
+    private = "/private/path owner=123 credential=secret image=private-bytes"
+    failure = (ValueError(private) if failure_kind == "other" else
+               ImageStoreCustodyError("database_mode" if failure_kind == "custody" else private, private))
+
+    def broken(*args):
+        raise failure
+
+    monkeypatch.setattr(pixel_images, "_storage_call", broken)
+    if operation == "upload":
+        response = upload(client)
+        detail = "Portal image storage is unavailable"
+        log = "Portal image storage operation failed"
+    else:
+        response = client.delete("/api/pixel/images/chat")
+        detail = "Conversation image deletion could not be confirmed. Retry before deleting local history."
+        log = "Portal conversation lifecycle unavailable"
+    assert response.status_code == 503
+    assert response.json() == {"detail": detail}
+    assert f"{log} ({diagnostic})" in caplog.messages
+    assert private not in caplog.text
+    assert private not in response.text
+
+
 def test_capacity_preserves_previous_image(client, monkeypatch):
     import pixel_image_store
     first = upload(client).json()

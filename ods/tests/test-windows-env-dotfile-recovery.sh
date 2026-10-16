@@ -67,7 +67,7 @@ check 'Remove-Item -LiteralPath $envPath -Recurse -Force' "$ENVGEN" "env generat
 check 'Write-ODSPrivateEnvFile -Path $envPath -Content $envContent' "$ENVGEN" "env generator protects and writes .env after recovery"
 
 check 'Test-Path -LiteralPath $Path -PathType Leaf' "$LLM_ENDPOINT" "shared env parser only reads .env when it is a file"
-check 'Get-Content -LiteralPath $Path -ErrorAction Stop' "$LLM_ENDPOINT" "shared env parser reads .env defensively"
+check 'Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop' "$LLM_ENDPOINT" "shared env parser reads .env defensively as UTF-8"
 check 'return @{}' "$LLM_ENDPOINT" "shared env parser fails closed for unreadable .env paths"
 
 echo ""

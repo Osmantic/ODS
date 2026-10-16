@@ -1,6 +1,6 @@
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, Search, Sparkles, Settings } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, LifeBuoy, Search, Sparkles, Settings } from 'lucide-react'
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
@@ -10,13 +10,8 @@ import ODSLogo from './ODSLogo'
 import MetalMetricIcon from './MetalMetricIcon'
 import PixelConversationNavigation from './PixelConversationNavigation'
 import {useLocalProfile} from '../lib/localProfile'
+import { ODS_HELP_DISCORD_URL } from '../lib/support'
 import UserAvatar from './UserAvatar'
-
-function withServiceToken(rawUrl, token) {
-  const url = new URL(rawUrl, window.location.origin)
-  url.searchParams.set('token', token)
-  return url.toString()
-}
 
 export default function Sidebar({ status, collapsed, onToggle }) {
   const profile = useLocalProfile()
@@ -30,14 +25,10 @@ export default function Sidebar({ status, collapsed, onToggle }) {
     if (collapsed) { setSearchOpen(false); setQuery('') }
   }, [collapsed])
   const [apiLinks, setApiLinks] = useState([])
-  const [serviceTokens, setServiceTokens] = useState({})
   useEffect(() => {
     let active = true
     fetch('/api/external-links').then(r => r.ok ? r.json() : []).then(value => {
       if (active && Array.isArray(value)) setApiLinks(value)
-    }).catch(() => {})
-    fetch('/api/service-tokens').then(r => r.ok ? r.json() : {}).then(value => {
-      if (active && value && typeof value === 'object') setServiceTokens(value)
     }).catch(() => {})
     return () => { active = false }
   }, [])
@@ -82,14 +73,14 @@ export default function Sidebar({ status, collapsed, onToggle }) {
           if (internalPath) {
             return <NavLink key={key} to={internalPath} onClick={closeSearch} className={({ isActive }) => `pixel-nav-item ${isActive ? 'is-active' : ''}`} title={stateLabel ? `${label} · ${stateLabel}` : label} aria-label={label}><Icon size={16} /><span>{label}</span>{stateLabel && !collapsed && <small>{stateLabel}</small>}</NavLink>
           }
-          const href = key === 'openclaw' && serviceTokens.openclaw ? withServiceToken(url, serviceTokens.openclaw) : url
-          return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? href : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer"><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
+          return <a key={key} className="pixel-nav-item" title={healthy ? label : `${label} · Offline`} aria-label={label} aria-disabled={!healthy} href={healthy ? url : undefined} target={healthy ? '_blank' : undefined} rel="noopener noreferrer"><Icon size={16} /><span>{label}</span>{!healthy && !collapsed && <small>Offline</small>}</a>
         })}
       </details>}
       <PixelConversationNavigation collapsed={collapsed} />
       {pixelMode && !collapsed && <div className="pixel-sidebar-sections">
         <PixelHandoffApproval label="Approvals" />
       </div>}
+      <a className="pixel-nav-item" href={ODS_HELP_DISCORD_URL} target="_blank" rel="noopener noreferrer" title="Get help on Discord" aria-label="Get help on Discord"><LifeBuoy size={16} /><span>Get help</span></a>
     </nav>
     <footer className="pixel-sidebar-footer"><NavLink to="/settings?section=profile" className="sidebar-profile-link" aria-label="Edit your profile" title="Edit your profile"><UserAvatar profile={profile}/><div className="sidebar-profile-copy"><strong>{profile.name || 'Your profile'}</strong><small>{status?.version ? `ODS ${status.version}` : 'Local workspace'}</small></div><MetalMetricIcon icon={Settings} size={14}/></NavLink></footer>
   </aside>

@@ -143,12 +143,16 @@ jobs:
           }
 
           configure_zypper_ci_repository_transport() {
-            # The HTTP mirror route can reference files missing on its selected
-            # mirror. Keep official paths and signature checks; use HTTPS.
+            # download.opensuse.org and cdn.opensuse.org serve repomd.xml but
+            # redirect the files it names to mirrors. While a new Tumbleweed snapshot syncs,
+            # often for an hour, a mirror can 404 the new primary.xml and
+            # zypper refresh fails. CI reads the same signed files from the
+            # origin, downloadcontent.opensuse.org, which never redirects.
+            # Paths and signature checks are unchanged.
             local repository
             for repository in "${1:-/etc/zypp/repos.d}"/*.repo; do
               [ -f "$repository" ] || continue
-              sed -i -E 's#^([[:space:]]*(baseurl|gpgkey)[[:space:]]*=[[:space:]]*)http://download\.opensuse\.org/#\1https://download.opensuse.org/#' "$repository"
+              sed -i -E 's#^([[:space:]]*(baseurl|gpgkey)[[:space:]]*=[[:space:]]*)https?://(download|cdn)\.opensuse\.org/#\1https://downloadcontent.opensuse.org/#' "$repository"
             done
           }
 

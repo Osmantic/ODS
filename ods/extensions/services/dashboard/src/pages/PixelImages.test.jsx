@@ -206,6 +206,33 @@ it('discards late upload completion after changing conversations, preserving the
   expect(stored().draftImages).toEqual([])
 })
 
+it('waits for an observer image upload before adopting terminal request recovery',async()=>{
+  saveConversation({schema:1,chatId:'image-recovery',requestId:'pending-request',inFlight:true,draft:'Keep my image',
+    messages:[{role:'user',content:'Previous request'},{role:'assistant',content:'Partial reply'}]})
+  const originalFetch=fetchMock.getMockImplementation()
+  let terminal=false,finishUpload,signal
+  upload=options=>{signal=options.signal;return new Promise(resolve=>{finishUpload=()=>resolve(response(receipt,201))})}
+  fetchMock.mockImplementation(async(url,options)=>{
+    if(url==='/api/pixel/chat/result')return response({state:terminal?'complete':'unknown',events:terminal?'data: {"choices":[{"delta":{"content":"Recovered with image draft"}}]}\n\ndata: [DONE]\n\n':''})
+    if(url==='/api/pixel/chat/activity')return response({state:'unknown'})
+    return originalFetch(url,options)
+  })
+  render(<Pixel/>)
+  await screen.findByRole('button',{name:'Check activity again'})
+  fireEvent.change(screen.getByLabelText('Choose images'),{target:{files:[fixtureFile()]}})
+  await waitFor(()=>expect(finishUpload).toBeTypeOf('function'))
+  terminal=true
+  fireEvent.click(screen.getByRole('button',{name:'Check activity again'}))
+  await act(async()=>{})
+  expect(signal.aborted).toBe(false)
+  expect(screen.getByRole('list',{name:'Attached images'})).toBeVisible()
+  await act(async()=>finishUpload())
+  expect(await screen.findByText('Recovered with image draft',{}, {timeout:4000})).toBeVisible()
+  expect(stored()).toMatchObject({draft:'Keep my image',draftImages:[receipt],inFlight:false,interrupted:false})
+  expect(screen.getByText(/1 × 1 · Ready/)).toBeVisible()
+  expect(calls('/api/pixel/chat/stream')).toHaveLength(0)
+})
+
 it('aborts an in-flight upload on unmount and never sends a chat request',async()=>{
   let signal
   upload=options=>{signal=options.signal;return new Promise(()=>{})}

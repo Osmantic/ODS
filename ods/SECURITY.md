@@ -27,9 +27,10 @@ values. The core credentials are:
 | `ODS_AGENT_KEY` | Bearer key for the host agent API |
 | `ODS_SESSION_SECRET` | Signs ODS session cookies (for example the Hermes gate) |
 | `WEBUI_SECRET` | Session signing for Open WebUI |
-| `LITELLM_KEY`, `LITELLM_LEMONADE_API_KEY` | LiteLLM gateway keys |
+| `LITELLM_KEY` | LiteLLM gateway key |
+| `LLAMA_SERVER_API_KEY` | Key of the Windows AMD `llama-server.exe` (Windows setup generates it) |
 | `QDRANT_API_KEY`, `SHIELD_API_KEY`, `TOKEN_SPY_API_KEY` | Service API keys |
-| `HERMES_DASHBOARD_SESSION_TOKEN`, `OPENCLAW_TOKEN`, `OPENCODE_SERVER_PASSWORD` | Agent and coding-tool credentials |
+| `HERMES_DASHBOARD_SESSION_TOKEN`, `OPENCODE_SERVER_PASSWORD` | Agent and coding-tool credentials |
 | `N8N_PASS`, `SEARXNG_SECRET`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `DIFY_SECRET_KEY` | Optional-service credentials |
 
 Each of these is marked `"secret": true` in `.env.schema.json`. Library
@@ -64,8 +65,11 @@ ods restart
 
 Hex values avoid characters that would break the `sed` expression. Rotating
 `WEBUI_SECRET` or `ODS_SESSION_SECRET` signs everyone out, and rotating
-`DASHBOARD_API_KEY` also invalidates dashboard sessions. `N8N_PASS` only seeds
-n8n's first admin account; change the n8n password inside n8n afterwards.
+`DASHBOARD_API_KEY` also invalidates dashboard sessions. n8n's owner account
+comes from `N8N_USER` and `N8N_PASS` wherever no owner had been created yet,
+and n8n resets it to them at every start, so rotate `N8N_PASS` and restart
+n8n. An owner created earlier on n8n's first-run screen keeps its own
+password, which is changed inside n8n.
 
 ---
 
@@ -86,7 +90,9 @@ For headless servers accessible from other machines on the same network:
 `--lan` sets `BIND_ADDRESS=0.0.0.0` and turns on Open WebUI sign-in
 (`WEBUI_AUTH=true`). If you change `BIND_ADDRESS` in the Dashboard Settings
 tab instead, saving a non-loopback address turns sign-in on as well, and
-`ods restart` applies it.
+`ods restart` applies it. If you edit `BIND_ADDRESS` in `.env` directly,
+`ods start`, `ods restart` and `ods update` (`.\ods.ps1` on native Windows)
+turn sign-in on before they recreate Open WebUI.
 
 This publishes the Dashboard (sign-in required from the network) and Open WebUI
 on the selected interface. Backend APIs, native inference and extension ports
@@ -97,7 +103,10 @@ without sign-in on localhost-only installs. In that mode it creates a built-in
 administrator, `admin@localhost`, with the password `admin`, and that account
 keeps working after sign-in is turned on. Sign in as `admin@localhost` and
 change its password (or create your own administrator and delete it) before
-other devices can reach port 3000.
+other devices can reach port 3000. ODS refuses to start Open WebUI for other
+devices, through `BIND_ADDRESS` or the ODS proxy, while that account still has
+the password `admin`. In that case Open WebUI stays stopped, and its log
+(`docker logs ods-webui`) explains these steps.
 
 Docker publishes container ports through its own firewall rules, so host
 firewalls such as `ufw` do not reliably restrict them. Restrict exposure with
@@ -171,6 +180,13 @@ Docker network, as one trust zone:
   request a local browser can, so it can use the dashboard admin API. Install
   library extensions only from sources you trust, because installing one gives
   it this level of access.
+- **The remote-provider boundary.** The remote-provider egress (which holds a
+  remote LLM provider's API key) and its SSH tunnel are not on `ods-network`.
+  They share an internal network with LiteLLM and dashboard-api only, and the
+  egress serves only callers that present the LiteLLM gateway key
+  (`LITELLM_KEY`). Extensions cannot join that network. A container that holds
+  `LITELLM_KEY` can still use the remote provider through LiteLLM, as it can
+  any other model.
 - **The host agent.** The host agent performs host-side actions for
   dashboard-api and requires `ODS_AGENT_KEY`. It runs as the installing user
   with Docker group access, so anything that controls dashboard-api can manage
@@ -189,7 +205,8 @@ The host agent (`bin/ods-host-agent.py`) has its own bind address, separate from
 
 | Platform | Default | Behavior |
 |----------|---------|----------|
-| macOS / Windows | `127.0.0.1` | Docker Desktop routes container traffic via loopback — loopback is sufficient |
+| macOS | `127.0.0.1` | Docker Desktop routes container traffic via loopback — loopback is sufficient |
+| Windows (native installer) | `0.0.0.0` | The installer writes it on a new install and keeps a value already set in `.env`, so the dashboard-api container can reach the agent through Docker Desktop's host gateway (`host.docker.internal`). Every `/v1/*` request still needs the bearer key (`ODS_AGENT_KEY`). |
 | Linux | auto-detected | Detects the `ods-network` gateway IP (e.g. `172.18.0.1`) so containers can reach the agent; LAN devices cannot. Falls back to the default Docker bridge gateway (e.g. `172.17.0.1`) for partial/older installs, then `127.0.0.1` if detection fails. |
 
 To override the default, set `ODS_AGENT_BIND` in `.env`:
@@ -393,8 +410,8 @@ llama-server has no authentication by default. Use LiteLLM as your authenticated
 | Service | Auth | Notes |
 |---------|------|-------|
 | Dashboard | Session off-machine; none for local browsers | See [Dashboard Sign-in](#dashboard-sign-in) and [Trust Boundary](#trust-boundary) |
-| Open WebUI | Off on localhost-only installs; on with `--lan` | Change the `admin@localhost` password before exposing (see [Quick LAN Access](#quick-lan-access)); disable signups |
-| n8n | Owner account | `N8N_PASS` seeds the first admin; change it in n8n and enable 2FA |
+| Open WebUI | Off on localhost-only installs; on with `--lan` | Change the `admin@localhost` password before exposing (see [Quick LAN Access](#quick-lan-access)); signup is closed, so administrators add accounts in Admin Panel > Users |
+| n8n | Owner account | Set from `N8N_USER`/`N8N_PASS` where no owner existed; an owner created earlier in n8n keeps its own password |
 | llama-server | None | Keep localhost-only, use LiteLLM for remote |
 | LiteLLM | API key | Set `LITELLM_KEY` in .env |
 | OpenCode web (optional) | None | Listens on `127.0.0.1:3003`; single-user machines only |

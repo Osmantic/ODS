@@ -138,23 +138,25 @@ ods_pixel_resolve_enablement() {
 # Classify only model routes that the Pixel host installer can bind through the
 # authenticated ODS LiteLLM gateway. Phase 02 validates external endpoints and
 # Phase 06 renders their concrete model behind the same authenticated alias.
+# A host-native llama-server (Windows Portal) is reached through that gateway,
+# which holds its key; the in-stack llama-server (any GPU) is local.
 ods_pixel_model_route_class() {
     local mode="${1:-local}"
     local external_url="${2:-}"
-    local lemonade_external="${3:-false}"
+    local host_native="${3:-false}"
     [[ "$external_url" != *$'\n'* && "$external_url" != *$'\r'* ]] || return 1
-    [[ "$lemonade_external" == true || "$lemonade_external" == false ]] || return 1
+    [[ "$host_native" == true || "$host_native" == false ]] || return 1
     if [[ -n "$external_url" ]]; then
         printf '%s\n' managed-gateway
         return 0
     fi
-    if [[ "$lemonade_external" == true ]]; then
+    if [[ "$host_native" == true ]]; then
         printf '%s\n' managed-gateway
         return 0
     fi
     case "$mode" in
         local) printf '%s\n' local ;;
-        cloud|hybrid|lemonade) printf '%s\n' managed-gateway ;;
+        cloud|hybrid) printf '%s\n' managed-gateway ;;
         *) return 1 ;;
     esac
 }
@@ -171,8 +173,8 @@ _ods_pixel_secure_owner_directory() {
 
 # The public ODS release carries Pixel source and a one-commit local bundle.
 # Owner-controlled local checkouts remain explicit developer overrides.
-ODS_PIXEL_BUNDLED_REF='9f3b6ecd25db3ab51bef4091473d88ee5824bc3b'
-ODS_PIXEL_BUNDLED_SHA256='b499ac4fe2f183caaafc8c3ccefd4824bb6e491a589e07ba0e2495b8b37e7d68'
+ODS_PIXEL_BUNDLED_REF='2ef78e7067211a198748c5499ed5a0261f4b48b6'
+ODS_PIXEL_BUNDLED_SHA256='cc4c5944a6a09a4f1132abef8811bdabf64384a8e8ee67fb3581f0071e4435b9'
 
 ods_pixel_bundled_source() {
     local bundle="${INSTALL_DIR:?}/vendor/pixel.bundle"

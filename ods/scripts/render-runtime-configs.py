@@ -27,8 +27,14 @@ DEFAULT_MODEL = "qwen3.5-9b"
 DEFAULT_GGUF = "Qwen3.5-9B-Q4_K_M.gguf"
 DEFAULT_CONTEXT = 131072
 DEFAULT_HERMES_MAX_TOKENS = 1024
-DEFAULT_LITELLM_KEY = "sk-lemonade"
+# Placeholder for dry runs only; installers and the host agent pass the real
+# gateway key through ODS_RENDER_LITELLM_KEY.
+DEFAULT_LITELLM_KEY = "sk-ods-unset"
 NO_KEY = "no-key"
+API_KEY_ENV_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+# One-release compatibility: ODS_MODE=lemonade is the retired managed-AMD
+# mode; it renders exactly like local.
+LEGACY_ODS_MODES = {"lemonade": "local"}
 PUBLIC_MODEL_ALIAS = "ods/current"
 REMOTE_PROVIDER_EGRESS_BASE_URL = "http://remote-provider-egress:8091/v1"
 REMOTE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$")
@@ -104,8 +110,6 @@ def atomic_write_text(target: Path, content: str, *, file_mode: int | None = Non
 class RenderInputs:
     model: str
     gguf_file: str
-    lemonade_model_id: str
-    lemonade_api_base: str
     gpu_backend: str
     ods_mode: str
     llm_base_url: str
@@ -117,6 +121,9 @@ class RenderInputs:
     remote_llm_base_url: str = ""
     remote_llm_model: str = ""
     external_llm_authenticated: bool = False
+    # Env var holding a host-native llama-server key (LLAMA_SERVER_API_KEY).
+    # Generated configs reference it by name; they never contain the key.
+    llm_api_key_env: str = ""
     # Switchboard rollout mode: legacy | observe | enabled (plan section 8)
     switchboard_mode: str = "enabled"
 
@@ -150,24 +157,25 @@ def remote_route_enabled(inputs: RenderInputs) -> bool:
     return inputs.remote_llm_enabled
 
 
-def lemonade_model_id(inputs: RenderInputs) -> str:
-    if inputs.lemonade_model_id:
-        return inputs.lemonade_model_id
-    return f"extra.{inputs.gguf_file}"
-
-
 def hermes_model_id(inputs: RenderInputs) -> str:
     if inputs.switchboard_mode == "enabled":
         return "ods/current"
-    if inputs.ods_mode == "lemonade" or inputs.gpu_backend == "amd":
-        return lemonade_model_id(inputs)
     return inputs.gguf_file or inputs.model
 
 
+def uses_gateway(inputs: RenderInputs) -> bool:
+    """Consumers reach a keyed host-native server only through LiteLLM."""
+    return inputs.switchboard_mode == "enabled" or bool(inputs.llm_api_key_env)
+
+
 def opencode_key(inputs: RenderInputs) -> str:
-    if inputs.switchboard_mode == "enabled":
-        return inputs.litellm_key
-    return inputs.litellm_key if inputs.ods_mode == "lemonade" else NO_KEY
+    return inputs.litellm_key if uses_gateway(inputs) else NO_KEY
+
+
+def native_api_key(inputs: RenderInputs) -> str:
+    if inputs.llm_api_key_env:
+        return f"os.environ/{inputs.llm_api_key_env}"
+    return "not-needed"
 
 
 def render_litellm_local(inputs: RenderInputs) -> RenderedFile:
@@ -253,12 +261,13 @@ def render_litellm_local_native(inputs: RenderInputs) -> RenderedFile:
     # ODS-CONTRACT-WRITER: litellm-local-native
     model = inputs.gguf_file or inputs.model
     api_base = inputs.llm_base_url.rstrip("/") or "http://host.docker.internal:8080/v1"
+    api_key = native_api_key(inputs)
     content = f"""model_list:
   - model_name: ods/current
     litellm_params:
       model: openai/{model}
       api_base: {api_base}
-      api_key: not-needed
+      api_key: {api_key}
       extra_body:
         chat_template_kwargs:
           enable_thinking: false
@@ -267,7 +276,7 @@ def render_litellm_local_native(inputs: RenderInputs) -> RenderedFile:
     litellm_params:
       model: openai/{model}
       api_base: {api_base}
-      api_key: not-needed
+      api_key: {api_key}
       extra_body:
         chat_template_kwargs:
           enable_thinking: false
@@ -276,7 +285,7 @@ def render_litellm_local_native(inputs: RenderInputs) -> RenderedFile:
     litellm_params:
       model: openai/*
       api_base: {api_base}
-      api_key: not-needed
+      api_key: {api_key}
       extra_body:
         chat_template_kwargs:
           enable_thinking: false
@@ -305,23 +314,24 @@ def render_litellm_cloud(inputs: RenderInputs) -> RenderedFile:
         content = f"""model_list:
   # Stable public alias used by ODS consumers. Provider credentials stay in
   # remote-provider-egress, never in LiteLLM YAML or generated public config.
+  # The egress admits only callers holding the LiteLLM gateway key.
   - model_name: {PUBLIC_MODEL_ALIAS}
     litellm_params:
       model: {model_param}
       api_base: {egress_base}
-      api_key: not-needed
+      api_key: os.environ/LITELLM_MASTER_KEY
 
   - model_name: default
     litellm_params:
       model: {model_param}
       api_base: {egress_base}
-      api_key: not-needed
+      api_key: os.environ/LITELLM_MASTER_KEY
 
   - model_name: {yaml_scalar(model)}
     litellm_params:
       model: {model_param}
       api_base: {egress_base}
-      api_key: not-needed
+      api_key: os.environ/LITELLM_MASTER_KEY
 
 router_settings:
   routing_strategy: simple-shuffle
@@ -447,47 +457,6 @@ litellm_settings:
     return RenderedFile("litellm-hybrid", "config/litellm/hybrid.yaml", content)
 
 
-def render_litellm_lemonade(inputs: RenderInputs) -> RenderedFile:
-    # ODS-CONTRACT-WRITER: litellm-lemonade
-    model = lemonade_model_id(inputs)
-    api_base = inputs.lemonade_api_base.rstrip("/") or "http://llama-server:8080/api/v1"
-    content = f"""model_list:
-  - model_name: ods/current
-    litellm_params:
-      model: openai/{model}
-      api_base: {api_base}
-      api_key: {inputs.litellm_key}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-  - model_name: default
-    litellm_params:
-      model: openai/{model}
-      api_base: {api_base}
-      api_key: {inputs.litellm_key}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-  - model_name: "*"
-    litellm_params:
-      model: openai/{model}
-      api_base: {api_base}
-      api_key: {inputs.litellm_key}
-      extra_body:
-        chat_template_kwargs:
-          enable_thinking: false
-
-litellm_settings:
-  drop_params: true
-  set_verbose: false
-  request_timeout: 900
-  stream_timeout: 900
-"""
-    return RenderedFile("litellm-lemonade", "config/litellm/lemonade.yaml", content)
-
-
 def render_hermes(inputs: RenderInputs) -> RenderedFile:
     model = hermes_model_id(inputs)
     base_url = (
@@ -520,8 +489,12 @@ def render_perplexica(inputs: RenderInputs) -> RenderedFile:
         model = "ods/current"
         base_url = "http://litellm:4000/v1"
         api_key = inputs.litellm_key
+    elif uses_gateway(inputs):
+        model = inputs.gguf_file or inputs.model
+        base_url = "http://litellm:4000/v1"
+        api_key = inputs.litellm_key
     else:
-        model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else (inputs.gguf_file or inputs.model)
+        model = inputs.gguf_file or inputs.model
         base_url = inputs.llm_base_url.rstrip("/") or "http://llama-server:8080"
         api_key = opencode_key(inputs)
     if not (base_url.endswith("/v1") or base_url.endswith("/api/v1")):
@@ -558,9 +531,12 @@ def render_opencode(inputs: RenderInputs) -> RenderedFile:
     if inputs.switchboard_mode == "enabled":
         base_url = "http://litellm:4000/v1"
         model = "ods/current"
+    elif uses_gateway(inputs):
+        base_url = "http://litellm:4000/v1"
+        model = inputs.gguf_file or inputs.model
     else:
         base_url = inputs.llm_base_url
-        model = lemonade_model_id(inputs) if inputs.ods_mode == "lemonade" else inputs.model
+        model = inputs.model
     payload = {
         "provider": "openai-compatible",
         "baseURL": base_url,
@@ -576,18 +552,12 @@ def render_opencode(inputs: RenderInputs) -> RenderedFile:
 
 
 def render_env(inputs: RenderInputs) -> RenderedFile:
-    lemonade_model = (
-        lemonade_model_id(inputs)
-        if inputs.ods_mode == "lemonade"
-        else inputs.lemonade_model_id
-    )
     lines = [
         f"ODS_MODE={inputs.ods_mode}",
         f"ODS_MODEL_SWITCHBOARD={inputs.switchboard_mode}",
-        f"LLM_BACKEND={'lemonade' if inputs.ods_mode == 'lemonade' else 'llama-server'}",
+        "LLM_BACKEND=llama-server",
         f"LLM_MODEL={inputs.model}",
         f"GGUF_FILE={inputs.gguf_file}",
-        f"LEMONADE_MODEL={lemonade_model}",
         f"GPU_BACKEND={inputs.gpu_backend}",
         f"LLM_API_URL={inputs.llm_base_url}",
         f"CTX_SIZE={inputs.context_length}",
@@ -682,16 +652,14 @@ def render_model_router_endpoints(inputs: RenderInputs) -> RenderedFile:
             raise ValueError("model router endpoint origin must be an HTTP URL without embedded credentials")
         return base
 
-    endpoints = [
-        {"id": "llama-server-default",
-         "baseUrl": _origin_base(inputs.llm_base_url, "http://llama-server:8080")},
-    ]
-    if inputs.gpu_backend.lower() == "amd" or inputs.ods_mode == "lemonade":
-        endpoints.append({
-            "id": "lemonade-default",
-            "baseUrl": _origin_base(inputs.lemonade_api_base, "http://lemonade:8000/api"),
-        })
-    content = json.dumps({"endpoints": endpoints}, indent=2) + "\n"
+    # Every managed runtime is upstream llama-server; a host-native one is
+    # reached at http://host.docker.internal:<port> with its key, which the
+    # router reads from the named env var (never from this file).
+    endpoint = {"id": "llama-server-default",
+                "baseUrl": _origin_base(inputs.llm_base_url, "http://llama-server:8080")}
+    if inputs.llm_api_key_env:
+        endpoint["apiKeyEnv"] = inputs.llm_api_key_env
+    content = json.dumps({"endpoints": [endpoint]}, indent=2) + "\n"
     return RenderedFile(
         "model-router-endpoints", "config/model-router/endpoints.json", content
     )
@@ -738,7 +706,6 @@ RENDERERS: dict[str, Callable[[RenderInputs], RenderedFile]] = {
     "litellm-external": render_litellm_external,
     "litellm-cloud": render_litellm_cloud,
     "litellm-hybrid": render_litellm_hybrid,
-    "litellm-lemonade": render_litellm_lemonade,
     "perplexica": render_perplexica,
     "hermes": render_hermes,
     "litellm-switchboard": render_litellm_switchboard,
@@ -761,11 +728,22 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--gguf-file", default=DEFAULT_GGUF)
-    parser.add_argument("--lemonade-model-id", default="")
-    parser.add_argument("--lemonade-api-base", default="http://llama-server:8080/api/v1")
+    # Accepted and ignored for one release: a running host agent or installer
+    # from before round F still passes them on every render (R13).
+    parser.add_argument("--lemonade-model-id", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--lemonade-api-base", default="", help=argparse.SUPPRESS)
     parser.add_argument("--gpu-backend", choices=["amd", "apple", "cpu", "nvidia"], default="nvidia")
-    parser.add_argument("--ods-mode", choices=["local", "cloud", "hybrid", "lemonade"], default="local")
+    parser.add_argument(
+        "--ods-mode", choices=["local", "cloud", "hybrid", *LEGACY_ODS_MODES], default="local",
+    )
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
+    parser.add_argument(
+        "--llm-api-key-env", default="",
+        help=(
+            "Name of the env var (LLAMA_SERVER_API_KEY) that holds a host-native "
+            "llama-server key. LiteLLM and the model-router read it by name."
+        ),
+    )
     parser.add_argument("--external-llm-authenticated", action="store_true")
     parser.add_argument(
         "--litellm-key",
@@ -829,8 +807,7 @@ def select_surfaces(
             "local": "litellm-local",
             "cloud": "litellm-cloud",
             "hybrid": "litellm-hybrid",
-            "lemonade": "litellm-lemonade",
-        }[ods_mode]
+        }[LEGACY_ODS_MODES.get(ods_mode, ods_mode)]
         surfaces = [
             "env",
             "opencode",
@@ -884,6 +861,8 @@ def validate_render_inputs(inputs: RenderInputs) -> None:
     }.items():
         if any(ord(char) < 32 or ord(char) == 127 for char in value):
             raise ValueError(f"{label} cannot contain control characters or newlines")
+    if inputs.llm_api_key_env and not API_KEY_ENV_RE.fullmatch(inputs.llm_api_key_env):
+        raise ValueError("llm api key env must be an upper-case environment variable name")
     validate_remote_inputs(inputs)
 
 
@@ -892,10 +871,8 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         switchboard_mode=getattr(args, 'switchboard_mode', 'enabled'),
         model=args.model,
         gguf_file=args.gguf_file,
-        lemonade_model_id=args.lemonade_model_id,
-        lemonade_api_base=args.lemonade_api_base,
         gpu_backend=args.gpu_backend,
-        ods_mode=args.ods_mode,
+        ods_mode=LEGACY_ODS_MODES.get(args.ods_mode, args.ods_mode),
         llm_base_url=args.llm_base_url,
         litellm_key=args.litellm_key,
         opencode_port=args.opencode_port,
@@ -905,6 +882,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         remote_llm_base_url=args.remote_llm_base_url,
         remote_llm_model=args.remote_llm_model,
         external_llm_authenticated=args.external_llm_authenticated,
+        llm_api_key_env=getattr(args, "llm_api_key_env", ""),
     )
     validate_render_inputs(inputs)
     if args.surface == "litellm-switchboard" and inputs.ods_mode == "cloud":

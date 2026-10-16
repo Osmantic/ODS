@@ -511,29 +511,13 @@ class TestReadinessPayload:
         assert "checks" in data
 
 
-# --- /api/service-tokens ---
+# --- /api/service-tokens (removed) ---
 
 
-class TestServiceTokens:
-
-    def test_returns_token_from_env(self, test_client, monkeypatch):
-        monkeypatch.setenv("OPENCLAW_TOKEN", "my-secret-token")
-
-        resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data.get("openclaw") == "my-secret-token"
-
-    def test_returns_empty_when_no_token(self, test_client, monkeypatch):
-        monkeypatch.delenv("OPENCLAW_TOKEN", raising=False)
-        # The file-based fallback paths (/data/openclaw/..., /ods/.env)
-        # won't exist in test environment, so all fallbacks fail gracefully.
-
-        resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
-        assert resp.status_code == 200
-        data = resp.json()
-        # Either empty dict or no openclaw key
-        assert "openclaw" not in data
+def test_service_tokens_endpoint_is_removed(test_client):
+    """The endpoint only served the removed legacy OpenClaw gateway token."""
+    resp = test_client.get("/api/service-tokens", headers=test_client.auth_headers)
+    assert resp.status_code == 404
 
 
 # --- /api/external-links ---
@@ -1133,8 +1117,8 @@ class TestApiStatusServiceSerialization:
             "swap_safe": False,
         }
         monkeypatch.setattr("main.SERVICES", {
-            "openclaw": {
-                "name": "OpenClaw",
+            "sample-agent": {
+                "name": "Sample Agent",
                 "port": 18789,
                 "external_port": 7860,
                 "category": "optional",

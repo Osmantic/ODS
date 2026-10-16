@@ -90,7 +90,6 @@ macOS Host
         ├── Perplexica Deep Research (port 3004)
         ├── Pixel edge, ingress, sandbox and workspace preview
         ├── Hermes Agent + auth proxy (optional alternative)
-        ├── OpenClaw Agents (port 7860, deprecated optional)
         ├── TEI Embeddings (port 8090)
         ├── Whisper STT (port 9000)
         ├── Kokoro TTS (port 8880)

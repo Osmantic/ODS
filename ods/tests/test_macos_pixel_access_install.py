@@ -24,6 +24,81 @@ installer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(installer)
 
 
+@pytest.mark.parametrize('fault', [None, 'pending', 'phase', 'operation', 'owner', 'source', 'hold',
+    'settings', 'bundle', 'disabled', 'access', 'mode', 'services', 'stops', 'admission', 'process', 'journal-change'])
+def test_initial_completion_proof_requires_unchanged_protected_state_without_mutations(tmp_path, monkeypatch, fault):
+    import copy
+    import pixel_access_bridge
+    import pixel_macos_custody
+    monkeypatch.setattr(installer.sys, 'platform', 'darwin')
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    state = tmp_path / 'protected'
+    state.mkdir()
+    monkeypatch.setattr(installer._launchd, 'ACCESS_STATE', state)
+    if fault == 'pending': (state / 'runtime-upgrade.json').write_text('pending')
+    owner = SimpleNamespace(pw_uid=501, pw_gid=20, pw_name='fixture')
+    plan = dict(initial_install=True, owner=owner, source=Path('/owner/gateway.plist'),
+        access_settings={'gateway_port': 18789, 'gateway_policy': {}}, runtime_bundle={'digest': 'a' * 64},
+        native_services={'expected_digest': 'b' * 64})
+    journal = dict(schemaVersion=1, phase='active', operation='initial-install', owner=501, source=str(plan['source']))
+    if fault in ('phase', 'operation', 'owner', 'source'):
+        journal[fault] = {'phase': 'staging', 'operation': 'migration', 'owner': 502, 'source': '/other'}[fault]
+    records = {'installation.json': journal,
+        'installation-edge.json': {'phase': 'held' if fault == 'hold' else 'released', 'container': 'e' * 64},
+        'service-installation.json': {'attempted': ['manager', 'promoter', 'operations'],
+                                     'stopWitnesses': {'manager': {}} if fault == 'stops' else {}}}
+    events = []
+    reads = []
+    def read(path, uid, maximum):
+        assert uid == 0
+        name = Path(path).name
+        reads.append(name)
+        value = copy.deepcopy(records[name])
+        if fault == 'journal-change' and name == 'installation.json' and reads.count(name) > 1:
+            value['phase'] = 'staging'
+        return value
+    monkeypatch.setattr(pixel_access_bridge, 'private_json', read)
+    def settings(path):
+        assert str(path) == '/private/etc/ods/pixel-access.json'
+        return json.dumps({'changed': True} if fault == 'settings' else plan['access_settings']).encode()
+    monkeypatch.setattr(pixel_macos_custody, 'protected_bytes', settings)
+    def check(name):
+        events.append(name)
+        if fault == name: raise installer.InstallError('fixture-' + name)
+    monkeypatch.setattr(installer, '_verify_bundle_selection', lambda plan: check('bundle'))
+    services = [SimpleNamespace(target=name, verify=lambda: check('definition')) for name in ('gateway', 'access', 'relay')]
+    monkeypatch.setattr(installer, '_activation_services', lambda plan: [None, *services])
+    monkeypatch.setattr(installer, '_job_disabled', lambda target: fault == 'disabled')
+    identity_calls = []
+    def identity(service):
+        identity_calls.append(service.target)
+        return (service.target, 1 if fault == 'process' and len(identity_calls) > 3 else 0)
+    monkeypatch.setattr(installer, '_upgrade_service_identity', identity)
+    ready = dict(available=True, surface='darwin', scope='owner-host', configured_mode='sandboxed', effective_mode='sandboxed',
+                 runtime_verified=True, busy=False, pending=False, reason=None)
+    monkeypatch.setattr(installer, '_ready_access', lambda service: dict(ready, runtime_verified=fault != 'access'))
+    monkeypatch.setattr(installer._policy, 'policy_state', lambda _: {
+        'activeMode': 'full-access' if fault == 'mode' else 'sandboxed'})
+    monkeypatch.setattr(installer, '_ready_gateway', lambda *args: check('gateway'))
+    monkeypatch.setattr(installer, '_ready_access_relay', lambda *args: check('relay'))
+    monkeypatch.setattr(installer, '_verify_new_services', lambda plan: check('services'))
+    monkeypatch.setattr(installer, '_migration_edge_request', lambda *args: dict(
+        capability='available', phase='idle', admission_blocked=fault == 'admission'))
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Read-only verification attempted a mutation')
+    for name in ('install', '_activate', '_command', '_write_exact', '_reprove_installed_access'):
+        monkeypatch.setattr(installer, name, forbidden)
+    if fault:
+        with pytest.raises(installer.InstallError):
+            installer.verify_initial_install(plan)
+    else:
+        assert installer.verify_initial_install(plan) == {
+            'status': 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
+        assert events.count('bundle') == 2
+        assert events.count('definition') == 6
+        assert len(identity_calls) == 9
+
+
 def test_migration_docker_child_drops_supplementary_groups(monkeypatch):
     """A Mac owner with >16 directory-service groups can still reach Docker."""
     owner = SimpleNamespace(pw_name='fixture', pw_uid=501, pw_gid=20)
@@ -994,6 +1069,44 @@ def test_dry_run_output_contains_no_environment_or_credentials(deployment, capsy
     assert "ProgramArguments" not in output
 
 
+@pytest.mark.parametrize('extra', [['--install'], ['--activate-upgrade'], ['--current-bundle-digest', 'd' * 64]])
+def test_initial_verification_cli_refuses_mutation_flags(monkeypatch, capsys, extra):
+    planner = Mock()
+    monkeypatch.setattr(installer, 'make_plan', planner)
+    assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--verify-initial',
+        '--services-bundle', '/services', '--services-digest', 'b' * 64,
+        '--pixel-source-ref', 'c' * 40, *extra]) == 1
+    planner.assert_not_called()
+    assert capsys.readouterr().err == 'error: native-initial-recovery-proof-failed\n'
+
+
+@pytest.mark.parametrize('failure', [False, True])
+def test_initial_verification_cli_dispatch_is_read_only_and_redacted(monkeypatch, capsys, failure):
+    plan = {'initial_install': True}
+    monkeypatch.setattr(installer, 'make_plan', Mock(return_value=plan))
+    monkeypatch.setattr(installer, 'bind_initial_services', Mock())
+    result = dict(status='active', runtimeDigest='a' * 64, serviceDigest='b' * 64)
+    proof = Mock(return_value=result, side_effect=ValueError('private-fixture-value') if failure else None)
+    monkeypatch.setattr(installer, 'verify_initial_install', proof)
+    mutate = Mock(side_effect=AssertionError('readback must never activate'))
+    monkeypatch.setattr(installer, 'install', mutate)
+    assert installer.main(['--source', '/source', '--openclaw-bin', '/bin/openclaw',
+        '--gateway-plist', '/owner/gateway.plist', '--initial-install', '--verify-initial',
+        '--runtime-bundle', '/runtime', '--bundle-digest', 'a' * 64,
+        '--services-bundle', '/services', '--services-digest', 'b' * 64,
+        '--pixel-source-ref', 'c' * 40]) == int(failure)
+    proof.assert_called_once_with(plan)
+    mutate.assert_not_called()
+    captured = capsys.readouterr()
+    if failure:
+        assert captured.out == ''
+        assert captured.err == 'error: native-initial-recovery-proof-failed\n'
+    else:
+        assert json.loads(captured.out) == result
+        assert captured.err == ''
+
+
 @pytest.mark.parametrize('kind', ['stream-progress', 'workspace-root'])
 def test_upgrade_cli_selects_system_plan_and_prints_only_public_identity(deployment, monkeypatch, capsys, kind):
     plan = installer.make_plan(**deployment)
@@ -1191,6 +1304,83 @@ def test_write_checks_parent_again_after_creation(monkeypatch, tmp_path):
     with pytest.raises(installer.InstallError, match="custody-changed"):
         installer._write_exact(destination, b"new", mode=0o644)
     assert not destination.exists()
+
+
+@pytest.fixture
+def deployment_directory_custody(monkeypatch, tmp_path):
+    """Map root ownership to the test owner; retain real modes and symlinks."""
+    def check(path, *, private=False):
+        path = Path(path)
+        for item in (path, *path.parents):
+            info = item.lstat()
+            forbidden = 0o077 if item == path and private else 0o022
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & forbidden):
+                raise installer.InstallError('access-directory-custody-unavailable')
+            if item == tmp_path:
+                return
+        pytest.fail('test escaped its temporary root')
+    real_fstat = os.fstat
+    def root_directory_info(fd):
+        info = real_fstat(fd)
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid():
+            values = list(info)
+            values[4] = 0
+            return os.stat_result(values)
+        return info
+    monkeypatch.setattr(installer, '_check_directory', check)
+    monkeypatch.setattr(installer.os, 'fstat', root_directory_info)
+
+
+def test_write_exact_directories_survive_private_umask(deployment_directory_custody, tmp_path):
+    destination = tmp_path / 'services' / 'operations' / 'broker.sb'
+    previous = os.umask(0o077)
+    try:
+        installer._write_exact(destination, b'profile', mode=0o644,
+                               uid=os.getuid(), gid=os.getgid())
+        assert os.umask(0o077) == 0o077
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(destination.parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE(destination.parent.parent.stat().st_mode) == 0o755
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o644
+    assert destination.read_bytes() == b'profile'
+
+
+def test_directory_creation_preserves_existing_private_parent(deployment_directory_custody, tmp_path):
+    parent = tmp_path / 'private'
+    parent.mkdir(mode=0o700)
+    installer._mkdir_deployment_directories(parent / 'new')
+    assert stat.S_IMODE(parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE((parent / 'new').stat().st_mode) == 0o755
+
+
+@pytest.mark.parametrize('raced', ['private', 'writable', 'symlink'])
+def test_raced_directory_is_checked_and_never_chmodded(deployment_directory_custody, tmp_path, monkeypatch, raced):
+    target = tmp_path / 'race'
+    other = tmp_path / 'other'
+    other.mkdir(mode=0o700)
+    mkdir = os.mkdir
+    def race(name, mode=0o777, *, dir_fd=None):
+        if name != 'race':
+            return mkdir(name, mode, dir_fd=dir_fd)
+        if raced == 'symlink':
+            os.symlink(other, name, dir_fd=dir_fd)
+        else:
+            mkdir(name, 0o700, dir_fd=dir_fd)
+            if raced == 'writable':
+                target.chmod(0o777)
+        raise FileExistsError(name)
+    monkeypatch.setattr(installer.os, 'mkdir', race)
+    if raced == 'private':
+        installer._mkdir_deployment_directories(target / 'child')
+        assert stat.S_IMODE(target.stat().st_mode) == 0o700
+        assert stat.S_IMODE((target / 'child').stat().st_mode) == 0o755
+    else:
+        with pytest.raises((installer.InstallError, OSError)):
+            installer._mkdir_deployment_directories(target / 'child')
+        assert not (target / 'child').exists()
+        assert stat.S_IMODE(other.stat().st_mode) == 0o700
 
 
 @pytest.fixture

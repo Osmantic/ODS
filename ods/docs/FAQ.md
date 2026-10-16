@@ -95,7 +95,8 @@ Yes. Common use cases:
 ### What about model security?
 
 - The model server runs in a Docker container on Linux; on macOS llama-server
-  runs natively, and on Windows AMD hosts Lemonade runs natively on Windows.
+  runs natively, and on Windows AMD hosts `llama-server.exe` runs natively on
+  Windows.
 - Inference needs no outbound network after the initial download.
 - You control which models to run.
 - The server can be air-gapped if needed.
@@ -123,15 +124,19 @@ audited commit manually.
 Windows:
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 Do not run the `curl ... | bash` installer from Windows PowerShell. The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with Hermes disabled. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done; see [Windows Quickstart](WINDOWS-QUICKSTART.md).
@@ -261,10 +266,15 @@ To return an existing installation to ODS-managed llama-server:
 ./install.sh --no-external-llm
 ```
 
+For another OpenAI-compatible server, such as a Lemonade Server you run
+yourself, use `--external-llm-provider openai-compatible` with the server's URL
+and exact model id.
+
 This integration routes text/chat inference; it does not import or synchronize
 Ollama/LM Studio model files, VLMs, embedding models, or rerankers. The
-installer flags in this release are Linux-only. Windows Lemonade and macOS
-native llama-server keep their existing platform lifecycle.
+installer flags in this release are Linux-only. The Windows AMD
+`llama-server.exe` and macOS native llama-server keep their existing platform
+lifecycle.
 
 ---
 

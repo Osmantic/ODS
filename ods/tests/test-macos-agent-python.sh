@@ -5,7 +5,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 INSTALL_DIR="$TMP/install"
 ODS_LOG_FILE="$TMP/install.log"
-eval "$(sed -n '/^_ensure_macos_agent_python() {/,/^}$/p' "$ROOT/installers/macos/install-macos.sh")"
+source "$ROOT/installers/macos/lib/host-agent-install.sh"
 bootstrap() {
     [[ "$1 $2" == '-m venv' ]] || return 1
     mkdir -p "$3/bin"

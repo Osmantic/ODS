@@ -14,6 +14,8 @@ param(
     [switch]$NoRecommended,
     [switch]$Hermes,
     [switch]$NoHermes,
+    # Ignored: the legacy OpenClaw extension was removed. Still accepted so
+    # existing commands keep working; the Portal setup prints a notice.
     [switch]$OpenClaw,
     [switch]$All,
     [switch]$Cloud,
@@ -25,7 +27,16 @@ param(
     [switch]$Lan,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = "",
-    [string]$StateRoot = ""
+    [string]$StateRoot = "",
+    # API mode: an OpenAI-compatible server (or Ollama / LM Studio) serves the
+    # model instead of a model on this computer. The key file stays on Windows;
+    # setup passes the key to Ubuntu in an environment variable, never argv.
+    [string]$ExternalLlmUrl = "",
+    [string]$ExternalLlmModel = "",
+    [string]$ExternalLlmProvider = "",
+    [string]$ExternalLlmKeyFile = "",
+    # Leave API mode: the model runs on this computer again.
+    [switch]$NoExternalLlm
 )
 
 $ErrorActionPreference = "Stop"

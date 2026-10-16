@@ -578,6 +578,57 @@ def _qualify_upgrade(kind, current, candidate, *, current_digest, candidate_dige
                             candidate_digest=candidate_digest)
 
 
+def migration_source_proof(*, owner_name, current_digest, gateway_port):
+    """Inspect the selected sealed source as root without activating anything.
+
+    Darwin restricts readlink on root-owned private symlinks. Owner preparation
+    needs this narrow proof, never a permission change or root build. These
+    hashes bind readable owner snapshots and authorize no later activation.
+    """
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise InstallError('protected-macos-verification-required')
+    if not isinstance(current_digest, str) or not re.fullmatch('[a-f0-9]{64}', current_digest):
+        raise InstallError('approved-current-bundle-digest-required')
+    from pixel_macos_custody import protected_bytes, protected_tree_metadata
+    owner = pwd.getpwnam(owner_name)
+    if owner.pw_uid <= 0:
+        raise InstallError('native-gateway-owner-invalid')
+    definition = protected_bytes(_launchd.GATEWAY_PLIST)
+    document, environment, _, _, node, entrypoint = _source_gateway(
+        _launchd.GATEWAY_PLIST, owner_name, gateway_port)
+    current = _bundle.INSTALL_ROOT / current_digest
+    previous = environment.get('OPENCLAW_CONFIG_PATH')
+    if (document != plistlib.loads(definition) or document.get('UserName') != owner_name
+            or node != current / 'node' or entrypoint != current / 'runtime/openclaw.mjs'
+            or not _source_runtime_config(previous, RUNTIME_CONFIG_ROOT / str(owner.pw_uid), current_digest)):
+        raise InstallError('active-runtime-migration-source-mismatch')
+    config = _configuration_bytes(previous, owner.pw_uid)
+    protected_tree_metadata(current)
+    _bundle.verify(current, expected_digest=current_digest)
+    if (protected_bytes(_launchd.GATEWAY_PLIST) != definition
+            or _configuration_bytes(previous, owner.pw_uid) != config):
+        raise InstallError('native-migration-source-changed-during-verification')
+    return {'currentBundleDigest': current_digest,
+        'sourceDefinitionSha256': hashlib.sha256(definition).hexdigest(),
+        'sourceConfigSha256': hashlib.sha256(config).hexdigest()}
+
+
+def _migration_source_main(argv):
+    parser = argparse.ArgumentParser(description='Read-only privileged proof of the selected native migration source.')
+    parser.add_argument('--owner', required=True)
+    parser.add_argument('--current-bundle-digest', required=True)
+    parser.add_argument('--gateway-port', type=int, default=18789)
+    args = parser.parse_args(argv)
+    try:
+        proof = migration_source_proof(owner_name=args.owner,
+            current_digest=args.current_bundle_digest, gateway_port=args.gateway_port)
+    except (OSError, ValueError, KeyError, TypeError):
+        print('error: native-migration-source-verification-failed', file=sys.stderr)
+        return 1
+    print(json.dumps(proof, sort_keys=True))
+    return 0
+
+
 def qualify_migration_selection(*, owner_name, current_digest, gateway_port, candidate,
                                 runtime_bundle, bundle_digest, services_bundle, services_digest, source_ref):
     """Read-only binding of migration artifacts to the selected active deployment.
@@ -803,10 +854,47 @@ def _preflight_file(path, data, *, mode, uid=0, gid=0):
     _check_existing(path, data, mode=mode, uid=uid, gid=gid)
 
 
+def _mkdir_deployment_directories(path):
+    """Apply the intended 0755 mode only to directories created by this call."""
+    missing = []
+    ancestor = Path(path)
+    while not ancestor.exists() and not ancestor.is_symlink():
+        missing.append(ancestor.name)
+        ancestor = ancestor.parent
+    _check_directory(ancestor)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent = os.open(ancestor, flags)
+    try:
+        for name in reversed(missing):
+            created = False
+            try:
+                os.mkdir(name, 0o755, dir_fd=parent)
+                created = True
+            except FileExistsError:
+                pass
+            child = os.open(name, flags, dir_fd=parent)
+            try:
+                info = os.fstat(child)
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                        or info.st_mode & 0o022):
+                    raise InstallError('access-directory-custody-unavailable')
+                if created:
+                    # mkdir's mode is filtered by umask. Public service code
+                    # must remain traversable by its unprivileged consumers.
+                    os.fchmod(child, 0o755)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(parent)
+            parent = child
+    finally:
+        os.close(parent)
+
+
 def _write_exact(path, data, *, mode, uid=0, gid=0):
     path = _destination(path)
     _preflight_file(path, data, mode=mode, uid=uid, gid=gid)
-    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    _mkdir_deployment_directories(path.parent)
     _check_directory(path.parent)
     if _check_existing(path, data, mode=mode, uid=uid, gid=gid):
         return
@@ -1395,30 +1483,82 @@ def _access_response_ready(value, *, upgrade_guard=False):
             and value.get('reason') == 'runtime-upgrade-recovery-required')
 
 
-def _ready_access(service, *, upgrade_guard=False):
-    pid = service.pid(require_running=True)
-    address = _launchd.ACCESS_SOCKET
-    deadline = time.monotonic() + 10
-    while not address.exists() and time.monotonic() < deadline:
-        time.sleep(0.25)
-    info = address.lstat()
-    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o660:
-        raise InstallError('native-access-socket-unavailable')
+def _read_access_readiness(address, deadline):
+    """Bound the entire status exchange, including a trickled response."""
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise TimeoutError('access readiness deadline exhausted')
+        return budget
+
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(20)
+        connection.settimeout(remaining())
         connection.connect(str(address))
+        connection.settimeout(remaining())
         connection.sendall(b'{"operation":"status"}\n')
-        with connection.makefile('rb') as stream:
-            raw = stream.readline(65537)
+        raw = bytearray()
+        while len(raw) <= 65536:
+            connection.settimeout(remaining())
+            chunk = connection.recv(min(4096, 65537 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+            if b'\n' in chunk:
+                break
+        remaining()
     if len(raw) > 65536 or not raw.endswith(b'\n'):
         raise InstallError('native-access-readiness-failed')
-    value = json.loads(raw)
-    if (type(value) is not dict or value.get('status') != 200
-            or not _access_response_ready(value.get('body'), upgrade_guard=upgrade_guard)
-            or service.pid(require_running=True) != pid):
-        raise InstallError('native-access-readiness-failed')
+    try:
+        return json.loads(raw)
+    except (ValueError, UnicodeError):
+        raise InstallError('native-access-readiness-failed') from None
 
 
+def _ready_access(service, *, upgrade_guard=False, timeout=300):
+    """Retry transient startup status while retaining the same trusted service."""
+    pid = service.pid(require_running=True)
+    address = _launchd.ACCESS_SOCKET
+    deadline = time.monotonic() + timeout
+    socket_deadline = min(deadline, time.monotonic() + 10)
+    while not address.exists() and time.monotonic() < socket_deadline:
+        time.sleep(min(0.25, max(0, socket_deadline - time.monotonic())))
+
+    def socket_identity():
+        try:
+            info = address.lstat()
+        except OSError:
+            raise InstallError('native-access-socket-unavailable') from None
+        if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o660:
+            raise InstallError('native-access-socket-unavailable')
+        return info.st_dev, info.st_ino
+
+    identity = socket_identity()
+    while time.monotonic() < deadline:
+        if service.pid(require_running=True) != pid or socket_identity() != identity:
+            raise InstallError('native-access-readiness-failed')
+        retry = False
+        try:
+            # Status may take longer than the former 20-second socket limit.
+            # Reserve time for retries rather than one 340-second stalled read.
+            value = _read_access_readiness(address, min(deadline, time.monotonic() + 60))
+        except (TimeoutError, ConnectionRefusedError):
+            retry = True
+            value = None
+        if service.pid(require_running=True) != pid or socket_identity() != identity:
+            raise InstallError('native-access-readiness-failed')
+        if not retry:
+            if type(value) is not dict or value.get('status') != 200:
+                raise InstallError('native-access-readiness-failed')
+            body = value.get('body')
+            if _access_response_ready(body, upgrade_guard=upgrade_guard):
+                if time.monotonic() >= deadline:
+                    break
+                return body
+            if (type(body) is not dict or body.get('available') is not False
+                    or body.get('reason') != 'runtime-unavailable-or-busy'):
+                raise InstallError('native-access-readiness-failed')
+        time.sleep(min(1, max(0, deadline - time.monotonic())))
+    raise InstallError('native-access-readiness-failed')
 def _migration_phase(plan, journal, value):
     sys.path.insert(0, str(HERE.parents[2] / 'bin'))
     from pixel_access_bridge import atomic_json
@@ -2729,6 +2869,94 @@ def _execute_upgrade_install(plan, source):
     return 'active'
 
 
+def verify_initial_install(plan):
+    """Read back a completed protected initial install without activating it.
+
+    Owner-side final-health failure is not authority to replay root activation.
+    Require its existing protected journals, exact configuration/bundle binding,
+    live process custody and controller readiness before allowing finalization.
+    No service starts, stops, policy transitions or receipt writes occur here.
+    """
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise InstallError('macos-root-install-required')
+    if not plan.get('initial_install') or not plan.get('runtime_bundle') or not plan.get('native_services'):
+        raise InstallError('complete-initial-service-selection-required')
+    sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+    from pixel_access_bridge import private_json
+    from pixel_macos_custody import protected_bytes
+    state = Path(_launchd.ACCESS_STATE)
+    pending = ('runtime-upgrade.json', 'transition.json', 'policy-activation.json')
+    def no_transition():
+        if any(os.path.lexists(state / name) for name in pending):
+            raise InstallError('native-initial-recovery-transition-pending')
+    no_transition()
+    journal = state / 'installation.json'
+    record = private_json(journal, 0, 65536)
+    if (type(record) is not dict or type(record.get('schemaVersion')) is not int
+            or record != {'schemaVersion': 1, 'phase': 'active', 'source': str(plan['source']),
+                   'owner': plan['owner'].pw_uid, 'operation': 'initial-install'}):
+        raise InstallError('native-initial-activation-not-complete')
+    edge_path = _edge_hold_journal(plan)
+    edge = private_json(edge_path, 0, 65536)
+    if type(edge) is not dict or edge.get('phase') != 'released':
+        raise InstallError('native-initial-admission-not-released')
+    settings_path = _destination(_launchd.ACCESS_CONFIG)
+    settings = protected_bytes(settings_path)
+    if json.loads(settings) != plan['access_settings']:
+        raise InstallError('native-initial-configuration-changed')
+    _verify_bundle_selection(plan)
+    services = _activation_services(plan)[1:]
+    if len(services) != 3:
+        raise InstallError('complete-initial-service-selection-required')
+    for service in services:
+        service.verify()
+        if _job_disabled(service.target):
+            raise InstallError('native-migration-disabled-job')
+    identities = [_upgrade_service_identity(service) for service in services]
+    _ready_gateway(services[0], plan['access_settings']['gateway_port'])
+    def access_ready():
+        value = _ready_access(services[1])
+        mode = _policy.policy_state(plan['access_settings']['gateway_policy'])['activeMode']
+        if (not _repair.access_ready(value) or value.get('surface') != 'darwin'
+                or value.get('effective_mode') != mode):
+            raise InstallError('native-runtime-access-reproof-required')
+    access_ready()
+    _ready_access_relay(services[2], plan)
+    def admission_ready():
+        value = _migration_edge_request(plan, edge['container'])
+        if (value.get('capability') != 'available' or value.get('phase') != 'idle'
+                or value.get('admission_blocked') is not False):
+            raise InstallError('native-initial-admission-not-ready')
+    admission_ready()
+    service_path = state / 'service-installation.json'
+    service_record = private_json(service_path, 0, 2 * 1024 * 1024)
+    if (type(service_record) is not dict or service_record.get('requiresRecovery') or service_record.get('stopWitnesses')
+            or service_record.get('attempted') != ['manager', 'promoter', 'operations']):
+        raise InstallError('native-managed-service-not-ready')
+    _verify_new_services(plan)
+    # Each readiness check can take time. Check the protected bindings and
+    # process births again; a replacement is not the verified activation.
+    no_transition()
+    if (private_json(journal, 0, 65536) != record
+            or private_json(edge_path, 0, 65536) != edge
+            or private_json(service_path, 0, 2 * 1024 * 1024) != service_record
+            or protected_bytes(settings_path) != settings
+            or [_upgrade_service_identity(service) for service in services] != identities):
+        raise InstallError('native-initial-activation-changed')
+    _verify_bundle_selection(plan)
+    for service in services:
+        service.verify()
+        if _job_disabled(service.target):
+            raise InstallError('native-migration-disabled-job')
+    admission_ready()
+    access_ready()
+    if [_upgrade_service_identity(service) for service in services] != identities:
+        raise InstallError('native-initial-activation-changed')
+    no_transition()
+    return {'status': 'active', 'runtimeDigest': plan['runtime_bundle']['digest'],
+            'serviceDigest': plan['native_services']['expected_digest']}
+
+
 def install(plan, source):
     if plan.get('migration_qualification'):
         raise InstallError('joint-native-migration-activation-required')
@@ -2929,12 +3157,15 @@ def _migration_main(argv):
     parser.add_argument('--access-port', type=int, default=18790)
     for name in ('docker', 'compose-project', 'ingress-image', 'ingress-user'):
         parser.add_argument('--' + name)
-    parser.add_argument('--activate', action='store_true', help='Requires root; default is a read-only plan')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--activate', action='store_true', help='Requires root; default is a read-only plan')
+    mode.add_argument('--verify-preparation', action='store_true',
+        help='Read-only root qualification; emit only selected source and candidate hashes')
     args = parser.parse_args(argv)
     from pixel_access_bridge import AccessError
     from pixel_macos_custody import CustodyError
     try:
-        if args.activate and (sys.platform != 'darwin' or os.geteuid() != 0):
+        if (args.activate or args.verify_preparation) and (sys.platform != 'darwin' or os.geteuid() != 0):
             raise InstallError('macos-root-install-required')
         bindings = (args.docker, args.compose_project, args.ingress_image, args.ingress_user)
         if any(bindings) and not all(bindings):
@@ -2965,13 +3196,21 @@ def _migration_main(argv):
                 break
         print('error: native-joint-migration-failed' + detail + '; retain the preparation and protected recovery journal', file=sys.stderr)
         return 1
-    print(json.dumps({'operation': 'native-migration', 'status': outcome,
-        'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}, sort_keys=True))
+    public = {'operation': 'native-migration', 'status': outcome,
+        'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}
+    if args.verify_preparation:
+        public.update(currentBundleDigest=args.current_bundle_digest,
+            sourceDefinitionSha256=hashlib.sha256(plan['source_bytes']).hexdigest(),
+            sourceConfigSha256=hashlib.sha256(plan['migration_source_config_bytes']).hexdigest())
+    print(json.dumps(public, sort_keys=True))
     return 0
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == 'verify-migration-source':
+        sys.path.insert(0, str(HERE.parents[2] / 'bin'))
+        return _migration_source_main(argv[1:])
     if argv and argv[0] == 'repair-controller':
         sys.path.insert(0, str(HERE.parents[2] / 'bin'))
         return _controller_repair_main(argv[1:])
@@ -3001,6 +3240,8 @@ def main(argv=None):
     parser.add_argument('--upgrade-kind', choices=('stream-progress', 'workspace-root'),
                         help='Exact reviewed change to qualify; requires --current-bundle-digest')
     parser.add_argument("--install", action="store_true")
+    parser.add_argument('--verify-initial', action='store_true',
+                        help='Read-only proof of an already active initial installation')
     parser.add_argument('--initial-install', action='store_true',
                         help='Plan a new deployment from an unloaded --gateway-plist template, not a migration')
     parser.add_argument('--activate-upgrade', action='store_true',
@@ -3008,6 +3249,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         service_options = (args.services_bundle, args.services_digest, args.pixel_source_ref)
+        if args.verify_initial and (not args.initial_install or not all(service_options)
+                                    or args.install or args.activate_upgrade or args.current_bundle_digest):
+            raise InstallError('initial-verification-conflicts-with-activation')
         if any(service_options) and (not all(service_options) or not args.initial_install):
             raise InstallError('complete-initial-service-selection-required')
         if args.initial_install and (args.current_bundle_digest or args.activate_upgrade or not args.gateway_plist):
@@ -3035,7 +3279,9 @@ def main(argv=None):
         if args.services_bundle:
             bind_initial_services(plan, bundle=args.services_bundle, digest=args.services_digest,
                 source_ref=args.pixel_source_ref)
-        if args.activate_upgrade:
+        if args.verify_initial:
+            print(json.dumps(verify_initial_install(plan), sort_keys=True, separators=(',', ':')))
+        elif args.activate_upgrade:
             outcome = upgrade_install(plan, args.source)
             print(json.dumps({'operation': 'runtime-upgrade', 'status': outcome,
                               'runtimeBundleDigest': plan['runtime_bundle']['digest']},
@@ -3071,6 +3317,11 @@ def main(argv=None):
         print("error: native-service-command-failed", file=sys.stderr)
         return 1
     except (InstallError, KeyError, OSError, ValueError) as error:
+        if args.verify_initial:
+            # This command is consumed by the owner recovery coordinator.
+            # Detailed configuration/OS errors must not become public logs.
+            print('error: native-initial-recovery-proof-failed', file=sys.stderr)
+            return 1
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0

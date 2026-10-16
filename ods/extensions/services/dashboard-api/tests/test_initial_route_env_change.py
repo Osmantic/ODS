@@ -15,7 +15,8 @@ def route(tmp_path, monkeypatch):
     monkeypatch.setattr(tma._mod, '_switchboard_initial_verify_cancel', threading.Event())
     monkeypatch.delenv('ODS_HOST_INSTALL_DIR', raising=False)
     monkeypatch.setattr(tma._mod, '_chat_completion_ready', lambda *_a, **_k: True)
-    monkeypatch.setattr(tma._mod, '_llama_runtime_context_length', lambda *_a: 65536)
+    monkeypatch.setattr(tma._mod, '_runtime_health', lambda _env: 'ok')
+    monkeypatch.setattr(tma._mod, '_llama_runtime_props', lambda _env: (65536, ''))
     monkeypatch.setattr(tma._mod, '_load_model_library_records', lambda: [])
     monkeypatch.setattr(tma._mod.time, 'sleep', lambda _s: None)
     state_path = install / 'data' / 'model-state.json'
@@ -132,22 +133,48 @@ def test_fast_poll_preserves_stale_route_predicate(route, monkeypatch):
     assert len(calls) == 1
 
 
-def test_env_change_during_native_identity_probe_prevents_old_model_warmup(route, monkeypatch):
+def test_env_change_during_identity_probe_never_runs_the_old_completion(route, monkeypatch):
     env_path, _ = route
     snapshot = tma._mod.load_env(env_path)
-    monkeypatch.setattr(tma._mod, '_uses_lemonade_runtime', lambda _env: True)
-    monkeypatch.setattr(tma._mod, '_lemonade_runtime_base_url', lambda _env: 'http://127.0.0.1:8080')
-    monkeypatch.setattr(tma._mod, '_lemonade_loaded_model_identity', lambda *_a: '')
-    monkeypatch.setattr(tma._mod, '_send_lemonade_warmup',
-                        lambda *_a, **_k: pytest.fail('installer selected bootstrap; old full model must not be warmed'))
+    monkeypatch.setattr(tma._mod, '_chat_completion_ready',
+                        lambda *_a, **_k: pytest.fail('installer selected bootstrap; old model must not be proved'))
 
     def probe(command, **_kwargs):
         set_model(env_path, 'bootstrap-2b.gguf')
-        return subprocess.CompletedProcess(command, 0, stdout='{"model_loaded":"bootstrap-2b"}', stderr='')
+        return fake_response(command, 'old-model.gguf')
 
     monkeypatch.setattr(tma._mod.subprocess, 'run', probe)
     assert tma._mod._wait_for_model_readiness(
         snapshot, model_id='old-model', gguf_file='old-model.gguf', llm_model_name='old-model',
-        lemonade_model_id='old-model', attempts=2, initial_delay=0, interval=0,
+        attempts=2, initial_delay=0, interval=0,
         return_proof=True,
         env_still_current=lambda: tma._mod._initial_switchboard_route_env_matches(snapshot)) == {}
+
+
+@pytest.mark.parametrize('mode, tools', [('enabled', True), ('observe', False)])
+def test_initial_route_republishes_measured_capabilities_only_when_enabled(route, monkeypatch, mode, tools):
+    # Any-model WP4.1: after an install or upgrade the re-proved route keeps what
+    # the model's last switch measured, not the catalog booleans (enabled only).
+    env_path, state_path = route
+    set_model(env_path, 'bootstrap-2b.gguf')
+    env_path.write_text(env_path.read_text() + f'ODS_MODEL_PROFILES={mode}\n')
+    store = tma._mod._model_profile_store
+    key = store.profile_key(gguf_sha256=['a' * 64], projector_sha256=None, build_info='b11429-x',
+                            backend='nvidia', template_sha256='b' * 64, template_source='embedded',
+                            suite='3', host='host')
+    summary = {'chat': True, 'tools': True, 'toolsStreamed': True, 'vision': None, 'tokensPerSecond': 1.0,
+               'thinking': {'control': 'enable_thinking', 'separated': True, 'works': True}}
+    profile = store.recorded_profile(key, model_id='bootstrap-2b', gguf_file='bootstrap-2b.gguf',
+                                     result={'probes': {}, 'summary': summary, 'elapsedMs': 1},
+                                     product_version='test')
+    doc = store.with_last_activation(store.with_profile(store.empty(), profile), 'bootstrap-2b', profile['keyHash'])
+    store.atomic_write(state_path.parent / 'model-profiles.json', doc)
+    monkeypatch.setattr(tma._mod.subprocess, 'run',
+                        lambda command, **_k: fake_response(command, 'bootstrap-2b.gguf'))
+
+    assert tma._mod._publish_verified_initial_switchboard_route(
+        reason='status', attempts=1, initial_delay=0, interval=0)
+    state, errors = sb.read_state(state_path)
+    assert not errors
+    assert state['active']['catalogId'] == 'bootstrap-2b'
+    assert state['active']['capabilities']['tools'] is tools

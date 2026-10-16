@@ -62,7 +62,7 @@ def test_shell_transport_changes_and_clears_policy_without_reusing_previous_mode
         if policy is not None:
             contract["imageInput"] = policy
         assert agent._reconcile_managed_pixel_contract(contract) == "reconciled"
-        assert calls[-1][-1] == (policy or "unknown")
+        assert calls[-1][-2:] == [policy or "unknown", ""]
         assert '"$target_route_fingerprint" "" "$target_image_input"' in calls[-1][2]
     with pytest.raises(RuntimeError, match="image-input policy"):
         agent._reconcile_managed_pixel_contract({**common, "model": "vision", "imageInput": True})

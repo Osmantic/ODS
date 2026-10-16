@@ -41,3 +41,22 @@ export function deliveredArtifactMetadata(message) {
   const artifacts = parseDeliveredArtifacts(message.artifacts)
   return artifacts?.length ? { artifacts } : {}
 }
+
+const EMBED_DIRECTIVE = /^\[embed ref="artifact_([a-f0-9]{64})" title="([^"]+)" height="([0-9]+)" \/\](?:\r?\n)*$/
+
+// Returns '' only when the entire assistant content is exactly one stand-alone
+// embed directive whose ref matches a delivered artifact's file.sha256 and
+// whose title matches that artifact's file.path. Any surrounding prose,
+// indentation, quoting, fencing, or mismatch preserves the original content.
+export function deliveredArtifactDisplayText(content, artifacts) {
+  if (typeof content !== 'string') return content
+  const match = EMBED_DIRECTIVE.exec(content)
+  if (!match) return content
+  const [, ref, title] = match
+  const delivered = parseDeliveredArtifacts(artifacts)
+  if (!delivered?.length) return content
+  for (const artifact of delivered) {
+    if (artifact?.file?.sha256 === ref && artifact?.file?.path === title) return ''
+  }
+  return content
+}

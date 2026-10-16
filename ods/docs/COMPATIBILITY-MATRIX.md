@@ -46,7 +46,7 @@ containers; it does not run full installs.
 | Backend   | Use case              | Requirements                          | Compose overlay           |
 |-----------|------------------------|----------------------------------------|----------------------------|
 | **NVIDIA**| CUDA inference         | NVIDIA GPU, drivers, nvidia-container-toolkit | docker-compose.nvidia.yml |
-| **AMD**   | ROCm (e.g. Strix Halo) | AMD GPU, ROCm stack                   | docker-compose.amd.yml    |
+| **AMD**   | llama.cpp Vulkan (e.g. Strix Halo); ROCm optional | AMD GPU with the amdgpu driver (`/dev/dri`; `/dev/kfd` for ROCm) | docker-compose.amd.yml (+ docker-compose.amd-rocm.yml for ROCm) |
 | **Apple** | Metal (macOS only)     | Apple Silicon, macOS 13+              | Native binary + Docker   |
 | **CPU**   | No GPU                 | Any x86_64/arm64 Linux                | docker-compose.base.yml + CPU backend |
 
@@ -119,7 +119,7 @@ Extensions declare compatibility with ODS versions via `compatibility.ods_min` (
 | Scenario                    | Supported | Notes |
 |----------------------------|-----------|-------|
 | Linux Ubuntu 24.04/26.04 + NVIDIA | Yes       | Primary path. |
-| Linux Fedora + AMD GPU     | Yes       | ROCm path. |
+| Linux Fedora + AMD GPU     | Yes       | llama.cpp Vulkan path (ROCm optional). |
 | Linux Debian + no GPU      | Yes       | CPU-only; lower tier. |
 | Linux Arch + NVIDIA        | Yes       | Use pacman for optional tools. |
 | Old PC (2015) + Linux + Docker | Possible | CPU-only or old GPU; use small model, check RAM. |

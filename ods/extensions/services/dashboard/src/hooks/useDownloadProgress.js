@@ -8,6 +8,35 @@ function isTerminalProgress(progress) {
   return TERMINAL_DOWNLOAD_STATUSES.has(progress?.status)
 }
 
+function downloadArtifactKey(model) {
+  if (typeof model !== 'string') return null
+  // Active split downloads name a part, while cancellation names part one.
+  // Normalize only the host's documented progress suffix and GGUF part index.
+  return model.replace(/ \((?:part \d+\/\d+|\d+ parts?)\)$/, '')
+    .replace(/-\d{5}-of-(\d{5})(\.gguf)$/i, '-part-of-$1$2')
+}
+
+function cancelledTransfer(current, terminal) {
+  // The API keeps cancellation inactive: idle + lastTerminalStatus. Consume
+  // that record only for a transfer this hook actually observed, so historical
+  // receipts cannot reappear on mount, after dismissal, or after completion.
+  const terminalStatus = typeof terminal?.status === 'string' ? terminal.status.toLowerCase() : null
+  if (!['downloading', 'verifying'].includes(current?.status)
+    || !['cancelled', 'canceled'].includes(terminalStatus)
+    || typeof terminal?.model !== 'string' || !terminal.model
+    || downloadArtifactKey(terminal.model) !== downloadArtifactKey(current.downloadTarget || current.model)) return null
+  const observedAt = Date.parse(current.updatedAt || current.startedAt)
+  const terminalAt = Date.parse(terminal.updatedAt)
+  if (Number.isFinite(observedAt) && (!Number.isFinite(terminalAt) || terminalAt < observedAt)) return null
+  return {
+    status: 'cancelled',
+    model: terminal.model,
+    error: (typeof terminal.error === 'string' && terminal.error)
+      || (typeof terminal.message === 'string' && terminal.message)
+      || 'Download cancelled',
+  }
+}
+
 async function errorFromResponse(response, fallback) {
   try {
     const payload = await response.json()
@@ -66,13 +95,16 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         setIsDownloading(true)
         setProgress({
           model: data.model,
+          downloadTarget: data.activeOperation === 'model_download' && typeof data.activeTarget === 'string'
+            ? data.activeTarget : data.model,
           status: data.status,
           percent,
           bytesDownloaded: downloaded,
           bytesTotal: total,
           speedMbps: data.speedBytesPerSec ? data.speedBytesPerSec / (1024 * 1024) : 0,
           eta: data.eta,
-          startedAt: data.startedAt
+          startedAt: data.startedAt,
+          updatedAt: data.updatedAt,
         })
       } else if (data.status === 'complete' || data.status === 'idle') {
         setIsDownloading(false)
@@ -91,7 +123,8 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         } else {
           // A later idle snapshot must not erase the only visible record of a
           // failed or cancelled transfer. The next download or dismissal does.
-          setProgress(current => isTerminalProgress(current) ? current : null)
+          setProgress(current => cancelledTransfer(current, data.lastTerminalStatus)
+            || (isTerminalProgress(current) ? current : null))
         }
       } else if (TERMINAL_DOWNLOAD_STATUSES.has(data.status)) {
         setIsDownloading(false)

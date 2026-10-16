@@ -54,7 +54,7 @@ Verify: `docker compose logs llama-server | grep parallel` after restart.
 ./install.sh --lan
 ```
 
-Or set `BIND_ADDRESS=0.0.0.0` in `.env` and run `ods restart`. `install-core.sh` maps `--lan` to that value, and the base plus extension compose port bindings use `${BIND_ADDRESS:-127.0.0.1}` — no per-service edits needed.
+Or set `BIND_ADDRESS=0.0.0.0` in `.env` and run `ods restart` (`.\ods.ps1 restart` on native Windows), which turns Open WebUI sign-in on before recreating it. `install-core.sh` maps `--lan` to that value, and the base plus extension compose port bindings use `${BIND_ADDRESS:-127.0.0.1}` — no per-service edits needed.
 
 ### 3. Add firewall rules
 
@@ -125,6 +125,8 @@ Be honest with your users about this:
 - **LiteLLM uses a shared master key.** No per-user attribution or quotas.
 
 `open-webui` is the only service in the stack with a real multi-user account model — chat history is per-account. If your users only interact via open-webui, the sharing problems above mostly don't surface.
+
+ODS keeps open-webui's self-signup closed. The first account created on a new install with `WEBUI_AUTH=true` becomes the administrator, who creates each user's account in **Admin Panel > Users**. Settings changed in open-webui's Admin Panel last until it restarts; see [Settings come from ODS](../extensions/services/open-webui/README.md#settings-come-from-ods).
 
 ---
 

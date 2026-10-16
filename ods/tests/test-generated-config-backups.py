@@ -12,7 +12,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MARKER = "ODS-CONTRACT-WRITER: litellm-lemonade"
+MARKER = "ODS-CONTRACT-WRITER: litellm-local-native"
+# A marked config file the fixture declares as a writer: config backups copy
+# it into .backups/, and that retained copy must not count as a live writer.
+TEMPLATE = "config/litellm/native-template.yaml"
 
 
 class GeneratedConfigBackupTests(unittest.TestCase):
@@ -32,6 +35,12 @@ class GeneratedConfigBackupTests(unittest.TestCase):
             target = self.root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / relative, target)
+        contract_path = self.root / "config/generated-config-contracts.json"
+        fixture = json.loads(contract_path.read_text())
+        surface = next(item for item in fixture["surfaces"] if item["id"] == "litellm-local-native")
+        surface["writers"].append({"platform": "checked-in-template", "path": TEMPLATE})
+        contract_path.write_text(json.dumps(fixture))
+        (self.root / TEMPLATE).write_text(f"# {MARKER}\nmodel_list: []\n")
         # Keep the real native-state checks and their trusted dependencies;
         # the copied installation remains an isolated configuration fixture.
         for helper in ("backup-native-preflight.py", "source-update-preflight.py"):
@@ -54,7 +63,7 @@ class GeneratedConfigBackupTests(unittest.TestCase):
             env=dict(os.environ, ODS_DIR=str(self.root), TMPDIR=self.temp.name),
         )
         self.assertEqual(backup.returncode, 0, backup.stdout + backup.stderr)
-        retained = list((self.root / ".backups").glob("*/config/litellm/lemonade.yaml"))
+        retained = list((self.root / ".backups").glob(f"*/{TEMPLATE}"))
         self.assertEqual(len(retained), 1, backup.stdout)
         original = retained[0].read_bytes()
         self.assertIn(MARKER.encode(), original)
@@ -77,7 +86,7 @@ class GeneratedConfigBackupTests(unittest.TestCase):
                     writer.unlink()
 
     def test_missing_live_marker_is_still_rejected(self):
-        writer = self.root / "config/litellm/lemonade.yaml"
+        writer = self.root / TEMPLATE
         writer.write_text(writer.read_text().replace(MARKER, "former writer"))
         result = self.validate()
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)

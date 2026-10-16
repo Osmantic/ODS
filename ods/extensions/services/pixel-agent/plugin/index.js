@@ -58,6 +58,7 @@ import {
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withCronCommandPayloadBlock } from "./cron-command-payload-guard.mjs";
 import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
@@ -473,13 +474,15 @@ export default definePluginEntry({
       const interrupted=delegationDelivery.blocked(context,event);
       if (interrupted) return interrupted;
       let guard = withPixelCronDeliveryDefault(
-        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
+        await toolLoopGuard.beforeToolCall(event, context, AGENT_ID,
+          delegationDelivery.hasPendingChildren(context)),
         event, context, AGENT_ID,
       );
       const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
       guard = withPixelSubagentWorkspace(guard, event, context, AGENT_ID, runtimeConfig,
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
+      guard = withCronCommandPayloadBlock(guard, event, context);
       const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
@@ -607,9 +610,10 @@ export default definePluginEntry({
         // Both synchronous fences are installed before either native abort
         // awaits drainage; queued announcements cannot steal owner custody.
         const delegatedPending=delegationDelivery.cancel(parsed.user);
+        const compactionPending=contextCompaction.cancelPending(parsed.user);
         const parentPending=toolLoopGuard.abortUserRun(parsed.user);
-        const [delegated,parentAborted]=await Promise.all([delegatedPending,parentPending]);
-        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
+        const [delegated,parentAborted,compactionAborted]=await Promise.all([delegatedPending,parentPending,compactionPending]);
+        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted || compactionAborted });
         return true;
       },
     });

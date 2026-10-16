@@ -12,31 +12,6 @@ foreach ($invalid in @('{}', '{"choices":[]}', '{"choices":[{"message":{"content
 $script:good = '{"choices":[{"message":{"content":"OK"}}]}'
 Assert (Test-ODSCompletionContent $good) 'Rejected visible completion'
 
-function Invoke-RestMethod {
-    param($Method, $Uri, $Headers, $ContentType, $Body, $TimeoutSec, $ErrorAction)
-    if ($Uri -like '*/health') {
-        return @{ all_models_loaded = @(@{ model_name = 'extra.test.gguf'; recipe_options = @{ ctx_size = $script:loadedContext } }) }
-    }
-    Assert ($Body -is [byte[]] -and $ContentType -eq 'application/json; charset=utf-8') 'Model load must transmit explicit UTF-8 bytes'
-    $payload = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
-    Assert ($Uri -eq 'http://127.0.0.1:18080/api/v1/load') 'Wrong load endpoint'
-    Assert ($payload.ctx_size -eq 65536 -and $payload.model_name -eq 'extra.test.gguf') 'Lost model or context'
-    Assert ($payload.save_options -eq $true -and $payload.llamacpp_backend -eq 'vulkan') 'Lost runtime options'
-    Assert ($Headers.Authorization -eq 'Bearer test-key') 'Lost authentication'
-    return @{ status = $script:loadStatus }
-}
-$script:loadStatus = 'success'
-$script:loadedContext = 65536
-Set-ODSLemonadeLoadedModel -Port 18080 -ModelId extra.test.gguf -ContextSize 65536 -ApiKey test-key
-$script:loadedContext = 4096
-$rejected = $false
-try { Set-ODSLemonadeLoadedModel -Port 18080 -ModelId extra.test.gguf -ContextSize 65536 -ApiKey test-key } catch { $rejected = $true }
-Assert $rejected 'Successful load with stale context must fail'
-$script:loadStatus = 'error'
-$rejected = $false
-try { Set-ODSLemonadeLoadedModel -Port 18080 -ModelId extra.test.gguf -ContextSize 65536 -ApiKey test-key } catch { $rejected = $true }
-Assert $rejected 'HTTP success with load error must fail'
-
 $script:gatewayCalls = 0
 $script:gatewayReady = $false
 function Invoke-WebRequest {
@@ -59,6 +34,23 @@ $script:good = '{}'
 Assert (-not (Test-WindowsSwitchboardReadiness $envMap -Attempts 1).Ok) 'Empty 200 accepted'
 Assert (-not (Test-WindowsLlmModelReadiness -Endpoint @{ ChatCompletionsUrl = 'http://localhost/native' } -InstallDir $root).Ok) 'Native empty 200 accepted'
 
+# The native Windows llama-server (AMD) requires its key; the model id is the
+# GGUF file name it serves as its --alias.
+$script:nativeRequest = $null
+function Invoke-WebRequest {
+    param($Method, $Uri, $Headers, $ContentType, $Body, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction)
+    $script:nativeRequest = @{ Uri = $Uri; Headers = $Headers; Model = ($Body | ConvertFrom-Json).model }
+    return @{ StatusCode = 200; Content = '{"choices":[{"message":{"content":"OK"}}]}' }
+}
+$nativeKey = 'ab' * 32
+$native = Test-WindowsLlmModelReadiness -Endpoint @{ ChatCompletionsUrl = 'http://localhost:8080/v1/chat/completions'; ApiKey = $nativeKey } `
+    -InstallDir $root -GgufFile 'missing-model.gguf'
+Assert ($script:nativeRequest.Headers.Authorization -eq ('Bearer ' + $nativeKey)) 'Native readiness must authenticate with LLAMA_SERVER_API_KEY'
+Assert ($script:nativeRequest.Model -eq 'missing-model.gguf' -and $native.ModelId -eq 'missing-model.gguf') 'Native readiness must request the GGUF alias'
+Assert (-not $native.Ok -and -not $native.FileExists) 'A completion without the GGUF on disk is not a ready model'
+$null = Test-WindowsLlmModelReadiness -Endpoint @{ ChatCompletionsUrl = 'http://localhost:11434/v1/chat/completions' } -InstallDir $root -GgufFile 'x.gguf'
+Assert (-not $script:nativeRequest.Headers.ContainsKey('Authorization')) 'Keyless endpoints send no Authorization header'
+
 # Execute the actual administrator refusal branch without requiring an elevated CI runner.
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'installers/windows/phases/01-preflight.ps1'), [ref]$tokens, [ref]$errors)
@@ -72,4 +64,4 @@ try { & ([scriptblock]::Create($branch.Clauses[0].Item2.Extent.Text.Trim().Subst
     $aborted = $_.Exception.Message -eq 'ODS_INSTALL_ABORTED'
 }
 Assert $aborted 'Declining administrator install must abort the orchestrator'
-Write-Output 'PASS: model load, native/gateway readiness, and administrator refusal'
+Write-Output 'PASS: completion content, native/gateway readiness with the llama-server key, and administrator refusal'

@@ -69,15 +69,19 @@ curl -fsSL https://install.osmantic.com/ods.sh | bash
 **Windows PowerShell** — guided Ubuntu/WSL2 setup with Pixel/Portal
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 Linux and macOS: Docker must be installed and running.
@@ -88,7 +92,7 @@ Windows: open a **normal PowerShell window** (not "Run as administrator"), paste
 2. Offers to enable WSL2 and install Docker Desktop with winget. Windows asks for administrator permission, then **one restart**; setup continues by itself after you sign in again.
 3. Offers to download Ubuntu 24.04 and asks you, in PowerShell, for a new Ubuntu username and password.
 4. Starts Docker Desktop and checks that it is connected to Ubuntu. If not, it shows the one setting to turn on in Docker Desktop and continues as soon as it works.
-5. Installs ODS inside Ubuntu with **`--pixel --no-hermes --no-openclaw`**. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
+5. Installs ODS inside Ubuntu with **`--pixel --no-hermes`**. A rerun leaves out `--no-hermes`, so a Hermes you added from Extensions stays on. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
 6. Verifies Pixel and Portal, then opens Portal in your browser and adds an **ODS Portal** shortcut to your desktop.
 
 Each step asks before changing anything and stops with instructions if it cannot finish; rerun the same command after fixing it. There is no fallback to Hermes or the native Windows installer. On NVIDIA machines, update the Windows driver to 570 or newer first. To use an existing distribution, add `-Distro <name>` (names from `wsl -l -v`).
@@ -108,7 +112,7 @@ Windows users should not run the `curl ... | bash` command from PowerShell. The 
 
 After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
 
-WSL GPU access must be checked separately. NVIDIA needs a supported Windows driver and GPU access inside WSL/Docker. On AMD, Windows setup runs Lemonade through an ODS task bound to the selected WSL installation. Once that ownership is verified, Dashboard **Models** supports compatible GGUF downloads (including Hugging Face), activation, context changes, and unload/resume. An independently configured Lemonade service remains externally managed. Older ODS tasks without the installation binding require an installer rerun; see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#manage-amd-models-from-portal) and [WSL2 GPU guide](ods/docs/WINDOWS-WSL2-GPU-GUIDE.md).
+WSL GPU access must be checked separately. NVIDIA needs a supported Windows driver and GPU access inside WSL/Docker. On AMD, Windows setup runs llama.cpp's `llama-server.exe` (Vulkan) through an ODS task bound to the selected WSL installation. Once that ownership is verified, Dashboard **Models** supports compatible GGUF downloads (including Hugging Face), activation, context changes, and unload/resume. A model server that the installation does not manage remains externally managed. Installations whose ODS task ran Lemonade Server move to llama.cpp when the installer runs again; see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#manage-amd-models-from-portal), the [WSL2 GPU guide](ods/docs/WINDOWS-WSL2-GPU-GUIDE.md) and [AMD GPUs now run on llama.cpp](ods/docs/MIGRATION-LEMONADE-TO-LLAMACPP.md).
 
 For Linux, macOS, or the recommended Windows/WSL installation, uninstall from the matching Linux/macOS terminal (open Ubuntu on Windows):
 
@@ -127,7 +131,7 @@ cd $installDir
 
 Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missing, run the same command from a source checkout as `.\ods\installers\windows\ods.ps1 uninstall --force`. It verifies the containers' Compose installation directory before removing resources. A shared `ods` project name does not authorize removing another Windows or WSL installation. Unattached volumes with no verifiable owner are preserved, with an error naming the resource; `--force` does not bypass this check.
 
-> **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. Open WebUI stays on **http://localhost:3000**.
+> **API endpoint:** Linux Docker installs expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and the Windows AMD `llama-server.exe` use **http://localhost:8080** unless overridden; the Windows server requires its API key. Open WebUI stays on **http://localhost:3000**.
 
 > **No GPU?** ODS also runs in cloud mode — same full stack, powered by OpenAI/Anthropic/Together APIs instead of local inference:
 > ```bash
@@ -278,7 +282,6 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 ### Agents & Automation
 - **Portal** — bundled core conversational assistant on Apple Silicon macOS and qualified Ubuntu 24.04/26.04 or Debian 12 systemd hosts, including qualified WSL2 installations through the Linux installer. No private repository access or separate license flag is required; available in the Dashboard and through a compatible Open WebUI model route. The native PowerShell installer does not install the Portal host runtime.
 - **Hermes Agent** — independent general-purpose agent, available alongside Portal; includes memory, skills, and a proxy with optional owner-card gating; direct access by default
-- **OpenClaw** — deprecated legacy autonomous agent, still opt-in during the migration window
 - **n8n** — workflow automation with 400+ integrations (Slack, email, databases, APIs)
 - **APE** — Agent Policy Engine for auditing and governing autonomous tool calls
 - **OpenCode** — browser-based AI coding assistant wired to the local stack

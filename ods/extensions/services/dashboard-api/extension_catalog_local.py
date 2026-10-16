@@ -55,6 +55,8 @@ def merge_local_catalog(catalog, directory, schema_path, *, proposals_only=False
             entry.setdefault('description', '')
             entry.setdefault('category', 'optional')
             entry['health_endpoint'] = service.get('health', '')
+            if service.get('ui_path') not in (None, '/'):
+                entry['ui_path'] = service['ui_path']
             # Runtime values and secret defaults never belong in catalog output.
             entry['env_vars'] = [{key: value for key, value in field.items()
                                   if key in {'key', 'description', 'required', 'secret'}}

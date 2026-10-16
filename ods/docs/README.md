@@ -80,10 +80,14 @@ canonical source and treat older recipes as context.
 - Pixel is the preferred agent on qualified Ubuntu 24.04/26.04 or Debian 12
   PID1-systemd hosts without a separate acceptance step. Hermes plus
   `hermes-proxy` remains the portable default and rollback path everywhere
-  else. OpenClaw is deprecated and explicit opt-in.
+  else. The legacy OpenClaw extension was removed; see
+  [MIGRATION-OPENCLAW-TO-HERMES.md](MIGRATION-OPENCLAW-TO-HERMES.md).
+- AMD GPUs run llama.cpp's `llama-server` like every other backend; ODS no
+  longer uses Lemonade Server. See
+  [MIGRATION-LEMONADE-TO-LLAMACPP.md](MIGRATION-LEMONADE-TO-LLAMACPP.md).
 - Linux Docker installs expose llama-server on host `OLLAMA_PORT=11434` by
-  default while containers use `llama-server:8080`. macOS native Metal and
-  Windows native/Lemonade paths use host port `8080` unless overridden.
+  default while containers use `llama-server:8080`. macOS native Metal and the
+  Windows AMD `llama-server.exe` use host port `8080` unless overridden.
 - Windows installs should run from a normal user PowerShell, not Administrator.
   The default install directory is `$env:USERPROFILE\ods` unless
   `ODS_HOME` is set.
@@ -92,8 +96,8 @@ canonical source and treat older recipes as context.
   manifest defaults live with each service. The dashboard extension library
   catalog is generated into `config/extensions-catalog.json`.
 - Generated runtime config has several writers. If you change `.env`,
-  OpenCode, Perplexica, Hermes, or LiteLLM/Lemonade behavior, update the Linux,
-  macOS, Windows, bootstrap-upgrade, and host-agent paths together.
+  OpenCode, Perplexica, Hermes, LiteLLM or model-router behavior, update the
+  Linux, macOS, Windows, bootstrap-upgrade, and host-agent paths together.
 
 ## Getting Started
 
@@ -126,13 +130,14 @@ canonical source and treat older recipes as context.
 | [ODS_CLI_DECOMPOSITION.md](ODS_CLI_DECOMPOSITION.md) | Maintainers / CLI contributors | Behavior-preserving plan for splitting the large Bash operator CLI without a risky rewrite |
 | [INTEGRATION-GUIDE.md](INTEGRATION-GUIDE.md) | Developers | Connect apps via OpenAI SDK, LangChain, n8n |
 | [BACKEND-CONTRACT.md](BACKEND-CONTRACT.md) | Developers | Backend runtime contract JSON schema |
-| [ENGINE-PROVIDER-MODES.md](ENGINE-PROVIDER-MODES.md) | Maintainers / backend reviewers | Provider mode contract for local, cloud, hybrid, and Lemonade-backed installs |
+| [ENGINE-PROVIDER-MODES.md](ENGINE-PROVIDER-MODES.md) | Maintainers / backend reviewers | Provider mode contract for local, cloud, hybrid, host-native and external-server installs |
 | [INSTALLER_PHASE_CONTRACTS.md](INSTALLER_PHASE_CONTRACTS.md) | Maintainers / installer reviewers | Phase ownership, inputs, outputs, idempotency, and validation expectations |
 | [COMPOSE_RESOLVER_CONTRACTS.md](COMPOSE_RESOLVER_CONTRACTS.md) | Maintainers / backend reviewers | Compose layer rules for services, hardware overlays, modes, dependencies, and ports |
 | [HERMES.md](HERMES.md) | Developers / operators | Default Hermes Agent packaging, security posture, and operations |
 | [PIXEL.md](PIXEL.md) | Developers / operators | Pixel eligibility, legal boundary, architecture, default routing, bounded ODS tools, operations, rollback, and qualification |
 | [OAUTH_PROVIDER_SETUP.md](OAUTH_PROVIDER_SETUP.md) | Operators / maintainers | OAuth provider registry, private credential bundles, and BYOC setup |
-| [OPENCLAW-INTEGRATION.md](OPENCLAW-INTEGRATION.md) | Developers | Deprecated OpenClaw setup and migration reference |
+| [MIGRATION-OPENCLAW-TO-HERMES.md](MIGRATION-OPENCLAW-TO-HERMES.md) | Operators | Removal notice for the legacy OpenClaw extension: what stays on disk and how to clean it up |
+| [MIGRATION-LEMONADE-TO-LLAMACPP.md](MIGRATION-LEMONADE-TO-LLAMACPP.md) | Operators | AMD GPUs now run on llama.cpp: what an upgrade from Lemonade does, retired settings and options, Vulkan or ROCm, and cleanup |
 
 ## Hardware & Configuration
 

@@ -4,6 +4,7 @@ import {
   AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
   Send, Volume2, VolumeX,
 } from 'lucide-react'
+import HelpLink from '../components/HelpLink'
 
 // Hermes likes to format with markdown (bold, lists, code). Rendering it as
 // HTML keeps the chat bubbles readable instead of showing raw `**` and `-`.
@@ -45,6 +46,10 @@ const TALK_STATUS_RETRY_MS = 1000
 // `reasonCode` says so, otherwise this fallback is shown.
 const MODEL_NOT_SUPPORTED_CODE = 'model_not_supported'
 const MODEL_NOT_SUPPORTED_MESSAGE = "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+// A model that failed the tool check gets an advisory, never a block: no
+// probe result may lock an owner out of chat. Unknown codes are ignored.
+const TALK_TOOLS_ADVISORY_CODE = 'tools-unavailable'
+const TALK_TOOLS_ADVISORY_MESSAGE = 'This model failed the tool-call check. Talk can still chat, but actions that need tools may fail.'
 const TALK_BLOCKING_COMPATIBILITY_STATUSES = new Set([
   'blocked',
   'incompatible',
@@ -101,6 +106,7 @@ export default function ODSTalk() {
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
   const [compatibilityNotice, setCompatibilityNotice] = useState(null)
+  const [toolsAdvisory, setToolsAdvisory] = useState(false)
   const [retryStatusRefresh, setRetryStatusRefresh] = useState(false)
   // Advances after every offline retry so the polling effect re-arms; a
   // repeated failure otherwise leaves every dependency unchanged.
@@ -177,6 +183,8 @@ export default function ODSTalk() {
       }
       if (!resp.ok) throw new Error(await parseError(resp, 'ODS Talk is not ready.'))
       const data = await resp.json()
+      // Shown only while Talk is ready; it never changes the status.
+      setToolsAdvisory(data.modelCompatibility?.hermesTalkAdvisory?.code === TALK_TOOLS_ADVISORY_CODE)
       const capabilities = data.capabilities || {}
       setVoiceState({
         tts: Boolean(capabilities.tts),
@@ -848,6 +856,25 @@ export default function ODSTalk() {
             >
               Choose a model
             </a>
+          </div>
+        )}
+
+        {status === 'ready' && toolsAdvisory && (
+          <div
+            role="status"
+            data-testid="talk-tools-notice"
+            className="mx-4 mb-3 rounded-lg border border-theme-border bg-theme-card/80 px-3 py-2 text-sm text-theme-text-secondary"
+          >
+            <p>{TALK_TOOLS_ADVISORY_MESSAGE}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <a
+                href={modelsPageUrl()}
+                className="inline-block font-medium text-theme-text underline decoration-zinc-400 underline-offset-2"
+              >
+                Choose a model
+              </a>
+              <HelpLink className="text-xs" />
+            </div>
           </div>
         )}
 

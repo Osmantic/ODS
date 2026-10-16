@@ -10,6 +10,17 @@ operator behavior use [model management](MODEL-MANAGEMENT.md),
 [September promotion record](PUBLIC_BETA_PROMOTION_2026-09.md). A historical
 rollback proposal is not a supported native Pixel recovery procedure.
 
+The legacy OpenClaw extension that this plan lists as a model consumer (PR 5B
+and the consumer lists below) was later removed from ODS; see the
+[removal notice](MIGRATION-OPENCLAW-TO-HERMES.md). Pixel's OpenClaw runtime is a
+separate host component and is not affected.
+
+ODS later stopped running Lemonade Server. AMD GPUs now run upstream
+llama.cpp's `llama-server` like every other backend, so the Lemonade adapter,
+the Lemonade routes and the Lemonade hosts in this plan (PR 2C, PR 6, the
+`lemonade` backend kind and the fleet gates) describe a runtime ODS no longer
+ships; see [AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
+
 Last audited: 2026-07-19; refreshed 2026-07-20 against post-merge `main` `5dd6f72d` (77-PR fix sweep + #1888 + #1766 + #1711 + #1887 + #1724 all merged)
 
 Status: proposed implementation stack. The lifecycle foundation ([#1711](https://github.com/Osmantic/ODS/pull/1711)), swap-safety manifest contract ([#1766](https://github.com/Osmantic/ODS/pull/1766)), transactional swap sync ([#1887](https://github.com/Osmantic/ODS/pull/1887)), and model management UI/actions ([#1724](https://github.com/Osmantic/ODS/pull/1724)) are already merged; the state store, data plane, reconciler, and consumer migrations in this plan are not implemented.

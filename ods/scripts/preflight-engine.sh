@@ -317,24 +317,24 @@ else:
 
 # GPU checks
 gpu_backend = (gpu_backend or "").lower()
-# WSL may expose no local GPU while the selected model runs through Lemonade
-# on Windows. Require the complete external GPU evidence; an external URL or
-# a stale GPU name alone must not hide the CPU fallback warning.
-lemonade_gpu_name = os.environ.get("LEMONADE_GPU_NAME", "").strip()
-lemonade_gpu_vram = os.environ.get("LEMONADE_GPU_VRAM_MB", "0")
+# WSL may expose no local GPU while the selected model runs in the host-native
+# llama-server on Windows (the Portal route). Require the complete GPU
+# evidence; a URL or a stale GPU name alone must not hide the CPU fallback
+# warning.
+native_gpu_name = os.environ.get("NATIVE_LLM_GPU_NAME", "").strip()
+native_gpu_vram = os.environ.get("NATIVE_LLM_GPU_VRAM_MB", "0")
 external_gpu = None
 if (
-    os.environ.get("LEMONADE_EXTERNAL", "false").lower() == "true"
-    and os.environ.get("LEMONADE_BASE_URL", "").strip()
-    and lemonade_gpu_name.lower() not in {"", "none", "unknown", "none (cpu-only mode)"}
-    and lemonade_gpu_vram.isascii()
-    and lemonade_gpu_vram.isdecimal()
-    and int(lemonade_gpu_vram) > 0
+    os.environ.get("NATIVE_LLM_BASE_URL", "").strip()
+    and native_gpu_name.lower() not in {"", "none", "unknown", "none (cpu-only mode)"}
+    and native_gpu_vram.isascii()
+    and native_gpu_vram.isdecimal()
+    and int(native_gpu_vram) > 0
 ):
     external_gpu = {
-        "provider": "lemonade",
-        "gpu_name": lemonade_gpu_name,
-        "gpu_vram_mb": int(lemonade_gpu_vram),
+        "provider": "host-native-llama-server",
+        "gpu_name": native_gpu_name,
+        "gpu_vram_mb": int(native_gpu_vram),
     }
 
 if tier_key == "CLOUD":
@@ -385,7 +385,7 @@ elif gpu_backend == "cpu":
         add_check(
             "gpu-backend",
             "pass",
-            f"External Lemonade GPU route configured ({lemonade_gpu_name}, {external_gpu['gpu_vram_mb']}MB VRAM); no local GPU is required for model inference.",
+            f"Host-native llama-server GPU route configured ({native_gpu_name}, {external_gpu['gpu_vram_mb']}MB VRAM); no local GPU is required for model inference.",
             "",
         )
     elif platform_id in {"windows", "macos"}:

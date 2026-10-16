@@ -51,7 +51,6 @@ Each extension is a self-contained directory with a `manifest.yaml` (service met
 | [`aider/`](services/aider/) | Aider — AI pair programming in your terminal | AMD, NVIDIA, Apple |
 | [`continue/`](services/continue/) | Continue — AI coding assistant (VS Code / JetBrains) | AMD, NVIDIA, Apple |
 | [`crewai/`](services/crewai/) | CrewAI — multi-agent orchestration framework | CPU |
-| [`gaia/`](services/gaia/) | AMD GAIA — experimental local agent UI and framework | CPU |
 | [`open-interpreter/`](services/open-interpreter/) | Open Interpreter — natural language → system commands | CPU |
 | [`jupyter/`](services/jupyter/) | Jupyter — notebooks with local LLM kernel | AMD, NVIDIA |
 
@@ -110,7 +109,6 @@ Quick reference for hardware requirements. Data sourced from each service's `man
 | fooocus | ✓ | — | — | — | 8 GB |
 | forge | ✓ | — | — | — | 8 GB |
 | frigate | ✓ | — | — | — | 1 GB |
-| gaia | — | — | — | ✓ | — |
 | gitea | — | — | — | ✓ | — |
 | immich | ✓ | ✓ | — | — | 2 GB |
 | invokeai | ✓ | ✓ | — | — | 8 GB |

@@ -166,6 +166,8 @@ for (const finalTurn of ['answer','tool','direct','compaction','partial']) test(
       assert.ok(JSON.stringify(seen[5]).includes(JSON.stringify(PROGRESS_FINALIZATION_INSTRUCTION).slice(1,-1)),
         'the answer turn sees the fixed instruction as the refused call result\n'+trace);
     }
+    assert.ok(frames.at(-1)?.pixel_outcome,
+      'terminal SSE frame must carry the outcome\n'+JSON.stringify(frames.slice(-3))+'\n'+trace);
     assert.equal(frames.at(-1).pixel_outcome.status,'failed',trace);
     if(finalTurn==='compaction'){
       assert.ok(summaries>=1,'OpenClaw ran a real compaction summarization call after the answer\n'+trace);

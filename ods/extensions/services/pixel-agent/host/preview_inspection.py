@@ -24,6 +24,8 @@ from preview_inspection_protocol import (
     SELECT_CAPABILITY,
     FILL_CAPABILITY,
     DOWNLOAD_CAPABILITY,
+    PRESS_CAPABILITY,
+    PAINT_CAPABILITY,
     canonical,
     exact,
     failure,
@@ -287,6 +289,20 @@ def inspect_request(request, config, cancelled=None):
              '{{index .Config.Labels "org.osmantic.ods.inspection.select"}}', config['imageId']],
             b'', timeout=5, limit=128, cancelled=cancelled)
         if capability.decode().strip() != SELECT_CAPABILITY:
+            return failure('unsupported_capability', request)
+    if any(step['action'] == 'press' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.press"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != PRESS_CAPABILITY:
+            return failure('unsupported_capability', request)
+    if any(step['action'] == 'assert-painted' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.paint"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != PAINT_CAPABILITY:
             return failure('unsupported_capability', request)
     if config["transport"] == "local":
         bundle = snapshot_bundle(config["snapshotRoot"], request, config["ownerUid"])

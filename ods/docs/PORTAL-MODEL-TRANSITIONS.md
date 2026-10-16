@@ -54,11 +54,6 @@ crash without sufficient proof remains pending and needs explicit repair;
 there is no generic reset that discards the saved state or silently unlocks an
 unverified model.
 
-Windows `/runtime/lemonade/ensure` remains a bootstrap operation outside this
-transaction. The launcher may need it before Edge and the agent have started.
-It is not the chat model-switch endpoint and must not be described as providing
-the interactive switch's admission and recovery guarantees.
-
 Remote SSH configuration can involve a staging step followed by an egress proof.
 Staging is allowed only when the previous local route can be verified unchanged.
 Changing an active remote route through that staged path requires deactivating

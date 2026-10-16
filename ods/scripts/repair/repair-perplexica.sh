@@ -24,17 +24,8 @@ if [[ -z "$PERPLEXICA_MODEL" ]]; then
     if [[ -n "${EXTERNAL_LLM_URL:-}" && -n "${EXTERNAL_LLM_MODEL:-}" ]]; then
         PERPLEXICA_MODEL="$EXTERNAL_LLM_MODEL"
     elif [[ -n "${GGUF_FILE:-}" ]]; then
+        # llama-server serves the GGUF file name (--alias) on every runtime.
         PERPLEXICA_MODEL="$GGUF_FILE"
-        # An AMD local install runs Lemonade while LLM_BACKEND stays
-        # "llama-server", so the runtime and the backend have to be checked
-        # independently — same rule as scripts/bootstrap-upgrade.sh and the
-        # container-side extensions/services/perplexica/sync-model-config.js.
-        _perplexica_runtime="$(printf '%s' "${AMD_INFERENCE_RUNTIME:-}" | tr '[:upper:]' '[:lower:]')"
-        _perplexica_backend="$(printf '%s' "${LLM_BACKEND:-}" | tr '[:upper:]' '[:lower:]')"
-        if [[ "$_perplexica_runtime" == "lemonade" || "$_perplexica_backend" == "lemonade" ]]; then
-            PERPLEXICA_MODEL="${LEMONADE_MODEL:-}"
-            [[ -n "$PERPLEXICA_MODEL" ]] || PERPLEXICA_MODEL="extra.$GGUF_FILE"
-        fi
     else
         PERPLEXICA_MODEL="$LLM_MODEL"
     fi

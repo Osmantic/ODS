@@ -308,10 +308,11 @@ def test_legacy_preparation_preserves_active_files_and_keeps_phase_receipts(tmp_
         return kwargs.get('destination', name + '-digest') if name not in ('runtime', 'services') else 'b' * 64
     installer = SimpleNamespace(_launchd=SimpleNamespace(GATEWAY_PLIST=definition),
         _source_runtime_config=module.helper('access-install')._source_runtime_config,
-        _bundle=SimpleNamespace(INSTALL_ROOT=runtimes, verify=lambda *a, **kw: None),
+        _bundle=SimpleNamespace(INSTALL_ROOT=runtimes,
+            verify=lambda *a, **kw: (_ for _ in ()).throw(PermissionError('retained Darwin sealed symlink'))),
         RUNTIME_CONFIG_ROOT=configs, GATEWAY_LAUNCHER=tmp_path / 'launcher',
         _source_gateway=lambda *args: (document, env, None, None, runtimes / digest / 'node', runtimes / digest / 'runtime/openclaw.mjs'),
-        make_migration_plan=lambda **kw: stage('joint-plan', **kw))
+        make_migration_plan=lambda **kw: pytest.fail('owner must not inspect sealed old bundle in planner'))
     config = SimpleNamespace(bootstrap=SimpleNamespace(prepare_sandbox=lambda **kw: stage('sandbox', **kw)),
         inspection_install=SimpleNamespace(build_config=lambda **kw: {'imageId': 'sha256:' + 'c' * 64}),
         prepare=lambda **kw: stage('configuration', **kw), stage_services=lambda **kw: stage('services', **kw),
@@ -320,6 +321,11 @@ def test_legacy_preparation_preserves_active_files_and_keeps_phase_receipts(tmp_
         'env': SimpleNamespace(snapshot=lambda path: (Path(path).read_bytes(), 'identity')),
         'onboarding': SimpleNamespace(write=lambda **kw: stage('onboarding', **kw))}
     monkeypatch.setattr(module, 'helper', helpers.__getitem__)
+    def proof(arguments, *, expected, prompt_for_sudo=False):
+        if arguments[0] == 'migrate-native':
+            stage('joint-plan')
+        return expected
+    monkeypatch.setattr(module, 'protected_migration_check', proof, raising=False)
     def run():
         return module.prepare_migration(source=tmp_path, ref='c' * 40, node='/node', runtime='/runtime',
             docker='/docker', ods_source=tmp_path, install_dir=tmp_path, destination=destination)

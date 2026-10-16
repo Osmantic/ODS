@@ -1,5 +1,5 @@
 # Code Assistant Agent Template
-# Mission: M7 (OpenClaw Frontier Pushing)
+# Mission: M7
 # Validated on: Qwen3-30B-A3B
 # Purpose: Programming help, debugging, code review
 
@@ -54,9 +54,6 @@ agent:
   usage:
     # How to use this template
     import: "agents/templates/code-assistant.yaml"
-    
-    # Or activate in OpenClaw:
-    # /agent load code-assistant
     
   notes:
     - Optimized for Qwen3 - works reliably on local hardware

@@ -4,7 +4,7 @@ Core LLM inference engine for ODS
 
 ## Overview
 
-llama-server is the local LLM inference backend, powered by [llama.cpp](https://github.com/ggml-org/llama.cpp). It loads GGUF-format models and exposes an OpenAI-compatible HTTP API on port 8080. GPU acceleration is provided via CUDA (NVIDIA) or ROCm (AMD); CPU fallback is available for systems without a supported GPU.
+llama-server is the local LLM inference backend, powered by [llama.cpp](https://github.com/ggml-org/llama.cpp). It loads GGUF-format models and exposes an OpenAI-compatible HTTP API on port 8080. GPU acceleration is provided via CUDA (NVIDIA) or Vulkan and ROCm (AMD); CPU fallback is available for systems without a supported GPU.
 
 All other services that perform AI inference — Open WebUI, LiteLLM, Privacy Shield, and the dashboard chat endpoint — connect to llama-server internally.
 
@@ -12,7 +12,7 @@ All other services that perform AI inference — Open WebUI, LiteLLM, Privacy Sh
 
 - **OpenAI-compatible API**: Drop-in replacement for the OpenAI Chat Completions and Completions endpoints
 - **GGUF model support**: Load any GGUF-quantized model from `data/models/`
-- **GPU acceleration**: CUDA (NVIDIA) and ROCm/HIP (AMD) backends
+- **GPU acceleration**: CUDA (NVIDIA), and Vulkan or ROCm/HIP (AMD) backends
 - **Configurable context window**: Token limit tunable via `CTX_SIZE`
 - **Prometheus metrics**: `/metrics` endpoint for throughput and token stats
 - **Memory-aware GPU offload**: llama.cpp selects the safe layer count by default; operators can override it with `N_GPU_LAYERS`
@@ -103,7 +103,7 @@ The default applies only where the pinned llama.cpp build has the benchmarked im
 | NVIDIA Docker (`docker-compose.nvidia.yml`) | b9014 | `ngram-mod` |
 | CPU Docker (`docker-compose.cpu.yml`) | b9014 | `ngram-mod` |
 | Native macOS Metal | b9014 (installs from before this pin keep b8210) | `ngram-mod` when the installed binary supports it; none on b8210 |
-| AMD (Lemonade, `docker-compose.amd.yml`) | Lemonade-managed | none; not a llama.cpp launch that ODS controls |
+| AMD Docker (`docker-compose.amd.yml`, Vulkan; `docker-compose.amd-rocm.yml` adds ROCm) | b9014 | none (not measured on AMD) |
 | Intel Docker (`docker-compose.intel.yml`, started by hand; the installer uses `docker-compose.arc.yml`) | b9014 | none (not measured on Intel) |
 | Intel Arc local build (`docker-compose.arc.yml`) | source default b9014; the installer does not build this image, and b9014 has not been built on its oneAPI 2025.0.0 base | none |
 | Apple Docker (`docker-compose.apple.yml`) | b9014 | none |
@@ -148,10 +148,12 @@ Every llama.cpp image ODS ships is pinned by tag and sha256 digest, for example 
 | `server-b9014` (CPU, multi-arch) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
 | `server-intel-b9014` (Intel) | `sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b` |
 | `server-b9014` (Apple Docker; same image as CPU) | `sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53` |
+| `server-vulkan-b9014` (AMD default, multi-arch) | `sha256:15c30b560d61ead1e08bee837503203a776fd968736118e313240c32157fd973` |
+| `server-rocm-b9014` (AMD with `AMD_INFERENCE_BACKEND=rocm`, amd64) | `sha256:68403f82fe496302bb1c681bab2ee569a04cc13da8fcf14456376b485562236d` |
 | `llama-b9014-bin-win-vulkan-x64.zip` (native Windows) | SHA-256 `6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f` |
 | Intel Arc local build (`images/llama-sycl`, source default; not built or tested) | tag `b9014`, commit `d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4` |
 
-To use another build, set `LLAMA_SERVER_IMAGE` to a `tag@sha256:digest` reference. `docker buildx imagetools inspect <image>` prints the digest of a tag.
+To use another build, set `LLAMA_SERVER_IMAGE` to a `tag@sha256:digest` reference. `docker buildx imagetools inspect <image>` prints the digest of a tag. The AMD overlays do not read `LLAMA_SERVER_IMAGE`: model profiles can set it to the CUDA image, which would run without the GPU on AMD.
 
 ### llama.cpp env names
 
@@ -170,6 +172,8 @@ llama-server reads only the `LLAMA_ARG_*` names defined in its `common/arg.cpp`,
 |----------|---------|-------------|
 | `VIDEO_GID` | `44` | GID of the `video` group (`getent group video \| cut -d: -f3`) |
 | `RENDER_GID` | `992` | GID of the `render` group (`getent group render \| cut -d: -f3`) |
+| `AMD_INFERENCE_BACKEND` | `vulkan` | `vulkan` (default) or `rocm`. `rocm` adds `docker-compose.amd-rocm.yml`; the installer selects it for Instinct cards, which have no Vulkan |
+| `HSA_OVERRIDE_GFX_VERSION` | unset | ROCm only. The installer sets it only for GPUs the ROCm image was not built for |
 
 ## API Endpoints
 
@@ -241,7 +245,7 @@ docker compose logs llama-server
 **AMD GPU not detected:**
 - Verify group IDs: `getent group video | cut -d: -f3` and `getent group render | cut -d: -f3`
 - Update `VIDEO_GID` and `RENDER_GID` in `.env`
-- Confirm `/dev/kfd` and `/dev/dri` exist on the host
+- Confirm `/dev/dri` exists on the host, and `/dev/kfd` too with `AMD_INFERENCE_BACKEND=rocm`
 
 **Check inference metrics:**
 ```bash

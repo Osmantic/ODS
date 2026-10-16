@@ -19,6 +19,8 @@ BIN_DIR="$TMP_DIR/bin"
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/config/litellm" "$BIN_DIR"
 
 cp "$UPDATE_SCRIPT" "$INSTALL_DIR/ods-update.sh"
+mkdir -p "$INSTALL_DIR/scripts"
+cp "$ROOT_DIR/scripts/publish-update-backup.py" "$INSTALL_DIR/scripts/"
 chmod +x "$INSTALL_DIR/ods-update.sh"
 
 cat > "$INSTALL_DIR/.env" <<'EOF'

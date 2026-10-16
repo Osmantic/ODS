@@ -85,6 +85,42 @@ def until(terminal, text=None):
     pytest.fail("bounded PTY fixture did not finish")
 
 
+def gone_or_zombie(proc):
+    # The child can be reaped between exists() and read_text(). Read once;
+    # only an absent proc entry or an observed zombie satisfies cleanup.
+    try:
+        return proc.read_text().split()[2] == "Z"
+    except FileNotFoundError:
+        return True
+
+
+def test_reaped_proc_during_observation_is_gone(monkeypatch):
+    proc = Path("/proc/12345/stat")
+    monkeypatch.setattr(Path, "exists", lambda _self: True)
+
+    def reaped(_self):
+        raise FileNotFoundError("fixture: reaped before read")
+
+    monkeypatch.setattr(Path, "read_text", reaped)
+    assert gone_or_zombie(proc)
+
+
+@pytest.mark.parametrize("state", ["R", "S", "D", "T", "Z"])
+def test_proc_observation_accepts_only_zombie_state(tmp_path, state):
+    proc = tmp_path / "stat"
+    proc.write_text(f"12345 (fixture) {state} 1 1 1\n")
+    assert gone_or_zombie(proc) is (state == "Z")
+
+
+def test_proc_observation_does_not_hide_permission_errors(monkeypatch):
+    def denied(_self):
+        raise PermissionError("fixture: unreadable proc entry")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(PermissionError):
+        gone_or_zombie(Path("/proc/12345/stat"))
+
+
 def test_real_controlling_tty_fixed_arguments_and_no_password_echo(make):
     start, revoked = make
     terminal = start(
@@ -186,7 +222,7 @@ def test_cancellation_kills_descendant_holding_tty(make, tmp_path):
     child = int(pid_file.read_text())
     assert terminal.cancel()["stopped"] is True
     proc = Path(f"/proc/{child}/stat")
-    assert not proc.exists() or proc.read_text().split()[2] == "Z"
+    assert gone_or_zombie(proc)
 
 
 def test_registry_rejects_foreign_owner_unknown_fields_and_unapproved_plan(tmp_path):
@@ -270,13 +306,9 @@ def test_host_death_closes_own_tty_without_leaving_helper(tmp_path):
         process.wait(timeout=3)
         proc = Path(f"/proc/{child}/stat")
         deadline = time.monotonic() + 3
-        while (
-            proc.exists()
-            and proc.read_text().split()[2] != "Z"
-            and time.monotonic() < deadline
-        ):
+        while not gone_or_zombie(proc) and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert not proc.exists() or proc.read_text().split()[2] == "Z"
+        assert gone_or_zombie(proc)
     finally:
         if process.poll() is None:
             process.kill()

@@ -77,7 +77,6 @@ jobs:
           N8N_USER: ci@example.com
           N8N_PASS: ci-placeholder
           LITELLM_KEY: ci-placeholder
-          OPENCLAW_TOKEN: ci-placeholder
         working-directory: ods
         run: |
           set -e
@@ -102,7 +101,6 @@ jobs:
           N8N_USER: ci@example.com
           N8N_PASS: ci-placeholder
           LITELLM_KEY: ci-placeholder
-          OPENCLAW_TOKEN: ci-placeholder
           GPU_COUNT: "2"
           LLAMA_SERVER_GPU_INDICES: "0,1"
           LLAMA_SERVER_GPU_UUIDS: "GPU-ci-a,GPU-ci-b"

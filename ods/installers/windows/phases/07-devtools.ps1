@@ -23,6 +23,8 @@
 
 Write-Phase -Phase 7 -Total 13 -Name "DEVELOPER TOOLS" -Estimate "~2-5 minutes"
 
+. (Join-Path $PSScriptRoot '../lib/host-agent-process.ps1')
+
 if ($dryRun) {
     Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
     Write-AI "[DRY RUN] Would configure OpenCode for local llama-server (model: $($tierConfig.LlmModel))"
@@ -407,7 +409,7 @@ if (Test-Path $_agentScript) {
             $_oldPid = $null
             try {
                 $_oldPid = [int](Get-Content $script:ODS_AGENT_PID_FILE -Raw).Trim()
-                Stop-Process -Id $_oldPid -Force -ErrorAction SilentlyContinue
+                Stop-ODSHostAgentProcess -ProcessId $_oldPid -AgentScript $_agentScript
             } catch { }
             Remove-Item $script:ODS_AGENT_PID_FILE -Force -ErrorAction SilentlyContinue
         }

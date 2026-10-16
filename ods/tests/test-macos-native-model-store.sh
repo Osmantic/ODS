@@ -142,6 +142,63 @@ assert args[args.index("--spec-type")+1] == "legacy"
 PY
 echo "[PASS] default installs retain the normal runtime and legacy tuning"
 
+# A vision import keeps its projector across restarts (WP2): the resolver reads
+# the import registry the way the host agent's switch does.
+printf 'mmproj' > "$INSTALL_DIR/data/models/default-mmproj-F16.gguf"
+printf '%s' '{"version":1,"models":[{"id":"hf-default","source":"huggingface","gguf_file":"default.gguf","mmproj_file":"default-mmproj-F16.gguf"}]}' \
+    > "$INSTALL_DIR/data/model-imports.json"
+: > "$CALLS"
+start_native_llama true || fail "vision import did not launch"
+wait
+python3 - "$ARGV" "$INSTALL_DIR" <<'PY'
+import sys
+from pathlib import Path
+args=Path(sys.argv[1]).read_bytes().decode().split("\0")[:-1]
+assert args.count("--mmproj") == 1, args
+assert args[args.index("--mmproj")+1] == str(Path(sys.argv[2]).resolve()/"data/models/default-mmproj-F16.gguf"), args
+PY
+rm "$INSTALL_DIR/data/models/default-mmproj-F16.gguf"
+start_native_llama true || fail "import without its projector file did not launch"
+wait
+python3 - "$ARGV" <<'PY'
+import sys
+from pathlib import Path
+args=Path(sys.argv[1]).read_bytes().decode().split("\0")[:-1]
+assert "--mmproj" not in args, args
+PY
+rm "$INSTALL_DIR/data/model-imports.json"
+echo "[PASS] a vision import's projector survives restart; without the file it launches text-only"
+
+# A fixed chat template the switch chose (WP5) is passed again on restart,
+# hash-checked; an altered template refuses the start before stopping inference.
+mkdir -p "$INSTALL_DIR/bin/model_profile" "$INSTALL_DIR/config/chat-templates/upstream-b9014"
+cp "$ROOT_DIR/bin/model_profile/__init__.py" "$ROOT_DIR/bin/model_profile/templates.py" "$INSTALL_DIR/bin/model_profile/"
+printf 'fixed template' > "$INSTALL_DIR/config/chat-templates/upstream-b9014/Fixed.jinja"
+python3 - <<'PY'
+import hashlib, json, os
+from pathlib import Path
+root = Path(os.environ["INSTALL_DIR"]) / "config/chat-templates"
+digest = hashlib.sha256((root / "upstream-b9014/Fixed.jinja").read_bytes()).hexdigest()
+entry = {"id": "fixed-tools", "embeddedTemplateSha256": "a" * 64, "file": "upstream-b9014/Fixed.jinja",
+         "fileSha256": digest, "builds": ["b9014"], "reason": "Test template."}
+(root / "index.json").write_text(json.dumps({"schemaVersion": 1, "overrides": [entry]}))
+PY
+printf 'MODEL_CHAT_TEMPLATE_OVERRIDE=fixed-tools\n' >> "$INSTALL_DIR/.env"
+: > "$CALLS"
+start_native_llama true || fail "fixed chat template did not launch"
+wait
+python3 - "$ARGV" "$INSTALL_DIR" <<'PY'
+import sys
+from pathlib import Path
+args=Path(sys.argv[1]).read_bytes().decode().split("\0")[:-1]
+assert args.count("--chat-template-file") == 1, args
+assert args[args.index("--chat-template-file")+1] == str(Path(sys.argv[2])/"config/chat-templates/upstream-b9014/Fixed.jinja"), args
+PY
+printf 'altered' > "$INSTALL_DIR/config/chat-templates/upstream-b9014/Fixed.jinja"
+assert_rejected_without_stop "altered fixed chat template"
+sed -i.bak '/^MODEL_CHAT_TEMPLATE_OVERRIDE=/d' "$INSTALL_DIR/.env" && rm -f "$INSTALL_DIR/.env.bak"
+echo "[PASS] a fixed chat template survives restart; an altered one refuses before stopping inference"
+
 mkdir -p "$INSTALL_DIR/installers/macos/lib"
 cp "$ROOT_DIR/installers/macos/lib/native-checkpoint-args.py" "$INSTALL_DIR/installers/macos/lib/"
 printf 'LLAMA_ARG_CHECKPOINT_EVERY_NT=1024\nLLAMA_ARG_CTX_CHECKPOINTS=8\nLLAMA_ARG_CACHE_RAM=512\n' >> "$INSTALL_DIR/.env"

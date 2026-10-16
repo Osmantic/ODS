@@ -50,7 +50,7 @@ from models import (
 from security import verify_api_key
 from gpu import get_gpu_info
 from helpers import (
-    get_all_services, get_cached_services, set_services_cache,
+    get_all_services, get_cached_services, get_services_cache_revision, set_services_cache,
     get_disk_usage, dir_size_gb, get_model_info, get_bootstrap_status,
     get_uptime, get_cpu_metrics, get_ram_metrics,
     get_llama_metrics, get_cached_llama_metrics, get_loaded_model, get_llama_context_size,
@@ -91,6 +91,7 @@ from routers import (
     pixel_scopes,
     pixel_advice_runtime,
     pixel_sharing,
+    pixel_model_failure,
     opencode_app,
 )
 from settings import (
@@ -154,6 +155,18 @@ _host_agent_probe_state: dict[str, Optional[str]] = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+def _public_manifest_errors() -> list[dict[str, str]]:
+    """Manifest load errors without exception text; config.py logs the detail."""
+    return [
+        {
+            "file": Path(entry["file"]).parent.name,
+            "error": ("Unsupported schema_version" if entry["error"] == "Unsupported schema_version"
+                      else "manifest could not be loaded"),
+        }
+        for entry in MANIFEST_ERRORS
+    ]
 
 
 def _resolve_install_root() -> Path:
@@ -1251,6 +1264,7 @@ app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
 
 
@@ -1502,7 +1516,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "throughputModel": last_inference.get("throughput_model"),
                           "inferenceActive": None,
                           "loadedModel": None, "contextSize": None},
-            "manifest_errors": MANIFEST_ERRORS,
+            "manifest_errors": _public_manifest_errors(),
         }
 
 
@@ -1558,6 +1572,22 @@ async def _get_dashboard_remote_runtime() -> dict[str, object] | None:
         return None
 
 
+_THIS_COMPUTER_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+
+
+def _external_api_off_this_computer() -> bool:
+    """Installer API mode with a model API elsewhere, not a host Ollama or LM Studio.
+
+    Status called it local inference (inferenceMode "local"), so the dashboard
+    showed local GPU telemetry and "Chat with your local AI model" (fleet row 33).
+    """
+    if str(read_live_env_value("LLM_BACKEND") or "").strip().lower() != "external":
+        return False
+    provider = str(read_live_env_value("EXTERNAL_LLM_PROVIDER") or "").strip().lower()
+    host = (urlparse(str(read_live_env_value("EXTERNAL_LLM_URL") or "").strip()).hostname or "").lower()
+    return bool(host) and provider not in {"ollama", "lmstudio"} and host not in _THIS_COMPUTER_HOSTS
+
+
 async def _build_api_status() -> dict:
     """Build the full status payload.
 
@@ -1601,12 +1631,14 @@ async def _build_api_status() -> dict:
     # Remote/cloud inference does not use the local GPU for primary inference.
     # Suppress local GPU/tier reporting so the UI cannot present local hardware
     # as the inference device. Local mode is unchanged.
-    remote_inference = bool(remote_runtime) or cloud_mode
+    external_api = not remote_runtime and not cloud_mode and _external_api_off_this_computer()
+    remote_inference = bool(remote_runtime) or cloud_mode or external_api
     if remote_inference:
         gpu_data = None
         tier = "Cloud"
-        inference_mode_value = "remote" if remote_runtime else "cloud"
-        inference_source_value = "remote-provider" if remote_runtime else "cloud-mode"
+        inference_mode_value = "remote" if remote_runtime or external_api else "cloud"
+        inference_source_value = ("remote-provider" if remote_runtime
+                                  else "external-api" if external_api else "cloud-mode")
     else:
         gpu_data = _serialize_gpu(gpu_info)
         tier = _infer_tier(gpu_info)
@@ -1676,39 +1708,12 @@ async def _build_api_status() -> dict:
             "loadedModel": loaded_model_name,
             "contextSize": context_size or (model_data["contextLength"] if model_data else None),
         },
-        "manifest_errors": MANIFEST_ERRORS,
+        "manifest_errors": _public_manifest_errors(),
     }
     return result
 
 
 # --- Settings ---
-
-@app.get("/api/service-tokens", dependencies=[Depends(verify_api_key)])
-async def service_tokens():
-    """Return connection tokens for services that need browser-side auth."""
-    def _read_tokens():
-        tokens = {}
-        oc_token = os.environ.get("OPENCLAW_TOKEN", "")
-        if not oc_token:
-            for path in [Path("/data/openclaw/home/gateway-token"), Path("/ods/.env")]:
-                try:
-                    if path.suffix == ".env":
-                        for line in path.read_text().splitlines():
-                            if line.startswith("OPENCLAW_TOKEN="):
-                                oc_token = line.split("=", 1)[1].strip()
-                                break
-                    else:
-                        oc_token = path.read_text().strip()
-                except (OSError, ValueError):
-                    continue
-                if oc_token:
-                    break
-        if oc_token:
-            tokens["openclaw"] = oc_token
-        return tokens
-
-    return await asyncio.to_thread(_read_tokens)
-
 
 @app.get("/api/external-links")
 async def get_external_links(api_key: str = Depends(verify_api_key)):
@@ -1794,7 +1799,7 @@ async def api_settings_summary(api_key: str = Depends(verify_api_key)):
             "uptime": uptime,
             "hostname": os.environ.get("HOSTNAME", "ods"),
         },
-        "manifest_errors": MANIFEST_ERRORS,
+        "manifest_errors": _public_manifest_errors(),
     }
     _cache.set("settings_summary", result, _SETTINGS_SUMMARY_CACHE_TTL)
     return result
@@ -1928,8 +1933,9 @@ async def _poll_service_health():
     await asyncio.sleep(2)  # let services start
     while True:
         try:
+            revision = get_services_cache_revision()
             statuses = await get_all_services()
-            set_services_cache(statuses)
+            set_services_cache(statuses, expected_revision=revision)
         except Exception:
             logger.exception("Service health poll failed")
         await asyncio.sleep(_SERVICE_POLL_INTERVAL)
