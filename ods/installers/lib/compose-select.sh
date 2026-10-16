@@ -147,8 +147,10 @@ ods_host_native_assert_no_managed_llama() {
 # to the running session yet, and sudo does not pass exported variables, so
 # hand the value to Compose explicitly. Call only inside a subshell function.
 _ods_compose_placeholder_pixel_gid() {
-    [[ -z "${PIXEL_INGRESS_GID:-}" ]] || return 0
-    export PIXEL_INGRESS_GID=1
+    export PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID:-1}"
+    # An inherited real GID also needs forwarding when the initial .env still
+    # has no installed identity. Keep the command-string assignment numeric.
+    [[ "$PIXEL_INGRESS_GID" =~ ^[1-9][0-9]*$ ]] || return 1
     if [[ "${DOCKER_COMPOSE_CMD:-}" == "sudo "* ]]; then
         DOCKER_COMPOSE_CMD="sudo env PIXEL_INGRESS_GID=$PIXEL_INGRESS_GID ${DOCKER_COMPOSE_CMD#sudo }"
     fi
@@ -158,7 +160,7 @@ _ods_compose_placeholder_pixel_gid() {
 # an ephemeral numeric GID only for Compose's read-only service selection.
 # Phase 11 still validates the installed identity and uses the strict helper.
 ods_host_native_assert_no_managed_llama_before_pixel_identity() (
-    _ods_compose_placeholder_pixel_gid
+    _ods_compose_placeholder_pixel_gid || return 1
     ods_host_native_assert_no_managed_llama "$@"
 )
 
@@ -180,6 +182,6 @@ ods_compose_assert_no_webui() {
 # within this read-only early check. Phase 11 validates the real installed GID
 # before starting containers and repeats the no-WebUI check.
 ods_compose_assert_no_webui_before_pixel_identity() (
-    _ods_compose_placeholder_pixel_gid
+    _ods_compose_placeholder_pixel_gid || return 1
     ods_compose_assert_no_webui "$@"
 )

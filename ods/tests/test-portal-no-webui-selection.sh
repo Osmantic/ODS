@@ -112,7 +112,21 @@ PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID='
     ods_host_native_assert_no_managed_llama_before_pixel_identity -f fake.yml 2>/dev/null || {
     echo 'FAIL: early host-native check lost its placeholder Pixel GID under sudo' >&2; exit 1;
 }
-[[ "$DOCKER_COMPOSE_CMD" == portal_compose_stub ]] || {
+# A nonempty inherited GID can precede phase 11's persisted identity too.
+printf '#!/bin/sh\n[ "${PIXEL_INGRESS_GID:-}" = 41002 ] || exit 1\nprintf "dashboard\\npixel-edge\\n"\n' \
+    > "$fakebin/fake-compose"
+for early_check in ods_compose_assert_no_webui_before_pixel_identity \
+    ods_host_native_assert_no_managed_llama_before_pixel_identity; do
+    PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID=41002 INSTALL_DIR="$fixture" \
+        "$early_check" -f fake.yml || {
+        echo 'FAIL: early check lost its inherited Pixel GID under sudo' >&2; exit 1;
+    }
+    if PATH="$fakebin:$PATH" DOCKER_COMPOSE_CMD="sudo fake-compose" PIXEL_INGRESS_GID='41002 EXTRA=yes' INSTALL_DIR="$fixture" \
+        "$early_check" -f fake.yml; then
+        echo 'FAIL: early check accepted a nonnumeric Pixel GID' >&2; exit 1;
+    fi
+done
+[[ "$DOCKER_COMPOSE_CMD" == portal_compose_stub && -z "${PIXEL_INGRESS_GID:-}" ]] || {
     echo 'FAIL: early Compose check changed the caller'"'"'s Compose command' >&2; exit 1;
 }
 if INSTALL_DIR="$fixture" PORTAL_TEST_MODE=unsafe \
