@@ -84,3 +84,32 @@ it('finds the remote model section by what people search for', () => {
     fireEvent.click(screen.getByRole('combobox', {name:'Settings section'}))
   }
 })
+
+it('preserves accurate trigger state during search and reserves empty label for zero matches', () => {
+  render(<SettingsModal />)
+  const trigger = screen.getByRole('combobox', { name: 'Settings section' })
+  expect(trigger).toHaveTextContent('General')
+
+  // From General, type 'storage' into Search settings:
+  fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'storage' } })
+
+  // Trigger before selecting a result: must not say 'No matching categories'
+  expect(trigger).not.toHaveTextContent('No matching categories')
+  expect(trigger).toHaveTextContent('Select section')
+
+  // Opening the combobox shows Storage:
+  fireEvent.click(trigger)
+  const storageOption = screen.getByRole('option', { name: /Storage/i })
+  expect(storageOption).toBeInTheDocument()
+
+  // Select the result:
+  fireEvent.click(storageOption)
+  expect(trigger).toHaveTextContent('Storage')
+  expect(screen.getByText('storage content')).toBeVisible()
+
+  // Zero-match case:
+  fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'nonexistent-category' } })
+  expect(trigger).toHaveTextContent('No matching categories')
+  expect(trigger).toBeDisabled()
+  expect(screen.getByText('No settings found.')).toBeVisible()
+})

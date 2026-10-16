@@ -3,7 +3,15 @@ import { Check, ChevronDown } from 'lucide-react'
 import './panel-select.css'
 
 // Inline (not portalled) so long labels can never expand into the chat pane.
-export default function PanelSelect({ label, value, onChange, options, disabled = false }) {
+export default function PanelSelect({
+  label,
+  value,
+  onChange,
+  options,
+  disabled = false,
+  placeholder = 'Select category',
+  emptyLabel = 'No matching categories'
+}) {
   const id = useId(), root = useRef(null), trigger = useRef(null)
   const [open, setOpen] = useState(false)
   const [activeValue, setActiveValue] = useState(null)
@@ -48,7 +56,7 @@ export default function PanelSelect({ label, value, onChange, options, disabled 
       onClick={() => { setActiveValue(options[Math.max(0, selected)]?.value); setOpen(!expanded) }}>
       <div className="panel-select-trigger-content">
         {options[selected]?.icon && <span className="panel-select-trigger-icon">{options[selected].icon}</span>}
-        <span>{options[selected]?.label || 'No matching categories'}</span>
+        <span>{options[selected]?.label || (options.length > 0 ? placeholder : emptyLabel)}</span>
       </div>
       <ChevronDown size={14} />
     </button>

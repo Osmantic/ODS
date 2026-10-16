@@ -49,7 +49,7 @@ export default function SettingsModal() {
     }
   }
 
-  const selectOptions = (filteredSections.length > 0 ? filteredSections : [currentSection]).map(([id, label, Icon]) => ({
+  const selectOptions = filteredSections.map(([id, label, Icon]) => ({
     value: id,
     label,
     icon: <MetalMetricIcon icon={Icon} size={15} />,
@@ -74,6 +74,7 @@ export default function SettingsModal() {
             value={section}
             onChange={setSection}
             options={selectOptions}
+            placeholder="Select section"
           />
           {filteredSections.length === 0 && (
             <p className="ods-settings-empty">No settings found.</p>
