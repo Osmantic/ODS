@@ -603,3 +603,17 @@ def test_compose_passes_the_bootstrap_administrator_to_open_webui():
     block = service_block((ODS / "docker-compose.base.yml").read_text(encoding="utf-8"))
     assert '      WEBUI_ADMIN_EMAIL: "${WEBUI_ADMIN_EMAIL:-}"\n' in block
     assert '      WEBUI_ADMIN_PASSWORD: "${WEBUI_ADMIN_PASSWORD:-}"\n' in block
+
+
+def test_every_installer_writes_the_bootstrap_administrator_and_keeps_existing_values():
+    linux = (ODS / "installers/phases/06-directories.sh").read_text(encoding="utf-8")
+    assert 'WEBUI_ADMIN_EMAIL=$(_env_get WEBUI_ADMIN_EMAIL "admin@ods.local")' in linux
+    assert "WEBUI_ADMIN_PASSWORD=$(_phase06_env_hex_secret WEBUI_ADMIN_PASSWORD 16)" in linux
+    assert 'WEBUI_ADMIN_PASSWORD=$(dotenv_value "${WEBUI_ADMIN_PASSWORD}")' in linux
+    windows = (ODS / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
+    assert 'Get-EnvOrNew "WEBUI_ADMIN_PASSWORD" (New-SecureHex -Bytes 16)' in windows
+    assert "WEBUI_ADMIN_PASSWORD=$webuiAdminPass" in windows
+    macos = (ODS / "installers/macos/lib/env-generator.sh").read_text(encoding="utf-8")
+    assert "WEBUI_ADMIN_PASSWORD=${webui_admin_password}" in macos
+    # An existing .env gains the account only where it has none.
+    assert 'if [[ -z "$(read_env_value "$env_path" "WEBUI_ADMIN_PASSWORD")" ]]; then' in macos

@@ -245,7 +245,7 @@ has built-in user management:
 
 1. Set `WEBUI_AUTH=true` in `.env`
 2. Restart Open WebUI
-3. The first user becomes admin and can configure auth in Open WebUI settings
+3. Sign in as the administrator from `.env` (`WEBUI_ADMIN_EMAIL` / `WEBUI_ADMIN_PASSWORD`, created by the installer) and configure auth in Open WebUI settings
 
 ---
 
