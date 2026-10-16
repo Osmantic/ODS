@@ -255,6 +255,24 @@ test('unticking Include vision imports the weights alone', async () => {
   expect(importBodies()[0]).toEqual({repoId: 'org/model', revision: 'c'.repeat(40), artifactId: 'q4', includeVision: false})
 })
 
+test('unticking Include vision frees an import that only the projector pushed past the disk', async () => {
+  detailsBody = {
+    ...repo, sha: 'c'.repeat(40), artifacts,
+    projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8, precision: 'F16'}],
+    defaultProjectorId: 'p1',
+  }
+  preflightBody = preflight({artifacts: {
+    q4: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'ok'},
+    q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'insufficient'},
+  }})
+  const dialog = await open()
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(2)
+  await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(1)
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true})) })
+  expect(importBodies()).toEqual([{repoId: 'org/model', revision: 'c'.repeat(40), artifactId: 'q4', includeVision: false}])
+})
+
 test('a repository without a projector shows no vision choice', async () => {
   const dialog = await open()
   expect(dialog.queryByRole('checkbox', {name: /Include vision/})).toBeNull()
@@ -321,6 +339,49 @@ test('unchecked import waits for exactly one selected-artifact check before post
   expect(fetch.mock.calls.filter(([url]) => url.includes('artifactId=q8'))).toHaveLength(1)
   await act(async () => { finish(selectedPreflight('q8')) })
   expect(importBodies()).toEqual([{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q8', includeVision: true}])
+})
+
+test.each([
+  ['weights fit without vision', false, 'ok', null, 1],
+  ['weights alone still exceed disk', false, 'insufficient', null, 0],
+  ['vision remains included', true, 'ok', null, 0],
+  ['the selected artifact is not a chat model', false, 'ok',
+    {code: 'not_a_chat_model:reranker', message: 'The selected file is a reranker.', overridable: false}, 0],
+])('selected-artifact disk check: %s', async (_label, includeVision, weightsDisk, refusal, posts) => {
+  unreadSecondArtifact()
+  detailsBody = {...detailsBody, projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8}], defaultProjectorId: 'p1'}
+  let finish
+  selectedPreflightResponse = () => new Promise(resolve => { finish = resolve })
+  const dialog = await open()
+  if (!includeVision) await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  const button = dialog.getAllByRole('button', {name: 'Import', exact: true})[1]
+  await act(async () => { fireEvent.click(button); fireEvent.click(button) })
+  expect(importBodies()).toEqual([])
+  expect(dialog.getByRole('checkbox', {name: /Include vision/})).toBeDisabled()
+  expect(fetch.mock.calls.filter(([url]) => url.includes('artifactId=q8'))).toHaveLength(1)
+  await act(async () => { finish(selectedPreflight('q8', {artifacts: {
+    q4: okCheck, q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: weightsDisk, refusal},
+  }})) })
+  expect(importBodies()).toEqual(posts ? [{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q8', includeVision}] : [])
+  if (!posts) expect(dialog.getByRole('button', {name: refusal ? 'Not supported' : 'Not enough disk'})).toBeDisabled()
+})
+
+test('skipping vision preserves the selected architecture override gate', async () => {
+  unreadSecondArtifact()
+  detailsBody = {...detailsBody, projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8}], defaultProjectorId: 'p1'}
+  const refusal = {code: 'runtime_architecture_unsupported', message: 'The selected file needs a newer runtime.', overridable: true}
+  selectedPreflightResponse = id => selectedPreflight(id, {artifacts: {
+    q4: okCheck, q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'ok', refusal},
+  }})
+  const dialog = await open()
+  await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  await act(async () => { fireEvent.click(dialog.getAllByRole('button', {name: 'Import', exact: true})[1]) })
+  expect(importBodies()).toEqual([])
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import anyway\u2026'})) })
+  expect(importBodies()).toEqual([])
+  await act(async () => { fireEvent.click(within(dialog.getByRole('alertdialog')).getByRole('button', {name: 'Import anyway'})) })
+  expect(importBodies()).toEqual([{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q8', includeVision: false, allowUnsupportedRuntime: true}])
+  expect(fetch.mock.calls.filter(([url]) => url.includes('artifactId=q8'))).toHaveLength(1)
 })
 
 test('matching checked metadata needs no additional network preflight', async () => {

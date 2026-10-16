@@ -90,7 +90,7 @@ async def conversation_storage(method, owner, chat_id):
     try:
         return await asyncio.to_thread(_storage_call, method, owner_namespace(owner), chat_id)
     except ConversationDeleted as exc:
-        raise HTTPException(410, str(exc)) from None
+        raise HTTPException(410, {"code": "conversation_deleted", "message": str(exc)}) from None
     except ImageStoreCapacity as exc:
         raise HTTPException(507, str(exc)) from None
     except Exception as exc:
