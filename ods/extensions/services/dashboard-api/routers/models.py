@@ -1408,7 +1408,7 @@ async def _hf_preflight(
         artifact_context = artifact_layout.get("max_context_length") or fallback_context
         # Access denial applies to the repository; model evidence does not.
         refusal = gate["refusal"] if (gate["refusal"] or {}).get("code") == "gated" else artifact_gate["refusal"]
-        needed = 0 if artifact.get("installed") else _hf_artifact_size(artifact) + projector_bytes
+        weights = 0 if artifact.get("installed") else _hf_artifact_size(artifact)
         artifacts[artifact["id"]] = {
             "header": artifact_gate["headerStatus"],
             "architecture": artifact_gate["architecture"],
@@ -1417,7 +1417,9 @@ async def _hf_preflight(
             "contextSource": "gguf_header" if artifact_layout.get("max_context_length") else fallback_source,
             "refusal": refusal,
             "fit": _hf_artifact_fit(artifact, artifact_layout, artifact_context, gpu_info, projector_bytes),
-            "disk": model_preflight.disk_status(needed, storage),
+            "disk": model_preflight.disk_status(weights + projector_bytes if weights else 0, storage),
+            # An import with Include vision unticked downloads the weights alone.
+            "diskWithoutProjector": model_preflight.disk_status(weights, storage),
             "tensors": _hf_artifact_tensors(artifact_gate, artifact),
         }
     return {
@@ -1658,7 +1660,29 @@ async def search_huggingface_models(
     if query:
         params["search"] = query
     try:
-        payload, _headers = await _hf_get_json("/api/models", params=params)
+        payload = None
+        if _HF_REPO_RE.fullmatch(query):
+            # A pasted repository ID does not need the Hub's search index.
+            # The metadata endpoint can remain healthy during search outages.
+            try:
+                repository, _headers = await _hf_get_json(
+                    f"/api/models/{quote(query, safe='/')}",
+                    timeout_seconds=6.0,
+                    connect_timeout_seconds=3.0,
+                )
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                # An owner/name prefix can still be a useful fuzzy search.
+            else:
+                if not isinstance(repository, dict) or str(
+                    repository.get("id") or repository.get("modelId") or ""
+                ).lower() != query.lower():
+                    raise HTTPException(status_code=502, detail="Hugging Face returned an unexpected repository")
+                item = _hf_search_item(repository)
+                payload = [repository] if item and item["ggufFileCount"] else []
+        if payload is None:
+            payload, _headers = await _hf_get_json("/api/models", params=params)
     except HTTPException as exc:
         if cached and exc.status_code in {429, 502, 504}:
             return {**cached[1], "stale": True}

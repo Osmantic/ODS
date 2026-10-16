@@ -23,10 +23,20 @@ function chips(summary, templateOverride) {
   if (templateOverride?.active) list.push({tone: 'neutral', text: 'Uses a fixed chat template'})
   if (summary.chat === true) list.push({tone: 'ok', text: 'Answers chat'})
   if (summary.chat === false) list.push({tone: 'warn', text: 'Did not answer the chat check'})
-  if (summary.tools === true) list.push({tone: 'ok', text: 'Calls tools (Pixel and agents)'})
-  if (summary.tools === false) list.push({tone: 'warn', text: 'No working tool calls: chat only for agents'})
+  if (summary.tools === true) list.push({tone: 'ok', text: 'Tool-call check passed'})
+  if (summary.tools === false) list.push({tone: 'warn', text: 'Tool-call check did not pass'})
+  list.push(summary.toolsStreamed === true
+    ? {tone: 'ok', text: 'Streaming tool check passed'}
+    : summary.toolsStreamed === false
+      ? {tone: 'warn', text: 'Streaming tool check did not pass'}
+      : {tone: 'neutral', text: 'Streaming tool check not verified'})
   const thinking = THINKING_TEXT[summary.thinking?.control]
-  if (thinking) list.push({tone: 'neutral', text: thinking})
+  if (thinking) {
+    const works = summary.thinking?.works
+    list.push(works === true
+      ? {tone: 'neutral', text: thinking}
+      : {tone: works === false ? 'warn' : 'neutral', text: works === false ? 'Thinking check did not pass' : 'Thinking not verified'})
+  }
   if (summary.vision === true) list.push({tone: 'ok', text: 'Sees images'})
   if (summary.vision === false) list.push({tone: 'warn', text: 'Image input did not work'})
   if (typeof summary.tokensPerSecond === 'number') list.push({tone: 'neutral', text: `About ${Math.round(summary.tokensPerSecond)} tokens/s`})
@@ -155,7 +165,7 @@ function ProfileForModel({modelId, lifecycleActive}) {
     // Portal advisory sends the owner here to press Check again.
     return (
       <div className="mt-2 space-y-1.5 text-[11px] text-theme-text-muted">
-        <p>Not checked yet: ODS checks what a model can do the first time it runs on this machine.</p>
+        <p>No saved capability check is available for this model on this machine. Choose Check again to run one.</p>
         {recheckButton}
         {notice && <p role="status" className="text-amber-200">{notice}</p>}
       </div>

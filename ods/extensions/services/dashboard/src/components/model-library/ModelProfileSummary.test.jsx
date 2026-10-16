@@ -51,7 +51,9 @@ test('shows what the running model was measured to do, and on which runtime', as
   await show()
   const region = screen.getByRole('region', {name: 'What this model can do'})
   expect(region).toHaveTextContent('Answers chat')
-  expect(region).toHaveTextContent('Calls tools (Pixel and agents)')
+  expect(region).toHaveTextContent('Tool-call check passed')
+  expect(region).toHaveTextContent('Streaming tool check passed')
+  expect(region).not.toHaveTextContent('Calls tools (Pixel and agents)')
   expect(region).toHaveTextContent('Thinking can be turned off')
   expect(region).toHaveTextContent('About 75 tokens/s')
   expect(region).toHaveTextContent('on llama.cpp b11429')
@@ -59,18 +61,64 @@ test('shows what the running model was measured to do, and on which runtime', as
   expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile', {cache: 'no-store', signal: expect.any(AbortSignal)})
 })
 
-test('a chat-only model says so plainly and links to help', async () => {
-  profileBody.profile = profile({...capable, tools: false, thinking: {control: 'always'}})
+test('a failed direct tool check reports the measurement and links to help', async () => {
+  profileBody.profile = profile({...capable, tools: false, thinking: {control: 'always', works: true}})
   await show()
-  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+  expect(screen.getByText('Streaming tool check passed')).toBeVisible()
+  expect(screen.queryByText('No working tool calls: chat only for agents')).toBeNull()
   expect(screen.getByText('Always thinks before it answers')).toBeVisible()
   expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
 })
 
-test('a model not measured yet says when it will be', async () => {
+test('observe mode separates a passed direct tool check from a failed streamed check', async () => {
+  profileBody = {mode: 'observe', modelId: 'qwen3.5-9b',
+    profile: profile({...capable, tools: true, toolsStreamed: false})}
+  await show()
+  const region = screen.getByRole('region', {name: 'What this model can do'})
+  expect(region).toHaveTextContent('Tool-call check passed')
+  expect(region).toHaveTextContent('Streaming tool check did not pass')
+  expect(region).not.toHaveTextContent('Calls tools (Pixel and agents)')
+  expect(screen.queryByText('Streaming tool check passed')).toBeNull()
+  expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(fetch.mock.calls[0][1].method).toBeUndefined()
+})
+
+test.each([null, undefined])('observe mode keeps an unknown streamed tool check neutral (%s)', async toolsStreamed => {
+  const summary = {...capable, toolsStreamed}
+  if (toolsStreamed === undefined) delete summary.toolsStreamed
+  profileBody = {mode: 'observe', modelId: 'qwen3.5-9b', profile: profile(summary)}
+  await show()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByText('Streaming tool check not verified')).toBeVisible()
+  expect(screen.queryByText('Streaming tool check passed')).toBeNull()
+  expect(screen.queryByText('Streaming tool check did not pass')).toBeNull()
+  expect(screen.queryByText('Calls tools (Pixel and agents)')).toBeNull()
+  expect(screen.queryByRole('link', {name: 'Get help on Discord'})).toBeNull()
+})
+
+test.each(['always', 'enable_thinking', 'none'])('a failed thinking check does not claim the template capability (%s)', async control => {
+  profileBody.profile = profile({...capable, thinking: {control, works: false, separated: false}})
+  await show()
+  expect(screen.getByText('Thinking check did not pass')).toBeVisible()
+  expect(screen.queryByText('Always thinks before it answers')).toBeNull()
+  expect(screen.queryByText('Thinking can be turned off')).toBeNull()
+  expect(screen.queryByText('Answers without a thinking step')).toBeNull()
+  expect(screen.getByText('Answers chat')).toBeVisible()
+})
+
+test.each([null, undefined])('an unknown thinking check is not presented as measured (%s)', async works => {
+  profileBody.profile = profile({...capable, thinking: {control: 'always', works}})
+  await show()
+  expect(screen.getByText('Thinking not verified')).toBeVisible()
+  expect(screen.queryByText('Always thinks before it answers')).toBeNull()
+})
+
+test('a missing saved check explains how to run one', async () => {
   profileBody.profile = null
   await show()
-  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  expect(screen.getByText('No saved capability check is available for this model on this machine. Choose Check again to run one.')).toBeVisible()
 })
 
 test('a running model never checked can be checked from its card', async () => {
@@ -81,7 +129,7 @@ test('a running model never checked can be checked from its card', async () => {
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
   expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST'})
   await waitFor(() => expect(screen.getByRole('region', {name: 'What this model can do'}))
-    .toHaveTextContent('Calls tools (Pixel and agents)'))
+    .toHaveTextContent('Tool-call check passed'))
 })
 
 test('a refused first check is shown in words', async () => {
@@ -90,11 +138,11 @@ test('a refused first check is shown in words', async () => {
   await show()
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only the running model can be checked'))
-  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  expect(screen.getByText(/No saved capability check/)).toBeVisible()
 })
 
 test('nothing shows when profiles are off or the check is unavailable', async () => {
-  profileBody = {mode: 'off', modelId: 'qwen3.5-9b', profile: null}
+  profileBody = {mode: 'off', modelId: 'qwen3.5-9b', profile: profile(capable)}
   const {container} = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
   await act(async () => {})
   expect(container).toBeEmptyDOMElement()
@@ -167,14 +215,14 @@ test('refreshes a delayed first profile after the model lifecycle settles withou
   profileBody.profile = null
   const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
   await act(async () => {})
-  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  expect(screen.getByText(/No saved capability check/)).toBeVisible()
   view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={true}/>)
   await act(async () => {})
   expect(fetch).toHaveBeenCalledTimes(1)
   profileBody.profile = profile(capable)
   view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
   await act(async () => {})
-  expect(screen.getByText('Calls tools (Pixel and agents)')).toBeVisible()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
   expect(fetch).toHaveBeenCalledTimes(2)
   expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
 })
@@ -186,10 +234,10 @@ test('a replaced model ignores a late previous profile response', async () => {
   profileBody = {mode: 'observe', modelId: 'new-model', profile: profile({...capable, tools: false}, {modelId: 'new-model'})}
   view.rerender(<ModelProfileSummary modelId="new-model"/>)
   await act(async () => {})
-  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
   await act(async () => { resolveOld({ok: true, json: async () => ({mode: 'observe', modelId: 'old-model', profile: profile(capable, {modelId: 'old-model'})})}) })
-  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
-  expect(screen.queryByText('Calls tools (Pixel and agents)')).toBeNull()
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+  expect(screen.queryByText('Tool-call check passed')).toBeNull()
 })
 
 test('an initial active lifecycle defers its read and an unchanged idle card does not poll', async () => {
@@ -232,5 +280,5 @@ test('a late recheck of an unmounted model does not launch another read or chang
   expect(fetch).toHaveBeenCalledTimes(3)
   await act(async () => { resolveRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
   expect(fetch).toHaveBeenCalledTimes(3)
-  expect(screen.getByText('No working tool calls: chat only for agents')).toBeVisible()
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
 })

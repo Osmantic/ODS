@@ -10,19 +10,98 @@ from typing import Any
 _MAX_BYTES = 16 * 1024 * 1024
 
 
-class CompletionStreamIdentityError(ValueError):
+# Only source-authored reasons may reach logs or the response. Never derive a
+# diagnostic from str(exc), backend fields, prompts, tool names or arguments.
+_REJECTION_CODES = {
+    'choice not object': 'sse_choice_not_object',
+    'choices not list': 'sse_choices_not_list',
+    'conflicting id': 'sse_conflicting_id',
+    'conflicting role': 'sse_conflicting_role',
+    'conflicting system_fingerprint': 'sse_conflicting_system_fingerprint',
+    'conflicting tool id': 'sse_conflicting_tool_id',
+    'conflicting tool name': 'sse_conflicting_tool_name',
+    'conflicting tool type': 'sse_conflicting_tool_type',
+    'content delta after finish_reason': 'sse_content_delta_after_finish_reason',
+    'content looks like inline tool_call': 'sse_content_looks_like_inline_tool_call',
+    'content not string': 'sse_content_not_string',
+    'created not int': 'sse_created_not_int',
+    'delta not object': 'sse_delta_not_object',
+    'duplicate finish_reason': 'sse_duplicate_finish_reason',
+    'event after [DONE]': 'sse_event_after_done',
+    'event not object': 'sse_event_not_object',
+    'expected_model must be non-empty str': 'sse_expected_model_must_be_non_empty_str',
+    'finish_reason not string': 'sse_finish_reason_not_string',
+    'finish_reason tool_calls with no tool calls': 'sse_finish_reason_tool_calls_with_no_tool_calls',
+    'function not object': 'sse_function_not_object',
+    'id not string': 'sse_id_not_string',
+    'inconsistent choice index': 'sse_inconsistent_choice_index',
+    'invalid choice index': 'sse_invalid_choice_index',
+    'invalid finish_reason for content': 'sse_invalid_finish_reason_for_content',
+    'invalid tool arguments json': 'sse_invalid_tool_arguments_json',
+    'invalid tool index': 'sse_invalid_tool_index',
+    'invalid usage frame': 'sse_invalid_usage_frame',
+    'invalid utf-8': 'sse_invalid_utf_8',
+    'malformed json': 'sse_malformed_json',
+    'max_bytes must be positive int': 'sse_max_bytes_must_be_positive_int',
+    'missing [DONE]': 'sse_missing_done',
+    'missing assistant role': 'sse_missing_assistant_role',
+    'missing terminal finish_reason': 'sse_missing_terminal_finish_reason',
+    'missing tool id': 'sse_missing_tool_id',
+    'missing tool name': 'sse_missing_tool_name',
+    'missing tool type': 'sse_missing_tool_type',
+    'model mismatch': 'sse_model_mismatch',
+    'model not string': 'sse_model_not_string',
+    'more than one choice': 'sse_more_than_one_choice',
+    'no events': 'sse_no_events',
+    'no frame carried expected model': 'sse_no_frame_carried_expected_model',
+    'raw exceeds max_bytes': 'sse_raw_exceeds_max_bytes',
+    'raw must be bytes': 'sse_raw_must_be_bytes',
+    'reasoning delta after finish_reason': 'sse_reasoning_delta_after_finish_reason',
+    'reasoning_content not string': 'sse_reasoning_content_not_string',
+    'role is not assistant': 'sse_role_is_not_assistant',
+    'tool arguments not string': 'sse_tool_arguments_not_string',
+    'tool calls require finish_reason tool_calls': 'sse_tool_calls_require_finish_reason_tool_calls',
+    'tool id not string': 'sse_tool_id_not_string',
+    'tool indexes are not contiguous': 'sse_tool_indexes_are_not_contiguous',
+    'tool name not string': 'sse_tool_name_not_string',
+    'tool type not string': 'sse_tool_type_not_string',
+    'tool_call not object': 'sse_tool_call_not_object',
+    'tool_calls delta after finish_reason': 'sse_tool_calls_delta_after_finish_reason',
+    'tool_calls not list': 'sse_tool_calls_not_list',
+    'top-level error': 'sse_top_level_error',
+    'truncated stream: unterminated data event': 'sse_truncated_stream_unterminated_data_event',
+    'unsupported delta field': 'sse_unsupported_delta_field',
+}
+_SAFE_CODES = frozenset(_REJECTION_CODES.values())
+
+
+class CompletionStreamError(ValueError):
+    """Closed, nonsecret classification of a rejected completed stream."""
+
+    def __init__(self, reason: str):
+        known = reason in _REJECTION_CODES
+        self.code = _REJECTION_CODES[reason] if known else "sse_unclassified"
+        super().__init__("sse: " + (reason if known else "invalid completed stream"))
+
+
+class CompletionStreamIdentityError(CompletionStreamError):
     """A completed stream did not prove the selected concrete model."""
 
 
-def _err(msg: str) -> ValueError:
-    return ValueError(f"sse: {msg}")
+def completion_stream_rejection_code(exc: ValueError) -> str:
+    code = exc.code if isinstance(exc, CompletionStreamError) else None
+    return code if isinstance(code, str) and code in _SAFE_CODES else "sse_unclassified"
+
+
+def _err(msg: str) -> CompletionStreamError:
+    return CompletionStreamError(msg)
 
 
 def _parse_sse(raw: bytes) -> list[str]:
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as e:
-        raise _err(f"invalid utf-8: {e}") from e
+        raise _err("invalid utf-8") from e
     # Normalize CRLF and lone CR to LF per SSE spec.
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     events: list[str] = []
@@ -98,7 +177,7 @@ def assemble_chat_completion_sse(
     if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes <= 0:
         raise _err("max_bytes must be positive int")
     if len(raw) > max_bytes:
-        raise _err(f"raw exceeds max_bytes ({len(raw)} > {max_bytes})")
+        raise _err("raw exceeds max_bytes")
 
     events = _parse_sse(bytes(raw))
 
@@ -125,7 +204,7 @@ def assemble_chat_completion_sse(
         try:
             obj = json.loads(ev)
         except json.JSONDecodeError as e:
-            raise _err(f"malformed json: {e}") from e
+            raise _err("malformed json") from e
         if not isinstance(obj, dict):
             raise _err("event not object")
         if "error" in obj and obj["error"] is not None:
@@ -159,7 +238,7 @@ def assemble_chat_completion_sse(
             if not isinstance(model, str):
                 raise _err("model not string")
             if model != expected_model:
-                raise CompletionStreamIdentityError("sse: model mismatch")
+                raise CompletionStreamIdentityError("model mismatch")
             saw_model = True
 
         choices = obj.get("choices")
@@ -247,7 +326,7 @@ def assemble_chat_completion_sse(
     if not saw_any:
         raise _err("no events")
     if not saw_model:
-        raise CompletionStreamIdentityError("sse: no frame carried expected model")
+        raise CompletionStreamIdentityError("no frame carried expected model")
     if finish is None:
         raise _err("missing terminal finish_reason")
     if not saw_done:
@@ -269,16 +348,16 @@ def assemble_chat_completion_sse(
         for idx in sorted(tools):
             slot = tools[idx]
             if not slot["id"]:
-                raise _err(f"missing tool id at index {idx}")
+                raise _err("missing tool id")
             if slot["type"] != "function":
-                raise _err(f"missing tool type at index {idx}")
+                raise _err("missing tool type")
             if not slot["name"]:
-                raise _err(f"missing tool name at index {idx}")
+                raise _err("missing tool name")
             args_str = "".join(slot["args"])
             try:
                 json.loads(args_str)
             except json.JSONDecodeError as e:
-                raise _err(f"invalid tool arguments json: {e}") from e
+                raise _err("invalid tool arguments json") from e
             ordered.append({
                 "id": slot["id"],
                 "type": slot["type"],
@@ -293,7 +372,7 @@ def assemble_chat_completion_sse(
         if finish == "tool_calls":
             raise _err("finish_reason tool_calls with no tool calls")
         if finish not in ("stop", "length", "content_filter"):
-            raise _err(f"invalid finish_reason for content: {finish}")
+            raise _err("invalid finish_reason for content")
         message = {"role": role, "content": content}
 
     if reasoning_parts:

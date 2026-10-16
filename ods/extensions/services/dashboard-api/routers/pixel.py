@@ -898,13 +898,15 @@ async def _retained_chat_stream(request, body, owner):
                     raise HTTPException(status_code=409, detail=issue[1])
                 messages = await _prepare_chat_messages(body, owner)
                 await conversation_storage("assert_available", owner, body.chat_id)
-            except Exception:
+            except Exception as exc:
                 # The attempt ID was committed, but no producer or agent turn
                 # was started. Retain an exact terminal receipt for reloads.
                 text = "Portal did not start this attempt. Restore its connection and send your message again."
                 frame = {"choices": [{"delta": {"content": text}}]}
                 data = f"data: {json.dumps(frame)}\n\n".encode() + _error_event(text) + b"data: [DONE]\n\n"
-                store.reject_before_submission(identity, data)
+                deleted = (isinstance(exc, HTTPException) and exc.status_code == 410
+                           and isinstance(exc.detail, dict) and exc.detail.get("code") == "conversation_deleted")
+                store.reject_before_submission(identity, data, rejected=deleted)
                 raise
             begin_pixel_stream()
             task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))

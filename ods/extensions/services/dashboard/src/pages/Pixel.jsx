@@ -572,6 +572,7 @@ function loadStoredChat(selected) {
       draftImages: draftImageReceipts(stored.draftImages),
       requestId: SAFE_CHAT_ID.test(stored.requestId || '') ? stored.requestId : null,
       interrupted: stored.inFlight === true || stored.interrupted === true,
+      conversationDeleted: stored.conversationDeleted === true,
     }
   } catch {
     return null
@@ -628,6 +629,7 @@ export default function Pixel({ systemStatus = null }) {
   const [persistenceError, setPersistenceError] = useState('')
   const [sending, setSending] = useState(false)
   const [interrupted, setInterrupted] = useState(() => initialChat?.interrupted || false)
+  const [conversationDeleted, setConversationDeleted] = useState(() => initialChat?.conversationDeleted || false)
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState('')
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
@@ -745,7 +747,7 @@ export default function Pixel({ systemStatus = null }) {
   const contextControl=usePortalContext({chatId:chatIdRef.current,
     runtimeIdentity:{model:contextRuntime?.model || activeModel,source:contextRuntime?.source || '',routeFingerprint:contextRuntime?.routeFingerprint},capacity:contextCapacity,
     initialRequestId:compactionRequestRef.current,
-    blocked:sending || modelSwitching || stopping || teams.busy || (interrupted && restoredActivity!=='terminal') || status!=='available',
+    blocked:conversationDeleted || sending || modelSwitching || stopping || teams.busy || (interrupted && restoredActivity!=='terminal') || status!=='available',
     onPendingChange:(id,chatId)=>{
       if(chatId!==chatIdRef.current)throw new Error('The conversation changed before compaction could be saved.')
       historySnapshot(messages)
@@ -1042,6 +1044,7 @@ export default function Pixel({ systemStatus = null }) {
         requestId: requestIdRef.current,
         inFlight: sending,
         interrupted,
+        ...(conversationDeleted ? {conversationDeleted:true} : {}),
         draft: input,
         draftImages: images.receipts,
         messages: storedMessages,
@@ -1073,9 +1076,11 @@ export default function Pixel({ systemStatus = null }) {
       setPersistenceError(error?.code === 'conversation-changed' ? error.message
         : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
     }
-  }, [messages, preview, workspaceOpen, sending, interrupted, input, imageDraftKey])
+  }, [messages, preview, workspaceOpen, sending, interrupted, input, imageDraftKey, conversationDeleted])
 
   const sendMessage = useCallback(async (answerOverride, continuationId = null) => {
+    if (conversationDeleted) return
+    const exactDraft = typeof answerOverride === 'string' ? answerOverride : input
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
     if(compactCommand(trimmed)){await compactConversation();return}
     if(contextControl.busy || contextControl.historyUnknown)return
@@ -1182,6 +1187,17 @@ export default function Pixel({ systemStatus = null }) {
           signal: controller.signal,
         })
         if (!isCurrentTurn()) return { kind: 'obsolete' }
+        if (response.status === 410) {
+          // Only this API admission receipt proves the request never started.
+          // Provider text, SSE errors and unrecognized 410 bodies stay uncertain.
+          let payload
+          try { payload = await response.json() } catch { /* Remain uncertain. */ }
+          if (!isCurrentTurn()) return {kind:'obsolete'}
+          if (payload?.detail?.code === 'conversation_deleted') {
+            requestIdRef.current = null
+            return {kind:'deleted'}
+          }
+        }
         if (response.status === 409) {
           requestIdRef.current = null
           let detail = MODEL_SWITCH_DETAIL
@@ -1344,6 +1360,15 @@ export default function Pixel({ systemStatus = null }) {
     try {
       let attempt = await streamAttempt(chatIdRef.current, conversation, fullHistory)
       if (!isCurrentTurn()) return
+      if (attempt.kind === 'deleted') {
+        setInput(current => current || exactDraft)
+        contextStartRef.current = originalContextStart
+        setMessages(messages)
+        setConversationDeleted(true)
+        setInterrupted(false)
+        updateRestoredActivity('idle')
+        return
+      }
       if (attempt.kind === 'rejected') {
         setInput(current => current || trimmed)
         contextStartRef.current = originalContextStart
@@ -1390,6 +1415,15 @@ export default function Pixel({ systemStatus = null }) {
         // current user message remains the active task in the legacy request.
         attempt = await streamAttempt(retryChatId, [userMessage], fullHistory)
         if (!isCurrentTurn()) return
+        if (attempt.kind === 'deleted') {
+          setInput(current => current || exactDraft)
+          contextStartRef.current = originalContextStart
+          setMessages(messages)
+          setConversationDeleted(true)
+          setInterrupted(false)
+          updateRestoredActivity('idle')
+          return
+        }
         if (attempt.kind === 'rejected') {
           setInput(current => current || trimmed)
           contextStartRef.current = originalContextStart
@@ -1454,7 +1488,7 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory])
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory,conversationDeleted])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1533,7 +1567,7 @@ export default function Pixel({ systemStatus = null }) {
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
-  const startNewChat = useCallback(() => {
+  const startNewChat = useCallback((preserveDraft = false) => {
     if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
     chatIdRef.current = makeChatId()
     images.replace(chatIdRef.current)
@@ -1544,11 +1578,12 @@ export default function Pixel({ systemStatus = null }) {
     setPreview(null)
     setWorkspaceOpen(false)
     setPreviewRefresh(0)
-    setInput('')
+    setInput(preserveDraft === true ? input : '')
+    setConversationDeleted(false)
     setInterrupted(false)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
-  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace])
+  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,input])
 
   useEffect(() => {
     const remove = async event => {
@@ -1615,6 +1650,7 @@ export default function Pixel({ systemStatus = null }) {
       setInput(chat.draft)
       setStopError('')
       setInterrupted(chat.interrupted)
+      setConversationDeleted(chat.conversationDeleted)
       updateRestoredActivity(chat.interrupted ? 'checking' : 'idle')
       // Two interrupted chats have identical flags; the ref-only identity
       // change must still dispose the previous poll and check the new chat.
@@ -1626,7 +1662,7 @@ export default function Pixel({ systemStatus = null }) {
 
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim() && !images.items.length
-  const isDisabled = sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
+  const isDisabled = conversationDeleted || sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
   const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
   const typeIntoComposer = useCallback((character, start, end) => setInput(value => {
     const agent = agentCommand(value)
@@ -1789,6 +1825,12 @@ export default function Pixel({ systemStatus = null }) {
         </p>
       )}
       <div role="region" aria-label="Conversation messages" tabIndex={-1} onScroll={chatScroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
+        {conversationDeleted && <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border px-4 py-3 text-sm">
+          This conversation is being deleted or was deleted. No task was started. Your draft and saved history are preserved.
+          <button type="button" className="ml-2 underline" disabled={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy}
+            onClick={() => startNewChat(true)}>New chat with draft</button>
+          {(images.items.length > 0 || hasImageHistory) && <p>Attachments will not be copied. Reattach the original files in the new chat.</p>}
+        </div>}
         {interrupted && !sending && (
           <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary">
             {restoredActivity === 'active'
