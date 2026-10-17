@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.3.32 - ODS-maintained candidate
+
+- Install the official Node.js 24.21.0 `node` binary in the agent sandbox image,
+  pinned by SHA-256 for amd64 and arm64 in `RELEASE-MANIFEST.json`
+  (`sandboxNodeRuntime`). npm, npx and corepack are not installed.
+- Bootstrap runs the candidate's node offline and refuses another version,
+  architecture or a package manager before any live change.
+- Keep the sandbox networkless with a read-only root and unchanged limits.
+
 ## 4.3.31 - ODS-maintained candidate
 
 - Wait for Operations Broker executable startup before the inventory deadline

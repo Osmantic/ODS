@@ -3,7 +3,7 @@
   "schemaVersion": 1,
   "combinations": [
     {
-      "pixel": "4.3.31",
+      "pixel": "4.3.32",
       "openclaw": "2026.6.33",
       "plugins": {
         "@openclaw/discord": "2026.6.33",
@@ -11,10 +11,10 @@
         "@openclaw/llama-cpp-provider": "2026.6.33"
       },
       "status": "candidate",
-      "qualifiedAt": "2026-10-08",
+      "qualifiedAt": "2026-10-17",
       "evidence": {
-        "sourceCommit": "81b278d3be292dac9226f3f0815bb329a66d74ee",
-        "liveAudit": "ODS-QUALIFICATION-4.3.31.md"
+        "sourceCommit": "b6edcbb37548f18fd34a8f7589d4f77006849eca",
+        "liveAudit": "ODS-QUALIFICATION-4.3.32.md"
       }
     },
     {

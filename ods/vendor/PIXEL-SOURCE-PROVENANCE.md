@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`2ef78e7067211a198748c5499ed5a0261f4b48b6`, and its SHA-256 is
-`cc4c5944a6a09a4f1132abef8811bdabf64384a8e8ee67fb3581f0071e4435b9`.
+`b966b349b6cb2863157f9b2793a90508ead6a08d`, and its SHA-256 is
+`e771d57ba91996590f45a591ad02bdea76d1725ad3f8fc73a4113a0864b6b93d`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -193,3 +193,26 @@ identity, timestamp and message. Only one public root is advertised. Runtime
 and dependency versions, image pins, policies and trust anchors are unchanged.
 Current source/bundle pins above identify this candidate; prior sections remain
 historical evidence. No private source history or signing credentials were used.
+
+## ODS-maintained 4.3.32 sandbox Node.js candidate
+
+This candidate installs the official Node.js 24.21.0 `node` binary in the agent
+sandbox image, pinned per architecture by SHA-256 in `RELEASE-MANIFEST.json`
+(`sandboxNodeRuntime`), without npm, npx or corepack. Bootstrap and native macOS
+preparation prove the image's node offline before any live change. The pins
+were read from the release's `SHASUMS256.txt`; its clearsigned
+`SHASUMS256.txt.asc` verified with the Node.js release key
+`5BE8A3F6C8A5C01D106C0AD820B1A390B168D356`, which the Node.js README lists.
+See `pixel/ODS-QUALIFICATION-4.3.32.md` for the change, its evidence and the
+fleet qualification still required.
+
+The public vendor tree is `38f08da83aa844c1363ef2629fa31e250806f9b9`. Two
+independent empty bare repositories produced byte-identical bundles with the
+alternates-based procedure, synthetic identity, timestamp and message
+documented above (Git 2.53 on Windows, `pack.threads=1`); the same procedure
+first rebuilt the 4.3.31 bundle byte for byte. Only one public root is
+advertised. The sandbox image gains the Node.js runtime; OpenClaw, plugin and
+dependency versions, the base image digest, policies and trust anchors are
+unchanged. Current source/bundle pins above identify this candidate; prior
+sections remain historical evidence. No private source history or signing
+credentials were used.
