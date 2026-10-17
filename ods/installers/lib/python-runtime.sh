@@ -36,9 +36,9 @@ ods_python_has_pip() {
 ods_python_is_env_managed() {
     local py_path="${1:-$(ods_python_cmd_path 2>/dev/null || true)}"
 
-    [[ -n "${CONDA_PREFIX:-}" || -n "${VIRTUAL_ENV:-}" ]] && return 0
+    [[ -n "${CONDA_PREFIX:-}" || -n "${VIRTUAL_ENV:-}" || -n "${PIXI_IN_PROJECT:-}" ]] && return 0
     [[ "$py_path" == *"/conda/"* || "$py_path" == *"/miniconda"* || "$py_path" == *"/anaconda"* ]] && return 0
-    [[ "$py_path" == *"/.venv/"* || "$py_path" == *"/venv/"* ]] && return 0
+    [[ "$py_path" == *"/.venv/"* || "$py_path" == *"/venv/"* || "$py_path" == *"/.pyenv/"* || "$py_path" == *"/poetry/"* ]] && return 0
     return 1
 }
 
