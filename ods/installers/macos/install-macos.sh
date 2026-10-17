@@ -520,6 +520,26 @@ raise SystemExit(0 if actual and hashlib.sha256(actual.encode()).hexdigest() == 
 HERMES_AUTH_VERIFY_PY
 }
 
+# Copy the finished example projects ODS ships (Elf of Doom) into the owner's
+# native Portal workspace, once and only where nothing of that name exists.
+# Runs after native activation; a failure warns and never fails the install.
+_macos_add_example_projects() {
+    local install_root status
+    # The native workspace path is built from the resolved install directory,
+    # and the helper refuses any symlinked path component.
+    if install_root="$(cd "$INSTALL_DIR" && pwd -P)" \
+        && status="$(/usr/bin/python3 -B "$INSTALL_DIR/installers/lib/pixel-example-projects.py" \
+            --workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel" 2>>"$ODS_LOG_FILE")"; then
+        printf 'Portal example projects: %s\n' "$status" >>"$ODS_LOG_FILE"
+        if [[ "$status" == *'"elf-of-doom":"added"'* ]]; then
+            ai_ok "Portal has a game to try: ask Portal to \"Open the existing Playground/elf-of-doom/index.html preview.\" to play Elf of Doom."
+        fi
+    else
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project. Nothing in your Portal workspace was replaced. The next Portal update tries again; for help, ask on Discord: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)"
+    fi
+    return 0
+}
+
 
 _macos_bootstrap_upgrade_pid_is_owned() {
     local pid="$1"
@@ -3019,6 +3039,9 @@ for service in (data.get("services") or {}).values():
 
     # Save compose flags for ods-macos.sh
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
+    if $ENABLE_PIXEL; then
+        _macos_add_example_projects
+    fi
 
     # ── Launch background model upgrade ──────────────────────────────────
     if [[ "$_BOOTSTRAP_ACTIVE" == "true" ]]; then

@@ -11,7 +11,7 @@
 #           DOCKER_COMPOSE_CMD, COMPOSE_FLAGS, BGRN, RED, AMB, NC,
 #           show_phase(), bootline(), signal(), ai(), ai_ok(), ai_bad(),
 #           ai_warn(), log(), spin_task(), ui_status_line()
-# Provides: Running Docker Compose stack
+# Provides: Running Docker Compose stack, ODS_EXAMPLE_PROJECT_ADDED (Portal example added)
 #
 # Modder notes:
 #   Change model download logic or compose launch flags here.
@@ -447,6 +447,28 @@ _phase11_apply_hermes_template() {
     else
         warn "Hermes template substitution didn't take effect — Hermes may 404 every chat completion. Hand-edit $_hermes_tpl after install if Hermes prompts hang."
     fi
+}
+
+# Copy the finished example projects ODS ships (Elf of Doom) into the owner's
+# Portal workspace, once and only where nothing of that name exists. Runs after
+# Portal is verified; a failure warns and never fails the working install.
+_phase11_add_example_projects() {
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    local owner home status
+    if owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" \
+        && home="$(ods_pixel_owner_home "$owner")" \
+        && status="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
+            "${INSTALL_DIR:?}/installers/lib/pixel-example-projects.py" \
+            --workspace "$home/.openclaw/workspace-pixel" 2>>"$LOG_FILE")"; then
+        log "Portal example projects: $status"
+        if [[ "$status" == *'"elf-of-doom":"added"'* ]]; then
+            ODS_EXAMPLE_PROJECT_ADDED=true
+            ai_ok "Portal has a game to try: ask Portal to \"Open the existing Playground/elf-of-doom/index.html preview.\" to play Elf of Doom."
+        fi
+    else
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project. Nothing in your Portal workspace was replaced. Rerun the installer to try again, or ask on Discord: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)"
+    fi
+    return 0
 }
 
 ods_progress 75 "services" "Starting services"
@@ -1473,6 +1495,7 @@ MODELS_INI_EOF
         _phase11_apply_hermes_template "${_phase11_hermes_template_route[@]}"
     fi
     _phase11_write_compose_launch_record
+    _phase11_add_example_projects
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 &
         compose_pid=$!

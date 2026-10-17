@@ -69,6 +69,27 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'manual-review-required'}
 
 
+def add_example_projects(*, preparation):
+    """Add the shipped example projects to the live owner workspace once.
+
+    Like the profile repair, this owner-side step runs after the proved update
+    and outside the protected activation. It only creates an absent
+    Playground/<name>; failure changes no owner content and is reported.
+    """
+    try:
+        document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')
+        agents = document['agents']['list']
+        if len(agents) != 1 or agents[0].get('id') != 'pixel':
+            raise ValueError('native-portal-profile-agent-required')
+        spec = importlib.util.spec_from_file_location('native_update_example_projects',
+            HERE.parents[1] / 'lib/pixel-example-projects.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.add_projects(Path(agents[0]['workspace']))
+    except (ValueError, OSError, KeyError, TypeError):
+        return {'status': 'manual-review-required'}
+
+
 def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
@@ -120,6 +141,7 @@ def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
+        outcome['exampleProjects'] = add_example_projects(preparation=preparation)
         return outcome
     finally:
         for key, value in saved.items():

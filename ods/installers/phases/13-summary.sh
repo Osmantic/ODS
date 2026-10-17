@@ -9,7 +9,7 @@
 # Expects: DRY_RUN, INSTALL_DIR, SCRIPT_DIR, LOG_FILE, INTERACTIVE,
 #           TIER, TIER_NAME, VERSION, GPU_BACKEND, LLM_MODEL, OFFLINE_MODE,
 #           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_QDRANT, ENABLE_HERMES,
-#           ENABLE_PIXEL_RUNTIME, PIXEL_AGENT_MODE,
+#           ENABLE_PIXEL_RUNTIME, PIXEL_AGENT_MODE, ODS_EXAMPLE_PROJECT_ADDED (:-false),
 #           COMPOSE_FLAGS, SUMMARY_JSON_FILE, PREFLIGHT_REPORT_FILE,
 #           BGRN, GRN, AMB, WHT, NC, DASHBOARD_PORT (:-3001),
 #           CAP_HARDWARE_CLASS_ID (:-unknown), CAP_HARDWARE_CLASS_LABEL (:-Unknown),
@@ -206,6 +206,7 @@ else
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
 fi
 [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Portal:        http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent)"
+[[ "${ODS_EXAMPLE_PROJECT_ADDED:-false}" == "true" ]] && echo "  • Elf of Doom:   ask Portal: Open the existing Playground/elf-of-doom/index.html preview."
 [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes: http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}"

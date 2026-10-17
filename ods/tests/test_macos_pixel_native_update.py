@@ -114,6 +114,8 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
                 expected += ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
                 assert result['portalIdentityMigration']['status'] == 'manual-review-required'
+                # The fixture preparation has no candidate profile to name a workspace.
+                assert result['exampleProjects'] == {'status': 'manual-review-required'}
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected
@@ -165,3 +167,27 @@ def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypat
 def test_native_update_does_not_claim_profile_migration_without_candidate(tmp_path):
     assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
         'status': 'manual-review-required'}
+
+
+@pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0, reason='the copy runs as a non-root POSIX workspace owner')
+def test_native_update_adds_example_projects_to_the_named_owner_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path.resolve() / 'owner-workspace'
+    workspace.mkdir(mode=0o700)
+    workspace.chmod(0o700)
+    preparation = tmp_path.resolve() / 'preparation'
+    document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
+    paths = []
+    def private_json(path):
+        paths.append(path)
+        return document
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=private_json))
+    assert module.add_example_projects(preparation=preparation) == {'elf-of-doom': 'added'}
+    assert paths == [preparation / 'candidate/openclaw.json']
+    assert (workspace / 'Playground/elf-of-doom/index.html').is_file()
+    assert module.add_example_projects(preparation=preparation) == {'elf-of-doom': 'present'}
+    document['agents']['list'].append({'id': 'other', 'workspace': str(workspace)})
+    assert module.add_example_projects(preparation=preparation) == {'status': 'manual-review-required'}
+
+
+def test_native_update_does_not_claim_example_projects_without_candidate(tmp_path):
+    assert module.add_example_projects(preparation=tmp_path) == {'status': 'manual-review-required'}

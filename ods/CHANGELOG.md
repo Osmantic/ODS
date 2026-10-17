@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Every install with Portal now gets a game to play: Elf of Doom, a small
+  browser dungeon crawler that Portal wrote in ODS from natural-language
+  prompts. The installer copies it to `Playground/elf-of-doom` in Portal's
+  workspace, once and only when nothing of that name exists, so an owner's
+  folder is never replaced, merged into or deleted. Ask Portal to "Open the
+  existing Playground/elf-of-doom/index.html preview." to play it. Existing
+  Linux and Windows (WSL2) installs get it on their next installer run; Macs
+  get it on a new install or the next native Portal update.
+
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple
   GPU reporters instead of choosing NVIDIA tooling merely because it is

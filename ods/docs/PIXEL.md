@@ -778,12 +778,18 @@ act as a capability gate:
   Every creative artifact follows the same model-authored workspace path.
   Open-ended demos, games, task boards, animated SVGs, voxel scenes, named
   designs, and arbitrary sites must be written by the active model before the
-  preview adapter can publish them. ODS contains no creative templates or
-  generated starter bytes. The adapter accepts only the existing relative
-  directory, so safety enforcement, static validation, snapshot isolation, and
-  HTTP readback cannot be confused with authorship. Pixel may author either a
-  self-contained `index.html` or a richer set of local files; ODS imposes no
-  creative-size ceiling and publishes only the exact completed snapshot.
+  preview adapter can publish them. The adapter never supplies or fabricates
+  creative bytes, and new creative work is always written by the active model.
+  ODS ships one finished example project, Elf of Doom, which Portal wrote in
+  ODS from natural-language prompts. The installers copy it once to
+  `Playground/elf-of-doom`, and only when nothing of that name exists; after
+  that it is ordinary owner content, published through the same path as any
+  other project. It is not offered as a starter for new work. The adapter
+  accepts only the existing relative directory, so safety enforcement, static
+  validation, snapshot isolation, and HTTP readback cannot be confused with
+  authorship. Pixel may author either a self-contained `index.html` or a
+  richer set of local files; ODS imposes no creative-size ceiling and publishes
+  only the exact completed snapshot.
 
 The status tools read only `/run/ods-pixel/ods-status.json`. The plugin does not
 receive the Docker socket, Dashboard API key, Open WebUI key, host shell, or ODS

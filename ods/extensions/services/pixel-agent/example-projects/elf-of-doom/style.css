@@ -1,0 +1,201 @@
+/* Elf of Doom — dark dungeon styles */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; background: #050303; overflow: hidden; font-family: "Trebuchet MS", "Segoe UI", Verdana, sans-serif; -webkit-user-select: none; user-select: none; }
+
+#game-wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at 50% 120%, #2a0a06 0%, #120403 45%, #040101 100%); }
+#game { display: block; width: 100%; height: 100%; object-fit: contain; cursor: none; touch-action: none; }
+
+.hidden { display: none !important; }
+
+/* ---------- HUD ---------- */
+#hud { position: absolute; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; align-items: flex-start; padding: 12px 16px; pointer-events: none; gap: 10px; }
+.hud-left { display: flex; flex-direction: column; gap: 8px; }
+.hero-badge { display: flex; gap: 10px; align-items: center; background: linear-gradient(180deg, rgba(24,12,8,.8), rgba(10,4,3,.85)); border: 1px solid rgba(200,150,70,.4); border-radius: 6px; padding: 8px 14px 8px 8px; box-shadow: 0 4px 14px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,200,120,.12); }
+.hero-emoji { font-size: 34px; line-height: 1; filter: drop-shadow(0 2px 2px rgba(0,0,0,.8)); }
+.hero-info { min-width: 190px; }
+.hero-name { color: #e8c27a; font-weight: bold; font-size: 13px; letter-spacing: .5px; text-shadow: 0 1px 2px #000; margin-bottom: 4px; font-variant: small-caps; }
+.bar { position: relative; height: 14px; border-radius: 4px; background: rgba(0,0,0,.75); border: 1px solid rgba(180,140,80,.35); overflow: hidden; margin-bottom: 5px; box-shadow: inset 0 2px 6px rgba(0,0,0,.8); }
+.bar > div { height: 100%; transition: width .18s ease; }
+#hp-fill { width: 100%; background: linear-gradient(180deg, #c9342a, #6e0f0f); box-shadow: 0 0 8px rgba(200,40,20,.5) inset; }
+#xp-fill { width: 0%; background: linear-gradient(180deg, #d9a832, #7a5208); }
+.bar > span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: bold; color: #fff; text-shadow: 0 1px 2px #000; letter-spacing: .5px; }
+.xp-bar { height: 10px; }
+.xp-bar > span { font-size: 9px; }
+
+#potions-row { display: flex; gap: 6px; }
+.pot-slot { pointer-events: auto; position: relative; width: 44px; height: 44px; font-size: 20px; background: linear-gradient(180deg, rgba(28,15,9,.85), rgba(10,4,3,.9)); border: 1px solid rgba(200,150,70,.4); border-radius: 6px; color: #fff; cursor: pointer; box-shadow: 0 3px 10px rgba(0,0,0,.6); }
+.pot-slot span { position: absolute; right: 3px; bottom: 1px; font-size: 11px; font-weight: bold; color: #ffd76b; text-shadow: 0 1px 2px #000; }
+.pot-slot:disabled { opacity: .35; cursor: default; }
+
+.hud-center { text-align: center; padding-top: 6px; }
+#zone-label { color: #e8c27a; font-size: 19px; font-weight: bold; letter-spacing: 3px; text-transform: uppercase; text-shadow: 0 0 14px rgba(200,80,10,.6), 0 2px 3px #000; font-variant: small-caps; }
+#wave-label { color: #cf9a86; font-size: 12px; letter-spacing: 1px; text-shadow: 0 1px 2px #000; margin-top: 3px; }
+
+.hud-right { display: flex; gap: 8px; align-items: center; }
+.stat { background: linear-gradient(180deg, rgba(24,12,8,.8), rgba(10,4,3,.85)); border: 1px solid rgba(200,150,70,.4); border-radius: 6px; padding: 7px 12px; color: #ecd3a4; font-weight: bold; font-size: 15px; display: flex; gap: 6px; align-items: center; text-shadow: 0 1px 2px #000; box-shadow: 0 3px 10px rgba(0,0,0,.6); }
+.stat-ico { font-size: 16px; }
+.icon-btn { pointer-events: auto; background: rgba(10,5,4,.8); border: 1px solid rgba(200,150,70,.4); border-radius: 6px; padding: 6px 10px; font-size: 16px; cursor: pointer; color: #ecd3a4; }
+
+/* skill cooldowns */
+#skills-bar { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 10px; pointer-events: none; }
+.skill { position: relative; width: 56px; height: 56px; overflow: hidden; background: linear-gradient(180deg, rgba(28,15,9,.85), rgba(8,3,2,.9)); border: 1px solid rgba(200,150,70,.45); border-radius: 8px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,.7); }
+.sk-ico { display: block; font-size: 22px; margin-top: 6px; }
+.sk-key { display: block; font-size: 9px; color: #cfa86a; letter-spacing: 1px; }
+.sk-cd { position: absolute; left: 0; bottom: 0; width: 100%; height: 0%; background: rgba(0,0,0,.72); }
+.skill.ready { border-color: rgba(255,200,90,.8); box-shadow: 0 0 10px rgba(255,150,40,.35), 0 4px 12px rgba(0,0,0,.7); }
+
+/* Boss bar */
+#boss-wrap { position: absolute; top: 88px; left: 50%; transform: translateX(-50%); width: min(560px, 80%); text-align: center; pointer-events: none; }
+#boss-name { color: #e8735a; font-weight: bold; letter-spacing: 3px; text-transform: uppercase; font-size: 14px; text-shadow: 0 0 12px rgba(200,30,10,.9), 0 2px 2px #000; margin-bottom: 4px; font-variant: small-caps; }
+.boss-bar { height: 16px; border-color: rgba(200,80,50,.5); }
+#boss-fill { width: 100%; background: linear-gradient(180deg, #a83226, #4e0808); box-shadow: 0 0 10px rgba(255,40,20,.5) inset; }
+
+/* vignette */
+#vignette { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(150,0,0,.5) 100%); transition: opacity .25s; }
+#vignette.hurt { opacity: 1; }
+#vignette.low { opacity: .8; animation: pulse 1.1s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* ---------- Screens ---------- */
+/* overflow-y:auto is load-bearing, not decoration. .screen used to be a plain centring flex
+   box, so the moment the card grew taller than the viewport - the controls list plus the footer
+   link pushed it well past the short/laptop heights - flex centring overflowed it symmetrically
+   and the excess was clipped off both ends: the archer icon chopped at the top and "Try ODS"
+   scrolled out of existence at the bottom. Centring a too-tall child is not a safe operation, so
+   the container scrolls and the card keeps its full height. */
+.screen { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow-y: auto; overscroll-behavior: contain; background: radial-gradient(ellipse at center, rgba(14,4,3,.78) 0%, rgba(3,1,1,.95) 80%); z-index: 10; }
+/* Short windows (laptop with browser chrome, half-height splits) are the case that kept clipping
+   this screen. overflow-y: auto made the card scrollable, which is not the same as fitting: the
+   Try ODS link sat below the fold and only appeared once you thought to scroll, and a scrollable
+   centred flex item also clips its own top - that was the chopped crest. The card now has no fixed
+   vertical ambition at all: every decorative margin and font step scales down with viewport
+   height, so the whole thing shrinks to fit and the link is on screen without scrolling. */
+.title-card { text-align: center; max-width: 660px; padding: clamp(8px, 2vh, 24px) 24px; margin: auto; flex: none; }
+/* The crest used to inherit .ring's fixed 64px glyph size while being floated 12px upward and
+   given a glow halo that hangs below its box. In a short window the title card scrolls, and that
+   overhang is exactly what got clipped at the top - the icon arrived chopped. It now sizes itself
+   to the viewport height and its shadow is inset, so nothing paints outside the box and the card
+   fits without needing the overflow to rescue it. */
+.title-crest { width: clamp(48px, 9vh, 86px); height: clamp(48px, 9vh, 86px); margin: 0 auto 4px;
+  font-size: clamp(32px, 6.2vh, 60px); line-height: 1; display: flex; align-items: center; justify-content: center;
+  filter: drop-shadow(0 0 14px rgba(255,170,40,.75)); }
+.title-crest::after { display: none; }
+.title-crest svg { width: 100%; height: 100%; display: block; }
+/* "Try ODS" at the very bottom of the title screen. .screen is a centring flex container, so
+   margin-top:auto pins the footer to the bottom of the card column regardless of how tall the
+   controls list above it grows. */
+/* single source of truth for the footer gap: see the later rule, which is the live one */
+.ods-link {
+  pointer-events: auto;
+  display: inline-block;
+  color: #d9b070; font-size: 12.5px; letter-spacing: 2.5px;
+  text-decoration: none; font-variant: small-caps;
+  padding: 5px 14px; border: 1px solid rgba(200,150,70,.35); border-radius: 999px;
+  background: rgba(20,9,4,.55); text-shadow: 0 1px 3px #000;
+  transition: color .12s, border-color .12s, box-shadow .12s, background .12s;
+}
+.ods-link:hover, .ods-link:focus-visible {
+  color: #f7e2b0; border-color: rgba(220,170,90,.75); background: rgba(60,32,10,.7);
+  box-shadow: 0 0 18px rgba(230,170,60,.35); outline: none;
+}
+.ring { font-size: 64px; animation: floaty 3s ease-in-out infinite; filter: drop-shadow(0 0 22px rgba(255,170,40,.8)); position: relative; display: inline-block; }
+.ring::after {
+  content: ""; position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  width: 96px; height: 14px; border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(255,170,40,.4) 0%, rgba(255,140,20,0) 70%);
+  animation: ember-glow 3s ease-in-out infinite;
+}
+@keyframes ember-glow { 0%, 100% { opacity: .45; width: 80px; } 50% { opacity: 1; width: 112px; } }
+@keyframes floaty { 50% { transform: translateY(-12px) rotate(-8deg); } }
+h1 {
+  /* vh-bounded as well as vw-bounded. With only the vw term, a short-and-wide window kept the
+     title at full height and pushed the Try ODS link off the bottom of the screen. */
+  font-size: min(clamp(28px, 5.2vw, 54px), 7.2vh); letter-spacing: 4px; text-transform: uppercase;
+  background: linear-gradient(180deg, #ffeaa6 0%, #dfa93e 48%, #9c5f14 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  filter: drop-shadow(0 0 26px rgba(200,80,10,.7)) drop-shadow(0 3px 5px rgba(0,0,0,.9));
+  margin: 8px 0 4px; font-variant: small-caps;
+  animation: title-in .85s cubic-bezier(.2,.9,.3,1.12) both;
+}
+@keyframes title-in { from { opacity: 0; transform: translateY(22px) scale(.92); letter-spacing: 16px; } to { opacity: 1; transform: none; letter-spacing: 4px; } }
+.subtitle { color: #b3805a; font-style: italic; letter-spacing: 2px; margin-bottom: clamp(6px, 1.6vh, 18px); }
+.lore { color: #b09a82; font-size: clamp(11.5px, 1.9vh, 14px); line-height: 1.45; margin-bottom: clamp(8px, 2.6vh, 26px); }
+.lore b { color: #d9b070; font-weight: 600; }
+.big-btn { pointer-events: auto; font-family: inherit; font-size: clamp(15px, 2.7vh, 19px); font-weight: bold; letter-spacing: 2px; color: #f5e3c0; background: linear-gradient(180deg, #7a4a18, #43240a); border: 1px solid #b3803a; border-radius: 6px; padding: clamp(9px, 1.9vh, 14px) clamp(22px, 4vw, 34px); cursor: pointer; text-shadow: 0 1px 3px #000; box-shadow: 0 6px 0 #241004, 0 12px 26px rgba(0,0,0,.75), inset 0 1px 0 rgba(255,210,140,.3); transition: transform .08s, box-shadow .08s, filter .1s; font-variant: small-caps; position: relative; overflow: hidden; }
+.big-btn::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -60%; width: 40%;
+  background: linear-gradient(100deg, transparent, rgba(255,235,180,.28), transparent);
+  transform: skewX(-18deg); animation: btn-sheen 4.5s ease-in-out infinite;
+}
+@keyframes btn-sheen { 0%, 78% { left: -60%; } 88% { left: 120%; } 100% { left: 120%; } }
+.big-btn:hover { filter: brightness(1.18); box-shadow: 0 6px 0 #241004, 0 12px 28px rgba(0,0,0,.75), 0 0 22px rgba(223,169,62,.35), inset 0 1px 0 rgba(255,210,140,.3); }
+.big-btn:active { transform: translateY(4px); box-shadow: 0 2px 0 #241004; }
+.controls-hint { margin-top: clamp(7px, 2vh, 18px); color: #7d6a58; font-size: clamp(10px, 1.6vh, 12px); line-height: 1.5; }
+.controls-hint b { color: #d9b070; }
+.controls-hint h3 { margin: 0 0 6px; font-size: 13px; letter-spacing: 1.5px; color: #b98f4e; font-variant: small-caps; }
+.controls-list { list-style: none; margin: 0; padding: 0; text-align: left; display: inline-block; }
+.controls-list li { position: relative; padding-left: 16px; }
+.controls-list li::before { content: "\2022"; position: absolute; left: 2px; color: #8a6a3a; }
+.controls-objective { margin-top: clamp(5px, 1.2vh, 10px); padding-top: clamp(5px, 1.2vh, 10px); border-top: 1px solid rgba(160,120,60,.25); font-size: clamp(9.5px, 1.5vh, 11.5px); }
+/* Was a fixed 22px of air above the link, which is exactly the slack that pushed it past the
+   bottom edge on a short window. It now takes what the rest of the card gives it. */
+.title-footer { margin-top: clamp(7px, 2vh, 22px); }
+
+.panel { text-align: center; background: linear-gradient(180deg, rgba(26,13,8,.96), rgba(10,4,3,.98)); border: 1px solid rgba(200,150,70,.45); border-radius: 10px; padding: 28px 34px; max-width: 700px; width: min(92vw, 700px); box-shadow: 0 0 70px rgba(200,60,10,.22), 0 20px 60px rgba(0,0,0,.8), inset 0 1px 0 rgba(255,200,120,.12); max-height: 92vh; overflow: auto; }
+.panel h2 { color: #dfa93e; letter-spacing: 3px; margin-bottom: 6px; text-shadow: 0 0 20px rgba(200,90,10,.6), 0 2px 3px #000; font-variant: small-caps; }
+.panel-sub { color: #b98f66; font-size: 14px; margin-bottom: 18px; }
+/* Pause resume hint: the player usually got here by clicking away, so the panel has to say out
+   loud which key gets them back in. Slightly brighter than a normal sub-line and bold keys. */
+.pause-hint { color: #d9b27c; font-size: 15px; margin: -6px 0 16px; }
+.pause-hint b { color: #ffd76b; font-weight: bold; letter-spacing: .3px; }
+.gold-inline { color: #ffd76b; }
+
+.boon-list, .shop-list { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-bottom: 20px; }
+.boon, .shop-item { pointer-events: auto; position: relative; width: 194px; background: linear-gradient(180deg, rgba(46,24,10,.95), rgba(20,9,4,.98)); border: 1px solid rgba(200,150,70,.4); border-radius: 8px; padding: 14px 12px; cursor: pointer; color: #ecd3a4; transition: transform .1s, border-color .1s, box-shadow .1s; text-align: center; font-family: inherit; box-shadow: 0 4px 14px rgba(0,0,0,.6); }
+/* number badge on a boon card: matches the 1/2/3 keys that pick it */
+.boon .keyhint { position: absolute; top: 6px; left: 8px; min-width: 18px; height: 18px; line-height: 17px; border-radius: 4px; background: rgba(200,150,70,.18); border: 1px solid rgba(200,150,70,.5); color: #d9b070; font-size: 11px; font-weight: bold; text-align: center; }
+.boon:hover, .shop-item:hover { transform: translateY(-3px); border-color: #dfa93e; box-shadow: 0 8px 20px rgba(0,0,0,.7), 0 0 16px rgba(200,120,20,.25); }
+.boon .ico, .shop-item .ico { font-size: 34px; display: block; margin-bottom: 6px; filter: drop-shadow(0 2px 4px rgba(0,0,0,.8)); }
+.boon .nm, .shop-item .nm { font-weight: bold; color: #e8c27a; font-size: 14px; margin-bottom: 4px; font-variant: small-caps; letter-spacing: .5px; }
+.boon .ds, .shop-item .ds { font-size: 11.5px; color: #a98a68; line-height: 1.45; }
+.shop-item .price { margin-top: 8px; font-weight: bold; color: #ffd76b; font-size: 13px; }
+.shop-item.disabled { opacity: .4; cursor: not-allowed; }
+
+.over-stats { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 22px; }
+.over-stats .chip { background: rgba(200,140,50,.12); border: 1px solid rgba(200,150,70,.4); border-radius: 6px; padding: 8px 14px; color: #ecd3a4; font-size: 13px; font-weight: bold; }
+
+@media (max-width: 720px) {
+  .hero-info { min-width: 130px; }
+  #zone-label { font-size: 14px; }
+  .stat { padding: 5px 8px; font-size: 12px; }
+  .skill { width: 46px; height: 46px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ring, .ring::after { animation: none; }
+  #vignette.low { animation: none; }
+  h1, #hud, .big-btn::before { animation: none; }
+}
+/* ---------- touch controls ---------- */
+#touch-ui { position: fixed; inset: 0; pointer-events: none; z-index: 60; }
+#stick-base {
+  position: absolute; left: 22px; bottom: 22px; width: 120px; height: 120px;
+  border-radius: 50%; background: rgba(20,12,10,.45); border: 2px solid rgba(255,206,84,.35);
+  pointer-events: auto; touch-action: none;
+}
+#stick-knob {
+  position: absolute; left: 42px; top: 42px; width: 36px; height: 36px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffce54, #7a4d10); border: 2px solid rgba(10,4,6,.8);
+}
+.t-btn {
+  position: absolute; right: 26px; bottom: 30px; width: 74px; height: 74px; border-radius: 50%;
+  font-size: 28px; background: rgba(40,20,14,.6); border: 2px solid rgba(255,206,84,.5); color: #fff;
+  pointer-events: auto; touch-action: none; -webkit-user-select: none; user-select: none;
+}
+.t-btn.small { width: 56px; height: 56px; font-size: 20px; }
+#t-dodge { right: 112px; bottom: 22px; }
+#t-ring { right: 118px; bottom: 100px; }
+
+/* arrow counter */
+#arrow-label { color: #dfe9ff; font-size: 13px; letter-spacing: 1px; text-shadow: 0 1px 2px #000; margin-top: 3px; font-weight: bold; }
+#arrow-label.low-ammo { color: #ff8a5e; animation: ammoPulse 1s infinite; }
+@keyframes ammoPulse { 50% { opacity: .45; } }
