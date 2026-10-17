@@ -1011,10 +1011,56 @@ function deliveryVerification(completion, verification) {
 }
 
 function applyVerificationToCompletion(completion, verification) {
-  const result=baseApplyVerificationToCompletion(completion,verification);
+  let result=baseApplyVerificationToCompletion(completion,verification);
+  const choice=result?.choices?.[0];
+  if (choice?.finish_reason === 'stop' && verification.artifacts?.length) {
+    const content=artifactDownloadDisplayText(choice.message?.content,verification.artifacts,verification.preview?.url);
+    if (content !== choice.message?.content) result={...result,choices:[
+      {...choice,message:{...choice.message,content}},...result.choices.slice(1),
+    ]};
+  }
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
+}
+
+function artifactDownloadDisplayText(content, artifacts, previewUrl) {
+  if (typeof content !== 'string' || !validDeliveredArtifacts(artifacts) || !artifacts.length) return content;
+  // A document receipt binds bytes, not a public URL. Replace only explicit
+  // download claims naming a delivered file; retain source links, website
+  // receipts, task prose and quoted/code examples. Never invent a replacement
+  // URL or choose one of several snapshots with the same basename.
+  const names=new Map();
+  for (const {file} of artifacts) names.set(file.path,(names.get(file.path)??0)+1);
+  let fence;
+  return content.split('\n').map(line=>{
+    const marker=/^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (marker) {
+      if (!fence) fence=marker[1];
+      else if (marker[1][0]===fence[0] && marker[1].length>=fence.length && !marker[2].trim()) fence=undefined;
+      return line;
+    }
+    if (fence || /^(?: {4}|\t|\s*>)/.test(line) || line.includes('`')) return line;
+    const downloadPrefix=/^\s*(?:[-*]\s+)?(?:\*\*)?(?:Download(?: (?:link|file))?|File download)(?:\*\*)?\s*:\s*/i.exec(line);
+    return line.replace(/\[([^\]\r\n]{1,256})\]\((https?:\/\/[^\s<>()]{1,4096})\)|<(https?:\/\/[^\s<>]{1,4096})>|\bhttps?:\/\/[^\s<>]{1,4096}(?=\s|[<>]|$)/gi,(match,label,markdownUrl,autoUrl,offset)=>{
+      const downloadLabel=typeof label==='string' && /^download\b/i.test(label);
+      const afterPrefix=downloadPrefix && !line.slice(downloadPrefix[0].length,offset).trim();
+      if ((!afterPrefix && !downloadLabel) || line[offset-1]==='!') return match;
+      const rawUrl=markdownUrl??autoUrl??match;
+      const url=rawUrl.replace(/[.,;:!?]+$/,'');
+      if (url===previewUrl) return match;
+      let basename;
+      try { basename=decodeURIComponent(new URL(url).pathname.split('/').at(-1)); } catch { return match; }
+      const namedLabel=typeof label==='string' ? label.replace(/^download(?:\s+(?:file|link))?\s*[:–-]?\s*/i,'').trim() : undefined;
+      const bound=[...new Set([basename,namedLabel].filter(name=>names.has(name)))];
+      if (!bound.length) return match;
+      if (namedLabel && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.[A-Za-z0-9]{1,10}$/.test(namedLabel) && !names.has(namedLabel)) {
+        return 'This download link does not match the verified file receipt. Use the Download buttons in Delivered files.';
+      }
+      if (bound.length!==1 || names.get(bound[0])!==1) return 'Use the verified Download buttons in Delivered files (the filename alone is ambiguous).';
+      return `Use the Download button in Delivered files for ${bound[0]}.`;
+    });
+  }).join('\n');
 }
 
 function baseApplyVerificationToCompletion(completion, verification) {
