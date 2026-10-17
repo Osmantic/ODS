@@ -7944,6 +7944,60 @@ def _save_install_operation(value):
             os.unlink(temporary)
 
 
+def _observe_install_container(service_id):
+    """Return 'running', 'stopped', or None when the outcome is not provable."""
+    ext_dir = _find_ext_dir(service_id)
+    manifest = _read_manifest(ext_dir) if ext_dir is not None else None
+    service_def = manifest.get('service', {}) if isinstance(manifest, dict) else {}
+    if not isinstance(service_def, dict):
+        service_def = {}
+    container = service_def.get('container_name') or f'ods-{service_id}'
+    try:
+        if not _container_exists(container):
+            return 'stopped'
+        result = subprocess.run(
+            ['docker', 'inspect', '--type', 'container', '--format',
+             '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}',
+             container],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        logger.warning('Could not observe %s while reconciling an install', container)
+        return None
+    if result.returncode != 0:
+        return None
+    status, _, health = result.stdout.strip().partition('|')
+    if status == 'running' and health in {'healthy', 'none'}:
+        return 'running'
+    if status in {'exited', 'created', 'dead'}:
+        return 'stopped'
+    return None
+
+
+def _reconcile_install_operation(service_id, operation_id):
+    """Resolve an orphaned non-terminal receipt from observed container state.
+
+    Returns the terminal state written, or None when the receipt must keep
+    blocking (live worker, or container state cannot be proven).
+    """
+    with _install_operation_guard:
+        if (service_id, operation_id) in _install_operation_live:
+            return None
+    observed = _observe_install_container(service_id)
+    if observed is None:
+        return None
+    path = _install_operation_path(service_id, operation_id)
+    value = json.loads(path.read_text(encoding='utf-8'))
+    state = 'succeeded' if observed == 'running' else 'failed'
+    value = {**value, 'state': state, 'phase': 'reconciled', 'updated_at': _iso_now(),
+             'exit_verified': False,
+             'reconciliation': ('reconciled after interruption: container running'
+                                if state == 'succeeded' else
+                                'interrupted: container absent or not running')}
+    _save_install_operation(value)
+    return state
+
+
 def _record_install_operation_progress(service_id, status, phase_label, exit_verified):
     value = getattr(_install_operation_context, 'value', None)
     if value is None or value['service_id'] != service_id:
@@ -12733,9 +12787,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             for saved in directory.glob('*.json'):
                 older = _read_install_operation(service_id, saved.stem)
                 if older and older['state'] not in {'succeeded', 'failed'}:
+                    # An orphaned receipt (no live worker) is resolved from
+                    # the container's observed state; a live worker or an
+                    # unprovable state keeps blocking.
+                    if _reconcile_install_operation(service_id, saved.stem):
+                        continue
                     lock.release()
                     json_response(self, 409, {'error': 'Previous installation requires reconciliation',
-                                             'operation_id': saved.stem})
+                                             'operation_id': saved.stem,
+                                             'receipt': str(saved),
+                                             'resolution': ('Wait for the running install to finish, or '
+                                                            'confirm the container state and delete this '
+                                                            'receipt file to allow a new install')})
                     return
             operation = {'schema_version': 1, 'service_id': service_id,
                          'operation_id': operation_id, 'run_setup_hook': run_setup_hook,
@@ -12934,6 +12997,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                 logger.exception("Install failed for %s", service_id)
                 _write_progress(service_id, "error", "Installation failed",
                                 error=str(exc)[:500])
+            except Exception as exc:
+                # Never leave the receipt non-terminal; then let it crash.
+                _write_progress(service_id, "error", "Installation failed",
+                                error=f"unexpected error: {exc}"[:500])
+                raise
             finally:
                 _install_operation_context.value = None
                 with _install_operation_guard:
@@ -12945,6 +13013,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception:
             with _install_operation_guard:
                 _install_operation_live.discard((service_id, operation_id))
+            _save_install_operation({**operation, 'state': 'failed', 'phase': 'error',
+                                     'updated_at': _iso_now()})
             lock.release()
             raise
         # A disconnected observer must not cancel or replay an accepted worker.

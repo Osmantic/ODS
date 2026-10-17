@@ -10412,8 +10412,9 @@ def test_install_result_is_not_terminal_until_worker_exits(tmp_path, monkeypatch
     assert _mod._read_install_operation(*identity)['state'] == terminal_state
 
 
-def test_orphaned_install_is_uncertain_and_blocks_new_attempt(install_operation_host):
+def test_orphaned_install_is_uncertain_and_blocks_new_attempt(install_operation_host, monkeypatch):
     invoke, responses, launches = install_operation_host
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: None, raising=False)
     _mod._save_install_operation({'service_id': 'operation-test', 'operation_id': 'c' * 32,
         'run_setup_hook': False, 'state': 'running'})
     invoke('c' * 32)
@@ -10436,6 +10437,7 @@ def test_install_disconnect_does_not_replay_or_release_worker_twice(install_oper
 
 def test_install_timeout_does_not_authorize_replay(install_operation_host, monkeypatch):
     invoke, responses, launches = install_operation_host
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: None, raising=False)
     def timeout(): raise subprocess.TimeoutExpired(['docker'], 1)
     monkeypatch.setattr(_mod, 'resolve_compose_flags', timeout)
     invoke('f' * 32)
@@ -10443,6 +10445,65 @@ def test_install_timeout_does_not_authorize_replay(install_operation_host, monke
     invoke('a' * 32)
     assert responses[-1][0] == 409
     assert len(launches) == 1
+
+
+def test_timed_out_install_reconciles_when_container_runs(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    def timeout(): raise subprocess.TimeoutExpired(['docker'], 1)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', timeout)
+    invoke('f' * 32)
+    assert _mod._read_install_operation('operation-test', 'f' * 32)['state'] == 'uncertain'
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: 'running', raising=False)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: [])
+    invoke('a' * 32)
+    assert responses[-1][0] == 202
+    assert len(launches) == 2
+    reconciled = _mod._read_install_operation('operation-test', 'f' * 32)
+    assert reconciled['state'] == 'succeeded'
+    assert 'reconciled after interruption' in reconciled['reconciliation']
+
+
+def test_stale_install_reconciles_to_failed_when_container_absent(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    _mod._save_install_operation({'service_id': 'operation-test', 'operation_id': 'c' * 32,
+        'run_setup_hook': False, 'state': 'running'})
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: 'stopped', raising=False)
+    invoke('d' * 32)
+    assert responses[-1][0] == 202
+    assert len(launches) == 1
+    reconciled = _mod._read_install_operation('operation-test', 'c' * 32)
+    assert reconciled['state'] == 'failed'
+    assert 'interrupted' in reconciled['reconciliation']
+
+
+def test_live_install_worker_still_blocks_new_attempt(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    identity = ('operation-test', 'c' * 32)
+    monkeypatch.setattr(_mod, '_install_operation_live', {identity})
+    _mod._save_install_operation({'service_id': identity[0], 'operation_id': identity[1],
+        'run_setup_hook': False, 'state': 'running'})
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: 'running', raising=False)
+    invoke('d' * 32)
+    assert responses[-1][0] == 409
+    assert not launches
+    assert _mod._read_install_operation(*identity)['state'] == 'running'
+
+
+def test_unexpected_install_exception_leaves_terminal_receipt(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    def boom(): raise KeyError('unexpected')
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', boom)
+    raised = []
+    class ThreadLikeWorker:  # A real thread reports, not propagates, target errors.
+        def __init__(self, target, **kwargs): self.target = target
+        def start(self):
+            with pytest.raises(KeyError) as error:
+                self.target()
+            raised.append(error.value)
+    monkeypatch.setattr(_mod.threading, 'Thread', ThreadLikeWorker)
+    invoke('e' * 32)
+    assert raised and responses[-1][0] == 202
+    assert _mod._read_install_operation('operation-test', 'e' * 32)['state'] == 'failed'
 
 
 def test_install_operation_http_observation_is_authenticated_and_bound(tmp_path, monkeypatch):
