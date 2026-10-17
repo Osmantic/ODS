@@ -188,7 +188,7 @@ else:
 
 write_target = target.resolve() if target.is_symlink() else target
 write_target.parent.mkdir(parents=True, exist_ok=True)
-mode = write_target.stat().st_mode & 0o777 if write_target.exists() else 0o644
+mode = write_target.stat().st_mode & 0o666 if write_target.exists() else 0o644
 temp_name = None
 try:
     with tempfile.NamedTemporaryFile(
