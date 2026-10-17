@@ -30,6 +30,17 @@ ENV_FILE="${ENV_FILE:-$ODS_DIR/.env}"
 TIMEOUT=15
 QUICK_TIMEOUT=5
 
+# macOS ships no `timeout` (a GNU coreutils tool). Fall back to running the
+# command unbounded there, mirroring the `command -v timeout` guard already used
+# by installers/lib/docker-images.sh and scripts/bootstrap-upgrade.sh. Without
+# this every `timeout ...` call below exits 127 on macOS, so `docker info` reads
+# as "daemon not running" and the diagnostic returns before its later sections.
+# All calls use the `timeout <seconds> <command...>` form, so dropping the
+# leading duration argument is sufficient.
+if ! command -v timeout >/dev/null 2>&1; then
+    timeout() { shift; "$@"; }
+fi
+
 # Source service registry for port resolution
 _DT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -f "$_DT_DIR/lib/service-registry.sh" ]]; then
