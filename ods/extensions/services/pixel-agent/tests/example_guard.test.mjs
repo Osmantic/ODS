@@ -624,10 +624,32 @@ test('a same-size edit that keeps the file\'s time is still put back', {skip: NO
   const {root, example, original} = workspace();
   const outside = outsideFolder();
   const run = turn(createToolLoopGuard(), 'Tidy my code', root, {env: {OUT: outside}});
-  run.exec('cp -p Playground/elf-of-doom/engine.js "$OUT/stamp" && sed -i \'s/const /CONST/\' Playground/elf-of-doom/engine.js'
-    + ' && touch -r "$OUT/stamp" Playground/elf-of-doom/engine.js');
+  const engine = path.join(example, 'engine.js');
+  const before = fs.statSync(engine);
+  const command = 'cp -p Playground/elf-of-doom/engine.js "$OUT/stamp" && sed -i \'s/const /CONST /\' Playground/elf-of-doom/engine.js'
+    + ' && touch -r "$OUT/stamp" Playground/elf-of-doom/engine.js';
+  const call = run.start('exec', {command, workdir: '/workspace'});
+  shell(root, command, {OUT: outside});
+  // Only the file's identity or change time shows the edit.
+  const edited = fs.statSync(engine);
+  assert.deepEqual([edited.size, edited.mtimeMs], [before.size, before.mtimeMs]);
+  assert.notDeepEqual(tree(example), original);
+  assert.ok(call.end().text.endsWith(RESTORED.model));
   assert.deepEqual(tree(example), original);
   run.finish();
+});
+
+test('a read-only file or folder the owner had stays read-only when it is put back', {skip: NO_BASH}, () => {
+  const {root, example} = workspace();
+  fs.chmodSync(path.join(example, 'ui.js'), 0o444);
+  fs.chmodSync(example, 0o555);
+  const original = tree(example);
+  const run = turn(createToolLoopGuard(), 'Rewrite my games\' interfaces', root);
+  run.exec('chmod u+w Playground/elf-of-doom Playground/elf-of-doom/ui.js && rm Playground/elf-of-doom/ui.js'
+    + ' && echo "// new" > Playground/elf-of-doom/ui.js && echo "// added" > Playground/elf-of-doom/extra.js');
+  assert.deepEqual(tree(example), original);
+  run.finish();
+  fs.chmodSync(example, 0o755);
 });
 
 test('modes are put back too: a read-only file, a mode-only change and a read-only folder', {skip: NO_BASH}, () => {
