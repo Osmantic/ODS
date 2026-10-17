@@ -269,7 +269,6 @@ test("routes natural visual follow-ups to a read-edit-republish contract", () =>
   for (const prompt of [
     "Keep that game and make it faster.",
     "Change the previous website to a solar palette.",
-    "Polish it and improve the mobile layout.",
     "Make this form mobile-friendly.",
     "Improve the previous prototype's keyboard navigation.",
     "The Reverse orbit button does not work. Investigate your existing artifact, fix that defect without starting over or using a template, republish the same artifact, and report only what the tools verify.",
@@ -296,6 +295,30 @@ test("routes natural visual follow-ups to a read-edit-republish contract", () =>
     fresh.appendSystemContext,
     expectedWorkspaceContract("Make a new Breakout game.")
   );
+});
+
+test("ordinary text follow-ups do not invent a visual artifact or workspace tool task", () => {
+  for (const prompt of [
+    "Make that sentence warmer while keeping Thursday and leaving out any time of day.",
+    "Make it shorter.",
+    "Polish it and improve the wording.",
+  ]) {
+    const messages = [
+      {role: "user", content: "Rewrite this invitation: Join us Thursday."},
+      {role: "assistant", content: "Please join us on Thursday."},
+    ];
+    for (const configuredLeanPrompt of [false, true]) {
+      const result = promptContractForAgent({agentId: "pixel"}, "pixel", {prompt, messages},
+        {configuredContextWindow:65536, configuredLeanPrompt});
+      assert.equal(result.appendSystemContext, configuredLeanPrompt
+        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT, prompt);
+    }
+  }
+  const prompt = "Polish it and improve the mobile layout.";
+  const result = promptContractForAgent({agentId: "pixel"}, "pixel", {prompt},
+    {configuredLeanPrompt:true, workspaceVisualContinuation:true});
+  assert.equal(result.appendSystemContext,
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT} ${AGENT_SKILLS.workspace}`);
 });
 
 test("uses a bounded complete core on compact contexts without changing requested routes", () => {
