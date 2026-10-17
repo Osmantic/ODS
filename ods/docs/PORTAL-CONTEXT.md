@@ -39,9 +39,11 @@ lease; that does not erase its history or restart its previous task.
 - A missing native session is rehydrated as inert historical reference under
   a maintenance lease, then compacted before executing the new request. Past
   requests are never executed as part of rehydration.
-- A delta that OpenClaw ran in a replacement session without a compaction is not
-  adopted. The next owner turn restores the archived conversation as inert
-  reference before it runs, as for a missing session.
+- A turn with earlier conversation that OpenClaw ran in a replacement session
+  without a compaction is not adopted: a delta never carries the earlier turns,
+  and a hydrated turn wrote them into the session it replaced. The next owner
+  turn restores the archived conversation as inert reference before it runs, as
+  for a missing session.
 - The agent can use `pixel_ods_history` to search or page through its own archived
   conversation. This tool cannot select another chat. Returned excerpts retain
   their status as historical data; they are not fresh approvals or tool receipts.
