@@ -42,7 +42,7 @@ it('opens the example in the Workspace preview without sending anything to the m
   expect(screen.queryByRole('alert')).toBeNull()
 })
 
-it('opening the example keeps an unsent draft in the composer without saving it as another conversation', async () => {
+it('opening the example leaves an unsent draft with the conversation the owner left, like switching conversations', async () => {
   localStorage.clear()
   vi.stubGlobal('fetch', host(reply(200, {schemaVersion: 1, preview})))
   render(<><PixelConversationNavigation collapsed={false}/><Pixel/></>)
@@ -52,17 +52,21 @@ it('opening the example keeps an unsent draft in the composer without saving it 
   const example = await screen.findByTitle('Playground/elf-of-doom')
   await act(async () => { fireEvent.click(example) })
   expect(await screen.findByTitle('Interactive Portal preview')).toBeInTheDocument()
-  // The composer still holds the text.
-  expect(screen.getByPlaceholderText(/^Message /)).toHaveValue(draft)
-  // Only the conversation the owner left keeps it: no copy, and none filed
-  // under the example's folder.
+  // The example's view starts empty; the draft is saved once, in the
+  // conversation the owner left, and none is filed under the example.
+  expect(screen.getByPlaceholderText(/^Message /)).toHaveValue('')
   const saved = readConversations()
-  expect(saved.filter(chat => chat.draft === draft)).toHaveLength(1)
+  expect(saved).toHaveLength(1)
+  expect(saved[0].draft).toBe(draft)
   expect(saved.filter(chat => chat.preview?.relativeDirectory === 'Playground/elf-of-doom')).toHaveLength(0)
   // So the example's row still opens the game rather than unfolding.
   const row = screen.getByTitle('Playground/elf-of-doom')
   expect(row).toHaveAttribute('role', 'button')
   expect(row.closest('details').open).toBe(false)
+  // Going back to that conversation brings its draft back.
+  await act(async () => { window.dispatchEvent(new CustomEvent(SELECT_EVENT, {detail: saved[0].chatId})) })
+  expect(screen.getByPlaceholderText(/^Message /)).toHaveValue(draft)
+  expect(readConversations()).toHaveLength(1)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })
 
