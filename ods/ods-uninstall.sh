@@ -315,6 +315,9 @@ if $DOCKER_CLEANUP; then
         log_error "No Compose files resolved; installation untouched. Restore the installation's Compose files, then retry uninstall."
         exit 1
     fi
+else
+    log_error "Docker CLI unavailable; owned containers cannot be verified. Installation untouched. Restore Docker and retry uninstall."
+    exit 1
 fi
 
 # Compose down -v cannot see volumes from disabled extension fragments. Record
@@ -339,6 +342,9 @@ if $DOCKER_CLEANUP; then
             exit 1
         fi
     fi
+else
+    log_error "Docker CLI became unavailable during preflight; installation untouched. Restore Docker and retry uninstall."
+    exit 1
 fi
 
 # Fail before stopping/removing services if models cannot be retained without
@@ -579,7 +585,8 @@ if $DOCKER_CLEANUP; then
 elif command -v docker &>/dev/null; then
     log_info "Docker holds nothing for this unconfigured installation; no container cleanup needed"
 else
-    log_warn "Docker not found — skipping container cleanup"
+    log_error "Docker CLI became unavailable before container cleanup; installation files and data retained for recovery. Pixel or host services may already be retired."
+    exit 1
 fi
 
 # 2. Stop and remove host service definitions
