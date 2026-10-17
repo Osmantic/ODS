@@ -2555,7 +2555,8 @@ async def proxy_other(request: Request, path: str):
     try:
         resp = await client.request(
             method=request.method,
-            url=f"/{path}",
+            # Keep repeated filters, opaque cursors and their original escaping.
+            url=httpx.URL(path=f"/{path}", query=request.scope.get("query_string", b"")),
             content=body if body else None,
             headers=headers,
         )
