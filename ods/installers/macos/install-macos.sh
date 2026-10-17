@@ -524,19 +524,26 @@ HERMES_AUTH_VERIFY_PY
 # native Portal workspace whenever Playground/elf-of-doom is absent and this
 # workspace has never received it, so a deleted or renamed example stays that
 # way. Portal's sidebar then lists it with the other projects; the installer
-# prints nothing about it. Runs after native activation; a failure warns and
-# never fails the install.
+# prints nothing about it. Runs after native activation; a failure never fails
+# the install. A workspace layout the helper never writes into (exit status 3)
+# stays as the owner made it, so it is only logged; any other failure warns
+# with the helper's one-sentence cause.
 _macos_add_example_projects() {
-    local install_root status
+    local install_root status code=0
     # The native workspace path is built from the resolved install directory,
     # and the helper refuses any symlinked path component.
-    if install_root="$(cd "$INSTALL_DIR" && pwd -P)" \
-        && status="$(/usr/bin/python3 -B "$INSTALL_DIR/installers/lib/pixel-example-projects.py" \
-            --workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel" 2>>"$ODS_LOG_FILE")"; then
-        printf 'Portal example projects: %s\n' "$status" >>"$ODS_LOG_FILE"
-    else
-        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project. Nothing in your Portal workspace was replaced. Rerun the installer to try again, or ask on Discord: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)"
+    if ! install_root="$(cd "$INSTALL_DIR" && pwd -P)"; then
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: it could not open the ODS install folder $INSTALL_DIR. Nothing in your Portal workspace was changed. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)"
+        return 0
     fi
+    status="$(/usr/bin/python3 -B "$INSTALL_DIR/installers/lib/pixel-example-projects.py" \
+        --workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel" 2>>"$ODS_LOG_FILE")" || code=$?
+    case "$code" in
+        0) printf 'Portal example projects: %s\n' "$status" >>"$ODS_LOG_FILE" ;;
+        3) printf 'Portal example projects not added: %s\n' "$status" >>"$ODS_LOG_FILE" ;;
+        4) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: $status Nothing in your Portal workspace was replaced. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)" ;;
+        *) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: its copy step stopped unexpectedly (exit $code). Nothing in your Portal workspace was replaced. Ask on Discord with the details from $ODS_LOG_FILE: ${ODS_HELP_DISCORD_URL}" ;;
+    esac
     return 0
 }
 

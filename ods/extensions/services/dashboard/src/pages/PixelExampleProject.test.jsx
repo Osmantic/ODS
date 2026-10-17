@@ -6,7 +6,7 @@ vi.mock('../lib/pixelArtifacts', async importOriginal => ({
   loadSnapshotFiles: vi.fn(async preview => [{path: 'index.html', bytes: preview.bytes, sha256: preview.entrySha256}]),
 }))
 import {render} from '../test/test-utils'
-import {act, screen} from '@testing-library/react'
+import {act, fireEvent, screen} from '@testing-library/react'
 import Pixel from './Pixel'
 import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT} from '../lib/exampleProjects'
 import {ODS_HELP_DISCORD_URL} from '../lib/support'
@@ -37,6 +37,18 @@ it('opens the example in the Workspace preview without sending anything to the m
   expect(JSON.parse(opened[1].body)).toEqual({name: 'elf-of-doom'})
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('opening the example keeps an unsent draft, as any other project row does', async () => {
+  localStorage.clear()
+  vi.stubGlobal('fetch', host(reply(200, {schemaVersion: 1, preview})))
+  render(<Pixel/>)
+  await screen.findByText('Available')
+  fireEvent.change(screen.getByPlaceholderText(/^Message /), {target: {value: 'In elf-of-doom, make the arrows give 7'}})
+  await openExample()
+  expect(await screen.findByTitle('Interactive Portal preview')).toBeInTheDocument()
+  expect(screen.getByPlaceholderText(/^Message /)).toHaveValue('In elf-of-doom, make the arrows give 7')
+  expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })
 
 it('refuses a receipt for any other folder, exactly like a model-run receipt', async () => {

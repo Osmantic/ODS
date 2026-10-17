@@ -88,7 +88,8 @@ def add_example_projects(*, preparation):
     and outside the protected activation. It only creates an absent
     Playground/<name> and the workspace's record of received examples, so an
     example the owner deleted or renamed is never added again; failure changes
-    no owner content and is reported.
+    no owner content. The outcome goes only to the update's private log (see
+    log_example_projects), never to the console.
     """
     try:
         document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')
@@ -100,6 +101,22 @@ def add_example_projects(*, preparation):
         return module.add_projects(Path(agent['workspace']))
     except (ValueError, OSError, KeyError, TypeError):
         return {'status': 'manual-review-required'}
+
+
+def log_example_projects(work, outcome):
+    """Keep the example step's outcome in this update's private folder only.
+
+    Nothing about the example is printed: Portal's sidebar simply lists it.
+    The folder is the one the update names as its preparation.
+    """
+    try:
+        with (Path(work) / 'example-projects.log').open('x', encoding='utf-8') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(outcome, sort_keys=True) + '\n')
+    except OSError:
+        # The update itself succeeded; this outcome is diagnostic only, and
+        # failing here would report a finished update as stopped.
+        return
 
 
 def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False):
@@ -153,7 +170,7 @@ def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
-        outcome['exampleProjects'] = add_example_projects(preparation=preparation)
+        log_example_projects(work, add_example_projects(preparation=preparation))
         return outcome
     finally:
         for key, value in saved.items():

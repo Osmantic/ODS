@@ -11,16 +11,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   small browser game Portal wrote in ODS from natural-language prompts. The
   installer adds `Playground/elf-of-doom` whenever that name is absent and the
   workspace has never received it (a hidden `.ods-examples.json` records
-  that), so a deleted or renamed copy stays that way; it never replaces,
-  merges into or deletes an existing entry. It sits in Portal's sidebar under
-  Projects > Playground like any other project while the folder exists;
-  clicking it plays the game in the Workspace panel with no model run.
-  Portal's project routing changes the folder only when a request names it,
-  or in later turns of the chat that named it, and a request for a new
-  project gets its own folder and never starts from the example's files.
-  These are best-effort routing checks, not a sandbox. Existing Linux and
-  Windows (WSL2) installs get it on their next installer run; Macs get it on a
-  new install or the next native Portal update.
+  that, and which copy ODS itself added), so a deleted or renamed copy stays
+  that way; it never replaces, merges into or deletes an existing entry, and
+  an owner's own earlier `Playground/elf-of-doom` stays ordinary owner
+  content. The added game sits in Portal's sidebar under Projects > Playground
+  like any other project while the folder exists; clicking it plays the game
+  in the Workspace panel with no model run. Portal's project routing tries to
+  change the folder only when a request names it as what to change (later
+  turns of that chat may then just say what to change), and to keep new
+  projects, sequels included, out of it and off its files. These are
+  best-effort routing checks, not a sandbox. Existing Linux and Windows (WSL2)
+  installs get it on their next installer run; Macs get it on a new install
+  or the next native Portal update.
 
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple

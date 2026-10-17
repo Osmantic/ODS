@@ -6,18 +6,26 @@ import path from 'node:path';
 import test from 'node:test';
 import vm from 'node:vm';
 
-import {createExampleProjectRoute, presentExampleProjects, SHIPPED_EXAMPLE_PROJECTS} from '../plugin/example-projects.mjs';
-import {exampleProjectRefusal, exampleProjectTesting} from '../plugin/playground-projects.mjs';
+import {addedExampleProjects, createExampleProjectRoute, EXAMPLE_RECORD, presentExampleProjects, SHIPPED_EXAMPLE_PROJECTS} from '../plugin/example-projects.mjs';
+import {exampleChatTopics, exampleProjectRefusal, exampleProjectTesting} from '../plugin/playground-projects.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createWorkspacePreviewPublisher, PREVIEW_FOLDER_FAILURES, testing as previewTesting} from '../plugin/workspace-preview.mjs';
 
 const SHIPPED = new URL('../example-projects/', import.meta.url);
 
-function workspace({index = true} = {}) {
+// The record installers/lib/pixel-example-projects.py writes: 'added' when ODS
+// added Playground/elf-of-doom, 'present' when the owner already had one.
+function writeRecord(root, kind = 'added') {
+  const added = kind === 'added' ? ['elf-of-doom'] : [];
+  fs.writeFileSync(path.join(root, EXAMPLE_RECORD), `${JSON.stringify({schemaVersion: 1, received: ['elf-of-doom'], added})}\n`, {mode: 0o600});
+}
+
+function workspace({index = true, record = 'added'} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-workspace-'));
   const folder = path.join(root, 'Playground', 'elf-of-doom');
   fs.mkdirSync(folder, {recursive: true, mode: 0o700});
   if (index) fs.writeFileSync(path.join(folder, 'index.html'), '<!doctype html><title>Elf of Doom</title>\n');
+  if (record) writeRecord(root, record);
   return root;
 }
 
@@ -65,6 +73,38 @@ test('a present example is listed, and a missing, renamed or emptied one quietly
   fs.rmSync(path.join(root, 'Playground'), {recursive: true});
   fs.writeFileSync(path.join(root, 'Playground'), 'not a folder\n');
   assert.deepEqual(presentExampleProjects(root), []);
+});
+
+test('a folder of that name the owner already had is not listed as the shipped example', () => {
+  // Portal may have built an "Elf of Doom" of the owner's own before ODS
+  // shipped one: the installer then records it as present, never as added.
+  for (const record of ['present', null]) {
+    const root = workspace({record});
+    assert.deepEqual(presentExampleProjects(root), [], String(record));
+    assert.deepEqual(addedExampleProjects(fs.realpathSync(root)), [], String(record));
+  }
+  const root = workspace();
+  const file = path.join(root, EXAMPLE_RECORD);
+  for (const body of ['not json', '{"schemaVersion":1,"received":["elf-of-doom"]}',
+    '{"schemaVersion":1,"received":[],"added":["elf-of-doom"]}', '{"schemaVersion":2,"received":["elf-of-doom"],"added":["elf-of-doom"]}',
+    `{"schemaVersion":1,"received":["elf-of-doom"],"added":["elf-of-doom"],"pad":"${'x'.repeat(5000)}"}`]) {
+    fs.writeFileSync(file, body);
+    assert.deepEqual(presentExampleProjects(root), [], body.slice(0, 60));
+  }
+  fs.rmSync(file);
+  fs.mkdirSync(file);
+  assert.deepEqual(presentExampleProjects(root), [], 'a folder where the record belongs');
+});
+
+test('a linked record is not the installers\' record', {skip: process.platform === 'win32'}, () => {
+  const root = workspace({record: null});
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-outside-'));
+  writeRecord(outside);
+  fs.symlinkSync(path.join(outside, EXAMPLE_RECORD), path.join(root, EXAMPLE_RECORD));
+  assert.deepEqual(presentExampleProjects(root), []);
+  fs.rmSync(path.join(root, EXAMPLE_RECORD));
+  fs.linkSync(path.join(outside, EXAMPLE_RECORD), path.join(root, EXAMPLE_RECORD));
+  assert.deepEqual(presentExampleProjects(root), [], 'a hard link');
 });
 
 test('a linked example folder is not the shipped example', {skip: process.platform === 'win32'}, () => {
@@ -187,21 +227,43 @@ test('the owner-initiated publisher returns only a verified receipt for that fol
 
 let runs = 0;
 function chatKey(digit) { return `agent:pixel:openai-user:ods-${digit.repeat(64)}`; }
-// One owner turn. Passing the same guard and chat key continues that chat.
-function guardFor(prompt, root, {guard = createToolLoopGuard(), sessionKey} = {}) {
+// One owner turn. Passing the same guard and chat key (and session id)
+// continues that chat.
+function guardFor(prompt, root, {guard = createToolLoopGuard(), sessionKey, sessionId} = {}) {
   const run = ++runs;
-  const context = {agentId: 'pixel', runId: `run-${run}`, sessionId: `session-${run}`, trigger: 'user',
+  const context = {agentId: 'pixel', runId: `run-${run}`, sessionId: sessionId ?? `session-${run}`, trigger: 'user',
     sessionKey: sessionKey ?? `agent:pixel:openai-user:ods-${String(run).padStart(64, 'a')}`};
   guard.observeRun(context, 'pixel', {prompt}, {executionHost: 'sandbox', workspaceRoot: root});
   let call = 0;
   const before = (toolName, params) => guard.beforeToolCall({toolName, runId: context.runId, params},
     {...context, toolName, toolCallId: `call-${++call}`}, 'pixel');
+  // The result of the latest call.
+  const after = (toolName, params, result) => guard.afterToolCall({toolName, runId: context.runId, params, toolCallId: `call-${call}`, result},
+    {...context, toolName, toolCallId: `call-${call}`}, 'pixel');
   const read = file => {
     const params = {path: file};
     assert.notEqual(before('read', params)?.block, true, 'reading the example stays allowed');
-    guard.afterToolCall({toolName: 'read', runId: context.runId, params, result: {details: {status: 'completed'}}}, {...context, toolName: 'read'}, 'pixel');
+    after('read', params, {details: {status: 'completed'}});
   };
-  return {guard, before, read};
+  return {guard, runId: context.runId, before, after, read};
+}
+// A verified publication of the example's folder, as the host receipt
+// reports it, so later turns of this chat continue that preview.
+function publishExample(turn) {
+  turn.read('Playground/elf-of-doom/index.html');
+  const params = {relativeDirectory: 'Playground/elf-of-doom'};
+  notRefused(turn.before('pixel_ods_workspace_preview', params), 'publish');
+  const content = Buffer.from('<!doctype html><title>Elf of Doom</title>\n'), name = Buffer.from('index.html');
+  const nameLength = Buffer.alloc(4), contentLength = Buffer.alloc(8);
+  nameLength.writeUInt32BE(name.length);
+  contentLength.writeBigUInt64BE(BigInt(content.length));
+  const sha256 = createHash('sha256').update(nameLength).update(name).update(contentLength).update(content).digest('hex');
+  const siteId = `site-${sha256.slice(0, 24)}`;
+  turn.after('pixel_ods_workspace_preview', params, {details: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'succeeded',
+    relativeDirectory: 'Playground/elf-of-doom', siteId, files: 1, bytes: content.length, sha256, entryFile: 'index.html',
+    entrySha256: createHash('sha256').update(content).digest('hex'), port: 9437, url: `http://${siteId}.localhost:9437/${siteId}/`,
+    httpStatus: 200, readbackVerified: true, executable: false, overwritten: false}});
+  assert.equal(turn.guard.verificationForRun(turn.runId)?.status, 'passed', 'the publication is verified');
 }
 const SHIPS = /Playground\/elf-of-doom is the finished example project ODS ships/;
 function refused(result, label) {
@@ -224,15 +286,24 @@ const NEW_GAME = ['Make me a dungeon crawler game.', 'Make me a game',
   'Make a sequel to Elf of Doom', 'Make me a new game, a prequel to elf-of-doom',
   'Make me a dungeon crawler like the one in elf-of-doom', 'Make me a new game with a boss like the dragon in elf of doom',
   'Build a new game for elf-of-doom fans', 'Create a new game with the same controls as in Elf of Doom',
-  "Make me a new game on top of elf-of-doom's engine", 'Make me a dungeon crawler in elf-of-doom'];
+  "Make me a new game on top of elf-of-doom's engine", 'Make me a dungeon crawler in elf-of-doom',
+  // Sequels and remakes made by naming the example.
+  'Make me Elf of Doom 2', 'Make Elf of Doom 2', 'Make me elf of doom with zombies', 'Make me elf-of-doom but in space',
+  "Make elf-of-doom's sequel", 'Add a sequel to elf-of-doom', 'Remake elf-of-doom as a platformer',
+  'Give me a new game like elf-of-doom'];
 const OPEN = 'Open the existing Playground/elf-of-doom/index.html preview.';
 const OPEN_ONLY = [OPEN, 'Show me elf of doom and explain how the arrows work', 'Open elf-of-doom. Does it work on my phone?',
-  'Open elf of doom, I want to see what it can do before I make my own game.', 'Open elf-of-doom and tell me what you would change'];
+  'Open elf of doom, I want to see what it can do before I make my own game.', 'Open elf-of-doom and tell me what you would change',
+  // "make sure", "give it a try" and "make it work" check or try it, never change it.
+  'Open elf-of-doom and make sure it loads', 'Open the existing Playground/elf-of-doom/index.html preview and make sure it renders.',
+  'Open elf-of-doom and give it a try', 'Preview elf-of-doom and make sure the preview works', 'Open elf-of-doom and make it work'];
 const NAMED = ['In elf-of-doom, make the arrows give 7', 'In Elf of Doom, make the arrows give 7.',
   'Fix the bugs in the game in Playground/elf-of-doom.', "Make elf-of-doom's arrows faster",
   'Open elf-of-doom and make the arrows give 7', 'Open elf-of-doom. Make the arrows give 7.',
   'In elf-of-doom, create a new boss level.', 'In elf-of-doom, build a new game mode with a boss',
-  'Can you add a pause button to elf of doom?', 'I want the arrows in elf-of-doom to give 7'];
+  'Can you add a pause button to elf of doom?', 'I want the arrows in elf-of-doom to give 7',
+  // A number that is not a sequel's.
+  'Make elf-of-doom 2 times faster'];
 const CHANGES = [
   ['write', {path: 'Playground/elf-of-doom/index.html', content: '<!doctype html><title>new</title>\n'}],
   ['write', {path: 'Playground/elf-of-doom/level2.html', content: '<!doctype html>\n'}],
@@ -369,22 +440,107 @@ test('a request to copy the example may copy it but changes only the copy', () =
   unchanged(root);
 });
 
-test('later turns of a chat that named the example keep changing it until a turn asks for something new', () => {
+const edit = turn => turn.before('edit', {path: 'Playground/elf-of-doom/engine.js', oldText: 'orig', newText: 'new'});
+
+test('later turns of a chat that named the example to change keep changing it until a turn asks for something new', () => {
   const root = fullWorkspace();
   const guard = createToolLoopGuard();
-  const edit = turn => turn.before('edit', {path: 'Playground/elf-of-doom/engine.js', oldText: 'orig', newText: 'new'});
   const chat = chatKey('e');
   notRefused(edit(guardFor('In elf-of-doom, make the arrows give 7', root, {guard, sessionKey: chat})), 'turn 1');
   notRefused(edit(guardFor('Now make them give 9', root, {guard, sessionKey: chat})), 'turn 2');
   notRefused(edit(guardFor('make it faster', root, {guard, sessionKey: chat})), 'turn 3');
+  // A later turn that names no change of its own changes nothing.
+  refused(edit(guardFor('What do the arrows do now?', root, {guard, sessionKey: chat})), 'a question');
+  notRefused(edit(guardFor('Now add a pause menu', root, {guard, sessionKey: chat})), 'still that chat');
   refused(edit(guardFor('Now make them give 9', root, {guard, sessionKey: chatKey('f')})), 'another chat');
   refused(edit(guardFor('Now make them give 9', root, {sessionKey: chat})), 'after a restart');
   refused(edit(guardFor('Make me a snake game', root, {guard, sessionKey: chat})), 'new game');
   refused(edit(guardFor('make it faster', root, {guard, sessionKey: chat})), 'after the new game');
-  const opened = chatKey('c');
-  notRefused(guardFor('Open elf-of-doom', root, {guard, sessionKey: opened}).before('pixel_ods_workspace_preview', {relativeDirectory: 'Playground/elf-of-doom'}), 'open');
-  notRefused(edit(guardFor('Make the arrows give 7', root, {guard, sessionKey: opened})), 'change after opening it');
-  refused(edit(guardFor('Make the arrows give 7 but do not change elf-of-doom', root, {guard, sessionKey: opened})), 'forbidden');
+  const forbidden = chatKey('9');
+  notRefused(edit(guardFor('In elf-of-doom, make the arrows give 7', root, {guard, sessionKey: forbidden})), 'named');
+  refused(edit(guardFor('Make the arrows give 7 but do not change elf-of-doom', root, {guard, sessionKey: forbidden})), 'forbidden');
+  refused(edit(guardFor('make it faster', root, {guard, sessionKey: forbidden})), 'after it was forbidden');
+  unchanged(root);
+});
+
+test('opening, showing or checking the example never unlocks a later change', () => {
+  const root = fullWorkspace();
+  const guard = createToolLoopGuard();
+  for (const [index, first] of ['Open elf-of-doom', 'Show me elf of doom', OPEN, 'Open elf-of-doom and make sure it loads',
+    'Open elf-of-doom and give it a try'].entries()) {
+    const chat = chatKey(String(index));
+    notRefused(guardFor(first, root, {guard, sessionKey: chat}).before('pixel_ods_workspace_preview', {relativeDirectory: 'Playground/elf-of-doom'}), first);
+    refused(edit(guardFor('Make the arrows give 7', root, {guard, sessionKey: chat})), `after: ${first}`);
+    assert.deepEqual([...exampleChatTopics(undefined, first)], [], first);
+  }
+  assert.deepEqual([...exampleChatTopics(undefined, 'In elf-of-doom, make the arrows give 7')], ['elf-of-doom']);
+  assert.deepEqual([...exampleChatTopics(new Set(['elf-of-doom']), 'Now make them give 9')], ['elf-of-doom']);
+  unchanged(root);
+});
+
+// New-game requests that name no creation verb, from a chat that changed the
+// example a turn earlier.
+const NEW_GAME_FOLLOW_UPS = ['I want a snake game', 'How about a snake game next?', "Let's do tetris now",
+  'Next: a platformer with a frog', 'Now a racing game please', 'Could I get a pong clone?',
+  'Turn it into a racing game', 'Change it into a snake game instead', 'Make it a platformer'];
+
+for (const follow of NEW_GAME_FOLLOW_UPS) {
+  test(`a later turn that asks for a new game never writes into the example: ${follow}`, () => {
+    const root = fullWorkspace();
+    const guard = createToolLoopGuard();
+    const chat = chatKey('7');
+    notRefused(edit(guardFor('In elf-of-doom, make the arrows give 7', root, {guard, sessionKey: chat})), 'named');
+    const turn = guardFor(follow, root, {guard, sessionKey: chat});
+    refused(turn.before('write', {path: 'Playground/elf-of-doom/index.html', content: '<!doctype html><title>snake</title>\n'}), 'write');
+    refused(edit(turn), 'edit');
+    // And the chat has moved on from the example.
+    refused(edit(guardFor('make it faster', root, {guard, sessionKey: chat})), 'the turn after');
+    unchanged(root);
+  });
+}
+
+test('a continuation of a preview of the example changes it only when the owner names it', () => {
+  // A chat whose verified preview is Playground/elf-of-doom continues there:
+  // Portal moves basenames and workdir-less commands into that folder. Every
+  // such call is checked as it will run.
+  const calls = [
+    ['tool_call', {id: 'write', args: {path: 'index.html', content: '<!doctype html><title>snake</title>\n'}}],
+    ['tool_call', {id: 'edit', args: {path: 'index.html', oldText: 'Elf of Doom', newText: 'Snake'}}],
+    ['tool_call', {id: 'exec', args: {command: 'rm engine.js'}}],
+    ['tool_call', {id: 'exec', args: {command: "sed -i 's/orig/new/' engine.js"}}],
+  ];
+  const continued = (first, second) => {
+    const root = fullWorkspace();
+    const guard = createToolLoopGuard();
+    const sessionKey = chatKey('8'), sessionId = `continued-${++runs}`;
+    publishExample(guardFor(first, root, {guard, sessionKey, sessionId}));
+    return calls.map(([name, params]) => {
+      const turn = guardFor(second, root, {guard, sessionKey, sessionId});
+      // ODS's continuation contract: read the file by its basename first.
+      const read = {id: 'read', args: {path: 'index.html'}};
+      const reading = turn.before('tool_call', read);
+      assert.equal(reading?.params?.args?.path, 'Playground/elf-of-doom/index.html', 'the continuation reads the example');
+      const tool = {id: 'openclaw:core:read', source: 'openclaw', sourceName: 'core', name: 'read'};
+      const inner = {content: [{type: 'text', text: '<!doctype html><title>Elf of Doom</title>'}], details: {status: 'completed'}};
+      turn.after('tool_call', reading.params, {content: [{type: 'text', text: JSON.stringify({tool, result: inner})}], details: {tool, result: inner}});
+      return {root, label: `${first} / ${second}: ${JSON.stringify(params)}`, result: turn.before(name, params)};
+    });
+  };
+  for (const [first, second] of [['Show me the game in my Playground', 'Make it faster'],
+    ['Show me the game in my Playground', 'Make it into a snake game instead'], ['Open elf-of-doom', 'Make it faster'],
+    ['In elf-of-doom, make the arrows give 7', 'Make it into a snake game instead']]) {
+    const outcomes = continued(first, second);
+    for (const {label, result} of outcomes) refused(result, label);
+    unchanged(outcomes[0].root);
+  }
+  // Named in this turn, or as the thing to change a turn earlier.
+  for (const [first, second] of [['Show me the game in my Playground', 'In elf-of-doom, make it faster'],
+    ['In elf-of-doom, make the arrows give 7', 'Make it faster']]) {
+    for (const {label, result} of continued(first, second)) {
+      notRefused(result, label);
+      assert.notEqual(result?.block, true, `${label}: ${result?.blockReason}`);
+    }
+  }
 });
 
 test('a call that routing moves into the example is refused after routing', () => {
@@ -444,7 +600,11 @@ test('what the owner asks of the example: change, copy, open or only a mention',
   assert.equal(level('Copy elf-of-doom into a new folder and make it harder'), 'reuse');
   for (const intent of OPEN_ONLY) assert.equal(level(intent), 'open', intent);
   assert.equal(level('make a game like elf-of-doom-2'), null);
-  assert.equal(exampleProjectTesting.exampleRequest('Make a sequel to Elf of Doom', 'elf-of-doom').creation, true);
+  for (const intent of NEW_GAME) assert.equal(exampleProjectTesting.exampleRequest(intent, 'elf-of-doom').creation, true, intent);
+  for (const intent of [...OPEN_ONLY, 'In elf-of-doom, make the arrows give 7', "Make elf-of-doom's arrows faster",
+    "Make me elf-of-doom's arrows faster", 'Make elf-of-doom 2 times faster', 'Make elf-of-doom faster']) {
+    assert.equal(exampleProjectTesting.exampleRequest(intent, 'elf-of-doom').creation, false, intent);
+  }
 });
 
 test('only plain reading commands count as read-only inside the example', () => {
@@ -468,6 +628,40 @@ test('commands in a project folder of their own are not mistaken for the example
   // is not yet a command on the whole workspace.
   assert.equal(exampleProjectTesting.execExampleUse('find . -name "*.tmp" -delete', undefined, root, 'elf-of-doom', true), null);
   assert.equal(exampleProjectTesting.execExampleUse('find . -name "*.tmp" -delete', undefined, root, 'elf-of-doom', false), 'change');
+});
+
+test('text in the run\'s own project that only mentions the example is not a path to it', () => {
+  const root = fullWorkspace();
+  const workdir = '/workspace/Playground/elf-shooter';
+  for (const command of ['echo "<!-- inspired by elf-of-doom -->" > notes.html', 'git commit -m "first version, unlike elf-of-doom"',
+    "printf 'credits: elf-of-doom team' > CREDITS.txt", "cat > CREDITS.md <<'EOF'\nInspired by elf-of-doom\nEOF",
+    'git commit --message="not elf-of-doom" && git log --oneline']) {
+    assert.equal(exampleProjectTesting.execExampleUse(command, workdir, root, 'elf-of-doom', false), null, command);
+    const turn = guardFor('Make me a game', root);
+    notRefused(turn.before('write', {path: 'Playground/elf-shooter/index.html', content: '<!doctype html>\n'}), 'new folder');
+    notRefused(turn.before('exec', {command, workdir}), command);
+  }
+  // Text a shell or an interpreter runs, and text written into the example,
+  // still count.
+  for (const [command, cwd] of [['echo "rm -rf elf-of-doom" | sh', '/workspace/Playground'],
+    ["python3 - <<'EOF'\nimport shutil; shutil.rmtree('elf-of-doom')\nEOF", '/workspace/Playground'],
+    ['echo x > ../elf-of-doom/notes.txt', workdir], ["echo 'see elf-of-doom' > elf-of-doom/notes.txt", '/workspace/Playground']]) {
+    assert.equal(exampleProjectTesting.execExampleUse(command, cwd, root, 'elf-of-doom', false), 'change', command);
+  }
+  unchanged(root);
+});
+
+test('a folder of that name the owner already had is ordinary owner content', () => {
+  // Portal may have built the owner's own Elf of Doom before ODS shipped one.
+  for (const record of ['present', null]) {
+    const root = fullWorkspace();
+    if (record) writeRecord(root, record);
+    else fs.rmSync(path.join(root, EXAMPLE_RECORD));
+    for (const [tool, params] of CHANGES) {
+      assert.equal(exampleProjectRefusal({tool, params, root, intent: 'add a pause menu'}), undefined, `${record}: ${tool}`);
+    }
+    notRefused(guardFor('Make me a dungeon crawler game.', root).before('edit', {path: 'Playground/elf-of-doom/ui.js', oldText: 'orig', newText: 'new'}), String(record));
+  }
 });
 
 test('paths outside the example, and other workspaces, are untouched by the protection', () => {

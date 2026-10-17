@@ -114,8 +114,13 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
                 expected += ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
                 assert result['portalIdentityMigration']['status'] == 'manual-review-required'
-                # The fixture preparation has no candidate profile to name a workspace.
-                assert result['exampleProjects'] == {'status': 'manual-review-required'}
+                # The example step prints nothing; its outcome is only in the
+                # update's private folder. The fixture preparation has no
+                # candidate profile to name a workspace.
+                assert 'exampleProjects' not in result and 'example' not in json.dumps(result).lower()
+                logs = list((installed / 'data/pixel-native').glob('update-*/example-projects.log'))
+                assert len(logs) == 1 and (logs[0].stat().st_mode & 0o777) == 0o600
+                assert json.loads(logs[0].read_text()) == {'status': 'manual-review-required'}
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected

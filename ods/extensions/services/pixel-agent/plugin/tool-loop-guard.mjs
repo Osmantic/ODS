@@ -7228,8 +7228,9 @@ export function createToolLoopGuard({
   const pendingToolRuns = new Map();
   const sessionPreviews = new Map();
   // Per chat, the shipped example projects (Playground/elf-of-doom) an owner
-  // turn named to change or open, until a turn asks for something new. A
-  // later turn may keep changing that example without naming it again.
+  // turn named as the thing to change, until a turn asks for something new.
+  // A later turn that asks for a change may keep changing that example
+  // without naming it again; opening or showing it never counts.
   // In memory only: after a restart the owner names it again.
   const exampleChatTopicsByChat = new Map();
   // A prior owner requirement is not a passing inspection. Bind it to the
@@ -7917,14 +7918,20 @@ export function createToolLoopGuard({
   // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
     const originalDecision = decideToolCall(event, context, agentId);
-    // Only refine an already-proven phantom process refusal. Real exec
-    // sessions, earlier denials, correction allowances and failure fuses keep
-    // their existing decisions. Fixed text preserves identical-outcome checks.
-    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
-      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
     const toolName = context?.toolName ?? event?.toolName;
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
+    // The call exactly as it will run, after every rewrite above: a shipped
+    // example project (Playground/elf-of-doom) changes only when the owner
+    // names it as what to change.
+    const exampleRefusal = state && originalDecision?.block !== true ? exampleProjectRefusal({tool:toolName,
+      params:originalDecision?.params ?? event?.params, ...exampleProjectContext(state),
+      previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
+    // Only refine an already-proven phantom process refusal. Real exec
+    // sessions, earlier denials, correction allowances and failure fuses keep
+    // their existing decisions. Fixed text preserves identical-outcome checks.
+    const decision = exampleRefusal ?? (nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision);
     if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     const callId = context?.toolCallId ?? event?.toolCallId;
     if (decision?.block === true && typeof callId === 'string' && callId) {
@@ -8139,11 +8146,6 @@ export function createToolLoopGuard({
       };
       pendingParams = normalizedParams;
     }
-    // The call as it will run: project routing and the continuation binding
-    // above may have moved a relative path into a shipped example's folder.
-    const routedExampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:pendingParams,
-      ...exampleProjectContext(state), previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
-    if (routedExampleRefusal) return routedExampleRefusal;
     const effectiveReplyTool = toolName === "tool_call"
       ? pendingParams?.id?.split(":").at(-1)
       : toolName;
@@ -8505,6 +8507,14 @@ export function createToolLoopGuard({
         },
       };
     }
+    // After the last path and workdir rewrite: project routing, the visual
+    // continuation binding and the task-directory adaptations above may have
+    // moved a relative path or a command into a shipped example's folder.
+    // Checked here, before the preview target is recorded and the call is
+    // remembered; beforeToolCall checks the returned call once more.
+    const routedExampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:pendingParams,
+      ...exampleProjectContext(state), previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
+    if (routedExampleRefusal) return routedExampleRefusal;
     const pendingSelectedName =
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)

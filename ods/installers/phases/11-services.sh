@@ -453,20 +453,26 @@ _phase11_apply_hermes_template() {
 # Portal workspace whenever Playground/elf-of-doom is absent and this workspace
 # has never received it, so a deleted or renamed example stays that way.
 # Portal's sidebar then lists it with the other projects; the installer prints
-# nothing about it. Runs after Portal is verified; a failure warns and never
-# fails the install.
+# nothing about it. Runs after Portal is verified; a failure never fails the
+# install. A workspace layout the helper never writes into (exit status 3)
+# stays as the owner made it, so it is only logged; any other failure warns
+# with the helper's one-sentence cause.
 _phase11_add_example_projects() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
-    local owner home status
-    if owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" \
-        && home="$(ods_pixel_owner_home "$owner")" \
-        && status="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
-            "${INSTALL_DIR:?}/installers/lib/pixel-example-projects.py" \
-            --workspace "$home/.openclaw/workspace-pixel" 2>>"$LOG_FILE")"; then
-        log "Portal example projects: $status"
-    else
-        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project. Nothing in your Portal workspace was replaced. Rerun the installer to try again, or ask on Discord: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)"
+    local owner home status code=0
+    if ! owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || ! home="$(ods_pixel_owner_home "$owner")"; then
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: it could not find the Portal owner's account or home folder. Nothing in your Portal workspace was changed. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)"
+        return 0
     fi
+    status="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
+        "${INSTALL_DIR:?}/installers/lib/pixel-example-projects.py" \
+        --workspace "$home/.openclaw/workspace-pixel" 2>>"$LOG_FILE")" || code=$?
+    case "$code" in
+        0) log "Portal example projects: $status" ;;
+        3) log "Portal example projects not added: $status" ;;
+        4) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: $status Nothing in your Portal workspace was replaced. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)" ;;
+        *) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: its copy step stopped unexpectedly (exit $code). Nothing in your Portal workspace was replaced. Ask on Discord with the details from $LOG_FILE: ${ODS_HELP_DISCORD_URL}" ;;
+    esac
     return 0
 }
 

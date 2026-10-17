@@ -1661,7 +1661,8 @@ export default function Pixel({ systemStatus = null }) {
         // The owner moved on (another click, chat or task) while it published.
         if (controller.signal.aborted || chatIdRef.current !== chatId) return
         if (exampleState.current.busy) { setStopError(busyText); return }
-        exampleState.current.startNewChat()
+        // Like any other project row, opening it keeps an unsent draft.
+        exampleState.current.startNewChat(true)
         setPreview(published); setPreviewRefresh(0); setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceExpanded(false)
       } catch (error) {
         if (controller.signal.aborted) return

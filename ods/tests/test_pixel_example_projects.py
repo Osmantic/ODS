@@ -46,7 +46,7 @@ PUBLISHED = {
     'ui.js': '5d0138ba4517d812359d4dd474f6febccf4dc703870412234a092cf8a04ef7f1',
     'world.js': 'b45864ccd2bed3d9413e571a167683f8b44cba29559bbee856a9f4d56ff8aff5',
 }
-WARNING = 'WARN: Portal is ready, but ODS could not add its Elf of Doom example project.'
+WARNING = 'WARN: Portal is ready, but ODS could not add its Elf of Doom example project: '
 # Not a Discord invite: tests/test-help-links.sh rejects any other invite.
 HELP_URL = 'https://help.invalid/ods'
 POSIX_OWNER = pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0,
@@ -135,6 +135,13 @@ def test_readme_says_where_it_is_how_to_play_and_how_it_was_made():
     assert 'ODS updates never overwrite or delete this folder. If you delete or rename it, ODS does not add it again.' in prose
     assert 'ODS never overwrites' not in prose and 'fresh copy' not in prose
     assert '"In elf-of-doom, make the arrows give 7"' in prose
+    # Opened from the sidebar, a follow-up has no folder to go on until it is named.
+    assert ('To ask Portal for a change after opening the game from the sidebar, name the folder in your request, '
+            'for example "In elf-of-doom, make the arrows give 7".') in prose
+    # Best-effort routing, said as such.
+    assert ('Portal tries to keep new games in their own Playground folder and to change this one only when you '
+            'name it.') in prose
+    assert 'always gets its own' not in prose and 'changes this folder only when' not in prose
     assert 'Qwen3.8-Flash-Next' in text
     assert 'See how it was made: https://odsspark.com\n' in text
     # The folder is read inside a workspace, where a relative link resolves to nothing.
@@ -236,8 +243,10 @@ def test_macos_update_adds_examples_after_the_proved_update():
     source = (ROOT / 'installers/macos/lib/pixel-native-update.py').read_text(encoding='utf-8')
     finalize = source.index("helper('pixel-native-finalize').finalize_update(preparation)")
     identity = source.index("outcome['portalIdentityMigration'] = migrate_public_identity(")
-    added = source.index("outcome['exampleProjects'] = add_example_projects(preparation=preparation)")
+    # Logged privately, never part of the outcome the update prints.
+    added = source.index("log_example_projects(work, add_example_projects(preparation=preparation))")
     assert finalize < identity < added
+    assert "outcome['exampleProjects']" not in source
 
 
 # ------------------------------------------------------- create-only copy --
@@ -261,7 +270,7 @@ def test_fresh_workspace_gets_a_private_exact_copy(workspace):
     record = workspace / examples.RECORD
     info = record.lstat()
     assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == os.getuid()
-    assert record.read_bytes() == b'{"schemaVersion":1,"received":["elf-of-doom"]}\n'
+    assert record.read_bytes() == b'{"schemaVersion":1,"received":["elf-of-doom"],"added":["elf-of-doom"]}\n'
     assert sorted(path.name for path in workspace.iterdir()) == [examples.RECORD, 'Playground']
     before = snapshot(project)
     assert examples.add_projects(workspace) == {'elf-of-doom': 'previously-received'}
@@ -289,6 +298,8 @@ def test_an_owner_entry_of_that_name_is_recorded_so_it_is_never_replaced_later(w
     (workspace / 'Playground').mkdir(mode=0o700)
     (workspace / 'Playground/elf-of-doom').mkdir()
     assert examples.add_projects(workspace) == {'elf-of-doom': 'present'}
+    # Received, but never added: Portal keeps treating it as the owner's own.
+    assert (workspace / examples.RECORD).read_bytes() == b'{"schemaVersion":1,"received":["elf-of-doom"],"added":[]}\n'
     (workspace / 'Playground/elf-of-doom').rmdir()
     assert examples.add_projects(workspace) == {'elf-of-doom': 'previously-received'}
     assert list((workspace / 'Playground').iterdir()) == []
@@ -296,27 +307,37 @@ def test_an_owner_entry_of_that_name_is_recorded_so_it_is_never_replaced_later(w
 
 @POSIX_OWNER
 def test_other_received_names_are_kept_in_the_record(workspace):
-    (workspace / examples.RECORD).write_bytes(b'{"schemaVersion":1,"received":["future-example"]}\n')
+    (workspace / examples.RECORD).write_bytes(
+        b'{"schemaVersion":1,"received":["future-example","owner-example"],"added":["future-example"]}\n')
     (workspace / examples.RECORD).chmod(0o600)
     assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
-    assert (workspace / examples.RECORD).read_bytes() == b'{"schemaVersion":1,"received":["elf-of-doom","future-example"]}\n'
+    assert (workspace / examples.RECORD).read_bytes() == (
+        b'{"schemaVersion":1,"received":["elf-of-doom","future-example","owner-example"],'
+        b'"added":["elf-of-doom","future-example"]}\n')
 
 
 @POSIX_OWNER
-@pytest.mark.parametrize('kind', ['not-json', 'wrong-shape', 'boolean-version', 'too-large', 'folder', 'link', 'hard-link'])
+@pytest.mark.parametrize('kind', ['not-json', 'wrong-shape', 'boolean-version', 'no-added', 'added-not-received',
+                                  'too-large', 'folder', 'link', 'hard-link'])
 def test_an_unusable_record_adds_nothing_and_is_left_alone(workspace, tmp_path, kind):
     record = workspace / examples.RECORD
     outside = tmp_path.resolve() / 'outside.json'
-    outside.write_bytes(b'{"schemaVersion":1,"received":[]}\n')
+    outside.write_bytes(b'{"schemaVersion":1,"received":[],"added":[]}\n')
     if kind == 'not-json':
         record.write_bytes(b'not json\n')
     elif kind == 'wrong-shape':
-        record.write_bytes(b'{"schemaVersion":1,"received":"elf-of-doom"}\n')
+        record.write_bytes(b'{"schemaVersion":1,"received":"elf-of-doom","added":[]}\n')
     elif kind == 'boolean-version':
-        record.write_bytes(b'{"schemaVersion":true,"received":[]}\n')
+        record.write_bytes(b'{"schemaVersion":true,"received":[],"added":[]}\n')
+    elif kind == 'no-added':
+        record.write_bytes(b'{"schemaVersion":1,"received":[]}\n')
+    elif kind == 'added-not-received':
+        record.write_bytes(b'{"schemaVersion":1,"received":[],"added":["elf-of-doom"]}\n')
     elif kind == 'too-large':
-        record.write_bytes(b'{"schemaVersion":1,"received":[' + b'"x",' * 2000 + b'"x"]}\n')
+        record.write_bytes(b'{"schemaVersion":1,"added":[],"received":[' + b'"x",' * 2000 + b'"x"]}\n')
     elif kind == 'folder':
+        # os.fdopen() refuses a folder descriptor outright, so the type is
+        # checked on the raw descriptor first.
         record.mkdir()
     elif kind == 'link':
         record.symlink_to(outside)
@@ -385,7 +406,7 @@ def test_an_unsafe_workspace_or_playground_is_refused_without_creating_anything(
         (workspace / 'Playground').mkdir()
         (workspace / 'Playground').chmod(0o775)
     before = snapshot(tmp_path.resolve())
-    with pytest.raises((ValueError, OSError)):
+    with pytest.raises(examples.LayoutRefused):
         examples.add_projects(path)
     assert snapshot(tmp_path.resolve()) == before
 
@@ -592,6 +613,43 @@ def test_a_changed_source_copies_nothing(workspace, tmp_path, change):
 
 
 @POSIX_OWNER
+def test_the_command_names_the_cause_and_marks_a_layout_it_never_writes_into(workspace, monkeypatch, capsys):
+    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(workspace)])
+    real = examples._write
+
+    def full(*_args):
+        raise OSError(errno.ENOSPC, 'No space left on device')
+
+    monkeypatch.setattr(examples, '_write', full)
+    assert examples.main() == examples.NOT_ADDED
+    out, err = capsys.readouterr()
+    assert out == ('a file could not be written in the Portal workspace (No space left on device). '
+                   "Free some disk space or fix that folder's permissions, then rerun the installer.\n")
+    assert 'example projects not added: OSError' in err
+    monkeypatch.setattr(examples, '_write', real)
+    monkeypatch.setitem(examples.EXAMPLES['elf-of-doom'], 'index.html', '0' * 64)
+    assert examples.main() == examples.NOT_ADDED
+    assert capsys.readouterr().out == ("ODS's own copy of the game files is damaged or incomplete. "
+                                       'Download ODS again, then rerun the installer.\n')
+    monkeypatch.undo()
+    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(workspace)])
+    assert examples.main() == 0
+    assert capsys.readouterr().out == '{"elf-of-doom":"added"}\n'
+    # A layout only the owner can change: rerunning cannot help, so none is suggested.
+    workspace.chmod(0o770)
+    assert examples.main() == examples.LAYOUT_REFUSED
+    out, err = capsys.readouterr()
+    assert out.startswith('ODS does not write into this workspace layout: the Portal workspace ') and out.count('\n') == 1
+    assert 'private owner workspace required' in out and 'rerun' not in out.lower()
+    assert 'example projects not added: LayoutRefused' in err
+    missing = workspace.parent / 'missing-workspace'
+    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(missing)])
+    assert examples.main() == examples.NOT_ADDED
+    assert capsys.readouterr().out == (f'the Portal workspace folder {missing} was not found. '
+                                       'Rerun the installer so it sets Portal up again.\n')
+
+
+@POSIX_OWNER
 def test_only_the_pinned_files_are_copied(workspace, tmp_path):
     source = source_copy(tmp_path)
     (source / 'elf-of-doom/notes.txt').write_bytes(b'not part of the example\n')
@@ -665,15 +723,33 @@ def test_linux_step_adds_the_game_quietly_then_reports_it_present(workspace, tmp
 
 
 @POSIX_OWNER
-def test_linux_step_warns_and_continues_when_the_copy_fails(workspace, tmp_path):
-    workspace.chmod(0o770)
+def test_linux_step_warns_with_the_cause_and_continues_when_the_copy_fails(tmp_path):
+    home = tmp_path.resolve() / 'home-without-portal'
+    home.mkdir()
     log = tmp_path.resolve() / 'install.log'
-    result = run_linux_step(workspace.parents[1], log)
+    result = run_linux_step(home, log)
     assert result.returncode == 0, result.stderr
     warning, after = result.stdout.splitlines()
-    assert warning.startswith(WARNING) and HELP_URL in warning and str(log) in warning
+    assert warning.startswith(WARNING + f'the Portal workspace folder {home}/.openclaw/workspace-pixel was not found. '
+                              'Rerun the installer so it sets Portal up again. Nothing in your Portal workspace was replaced.')
+    assert HELP_URL in warning and str(log) in warning
     assert after == 'installer continues'
-    assert 'private owner workspace required' in log.read_text(encoding='utf-8')
+    assert 'example projects not added: FileNotFoundError' in log.read_text(encoding='utf-8')
+    assert list(home.iterdir()) == []
+
+
+@POSIX_OWNER
+def test_linux_step_only_logs_a_workspace_layout_it_never_writes_into(workspace, tmp_path):
+    # The owner's own permissions persist across reruns: no console line, ever.
+    workspace.chmod(0o770)
+    log = tmp_path.resolve() / 'install.log'
+    for _attempt in range(2):
+        result = run_linux_step(workspace.parents[1], log)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == 'installer continues\n'
+    text = log.read_text(encoding='utf-8')
+    assert text.count('Portal example projects not added: ODS does not write into this workspace layout: ') == 2
+    assert 'private owner workspace required' in text
     assert list(workspace.iterdir()) == []
 
 
@@ -731,13 +807,29 @@ def test_macos_step_adds_the_game_quietly_through_the_resolved_install(tmp_path)
 
 
 @POSIX_OWNER
-def test_macos_step_warns_and_continues_when_the_copy_fails(tmp_path):
-    install, _workspace = macos_install(tmp_path)
+def test_macos_step_warns_with_the_cause_and_continues_when_the_copy_fails(tmp_path):
+    install, workspace = macos_install(tmp_path)
     log = tmp_path.resolve() / 'install.log'
     result = run_macos_step(install, log)
     assert result.returncode == 0, result.stderr
     warning, after = result.stdout.splitlines()
-    assert warning.startswith(WARNING) and HELP_URL in warning and str(log) in warning
+    assert warning.startswith(WARNING + f'the Portal workspace folder {workspace} was not found. '
+                              'Rerun the installer so it sets Portal up again.')
+    assert HELP_URL in warning and str(log) in warning
     assert after == 'installer continues'
     assert 'FileNotFoundError' in log.read_text(encoding='utf-8')
     assert not (install / 'data').exists()
+
+
+@POSIX_OWNER
+def test_macos_step_only_logs_a_workspace_layout_it_never_writes_into(tmp_path):
+    install, workspace = macos_install(tmp_path)
+    workspace.mkdir(parents=True)
+    workspace.chmod(0o770)
+    log = tmp_path.resolve() / 'install.log'
+    result = run_macos_step(install, log)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == 'installer continues\n'
+    text = log.read_text(encoding='utf-8')
+    assert 'Portal example projects not added: ODS does not write into this workspace layout: ' in text
+    assert list(workspace.iterdir()) == []
