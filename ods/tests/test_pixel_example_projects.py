@@ -435,6 +435,23 @@ def test_an_unusable_record_adds_nothing_and_is_left_alone(workspace, tmp_path, 
 
 
 @POSIX_OWNER
+@pytest.mark.parametrize('unreadable', ['records', 'record'])
+def test_a_record_that_cannot_be_read_adds_nothing_and_is_only_logged(workspace, capsys, unreadable):
+    # An EACCES (or EIO) on the record folder or file in Portal's state folder
+    # is the record being unusable, never a workspace write failure.
+    path = write_record(workspace, record_bytes(workspace, [], []))
+    (path.parent if unreadable == 'records' else path).chmod(0)
+    try:
+        assert add(workspace) == {'elf-of-doom': 'record-unusable'}
+    finally:
+        path.parent.chmod(0o700)
+        path.chmod(0o600)
+    assert not (workspace / 'Playground').exists()
+    assert 'example record in .ods-example-projects of the Portal state folder could not be read' in capsys.readouterr().err
+    assert path.read_bytes() == record_bytes(workspace, [], [])
+
+
+@POSIX_OWNER
 def test_a_failed_record_write_keeps_the_added_example_and_the_next_run_records_it(workspace, monkeypatch, capsys):
     real = examples._write_record
 
@@ -472,8 +489,8 @@ def test_a_run_stopped_between_the_rename_and_the_record_is_recovered(workspace,
 
 
 @POSIX_OWNER
-@pytest.mark.parametrize('kind', ['edited', 'empty', 'partial', 'extra-file', 'one-byte', 'linked-file', 'file', 'link',
-                                  'dangling-link'])
+@pytest.mark.parametrize('kind', ['edited', 'empty', 'partial', 'extra-file', 'one-byte', 'appended-byte', 'linked-file',
+                                  'hard-link', 'file', 'link', 'dangling-link'])
 def test_an_existing_entry_of_that_name_is_never_touched(workspace, tmp_path, kind):
     playground = workspace / 'Playground'
     playground.mkdir(mode=0o700)
@@ -489,7 +506,7 @@ def test_an_existing_entry_of_that_name_is_never_touched(workspace, tmp_path, ki
     elif kind == 'partial':
         target.mkdir()
         shutil.copyfile(SOURCE / 'elf-of-doom/index.html', target / 'index.html')
-    elif kind in ('extra-file', 'one-byte', 'linked-file'):
+    elif kind in ('extra-file', 'one-byte', 'appended-byte', 'linked-file', 'hard-link'):
         # The pinned files with one difference: an owner's own folder.
         shutil.copytree(SOURCE / 'elf-of-doom', target)
         if kind == 'extra-file':
@@ -497,6 +514,14 @@ def test_an_existing_entry_of_that_name_is_never_touched(workspace, tmp_path, ki
         elif kind == 'one-byte':
             body = (target / 'ui.js').read_bytes()
             (target / 'ui.js').write_bytes(body[:-1] + bytes([body[-1] ^ 1]))
+        elif kind == 'appended-byte':
+            # The pinned bytes plus one more: only a read past their length tells them apart.
+            (target / 'ui.js').write_bytes((target / 'ui.js').read_bytes() + b'x')
+        elif kind == 'hard-link':
+            # The pinned bytes, but the same file as one outside the folder.
+            shutil.copyfile(target / 'ui.js', outside / 'ui.js')
+            (target / 'ui.js').unlink()
+            os.link(outside / 'ui.js', target / 'ui.js')
         else:
             shutil.copyfile(target / 'ui.js', outside / 'ui.js')
             (target / 'ui.js').unlink()

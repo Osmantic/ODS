@@ -441,12 +441,23 @@ def _add(playground, name, files):
 
 
 def _read_record(state, workspace):
-    records = _records(state)
+    """The record's (received, added) names; RecordUnusable when it cannot be trusted or read.
+
+    An error opening or reading the record folder or file in the state folder
+    (EACCES, EIO) is logged and makes the record unusable: nothing is added,
+    and nothing in the workspace is blamed for it.
+    """
     try:
-        return _received(records, workspace)
-    finally:
-        if records is not None:
-            os.close(records)
+        records = _records(state)
+        try:
+            return _received(records, workspace)
+        finally:
+            if records is not None:
+                os.close(records)
+    except OSError as error:
+        print(f'the example record in {RECORD_DIRECTORY} of the Portal state folder could not be read: {error}',
+              file=sys.stderr)
+        raise RecordUnusable() from error
 
 
 def _write_record(state, workspace, received, added):
@@ -475,7 +486,7 @@ def add_projects(workspace, state_dir, source=SOURCE):
     outcome: 'added'; 'present' when something else of that name already
     exists; 'previously-received' when the record lists it (the owner may have
     deleted or renamed it since); or 'record-unusable' when the record cannot
-    be trusted. 'added' and 'present' are recorded as received, so a later run
+    be trusted or read. 'added' and 'present' are recorded as received, so a later run
     never adds that example again, and only 'added' is recorded as added: an
     owner's own folder of that name never becomes the example. Raises
     LayoutRefused for a workspace layout this helper never writes into.
