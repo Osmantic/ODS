@@ -15,6 +15,7 @@ Modules:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -928,12 +929,15 @@ def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:
     )
 
 
-def _call_agent_env_update(raw_text: str) -> dict[str, Any]:
+def _call_agent_env_update(raw_text: str, expected_revision: Optional[str] = None) -> dict[str, Any]:
     """Route .env writes through the host agent (filesystem is :ro in container)."""
+    payload = {"raw_text": raw_text, "backup": True}
+    if expected_revision is not None:
+        payload["expected_revision"] = expected_revision
     return request_agent_json(
         "POST",
         "/v1/env/update",
-        payload={"raw_text": raw_text, "backup": True},
+        payload=payload,
         timeout=60,
     )
 
@@ -970,6 +974,7 @@ def _build_settings_env_payload(
 
     return {
         "path": _relative_install_path(env_path),
+        "revision": _env_revision(raw_text),
         "raw": "",
         "values": public_values,
         "fields": public_fields,
@@ -983,6 +988,19 @@ def _build_settings_env_payload(
     }
 
 
+def _env_revision(raw_text: str) -> str:
+    """Opaque revision of the environment text, including masked secret fields."""
+    return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+
+def _persisted_env_revision() -> str:
+    try:
+        raw_text = _resolve_runtime_env_path().read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raw_text = ""
+    return _env_revision(raw_text)
+
+
 def _relative_install_path(path: Path) -> str:
     try:
         return str(path.relative_to(_resolve_install_root())).replace("\\", "/")
@@ -992,6 +1010,12 @@ def _relative_install_path(path: Path) -> str:
 
 def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     mode = payload.get("mode", "form")
+    if "revision" in payload:
+        revision = payload["revision"]
+        if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision):
+            raise HTTPException(status_code=400, detail={"message": "Invalid environment revision."})
+        if revision != _persisted_env_revision():
+            raise HTTPException(status_code=409, detail={"message": "Configuration changed since this editor loaded. Reload the environment editor before saving."})
     env_path = _resolve_runtime_env_path()
     current_values, _ = _read_env_map_from_path(env_path)
     schema_properties, required_keys = _load_env_schema()
@@ -1808,7 +1832,8 @@ async def api_settings_summary(api_key: str = Depends(verify_api_key)):
 @app.get("/api/settings/env")
 async def api_settings_env(api_key: str = Depends(verify_api_key)):
     cached = _cache.get("settings_env")
-    if cached is not None:
+    revision = await asyncio.to_thread(_persisted_env_revision)
+    if isinstance(cached, dict) and cached.get("revision") == revision:
         return cached
 
     result = await asyncio.to_thread(_build_settings_env_payload)
@@ -1832,10 +1857,13 @@ async def api_settings_env_save(
         )
 
     try:
-        agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
+        if "revision" in payload:
+            agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text, expected_revision=payload["revision"])
+        else:
+            agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
     except AgentHTTPError as exc:
         detail = exc.detail
-        raise HTTPException(status_code=503, detail={"message": detail}) from exc
+        raise HTTPException(status_code=409 if exc.status_code == 409 else 503, detail={"message": detail}) from exc
     except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,

@@ -23,6 +23,132 @@ def test_settings_parser_strips_one_pair_and_preserves_unmatched_quotes():
     }
 
 
+def test_settings_save_refuses_stale_full_form_without_losing_recent_edit(test_client, settings_env_fixture):
+    headers = test_client.auth_headers
+    first = test_client.get("/api/settings/env", headers=headers).json()
+    stale = test_client.get("/api/settings/env", headers=headers).json()
+
+    def form(snapshot, changes):
+        payload = {"mode": "form", "values": {**snapshot["values"], **changes}}
+        if "revision" in snapshot:
+            payload["revision"] = snapshot["revision"]
+        return payload
+
+    saved = test_client.put("/api/settings/env", headers=headers, json=form(first, {"LLM_BACKEND": "cloud"}))
+    assert saved.status_code == 200
+    conflict = test_client.put("/api/settings/env", headers=headers, json=form(stale, {"WEBUI_AUTH": "false"}))
+
+    assert conflict.status_code == 409
+    persisted = settings_env_fixture["env_path"].read_text(encoding="utf-8")
+    assert "LLM_BACKEND=cloud" in persisted
+    assert "WEBUI_AUTH=true" in persisted
+    assert "OPENAI_API_KEY=sk-live-secret" in persisted
+    assert saved.json()["revision"] != first["revision"]
+    assert saved.json()["values"]["OPENAI_API_KEY"] == ""
+
+
+def test_settings_cached_get_observes_external_edit_and_allows_reloaded_save(test_client, settings_env_fixture):
+    headers = test_client.auth_headers
+    first = test_client.get("/api/settings/env", headers=headers).json()
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8").replace("LLM_BACKEND=local", "LLM_BACKEND=cloud"), encoding="utf-8")
+    reloaded = test_client.get("/api/settings/env", headers=headers).json()
+
+    assert reloaded["revision"] != first["revision"]
+    assert reloaded["values"]["LLM_BACKEND"] == "cloud"
+    saved = test_client.put("/api/settings/env", headers=headers,
+                            json={"mode": "form", "revision": reloaded["revision"],
+                                  "values": {**reloaded["values"], "WEBUI_AUTH": "false"}})
+    assert saved.status_code == 200
+    assert "LLM_BACKEND=cloud" in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("revision", [None, "", "not-a-revision", 5])
+def test_settings_invalid_revision_refuses_write(test_client, settings_env_fixture, revision):
+    env_path = settings_env_fixture["env_path"]
+    original = env_path.read_bytes()
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "revision": revision, "values": {"LLM_BACKEND": "cloud"}})
+    assert response.status_code == 400
+    assert env_path.read_bytes() == original
+
+
+def test_settings_secret_clear_changes_revision_and_cannot_be_undone_by_stale_editor(test_client, settings_env_fixture):
+    headers = test_client.auth_headers
+    snapshot = test_client.get("/api/settings/env", headers=headers).json()
+    cleared = test_client.put("/api/settings/env", headers=headers,
+                              json={"mode": "form", "revision": snapshot["revision"],
+                                    "values": snapshot["values"], "clearSecrets": ["RAG_OPENAI_API_KEY"]})
+    assert cleared.status_code == 200
+    assert cleared.json()["revision"] != snapshot["revision"]
+    stale = test_client.put("/api/settings/env", headers=headers,
+                            json={"mode": "form", "revision": snapshot["revision"], "values": snapshot["values"]})
+    assert stale.status_code == 409
+    assert "RAG_OPENAI_API_KEY=rag-live-secret" not in settings_env_fixture["env_path"].read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("auth_value", [None, "false"])
+def test_settings_real_writer_revision_allows_next_save_after_network_auth_enforcement(
+    test_client, settings_env_fixture, monkeypatch, auth_value
+):
+    import hashlib
+    import test_host_agent
+    from host_agent_client import AgentHTTPError
+
+    host = test_host_agent._mod
+    env_path = settings_env_fixture["env_path"]
+    text = env_path.read_text(encoding="utf-8").replace("WEBUI_AUTH=true\n", "")
+    text += "BIND_ADDRESS=0.0.0.0\n"
+    if auth_value is not None:
+        text += f"WEBUI_AUTH={auth_value}\n"
+    env_path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(host, "INSTALL_DIR", env_path.parent)
+    monkeypatch.setattr(host, "DATA_DIR", env_path.parent / "data")
+    monkeypatch.setattr(host, "AGENT_API_KEY", "test-key")
+
+    def real_write(raw_text, expected_revision=None):
+        body = {"raw_text": raw_text, "backup": True}
+        if expected_revision is not None:
+            body["expected_revision"] = expected_revision
+        handler = test_host_agent._FakeHandler(json.dumps(body).encode())
+        host.AgentHandler._handle_env_update(handler)
+        result = handler.parse_response()
+        if handler.response_code != 200:
+            assert isinstance(handler.response_code, int)
+            raise AgentHTTPError(handler.response_code, result["error"])
+        return result
+
+    monkeypatch.setattr("main._call_agent_env_update", real_write)
+    headers = test_client.auth_headers
+    snapshot = test_client.get("/api/settings/env", headers=headers).json()
+    saved = test_client.put("/api/settings/env", headers=headers,
+                            json={"mode": "form", "revision": snapshot["revision"],
+                                  "values": {**snapshot["values"], "WEBUI_AUTH": "false"}})
+    assert saved.status_code == 200
+    revision = hashlib.sha256(env_path.read_text(encoding="utf-8").encode()).hexdigest()
+    assert saved.json()["revision"] == revision
+    second = test_client.put("/api/settings/env", headers=headers,
+                             json={"mode": "form", "revision": saved.json()["revision"],
+                                   "values": {**saved.json()["values"], "LLM_BACKEND": "cloud"}})
+    assert second.status_code == 200
+    assert "WEBUI_AUTH=true" in env_path.read_text(encoding="utf-8")
+
+
+def test_settings_maps_writer_revision_conflict_to_409(test_client, settings_env_fixture, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def conflicted_write(raw_text, expected_revision):
+        raise AgentHTTPError(409, "Configuration changed. Reload the editor before saving.")
+
+    monkeypatch.setattr("main._call_agent_env_update", conflicted_write)
+    headers = test_client.auth_headers
+    snapshot = test_client.get("/api/settings/env", headers=headers).json()
+    response = test_client.put("/api/settings/env", headers=headers,
+                               json={"mode": "form", "revision": snapshot["revision"], "values": {"LLM_BACKEND": "cloud"}})
+    assert response.status_code == 409
+    assert "LLM_BACKEND=local" in settings_env_fixture["env_path"].read_text(encoding="utf-8")
+
+
 @pytest.fixture()
 def settings_env_fixture(tmp_path, monkeypatch):
     install_root = tmp_path / "ods"
@@ -100,7 +226,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
         lambda method, path, *, timeout: {"status": "ok"},
     )
 
-    def fake_env_update(raw_text):
+    def fake_env_update(raw_text, expected_revision=None):
         backup_dir = data_root / "config-backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
         backup_path = backup_dir / ".env.backup.test"
