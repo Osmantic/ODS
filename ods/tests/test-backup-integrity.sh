@@ -155,7 +155,7 @@ pass "concurrent same-second backups receive distinct IDs"
 
 info "Deleting a compressed backup by bare ID"
 (cd "$LIFECYCLE_DIR" && mkdir -p 20260601-120000 && echo x > 20260601-120000/f \
-  && tar czf 20260601-120000.tar.gz 20260601-120000 && rm -rf 20260601-120000)
+  && printf '{"manifest_version":"1.0","backup_id":"20260601-120000","backup_type":"config"}\n' > 20260601-120000/manifest.json && tar czf 20260601-120000.tar.gz 20260601-120000 && rm -rf 20260601-120000)
 echo y | ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" -d 20260601-120000 >/dev/null
 [[ ! -f "$LIFECYCLE_DIR/20260601-120000.tar.gz" ]] || fail "delete left the compressed backup behind"
 pass "delete removes compressed backups by bare ID"

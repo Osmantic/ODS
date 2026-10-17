@@ -15,18 +15,22 @@ PATH="$MOCK_BIN:$PATH"
 
 ODS_BACKUP_SOURCE_ONLY=true source "$SCRIPT_DIR/../ods-backup.sh"
 BACKUP_ROOT="$TEST_BACKUP_ROOT"
-mkdir -p "$BACKUP_ROOT/backup-fixture"
+mkdir -p "$BACKUP_ROOT/backup-fixture-20261009-000000"
+printf '{"manifest_version":"1.0","backup_id":"backup-fixture-20261009-000000","backup_type":"config"}\n' \
+    > "$BACKUP_ROOT/backup-fixture-20261009-000000/manifest.json"
 
-rm() {
+python3() {
+    printf called > "$TEST_BACKUP_ROOT/helper-called"
     return 1
 }
 
-if printf 'y\n' | delete_backup backup-fixture >/dev/null 2>&1; then
-    echo "FAIL: delete_backup reported success after rm failed"
+if printf 'y\n' | delete_backup backup-fixture-20261009-000000 >/dev/null 2>&1; then
+    echo "FAIL: delete_backup reported success after its deletion helper failed"
     exit 1
 fi
-[[ -d "$BACKUP_ROOT/backup-fixture" ]] || {
+[[ -d "$BACKUP_ROOT/backup-fixture-20261009-000000" ]] || {
     echo "FAIL: failed deletion unexpectedly removed the backup"
     exit 1
 }
+[[ -f "$TEST_BACKUP_ROOT/helper-called" ]] || { echo "FAIL: fixture never reached the deletion helper"; exit 1; }
 echo "PASS: failed backup deletion propagates non-zero status"
