@@ -78,7 +78,7 @@ def client(response, calls):
 
 @pytest.mark.asyncio
 async def test_list_relays_the_present_examples_with_the_edge_key():
-    calls = []
+    calls: list[dict] = []
     with client(Response(body={"schemaVersion": 1, "projects": ["elf-of-doom"]}), calls) as factory:
         assert await pixel.pixel_example_projects() == {"schemaVersion": 1, "projects": ["elf-of-doom"]}
     assert calls[0]["method"] == "GET"
@@ -114,7 +114,7 @@ async def test_an_ambiguous_list_is_an_error_not_a_guess(response):
 
 @pytest.mark.asyncio
 async def test_open_returns_the_exact_verified_receipt():
-    calls = []
+    calls: list[dict] = []
     with client(Response(body={"schemaVersion": 1, "preview": PREVIEW}), calls):
         result = await pixel.pixel_example_project_open(pixel.ExampleProjectOpenRequest(name="elf-of-doom"))
     assert result == {"schemaVersion": 1, "preview": PREVIEW}
