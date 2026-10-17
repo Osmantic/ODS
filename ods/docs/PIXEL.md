@@ -778,12 +778,62 @@ act as a capability gate:
   Every creative artifact follows the same model-authored workspace path.
   Open-ended demos, games, task boards, animated SVGs, voxel scenes, named
   designs, and arbitrary sites must be written by the active model before the
-  preview adapter can publish them. ODS contains no creative templates or
-  generated starter bytes. The adapter accepts only the existing relative
-  directory, so safety enforcement, static validation, snapshot isolation, and
-  HTTP readback cannot be confused with authorship. Pixel may author either a
-  self-contained `index.html` or a richer set of local files; ODS imposes no
-  creative-size ceiling and publishes only the exact completed snapshot.
+  preview adapter can publish them. The adapter never supplies or fabricates
+  creative bytes, and new creative work is always written by the active model.
+  ODS ships one finished example project, Elf of Doom, which Portal wrote in
+  ODS from natural-language prompts. The installers copy it to
+  `Playground/elf-of-doom` whenever Playground/elf-of-doom is absent and the
+  workspace has never received it (a private record in the OpenClaw state
+  folder, `.ods-example-projects/<SHA-256 of the workspace path>.json`, which
+  the agent's sandbox never mounts, lists each example received, so a deleted
+  or renamed copy is never added again, and each one ODS itself added; the
+  run after one that stopped before writing it recognizes ODS's own unchanged
+  copy), and never replace, merge into or delete an existing entry of that
+  name; it is ordinary owner content. Only a folder the record says ODS
+  added is the example: an owner's own earlier `Playground/elf-of-doom` is
+  neither listed as it nor guarded.
+  While the folder exists, Portal's sidebar lists it under
+  Projects > Playground like any other project, and clicking it publishes that
+  existing folder through the same create-only preview service with no model
+  run (the plugin's gateway route `/pixel-ods/example-projects`, relayed by
+  the ingress, the edge and `/api/pixel/example-projects`). Portal changes
+  it only when the owner's own message starts with "In elf-of-doom,", for
+  example "In elf-of-doom, make the arrows give 7"; on such a turn project
+  routing keeps every write, edit and exec working folder in
+  Playground/elf-of-doom and does not treat the request as a new project.
+  When any other run changes it, ODS puts it back, and the reply Portal
+  shows ends with one line saying so: the run's verification carries it as
+  `notice`, which the ingress adds after the delivered reply
+  (`host/pixel_ingress.mjs`). The plugin (`plugin/example-guard.mjs`) keeps
+  a known-good tree of the folder in memory:
+
+  - When a run starts while no other Portal run works in that workspace, the
+    folder as it is then becomes the known-good tree; a run never restores
+    when it starts. So what changed while Portal was idle is the owner's: a
+    hand edit, a folder the owner deleted, or what an earlier run's
+    background process wrote after that run ended.
+  - For a run whose message does not have that form, the folder is compared
+    with the tree after each tool call, at finalize and when the run ends,
+    and restored exactly on any difference.
+  - From the start of a run with that form until it ends (or its deadline
+    plus two minutes, if the gateway never sees its end), no other run's
+    change is undone, and its end makes the folder as it is then the
+    known-good tree. So with two chats at once, what one changes while the
+    other names the example stays. A run that starts while another works
+    keeps the tree it finds.
+
+  The guard protects a folder of at most 512 files and folders and 16 MiB
+  that holds no link or hard-linked file; otherwise it leaves the folder to
+  the owner and logs that once. After a gateway restart the folder as the
+  gateway first finds it is the known-good tree. To remove the example, the
+  owner deletes the folder; the record keeps the installers from adding it
+  again. This keeps the owner's game safe from mistakes; it is not a
+  sandbox. The adapter accepts only the existing relative
+  directory, so safety enforcement, static validation, snapshot isolation,
+  and HTTP readback cannot be confused with authorship. Pixel may author
+  either a self-contained `index.html` or a richer set of local files; ODS
+  imposes no creative-size ceiling and publishes only the exact completed
+  snapshot.
 
 The status tools read only `/run/ods-pixel/ods-status.json`. The plugin does not
 receive the Docker socket, Dashboard API key, Open WebUI key, host shell, or ODS

@@ -15,8 +15,11 @@ on:
       - 'ods/lib/dashboard-private-state.sh'
       - 'ods/scripts/uninstall-compose-volumes.py'
       - 'ods/installers/lib/pixel-workspace-guidance.py'
+      - 'ods/installers/lib/pixel-example-projects.py'
+      - 'ods/extensions/services/pixel-agent/example-projects/**'
       - 'ods/installers/lib/pixel-host-install.sh'
       - 'ods/tests/test_pixel_workspace_guidance.py'
+      - 'ods/tests/test_pixel_example_projects.py'
       - 'ods/tests/test_macos_pixel_native_install.py'
       - 'ods/tests/test_macos_pixel_native_uninstall.py'
       - 'ods/tests/test_macos_pixel_ops_account.py'
@@ -67,8 +70,11 @@ on:
       - 'ods/lib/dashboard-private-state.sh'
       - 'ods/scripts/uninstall-compose-volumes.py'
       - 'ods/installers/lib/pixel-workspace-guidance.py'
+      - 'ods/installers/lib/pixel-example-projects.py'
+      - 'ods/extensions/services/pixel-agent/example-projects/**'
       - 'ods/installers/lib/pixel-host-install.sh'
       - 'ods/tests/test_pixel_workspace_guidance.py'
+      - 'ods/tests/test_pixel_example_projects.py'
       - 'ods/tests/test_macos_pixel_native_install.py'
       - 'ods/tests/test_macos_pixel_native_uninstall.py'
       - 'ods/tests/test_macos_pixel_ops_account.py'
@@ -182,6 +188,7 @@ jobs:
           ods/tests/test_macos_pixel_native_update.py
           ods/tests/test_macos_pixel_migration_source_proof.py
           ods/tests/test_pixel_workspace_guidance.py
+          ods/tests/test_pixel_example_projects.py
           ods/tests/test_macos_pixel_controller_repair.py
           ods/tests/test_macos_pixel_controller_held_proof.py
           ods/tests/test_macos_pixel_native_finalize.py

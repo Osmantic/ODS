@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Elf of Doom — Archer of Vaighruz</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="game-wrap">
+  <canvas id="game" width="960" height="540"></canvas>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-left">
+      <div class="hero-badge">
+        <div class="hero-emoji"><svg viewBox="0 0 40 40" width="46" height="46" aria-hidden="true">
+          <!-- Faelar: fair skin and long blond hair under a slim circlet. The previous art
+               used green skin, pig ears and a brown horned helm, which read as a brute. -->
+          <ellipse cx="20" cy="23" rx="11.5" ry="13" fill="#e8c39a" stroke="#3a2a1c" stroke-width="1.6"/>
+          <!-- long hair falling behind the shoulders -->
+          <path d="M8 20 Q5 34 11 38 L15 33 Q11 27 12 19 Z" fill="#e6cf82" stroke="#3a2a1c" stroke-width="1.5"/>
+          <path d="M32 20 Q35 34 29 38 L25 33 Q29 27 28 19 Z" fill="#e6cf82" stroke="#3a2a1c" stroke-width="1.5"/>
+          <!-- hair crown / fringe -->
+          <path d="M8.5 21 Q8 8 20 8 Q32 8 31.5 21 Q29 13 20 12.5 Q11 13 8.5 21 Z" fill="#f0dc93" stroke="#3a2a1c" stroke-width="1.5"/>
+          <!-- elven circlet with a small leaf gem -->
+          <path d="M9.5 17.5 Q20 13.5 30.5 17.5" fill="none" stroke="#d9bd63" stroke-width="1.8"/>
+          <circle cx="20" cy="14.6" r="1.7" fill="#7fd6a0" stroke="#3a2a1c" stroke-width="1"/>
+          <!-- eyes, brows, nose, mouth -->
+          <ellipse cx="15.8" cy="22.5" rx="1.7" ry="1.3" fill="#2c4a6b"/>
+          <ellipse cx="24.2" cy="22.5" rx="1.7" ry="1.3" fill="#2c4a6b"/>
+          <path d="M13.8 19.6 Q15.8 18.6 17.6 19.5" fill="none" stroke="#b99b57" stroke-width="1.2" stroke-linecap="round"/>
+          <path d="M22.4 19.5 Q24.2 18.6 26.2 19.6" fill="none" stroke="#b99b57" stroke-width="1.2" stroke-linecap="round"/>
+          <path d="M20 23.5 L19.2 26.4 Q20 27.1 20.9 26.5" fill="none" stroke="#c49a72" stroke-width="1.1" stroke-linecap="round"/>
+          <path d="M17.2 29.6 Q20 31.2 22.8 29.6" fill="none" stroke="#a9695c" stroke-width="1.5" stroke-linecap="round"/>
+          <!-- shoulder line of the elven cloak -->
+          <path d="M7 40 Q20 32 33 40" fill="#3f6b4f" stroke="#3a2a1c" stroke-width="1.5"/>
+        </svg></div>
+        <div class="hero-info">
+          <div class="hero-name">Faelar Brightarrow</div>
+          <div class="bar hp-bar"><div id="hp-fill"></div><span id="hp-text">50/50</span></div>
+          <div class="bar xp-bar"><div id="xp-fill"></div><span id="xp-text">Lv 1</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="hud-center">
+      <div id="zone-label">The Gate of Ash</div>
+      <div id="wave-label">Foes: 0</div>
+      <div id="arrow-label">🏹 Arrows: 24</div>
+    </div>
+    <div class="hud-right">
+      <div class="stat"><span class="stat-ico">🪙</span><span id="gold-text">0</span></div>
+      <div class="stat"><span class="stat-ico">💀</span><span id="kills-text">0</span></div>
+      <div class="stat"><span class="stat-ico">🏹</span><span id="dmg-text">22</span></div>
+      <button id="mute-btn" class="icon-btn" type="button" aria-label="Toggle sound">🔊</button>
+    </div>
+  </div>
+
+  <!-- Boss bar -->
+  <div id="boss-wrap" class="hidden">
+    <div id="boss-name">—</div>
+    <div class="bar boss-bar"><div id="boss-fill"></div></div>
+  </div>
+
+  <div id="vignette"></div>
+
+  <!-- Title screen -->
+  <div id="screen-title" class="screen">
+    <div class="title-card">
+      <div class="ring title-crest" aria-hidden="true">🏹</div>
+      <h1>Elf of Doom</h1>
+      <p class="subtitle">A dungeon crawler made with ODS on the RTX Spark</p>
+      <p class="lore">One elf. One bow. Endless brutes.<br>
+      Run, draw, and loose arrows through great halls of the ashland — <b>grab hearts</b> to mend your wounds and <b>quivers</b> to keep your string singin', then loot, level, and outrun your way to the Cinderfall.</p>
+      <button id="btn-start" class="big-btn" type="button">🏹 Draw Your Bow</button>
+      <div class="controls-hint">
+        <h3>Controls</h3>
+        <ul class="controls-list">
+          <li><b>Arrow keys</b> / <b>WASD</b> — run; you shoot the way you last ran</li>
+          <li><b>Hold Space</b> to keep shooting — or tap <b>J</b> for single arrows</li>
+          <li><b>Hearts</b> heal you, <b>quivers</b> refill your arrows — grab them between waves</li>
+          <li><b>1</b>, <b>2</b>, <b>3</b> — choose a boon when you level up</li>
+          <li><b>Esc</b> or <b>P</b> — pause&nbsp;·&nbsp;<b>Enter</b> — start / retry&nbsp;·&nbsp;<b>M</b> — mute</li>
+          <li>Clicking away from the game pauses it automatically</li>
+        </ul>
+        <div class="controls-objective">
+          Clear every brute in the arena to open the way onward — <b>6 realms</b>, each with its own boss, then <b>Mount Cinderfall</b> and the Hollow Crown.
+        </div>
+      </div>
+      <div class="title-footer">
+        <a class="ods-link" href="https://github.com/Osmantic/ODS" target="_blank" rel="noopener noreferrer">Try ODS</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Level up -->
+  <div id="screen-levelup" class="screen hidden">
+    <div class="panel">
+      <h2>✨ Level Up!</h2>
+      <p class="panel-sub">The wisdom of the Sylvaniai sharpens your aim. Choose a boon:</p>
+      <div id="boon-list" class="boon-list"></div>
+    </div>
+  </div>
+
+  <!-- Game over -->
+  <div id="screen-over" class="screen hidden">
+    <div class="panel">
+      <h2 id="over-title">💀 The Shadow Prevails</h2>
+      <p class="panel-sub" id="over-sub">The last arrow has flown…</p>
+      <div id="over-stats" class="over-stats"></div>
+      <button id="btn-retry" class="big-btn" type="button">↻ Rise Again</button>
+    </div>
+  </div>
+
+  <!-- Victory -->
+  <div id="screen-win" class="screen hidden">
+    <div class="panel">
+      <h2>🌋 The Quest is Done!</h2>
+      <p class="panel-sub">The Hollow Crown is broken, and the elven realms begin their long twilight.</p>
+      <div id="win-stats" class="over-stats"></div>
+      <button id="btn-again" class="big-btn" type="button">↻ Play Again</button>
+    </div>
+  </div>
+
+  <!-- Pause -->
+  <div id="screen-pause" class="screen hidden">
+    <div class="panel">
+      <h2>⏸️ Paused</h2>
+      <p class="panel-sub">The brutes wait politely.</p>
+      <!-- The usual way here is clicking away from the window, which does not put keyboard focus
+           back on the page, so the player arrives with no idea how to continue. Say it plainly. -->
+      <p class="panel-sub pause-hint">
+        Press <b>P</b> or <b>Esc</b> to jump back in &nbsp;·&nbsp; or click <b>Resume</b> below.
+      </p>
+      <button id="btn-resume" class="big-btn" type="button">▶ Resume</button>
+    </div>
+  </div>
+</div>
+<script src="world.js"></script>
+<script src="dungeon.js"></script>
+<script src="chars.js"></script>
+<script src="legacy.js"></script>
+<script src="engine.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

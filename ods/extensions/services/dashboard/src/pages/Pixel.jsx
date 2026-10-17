@@ -6,6 +6,7 @@ import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import {validSourceReview} from '../lib/pixelSourceReview'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
+import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, openExampleProject} from '../lib/exampleProjects'
 import { Link } from 'react-router-dom'
 import HelpLink from '../components/HelpLink'
 import PixelAdvice from '../components/PixelAdvice.jsx'
@@ -632,6 +633,7 @@ export default function Pixel({ systemStatus = null }) {
   const [conversationDeleted, setConversationDeleted] = useState(() => initialChat?.conversationDeleted || false)
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState('')
+  const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
   const [activityRefresh, setActivityRefresh] = useState(0)
   const [workingElapsedSeconds, setWorkingElapsedSeconds] = useState(0)
@@ -1110,6 +1112,7 @@ export default function Pixel({ systemStatus = null }) {
       const context=teamAttempt.current.context
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
+      setExampleError(null)
       try {
         const team=await teams.start({request_id:requestId,task:teamCommand.task,context,...(requestedGoal?{mode:'goal'}:{})})
         if(team){setInput('');teamAttempt.current=null}
@@ -1137,6 +1140,7 @@ export default function Pixel({ systemStatus = null }) {
     updateRestoredActivity('idle')
     setStopping(false)
     setStopError('')
+    setExampleError(null)
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -1581,6 +1585,8 @@ export default function Pixel({ systemStatus = null }) {
     setInput(preserveDraft === true ? input : '')
     setConversationDeleted(false)
     setInterrupted(false)
+    // A failed example open belongs to the task the owner just left.
+    setExampleError(null)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
   }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,input])
@@ -1626,6 +1632,60 @@ export default function Pixel({ systemStatus = null }) {
     return () => window.removeEventListener('ods:pixel-new-task', startNewChat)
   }, [startNewChat])
 
+  // The sidebar's example list may have been checked before Portal was ready.
+  useEffect(() => {
+    if (status === 'available') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+  }, [status])
+
+  // A shipped example project opens from the sidebar like a saved preview:
+  // the host publishes the owner's existing folder, this page checks the
+  // receipt exactly like one from a model run, and a new task shows it in
+  // the Workspace panel. No model runs and no message is sent.
+  const exampleOpen = useRef(null)
+  const exampleState = useRef(null)
+  exampleState.current = {busy: sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy, startNewChat}
+  useEffect(() => {
+    const busyText = 'Stop the current task before opening another project.'
+    const open = async event => {
+      const name = event.detail?.name
+      if (typeof name !== 'string') return
+      if (exampleState.current.busy) { setStopError(busyText); return }
+      exampleOpen.current?.abort()
+      const controller = exampleOpen.current = new AbortController()
+      const chatId = chatIdRef.current
+      setExampleError(null)
+      try {
+        const receipt = await openExampleProject(name, controller.signal)
+        const published = parseVerifiedPreviewFrame({choices:[{finish_reason:'stop'}], pixel:{schemaVersion:1, preview:receipt}})
+        if (!published || published.relativeDirectory !== `Playground/${name}`) throw Object.assign(new Error('Invalid example receipt'), {code:'unavailable'})
+        // The owner moved on (another click, chat or task) while it published.
+        if (controller.signal.aborted || chatIdRef.current !== chatId) return
+        if (exampleState.current.busy) { setStopError(busyText); return }
+        // Like switching conversations: an unsent draft stays with the
+        // conversation the owner left.
+        exampleState.current.startNewChat()
+        setPreview(published); setPreviewRefresh(0); setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceExpanded(false)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        // The sidebar's list is stale in both cases: check it again.
+        if (error?.code === 'missing' || error?.code === 'not-playable') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+        // A folder that is gone or changed is the owner's own doing: no help
+        // link. A preview that failed is a real failure.
+        setExampleError(error?.code === 'missing'
+          ? {text: `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.`}
+          : error?.code === 'not-playable'
+            ? {text: `Portal could not open ${name}: the Playground/${name} folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/${name}".`}
+            : error?.code === 'not-previewable'
+              ? {text: `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`, help: true}
+              : {text: `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`, help: true})
+      } finally {
+        if (exampleOpen.current === controller) exampleOpen.current = null
+      }
+    }
+    window.addEventListener(EXAMPLE_OPEN_EVENT, open)
+    return () => { window.removeEventListener(EXAMPLE_OPEN_EVENT, open); exampleOpen.current?.abort() }
+  }, [])
+
   useEffect(() => {
     const select = event => {
       if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) {
@@ -1649,6 +1709,7 @@ export default function Pixel({ systemStatus = null }) {
       setPreviewRefresh(0)
       setInput(chat.draft)
       setStopError('')
+      setExampleError(null)
       setInterrupted(chat.interrupted)
       setConversationDeleted(chat.conversationDeleted)
       updateRestoredActivity(chat.interrupted ? 'checking' : 'idle')
@@ -2017,6 +2078,7 @@ export default function Pixel({ systemStatus = null }) {
           </div>
           </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{stopError}</p>}
+          {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError.text}{exampleError.help && <> <HelpLink /></>}</p>}
           {contextControl.historyUnknown && <div className="portal-context-status" role="status">
             {contextControl.resolving && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
             <span>{contextControl.recoveryNotice || 'The previous turn could not be confirmed. Resolve it before continuing; your conversation is preserved.'}</span>

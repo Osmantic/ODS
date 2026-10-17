@@ -39,6 +39,7 @@ import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDead
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { createExampleGuard, EXAMPLE_NOTES, mentionsExample, namesExample } from "./example-guard.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -7195,8 +7196,15 @@ export function createToolLoopGuard({
   warn = () => {},
   info = () => {},
   now = Date.now,
+  // The owner run a delegated child or announced continuation reports to
+  // (subagent-delivery.mjs ownerRunOf), for the shipped example's guard.
+  exampleOwnerRun = () => undefined,
+  exampleGuard,
 } = {}) {
   const effective = normalizedLimits(limits);
+  const examples = exampleGuard ?? createExampleGuard({warn, now});
+  // The guard's outcome per tool call, for that call's persisted result.
+  const exampleNotes = new Map();
   // This intentionally stays plugin-local. OpenClaw's runContext write API is
   // disabled for this non-bundled hook path. Bound the cache itself instead of
   // requesting conversation access merely for cleanup.
@@ -8039,7 +8047,9 @@ export function createToolLoopGuard({
       const projectRoute = routePlaygroundTool({state:state.playgroundRouting,tool:toolName,
         params:normalizedParams ?? event?.params,root:state.configuredWorkspaceRoot,
         session:state.currentSessionKey ?? state.currentSessionId,intent:state.playgroundOwnerIntent,
-        preserveExisting:state.workspaceVisualContinuationRequested && !state.workspaceTaskDirectory?.startsWith('Playground/'),
+        // A turn that names the shipped example works in its real folder.
+        preserveExisting:state.exampleNamed === true ||
+          (state.workspaceVisualContinuationRequested && !state.workspaceTaskDirectory?.startsWith('Playground/')),
         continueProject:state.workspaceVisualContinuationRequested,
         existingPaths:[...state.successfulReadPaths]});
       if (projectRoute?.block) return projectRoute;
@@ -10457,11 +10467,57 @@ export function createToolLoopGuard({
     return cancelled;
   }
 
+  // The shipped example's guard (example-guard.mjs), told when a run starts,
+  // after each tool call, and when the run finalizes and ends. A run names
+  // the example only by its owner turn's own message: a delegated child or
+  // an announced continuation uses the owner run it reports to, never its own
+  // task text; an answer to a clarification card uses the request that card
+  // recorded, never the model's question; and a cron or other non-owner run
+  // never names it. Project routing keeps a naming turn's paths in the real
+  // folder (exampleNamed). A turn that mentions the example without naming
+  // it gets model-only guidance (exampleContextForRun).
+  function observeExampleRun(context, agentId = "pixel") {
+    const state = context?.agentId === agentId ? runs.get(context.runId) : undefined;
+    if (!state) return;
+    const ownerRun = exampleOwnerRun(context);
+    const child = typeof context.sessionKey === 'string' && context.sessionKey.startsWith(`agent:${agentId}:subagent:`);
+    const owner = ownerRun ? runs.get(ownerRun) : child ? undefined : state;
+    if (owner) state.exampleTurnRunId = ownerRun ?? context.runId;
+    const answered = owner?.clarificationAnswer?.request;
+    state.exampleNamed = owner?.artifactOwnerInteractive === true && namesExample(answered ?? owner.ownerRequestText);
+    recordExampleOutcome(context, examples.begin(context.runId, state.configuredWorkspaceRoot, state.exampleNamed,
+      state.runDeadline?.timeoutMs));
+    state.exampleGuidance = examples.guarding(context.runId) &&
+      (mentionsExample(owner?.ownerRequestText) || mentionsExample(answered));
+  }
+  function exampleContextForRun(runId) {
+    return typeof runId === 'string' && runs.get(runId)?.exampleGuidance ? EXAMPLE_NOTES.guidance : undefined;
+  }
+  // The run that holds the owner's turn: the owner run itself.
+  function exampleTurn(context) {
+    return runs.get(runs.get(context?.runId)?.exampleTurnRunId ?? exampleOwnerRun(context) ?? context?.runId);
+  }
+  function recordExampleOutcome(context, outcome, toolCallId) {
+    if (!outcome) return;
+    const turn = exampleTurn(context);
+    if (turn) turn.exampleOutcome = outcome;
+    if (typeof toolCallId !== 'string' || !toolCallId) return;
+    exampleNotes.delete(toolCallId);
+    exampleNotes.set(toolCallId, outcome);
+    while (exampleNotes.size > MAX_TRACKED_RUNS) exampleNotes.delete(exampleNotes.keys().next().value);
+  }
+  // The owner's one line for a turn in which ODS put the example back.
+  function exampleNoticeForRun(runId) {
+    const outcome = typeof runId === 'string' && runId ? exampleTurn({runId})?.exampleOutcome : undefined;
+    return outcome ? EXAMPLE_NOTES[outcome].owner : undefined;
+  }
+
   function afterToolCall(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return;
     const toolName = context?.toolName ?? event?.toolName;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return;
+    recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
@@ -11920,6 +11976,9 @@ export function createToolLoopGuard({
     const toolCallId = context?.toolCallId ?? event?.toolCallId ?? event?.message?.toolCallId;
     const pending = pendingToolRuns.get(toolCallId);
     pendingToolRuns.delete(toolCallId);
+    // ODS put the shipped example back after this call (example-guard.mjs).
+    const exampleOutcome = exampleNotes.get(toolCallId);
+    exampleNotes.delete(toolCallId);
     // A Tool Search child's result is folded into this outer receipt and never
     // persisted on its own, so its pending run ends here. Otherwise it stays
     // pending and finalization can never compare the published bytes.
@@ -12319,7 +12378,8 @@ export function createToolLoopGuard({
       !controlNameRepair &&
       !sandboxPathCorrection &&
       !executionGuidance &&
-      !deadlineNotice
+      !deadlineNotice &&
+      !exampleOutcome
     ) {
       return undefined;
     }
@@ -12389,6 +12449,7 @@ export function createToolLoopGuard({
         text: `${OPERATIONS_TRUSTED_CONTINUATION_PREFIX} ${continuation.instruction}`,
       });
     }
+    if (exampleOutcome) content.push({type: 'text', text: EXAMPLE_NOTES[exampleOutcome].model});
     // Last, and a block of its own: the per-result cap keeps short blocks whole.
     if (deadlineNotice) content.push({type: 'text', text: deadlineNotice});
     return {
@@ -12693,7 +12754,9 @@ export function createToolLoopGuard({
   // limit, recursive-delete refusal or any other guard abort) has its own
   // delivery text.
   function observeAgentEnd(event, context) {
-    const state = runs.get(context?.runId ?? event?.runId);
+    const runId = context?.runId ?? event?.runId;
+    recordExampleOutcome({...context, runId}, examples.end(runId));
+    const state = runs.get(runId);
     if (!state) return;
     state.runEnded = true;
     state.runDeadlineReached = !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
@@ -12732,6 +12795,8 @@ export function createToolLoopGuard({
     if (context?.agentId !== agentId) return undefined;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return undefined;
+    // Before the reply, so the owner's notice can travel with it.
+    recordExampleOutcome({...context, runId}, examples.check(runId));
     const state = runs.get(runId);
     if (state?.recursiveDeleteDenied && !state.clientCancelled && !state.recursiveDeleteAbortAttempted) {
       if ((context?.sessionId && context.sessionId !== state.currentSessionId) ||
@@ -13234,6 +13299,11 @@ export function createToolLoopGuard({
         ? `${missing}\n\n${result.text}`.slice(0, MAX_INGRESS_VERIFICATION_TEXT) : missing};
       delete result.deliveryMode;
     }
+    // The shipped example's one owner line, which Portal's ingress adds after
+    // the reply it delivers (host/pixel_ingress.mjs). A pending question card
+    // carries none.
+    const notice = result.status === 'pending' ? undefined : exampleNoticeForRun(runId);
+    if (notice) result = {...result, notice};
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
       ? {...result,artifacts:structuredClone(artifacts)} : result;
   }
@@ -13377,6 +13447,9 @@ export function createToolLoopGuard({
       const ownerIntent = runs.get(runId)?.subagentOwnerIntent;
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
+    observeExampleRun,
+    exampleContextForRun,
+    exampleNoticeForRun,
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

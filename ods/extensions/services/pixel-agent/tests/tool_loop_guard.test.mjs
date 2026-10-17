@@ -223,6 +223,7 @@ import {
   userMessageRequestsExactByteDownload,
   userMessageExactDownloadRequest,
 } from "../plugin/tool-loop-guard.mjs";
+import { requestsNewPlaygroundProject } from "../plugin/playground-projects.mjs";
 
 function workspacePreviewSnapshot(relativeDirectory, writes) {
   const digest = createHash("sha256");
@@ -12817,6 +12818,27 @@ for (const wrapped of [false, true]) {
     assert.equal(guard.verificationForRun("run-1").status, "failed", "no successful host receipt has been received");
   });
 }
+
+test("asking Portal to open the shipped Elf of Doom example opens it as an existing project", () => {
+  // installers/lib/pixel-example-projects.py adds the game to this folder;
+  // Portal's sidebar opens it without a model run, and an owner may also ask.
+  const prompt = "Open the existing Playground/elf-of-doom/index.html preview.";
+  assert.equal(workspacePreviewMode([], prompt), "existing-project");
+  assert.equal(requestsNewPlaygroundProject(prompt), false, "never a new Playground folder");
+  for (const wrapped of [false, true]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { path: "Playground/elf-of-doom/index.html" };
+    call(guard, "read", { event: { params } });
+    afterCall(guard, "read", { event: { params, result: { details: { status: "completed" } } } });
+    const target = { relativeDirectory: "Playground/elf-of-doom" };
+    const published = call(guard, wrapped ? "tool_call" : "pixel_ods_workspace_preview", {
+      event: { params: wrapped ? { id: "pixel_ods_workspace_preview", args: target } : target },
+    });
+    assert.notEqual(published?.block, true, "an owner-requested existing project needs no new authorship");
+    assert.deepEqual(wrapped ? published?.params?.args ?? target : published?.params ?? target, target);
+  }
+});
 
 test("accepts only a readback-verified dedicated preview receipt", () => {
   const guard = createToolLoopGuard();

@@ -139,11 +139,20 @@ upstream default. Other agents and existing jobs are unaffected.
   nothing, never overwrites a snapshot, and reads back `index.html` before its
   receipt is accepted. Only that exact receipt can produce the structured SSE
   marker that opens the Dashboard's sandboxed side panel; model-authored URLs
-  remain ordinary text. ODS supplies no creative artifact bytes: open-ended
+  remain ordinary text. ODS supplies no starter bytes for new work: open-ended
   showcases, games, task boards, animated SVGs, voxel scenes, and every other
-  visual request use the same model-authored workspace-file path. The preview
-  adapter can publish only an existing directory containing `index.html`; it
-  has no template, scaffold, HTML, title, theme, or content input.
+  visual request use the same model-authored workspace-file path. ODS ships
+  one finished example project, the Elf of Doom game at
+  `Playground/elf-of-doom`, which Portal wrote from natural-language prompts;
+  Portal's sidebar opens it through the same preview service with no model
+  run. Portal changes it only when the owner's message starts with
+  "In elf-of-doom,", for example "In elf-of-doom, make the arrows give 7";
+  a change another run makes to it while that run works is put back, and
+  the owner's own changes while Portal is idle stay
+  (`plugin/example-guard.mjs`). The
+  preview adapter can publish only an existing directory containing
+  `index.html`; it has no template, scaffold, HTML, title, theme, or content
+  input.
   Published `.json` assets must parse as UTF-8 JSON without duplicate keys or
   nonstandard numeric constants. Validation uses the captured bytes and never
   rewrites them. Rejections report the artifact-relative filename and decoder

@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import socket
 import subprocess
@@ -114,6 +115,15 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
                 expected += ['activate', 'finalize']
                 assert result['status'] == 'selection-ready'
                 assert result['portalIdentityMigration']['status'] == 'manual-review-required'
+                # The example step prints nothing; its outcome is only in the
+                # update's private folder. The fixture preparation has no
+                # candidate profile to name a workspace.
+                assert 'exampleProjects' not in result and 'example' not in json.dumps(result).lower()
+                logs = list((installed / 'data/pixel-native').glob('update-*/example-projects.log'))
+                assert len(logs) == 1 and (logs[0].stat().st_mode & 0o777) == 0o600
+                logged = json.loads(logs[0].read_text())
+                # The cause is kept for diagnosis, privately.
+                assert logged['status'] == 'manual-review-required' and logged['cause'].startswith('FileNotFoundError')
             else:
                 assert result['status'] == 'prepared'
             assert stages == expected
@@ -163,5 +173,84 @@ def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypat
 
 
 def test_native_update_does_not_claim_profile_migration_without_candidate(tmp_path):
+    assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
+        'status': 'manual-review-required'}
+
+
+@pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0, reason='the copy runs as a non-root POSIX workspace owner')
+def test_native_update_adds_example_projects_to_the_named_owner_workspace(tmp_path, monkeypatch):
+    state = tmp_path.resolve() / 'state'
+    workspace = state / 'workspace-pixel'
+    workspace.mkdir(parents=True, mode=0o700)
+    for folder in (state, workspace):
+        folder.chmod(0o700)
+    preparation = tmp_path.resolve() / 'preparation'
+    document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
+    paths = []
+    def private_json(path):
+        paths.append(path)
+        return document
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=private_json))
+    assert module.add_example_projects(preparation=preparation, state_dir=state) == {'elf-of-doom': 'added'}
+    assert paths == [preparation / 'candidate/openclaw.json']
+    assert (workspace / 'Playground/elf-of-doom/index.html').is_file()
+    # The record is in the state folder, never in the workspace.
+    assert [path.name for path in workspace.iterdir()] == ['Playground']
+    assert len(list((state / '.ods-example-projects').iterdir())) == 1
+    # The workspace has received it: a later update never adds it again, even
+    # after the owner deleted the folder to remove it.
+    assert module.add_example_projects(preparation=preparation, state_dir=state) == {
+        'elf-of-doom': 'previously-received'}
+    shutil.rmtree(workspace / 'Playground/elf-of-doom')
+    assert module.add_example_projects(preparation=preparation, state_dir=state) == {
+        'elf-of-doom': 'previously-received'}
+    assert not (workspace / 'Playground/elf-of-doom').exists()
+    document['agents']['list'].append({'id': 'other', 'workspace': str(workspace)})
+    outcome = module.add_example_projects(preparation=preparation, state_dir=state)
+    assert outcome == {'status': 'manual-review-required', 'cause': 'ValueError: native-portal-profile-agent-required'}
+
+
+@pytest.mark.skipif(os.name != 'posix' or os.geteuid() == 0, reason='the copy runs as a non-root POSIX workspace owner')
+def test_native_update_keeps_the_helper_notes_off_the_terminal(tmp_path, monkeypatch, capfd):
+    # The helper writes notes to stderr (a leftover it could not remove, a
+    # record it could not write). The update captures them for its private
+    # log; `ods-macos.sh update-pixel` shows that terminal to the owner.
+    state = tmp_path.resolve() / 'state'
+    workspace = state / 'workspace-pixel'
+    workspace.mkdir(parents=True, mode=0o700)
+    for folder in (state, workspace):
+        folder.chmod(0o700)
+    document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    # A state folder this owner cannot write: the copy succeeds, its record
+    # cannot, and the helper says so on stderr.
+    state.chmod(0o500)
+    try:
+        outcome = module.add_example_projects(preparation=tmp_path, state_dir=state)
+    finally:
+        state.chmod(0o700)
+    assert capfd.readouterr() == ('', '')
+    assert outcome['elf-of-doom'] == 'added'
+    assert len(outcome['notes']) == 1
+    assert outcome['notes'][0].startswith('could not record the added example projects: PermissionError')
+    module.log_example_projects(tmp_path, outcome)
+    assert json.loads((tmp_path / 'example-projects.log').read_text()) == outcome
+    assert capfd.readouterr() == ('', '')
+
+
+def test_native_update_does_not_claim_example_projects_without_candidate(tmp_path):
+    outcome = module.add_example_projects(preparation=tmp_path, state_dir=tmp_path)
+    assert outcome['status'] == 'manual-review-required' and outcome['cause'].startswith('FileNotFoundError')
+
+
+@pytest.mark.parametrize('document', [
+    {'agents': {'list': ['pixel']}}, {'agents': {'list': [None]}}, {'agents': {'list': 'pixel'}},
+    {'agents': ['pixel']}, ['agents'], {'agents': {'list': [{'id': 'pixel', 'workspace': 7}]}},
+])
+def test_a_malformed_candidate_profile_is_manual_review_not_a_crash(monkeypatch, tmp_path, document):
+    # A non-object agent entry once raised AttributeError after activation had
+    # already succeeded, losing the update outcome.
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    assert module.add_example_projects(preparation=tmp_path, state_dir=tmp_path)['status'] == 'manual-review-required'
     assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
         'status': 'manual-review-required'}

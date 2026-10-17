@@ -242,6 +242,7 @@ tests/test_persona_running_containers.py
 tests/test_pixel_access_http.py
 tests/test_pixel_access_reconcile.py
 tests/test_pixel_activity.py
+tests/test_pixel_example_projects.py
 tests/test_pixel_exec_control_install.py
 tests/test_pixel_extension_catalog.py
 tests/test_pixel_onboarding_upgrade.py

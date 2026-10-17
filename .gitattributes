@@ -26,6 +26,10 @@ ods/extensions/services/pixel-agent/runtime-source/*.patch text eol=lf
 # Recorded preview snapshots reproduce a published digest byte for byte.
 ods/tests/fixtures/preview-controls/** -text -whitespace
 
+# Elf of Doom ships exactly as published at odsspark.com/game; keep its bytes.
+# installers/lib/pixel-example-projects.py pins every file's SHA-256.
+ods/extensions/services/pixel-agent/example-projects/** -text -whitespace
+
 # Vendored llama.cpp chat templates are byte copies whose SHA-256 the manifest,
 # the template index and llama.cpp's /props all record; keep upstream's bytes.
 ods/config/chat-templates/upstream-*/** -text -whitespace

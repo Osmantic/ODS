@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Portal's workspace includes one finished example project, Elf of Doom, a
+  small browser game Portal wrote in ODS from natural-language prompts. The
+  installer adds `Playground/elf-of-doom` whenever that name is absent and the
+  workspace has never received it (a private record in Portal's state folder,
+  outside the workspace the agent's sandbox mounts, records that and which
+  copy ODS itself added), so it never adds a deleted or renamed copy again;
+  it never replaces, merges into or deletes an existing entry, and an owner's
+  own earlier `Playground/elf-of-doom` stays ordinary owner content. The
+  added game sits in Portal's sidebar under Projects > Playground like any
+  other project while the folder exists; clicking it plays the game in the
+  Workspace panel with no model run. Portal changes Elf of Doom only when
+  your message starts with "In elf-of-doom,", for example "In elf-of-doom,
+  make the arrows give 7"; when Portal changes it while working on anything
+  else, ODS puts it back and says so, and changes you make yourself while
+  Portal is idle stay. To remove it, delete the folder; ODS never adds it
+  back. Existing Linux and Windows (WSL2) installs get it on their next
+  installer run; Macs get it on a new install or the next native Portal
+  update.
+
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple
   GPU reporters instead of choosing NVIDIA tooling merely because it is
