@@ -3622,7 +3622,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=b966b349b6cb2863157f9b2793a90508ead6a08d\n"
+        "PIXEL_SOURCE_REF=4bf2203c56cce323490e41e36736062d4f74cf39\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -3716,7 +3716,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "b966b349b6cb2863157f9b2793a90508ead6a08d"
+    source_ref = "4bf2203c56cce323490e41e36736062d4f74cf39"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",

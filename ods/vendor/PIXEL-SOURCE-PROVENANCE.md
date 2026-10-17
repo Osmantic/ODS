@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`b966b349b6cb2863157f9b2793a90508ead6a08d`, and its SHA-256 is
-`e771d57ba91996590f45a591ad02bdea76d1725ad3f8fc73a4113a0864b6b93d`.
+`4bf2203c56cce323490e41e36736062d4f74cf39`, and its SHA-256 is
+`0f45a292d978bd766d19606404554a0ebdca6e1f8e0fb95d870e2f7d3ceded5b`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -216,3 +216,19 @@ dependency versions, the base image digest, policies and trust anchors are
 unchanged. Current source/bundle pins above identify this candidate; prior
 sections remain historical evidence. No private source history or signing
 credentials were used.
+
+The candidate was rebuilt before publication with review fixes: bootstrap's
+node proof is bounded at 120 seconds, removes its own named container and
+fails with a fixed `Sandbox runtime proof failed:` message; the Node.js
+download stops on a stalled connection; the e2e suite covers both; and the
+qualification record names the macOS update's sandbox retirement and the new
+functional source checkpoint. The public vendor tree is
+`bcfd325ce22da8f859bfb580c21897e2abd81f29`. Two independent empty bare
+repositories produced byte-identical bundles with the same procedure, identity,
+timestamp and message (Git 2.53 on Windows, `pack.threads=1`); the same
+procedure reproduced the earlier candidate's commit
+`b966b349b6cb2863157f9b2793a90508ead6a08d` from its tree, though not its bytes,
+since the packs the alternates name have changed. This replaces the unpublished
+earlier candidate. Only one public root is advertised; versions, image digests,
+policies and trust anchors are unchanged, and no private source history or
+signing credentials were used.

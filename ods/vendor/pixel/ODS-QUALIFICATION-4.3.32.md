@@ -1,6 +1,6 @@
 # ODS-maintained Pixel 4.3.32 candidate
 
-Functional source checkpoint: `b6edcbb37548f18fd34a8f7589d4f77006849eca` in
+Functional source checkpoint: `5454dcb094df2c56caa79d8c500529187c5dfb4f` in
 the public ODS repository. This is an ODS-maintained candidate, not an upstream
 Pixel release or a completed installation qualification.
 
