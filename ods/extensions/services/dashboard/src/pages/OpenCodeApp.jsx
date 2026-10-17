@@ -207,7 +207,7 @@ export default function OpenCodeApp() {
             <>
               <p>
                 {app.portInUse
-                  ? `OpenCode is set up, but port ${port} is answering without verified managed health. Stop that listener or wait for OpenCode to become healthy, then try again.`
+                  ? `OpenCode is set up, but port ${port} is occupied without verified managed health. Stop that listener or wait for OpenCode to become healthy, then try again.`
                   : 'OpenCode is set up but not running.'}
               </p>
               <button type="button" className="opencode-button is-primary" disabled={!!busy || !app.startSupported || app.portInUse} onClick={() => act('start')}>
