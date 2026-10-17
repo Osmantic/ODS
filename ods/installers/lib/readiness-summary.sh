@@ -175,7 +175,7 @@ ods_readiness_summary() {
     fi
 
     echo ""
-    echo -e "${BGRN:-}INSTALL READINESS${NC:-}"
+    printf '%sINSTALL READINESS%s\n' "${BGRN:-}" "${NC:-}"
     echo "Ready now: ${#ready_lines[@]}/${total}"
     if [[ ${#ready_lines[@]} -gt 0 ]]; then
         echo "Ready:"
