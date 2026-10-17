@@ -11,7 +11,7 @@ import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, {after} from 'node:test';
 import {fileURLToPath} from 'node:url';
 
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
@@ -20,8 +20,12 @@ import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 
 const SHIPPED = fileURLToPath(new URL('../example-projects/elf-of-doom/', import.meta.url));
+// Every temporary folder this file makes, removed when it ends.
+const temporary = [];
+const scratch = prefix => { const folder = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); temporary.push(folder); return folder; };
+after(() => { for (const folder of temporary) fs.rmSync(folder, {recursive: true, force: true}); });
 // Portal's state folder: outside every workspace, as it is outside the sandbox.
-process.env.OPENCLAW_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-guard-state-'));
+process.env.OPENCLAW_STATE_DIR = scratch('ods-example-guard-state-');
 fs.mkdirSync(exampleRecordDirectory(), {mode: 0o700});
 // Git Bash on Windows, never the WSL launcher that a bare "bash" can resolve to.
 const BASH = process.platform === 'win32'
@@ -153,7 +157,7 @@ function outsideExample(root, others = []) {
 // A workspace holding the real shipped game, the installers' record (by
 // default saying ODS added it) and two of the owner's own games.
 function workspace({record = 'added'} = {}) {
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-guard-')));
+  const root = scratch('ods-example-guard-');
   fs.cpSync(SHIPPED, path.join(root, 'Playground', 'elf-of-doom'), {recursive: true});
   for (const game of ['snake-game', 'space-race']) {
     const folder = path.join(root, 'Playground', game);
@@ -169,7 +173,7 @@ function workspace({record = 'added'} = {}) {
   return {root, example: path.join(root, 'Playground', 'elf-of-doom'), original: tree(path.join(root, 'Playground', 'elf-of-doom'))};
 }
 function outsideFolder() {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-guard-outside-')));
+  return scratch('ods-example-guard-outside-');
 }
 const posix = value => value.replaceAll('\\', '/');
 
@@ -480,7 +484,7 @@ test('a folder ODS cannot copy back exactly is left to the owner, and the gatewa
 });
 
 test('the copy is bounded: more entries than the bound are not copied', () => {
-  const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-guard-bound-'));
+  const folder = scratch('ods-example-guard-bound-');
   for (let i = 0; i <= exampleGuardTesting.MAX_ENTRIES; i++) fs.writeFileSync(path.join(folder, `f${i}.txt`), 'x');
   assert.match(exampleGuardTesting.takeSnapshot(folder).skipped, /more than 512/);
   assert.equal(exampleGuardTesting.takeSnapshot(path.join(folder, 'absent')), null);
