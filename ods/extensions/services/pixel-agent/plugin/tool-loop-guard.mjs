@@ -38,7 +38,7 @@ import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisR
 import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
-import { exampleProjectRefusal, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { exampleChatTopics, exampleProjectRefusal, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -6593,6 +6593,14 @@ export function userMessageRequestsWorkspaceVerificationContinuation(messages, p
   return true;
 }
 
+// What the shipped-example checks need from a run: its workspace, the
+// owner's request, the examples earlier turns of this chat named, and the
+// run's own project folder for refusal advice.
+function exampleProjectContext(state) {
+  return {root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent,
+    earlier:state.exampleChatTopics, projectDirectory:state.playgroundRouting?.binding?.directory};
+}
+
 function workspacePreviewDirectoryFromState(state) {
   const indexDirectories = new Set(
     [...(state?.successfulWritePaths ?? []), ...(state?.successfulReadPaths ?? [])]
@@ -7219,6 +7227,11 @@ export function createToolLoopGuard({
   let stopSynthesisFailedAt = -Infinity;
   const pendingToolRuns = new Map();
   const sessionPreviews = new Map();
+  // Per chat, the shipped example projects (Playground/elf-of-doom) an owner
+  // turn named to change or open, until a turn asks for something new. A
+  // later turn may keep changing that example without naming it again.
+  // In memory only: after a restart the owner names it again.
+  const exampleChatTopicsByChat = new Map();
   // A prior owner requirement is not a passing inspection. Bind it to the
   // session's real publication and carry no proof across changed snapshots.
   const sessionPreviewVisibilityObligations = new Map();
@@ -8035,9 +8048,10 @@ export function createToolLoopGuard({
         !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
     // A shipped example project (Playground/elf-of-doom) changes only when the
     // owner names it as what to change. Check before routing, so a refused
-    // call leaves no routing state, and again on the routed call below.
+    // call leaves no routing state, and again on the final call below, after
+    // every path rewrite.
     const exampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:normalizedParams ?? event?.params,
-      root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent}) : undefined;
+      ...exampleProjectContext(state), routable:true}) : undefined;
     if (exampleRefusal) return exampleRefusal;
     if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
       && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
@@ -8049,12 +8063,7 @@ export function createToolLoopGuard({
         continueProject:state.workspaceVisualContinuationRequested,
         existingPaths:[...state.successfulReadPaths]});
       if (projectRoute?.block) return projectRoute;
-      if (projectRoute?.params) {
-        normalizedParams = projectRoute.params;
-        const routedExampleRefusal = exampleProjectRefusal({tool:toolName, params:normalizedParams,
-          root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent});
-        if (routedExampleRefusal) return routedExampleRefusal;
-      }
+      if (projectRoute?.params) normalizedParams = projectRoute.params;
       const routedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
         toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
       if (routedRestriction) return {block:true, blockReason:routedRestriction};
@@ -8130,6 +8139,11 @@ export function createToolLoopGuard({
       };
       pendingParams = normalizedParams;
     }
+    // The call as it will run: project routing and the continuation binding
+    // above may have moved a relative path into a shipped example's folder.
+    const routedExampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:pendingParams,
+      ...exampleProjectContext(state), previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
+    if (routedExampleRefusal) return routedExampleRefusal;
     const effectiveReplyTool = toolName === "tool_call"
       ? pendingParams?.id?.split(":").at(-1)
       : toolName;
@@ -9996,6 +10010,15 @@ export function createToolLoopGuard({
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
+      if (ownerIntent && state.exampleChatTopics === undefined) {
+        // Only the owner's own turns name an example for later turns; the
+        // first attempt of a run carries the owner's message.
+        const chat = typeof context?.sessionKey === 'string' && context.sessionKey ? context.sessionKey
+          : typeof sessionId === 'string' && sessionId ? sessionId : undefined;
+        const previous = chat && state.artifactOwnerInteractive ? exampleChatTopicsByChat.get(chat) : undefined;
+        state.exampleChatTopics = new Set(previous ?? []);
+        if (chat && state.artifactOwnerInteractive) rememberBySessionKey(exampleChatTopicsByChat, chat, exampleChatTopics(previous, ownerIntent));
+      }
       if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}

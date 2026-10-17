@@ -145,7 +145,8 @@ upstream default. Other agents and existing jobs are unaffected.
   one finished example project, the Elf of Doom game at
   `Playground/elf-of-doom`, which Portal wrote from natural-language prompts;
   Portal's sidebar opens it through the same preview service with no model
-  run, and Portal changes it only when the owner's request names it. The
+  run, and Portal's routing changes it only when the owner's request names
+  it (best-effort checks, not a sandbox). The
   preview adapter can publish only an existing directory containing
   `index.html`; it has no template, scaffold, HTML, title, theme, or content
   input.

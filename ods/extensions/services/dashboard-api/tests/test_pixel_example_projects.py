@@ -123,11 +123,17 @@ async def test_open_returns_the_exact_verified_receipt():
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_example_is_404_and_a_wrong_receipt_503():
+async def test_a_deleted_example_is_404_refused_files_409_and_a_wrong_receipt_503():
     with client(Response(status=404, body={"error": "example-project-unavailable"}), []):
         with pytest.raises(HTTPException) as raised:
             await pixel.pixel_example_project_open(pixel.ExampleProjectOpenRequest(name="elf-of-doom"))
     assert raised.value.status_code == 404
+    # The host refused files in the folder: the owner can fix them there.
+    with client(Response(status=409, body={"error": "example-project-not-previewable"}), []):
+        with pytest.raises(HTTPException) as raised:
+            await pixel.pixel_example_project_open(pixel.ExampleProjectOpenRequest(name="elf-of-doom"))
+    assert raised.value.status_code == 409
+    assert raised.value.detail == "Some files in this example project's folder cannot be previewed."
     for preview in ({**PREVIEW, "relativeDirectory": "Playground/other"}, {**PREVIEW, "port": True},
                     {**PREVIEW, "url": "http://evil.example/"}, {**PREVIEW, "secret": "x"}):
         with client(Response(body={"schemaVersion": 1, "preview": preview}), []):

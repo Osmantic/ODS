@@ -1593,9 +1593,10 @@ async function handleExampleProjects(req, res, token, gatewayPort, deps) {
       method: open ? 'POST' : 'GET', headers: upstreamHeaders(false, token),
       ...(open ? {body: JSON.stringify({name})} : {}), redirect: 'error', signal: controller.signal,
     });
-    if (open && response.status === 404) {
+    // 404: the folder is gone. 409: the host refused files in it.
+    if (open && (response.status === 404 || response.status === 409)) {
       await drain(response.body);
-      sendJson(res, 404, {error: 'example-project-unavailable'});
+      sendJson(res, response.status, {error: response.status === 404 ? 'example-project-unavailable' : 'example-project-not-previewable'});
       return;
     }
     if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {

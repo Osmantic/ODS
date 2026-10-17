@@ -110,11 +110,17 @@ class ExampleProjectRelayTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 415)
         self.assertEqual(len(self.calls), 1)
 
-    async def test_missing_example_is_404_and_any_other_failure_a_fixed_503(self):
+    async def test_missing_example_is_404_refused_files_409_and_any_other_failure_a_fixed_503(self):
         self.reply = (404, b'{"error":"example-project-unavailable","private":"/home/owner"}')
         async with self.client.post(self.url, headers=AUTH, json={"name": "elf-of-doom"}) as response:
             self.assertEqual(response.status, 404)
             self.assertEqual(await response.json(), {"error": "example-project-unavailable"})
+        self.reply = (409, b'{"error":"example-project-not-previewable","private":"/home/owner"}')
+        async with self.client.post(self.url, headers=AUTH, json={"name": "elf-of-doom"}) as response:
+            self.assertEqual(response.status, 409)
+            self.assertEqual(await response.json(), {"error": "example-project-not-previewable"})
+        async with self.client.get(self.url, headers=AUTH) as response:
+            self.assertEqual(response.status, 503)
         for status, raw in ((503, b'{"error":"secret detail"}'), (200, b"x" * 9000),
                             (200, json.dumps({"schemaVersion": 1, "preview": {**PREVIEW, "relativeDirectory": "Playground/x"}}).encode()),
                             (200, json.dumps({"schemaVersion": 1, "preview": {**PREVIEW, "files": True}}).encode()),

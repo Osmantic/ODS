@@ -782,17 +782,25 @@ act as a capability gate:
   creative bytes, and new creative work is always written by the active model.
   ODS ships one finished example project, Elf of Doom, which Portal wrote in
   ODS from natural-language prompts. The installers copy it to
-  `Playground/elf-of-doom` whenever Playground/elf-of-doom is absent and never
-  replace, merge into or delete an existing entry of that name; it is ordinary
-  owner content. While the folder exists, Portal's sidebar lists it under
+  `Playground/elf-of-doom` whenever Playground/elf-of-doom is absent and the
+  workspace has never received it (the hidden `.ods-examples.json` at the
+  workspace root records each example received, so a deleted or renamed copy
+  is never added again), and never replace, merge into or delete an existing
+  entry of that name; it is ordinary owner content. While the folder exists,
+  Portal's sidebar lists it under
   Projects > Playground like any other project, and clicking it publishes that
   existing folder through the same create-only preview service with no model
   run (the plugin's gateway route `/pixel-ods/example-projects`, relayed by
   the ingress, the edge and `/api/pixel/example-projects`). It is never a
-  starter for new work: the plugin's routing refuses writes, edits, patches
-  and mutating commands inside it unless the owner's request names it as what
-  to change (for example "In elf-of-doom, make the arrows give 7"), and a
-  new-project request may neither change nor publish it as its result. The
+  starter for new work: the plugin's routing refuses writes, edits, patches,
+  bundles, promoted downloads and mutating commands inside it unless the
+  owner's request names it as what to change (for example "In elf-of-doom,
+  make the arrows give 7"), or an earlier turn of the same chat named it to
+  change or open and the turn asks for nothing new. A request for something
+  new may neither change it, copy its files as a starting point (unless the
+  owner asks for a copy), nor publish it as its result. These are best-effort
+  routing checks for the owner's files, not a sandbox: a command that hides
+  the folder name can still reach it. The
   adapter accepts only the existing relative directory, so safety enforcement,
   static validation, snapshot isolation, and HTTP readback cannot be confused
   with authorship. Pixel may author either a self-contained `index.html` or a

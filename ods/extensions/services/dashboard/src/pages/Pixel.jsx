@@ -1112,6 +1112,7 @@ export default function Pixel({ systemStatus = null }) {
       const context=teamAttempt.current.context
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
+      setExampleError('')
       try {
         const team=await teams.start({request_id:requestId,task:teamCommand.task,context,...(requestedGoal?{mode:'goal'}:{})})
         if(team){setInput('');teamAttempt.current=null}
@@ -1139,6 +1140,7 @@ export default function Pixel({ systemStatus = null }) {
     updateRestoredActivity('idle')
     setStopping(false)
     setStopError('')
+    setExampleError('')
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -1583,6 +1585,8 @@ export default function Pixel({ systemStatus = null }) {
     setInput(preserveDraft === true ? input : '')
     setConversationDeleted(false)
     setInterrupted(false)
+    // A failed example open belongs to the task the owner just left.
+    setExampleError('')
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
   }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,input])
@@ -1628,6 +1632,11 @@ export default function Pixel({ systemStatus = null }) {
     return () => window.removeEventListener('ods:pixel-new-task', startNewChat)
   }, [startNewChat])
 
+  // The sidebar's example list may have been checked before Portal was ready.
+  useEffect(() => {
+    if (status === 'available') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+  }, [status])
+
   // A shipped example project opens from the sidebar like a saved preview:
   // the host publishes the owner's existing folder, this page checks the
   // receipt exactly like one from a model run, and a new task shows it in
@@ -1658,8 +1667,10 @@ export default function Pixel({ systemStatus = null }) {
         if (controller.signal.aborted) return
         if (error?.code === 'missing') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
         setExampleError(error?.code === 'missing'
-          ? `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name; if you deleted it, the next ODS install or upgrade adds a fresh copy.`
-          : `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`)
+          ? `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.`
+          : error?.code === 'not-previewable'
+            ? `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`
+            : `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`)
       } finally {
         if (exampleOpen.current === controller) exampleOpen.current = null
       }
@@ -1691,6 +1702,7 @@ export default function Pixel({ systemStatus = null }) {
       setPreviewRefresh(0)
       setInput(chat.draft)
       setStopError('')
+      setExampleError('')
       setInterrupted(chat.interrupted)
       setConversationDeleted(chat.conversationDeleted)
       updateRestoredActivity(chat.interrupted ? 'checking' : 'idle')

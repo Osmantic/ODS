@@ -184,7 +184,8 @@ def test_native_update_adds_example_projects_to_the_named_owner_workspace(tmp_pa
     assert module.add_example_projects(preparation=preparation) == {'elf-of-doom': 'added'}
     assert paths == [preparation / 'candidate/openclaw.json']
     assert (workspace / 'Playground/elf-of-doom/index.html').is_file()
-    assert module.add_example_projects(preparation=preparation) == {'elf-of-doom': 'present'}
+    # The workspace has received it: a later update never adds it again.
+    assert module.add_example_projects(preparation=preparation) == {'elf-of-doom': 'previously-received'}
     document['agents']['list'].append({'id': 'other', 'workspace': str(workspace)})
     assert module.add_example_projects(preparation=preparation) == {'status': 'manual-review-required'}
 

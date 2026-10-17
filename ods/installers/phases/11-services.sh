@@ -450,9 +450,11 @@ _phase11_apply_hermes_template() {
 }
 
 # Copy the finished example projects ODS ships (Elf of Doom) into the owner's
-# Portal workspace whenever Playground/elf-of-doom is absent. Portal's sidebar
-# then lists it with the other projects; the installer prints nothing about it.
-# Runs after Portal is verified; a failure warns and never fails the install.
+# Portal workspace whenever Playground/elf-of-doom is absent and this workspace
+# has never received it, so a deleted or renamed example stays that way.
+# Portal's sidebar then lists it with the other projects; the installer prints
+# nothing about it. Runs after Portal is verified; a failure warns and never
+# fails the install.
 _phase11_add_example_projects() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home status

@@ -69,15 +69,16 @@ export default function PixelConversationNavigation({ collapsed }) {
   }, [])
   useEffect(() => {
     // Shipped example projects whose folder is in the owner's workspace.
-    // Checked again when the window regains focus, so a deleted or renamed
-    // folder quietly leaves the list. Any failure lists none.
+    // Checked again when the window regains focus and when Portal becomes
+    // available (Pixel sends the refresh event then), so a deleted or renamed
+    // folder quietly leaves the list. A failed check keeps the last answer.
     let controller = null
     const load = () => {
       controller?.abort()
       const current = controller = new AbortController()
       readExampleProjects(current.signal)
         .then(names => { if (!current.signal.aborted) setExamples(names) })
-        .catch(() => { if (!current.signal.aborted) setExamples([]) })
+        .catch(() => { /* Portal is not answering yet; a later check decides. */ })
     }
     load()
     window.addEventListener('focus', load)
@@ -104,8 +105,9 @@ export default function PixelConversationNavigation({ collapsed }) {
   function projectRows(items) {
     // A shipped example with no conversations yet opens its game on click,
     // exactly where the folder sits; otherwise it is the same project row.
+    // Assistive tech hears a button, since this row opens rather than unfolds.
     return items.map(project=>project.example ? <details className="rail-project" key={project.path}>
-      <summary title={project.path} onClick={event=>{event.preventDefault();window.dispatchEvent(new CustomEvent(EXAMPLE_OPEN_EVENT,{detail:{name:project.name}}))}}><Folder size={16}/><span>{project.name}</span>{chevron}</summary>
+      <summary role="button" title={project.path} onClick={event=>{event.preventDefault();window.dispatchEvent(new CustomEvent(EXAMPLE_OPEN_EVENT,{detail:{name:project.name}}))}}><Folder size={16}/><span>{project.name}</span>{chevron}</summary>
     </details> : <details className="rail-project" key={project.path} open={project.chats.some(chat=>chat.chatId===active) || undefined}>
       <summary title={project.path}><Folder size={16}/><span>{project.name}</span>{chevron}</summary>
       <LimitedList items={project.chats} label={`conversations in ${project.path}`}>{items=>rows(items,'')}</LimitedList>

@@ -8,13 +8,16 @@ export const EXAMPLE_OPEN_EVENT = 'ods:pixel-open-example-project'
 export const EXAMPLE_REFRESH_EVENT = 'ods:pixel-example-projects-changed'
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
-// The present examples' folder names. A failed or unexpected answer lists
-// none: the sidebar then simply shows no example.
+// The present examples' folder names. A failed or unexpected answer throws,
+// so the sidebar keeps what it last knew: only the host's own answer that a
+// folder is gone removes an example.
 export async function readExampleProjects(signal) {
   const response = await fetch('/api/pixel/example-projects', {signal, cache: 'no-store'})
-  if (!response.ok) return []
+  if (!response.ok) throw new Error('Example projects unavailable')
   const value = await response.json()
-  if (!value || value.schemaVersion !== 1 || !Array.isArray(value.projects) || value.projects.length > 8) return []
+  if (!value || value.schemaVersion !== 1 || !Array.isArray(value.projects) || value.projects.length > 8) {
+    throw new Error('Invalid example projects')
+  }
   return [...new Set(value.projects.filter(name => typeof name === 'string' && NAME.test(name)))]
 }
 
@@ -28,7 +31,8 @@ export async function openExampleProject(name, signal) {
   })
   if (!response.ok) {
     const error = new Error('Example project unavailable')
-    error.code = response.status === 404 ? 'missing' : 'unavailable'
+    // 404: the folder is gone. 409: the host refused files in the folder.
+    error.code = response.status === 404 ? 'missing' : response.status === 409 ? 'not-previewable' : 'unavailable'
     throw error
   }
   const value = await response.json()

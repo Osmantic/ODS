@@ -9,6 +9,7 @@
 // ODS never supplies starter bytes for new work.
 import * as fs from 'node:fs';
 import path from 'node:path';
+import {PREVIEW_FOLDER_FAILURES} from './workspace-preview.mjs';
 
 export const SHIPPED_EXAMPLE_PROJECTS = Object.freeze(['elf-of-doom']);
 
@@ -106,8 +107,11 @@ export function createExampleProjectRoute({workspaceRoot, publish, sendJson}) {
     try {
       const receipt = await publish(`Playground/${name}`);
       sendJson(res, 200, {schemaVersion: 1, preview: dashboardPreview(receipt)});
-    } catch {
-      sendJson(res, 503, {error: 'example-project-preview-unavailable'});
+    } catch (error) {
+      // 409: the host refused files in the folder, which the owner can fix
+      // there. Anything else is an unavailable preview service.
+      if (PREVIEW_FOLDER_FAILURES.includes(error?.code)) sendJson(res, 409, {error: 'example-project-not-previewable'});
+      else sendJson(res, 503, {error: 'example-project-preview-unavailable'});
     }
     return true;
   };

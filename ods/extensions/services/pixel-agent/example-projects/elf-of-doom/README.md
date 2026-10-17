@@ -38,7 +38,9 @@ See how it was made: https://odsspark.com
 ## It's yours
 
 Play it, change it, or ask Portal to change it. Name it in your request, for
-example "In elf-of-doom, make the arrows give 7": Portal changes this folder
-only when you name it, and a request for a new game always gets its own
-Playground folder. ODS updates never overwrite or delete this folder. If you
-delete it, a later ODS install or upgrade can add a fresh copy.
+example "In elf-of-doom, make the arrows give 7". Portal changes this folder
+only when you name it; later requests in that same chat can just say what to
+change. A request for a new game always gets its own Playground folder.
+
+ODS updates never overwrite or delete this folder. If you delete or rename
+it, ODS does not add it again.

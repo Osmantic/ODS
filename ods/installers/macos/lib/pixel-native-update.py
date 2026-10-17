@@ -81,11 +81,14 @@ def migrate_public_identity(*, source, preparation, node):
 
 
 def add_example_projects(*, preparation):
-    """Add the shipped example projects whenever Playground/elf-of-doom is absent.
+    """Add the shipped example projects whenever Playground/elf-of-doom is absent
+    and this workspace has never received it.
 
     Like the profile repair, this owner-side step runs after the proved update
     and outside the protected activation. It only creates an absent
-    Playground/<name>; failure changes no owner content and is reported.
+    Playground/<name> and the workspace's record of received examples, so an
+    example the owner deleted or renamed is never added again; failure changes
+    no owner content and is reported.
     """
     try:
         document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')

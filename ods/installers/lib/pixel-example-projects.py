@@ -1,13 +1,16 @@
 """Add the finished example projects ODS ships to an owner's Portal workspace.
 
-Elf of Doom is copied to the workspace whenever Playground/elf-of-doom is
-absent (each example likewise to Playground/<name>): a fresh install adds it,
-and so does a later installer run after the owner deleted it. Anything already
-of that name (a folder, even empty, a file or a link) is ordinary owner content
-that ODS never overwrites, merges into, chmods or deletes. Portal's sidebar
-lists the folder with the other projects; nothing is printed about it. Run as
-the non-root workspace owner after Portal is verified. Every shipped file's
-SHA-256 is pinned below; when any source file differs, nothing is copied.
+Elf of Doom is copied to Playground/elf-of-doom whenever Playground/elf-of-doom
+is absent and this workspace has never received it (each example likewise to
+Playground/<name>). A hidden record in the workspace, .ods-examples.json, lists
+the examples it has received, so an example the owner deleted or renamed is
+never added again; a fresh workspace gets it on its first install or update.
+Anything already of that name (a folder, even empty, a file or a link) is
+ordinary owner content that ODS never overwrites, merges into, chmods or
+deletes. Portal's sidebar lists the folder with the other projects; nothing is
+printed about it. Run as the non-root workspace owner after Portal is verified.
+Every shipped file's SHA-256 is pinned below; when any source file differs,
+nothing is copied.
 """
 import argparse
 import ctypes
@@ -30,6 +33,10 @@ STAGING_PREFIX = '.ods-example-'
 STAGING_NAME = re.compile(re.escape(STAGING_PREFIX) + r'[0-9a-f]{16}')
 # A copy takes seconds; an older staging folder was left by an interrupted run.
 STALE_STAGING_SECONDS = 3600
+# The examples this workspace has received, at its root. Hidden like Portal's
+# own .ods-projects metadata, so Portal's preview and sidebar never show it.
+RECORD = '.ods-examples.json'
+MAX_RECORD_BYTES = 4096
 # Linux renameat2(2) RENAME_NOREPLACE and macOS renameatx_np(2) RENAME_EXCL.
 RENAME_NOREPLACE = 0x1
 RENAME_EXCL = 0x4
@@ -37,7 +44,7 @@ RENAME_EXCL = 0x4
 # files are exactly the bytes published at https://odsspark.com/game/.
 EXAMPLES = {
     'elf-of-doom': {
-        'README.md': '0cd372716e60198997fd8ae30ea93054829536ad008f9d031c5c843781a89010',
+        'README.md': 'c46837ef5b67f3d83c22c7251c3a9a5be8e3d750a38dad41c2f11d6f43cd9b1d',
         'chars.js': '161b08c8a331fef5f09ac45e6ade2cff62e03316ba7c6ac197adf8147af629db',
         'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
         'engine.js': '2f573a818c04b23554a95426bbe7a8a367780c9c583e03488fbe5e66e19dbedf',
@@ -133,25 +140,90 @@ def _remove_interrupted_staging(playground):
     Only an owner-owned real folder named exactly like this helper's staging
     folders, unchanged for an hour (so never a copy still running), holding
     nothing but regular files with pinned example names, is removed. Anything
-    else that merely looks similar is left alone.
+    else that merely looks similar is left alone, and so is one that cannot be
+    inspected or removed: that is logged, never a reason to skip the copy.
     """
     for entry in os.listdir(playground):
         if not STAGING_NAME.fullmatch(entry):
             continue
-        info = os.stat(entry, dir_fd=playground, follow_symlinks=False)
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or time.time() - info.st_mtime < STALE_STAGING_SECONDS):
-            continue
-        directory = os.open(entry, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=playground)
         try:
-            names = os.listdir(directory)
-            only_pinned = all(
-                name in PINNED_NAMES and stat.S_ISREG(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode)
-                for name in names)
-        finally:
-            os.close(directory)
-        if only_pinned:
-            _discard(playground, entry, names)
+            _remove_one_staging(playground, entry)
+        except OSError as error:
+            print(f'left interrupted staging folder {entry}: {error}', file=sys.stderr)
+
+
+def _remove_one_staging(playground, entry):
+    info = os.stat(entry, dir_fd=playground, follow_symlinks=False)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or time.time() - info.st_mtime < STALE_STAGING_SECONDS):
+        return
+    directory = os.open(entry, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=playground)
+    try:
+        names = os.listdir(directory)
+        only_pinned = all(
+            name in PINNED_NAMES and stat.S_ISREG(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode)
+            for name in names)
+    finally:
+        os.close(directory)
+    if only_pinned:
+        _discard(playground, entry, names)
+
+
+def _received(workspace):
+    """The example names this workspace has received, or None for an unusable record.
+
+    No record means none. A record that is not the owner's own single regular
+    file of the expected shape is unusable: it is never trusted or replaced,
+    and no example is added while it is there.
+    """
+    try:
+        fd = os.open(RECORD, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=workspace)
+    except FileNotFoundError:
+        return frozenset()
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            return None  # A link where the record belongs.
+        raise
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
+            return None
+        body = stream.read(MAX_RECORD_BYTES + 1)
+    try:
+        value = json.loads(body.decode('utf-8')) if len(body) <= MAX_RECORD_BYTES else None
+    except (UnicodeDecodeError, ValueError):
+        return None
+    received = value.get('received') if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {'schemaVersion', 'received'}
+            or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or not isinstance(received, list) or not all(isinstance(name, str) for name in received)):
+        return None
+    return frozenset(received)
+
+
+def _record(workspace, names):
+    """Replace the record with these names: a private file renamed into place."""
+    body = (json.dumps({'schemaVersion': 1, 'received': sorted(names)}, separators=(',', ':')) + '\n').encode()
+    temporary = '.ods-examples-' + secrets.token_hex(8) + '.tmp'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=workspace)
+    renamed = False
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # rename(2) replaces a link or file at the record name itself, never
+        # what a link points to; _received has just checked that entry.
+        os.rename(temporary, RECORD, src_dir_fd=workspace, dst_dir_fd=workspace)
+        renamed = True
+        os.fsync(workspace)
+    finally:
+        if not renamed:
+            try:
+                os.unlink(temporary, dir_fd=workspace)
+            except FileNotFoundError:
+                pass  # It was never created.
 
 
 def _exclusive_rename(directory, source, target):
@@ -230,19 +302,40 @@ def _add(playground, name, files):
 
 
 def add_projects(workspace, source=SOURCE):
+    """Add each shipped example this workspace has never received.
+
+    Returns each example's outcome: 'added'; 'present' when something of that
+    name already exists; 'previously-received' when the record lists it (the
+    owner may have deleted or renamed it since); or 'record-unusable' when the
+    record cannot be trusted. 'added' and 'present' are recorded, so a later
+    run never adds that example again.
+    """
     if os.geteuid() == 0:
         raise ValueError('add example projects as the non-root workspace owner')
     projects = {name: _read_source(Path(source) / name, expected) for name, expected in sorted(EXAMPLES.items())}
     root = _owner_directory(workspace)
     try:
+        received = _received(root)
+        if received is None:
+            return {name: 'record-unusable' for name in projects}
         playground = _playground(root)
+        try:
+            _remove_interrupted_staging(playground)
+            outcome = {name: 'previously-received' if name in received else _add(playground, name, files)
+                       for name, files in projects.items()}
+        finally:
+            os.close(playground)
+        delivered = {name for name, status in outcome.items() if status in ('added', 'present')}
+        if delivered - received:
+            try:
+                _record(root, received | delivered)
+            except OSError as error:
+                # The examples are in place; only a later re-add after the
+                # owner deletes one is no longer prevented.
+                print(f'could not record the added example projects: {error}', file=sys.stderr)
+        return outcome
     finally:
         os.close(root)
-    try:
-        _remove_interrupted_staging(playground)
-        return {name: _add(playground, name, files) for name, files in projects.items()}
-    finally:
-        os.close(playground)
 
 
 def main():

@@ -108,6 +108,7 @@ function freeFolder(root, name, suffixes = false) {
     catch (error) { return error.code === 'ENOENT' ? name : null; }
     for (let i = 1; i <= (suffixes ? 1000 : 1); i++) {
       const candidate = i === 1 ? name : `${name.slice(0,58)}-${i}`;
+      if (shippedExampleName(candidate)) continue;
       try { fs.lstatSync(path.join(base,candidate)); }
       catch (error) { return error.code === 'ENOENT' ? candidate : null; }
     }
@@ -475,10 +476,16 @@ function validateProject(root, binding) {
   const base = safeDirectory(path.join(safeRoot(root),'Playground'));
   safeDirectory(path.join(base,binding.directory.split('/')[1]));
 }
+function shippedExampleName(name) {
+  return SHIPPED_EXAMPLE_PROJECTS.includes(String(name).toLowerCase());
+}
 function reserveProject(root, source) {
   const base = safeDirectory(path.join(safeRoot(root),'Playground'),true);
   for (let i = 1; i <= 1000; i++) {
     const name = i === 1 ? source : `${source.slice(0,58)}-${i}`;
+    // A new project never takes a shipped example's name, even after the
+    // owner deleted that example.
+    if (shippedExampleName(name)) continue;
     try { fs.mkdirSync(path.join(base,name),{mode:0o700}); return {source,directory:`Playground/${name}`}; }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
@@ -543,7 +550,9 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       state.fresh = false;
       state.binding = null;
     };
-    if (preserveExisting || ownerNamesPath(intent)) {
+    // A request that names a shipped example as what to change ("In
+    // elf-of-doom, build a new game mode") works in that folder, never a new one.
+    if (preserveExisting || ownerNamesPath(intent) || ownerChangesAnyExample(intent)) {
       if (preserveExisting || ['write','edit','apply_patch','pixel_ods_workspace_preview'].includes(selected.tool)) preserve();
       return undefined;
     }
@@ -689,23 +698,43 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
   }
 }
 
-// ODS ships finished example projects (Elf of Doom) at Playground/<name>. They
-// are owner content: Portal may read and publish them, but changes one only
-// when the owner's own request names it as the thing to change, for example
-// "In elf-of-doom, make the arrows give 7". A request for something new gets
-// its own folder, and a request to open or show the example changes nothing.
-// This is a routing convention for the owner's files, never an access grant.
-const EXAMPLE_CHANGE_VERB = /\b(?:make|change|edit|update|modify|fix|repair|debug|add|remove|delete|tweak|improve|adjust|set|give|increase|decrease|raise|lower|double|halve|speed|slow|rename|replace|rewrite|refactor|rebalance|balance|recolou?r|restyle|extend|enhance|upgrade|convert|translate|implement|create|build|write|put|turn|swap|work|mude|mudar|altere|alterar|edite|editar|atualize|atualizar|corrija|corrigir|conserte|consertar|adicione|adicionar|remova|remover|faca|fazer|coloque|troque|aumente|diminua|melhore)\b/i;
-// "don't change anything" names a verb the owner forbids, not one requested.
-const NEGATED_FRAGMENT = /\b(?:do\s+not|don['’]t|never|without|nao|nunca|sem)\b[^.;!?\n,]*/gi;
-// Words before a mention that make it a reference, not the target: "like
-// elf-of-doom", "a copy of Elf of Doom", "inspired by elf-of-doom".
-const COMPARATIVE = /\b(?:like|unlike|than|similar\s+to|based\s+on|inspired\s+by|in\s+the\s+style\s+of|(?:copy|clone|version|remix|fork|variant|sequel)\s+of|as|como|parecido\s+com|igual\s+ao?)\s+(?:(?:the|my|your|our|this|that|o|a|ods['’]?s?)\s+)?(?:(?:existing|example|shipped)\s+)?(?:(?:game|project|folder|jogo|projeto|pasta)\s+)?$/i;
-// Words before a mention that make it the place to change: "in elf-of-doom",
-// "to Playground/elf-of-doom", "inside the elf-of-doom folder".
-const LOCATIVE = /\b(?:in|inside|into|within|on|to|for|of|under|em|no|na|dentro\s+d[aeo])\s+(?:(?:the|my|your|our|this|that|o|a|meu|minha|seu|sua|ods['’]?s?)\s+){0,3}(?:(?:existing|example|shipped|current)\s+){0,2}(?:(?:game|project|folder|directory|jogo|projeto|pasta)\s+)?(?:\/?workspace\/)?(?:playground\/)?$/i;
-const READ_ONLY_PROGRAM = /^(?:ls|dir|cat|head|tail|wc|stat|file|grep|egrep|fgrep|rg|tree|du|sha1sum|sha256sum|sha512sum|md5sum|shasum|cksum|b2sum|diff|cmp|pwd|echo|printf|sort|uniq|cut|nl|od|xxd|hexdump|strings|basename|dirname|realpath|readlink|test|\[|\[\[|true|cd|pushd|popd|find|less|more|column|jq|get-childitem|get-content|get-location|select-string)$/;
-const RUN_PREFIX = /^(?:sudo|env|nohup|time|command|builtin|exec|nice|if|then|else|elif|while|until|do|done|fi|!|\{|\})$/;
+// ODS ships finished example projects (Elf of Doom) at Playground/<name>.
+// They are owner content. Portal may read and publish one, but changes it only
+// when the owner names it as the thing to change ("In elf-of-doom, make the
+// arrows give 7"), or when an earlier turn of this chat named it to change or
+// open and this turn asks for nothing new. A request for something new gets
+// its own folder and never starts from the example's files unless the owner
+// asks for a copy. A deleted or renamed example is ordinary owner history and
+// is not protected. These are best-effort routing checks for the owner's
+// files, never an access grant or a sandbox: core tools keep their checks.
+
+const RANK = {mention: 1, open: 2, reuse: 3, change: 4};
+// The first word of a clause, after polite lead-ins, says what it asks for.
+const CHANGE_VERB = /^(?:make|change|edit|update|modify|fix|repair|debug|add|remove|delete|tweak|improve|adjust|set|give|increase|decrease|raise|lower|double|halve|triple|speed|slow|rename|replace|rewrite|refactor|rebalance|balance|recolou?r|restyle|extend|enhance|upgrade|convert|translate|implement|write|put|turn|swap|move|polish|redesign|rework|reskin|tune|nerf|buff|patch|insert|append|optimi[sz]e|redo|mude|mudar|altere|alterar|edite|editar|atualize|atualizar|corrija|corrigir|conserte|consertar|adicione|adicionar|remova|remover|faca|fazer|faz|coloque|colocar|troque|trocar|aumente|aumentar|diminua|diminuir|melhore|melhorar|escreva|escrever)$/i;
+// Creation verbs always ask for something new; make, write and start do when
+// a new object follows ("make me a game", "start a new one").
+const CREATION_VERB = /^(?:create|build|develop|design|generate|crie|criar|construa|construir|desenvolva|desenvolver|gere|gerar)$/i;
+const NEW_OBJECT_VERB = /^(?:make|write|start|faca|fazer|faz|escreva|escrever|comece|comecar)$/i;
+const NEW_OBJECT = /^(?:(?:me|us|for\s+me|for\s+us|pra\s+mim|para\s+mim)\s+)?(?:a|an|new|another|some|one|my\s+own|our\s+own|um|uma|novo|nova|outro|outra)\b/i;
+const OPEN_VERB = /^(?:open|show|play|preview|publish|republish|display|view|launch|run|load|see|watch|try|demo|start|abra|abrir|mostre|mostrar|jogue|jogar|veja|ver|rode|rodar|exiba|exibir)$/i;
+const LEAD_IN = /^(?:(?:please|pls|now|ok(?:ay)?|so|and|then|also|next|finally|first|just|quickly|simply|only|really|kindly|actually|hey|hi|portal|go\s+ahead\s+and|(?:can|could|would|will)\s+you|i\s+(?:want|need)\s+you\s+to|i\s+(?:would|['’]d)\s+like\s+you\s+to|let['’]?s|por\s+favor|agora|entao|tambem|(?:voce\s+)?(?:pode|poderia))\s+)*/i;
+const NEGATED = /^(?:do\s+not|don['’]t|never|nao|nunca|stop)\b/i;
+// "I want the arrows in elf-of-doom to give 7" asks for a change; "I want to
+// see it" does not.
+const DESIRE = /^(?:i\s+(?:want|need|would\s+like|['’]d\s+like|wish)|eu\s+quero)\s+(?!to\b|you\b)/i;
+// A comparison or exclusion anywhere before the mention in its clause makes
+// it a reference, never the target: "a game like the one in elf-of-doom",
+// "a sequel to Elf of Doom", "the same controls as in elf-of-doom".
+const COMPARISON = /\b(?:like|unlike|than|similar|same|as\s+in|based|inspired|sequel|prequel|spin-?off|successor|remake|reboot|imitation|rip-?off|knock-?off|homage|tribute|parody|beside|besides|alongside|except|instead|rather|separate(?:ly)?|outside|without|not|never|leave|untouched|apart|aside|como|parecid[oa]|igual|baseado|inspirado|continuacao|alem|fora|sem|nao)\b/i;
+const DETERMINERS = '(?:(?:the|my|your|our|this|that|o|a|meu|minha)\\s+){0,2}(?:(?:existing|example|shipped|current|original)\\s+){0,2}(?:(?:game|project|folder|directory|jogo|projeto|pasta)\\s+)?';
+// Phrases directly before the mention that name it as a source or model.
+const ADJACENT_REFERENCE = new RegExp(`\\b(?:(?:copy|clone|version|remix|fork|variant|style|imitation)\\s+of|alternative\\s+to|next\\s+to|after)\\s+${DETERMINERS}(?:\\/?workspace\\/)?(?:playground\\/)?$`, 'i');
+const AFTER_REFERENCE = /^(?:['’]s)?\s*(?:fans?|players?|lovers?|style|clone|copy|knock-?off|rip-?off)\b/i;
+const REUSE_VERB = /\b(?:copy|duplicate|clone|fork|reuse|copie|copiar|duplique|duplicar)\b/i;
+const WEAK_LOCATIVE = new RegExp(`\\b(?:in|inside|into|within|on|to|of|for|from|under|em|no|na|do|da|de|dentro\\s+d[aeo])\\s+${DETERMINERS}$`, 'i');
+const STRONG_PATH = /(?:^|[^A-Za-z0-9_.-])(?:\/?workspace\/)?playground\/$/i;
+const PURE_LOCATIVE_PREFIX = `^(?:(?:in|inside|within|into|on|for|em|no|na|para|dentro\\s+d[aeo])\\s+)?${DETERMINERS}(?:\\/?workspace\\/)?(?:playground\\/)?`;
+const PURE_LOCATIVE_SUFFIX = '(?:\\/\\S*)?(?:\\s+(?:game|project|folder|directory|jogo|projeto|pasta))?$';
 
 // Only the owner's words: ODS appends routing contracts ("[ODS Portal ...
 // route: ...]") to the turn, and their verbs are not the owner's request.
@@ -715,69 +744,185 @@ function ownerWords(intent) {
 function ownerText(intent) {
   return plainIntent(ownerWords(intent)).replaceAll('\\', '/');
 }
+function escaped(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+// The folder name and its spaced title (Elf of Doom) both name the example.
+function mentionSource(name) {
+  return name.split('-').map(escaped).join('[\\s_-]+');
+}
+function mentions(text, name) {
+  return [...text.matchAll(new RegExp(`(^|[^A-Za-z0-9_.-])(${mentionSource(name)})(?![A-Za-z0-9_]|-[A-Za-z0-9])`, 'gi'))]
+    .map(match => ({start: match.index + match[1].length, end: match.index + match[1].length + match[2].length}));
+}
 
-// How the owner's text names one example: 'target' when it is the place to
-// change (a path into it, a possessive, or after in/to/inside...), 'bare' for
-// any other mention that is not a comparison, otherwise null. The folder name
-// and its spaced title (Elf of Doom) both count.
-function exampleMention(text, name) {
-  const words = name.split('-').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const pattern = new RegExp(`(^|[^A-Za-z0-9_.-])(${words.join('[\\s_-]+')})(?![A-Za-z0-9_]|-[A-Za-z0-9])`, 'gi');
-  let bare = false;
-  for (const match of text.matchAll(pattern)) {
-    const start = match.index + match[1].length;
-    const before = text.slice(Math.max(0, start - 96), start);
-    const after = text.slice(start + match[2].length);
-    if (COMPARATIVE.test(before)) continue;
-    if (/^\/[A-Za-z0-9_.-]/.test(after) || /^['’]s\b/i.test(after) || LOCATIVE.test(before)
-        || /(?:^|[^A-Za-z0-9_.-])(?:\/?workspace\/)?playground\/$/i.test(before)) return 'target';
-    bare = true;
+function ownerSentences(text) {
+  return text.split(/[;!?\n]+|\.(?=\s|$)/).map(part => part.trim()).filter(Boolean);
+}
+function ownerClauses(sentence) {
+  return sentence.split(/\s*[,:]\s*|\s+(?:and|then|but|plus|e|mas|depois)\s+/i).map(part => part.trim()).filter(Boolean);
+}
+// What one clause asks for: 'change', 'creation' (something new), 'open',
+// 'negated' (a prohibition) or null (a question, statement or other verb).
+function clauseRequest(clause) {
+  const text = clause.replace(LEAD_IN, '');
+  if (NEGATED.test(text)) return {kind: 'negated', text, verb: ''};
+  const desire = DESIRE.exec(text);
+  if (desire) {
+    const asks = text.slice(desire[0].length).split(/\s+/).some(word => CHANGE_VERB.test(word.replace(/[^A-Za-z]/g, '')));
+    return {kind: asks ? 'change' : null, text, verb: ''};
   }
-  return bare ? 'bare' : null;
+  const match = /^([A-Za-z]+)\b\s*/.exec(text);
+  if (!match) return {kind: null, text, verb: ''};
+  const after = text.slice(match[0].length);
+  const kind = CREATION_VERB.test(match[1]) || (NEW_OBJECT_VERB.test(match[1]) && NEW_OBJECT.test(after)) ? 'creation'
+    : CHANGE_VERB.test(match[1]) ? 'change' : OPEN_VERB.test(match[1]) ? 'open' : null;
+  return {kind, text, verb: match[0]};
+}
+// How one mention sits in its clause: 'negated', 'reuse' (copy it),
+// 'reference' (a comparison), 'strong' (the clause is only the mention, as
+// in "In elf-of-doom, ...", or a Playground/<name> path), 'weak' (after in,
+// to, of ..., a possessive, or the object of the clause's verb), or 'bare'.
+function mentionPlace(request, mention, name) {
+  if (request.kind === 'negated') return 'negated';
+  const text = request.text, before = text.slice(0, mention.start), after = text.slice(mention.end);
+  if (REUSE_VERB.test(before)) return 'reuse';
+  if (COMPARISON.test(before) || ADJACENT_REFERENCE.test(before) || AFTER_REFERENCE.test(after)) return 'reference';
+  if (new RegExp(PURE_LOCATIVE_PREFIX + mentionSource(name) + PURE_LOCATIVE_SUFFIX, 'i').test(text) || STRONG_PATH.test(before)) return 'strong';
+  if (WEAK_LOCATIVE.test(before) || /^['’]s\b/.test(after) || /^\/[A-Za-z0-9_.-]/.test(after)) return 'weak';
+  if (request.verb && new RegExp(`^${escaped(request.verb)}(?:(?:me|us)\\s+)?${DETERMINERS}$`, 'i').test(before)) return 'object';
+  return 'bare';
 }
 
-// True only when the owner asks to change this example by name. An open,
-// show or publish request without a change verb never changes it, and a
-// request for a new project changes it only when it names the example as the
-// place to change ("In elf-of-doom, create a new boss").
+// What the owner's current request asks of one shipped example: level is
+// 'change' (named as what to change), 'reuse' (copy it), 'open' (open, show
+// or play it), 'mention' (any other mention) or null; creation is true when
+// it asks for something new. A clause that only names the example ("In
+// elf-of-doom, ...") or a Playground/<name> path names it even in a request
+// that also creates something; "the arrows in elf-of-doom", a possessive or
+// an object of the verb names it only when nothing new is requested.
+function exampleRequest(intent, name) {
+  const fresh = requestsNewPlaygroundProject(ownerWords(intent));
+  let level = null, creation = fresh, negated = false, topic = false;
+  const raise = value => { if ((RANK[value] ?? 0) > (RANK[level] ?? 0)) level = value; };
+  for (const sentence of ownerSentences(ownerText(intent))) {
+    const requests = ownerClauses(sentence).map(clauseRequest);
+    const creates = requests.some(request => request.kind === 'creation');
+    const strict = fresh || creates;
+    creation ||= creates;
+    const changes = requests.filter(request => request.kind === 'change' || request.kind === 'creation');
+    let mentioned = false;
+    for (const request of requests) {
+      for (const mention of mentions(request.text, name)) {
+        mentioned = true;
+        const place = mentionPlace(request, mention, name);
+        if (place === 'negated') { negated = true; continue; }
+        if (place === 'reference' || place === 'bare') { raise('mention'); continue; }
+        if (place === 'reuse') { raise('reuse'); continue; }
+        const opened = request.kind === 'open';
+        const target = place === 'strong' || (!strict && (place === 'weak' || place === 'object'));
+        // "Open elf-of-doom and make the arrows give 7": the opened example
+        // is what the other clause changes.
+        if (target && changes.some(other => !opened || other !== request)) raise('change');
+        else if (opened) raise('open');
+        else raise('mention');
+        if (target || opened) topic = true;
+      }
+    }
+    // "Open elf-of-doom. Make the arrows give 7."
+    if (!mentioned && topic && !strict && changes.length) raise('change');
+  }
+  return {level, creation, negated};
+}
+
 function ownerChangesExample(intent, name) {
-  const text = ownerText(intent);
-  if (!EXAMPLE_CHANGE_VERB.test(text.replace(NEGATED_FRAGMENT, ' '))) return false;
-  const mention = exampleMention(text, name);
-  return mention === 'target' || (mention === 'bare' && !requestsNewPlaygroundProject(ownerWords(intent)));
+  return exampleRequest(intent, name).level === 'change';
+}
+// True when the owner's request names any shipped example as what to change.
+function ownerChangesAnyExample(intent) {
+  return SHIPPED_EXAMPLE_PROJECTS.some(name => ownerChangesExample(intent, name));
 }
 
-// The shipped example a tool path is inside, matched without case as a
-// case-insensitive workspace would resolve it. A path is workspace-relative,
-// under /workspace/ or the configured root, or relative to base (the exec
-// directory); with a null base a relative path cannot be resolved.
-function examplePath(value, root, base = '') {
+// The examples this chat may keep changing in its next turn: ones the owner
+// named to change or open, until a turn asks for something new. Callers keep
+// the returned set per chat in memory only.
+export function exampleChatTopics(previous, intent) {
+  const topics = new Set();
+  let creation = false;
+  for (const name of SHIPPED_EXAMPLE_PROJECTS) {
+    const request = exampleRequest(intent, name);
+    creation ||= request.creation;
+    if (request.level === 'change' || request.level === 'open') topics.add(name);
+  }
+  if (!creation) for (const name of previous ?? []) if (SHIPPED_EXAMPLE_PROJECTS.includes(name)) topics.add(name);
+  return topics;
+}
+
+// Whether Playground/<name> exists. Only an existing example is protected;
+// an unreadable workspace counts as existing.
+function examplePresent(root, name) {
+  try {
+    fs.lstatSync(path.join(safeRoot(root), 'Playground', name));
+    return true;
+  } catch (error) {
+    return !['ENOENT', 'ENOTDIR'].includes(error?.code);
+  }
+}
+
+// ------------------------------------------------- tool paths and commands --
+
+const OUTSIDE = Symbol('outside the workspace');
+const GLOB = /[*?[]/;
+// A path as the workspace sees it: a workspace-relative string ('' is the
+// root), OUTSIDE, or null when it cannot be resolved (an unknown cwd, a
+// variable or a home path). Relative paths resolve against cwd.
+function workspaceTarget(value, cwd, root) {
   if (typeof value !== 'string' || !value || value.length > 4096) return null;
   let text = value.replaceAll('\\', '/');
   const configured = root.replaceAll('\\', '/').replace(/\/+$/, '');
   if (text === configured || text.startsWith(`${configured}/`)) text = text.slice(configured.length + 1);
   else if (text === '/workspace' || text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
-  else if (text.startsWith('/') || base === null) return null;
-  else if (base) text = `${base}/${text}`;
-  const normalized = path.posix.normalize(text || '.');
-  if (normalized === '..' || normalized.startsWith('../')) return null;
-  const segments = normalized.split('/');
-  if (segments.length < 2 || segments[0].toLowerCase() !== 'playground') return null;
-  return SHIPPED_EXAMPLE_PROJECTS.find(name => name === segments[1].toLowerCase()) ?? null;
+  else if (/^(?:\/|[A-Za-z]:\/)/.test(text)) return OUTSIDE;
+  else {
+    text = text.replace(/^(?:\$\(pwd\)|\$\{?PWD\}?)(?=\/|$)/, '.');
+    if (/^[~$%]/.test(text) || cwd === null) return null;
+    if (cwd === OUTSIDE) return OUTSIDE;
+    if (cwd) text = `${cwd}/${text}`;
+  }
+  const normalized = path.posix.normalize(text || '.').replace(/\/+$/, '');
+  if (normalized === '..' || normalized.startsWith('../')) return OUTSIDE;
+  return normalized === '.' ? '' : normalized;
 }
-
-// An exec workdir as a workspace-relative directory: '' for the workspace
-// root, null for a directory outside the workspace.
+function globSegment(pattern) {
+  let source = '';
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i];
+    const close = c === '[' ? pattern.indexOf(']', i + 2) : -1;
+    if (c === '*') source += '.*';
+    else if (c === '?') source += '.';
+    else if (close > i) { source += `[${pattern.slice(i + 1, close).replace(/^!/, '^').replace(/\\/g, '\\\\')}]`; i = close; }
+    else source += escaped(c);
+  }
+  try { return new RegExp(`^${source}$`, 'i'); } catch { return /^/; }
+}
+// 'inside' when a workspace path (or glob) is, or may be, in Playground/<name>;
+// 'ancestor' when it is the workspace root, Playground, or a glob for them.
+function exampleRelation(target, name) {
+  if (typeof target !== 'string') return null;
+  const segments = target ? target.split('/') : [];
+  if (segments.includes('**')) return 'inside';
+  const matches = (segment, value) => GLOB.test(segment) ? globSegment(segment).test(value) : segment.toLowerCase() === value.toLowerCase();
+  if (!segments.length) return 'ancestor';
+  if (!matches(segments[0], 'Playground')) return null;
+  if (segments.length === 1) return 'ancestor';
+  return matches(segments[1], name) ? 'inside' : null;
+}
+// An exec workdir: '' for the workspace root, a workspace-relative directory,
+// or OUTSIDE.
 function execDirectory(workdir, root) {
   if (workspaceCwd(workdir, root)) return '';
-  if (typeof workdir !== 'string') return null;
-  let text = workdir.replaceAll('\\', '/');
-  const configured = root.replaceAll('\\', '/').replace(/\/+$/, '');
-  if (text.startsWith(`${configured}/`)) text = text.slice(configured.length + 1);
-  else if (text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
-  else if (text.startsWith('/')) return null;
-  const normalized = path.posix.normalize(text).replace(/\/+$/, '');
-  return normalized === '.' ? '' : normalized === '..' || normalized.startsWith('../') ? null : normalized;
+  const target = workspaceTarget(workdir, '', root);
+  return target === null ? OUTSIDE : target;
 }
 
 // A command that only reads: every program is a reading program, nothing is
@@ -797,65 +942,270 @@ function readOnlyCommand(command) {
     }
     if (program === null) {
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(text) || RUN_PREFIX.test(text)) continue;
-      program = text.replaceAll('\\', '/').split('/').at(-1).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '');
+      program = programName(text);
       if (!READ_ONLY_PROGRAM.test(program)) return false;
       continue;
     }
-    if (program === 'find' && /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(text)) return false;
+    if (program === 'find' && FIND_ACTION.test(text)) return false;
     if (program === 'sort' && /^-(?:o|-output)/.test(text)) return false;
   }
   return true;
 }
-
-// The shipped examples a tool call would change, by name. A read never
-// changes anything; an exec changes an example only when it touches one and
-// is not a read-only command.
-function examplesChanged(selected, root) {
-  const args = selected.args, found = new Set();
-  const add = name => { if (name) found.add(name); };
-  if (selected.tool === 'write' || selected.tool === 'edit') {
-    for (const key of ['path', 'file_path', 'filePath']) add(examplePath(args[key], root));
-  } else if (selected.tool === 'apply_patch') {
-    if (typeof args.input === 'string') for (const match of args.input.matchAll(PATCH_HEADER)) add(examplePath(match[2].trim(), root));
-  } else if (selected.tool === 'exec') {
-    const command = typeof args.command === 'string' ? args.command : '';
-    const touched = new Set([examplePath(args.workdir, root)].filter(Boolean));
-    // A relative path word resolves against the exec directory until the
-    // command changes directory; the cd target is itself a path word.
-    const directory = execDirectory(args.workdir, root);
-    for (const word of shellPathWords(command, root)) {
-      const name = examplePath(word.text, root, word.rooted ? directory : null);
-      if (name) touched.add(name);
-    }
-    if (touched.size && !readOnlyCommand(command)) for (const name of touched) found.add(name);
-  }
-  return found;
+const READ_ONLY_PROGRAM = /^(?:ls|dir|cat|head|tail|wc|stat|file|grep|egrep|fgrep|rg|tree|du|sha1sum|sha256sum|sha512sum|md5sum|shasum|cksum|b2sum|diff|cmp|pwd|echo|printf|sort|uniq|cut|nl|od|xxd|hexdump|strings|basename|dirname|realpath|readlink|test|\[|\[\[|true|cd|pushd|popd|find|less|more|column|jq|get-childitem|get-content|get-location|select-string)$/;
+const RUN_PREFIX = /^(?:sudo|env|nohup|time|command|builtin|exec|nice|if|then|else|elif|while|until|do|done|fi|!|\{|\})$/;
+const FIND_ACTION = /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
+// Programs that copy: sources are only read, the last operand (or -t) is
+// written. mv moves its sources away. These change a whole tree given its
+// root: rm -r, chmod/chown/chgrp -R, find with an action, rsync --delete.
+const COPY_PROGRAM = /^(?:cp|rsync|ditto|install)$/;
+const RECURSIVE_PROGRAM = /^(?:rm|chmod|chown|chgrp|setfacl|chattr)$/;
+const GIT_TREE = /^(?:clean|checkout|restore|reset|stash|rm|mv|switch|pull|merge|rebase|apply|am|cherry-pick|revert)$/;
+const STDIN_PROGRAM = /^(?:xargs|parallel)$/;
+function programName(text) {
+  return text.replaceAll('\\', '/').split('/').at(-1).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '');
 }
 
-function exampleChangeReason(name, fresh) {
+// Simple commands in order, with subshell boundaries.
+function shellCommands(command) {
+  const events = [];
+  let words = [], redirects = [], redirect = null;
+  const end = () => {
+    if (words.length || redirects.length) events.push({type: 'command', words, redirects});
+    words = []; redirects = []; redirect = null;
+  };
+  for (const token of shellTokens(command)) {
+    if (token.type === 'separator') { end(); continue; }
+    if (token.type === 'open' || token.type === 'close') { end(); events.push({type: token.type}); continue; }
+    if (token.type === 'redirect') { redirect = token.op; continue; }
+    if (redirect) { redirects.push({op: redirect, text: token.text}); redirect = null; continue; }
+    words.push(token.text);
+  }
+  end();
+  return events;
+}
+
+// How an exec command uses one shipped example: 'change', 'source' (only
+// copied from) or null. It follows cd, pushd and Set-Location, reads sh -c
+// text as commands, and also checks every other spelling of the folder name
+// in the command (interpreter code, heredoc text) as a path. With routable,
+// a command with no workdir may still be routed into a project folder, so a
+// relative root or Playground operand is not yet taken as the whole tree.
+function execExampleUse(command, workdir, root, name, routable) {
+  if (typeof command !== 'string' || readOnlyCommand(command)) return null;
+  const start = execDirectory(workdir, root);
+  const routed = routable && start === '';
+  let use = null, maybeExample = false, moved = false, related = false;
+  const record = kind => { if (kind === 'change' || !use) use = kind; };
+  const accounted = new Map();
+  const account = text => accounted.set(text, (accounted.get(text) ?? 0) + 1);
+  if (typeof start === 'string' && exampleRelation(start, name) === 'inside') record('change');
+  // relation of one operand; a relative operand of an unrouted command
+  // resolves against the shell cwd.
+  const relationOf = (text, cwd) => {
+    const target = workspaceTarget(text, cwd, root);
+    const relation = exampleRelation(target, name);
+    const relative = !/^(?:\/|[A-Za-z]:[\\/])/.test(text.replaceAll('\\', '/'));
+    return relation === 'ancestor' && routed && relative && cwd === '' ? null : relation;
+  };
+  const walk = (text, cwd, depth) => {
+    const stack = [];
+    for (const event of shellCommands(text)) {
+      if (event.type === 'open') { stack.push(cwd); continue; }
+      if (event.type === 'close') { if (stack.length) cwd = stack.pop(); continue; }
+      for (const {op, text: target} of event.redirects) {
+        if (op.startsWith('<<') || (op.endsWith('&') && /^(?:\d+|-)$/.test(target))) continue;
+        account(target);
+        if (/[>]/.test(op) && relationOf(target, cwd) === 'inside') record('change');
+      }
+      let index = 0;
+      while (index < event.words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(event.words[index]) || COMMAND_PREFIXES.test(event.words[index]))) index++;
+      if (index >= event.words.length) continue;
+      const program = programName(event.words[index]);
+      const args = event.words.slice(index + 1);
+      const operands = args.filter(value => !value.startsWith('-') || value === '-');
+      const inCwd = cwd === null ? maybeExample : typeof cwd === 'string' && exampleRelation(cwd, name) === 'inside';
+      if (args.some(value => ['inside', 'ancestor'].includes(relationOf(value, cwd)))) related = true;
+      if (STDIN_PROGRAM.test(program)) {
+        // grep -rl x Playground | xargs sed -i ...: the paths come from input.
+        const target = args.find(value => !value.startsWith('-'));
+        if (target && !READ_ONLY_PROGRAM.test(programName(target))
+          && (related || ['inside', 'ancestor'].includes(relationOf('.', cwd)))) record('change');
+        continue;
+      }
+      if (CHANGE_DIRECTORY.test(program) || program === 'popd') {
+        const raw = program === 'popd' ? undefined : operands[0];
+        if (raw !== undefined) account(raw);
+        moved = true;
+        if (raw === undefined || raw === '-') { cwd = null; continue; }
+        const target = workspaceTarget(raw, cwd, root);
+        if (GLOB.test(raw)) { if (exampleRelation(target, name) === 'inside') maybeExample = true; cwd = null; continue; }
+        cwd = target;
+        continue;
+      }
+      if (SHELLS.test(program)) {
+        const flag = args.findIndex(value => /^-[A-Za-z]*c$/.test(value));
+        if (flag >= 0 && args[flag + 1] !== undefined) {
+          if (depth < 2) walk(args[flag + 1], cwd, depth + 1);
+          else record('change');
+          continue;
+        }
+      }
+      if (INTERPRETERS.test(program)) {
+        // Code after -c/-e is not a path list; the name scan below reads it.
+        const code = args.findIndex(value => /^(?:-c|-e|--eval|-command)$/i.test(value));
+        for (const [position, value] of args.entries()) if (position !== code + 1 || code < 0) account(value);
+        if (inCwd) record('change');
+        for (const value of operands) if (relationOf(value, cwd) === 'inside') record('change');
+        continue;
+      }
+      if (TEXT_PROGRAMS.test(program)) {
+        // Their arguments are text, not paths; the name scan still reads them.
+        if (inCwd && !READ_ONLY_PROGRAM.test(program)) record('change');
+        continue;
+      }
+      for (const value of args) account(value.includes('=') && value.startsWith('--') ? value.slice(value.indexOf('=') + 1) : value);
+      if (program === 'find') {
+        if (!args.some(value => FIND_ACTION.test(value))) continue;
+        const roots = [];
+        for (const value of args) { if (value.startsWith('-') || value === '(' || value === '!') break; roots.push(value); }
+        if (!roots.length) roots.push('.');
+        if (roots.some(value => ['inside', 'ancestor'].includes(relationOf(value, cwd)))) record('change');
+        continue;
+      }
+      if (READ_ONLY_PROGRAM.test(program)) {
+        // cat Playground/elf-of-doom/x > elsewhere copies it.
+        const writes = event.redirects.some(({op, text: target}) => /[>]/.test(op) && !op.endsWith('&') && target !== '/dev/null');
+        if (writes && operands.some(value => relationOf(value, cwd) === 'inside')) record('source');
+        continue;
+      }
+      if (inCwd) record('change');
+      if (COPY_PROGRAM.test(program)) {
+        const option = args.findIndex(value => value === '-t' || value.startsWith('--target-directory'));
+        const destination = option >= 0 ? (args[option].includes('=') ? args[option].split('=').slice(1).join('=') : args[option + 1]) : operands.at(-1);
+        const sources = option >= 0 ? operands.filter(value => value !== destination) : operands.slice(0, -1);
+        const deletes = program === 'rsync' && args.some(value => value.startsWith('--delete'));
+        const written = destination === undefined ? null : relationOf(destination, cwd);
+        if (written === 'inside' || (deletes && written === 'ancestor')) record('change');
+        if (sources.some(value => relationOf(value, cwd) === 'inside')) record('source');
+        continue;
+      }
+      if (program === 'mv') {
+        if (operands.slice(0, -1).some(value => ['inside', 'ancestor'].includes(relationOf(value, cwd)))
+          || relationOf(operands.at(-1) ?? '', cwd) === 'inside') record('change');
+        continue;
+      }
+      if (RECURSIVE_PROGRAM.test(program)) {
+        const recursive = args.some(value => /^-[A-Za-z]*[rR]/.test(value) || value === '--recursive');
+        if (operands.some(value => relationOf(value, cwd) === 'inside' || (recursive && relationOf(value, cwd) === 'ancestor'))) record('change');
+        continue;
+      }
+      if (program === 'git') {
+        let position = 0;
+        while (position < args.length && args[position].startsWith('-')) position += ['-C', '-c', '--git-dir', '--work-tree'].includes(args[position]) ? 2 : 1;
+        if (!GIT_TREE.test(args[position] ?? '')) { if (operands.some(value => relationOf(value, cwd) === 'inside')) record('change'); continue; }
+        const paths = args.slice(position + 1).filter(value => !value.startsWith('-'));
+        const here = cwd === null ? 'unknown' : routed && cwd === '' ? null : exampleRelation(typeof cwd === 'string' ? cwd : null, name);
+        if (paths.some(value => ['inside', 'ancestor'].includes(relationOf(value, cwd))) || (!paths.length && here)) record('change');
+        continue;
+      }
+      if (operands.some(value => relationOf(value, cwd) === 'inside')) record('change');
+    }
+  };
+  walk(command, start, 0);
+  // Every other spelling of the folder name in the command text: code passed
+  // to an interpreter, heredoc text, or words the walk above did not read. A
+  // bare name, or one the cwd leaves unresolved, may be the example.
+  const pattern = new RegExp(`(?<![A-Za-z0-9_.-])${escaped(name)}(?![A-Za-z0-9_]|-[A-Za-z0-9])`, 'gi');
+  for (const match of command.matchAll(pattern)) {
+    let left = match.index, right = match.index + match[0].length;
+    while (left > 0 && /[^\s'"`;|&<>(){},:=]/.test(command[left - 1])) left--;
+    while (right < command.length && /[^\s'"`;|&<>(){},:=]/.test(command[right])) right++;
+    const token = command.slice(left, right);
+    if (accounted.get(token) > 0) { accounted.set(token, accounted.get(token) - 1); continue; }
+    if (!token.includes('/') && !token.includes('\\')) { record('change'); continue; }
+    const target = workspaceTarget(token, moved ? null : start, root);
+    if (target === null || exampleRelation(target, name) === 'inside') record('change');
+  }
+  return use;
+}
+
+// The tool as the example checks see it, unwrapping tool_call.
+function exampleTool(tool, params) {
+  if (tool !== 'tool_call') return {tool, args: params};
+  const id = params?.id;
+  if (typeof id !== 'string') return null;
+  return {tool: id.split(':').at(-1), args: params.args};
+}
+const PROCESS_READS = /^(?:list|poll|log|kill|status|wait)$/;
+
+// How one tool call would use each shipped example, as a Map from name to
+// 'change' or 'source'. Reads never change anything.
+function exampleUses(selected, root, routable) {
+  const args = selected.args, uses = new Map();
+  const add = (name, kind) => { if (name && (kind === 'change' || !uses.has(name))) uses.set(name, kind); };
+  const inside = (value, cwd = '') => SHIPPED_EXAMPLE_PROJECTS.find(name => exampleRelation(workspaceTarget(value, cwd, root), name) === 'inside');
+  if (selected.tool === 'write' || selected.tool === 'edit') {
+    for (const key of ['path', 'file_path', 'filePath']) add(inside(args[key]), 'change');
+  } else if (selected.tool === 'apply_patch') {
+    if (typeof args.input === 'string') for (const match of args.input.matchAll(PATCH_HEADER)) add(inside(match[2].trim()), 'change');
+  } else if (selected.tool === 'exec') {
+    for (const name of SHIPPED_EXAMPLE_PROJECTS) add(name, execExampleUse(args.command, args.workdir, root, name, routable));
+  } else if (selected.tool === WORKSPACE_BUNDLE) {
+    add(inside(args.outputRoot), 'change');
+    if (Array.isArray(args.files)) for (const item of args.files) add(inside(item?.source), 'source');
+  } else if (selected.tool === 'pixel_ods_download_promote') {
+    add(inside(args.relativePath), 'change');
+  } else if (selected.tool === 'process' && !PROCESS_READS.test(String(args.action ?? ''))) {
+    const text = JSON.stringify(args) ?? '';
+    for (const name of SHIPPED_EXAMPLE_PROJECTS) if (new RegExp(escaped(name), 'i').test(text)) add(name, 'change');
+  }
+  for (const [name, kind] of uses) if (kind === null) uses.delete(name);
+  return uses;
+}
+const WORKSPACE_BUNDLE = 'pixel_ods_workspace_bundle';
+
+function exampleRefusalReason(name, kind, request, projectDirectory) {
   const folder = `Playground/${name}`;
-  return fresh
-    ? `Not changed: ${folder} is the finished example project ODS ships, and the owner asked for a new project. Leave ${folder} as it is. Put every file of the new project in its own descriptive folder, for example Playground/dungeon-crawler/index.html, and publish that folder.`
+  const place = typeof projectDirectory === 'string' && projectDirectory.startsWith('Playground/')
+    && !exampleRelation(projectDirectory, name) ? projectDirectory : 'a new descriptive Playground folder named for that project';
+  if (kind === 'source') {
+    return `Not copied: ${folder} is the finished example project ODS ships. It is never a starting point for new work unless the owner asks for a copy of it. Leave it as it is and write the new project's own files yourself in ${place}.`;
+  }
+  if (request.level === 'reuse') {
+    return `Not changed: ${folder} is the finished example project ODS ships, and the owner asked for a copy of it. Leave ${folder} as it is: copy its files into a new descriptive Playground folder and change only that copy.`;
+  }
+  return request.creation
+    ? `Not changed: ${folder} is the finished example project ODS ships, and the owner asked for something new. Leave ${folder} as it is and do not copy its files. Write every file of the new project yourself in ${place}, and publish that folder.`
     : `Not changed: ${folder} is the finished example project ODS ships. Portal changes it only when the owner's request names it as what to change, for example "In ${name}, make the arrows give 7". Reading and publishing it stay available. Do not copy it into another folder to get around this; tell the owner how to ask.`;
 }
 
 // The refusal for a tool call that would change a shipped example the owner
-// did not ask to change, or that would publish one as a requested new project.
-// Undefined when the call may proceed; it never rewrites the call.
-export function exampleProjectRefusal({tool, params, root, intent}) {
-  const selected = selectTool(tool, params);
-  if (!selected || !selected.args || typeof root !== 'string' || !path.isAbsolute(root)) return undefined;
-  const fresh = requestsNewPlaygroundProject(ownerWords(intent));
+// did not ask to change, copy one for new work the owner did not ask to copy,
+// or publish one as a requested new project. Undefined when the call may
+// proceed; it never rewrites the call. earlier holds the examples an earlier
+// turn of this chat named to change or open (exampleChatTopics). routable
+// marks the check made before project routing, which may still move an exec
+// with no workdir into the run's project folder. previewDirectory is the
+// directory a preview call with none of its own publishes.
+export function exampleProjectRefusal({tool, params, root, intent, earlier, projectDirectory, previewDirectory, routable = false}) {
+  const selected = exampleTool(tool, params);
+  if (!selected || !selected.args || typeof selected.args !== 'object' || typeof root !== 'string' || !path.isAbsolute(root)) return undefined;
   if (selected.tool === 'pixel_ods_workspace_preview') {
-    const name = examplePath(selected.args.relativeDirectory, root);
-    if (!name || !fresh || exampleMention(ownerText(intent), name)) return undefined;
-    return {block:true, blockReason:`Not published: Playground/${name} is the finished example project ODS ships, not the new project the owner asked for. Write the new project in its own descriptive Playground folder and publish that folder.`};
+    const directory = selected.args.relativeDirectory ?? selected.args.directory ?? previewDirectory;
+    const name = SHIPPED_EXAMPLE_PROJECTS.find(value => exampleRelation(workspaceTarget(directory, '', root), value) === 'inside');
+    if (!name || !examplePresent(root, name)) return undefined;
+    const request = exampleRequest(intent, name);
+    if (!request.creation || request.level === 'change' || request.level === 'open') return undefined;
+    return {block: true, blockReason: `Not published: ${`Playground/${name}`} is the finished example project ODS ships, not the new project the owner asked for. Write the new project in its own descriptive Playground folder and publish that folder.`};
   }
-  if (!['write', 'edit', 'apply_patch', 'exec'].includes(selected.tool)) return undefined;
-  for (const name of examplesChanged(selected, root)) {
-    if (!ownerChangesExample(intent, name)) return {block:true, blockReason:exampleChangeReason(name, fresh)};
+  for (const [name, kind] of exampleUses(selected, root, routable)) {
+    if (!examplePresent(root, name)) continue;
+    const request = exampleRequest(intent, name);
+    const continued = earlier?.has?.(name) && !request.creation && !request.negated && (request.level === null || request.level === 'open');
+    if (request.level === 'change' || continued || (kind === 'source' && request.level === 'reuse')) continue;
+    return {block: true, blockReason: exampleRefusalReason(name, kind, request, projectDirectory)};
   }
   return undefined;
 }
 
-export const exampleProjectTesting = Object.freeze({exampleMention, ownerChangesExample, readOnlyCommand, examplePath});
+export const exampleProjectTesting = Object.freeze({exampleRequest, ownerChangesExample, readOnlyCommand, execExampleUse, exampleRelation, workspaceTarget});

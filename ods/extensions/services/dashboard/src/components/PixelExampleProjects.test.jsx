@@ -50,6 +50,26 @@ test('without the folder, or without an answer, there is no example and no empty
   expect(screen.queryByTitle('Playground/elf-of-doom')).toBeNull()
 })
 
+test('a failed check keeps the list, and Portal becoming available checks again', async () => {
+  vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Portal is restarting') }))
+  render(<PixelConversationNavigation collapsed={false}/>)
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
+  expect(screen.queryByTitle('Playground/elf-of-doom')).toBeNull()
+  // Pixel sends the refresh event when Portal becomes available.
+  fetch.mockResolvedValue(listed(['elf-of-doom']))
+  act(() => { window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT)) })
+  const example = await screen.findByTitle('Playground/elf-of-doom')
+  expect(example).toHaveAttribute('role', 'button')
+  for (const failure of [async () => ({ok: false, status: 503, json: async () => ({detail: 'down'})}),
+    async () => { throw new TypeError('offline') }]) {
+    fetch.mockImplementationOnce(failure)
+    const calls = fetch.mock.calls.length
+    act(() => { window.dispatchEvent(new Event('focus')) })
+    await waitFor(() => expect(fetch.mock.calls.length).toBe(calls + 1))
+    expect(screen.getByTitle('Playground/elf-of-doom')).toBeVisible()
+  }
+})
+
 test('a deleted or renamed folder quietly leaves the list on the next check', async () => {
   vi.stubGlobal('fetch', vi.fn(async () => listed(['elf-of-doom'])))
   render(<PixelConversationNavigation collapsed={false}/>)
