@@ -166,6 +166,9 @@ export const VISIBLE_REPLY_REQUIRES_FINAL_REASON =
 export const OWNER_NO_TOOLS_REASON =
   "The owner explicitly requested no tools for this turn. No tool was run. Answer directly from the information already available; do not call another tool.";
 
+export const ATTACHED_PICTURE_IN_CONTEXT_REASON =
+  "That picture is attached to the owner's current message and is already in your context. No tool can fetch, open or search it, and no tool was run. Look at the picture and answer the owner directly.";
+
 export const EDIT_CREATE_REQUIRES_WRITE_REASON =
   "edit cannot create a new file because every edit replacement requires a non-empty oldText copied from existing content. Use the visible tool_call control now with id write and args containing the same path plus the exact newText as content. Do not retry edit.";
 
@@ -4661,6 +4664,23 @@ function ownerForbidsTools(text) {
   return false;
 }
 
+// Must match CURRENT_IMAGE_NOTE in host/chat_image_transport.mjs, which the
+// trusted ingress appends after an image turn's pixels and delivery guidance.
+const ATTACHED_PICTURE_NOTE = "[Attached pictures: the image parts of this message are the pictures themselves, ";
+
+function attachedPictureIds(text) {
+  const index = text.lastIndexOf(ATTACHED_PICTURE_NOTE);
+  if (index < 0) return [];
+  return [...new Set(text.slice(index).match(/\bimg-[a-f0-9]{32}\b/g) ?? [])].slice(0, 4);
+}
+
+// A picture already in the model's context cannot be fetched by any tool;
+// small vision models still try, even passing its identifier to web search.
+function namesAttachedPicture(params, ids) {
+  const text = JSON.stringify(params ?? null);
+  return ids.some(id => text.includes(id));
+}
+
 function ownerWorkspaceLaneRequested(text, workspaceRequested) {
   if (workspaceRequested) return true;
   // Repository investigation named within an extension slash route belongs to
@@ -7953,6 +7973,10 @@ export function createToolLoopGuard({
       blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
     };
     if (state?.ownerNoTools) return {block:true, blockReason:OWNER_NO_TOOLS_REASON};
+    // After compaction the pixels may have left the context; re-reading is then legitimate.
+    if (state?.attachedPictureIds && !state.compactionSeen && namesAttachedPicture(event?.params, state.attachedPictureIds)) {
+      return {block:true, blockReason:ATTACHED_PICTURE_IN_CONTEXT_REASON};
+    }
     // Every tool stays blocked after the budget stops the response. Until the
     // model has seen the finalization instruction, the refusal carries it; a
     // tool call during the answer turn ends the run at this boundary (the
@@ -9976,6 +10000,8 @@ export function createToolLoopGuard({
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
+      const pictureIds=attachedPictureIds(currentUserText(event?.messages,event?.prompt));
+      if (pictureIds.length && state.attachedPictureIds === undefined) state.attachedPictureIds=pictureIds;
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
@@ -10315,7 +10341,7 @@ export function createToolLoopGuard({
   function observeCompaction(context, phase) {
     const state = compactionRunState(context);
     if (!state) return;
-    if (phase === "start") state.compactionWindow = { calls: new Set(), started: 0 };
+    if (phase === "start") { state.compactionWindow = { calls: new Set(), started: 0 }; state.compactionSeen = true; }
     else if (state.compactionWindow?.calls.size === 0) state.compactionWindow = undefined;
     // The summary can drop a delivered run-deadline notice (keepRecentTokens
     // is 8192 on a 131K model), so the stage now due is sent again, with the

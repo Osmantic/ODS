@@ -21,7 +21,7 @@ import { parseTaskActivity } from "./task_activity_schema.mjs";
 import { parseQuestions } from "./questions_schema.mjs";
 import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
-import {decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
+import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
 import {handleAccessMode, handleModelControl, readAccessOwnerKey} from './access_mode_relay.mjs';
 
 // ---------------------------------------------------------------------------
@@ -2048,8 +2048,8 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
       imageStore.put(user,images,prepared.state.messages.flatMap(message=>message.images||[]));
     }
     const nativeLatest={role:latest.role,content:latest.content};
-    if(images.length) nativeLatest.content=[...latest.content,{type:'text',text:
-      nativeHistoryMessages([{role:'user',content:'',images:archivedLatest.images}])[0].content}];
+    // The pixels ride in this message; history replay uses the retrieval note.
+    if(images.length) nativeLatest.content=[...latest.content,{type:'text',text:currentImageNote(archivedLatest.images)}];
     // Identity/delivery policy belongs to the trusted API/edge messages. The
     // snapshot is data only; it cannot introduce system/developer instructions.
     outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...nativeHistoryMessages(prepared.delta.slice(0,-1)),nativeLatest];
