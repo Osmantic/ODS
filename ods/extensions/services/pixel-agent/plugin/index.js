@@ -427,6 +427,7 @@ export default definePluginEntry({
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
+        workspaceVisualContinuation: toolLoopGuard.workspaceVisualContinuationForRun(context?.runId ?? event?.runId),
         configuredContextWindow,
         configuredLeanPrompt,
         privateBrowserAccess,

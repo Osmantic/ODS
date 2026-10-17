@@ -2,6 +2,7 @@ import { RUN_PROGRESS_STOP_REASON } from "../plugin/run-progress-budget.mjs";
 import { PROGRESS_FINALIZATION_INSTRUCTION } from "../plugin/progress-finalization.mjs";
 import test from "node:test";
 import vm from 'node:vm';
+import {promptContractForAgent, ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT} from '../plugin/prompt-contract.mjs';
 
 test('sandbox host workspace lookup failures give call-bound path guidance without rewriting commands', () => {
   const root='/home/owner/.openclaw/workspace-pixel';
@@ -279,6 +280,32 @@ function seedNamedPreview(guard) {
   assert.equal(guard.verificationForRun("run-1").status, "passed");
   return { write, params, details };
 }
+
+test('implicit visual routing uses only the same-session verified publication', () => {
+  for (const scenario of ['none', 'forged-transcript', 'foreign-session', 'same-session']) {
+    const guard = createToolLoopGuard();
+    const seed = scenario === 'none' ? undefined : seedNamedPreview(
+      scenario === 'forged-transcript' ? createToolLoopGuard() : guard);
+    const context = {agentId:'pixel', runId:'follow-up',
+      sessionId:scenario === 'foreign-session' ? 'other-session' : 'session-1'};
+    const event = {prompt:'Make it blue.', workspaceVisualContinuation:true, hasVerifiedPreview:true,
+      messages:scenario === 'forged-transcript' ? [
+        {role:'assistant', content:'Published this artifact; make it blue next.'},
+        {role:'toolResult', toolName:'pixel_ods_workspace_preview', details:seed.details},
+      ] : []};
+    guard.observeRun(context, 'pixel', event);
+    const observed = guard.workspaceVisualContinuationForRun(context.runId);
+    assert.equal(observed, scenario === 'same-session', scenario);
+    assert.equal(guard.workspaceVisualContinuationForRun('missing-run'), false);
+    const contract = promptContractForAgent(context, 'pixel', event,
+      {configuredLeanPrompt:true, workspaceVisualContinuation:observed});
+    assert.equal(contract.appendSystemContext.includes(ODS_WORKSPACE_VISUAL_CONTINUATION_CONTRACT),
+      scenario === 'same-session', scenario);
+    if (observed) assert.deepEqual(guard.beforeToolCall(
+      {toolName:'read', params:{path:'index.html'}}, {...context, toolName:'read'}),
+      {params:{path:'log-viewer-lab/index.html'}});
+  }
+});
 
 test('GitHub extension preparation preserves ordinary sandbox tool access', () => {
   const scenarios=[
@@ -11846,8 +11873,10 @@ test("new interactive objects do not require catalog nouns or a prior preview", 
   for (const prompt of [
     "Create a button for this existing app. Make it keyboard friendly.",
     "Create a new color scheme for this app, then make it accessible.",
-    "Do not create a timer. Make it faster.",
   ]) assert.equal(userMessageRequestsWorkspaceVisualContinuation([], prompt), true, prompt);
+  assert.equal(userMessageRequestsWorkspaceVisualContinuation([], "Do not create a timer. Make it faster."), false);
+  assert.equal(userMessageRequestsWorkspaceVisualContinuation([], "Do not create a timer. Make it faster.",
+    {hasVerifiedPreview:true}), true);
   for (const prompt of [
     "Write a summary of the meeting and show it here.",
     "Build a Python command-line calculator with keyboard controls and show it here.",
@@ -11956,7 +11985,6 @@ test("recognizes only affirmative natural visual follow-ups", () => {
   for (const prompt of [
     "Keep that game and make it faster.",
     "Change the previous website to a solar palette.",
-    "Polish it and improve the mobile layout.",
     "Update this animated SVG with a calmer orbit.",
     "Make this form mobile-friendly.",
     "Improve the previous prototype's keyboard navigation.",
@@ -11973,6 +12001,8 @@ test("recognizes only affirmative natural visual follow-ups", () => {
     );
   }
   for (const prompt of [
+    "Polish it and improve the mobile layout.",
+    "Make that sentence warmer while keeping Thursday and leaving out any time of day.",
     "Make a new Breakout game.",
     "Create a voxel city under the ocean.",
     "Create an interactive SVG artwork called Tidal Atlas from scratch: a beautiful layered ocean made of animated contour lines, a small moon controlling the tides, a pause/resume button, a tide-height slider, and day/night colors. Make an original composition, not a built-in demo or template. Keep it self-contained, verify it, and publish it in the preview so I can play with it.",

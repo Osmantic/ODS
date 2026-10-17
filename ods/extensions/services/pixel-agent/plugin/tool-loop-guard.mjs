@@ -6536,7 +6536,8 @@ function workspaceVisualRepairIntent(text) {
 
 export function userMessageRequestsWorkspaceVisualContinuation(
   messages,
-  prompt = undefined
+  prompt = undefined,
+  { hasVerifiedPreview = false } = {}
 ) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return false;
@@ -6550,6 +6551,12 @@ export function userMessageRequestsWorkspaceVisualContinuation(
     /\b(?:existing|previous|prior|same|that|the|this)\s+(?:animated\s+)?(?:app|artifact|board|dashboard|demo|form|game|illustration|interface|page|preview|prototype|scene|site|svg|task\s+board|visual|voxel(?:\s+world)?|web\s*page|web\s*site|website)\b/i;
   const pronounReference =
     /\b(?:add|animate|change|continue|edit|improve|keep|make|modify|polish|refresh|remove|republish|restyle|rework|speed\s+up|tweak|update)\s+(?:it|that)\b/i;
+  // A bare "make it/that" can revise conversational text. Only the guard's
+  // verified same-session publication can supply its missing artifact target;
+  // owner/assistant prose or a serialized tool message is not that receipt.
+  // An explicit visual target in this request also binds a later style clause,
+  // e.g. "Create a button for this existing app. Make it keyboard friendly."
+  const hasVisualTarget = hasVerifiedPreview || visualReference.test(ownerLaneText(text));
   const rejection =
     /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip)\b[^.!?;\n]{0,96}\b(?:add|animate|change|continue|edit|improve|keep|make|modify|polish|refresh|remove|republish|restyle|rework|speed\s+up|tweak|update)\b/i;
   const withoutAction =
@@ -6564,7 +6571,7 @@ export function userMessageRequestsWorkspaceVisualContinuation(
   return clauses.some(
       (clause) =>
         action.test(clause) &&
-        (visualReference.test(clause) || pronounReference.test(clause)) &&
+        (visualReference.test(clause) || (hasVisualTarget && pronounReference.test(clause))) &&
         !rejection.test(clause) &&
         !withoutAction.test(clause)
     );
@@ -10028,7 +10035,8 @@ export function createToolLoopGuard({
         const visualContinuationRequested =
           userMessageRequestsWorkspaceVisualContinuation(
             event?.messages,
-            event?.prompt
+            event?.prompt,
+            { hasVerifiedPreview: Boolean(previousPreview) }
           );
         const verificationContinuationRequested = userMessageRequestsWorkspaceVerificationContinuation(
           event?.messages, event?.prompt
@@ -13371,6 +13379,8 @@ export function createToolLoopGuard({
       const ownerIntent = runs.get(runId)?.subagentOwnerIntent;
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
+    // Prompt routing consumes the same observed boundary as tool enforcement.
+    workspaceVisualContinuationForRun: runId => runs.get(runId)?.workspaceVisualContinuationRequested === true,
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

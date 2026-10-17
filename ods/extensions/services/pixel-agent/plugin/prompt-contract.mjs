@@ -331,7 +331,7 @@ export function promptContractForAgent(
   context,
   agentId,
   event = undefined,
-  { verificationStatus, configuredContextWindow, configuredLeanPrompt, privateBrowserAccess, executionHost } = {}
+  { verificationStatus, configuredContextWindow, configuredLeanPrompt, privateBrowserAccess, executionHost, workspaceVisualContinuation: observedVisualContinuation = false } = {}
 ) {
   if (!context || context.agentId !== agentId) return undefined;
   // A 32K runtime also needs the compact core: fixed instructions otherwise
@@ -411,7 +411,7 @@ export function promptContractForAgent(
     event?.messages, event?.prompt
   );
   const workspaceVisualContinuation =
-    (workspaceVerificationContinuation || userMessageRequestsWorkspaceVisualContinuation(
+    (workspaceVerificationContinuation || observedVisualContinuation === true || userMessageRequestsWorkspaceVisualContinuation(
       event?.messages,
       event?.prompt
     ))
