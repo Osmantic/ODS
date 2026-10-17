@@ -30,7 +30,9 @@ sr_load
 
 # Resolve port overrides from .env (same as phase 12)
 if [[ -f "$INSTALL_DIR/.env" ]]; then
-    . "$SCRIPT_DIR/lib/safe-env.sh" 2>/dev/null || true
+    if [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]]; then
+        . "$SCRIPT_DIR/lib/safe-env.sh"
+    fi
     load_env_file "$INSTALL_DIR/.env"
     sr_resolve_ports
 fi
