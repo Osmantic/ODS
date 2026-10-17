@@ -202,7 +202,7 @@ def test_bootstrap_source_hint_cannot_fabricate_provenance(source, monkeypatch, 
 
 @pytest.mark.skipif(os.name == 'nt', reason='POSIX bootstrap handoff')
 def test_standard_bootstrap_hands_clean_checkout_to_installed_entrypoint(source):
-    put(source.ods, 'install.sh', b'#!/bin/bash\nset -eu\nprintf "%s\\n" "$ODS_BOOTSTRAP_SOURCE_DIR" > source-path.txt\n')
+    put(source.ods, 'install.sh', b'#!/bin/bash\nset -eu\nprintf "%s\\n" "$ODS_BOOTSTRAP_SOURCE_DIR" > source-path.txt\ngit -C "$ODS_BOOTSTRAP_SOURCE_DIR" rev-parse HEAD > source-head.txt\ngit -C "$ODS_BOOTSTRAP_SOURCE_DIR" status --porcelain > source-status.txt\n')
     (source.ods / 'install.sh').chmod(0o755)
     git(source.repository, 'add', '.')
     git(source.repository, 'commit', '-m', 'bootstrap entrypoint fixture')
@@ -225,8 +225,9 @@ def test_standard_bootstrap_hands_clean_checkout_to_installed_entrypoint(source)
     assert result.returncode == 0, result.stdout + result.stderr
     handed = Path((home / 'ods/source-path.txt').read_text().strip())
     assert handed.is_relative_to(temporary) and handed.name == 'ods'
-    assert git(handed, 'rev-parse', 'HEAD') == ref
-    assert git(handed, 'status', '--porcelain') == ''
+    assert (home / 'ods/source-head.txt').read_text().strip() == ref
+    assert (home / 'ods/source-status.txt').read_text() == ''
+    assert not handed.exists()
     assert not (home / 'ods/.git').exists()
 
 

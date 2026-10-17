@@ -251,13 +251,28 @@ sha_repo="$tmpdir/sha-ref-repo"
 sha_home="$tmpdir/sha-home"
 sha_install="$tmpdir/sha-install"
 sha_marker="$tmpdir/sha-marker"
-mkdir -p "$sha_repo/ods/scripts" "$sha_repo/ods/extensions/library" "$sha_repo/ods/installers" "$sha_home" "$tmpdir/bin"
+sha_source_marker="$tmpdir/sha-source-marker"
+mkdir -p "$sha_repo/ods/scripts" "$sha_repo/ods/extensions/library" "$sha_repo/ods/installers" "$sha_home" "$tmpdir/bin" "$tmpdir/bootstrap-clones"
 cp installers/reinstall-preflight.sh "$sha_repo/ods/installers/reinstall-preflight.sh"
 cat > "$sha_repo/ods/install.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "${1:-}" != --preflight-only ]] || exit 0
+[[ -d "${ODS_BOOTSTRAP_SOURCE_DIR:?}" && -f "$ODS_BOOTSTRAP_SOURCE_DIR/install.sh" ]]
+if [[ -n "${ODS_TEST_BOOTSTRAP_SOURCE_MARKER:-}" ]]; then
+  printf '%s\n' "$ODS_BOOTSTRAP_SOURCE_DIR" > "$ODS_TEST_BOOTSTRAP_SOURCE_MARKER"
+fi
 printf '%s\n' first-commit > "${ODS_TEST_BOOTSTRAP_INSTALL_MARKER:?}"
+if [[ "${ODS_TEST_HOLD_SIGNAL:-false}" == true ]]; then
+  printf '%s\n' ready > "${ODS_TEST_SIGNAL_READY_MARKER:?}"
+  sleep 2
+  if [[ -d "$ODS_BOOTSTRAP_SOURCE_DIR" ]]; then
+    printf '%s\n' live > "${ODS_TEST_SIGNAL_OBSERVED_MARKER:?}"
+  else
+    printf '%s\n' removed > "${ODS_TEST_SIGNAL_OBSERVED_MARKER:?}"
+  fi
+fi
+exit "${ODS_TEST_INSTALL_EXIT:-0}"
 EOF
 chmod +x "$sha_repo/ods/install.sh"
 cat > "$sha_repo/ods/ods-uninstall.sh" <<'EOF'
@@ -308,12 +323,14 @@ EOF
 chmod +x "$tmpdir/bin/docker"
 
 if ! PATH="$tmpdir/bin:$PATH" \
+    TMPDIR="$tmpdir/bootstrap-clones" \
     HOME="$sha_home" \
     ODS_BOOTSTRAP_ROOT="$sha_home" \
     ODS_REPO_URL="file://$sha_repo" \
     ODS_REF="$sha_ref" \
     ODS_INSTALL_DIR="$sha_install" \
     ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_BOOTSTRAP_SOURCE_MARKER="$sha_source_marker" \
     ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$sha_marker" \
     OSTYPE=linux-gnu \
     bash get-ods.sh --non-interactive >"$tmpdir/bootstrap-sha.out" 2>&1; then
@@ -323,7 +340,70 @@ if ! PATH="$tmpdir/bin:$PATH" \
 fi
 grep -qF first-commit "$sha_marker" \
   || { cat "$tmpdir/bootstrap-sha.out"; echo "[FAIL] bootstrap did not install the exact SHA payload"; exit 1; }
+[[ -f "$sha_install/install.sh" && ! -e "$(cat "$sha_source_marker")" ]] \
+  || { cat "$tmpdir/bootstrap-sha.out"; echo "[FAIL] successful bootstrap leaked its source clone or lost the installed tree"; exit 1; }
 assert_not_contains "$tmpdir/bootstrap-sha.out" 'Remote branch .* not found' "bootstrap treated an exact SHA as a branch name"
+
+echo "[contract] public bootstrap releases its clone after installer failure"
+sha_failed_install="$tmpdir/sha-failed-install"
+sha_failed_source_marker="$tmpdir/sha-failed-source-marker"
+sha_failed_marker="$tmpdir/sha-failed-marker"
+printf '%s\n' keep-user-data > "$sha_home/unrelated-user-file"
+set +e
+PATH="$tmpdir/bin:$PATH" \
+    TMPDIR="$tmpdir/bootstrap-clones" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$sha_failed_install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_BOOTSTRAP_SOURCE_MARKER="$sha_failed_source_marker" \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$sha_failed_marker" \
+    ODS_TEST_INSTALL_EXIT=17 \
+    OSTYPE=linux-gnu \
+    bash get-ods.sh --non-interactive >"$tmpdir/bootstrap-payload-fail.out" 2>&1
+sha_failed_rc=$?
+set -e
+[[ "$sha_failed_rc" -eq 17 && -f "$sha_failed_install/install.sh" \
+   && ! -e "$(cat "$sha_failed_source_marker")" \
+   && "$(cat "$sha_home/unrelated-user-file")" == keep-user-data ]] \
+  || { cat "$tmpdir/bootstrap-payload-fail.out"; echo "[FAIL] failed installer exit, clone cleanup, or retained data contract changed"; exit 1; }
+
+echo "[contract] wrapper-only TERM waits for installer before releasing bootstrap clone"
+signal_install="$tmpdir/sha-signal-install"
+signal_source_marker="$tmpdir/sha-signal-source-marker"
+signal_ready_marker="$tmpdir/sha-signal-ready-marker"
+signal_observed_marker="$tmpdir/sha-signal-observed-marker"
+PATH="$tmpdir/bin:$PATH" \
+    TMPDIR="$tmpdir/bootstrap-clones" \
+    HOME="$sha_home" \
+    ODS_BOOTSTRAP_ROOT="$sha_home" \
+    ODS_REPO_URL="file://$sha_repo" \
+    ODS_REF="$sha_ref" \
+    ODS_INSTALL_DIR="$signal_install" \
+    ODS_ALLOW_LEGACY_PARALLEL=1 \
+    ODS_TEST_BOOTSTRAP_SOURCE_MARKER="$signal_source_marker" \
+    ODS_TEST_BOOTSTRAP_INSTALL_MARKER="$tmpdir/sha-signal-install-marker" \
+    ODS_TEST_HOLD_SIGNAL=true \
+    ODS_TEST_SIGNAL_READY_MARKER="$signal_ready_marker" \
+    ODS_TEST_SIGNAL_OBSERVED_MARKER="$signal_observed_marker" \
+    OSTYPE=linux-gnu \
+    bash get-ods.sh --non-interactive >"$tmpdir/bootstrap-signal.out" 2>&1 &
+signal_pid=$!
+for _ in {1..100}; do
+  [[ -f "$signal_ready_marker" ]] && break
+  sleep 0.05
+done
+[[ -f "$signal_ready_marker" ]] || { cat "$tmpdir/bootstrap-signal.out"; echo '[FAIL] signal fixture installer did not start'; exit 1; }
+kill -TERM "$signal_pid"
+set +e
+wait "$signal_pid"
+signal_rc=$?
+set -e
+[[ "$signal_rc" -eq 143 && "$(cat "$signal_observed_marker")" == live \
+   && ! -e "$(cat "$signal_source_marker")" ]] \
+  || { cat "$tmpdir/bootstrap-signal.out"; echo '[FAIL] wrapper-only TERM released the source before installer completed'; exit 1; }
 
 echo "[contract] forced reinstall uses the requested candidate uninstaller"
 reinstall_dir="$tmpdir/reinstall-target"
