@@ -11,6 +11,17 @@ set -euo pipefail
 ODS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PHASE="$ODS_ROOT/installers/phases/02-detection.sh"
 
+# Phase 02 is sourced at top level: its fallback cannot use local.
+fallback="$(grep -F 'MIN_DRIVER_VERSION="${MIN_DRIVER_VERSION:-570}"' "$PHASE")"
+(
+    unset MIN_DRIVER_VERSION
+    eval "$fallback"
+    [[ "$MIN_DRIVER_VERSION" == 570 ]]
+    MIN_DRIVER_VERSION=580
+    eval "$fallback"
+    [[ "$MIN_DRIVER_VERSION" == 580 ]]
+)
+
 run_guard() {
     (
         export SCRIPT_DIR="$ODS_ROOT"
