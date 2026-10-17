@@ -202,6 +202,27 @@ assert_eq "LLAMA_CPP_RELEASE_TAG_OVERRIDE" "b9014"             "$LLAMA_CPP_RELEA
 unset MODEL_PROFILE
 echo ""
 
+# Only the NVIDIA overlay runs the CUDA build. CPU and Intel overlays already
+# default to their own pinned b9014 image, and the AMD overlays and Apple pin
+# their runtime, so every other backend gets no override at all.
+echo "Gemma 4 runtime image per backend (tier 2):"
+for backend_image in \
+    "nvidia=ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c" \
+    "cpu=" \
+    "intel=" \
+    "amd=" \
+    "apple="; do
+    backend="${backend_image%%=*}"
+    TIER=2 TIER_NAME="" LLM_MODEL="" GGUF_FILE="" GGUF_URL="" MAX_CONTEXT=""
+    GPU_BACKEND="$backend" N_GPU_LAYERS=""
+    MODEL_PROFILE=gemma4 resolve_tier_config
+    assert_eq "LLAMA_SERVER_IMAGE[$backend]" "${backend_image#*=}" "$LLAMA_SERVER_IMAGE"
+done
+MODEL_PROFILE=gemma4 run_tier ARC
+assert_eq "LLAMA_SERVER_IMAGE[ARC/sycl]" "" "$LLAMA_SERVER_IMAGE"
+unset MODEL_PROFILE
+echo ""
+
 echo "Auto profile (tier 0 fallback):"
 MODEL_PROFILE=auto run_tier 0
 assert_eq "MODEL_PROFILE_EFFECTIVE" "qwen"                     "$MODEL_PROFILE_EFFECTIVE"
