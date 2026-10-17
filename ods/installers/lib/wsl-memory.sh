@@ -12,7 +12,7 @@ ods_wsl_host_ram_kb() {
     if command -v powershell.exe >/dev/null 2>&1; then
         host_bytes="$(powershell.exe -NoProfile -Command \
             '(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory' 2>/dev/null \
-            | tr -d '\r')" || host_bytes=""
+            | tr -d '\r\n ')" || host_bytes=""
         if [[ "$host_bytes" =~ ^[0-9]+$ ]]; then
             printf '%s\n' "$((host_bytes / 1024))"
             return 0

@@ -11,7 +11,7 @@ if [[ "${ODS_TEST_PS_MODE:-ok}" == fail ]]; then
     printf 'Exec format error\n' >&2
     exit 126
 fi
-printf '17179869184\r\n'
+printf ' 17179869184 \r\n\r\n'
 PS
 cat >"$tmp/wmic.exe" <<'WMIC'
 #!/usr/bin/env bash
