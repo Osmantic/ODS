@@ -5554,7 +5554,7 @@ def _write_remote_provider_secret(ref: str, value: str) -> None:
 
 
 def _repair_remote_provider_secret_permissions() -> list[str]:
-    """Migrate legacy provider-consumed secrets from 0600 to safe 0640.
+    """Repair group traversal and legacy provider-consumed secrets safely.
 
     Existing installations may have secrets written before provider services
     received the installation data group. Never follow links or touch a file
@@ -5581,12 +5581,27 @@ def _repair_remote_provider_secret_permissions() -> list[str]:
         | getattr(os, "O_NOFOLLOW", 0)
     )
     try:
-        provider_root_fd = os.open(_remote_provider_root(), directory_flags)
+        # Anchor state lookup in the declared data directory as well: a
+        # replaced data symlink must not turn permission repair into mutation
+        # of a foreign tree.
+        data_fd = os.open(_remote_provider_root().parent, directory_flags)
     except FileNotFoundError:
         return []
     except OSError as exc:
         logger.warning("Could not safely open remote-provider state directory: %s", exc)
         return []
+    try:
+        try:
+            provider_root_fd = os.open(
+                _remote_provider_root().name, directory_flags, dir_fd=data_fd
+            )
+        except FileNotFoundError:
+            return []
+        except OSError as exc:
+            logger.warning("Could not safely open remote-provider state directory: %s", exc)
+            return []
+    finally:
+        os.close(data_fd)
     try:
         try:
             secret_dir_fd = os.open("secrets", directory_flags, dir_fd=provider_root_fd)
@@ -5597,6 +5612,29 @@ def _repair_remote_provider_secret_permissions() -> list[str]:
             return []
         try:
             repaired: list[str] = []
+            # Readable files are unreachable when a strict installer umask
+            # leaves either parent at 0700. Inspect both held, no-follow
+            # descriptors before changing permissions or ownership anywhere.
+            try:
+                for descriptor in (provider_root_fd, secret_dir_fd):
+                    metadata = os.fstat(descriptor)
+                    if not stat_mod.S_ISDIR(metadata.st_mode):
+                        raise RuntimeError("remote-provider state is not a directory")
+                    if effective_uid != 0 and metadata.st_uid != desired_uid:
+                        raise RuntimeError("remote-provider directory is owned by another user")
+                for descriptor in (provider_root_fd, secret_dir_fd):
+                    metadata = os.fstat(descriptor)
+                    if metadata.st_uid != desired_uid or metadata.st_gid != desired_gid:
+                        os.fchown(descriptor, desired_uid, desired_gid)
+                    if stat_mod.S_IMODE(metadata.st_mode) != 0o750:
+                        os.fchmod(descriptor, 0o750)
+                    final = os.fstat(descriptor)
+                    if (final.st_uid != desired_uid or final.st_gid != desired_gid
+                            or stat_mod.S_IMODE(final.st_mode) != 0o750):
+                        raise RuntimeError("remote-provider directory repair did not persist")
+            except (OSError, RuntimeError) as exc:
+                logger.warning("Could not repair remote-provider directory permissions: %s", exc)
+                return []
             file_flags = (
                 os.O_RDONLY
                 | getattr(os, "O_CLOEXEC", 0)

@@ -183,7 +183,11 @@ class DashboardDataPermissions(unittest.TestCase):
             pre_copy = phase.split('    # Fix ownership of data/config dirs', 1)[1]
             pre_copy = pre_copy.split('    # Copy entire source tree', 1)[0]
             pre_copy = pre_copy[pre_copy.index('\n'):]
-            pre_copy_script = ('set -euo pipefail\n_phase06_rootless=false\nENABLE_HERMES=true\n'
+            # The extracted phase region calls this library after ownership
+            # recovery. Load its actual definitions before dropping fixture
+            # IDs; those IDs need not be able to traverse the checkout home.
+            provider_directories = (ROOT / 'installers/lib/remote-provider-directories.sh').read_text(encoding='utf-8')
+            pre_copy_script = ('set -euo pipefail\n' + provider_directories + '\n_phase06_rootless=false\nENABLE_HERMES=true\n'
                                '_phase06_repair_host_path() { echo "Unexpected ownership repair: $1" >&2; return 1; }\n'
                                'error() { echo "$*" >&2; return 1; }\nrun_phase() {\n' + pre_copy + '\n:\n}\nrun_phase\n')
             script = ('set -euo pipefail\n_phase06_rootless=false\n_phase06_step() { :; }\nods_sudo() { "$@"; }\n'
