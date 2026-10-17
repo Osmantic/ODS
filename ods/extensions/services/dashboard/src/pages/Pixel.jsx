@@ -2064,7 +2064,7 @@ export default function Pixel({ systemStatus = null }) {
               collapsed={previewCollapsed} onCollapse={()=>setPreviewCollapsed(value=>!value)}
               expanded={workspaceExpanded} onExpand={()=>setWorkspaceExpanded(value=>!value)}
               onClose={()=>{setWorkspaceOpen(false);setWorkspaceExpanded(false)}}
-              onPublish={isDisabled?undefined:()=>{setWorkspaceExpanded(false);insertComposerText('Publique o site que voce criou nesta conversa no preview do ODS. Inspecione os arquivos existentes, preserve o projeto e use pixel_ods_workspace_preview para a pasta que contem index.html.')}}/>
+              onPublish={isDisabled?undefined:()=>{setWorkspaceExpanded(false);insertComposerText('Publish the site you created in this conversation to the ODS preview. Inspect the existing files, preserve the project, and use pixel_ods_workspace_preview for the folder that contains index.html.')}}/>
 
           </aside>
         )}

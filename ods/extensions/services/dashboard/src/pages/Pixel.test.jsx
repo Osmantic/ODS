@@ -340,7 +340,7 @@ describe('Pixel', () => {
     expect(document.querySelector('.pixel-chat-preview-layout')).toHaveClass('is-workspace-expanded')
     fireEvent.click(screen.getByRole('button',{name:'Ask Portal to publish'}))
     expect(document.querySelector('.pixel-chat-preview-layout')).not.toHaveClass('is-workspace-expanded')
-    expect(screen.getByPlaceholderText('Message Portal...').value).toContain('pixel_ods_workspace_preview')
+    expect(screen.getByPlaceholderText('Message Portal...').value).toBe('Publish the site you created in this conversation to the ODS preview. Inspect the existing files, preserve the project, and use pixel_ods_workspace_preview for the folder that contains index.html.')
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
     fireEvent.click(screen.getByTitle('Close preview'))
     expect(screen.queryByText('No files to show yet')).toBeNull()
