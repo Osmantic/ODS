@@ -19,6 +19,12 @@ When selected, Open WebUI is served at `http://localhost:3000` and communicates 
 - **Document Q&A**: Upload files and chat with their contents (requires Qdrant)
 - **Model selection**: Switch between models at runtime
 
+With Model Switchboard on (the default outside cloud mode), Open WebUI talks to
+LiteLLM, which serves several names for the one active model (`ods/current`,
+`local`, `default` and a `*` catch-all). The model picker lists `ods/current`
+once instead, plus the named cloud routes in hybrid mode. Change the active
+model from the Dashboard; `ods/current` follows it.
+
 ## Configuration
 
 Environment variables (set in `.env`):
@@ -180,9 +186,10 @@ docker compose logs open-webui
 ## Files
 
 - `manifest.yaml` — Service metadata and feature definitions
-- `openwebui-entrypoint.sh` — Runs `openwebui-prepare.py`, then the image's own start command
+- `openwebui-entrypoint.sh` — Runs `openwebui-prepare.py` and `openwebui-model-list.py`, then the image's own start command
+- `openwebui-model-list.py` — Limits the LiteLLM connection's model list to `ods/current` (and hybrid cloud routes)
 - `openwebui-prepare.py` — Pre-start backup and upgrade checks (see [Upgrades and backups](#upgrades-and-backups))
-- `tests/` — Contracts for the pre-start step and its compose wiring
+- `tests/` — Contracts for the pre-start steps and their compose wiring
 - `../../../tests/test-open-webui-live.sh` — Read-only check of a running install, for the fleet harness
 
 ## License
