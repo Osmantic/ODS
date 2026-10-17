@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, {after} from 'node:test';
 import vm from 'node:vm';
 
 import {addedExampleProjects, createExampleProjectRoute, EXAMPLE_RECORD_DIRECTORY, exampleProjectState, exampleRecordDirectory,
@@ -12,10 +12,14 @@ import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {createWorkspacePreviewPublisher, PREVIEW_FOLDER_FAILURES, testing as previewTesting} from '../plugin/workspace-preview.mjs';
 
 const SHIPPED = new URL('../example-projects/', import.meta.url);
+// Every temporary folder this file makes, removed when it ends.
+const temporary = [];
+const scratch = prefix => { const folder = fs.mkdtempSync(path.join(os.tmpdir(), prefix)); temporary.push(folder); return folder; };
+after(() => { for (const folder of temporary) fs.rmSync(folder, {recursive: true, force: true}); });
 
 // Portal's state folder, where the installers keep their records: outside
 // every test workspace, as it is outside the sandbox's workspace mount.
-process.env.OPENCLAW_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-state-'));
+process.env.OPENCLAW_STATE_DIR = scratch('ods-example-state-');
 fs.mkdirSync(exampleRecordDirectory(), {mode: 0o700});
 
 // The record installers/lib/pixel-example-projects.py writes for a workspace:
@@ -31,7 +35,7 @@ function writeRecord(root, kind = 'added') {
 }
 
 function workspace({index = true, record = 'added'} = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-workspace-'));
+  const root = scratch('ods-example-workspace-');
   const folder = path.join(root, 'Playground', 'elf-of-doom');
   fs.mkdirSync(folder, {recursive: true, mode: 0o700});
   if (index) fs.writeFileSync(path.join(folder, 'index.html'), '<!doctype html><title>Elf of Doom</title>\n');
@@ -128,7 +132,7 @@ test('a folder of that name the owner already had is not listed as the shipped e
 
 test('a linked record, or a record folder that is a link or shared, is not the installers\' record', {skip: process.platform === 'win32'}, () => {
   const root = workspace({record: null});
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-outside-'));
+  const outside = scratch('ods-example-outside-');
   fs.writeFileSync(path.join(outside, 'record.json'), recordBody(root), {mode: 0o600});
   fs.symlinkSync(path.join(outside, 'record.json'), recordFile(root));
   assert.deepEqual(presentExampleProjects(root), []);
@@ -137,7 +141,7 @@ test('a linked record, or a record folder that is a link or shared, is not the i
   assert.deepEqual(presentExampleProjects(root), [], 'a hard link');
   fs.rmSync(recordFile(root));
   // The record folder itself must be the owner's private real folder.
-  const state = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-state-'));
+  const state = scratch('ods-example-state-');
   const records = path.join(state, EXAMPLE_RECORD_DIRECTORY);
   fs.mkdirSync(records, {mode: 0o700});
   fs.writeFileSync(exampleRecordFile(fs.realpathSync(root), records), recordBody(root), {mode: 0o600});
@@ -152,7 +156,7 @@ test('a linked record, or a record folder that is a link or shared, is not the i
 
 test('a linked example folder is not the shipped example', {skip: process.platform === 'win32'}, () => {
   const root = workspace();
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-example-outside-'));
+  const outside = scratch('ods-example-outside-');
   fs.writeFileSync(path.join(outside, 'index.html'), '<!doctype html>\n');
   fs.rmSync(path.join(root, 'Playground', 'elf-of-doom'), {recursive: true});
   fs.symlinkSync(outside, path.join(root, 'Playground', 'elf-of-doom'));
