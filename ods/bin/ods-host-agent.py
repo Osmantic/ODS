@@ -4920,6 +4920,148 @@ def _pixel_model_transition_pending_for_route_proof() -> bool:
         return True
 
 
+# Durable rollback point for local llama-server activations. The in-memory
+# snapshots inside _do_model_activate die with the process; this journal lets
+# the next agent start restore the previous files and re-raise the runtime.
+_MODEL_ACTIVATION_JOURNAL_VERSION = 1
+_MODEL_ACTIVATION_RECOVERABLE_STRATEGIES = frozenset({'compose-llama', 'container-llama'})
+_model_activation_recovery_running = False
+
+
+def _model_activation_journal_path() -> Path:
+    return INSTALL_DIR / 'data' / 'model-activation-transaction.json'
+
+
+def _model_activation_journal_targets() -> dict[str, Path]:
+    """The only files an activation journal may restore, keyed by name."""
+    return {
+        'env': INSTALL_DIR / '.env',
+        'models_ini': INSTALL_DIR / 'config' / 'llama-server' / 'models.ini',
+        'litellm_local': INSTALL_DIR / 'config' / 'litellm' / 'local.yaml',
+        'litellm_switchboard': INSTALL_DIR / 'config' / 'litellm' / 'switchboard.yaml',
+        'model_router_endpoints': INSTALL_DIR / 'config' / 'model-router' / 'endpoints.json',
+        'activation_receipt': INSTALL_DIR / 'data' / 'model-activation-receipt.json',
+    }
+
+
+def _write_model_activation_journal(target_model_id: str, strategy: str,
+                                    snapshots: dict[str, dict]) -> None:
+    """Persist the pre-mutation snapshots before the first activation write."""
+    targets = _model_activation_journal_targets()
+    files = {}
+    for name, snapshot in snapshots.items():
+        if name not in targets:
+            raise ValueError(f'Unknown model activation journal file: {name}')
+        files[name] = {key: snapshot.get(key) for key in ('exists', 'text', 'mode', 'uid', 'gid')}
+    _atomic_write_json(_model_activation_journal_path(), {
+        'version': _MODEL_ACTIVATION_JOURNAL_VERSION,
+        'phase': 'mutating',
+        'targetModelId': target_model_id,
+        'strategy': strategy,
+        'createdAt': _iso_now(),
+        'files': files,
+    }, 0o600)
+
+
+def _clear_model_activation_journal() -> None:
+    _model_activation_journal_path().unlink(missing_ok=True)
+
+
+def _read_model_activation_journal() -> dict | None:
+    try:
+        journal = json.loads(_model_activation_journal_path().read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return None
+    if (not isinstance(journal, dict)
+            or journal.get('version') != _MODEL_ACTIVATION_JOURNAL_VERSION
+            or not isinstance(journal.get('files'), dict)
+            or 'env' not in journal['files']):
+        raise ValueError('Model activation journal is malformed')
+    return journal
+
+
+def _model_activation_recovery_status() -> dict | None:
+    """Report an interrupted activation; None when no recovery is owed."""
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation == 'model_activation':
+            return None  # The live activation owns its own journal.
+        running = _model_activation_recovery_running
+    journal = _read_model_activation_journal()
+    if journal is None:
+        return None
+    return {
+        'pending': True,
+        'phase': 'activation_recovering' if running else 'activation_recovery_failed',
+        'transactionId': None,
+        'reason': 'interrupted-model-activation',
+        'targetModelId': journal.get('targetModelId'),
+    }
+
+
+def _restore_interrupted_model_activation(journal: dict) -> None:
+    """Restore the journaled files, re-raise the previous runtime and prove it."""
+    strategy = journal.get('strategy')
+    if strategy not in _MODEL_ACTIVATION_RECOVERABLE_STRATEGIES:
+        raise RuntimeError(f'Interrupted {strategy} activation requires explicit recovery')
+    targets = _model_activation_journal_targets()
+    for name, snapshot in journal['files'].items():
+        if name not in targets or not isinstance(snapshot, dict):
+            raise ValueError(f'Unknown model activation journal file: {name}')
+        if name == 'env':
+            _restore_bound_env_file(targets[name], snapshot)
+        else:
+            _restore_text_file(targets[name], snapshot)
+    env = load_env(targets['env'])
+    previous_gguf = str(env.get('GGUF_FILE') or '')
+    if not previous_gguf:
+        raise RuntimeError('previous GGUF identity is empty')
+    previous_model = str(env.get('LLM_MODEL') or _local_model_name_from_gguf(previous_gguf))
+    if strategy == 'container-llama':
+        _recreate_llama_server(env, override_image=_container_llama_rollback_image(env))
+    else:
+        _compose_restart_llama_server(env)
+    if not _wait_for_model_readiness(env, model_id=previous_model, gguf_file=previous_gguf,
+                                     llm_model_name=previous_model):
+        raise RuntimeError(f'previous model {previous_gguf} did not pass readiness')
+
+
+def _recover_interrupted_model_activation() -> str:
+    """Startup recovery of an activation the agent did not finish.
+
+    Holds the model lifecycle like an activation does. The journal is cleared
+    only after the previous runtime is proven, so a failure retries next start.
+    Re-running it is idempotent: it restores the same bytes and re-proves.
+    """
+    global _model_activation_recovery_running
+    journal = _read_model_activation_journal()
+    if journal is None:
+        return 'none'
+    acquired, active = _begin_model_lifecycle('model_recovery')
+    if not acquired:
+        raise RuntimeError(f"Model lifecycle is busy: {active.get('operation')}")
+    with _model_lifecycle_state_lock:
+        _model_activation_recovery_running = True
+    try:
+        logger.warning('Recovering interrupted model activation of %s', journal.get('targetModelId'))
+        _restore_interrupted_model_activation(journal)
+        _clear_model_activation_journal()
+        logger.info('Interrupted model activation recovered; previous runtime proven')
+        return 'recovered'
+    finally:
+        with _model_lifecycle_state_lock:
+            _model_activation_recovery_running = False
+        _end_model_lifecycle('model_recovery')
+
+
+def _startup_recover_interrupted_model_activation() -> None:
+    """Never crash the agent; leave the journal for the next start."""
+    try:
+        _recover_interrupted_model_activation()
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.error('INTERRUPTED MODEL ACTIVATION RECOVERY FAILED; journal %s kept for the '
+                     'next start: %s', _model_activation_journal_path(), exc)
+
+
 def _read_remote_provider_activation_state() -> dict | None:
     path = _remote_provider_activation_state_path()
     try:
@@ -13758,7 +13900,10 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _handle_model_recovery_status(self):
         if not check_auth(self):return
         try:
-            json_response(self,200,_pixel_model_recovery_status(),no_store=True)
+            status=_pixel_model_recovery_status()
+            if not status['pending']:
+                status=_model_activation_recovery_status() or status
+            json_response(self,200,status,no_store=True)
         except Exception:
             json_response(self,503,{'pending':True,'phase':'unavailable','transactionId':None},no_store=True)
 
@@ -14494,6 +14639,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         raise RuntimeError(
                             "the previous managed Pixel model route disappeared during rollback"
                         )
+                _clear_model_activation_journal()
                 return True, ""
             except Exception as rollback_exc:
                 logger.exception("Failed to prove previous model route during rollback")
@@ -14733,6 +14879,25 @@ class AgentHandler(BaseHTTPRequestHandler):
 
             # Update .env
             pixel_transaction = _begin_pixel_model_transaction(env_pre)
+            if wsl_managed.get('managed') is True:
+                journal_strategy = 'wsl-native-llama'
+            elif windows_native_llama:
+                journal_strategy = 'windows-native-llama'
+            elif gpu_backend == 'apple':
+                journal_strategy = 'macos-native-llama'
+            elif os.environ.get('ODS_HOST_INSTALL_DIR'):
+                journal_strategy = 'container-llama'
+            else:
+                journal_strategy = 'compose-llama'
+            # Durable before the first write: a killed agent restores from it.
+            _write_model_activation_journal(model_id, journal_strategy, {
+                'env': env_snapshot,
+                'models_ini': ini_snapshot,
+                'litellm_local': litellm_local_snapshot,
+                'litellm_switchboard': litellm_switchboard_snapshot,
+                'model_router_endpoints': model_router_endpoints_snapshot,
+                'activation_receipt': activation_receipt_snapshot,
+            })
             mutation_started = True
             if env_path.exists():
                 lines = str(env_snapshot.get("text") or "").splitlines()
@@ -15341,6 +15506,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     },
                 )
                 committed = True  # system state is committed before the response write
+                _clear_model_activation_journal()
                 if pixel_transaction is not None:
                     # Keep both admission gates until the durable activation
                     # receipt and every consumer's proof are committed.
@@ -21102,6 +21268,8 @@ def main():
         STARTUP_ODS_MODE,
     )
     try:
+        threading.Thread(target=_startup_recover_interrupted_model_activation,
+                         name='ods-model-activation-recovery', daemon=True).start()
         if platform.system() in ('Darwin', 'Linux'):
             threading.Thread(target=_monitor_native_pixel_access,
                              name='ods-pixel-startup-reproof', daemon=True).start()
