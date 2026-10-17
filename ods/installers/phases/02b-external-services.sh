@@ -116,6 +116,15 @@ if ods_native_llm_requested; then
     ai "Select one host-managed inference backend, or use --no-external-llm."
     return 1
 fi
+case "$_external_url" in
+    http://*|https://*) ;;
+    *)
+        ai_bad "Invalid external LLM URL protocol: ${_external_url}"
+        ai "URL must explicitly start with http:// or https://"
+        return 1
+        ;;
+esac
+
 if ! external_llm_validate_url "$_external_url"; then
     ai_bad "Invalid external LLM URL: ${_external_url}"
     ai "Use an http(s) base URL without credentials, query parameters, or fragments."
