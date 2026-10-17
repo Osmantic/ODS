@@ -3059,6 +3059,29 @@ def _schedule_initial_switchboard_verification(reason: str) -> None:
         _switchboard_initial_verify_thread.start()
 
 
+def _reconcile_interrupted_bootstrap_swap() -> None:
+    """Settle a bootstrap upgrade a host reboot cut off mid-swap.
+
+    The agent starts on every boot, so it is the one hook that runs after a
+    reboot without the user typing `ods start`. The script no-ops while a
+    bootstrap-upgrade.sh process is alive.
+    """
+    script = INSTALL_DIR / "scripts" / "reconcile-bootstrap-swap.sh"
+    if not script.is_file():
+        return
+    result = subprocess.run(
+        ["bash", str(script), str(INSTALL_DIR)],
+        capture_output=True, text=True, timeout=120, check=False,
+    )
+    for line in result.stdout.splitlines():
+        logger.info("%s", line)
+    if result.returncode != 0:
+        logger.warning(
+            "bootstrap swap reconciliation failed (rc=%d): %s",
+            result.returncode, result.stderr.strip(),
+        )
+
+
 def _bootstrap_status_allows_route_proof() -> bool:
     status_path = INSTALL_DIR / "data" / "bootstrap-status.json"
     try:
@@ -21110,6 +21133,9 @@ def main():
         STARTUP_ODS_MODE,
     )
     try:
+        if platform.system() == 'Linux':
+            threading.Thread(target=_reconcile_interrupted_bootstrap_swap,
+                             name='ods-bootstrap-swap-reconcile', daemon=True).start()
         if platform.system() in ('Darwin', 'Linux'):
             threading.Thread(target=_monitor_native_pixel_access,
                              name='ods-pixel-startup-reproof', daemon=True).start()

@@ -302,6 +302,14 @@ _ods_cli_bootstrap_active_status_settled() {
     return 0
 }
 
+# Settle a bootstrap upgrade interrupted by a host reboot (llama-server left
+# "Created", status stuck active). The script no-ops while the upgrade lives.
+_ods_cli_reconcile_bootstrap_swap() {
+    local script="$INSTALL_DIR/scripts/reconcile-bootstrap-swap.sh"
+    [[ -f "$script" ]] || return 0
+    bash "$script" "$INSTALL_DIR" || warn "Interrupted model upgrade could not be reconciled (non-fatal)."
+}
+
 _ods_cli_bootstrap_download_near_swap() {
     local model percent percent_int downloaded total remaining threshold
     model="$(_ods_cli_bootstrap_status_field model)"
@@ -1452,6 +1460,15 @@ cmd_status() {
     docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" \
         || warn "Could not list containers (see the docker error above); continuing with health checks."
 
+    # `ps` above hides containers that exist but never started (an interrupted
+    # recreate leaves llama-server "created" and restart policies skip it).
+    # Daemon errors were already reported by the listing above.
+    local llama_state
+    llama_state="$(docker compose "${flags[@]}" ps -a --format '{{.State}}' llama-server 2>/dev/null || true)"
+    if [[ -n "$llama_state" && "$llama_state" != "running" ]]; then
+        warn "llama-server: container $llama_state but not started — run 'ods start'"
+    fi
+
     echo ""
 
     # Registry-driven health checks (parallel)
@@ -1553,7 +1570,11 @@ cmd_status() {
             bs_model=$(grep -o '"model"[[:space:]]*:[[:space:]]*"[^"]*"' "$bootstrap_file" | sed -n '1p' | sed 's/.*"model"[[:space:]]*:[[:space:]]*"//' | sed 's/"//' || true)
             bs_percent=$(grep -o '"percent"[[:space:]]*:[[:space:]]*[0-9.]*' "$bootstrap_file" | sed -n '1p' | sed 's/.*:[[:space:]]*//' || true)
             log ""
-            log "  Model Upgrade: $bs_model (${bs_percent:-?}% downloaded)"
+            if _ods_cli_bootstrap_upgrade_process_running "$bs_model"; then
+                log "  Model Upgrade: $bs_model (${bs_percent:-?}% downloaded)"
+            else
+                log "  Model Upgrade: $bs_model interrupted ($bs_status, no upgrade process) — run 'ods start'"
+            fi
         fi
     fi
 }
@@ -2133,6 +2154,7 @@ cmd_start() {
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
+        _ods_cli_reconcile_bootstrap_swap
         _ods_cli_wait_for_bootstrap_compose_safe "start"
         _ods_cli_reload_model_env
         ensure_llama_cpu_budget
