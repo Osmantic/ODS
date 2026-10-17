@@ -145,9 +145,9 @@ upstream default. Other agents and existing jobs are unaffected.
   one finished example project, the Elf of Doom game at
   `Playground/elf-of-doom`, which Portal wrote from natural-language prompts;
   Portal's sidebar opens it through the same preview service with no model
-  run. Portal changes it only when the owner's message names it, for example
-  "In elf-of-doom, make the arrows give 7"; anything else that changes it is
-  put back (`plugin/example-guard.mjs`). The
+  run. Portal changes it only when the owner's message starts with
+  "In elf-of-doom,", for example "In elf-of-doom, make the arrows give 7";
+  any other change to it is put back (`plugin/example-guard.mjs`). The
   preview adapter can publish only an existing directory containing
   `index.html`; it has no template, scaffold, HTML, title, theme, or content
   input.

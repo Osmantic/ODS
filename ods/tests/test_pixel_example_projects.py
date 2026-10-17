@@ -166,11 +166,13 @@ def test_readme_says_where_it_is_how_to_play_and_how_it_was_made():
     # The Windows installer accepts more than one WSL distribution.
     assert 'Windows: the same path inside the WSL Linux environment ODS runs in' in prose
     assert 'Ubuntu' not in text and 'Debian' not in text
-    assert 'ODS updates never overwrite or delete this folder. If you delete or rename it, ODS does not add it again.' in prose
+    assert ('ODS updates never overwrite or delete this folder. To delete or rename it, ask Portal the same way, '
+            'for example "In elf-of-doom, delete this game"; ODS then does not add it again.') in prose
     assert 'ODS never overwrites' not in prose and 'fresh copy' not in prose
     # The rule the plugin's guard enforces (plugin/example-guard.mjs), in plain words.
-    assert ('Portal changes Elf of Doom only when your message names it, for example "In elf-of-doom, make the '
-            'arrows give 7"; anything else that changes it is put back.') in prose
+    assert ('Play it, or ask Portal to change it: start your message with "In elf-of-doom,", for example '
+            '"In elf-of-doom, make the arrows give 7". Portal changes Elf of Doom only then. Any other change to '
+            'this folder, even one you make by hand, is put back when Portal next works on something else.') in prose
     assert 'later requests in that chat' not in prose and 'best-effort' not in prose
     assert 'Qwen3.8-Flash-Next' in text
     assert 'See how it was made: https://odsspark.com\n' in text

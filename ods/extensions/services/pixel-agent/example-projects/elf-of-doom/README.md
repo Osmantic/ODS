@@ -37,9 +37,12 @@ See how it was made: https://odsspark.com
 
 ## It's yours
 
-Play it, change it, or ask Portal to change it. Portal changes Elf of Doom
-only when your message names it, for example "In elf-of-doom, make the
-arrows give 7"; anything else that changes it is put back.
+Play it, or ask Portal to change it: start your message with
+"In elf-of-doom,", for example "In elf-of-doom, make the arrows give 7".
+Portal changes Elf of Doom only then. Any other change to this folder,
+even one you make by hand, is put back when Portal next works on
+something else.
 
-ODS updates never overwrite or delete this folder. If you delete or rename
-it, ODS does not add it again.
+ODS updates never overwrite or delete this folder. To delete or rename it,
+ask Portal the same way, for example "In elf-of-doom, delete this game";
+ODS then does not add it again.

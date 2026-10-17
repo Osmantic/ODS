@@ -797,12 +797,18 @@ act as a capability gate:
   existing folder through the same create-only preview service with no model
   run (the plugin's gateway route `/pixel-ods/example-projects`, relayed by
   the ingress, the edge and `/api/pixel/example-projects`). Portal changes
-  it only when the owner's message names it, for example "In elf-of-doom,
-  make the arrows give 7"; when a run that does not name it changes it
-  anyway, ODS puts the folder back exactly (the plugin copies it when such a
-  run starts and compares after every tool call and at the end of the run)
-  and the reply says so. This keeps the owner's game safe from mistakes; it
-  is not a sandbox. The adapter accepts only the existing relative
+  it only when the owner's message starts with "In elf-of-doom,", for
+  example "In elf-of-doom, make the arrows give 7"; any other change to it is
+  put back, and the reply says so in one line. The plugin
+  (`plugin/example-guard.mjs`) keeps the folder's last known-good tree in
+  memory: the folder as the gateway first finds it, and again after each
+  tool call and at the end of a run whose message has that form. For every
+  other run it compares the folder with that tree when the run starts,
+  after each tool call and at the end, and restores it exactly. This keeps
+  the owner's game safe from mistakes; it is not a sandbox. After a gateway
+  restart the folder as the gateway first finds it is the known-good tree,
+  and a change another run makes while a call of a run with that form is
+  running stays. The adapter accepts only the existing relative
   directory, so safety enforcement, static validation, snapshot isolation,
   and HTTP readback cannot be confused with authorship. Pixel may author
   either a self-contained `index.html` or a richer set of local files; ODS
