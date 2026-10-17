@@ -1356,6 +1356,61 @@ EOF
 }
 
 #==============================================================================
+# CROSS-PROCESS UPDATE LOCK
+#==============================================================================
+
+# update and rollback stop services, rewrite configuration and move the git
+# checkout. The host agent serializes only its own runs, so a dashboard update
+# and a shell update must share this lock. Contention fails fast: waiting would
+# start a second run against a stack the first one just changed.
+UPDATE_LOCK_FILE="${INSTALL_DIR}/data/.ods-update.lock"
+UPDATE_LOCK_DIR="${UPDATE_LOCK_FILE}.d"
+_UPDATE_LOCK_DIR_HELD=false
+
+_update_lock_busy() {
+    log_error "Cannot run ${1}: another update is in progress for ${INSTALL_DIR}."
+    return 1
+}
+
+# Release only the mkdir fallback; an flock descriptor closes with the process.
+_release_update_lock() {
+    [[ "$_UPDATE_LOCK_DIR_HELD" == true ]] || return 0
+    rm -f -- "${UPDATE_LOCK_DIR}/pid"
+    rmdir -- "$UPDATE_LOCK_DIR" || log_warn "Could not remove update lock ${UPDATE_LOCK_DIR}"
+    _UPDATE_LOCK_DIR_HELD=false
+}
+
+# _acquire_update_lock <command>
+#   flock where available (Linux); otherwise an atomic mkdir lock that records
+#   its PID so a lock left by a killed run can be reclaimed (macOS has no flock).
+_acquire_update_lock() {
+    local action="$1" holder=""
+    mkdir -p "${INSTALL_DIR}/data"
+    if [[ -z "${ODS_UPDATE_LOCK_NO_FLOCK:-}" ]] && command -v flock >/dev/null 2>&1; then
+        exec {ODS_UPDATE_LOCK_FD}>"$UPDATE_LOCK_FILE"
+        flock -xn "$ODS_UPDATE_LOCK_FD" || _update_lock_busy "$action"
+        return
+    fi
+    if ! mkdir "$UPDATE_LOCK_DIR" 2>/dev/null; then
+        holder="$(cat "${UPDATE_LOCK_DIR}/pid" 2>/dev/null || true)"
+        if [[ ! "$holder" =~ ^[0-9]+$ ]] || kill -0 "$holder" 2>/dev/null; then
+            # A live holder, or one that has not written its PID yet.
+            _update_lock_busy "$action"
+            return 1
+        fi
+        log_warn "Reclaiming update lock left by exited process ${holder}."
+        rm -f -- "${UPDATE_LOCK_DIR}/pid"
+        rmdir -- "$UPDATE_LOCK_DIR"
+        mkdir "$UPDATE_LOCK_DIR" 2>/dev/null || { _update_lock_busy "$action"; return 1; }
+    fi
+    _UPDATE_LOCK_DIR_HELD=true
+    trap _release_update_lock EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    echo "$$" > "${UPDATE_LOCK_DIR}/pid"
+}
+
+#==============================================================================
 # MAIN
 #==============================================================================
 
@@ -1374,9 +1429,11 @@ main() {
             cmd_backup "$@"
             ;;
         update)
+            _acquire_update_lock update || exit 1
             cmd_update "$@"
             ;;
         rollback)
+            _acquire_update_lock rollback || exit 1
             cmd_rollback "$@"
             ;;
         changelog)
