@@ -18549,11 +18549,29 @@ def _opencode_macos_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{_OPENCODE_MACOS_LABEL}.plist"
 
 
+def _opencode_linux_unit_executable(unit_path: Path) -> Path | None:
+    """Return the program the OpenCode user unit starts, or None without one."""
+    for line in unit_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key.strip() == "ExecStart":
+            # systemd allows "@-:+!" prefixes; ODS renders paths without spaces.
+            command = value.strip().lstrip("@-:+!").split()
+            return Path(command[0]) if command else None
+    return None
+
+
 def _opencode_service_registered(system: str | None = None) -> bool:
-    """Return whether ODS registered its managed OpenCode web service."""
+    """Return whether ODS registered a managed OpenCode web service that can run."""
     system = system or platform.system()
     if system == "Linux":
-        return _opencode_linux_unit_path().is_file()
+        unit_path = _opencode_linux_unit_path()
+        if not unit_path.is_file():
+            return False
+        # A unit left behind after its executable was removed cannot start;
+        # report it as not installed so the dashboard offers setup instead of
+        # a Start button that always times out (#7626).
+        executable = _opencode_linux_unit_executable(unit_path)
+        return bool(executable and executable.is_file() and os.access(executable, os.X_OK))
     if system == "Darwin":
         return _opencode_macos_plist_path().is_file()
     if system == "Windows":
@@ -18730,7 +18748,14 @@ def _start_managed_opencode() -> None:
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         raise RuntimeError(f"Could not start OpenCode: {detail[:300]}")
-    _wait_for_opencode_health()
+    try:
+        _wait_for_opencode_health()
+    except RuntimeError as exc:
+        if system != "Linux":
+            raise
+        raise RuntimeError(
+            f"{exc}. See 'journalctl --user -u {_OPENCODE_LINUX_UNIT}' for the reason."
+        ) from exc
 
 
 def _snapshot_managed_opencode_binary() -> dict:
@@ -18804,7 +18829,11 @@ def _opencode_prior_systemd_state(user_env: dict[str, str]) -> tuple[bool, bool]
     active = values.get("ActiveState")
     if load == "not-found" and unit_file == "" and active == "inactive":
         return False, False
-    if load != "loaded" or unit_file not in {"enabled", "disabled"} or active not in {"active", "inactive"}:
+    # A unit whose executable is missing ends up failed or looping through
+    # Restart=on-failure; setup replaces it, and rollback stops it again.
+    if load != "loaded" or unit_file not in {"enabled", "disabled"} or active not in {
+        "active", "inactive", "failed", "activating",
+    }:
         raise RuntimeError(
             "OpenCode has an unsupported systemd state; use the installer to repair it "
             f"({load or 'unknown'}, {unit_file or 'unknown'}, {active or 'unknown'})"
