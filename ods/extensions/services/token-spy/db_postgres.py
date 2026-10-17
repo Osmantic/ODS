@@ -71,6 +71,13 @@ def init_db():
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Add metadata only: NULL keeps every historical event's arithmetic.
+            # Existing rows may mix inclusive and disjoint OpenAI prompt counts.
+            # A preprovisioned schema must also work with a DML-only app role.
+            cur.execute("SELECT 1 FROM pg_attribute WHERE attrelid = 'requests'::regclass "
+                        "AND attname = 'token_buckets_version' AND NOT attisdropped")
+            if cur.fetchone() is None:
+                cur.execute("ALTER TABLE requests ADD COLUMN IF NOT EXISTS token_buckets_version INTEGER")
             # Check if tenant exists
             cur.execute(
                 "SELECT id FROM tenants WHERE slug = %s AND deleted_at IS NULL",
@@ -170,12 +177,12 @@ def log_usage(entry: dict):
                     skill_injection_chars, base_prompt_chars,
                     conversation_history_chars,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                    estimated_cost_usd, duration_ms, stop_reason
+                    estimated_cost_usd, duration_ms, stop_reason, token_buckets_version
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, 1
                 )
                 """,
                 (
@@ -660,7 +667,9 @@ def query_recent_events(limit: int = 100, after_id=None):
                         r.provider,
                         r.input_tokens,
                         r.output_tokens,
-                        (r.input_tokens + r.output_tokens) as total_tokens,
+                        (r.input_tokens + r.output_tokens + CASE WHEN r.token_buckets_version = 1
+                            THEN COALESCE(r.cache_read_tokens, 0) + COALESCE(r.cache_write_tokens, 0)
+                            ELSE 0 END) as total_tokens,
                         r.estimated_cost_usd as cost_usd,
                         r.timestamp,
                         a.name as agent_name
@@ -683,7 +692,9 @@ def query_recent_events(limit: int = 100, after_id=None):
                         r.provider,
                         r.input_tokens,
                         r.output_tokens,
-                        (r.input_tokens + r.output_tokens) as total_tokens,
+                        (r.input_tokens + r.output_tokens + CASE WHEN r.token_buckets_version = 1
+                            THEN COALESCE(r.cache_read_tokens, 0) + COALESCE(r.cache_write_tokens, 0)
+                            ELSE 0 END) as total_tokens,
                         r.estimated_cost_usd as cost_usd,
                         r.timestamp,
                         a.name as agent_name
