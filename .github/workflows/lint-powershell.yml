@@ -140,6 +140,15 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-native-llama-runtime.ps1
 
+      - name: Windows Native llama.cpp CUDA Runtime Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-native-llama-cuda-runtime.ps1
+
+      - name: Windows Native llama.cpp CUDA Runtime Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-llama-cuda-runtime.ps1
+
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
         shell: bash

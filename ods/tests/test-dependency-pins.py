@@ -266,6 +266,41 @@ def test_amd_overlays_pin_official_llama_cpp_images_mirrored_in_lock_and_contrac
     assert not any("ods-lemonade-server" in item["value"] for item in lock["allow_local_images"])
 
 
+def test_nvidia_windows_arm64_archives_are_mirrored_in_lock() -> None:
+    """The RTX Spark llama.cpp CUDA build: two release zips, each locked by SHA-256."""
+    lock = json.loads((ROOT / "config" / "dependency-lock.json").read_text(encoding="utf-8"))
+    contract = json.loads((ROOT / "config" / "backends" / "nvidia.json").read_text(encoding="utf-8"))
+    pin = contract["runtime"]["llama_server"]["windows_arm64"]
+    tag, flavor = pin["release_tag"], pin["flavor"]
+    assert flavor == "win-cuda-13.4-arm64" and pin["backend"] == "cuda", pin
+    assert [archive["asset"] for archive in pin["archives"]] == [
+        f"llama-{tag}-bin-{flavor}.zip",
+        f"cudart-llama-bin-{flavor}.zip",
+    ]
+    by_id = {entry["id"]: entry for entry in lock["entries"]}
+    for ident, archive in zip(
+        ("nvidia.llama-server-windows-cuda-arm64", "nvidia.cudart-windows-cuda-arm64"), pin["archives"]
+    ):
+        assert by_id[ident] == {
+            "id": ident, "type": "archive", "path": "config/backends/nvidia.json", "value": archive["sha256"],
+        }, ident
+        assert isinstance(archive["size"], int) and archive["size"] > 1024 * 1024, archive
+    locked = sorted(
+        entry["value"] for entry in lock["entries"]
+        if entry.get("type") == "archive" and entry["path"] == "config/backends/nvidia.json"
+    )
+    assert locked == sorted(archive["sha256"] for archive in pin["archives"]), locked
+    assert "llama-server.exe" in pin["required_files"]
+    # A changed archive digest must fail the lock check, not slip through.
+    module = load_module()
+    drifted = json.loads(json.dumps(lock))
+    for entry in drifted["entries"]:
+        if entry["id"] == "nvidia.cudart-windows-cuda-arm64":
+            entry["value"] = "0" * 64
+    errors = module._validate_lock_shape(drifted, ROOT)
+    assert any("not present in config/backends/nvidia.json" in error for error in errors), errors
+
+
 def test_archive_entries_need_a_sha256_and_are_not_image_refs() -> None:
     module = load_module()
     with TemporaryDirectory() as tmp:
@@ -338,6 +373,7 @@ def main() -> int:
         test_repo_llama_cpp_pins_carry_digests,
         test_external_pins_cannot_be_bypassed_by_lock_or_latest_exception,
         test_amd_overlays_pin_official_llama_cpp_images_mirrored_in_lock_and_contract,
+        test_nvidia_windows_arm64_archives_are_mirrored_in_lock,
         test_archive_entries_need_a_sha256_and_are_not_image_refs,
         test_extension_library_sha_tags_are_rejected,
         test_dockerfile_heredocs_are_not_image_instructions,

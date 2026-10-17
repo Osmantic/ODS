@@ -68,6 +68,18 @@
       "value": "6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f"
     },
     {
+      "id": "nvidia.llama-server-windows-cuda-arm64",
+      "type": "archive",
+      "path": "config/backends/nvidia.json",
+      "value": "930cff325a0eb15e1232d5b5275b818c76c9c32a398788f18bb05273d3110c72"
+    },
+    {
+      "id": "nvidia.cudart-windows-cuda-arm64",
+      "type": "archive",
+      "path": "config/backends/nvidia.json",
+      "value": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774"
+    },
+    {
       "id": "ape.python",
       "type": "image",
       "path": "extensions/services/ape/Dockerfile",

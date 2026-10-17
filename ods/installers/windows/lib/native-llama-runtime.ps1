@@ -6,6 +6,14 @@
 #          (Vulkan build) for the Windows Portal task and the legacy native
 #          installer. WSL2 cannot drive an AMD GPU, so the model runs here.
 #
+# Flavors: a runtime is one llama.cpp release build, chosen by GPU backend
+# and Windows architecture. win-vulkan-x64 (AMD) is the only routed flavor and
+# keeps every behaviour below. win-cuda-<version>-arm64 (NVIDIA GPUs on
+# Windows on Arm, config/backends/nvidia.json) ships as two archives, writes
+# pin.json schemaVersion 2 with its own required-file list, launches with
+# --fit off and is qualified by a short generation check. Nothing routes to it
+# yet.
+#
 # Contract (Round F, section 5):
 #   - Binary: %LOCALAPPDATA%\ODS\llama.cpp\<tag>-win-vulkan-x64\ with pin.json
 #     (tag, asset, zip SHA-256 and a SHA-256 for every file). Size and hash
@@ -26,14 +34,119 @@
 
 . (Join-Path $PSScriptRoot 'private-file.ps1')
 
+# Required files of a pin.json v1 runtime: the win-vulkan-x64 flavor. A v2
+# runtime lists its own in pin.json, so the copied launcher needs no config.
 $script:ODSNativeLlamaRequiredFiles = @('llama-server.exe', 'ggml-vulkan.dll')
 $script:ODSNativeLlamaExecutableExtensions = @('.exe', '.dll', '.sys', '.com', '.bat', '.cmd', '.ps1', '.psm1', '.vbs', '.js', '.msi', '.scr', '.cpl', '.ocx')
 $script:ODSNativeLlamaStartupSeconds = 900
 $script:ODSNativeLlamaContextAlignment = 256
+$script:ODSNativeLlamaVulkanFlavor = 'win-vulkan-x64'
+# The generation check: a question whose only right answer is one token.
+$script:ODSNativeLlamaProbeQuestion = 'What is 2+2? Answer with the number only.'
+$script:ODSNativeLlamaProbeContext = 4096
+
+# --- Flavor ---------------------------------------------------------------------
+
+function ConvertFrom-ODSNativeLlamaFlavor([string]$Flavor) {
+    <#
+    .SYNOPSIS
+        Backend and Windows architecture of a llama.cpp release flavor, or
+        $null for a flavor ODS does not know.
+    #>
+    if ($Flavor -ceq $script:ODSNativeLlamaVulkanFlavor) {
+        return [pscustomobject]@{ Flavor = $Flavor; Backend = 'vulkan'; Architecture = 'x64'; CudaVersion = '' }
+    }
+    $match = [regex]::Match($Flavor, '^win-cuda-(?<cuda>[0-9]{1,2}\.[0-9]{1,2})-(?<arch>arm64)$')
+    if ($match.Success) {
+        return [pscustomobject]@{ Flavor = $Flavor; Backend = 'cuda'; Architecture = $match.Groups['arch'].Value
+            CudaVersion = $match.Groups['cuda'].Value }
+    }
+    return $null
+}
+
+function Get-ODSNativeLlamaPinFlavor($Pin) {
+    # Pins written before flavors existed are the Vulkan build.
+    $flavor = [string]$Pin.Flavor
+    if (-not $flavor) { return $script:ODSNativeLlamaVulkanFlavor }
+    if (-not (ConvertFrom-ODSNativeLlamaFlavor $flavor)) { throw "Unknown llama.cpp runtime flavor '$flavor'." }
+    return $flavor
+}
+
+function New-ODSNativeLlamaFailure([string]$Message, [string]$Class) {
+    <#
+    .SYNOPSIS
+        An exception whose Data['class'] says why llama.cpp cannot run here:
+        start, policy, dll, timeout, exit, build or driver. The message is the
+        owner-facing text; callers choose a route from the class.
+    #>
+    $exception = [Management.Automation.RuntimeException]::new($Message)
+    $exception.Data['class'] = $Class
+    return $exception
+}
 
 # --- Pin ----------------------------------------------------------------------
 
+function Assert-ODSNativeLlamaArchivePin($Pin) {
+    # A flavor shipped as release archives (config/backends/nvidia.json).
+    $tag = [string]$Pin.release_tag
+    $flavor = ConvertFrom-ODSNativeLlamaFlavor ([string]$Pin.flavor)
+    $archives = @($Pin.archives)
+    $required = @($Pin.required_files)
+    $problem = ''
+    if ($tag -cnotmatch '^b[0-9]{3,6}$') { $problem = 'a bNNNN release_tag' }
+    elseif (-not $flavor -or $flavor.Backend -ceq 'vulkan' -or [string]$Pin.backend -cne $flavor.Backend) {
+        $problem = 'a known flavor (win-cuda-<version>-arm64) and its backend'
+    }
+    elseif ([string]$Pin.policy_key -cnotmatch '^windows-native(-[a-z0-9]{1,16})?$') { $problem = 'a windows-native policy_key' }
+    elseif ($archives.Count -lt 1 -or $archives.Count -gt 2) { $problem = 'one or two release archives' }
+    elseif (-not $required.Count -or $required.Count -gt 64 -or @($required | Where-Object { [string]$_ -ceq 'llama-server.exe' }).Count -ne 1) {
+        $problem = 'required_files including llama-server.exe'
+    }
+    elseif ([string]$Pin.min_driver_version -cnotmatch '^[0-9]{2,4}\.[0-9]{1,3}$') { $problem = 'a min_driver_version such as 616.41' }
+    if (-not $problem) {
+        $names = @("llama-$tag-bin-$($flavor.Flavor).zip", "cudart-llama-bin-$($flavor.Flavor).zip")
+        for ($index = 0; $index -lt $archives.Count; $index++) {
+            $archive = $archives[$index]
+            if ([string]$archive.asset -cne $names[$index] -or [string]$archive.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                ($archive.size -isnot [int] -and $archive.size -isnot [long]) -or
+                [long]$archive.size -lt 1048576 -or [long]$archive.size -gt 536870912) {
+                $problem = "archive $($index + 1) as $($names[$index]) with a lowercase SHA-256 and a size in bytes"
+                break
+            }
+        }
+    }
+    if (-not $problem) {
+        $seen = @{}
+        foreach ($name in $required) {
+            if ([string]$name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$' -or $seen.ContainsKey(([string]$name).ToLowerInvariant())) {
+                $problem = 'distinct ASCII required_files'
+                break
+            }
+            $seen[([string]$name).ToLowerInvariant()] = $true
+        }
+    }
+    if (-not $problem) {
+        $map = $Pin.cuda_archs_by_compute
+        $entries = if ($map) { @($map.PSObject.Properties) } else { @() }
+        foreach ($entry in $entries) {
+            if ($entry.Name -cnotmatch '^[0-9]{1,2}\.[0-9]$' -or -not @($entry.Value).Count -or
+                @($entry.Value | Where-Object { [string]$_ -cnotmatch '^[0-9]{2,4}[a-z]?$' }).Count) {
+                $problem = 'cuda_archs_by_compute as compute capability -> CUDA arch names'
+                break
+            }
+        }
+        if (-not $entries.Count) { $problem = 'cuda_archs_by_compute as compute capability -> CUDA arch names' }
+    }
+    if (-not $problem) {
+        foreach ($id in @($Pin.model_ladder) + @($Pin.fallback_models)) {
+            if ([string]$id -cnotmatch '^[a-z0-9][a-z0-9._-]{0,127}$') { $problem = 'catalog ids in model_ladder and fallback_models'; break }
+        }
+    }
+    if ($problem) { throw "The Windows llama.cpp pin must name $problem." }
+}
+
 function Assert-ODSNativeLlamaPin($Pin) {
+    if ($Pin.PSObject.Properties['archives']) { Assert-ODSNativeLlamaArchivePin $Pin; return }
     $tag = [string]$Pin.release_tag
     if ($tag -cnotmatch '^b[0-9]{3,6}$' -or
         [string]$Pin.asset -cne "llama-$tag-bin-win-vulkan-x64.zip" -or
@@ -87,14 +200,76 @@ function Read-ODSNativeLlamaConstantsPin([string]$ConstantsPath) {
     }
 }
 
+function Get-ODSNativeLlamaArchivePin([string]$SourceRoot, [string]$ContractName, [string]$Key, [string]$Platform) {
+    # Flavors shipped as release archives have no constants.ps1 fallback.
+    $relative = "config/backends/$ContractName"
+    $contractPath = if ($SourceRoot) { Join-Path (Join-Path (Join-Path $SourceRoot 'config') 'backends') $ContractName } else { '' }
+    if (-not $contractPath -or -not (Test-Path -LiteralPath $contractPath -PathType Leaf)) {
+        throw "ODS has no pinned llama.cpp build for $Platform ($relative is missing)."
+    }
+    $contract = Get-Content -LiteralPath $contractPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    $pins = $contract.runtime.llama_server
+    if (-not $pins -or -not $pins.PSObject.Properties[$Key]) {
+        throw "ODS has no pinned llama.cpp build for $Platform ($relative has no runtime.llama_server.$Key)."
+    }
+    $pin = $pins.$Key
+    Assert-ODSNativeLlamaPin $pin
+    $tag = [string]$pin.release_tag
+    $flavor = ConvertFrom-ODSNativeLlamaFlavor ([string]$pin.flavor)
+    $archives = @($pin.archives | ForEach-Object {
+        [pscustomobject]@{ Asset = [string]$_.asset; Sha256 = [string]$_.sha256; Size = [long]$_.size
+            Url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$([string]$_.asset)" }
+    })
+    $archs = @{}
+    foreach ($entry in @($pin.cuda_archs_by_compute.PSObject.Properties)) { $archs[$entry.Name] = @($entry.Value | ForEach-Object { [string]$_ }) }
+    return [pscustomobject]@{
+        ReleaseTag = $tag
+        Build = [int]$tag.Substring(1)
+        # The primary (llama.cpp) archive, under the names the v1 pin uses.
+        Asset = $archives[0].Asset
+        Sha256 = $archives[0].Sha256
+        Size = $archives[0].Size
+        Url = $archives[0].Url
+        Source = "$relative runtime.llama_server.$Key"
+        Flavor = $flavor.Flavor
+        Backend = $flavor.Backend
+        Architecture = $flavor.Architecture
+        CudaVersion = $flavor.CudaVersion
+        PolicyKey = [string]$pin.policy_key
+        Archives = $archives
+        RequiredFiles = @($pin.required_files | ForEach-Object { [string]$_ })
+        RequiredCudaArchs = $archs
+        MinDriverVersion = [string]$pin.min_driver_version
+        ModelLadder = @($pin.model_ladder | ForEach-Object { [string]$_ })
+        FallbackModels = @($pin.fallback_models | ForEach-Object { [string]$_ })
+    }
+}
+
 function Get-ODSNativeLlamaPin {
     <#
     .SYNOPSIS
-        The pinned llama.cpp Windows Vulkan release, from config/backends/amd.json
+        The pinned llama.cpp Windows release for a GPU vendor and Windows
+        architecture.
+    .DESCRIPTION
+        AMD (x64): the Vulkan build from config/backends/amd.json
         runtime.llama_server.windows, or constants.ps1 until amd.json has it.
+        NVIDIA (arm64): the CUDA build from config/backends/nvidia.json
+        runtime.llama_server.windows_arm64, never a fallback.
+        Asset, Sha256, Size and Url always describe the primary archive;
+        Archives lists every archive of the flavor.
     #>
-    param([string]$SourceRoot = '')
+    param(
+        [string]$SourceRoot = '',
+        [ValidateSet('amd', 'nvidia', IgnoreCase = $false)][string]$Backend = 'amd',
+        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'x64'
+    )
 
+    if ($Backend -ceq 'nvidia') {
+        if ($Architecture -cne 'arm64') { throw 'ODS has no Windows llama.cpp build for NVIDIA GPUs on x64 Windows; they run the model in a container in Ubuntu.' }
+        return (Get-ODSNativeLlamaArchivePin -SourceRoot $SourceRoot -ContractName 'nvidia.json' -Key 'windows_arm64' `
+            -Platform 'NVIDIA GPUs on Windows on Arm')
+    }
+    if ($Architecture -cne 'x64') { throw 'ODS has no pinned llama.cpp build for AMD GPUs on Windows on Arm.' }
     $pin = $null
     $source = ''
     if ($SourceRoot) {
@@ -135,14 +310,26 @@ function Get-ODSNativeLlamaPin {
     }
     Assert-ODSNativeLlamaPin $pin
     $tag = [string]$pin.release_tag
+    $url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$([string]$pin.asset)"
     return [pscustomobject]@{
         ReleaseTag = $tag
         Build = [int]$tag.Substring(1)
         Asset = [string]$pin.asset
         Sha256 = [string]$pin.sha256
         Size = [long]$pin.size
-        Url = "https://github.com/ggml-org/llama.cpp/releases/download/$tag/$([string]$pin.asset)"
+        Url = $url
         Source = $source
+        Flavor = $script:ODSNativeLlamaVulkanFlavor
+        Backend = 'vulkan'
+        Architecture = 'x64'
+        CudaVersion = ''
+        PolicyKey = 'windows-native'
+        Archives = @([pscustomobject]@{ Asset = [string]$pin.asset; Sha256 = [string]$pin.sha256; Size = [long]$pin.size; Url = $url })
+        RequiredFiles = $script:ODSNativeLlamaRequiredFiles
+        RequiredCudaArchs = @{}
+        MinDriverVersion = ''
+        ModelLadder = @()
+        FallbackModels = @()
     }
 }
 
@@ -156,7 +343,8 @@ function Get-ODSNativeLlamaRoot {
 }
 
 function Get-ODSNativeLlamaInstallDirectory($Pin, [string]$Root = (Get-ODSNativeLlamaRoot)) {
-    return (Join-Path $Root ("{0}-win-vulkan-x64" -f $Pin.ReleaseTag))
+    # <tag>-<flavor>: b9014-win-vulkan-x64 as before, b11429-win-cuda-13.4-arm64.
+    return (Join-Path $Root ("{0}-{1}" -f $Pin.ReleaseTag, (Get-ODSNativeLlamaPinFlavor $Pin)))
 }
 
 # --- Acquire --------------------------------------------------------------------
@@ -243,20 +431,35 @@ function Test-ODSNativeLlamaInstall {
     param(
         [Parameter(Mandatory = $true)][string]$Directory,
         [string]$ExpectedZipSha256 = '',
-        [string]$ExpectedReleaseTag = ''
+        [string]$ExpectedReleaseTag = '',
+        # A multi-archive pin's Archives: the runtime must come from exactly these.
+        [object[]]$ExpectedArchives = @()
     )
     $pinPath = Join-Path $Directory 'pin.json'
     if (-not (Test-Path -LiteralPath $pinPath -PathType Leaf)) { throw "The llama.cpp runtime has no pin.json: $Directory" }
     $record = [IO.File]::ReadAllText($pinPath, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json -ErrorAction Stop
-    if ($record.schemaVersion -ne 1 -or [string]$record.releaseTag -cnotmatch '^b[0-9]{3,6}$' -or
+    if (($record.schemaVersion -ne 1 -and $record.schemaVersion -ne 2) -or [string]$record.releaseTag -cnotmatch '^b[0-9]{3,6}$' -or
         [string]$record.zipSha256 -cnotmatch '^[0-9a-f]{64}$' -or @($record.files).Count -eq 0) {
         throw "The llama.cpp pin.json is invalid: $pinPath"
+    }
+    $requiredFiles = $script:ODSNativeLlamaRequiredFiles
+    $flavor = $script:ODSNativeLlamaVulkanFlavor
+    if ($record.schemaVersion -eq 2) {
+        $requiredFiles = Get-ODSNativeLlamaRecordRequiredFiles $record $pinPath
+        $flavor = [string]$record.flavor
     }
     if ($ExpectedReleaseTag -and [string]$record.releaseTag -cne $ExpectedReleaseTag) {
         throw "The llama.cpp runtime is $($record.releaseTag), not the pinned $ExpectedReleaseTag."
     }
     if ($ExpectedZipSha256 -and [string]$record.zipSha256 -cne $ExpectedZipSha256) {
         throw 'The llama.cpp runtime was installed from a different archive than the pinned one.'
+    }
+    if ($ExpectedArchives.Count) {
+        $installed = if ($record.schemaVersion -eq 2) { @($record.archives | ForEach-Object { "$($_.asset)|$($_.sha256)" }) } else { @() }
+        $pinned = @($ExpectedArchives | ForEach-Object { "$($_.Asset)|$($_.Sha256)" })
+        if (($installed -join ',') -cne ($pinned -join ',')) {
+            throw 'The llama.cpp runtime was installed from different archives than the pinned ones.'
+        }
     }
     $listed = @{}
     foreach ($file in @($record.files)) {
@@ -267,8 +470,8 @@ function Test-ODSNativeLlamaInstall {
         }
         $listed[$path.ToLowerInvariant()] = $file
     }
-    foreach ($required in $script:ODSNativeLlamaRequiredFiles) {
-        if (-not $listed.ContainsKey($required)) { throw "The llama.cpp runtime is missing $required." }
+    foreach ($required in $requiredFiles) {
+        if (-not $listed.ContainsKey(([string]$required).ToLowerInvariant())) { throw "The llama.cpp runtime is missing $required." }
     }
     $actual = @{}
     foreach ($file in (Get-ODSNativeLlamaFileManifest $Directory)) { $actual[$file.path.ToLowerInvariant()] = $file }
@@ -292,7 +495,25 @@ function Test-ODSNativeLlamaInstall {
         ReleaseTag = [string]$record.releaseTag
         ZipSha256 = [string]$record.zipSha256
         FileCount = $listed.Count
+        Flavor = $flavor
     }
+}
+
+function Get-ODSNativeLlamaRecordRequiredFiles($Record, [string]$PinPath) {
+    # pin.json v2: a known non-Vulkan flavor, its archives (primary first) and
+    # the required files the flavor's pin listed, llama-server.exe included.
+    $flavor = ConvertFrom-ODSNativeLlamaFlavor ([string]$Record.flavor)
+    $archives = @($Record.archives)
+    $required = @($Record.requiredFiles | ForEach-Object { [string]$_ })
+    $valid = $flavor -and $flavor.Backend -cne 'vulkan' -and [string]$Record.backend -ceq $flavor.Backend -and
+        $archives.Count -ge 1 -and $archives.Count -le 2 -and [string]$archives[0].sha256 -ceq [string]$Record.zipSha256 -and
+        [string]$archives[0].asset -ceq "llama-$($Record.releaseTag)-bin-$($flavor.Flavor).zip" -and
+        @($archives | Where-Object { [string]$_.sha256 -cnotmatch '^[0-9a-f]{64}$' }).Count -eq 0 -and
+        $required -ccontains 'llama-server.exe' -and
+        @($required | Where-Object { $_ -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$' }).Count -eq 0
+    if ($archives.Count -eq 2 -and [string]$archives[1].asset -cne "cudart-llama-bin-$($flavor.Flavor).zip") { $valid = $false }
+    if (-not $valid) { throw "The llama.cpp pin.json is invalid: $PinPath" }
+    return $required
 }
 
 function Install-ODSNativeLlamaRuntime {
@@ -304,11 +525,16 @@ function Install-ODSNativeLlamaRuntime {
         lands in a private staging directory, its size and SHA-256 are checked
         before extraction, entries are extracted traversal-safely, pin.json
         records every file hash, and one rename publishes the directory.
+        A flavor other than Vulkan (several archives) goes through
+        Install-ODSNativeLlamaArchiveSet; the Vulkan path below is unchanged.
     #>
     param(
         [Parameter(Mandatory = $true)]$Pin,
         [string]$Root = (Get-ODSNativeLlamaRoot)
     )
+    if ((Get-ODSNativeLlamaPinFlavor $Pin) -cne $script:ODSNativeLlamaVulkanFlavor) {
+        return (Install-ODSNativeLlamaArchiveSet -Pin $Pin -Root $Root)
+    }
     $target = Get-ODSNativeLlamaInstallDirectory $Pin $Root
     if (Test-Path -LiteralPath $target) {
         try {
@@ -357,6 +583,109 @@ function Install-ODSNativeLlamaRuntime {
         if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     }
     return (Test-ODSNativeLlamaInstall -Directory $target -ExpectedZipSha256 $Pin.Sha256 -ExpectedReleaseTag $Pin.ReleaseTag)
+}
+
+function Merge-ODSNativeLlamaPayload([string]$Source, [string]$Destination, [hashtable]$Origins, [string]$Asset) {
+    # One archive's files join the runtime. A path another archive already
+    # supplied is kept once when the bytes agree and refused when they differ.
+    $root = [IO.Path]::GetFullPath($Source).TrimEnd([char[]]@('\', '/')) + [IO.Path]::DirectorySeparatorChar
+    foreach ($item in @(Get-ChildItem -LiteralPath $Source -Recurse -Force -File)) {
+        $relative = $item.FullName.Substring($root.Length)
+        $key = $relative.Replace('\', '/').ToLowerInvariant()
+        $sha = Get-ODSNativeLlamaFileSha256 $item.FullName
+        if ($Origins.ContainsKey($key)) {
+            if ($Origins[$key].Sha256 -cne $sha) {
+                throw "The llama.cpp archives disagree on $($relative.Replace('\', '/')) ($($Origins[$key].Asset) and $Asset ship different files); nothing was installed."
+            }
+            continue
+        }
+        $target = Join-Path $Destination $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+        [IO.File]::Move($item.FullName, $target)
+        $Origins[$key] = @{ Sha256 = $sha; Asset = $Asset }
+    }
+}
+
+function Install-ODSNativeLlamaArchiveSet {
+    <#
+    .SYNOPSIS
+        Download, verify and publish a llama.cpp flavor shipped as several
+        archives (the CUDA build and its CUDA runtime).
+    .DESCRIPTION
+        Idempotent like the Vulkan path. Each archive's size and SHA-256 are
+        checked before it is extracted into its own folder; the folders are
+        merged, the flavor's required files must all be present, and pin.json
+        (schemaVersion 2) records the archives, the required files and a
+        SHA-256 for every file before one rename publishes the directory.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Pin,
+        [string]$Root = (Get-ODSNativeLlamaRoot)
+    )
+    $flavor = ConvertFrom-ODSNativeLlamaFlavor (Get-ODSNativeLlamaPinFlavor $Pin)
+    $archives = @($Pin.Archives)
+    if ($archives.Count -lt 1 -or $archives.Count -gt 2 -or [string]$Pin.Sha256 -cne [string]$archives[0].Sha256 -or -not @($Pin.RequiredFiles).Count) {
+        throw "The llama.cpp $($flavor.Flavor) pin must list one or two archives, the llama.cpp archive first, and its required files."
+    }
+    $target = Get-ODSNativeLlamaInstallDirectory $Pin $Root
+    if (Test-Path -LiteralPath $target) {
+        try {
+            return (Test-ODSNativeLlamaInstall -Directory $target -ExpectedZipSha256 $Pin.Sha256 -ExpectedReleaseTag $Pin.ReleaseTag `
+                -ExpectedArchives $archives)
+        } catch {
+            # Keep the damaged copy for diagnosis; a new one is published below.
+            $damaged = Join-Path $Root ('.damaged-{0}-{1}' -f $Pin.ReleaseTag, [guid]::NewGuid().ToString('N'))
+            [IO.Directory]::Move($target, $damaged)
+            Write-Host "         The existing llama.cpp $($Pin.ReleaseTag) ($($flavor.Flavor)) failed verification ($($_.Exception.Message)); downloading it again."
+        }
+    }
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    $staging = Join-Path $Root ('.staging-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging | Out-Null
+    try {
+        $merged = Join-Path $staging 'runtime'
+        New-Item -ItemType Directory -Path $merged | Out-Null
+        $origins = @{}
+        for ($index = 0; $index -lt $archives.Count; $index++) {
+            $archive = $archives[$index]
+            $download = Join-Path $staging $archive.Asset
+            Invoke-ODSNativeLlamaDownload $archive.Url $download
+            $length = (Get-Item -LiteralPath $download).Length
+            if ($length -ne $archive.Size) {
+                throw "The llama.cpp download $($archive.Asset) is $length bytes, not the pinned $($archive.Size); it was discarded."
+            }
+            $actualSha = Get-ODSNativeLlamaFileSha256 $download
+            if ($actualSha -cne $archive.Sha256) {
+                throw "The llama.cpp download $($archive.Asset) does not match its pinned SHA-256 (got $actualSha, expected $($archive.Sha256)); it was discarded."
+            }
+            $extract = Join-Path $staging "extract-$index"
+            Expand-ODSNativeLlamaArchive $download $extract
+            Merge-ODSNativeLlamaPayload -Source (Get-ODSNativeLlamaPayloadRoot $extract) -Destination $merged -Origins $origins -Asset $archive.Asset
+            Remove-Item -LiteralPath $download -Force
+        }
+        foreach ($required in @($Pin.RequiredFiles)) {
+            if (-not (Test-Path -LiteralPath (Join-Path $merged $required) -PathType Leaf)) {
+                throw "The llama.cpp archives have no $required; they are not the Windows $($flavor.Flavor) build."
+            }
+        }
+        $record = [ordered]@{
+            schemaVersion = 2
+            releaseTag = $Pin.ReleaseTag
+            flavor = $flavor.Flavor
+            backend = $flavor.Backend
+            archives = @($archives | ForEach-Object { [ordered]@{ asset = $_.Asset; sha256 = $_.Sha256; size = $_.Size } })
+            zipSha256 = $Pin.Sha256
+            requiredFiles = @($Pin.RequiredFiles)
+            source = "https://github.com/ggml-org/llama.cpp/releases/tag/$($Pin.ReleaseTag)"
+            files = @(Get-ODSNativeLlamaFileManifest $merged)
+        }
+        Write-ODSPrivateEnvFile -Path (Join-Path $merged 'pin.json') -Content ($record | ConvertTo-Json -Depth 4)
+        [IO.Directory]::Move($merged, $target)
+    } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    }
+    return (Test-ODSNativeLlamaInstall -Directory $target -ExpectedZipSha256 $Pin.Sha256 -ExpectedReleaseTag $Pin.ReleaseTag `
+        -ExpectedArchives $archives)
 }
 
 function Publish-ODSNativeLlamaRuntimeCopy {
@@ -418,7 +747,7 @@ function Remove-ODSNativeLlamaOldRuntimes {
     if (-not (Test-Path -LiteralPath $Root -PathType Container)) { return }
     $keep = @($KeepDirectory, $PreviousDirectory) | Where-Object { $_ } | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') }
     foreach ($child in @(Get-ChildItem -LiteralPath $Root -Directory -Force)) {
-        if ($child.Name -notmatch '^(b[0-9]{3,6}-win-vulkan-x64|\.staging-[0-9a-f]{32}|\.damaged-b[0-9]{3,6}-[0-9a-f]{32})$') { continue }
+        if ($child.Name -notmatch '^(b[0-9]{3,6}-win-vulkan-x64|b[0-9]{3,6}-win-cuda-[0-9.]+-arm64|\.staging-[0-9a-f]{32}|\.damaged-b[0-9]{3,6}-[0-9a-f]{32})$') { continue }
         if ([IO.Path]::GetFullPath($child.FullName).TrimEnd('\') -in $keep) { continue }
         Remove-Item -LiteralPath $child.FullName -Recurse -Force
     }
@@ -465,14 +794,50 @@ function Invoke-ODSNativeLlamaProbe {
     }
 }
 
-function Get-ODSNativeLlamaExitHint([int]$ExitCode) {
-    # NTSTATUS values arrive as negative 32-bit exit codes.
-    if ($ExitCode -eq -1073741515) { return 'A DLL it needs is missing (0xC0000135), most likely the Microsoft Visual C++ 2015-2022 Redistributable (x64). Install it from https://aka.ms/vs/17/release/vc_redist.x64.exe or with: winget install Microsoft.VCRedist.2015+.x64' }
+function Get-ODSNativeLlamaExitHint([int]$ExitCode, [string]$Backend = 'vulkan', [string]$Architecture = 'x64') {
+    # NTSTATUS values arrive as negative 32-bit exit codes. The Visual C++
+    # runtime and image wording follow the Windows architecture, the driver
+    # wording the GPU backend; Vulkan on x64 keeps its original text.
+    $arm64 = $Architecture -ceq 'arm64'
+    $nvidia = $Backend -ceq 'cuda'
+    if ($ExitCode -eq -1073741515) {
+        if ($arm64) { return 'A DLL it needs is missing (0xC0000135), most likely the Microsoft Visual C++ 2015-2022 Redistributable for Arm64. Install it from https://aka.ms/vs/17/release/vc_redist.arm64.exe or with: winget install Microsoft.VCRedist.2015+.arm64' }
+        return 'A DLL it needs is missing (0xC0000135), most likely the Microsoft Visual C++ 2015-2022 Redistributable (x64). Install it from https://aka.ms/vs/17/release/vc_redist.x64.exe or with: winget install Microsoft.VCRedist.2015+.x64'
+    }
     if ($ExitCode -eq -1073740760) { return 'Windows code integrity refused one of its files (0xC0000428). Smart App Control, Windows Defender Application Control or another allow-list policy blocks the unsigned llama.cpp binaries.' }
-    if ($ExitCode -eq -1073741701) { return 'Windows reports a bad image (0xC000007B): the download is damaged or not built for x64.' }
-    if ($ExitCode -eq -1073741502) { return 'A DLL failed to initialize (0xC0000142). Restart Windows, update the AMD graphics driver, then rerun setup.' }
-    if ($ExitCode -eq -1073741819) { return 'It crashed (0xC0000005), usually inside the graphics driver. Update the AMD Adrenalin driver from amd.com/support, then rerun setup.' }
+    if ($ExitCode -eq -1073741701) {
+        if ($arm64) { return 'Windows reports a bad image (0xC000007B): the download is damaged or not built for this processor (Arm64).' }
+        return 'Windows reports a bad image (0xC000007B): the download is damaged or not built for x64.'
+    }
+    if ($ExitCode -eq -1073741502) {
+        if ($nvidia) { return 'A DLL failed to initialize (0xC0000142). Restart Windows, update the NVIDIA graphics driver with the NVIDIA App or from nvidia.com, then rerun setup.' }
+        return 'A DLL failed to initialize (0xC0000142). Restart Windows, update the AMD graphics driver, then rerun setup.'
+    }
+    if ($ExitCode -eq -1073741819) {
+        if ($nvidia) { return 'It crashed (0xC0000005), usually inside the graphics driver. Update the NVIDIA graphics driver with the NVIDIA App or from nvidia.com, then rerun setup.' }
+        return 'It crashed (0xC0000005), usually inside the graphics driver. Update the AMD Adrenalin driver from amd.com/support, then rerun setup.'
+    }
     return ''
+}
+
+function Get-ODSNativeLlamaFailureClass($Probe, $CodeIntegrity = $null) {
+    <#
+    .SYNOPSIS
+        Why a llama-server.exe run failed: policy (code integrity), start, dll
+        (0xC0000135, a missing runtime DLL), timeout or exit.
+    #>
+    $integrityOn = $CodeIntegrity -and ($CodeIntegrity.SmartAppControl -eq 'on' -or $CodeIntegrity.UserModeCodeIntegrity -eq 'enforced')
+    if (-not $Probe.Started) {
+        # 1260 ERROR_ACCESS_DISABLED_BY_POLICY, 4551 an application control
+        # policy; with Smart App Control or WDAC enforced, any blocked start
+        # except a missing file is most likely that policy.
+        if ($Probe.NativeError -in @(1260, 4551) -or ($integrityOn -and $Probe.NativeError -ne 2)) { return 'policy' }
+        return 'start'
+    }
+    if ($Probe.TimedOut) { return 'timeout' }
+    if ($Probe.ExitCode -eq -1073741515) { return 'dll' }
+    if ($Probe.ExitCode -eq -1073740760) { return 'policy' }
+    return 'exit'
 }
 
 function Get-ODSNativeLlamaStartHint([int]$NativeError) {
@@ -518,7 +883,9 @@ function Format-ODSNativeLlamaPolicyHint($State) {
 }
 
 function ConvertFrom-ODSNativeLlamaDeviceList([string]$Output) {
-    # llama.cpp b9014 prints "  Vulkan0: <name> (<total> MiB, <free> MiB free)".
+    # llama.cpp b9014 prints "  Vulkan0: <name> (<total> MiB, <free> MiB free)";
+    # the b11429 CUDA build "  CUDA0: <name> (...)" the same way. Under WDDM
+    # the CUDA sizes are this process's budget, not the GPU's memory.
     $devices = [Collections.Generic.List[object]]::new()
     foreach ($line in ($Output -split "`r?`n")) {
         $match = [regex]::Match($line, '^\s+(?<name>[A-Za-z][A-Za-z0-9_-]*[0-9]+):\s+(?<description>.+?)\s+\((?<total>[0-9]+) MiB, (?<free>[0-9]+) MiB free\)\s*$')
@@ -545,9 +912,11 @@ function Select-ODSNativeLlamaDevice {
         Choose the Vulkan device for the detected AMD adapter, or $null.
     .DESCRIPTION
         Software rasterizers and other vendors' GPUs are never chosen. With no
-        name match, a single AMD-looking Vulkan device is accepted.
+        name match, a single AMD-looking Vulkan device is accepted. -Backend
+        cuda picks among CUDA devices instead (Select-ODSNativeLlamaCudaDevice).
     #>
-    param([object[]]$Devices, [string]$AdapterName)
+    param([object[]]$Devices, [string]$AdapterName, [ValidateSet('vulkan', 'cuda', IgnoreCase = $false)][string]$Backend = 'vulkan')
+    if ($Backend -ceq 'cuda') { return (Select-ODSNativeLlamaCudaDevice -Devices $Devices -AdapterName $AdapterName) }
     $vulkan = @($Devices | Where-Object {
         $_.Name -cmatch '^Vulkan[0-9]{1,2}$' -and
         $_.Description -notmatch '(?i)llvmpipe|swiftshader|lavapipe|software|basic render|microsoft' -and
@@ -569,49 +938,329 @@ function Select-ODSNativeLlamaDevice {
     return $null
 }
 
+function Select-ODSNativeLlamaCudaDevice {
+    <#
+    .SYNOPSIS
+        Choose the CUDA device for the detected NVIDIA adapter, or $null.
+    .DESCRIPTION
+        Only CUDAn devices count; llama.cpp lists no NPU among them. A name
+        match wins; with no match a single CUDA device is accepted, never one
+        of several.
+    #>
+    param([object[]]$Devices, [string]$AdapterName)
+    $cuda = @($Devices | Where-Object { $_.Name -cmatch '^CUDA[0-9]{1,2}$' })
+    if ($cuda.Count -eq 0) { return $null }
+    $target = ConvertTo-ODSNativeLlamaAdapterKey $AdapterName
+    if ($target) {
+        $exact = @($cuda | Where-Object { (ConvertTo-ODSNativeLlamaAdapterKey $_.Description) -eq $target })
+        if ($exact.Count -ge 1) { return $exact[0] }
+        $partial = @($cuda | Where-Object {
+            $key = ConvertTo-ODSNativeLlamaAdapterKey $_.Description
+            $key -and ($key.Contains($target) -or $target.Contains($key))
+        })
+        if ($partial.Count -ge 1) { return $partial[0] }
+    }
+    if ($cuda.Count -eq 1) { return $cuda[0] }
+    return $null
+}
+
+function ConvertFrom-ODSNativeLlamaVersion([string]$Output) {
+    # b9014: "version: 9014 (d4b0c22f)". b11429: "version: 0.6.0-dev (build
+    # 11429, commit d81235049)". $null when neither form is present.
+    $match = [regex]::Match($Output, '(?m)^version:\s*([0-9]+)\s*\(([0-9a-f]+)\)')
+    if ($match.Success) { return [pscustomobject]@{ Build = [int]$match.Groups[1].Value; Commit = $match.Groups[2].Value } }
+    $match = [regex]::Match($Output, '(?m)^version:\s*[0-9A-Za-z.+-]{1,32}\s*\(build\s+([0-9]{1,7}),\s*commit\s+([0-9a-f]{6,40})\)')
+    if ($match.Success) { return [pscustomobject]@{ Build = [int]$match.Groups[1].Value; Commit = $match.Groups[2].Value } }
+    return $null
+}
+
 function Test-ODSNativeLlamaQualification {
     <#
     .SYNOPSIS
         Qualify an installed llama-server.exe before any cutover.
     .OUTPUTS
-        Build, Devices and Device ($null when no usable Vulkan device exists).
-        Throws with guidance when the binary cannot run at all.
+        Build, Devices and Device ($null when no usable device of -Backend
+        exists). Throws with guidance when the binary cannot run at all; the
+        exception's Data['class'] is start, policy, dll, timeout, exit or build.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$ExecutablePath,
         [Parameter(Mandatory = $true)][int]$ExpectedBuild,
         [string]$AdapterName = '',
-        $CodeIntegrity = $null
+        $CodeIntegrity = $null,
+        [ValidateSet('vulkan', 'cuda', IgnoreCase = $false)][string]$Backend = 'vulkan',
+        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'x64'
     )
     if ($null -eq $CodeIntegrity) { $CodeIntegrity = Get-ODSNativeLlamaCodeIntegrityState }
     $policyHint = Format-ODSNativeLlamaPolicyHint $CodeIntegrity
     $version = Invoke-ODSNativeLlamaProbe -ExecutablePath $ExecutablePath -Arguments @('--version')
+    $class = Get-ODSNativeLlamaFailureClass $version $CodeIntegrity
     if (-not $version.Started) {
-        throw ("llama-server.exe could not start: $($version.StartError) " + (Get-ODSNativeLlamaStartHint $version.NativeError) + " $policyHint").Trim()
+        throw (New-ODSNativeLlamaFailure ("llama-server.exe could not start: $($version.StartError) " + (Get-ODSNativeLlamaStartHint $version.NativeError) + " $policyHint").Trim() $class)
     }
-    if ($version.TimedOut) { throw 'llama-server.exe --version did not finish within 60 seconds.' }
+    if ($version.TimedOut) { throw (New-ODSNativeLlamaFailure 'llama-server.exe --version did not finish within 60 seconds.' $class) }
     if ($version.ExitCode -ne 0) {
-        $hint = Get-ODSNativeLlamaExitHint $version.ExitCode
-        throw ("llama-server.exe --version failed with exit code $($version.ExitCode). $hint $policyHint").Trim()
+        $hint = Get-ODSNativeLlamaExitHint $version.ExitCode $Backend $Architecture
+        throw (New-ODSNativeLlamaFailure ("llama-server.exe --version failed with exit code $($version.ExitCode). $hint $policyHint").Trim() $class)
     }
-    $match = [regex]::Match([string]$version.Output, '(?m)^version:\s*([0-9]+)\s*\(([0-9a-f]+)\)')
-    if (-not $match.Success) { throw 'llama-server.exe --version did not report a build number.' }
-    $build = [int]$match.Groups[1].Value
-    if ($build -ne $ExpectedBuild) { throw "llama-server.exe reports build $build, not the pinned b$ExpectedBuild." }
+    $parsed = ConvertFrom-ODSNativeLlamaVersion ([string]$version.Output)
+    if (-not $parsed) { throw (New-ODSNativeLlamaFailure 'llama-server.exe --version did not report a build number.' 'build') }
+    $build = $parsed.Build
+    if ($build -ne $ExpectedBuild) { throw (New-ODSNativeLlamaFailure "llama-server.exe reports build $build, not the pinned b$ExpectedBuild." 'build') }
     $list = Invoke-ODSNativeLlamaProbe -ExecutablePath $ExecutablePath -Arguments @('--list-devices')
     if (-not $list.Started -or $list.TimedOut -or $list.ExitCode -ne 0) {
         $code = if ($list.Started -and -not $list.TimedOut) { $list.ExitCode } else { 0 }
-        throw ("llama-server.exe --list-devices failed. " + (Get-ODSNativeLlamaExitHint $code) + " $policyHint").Trim()
+        throw (New-ODSNativeLlamaFailure ("llama-server.exe --list-devices failed. " + (Get-ODSNativeLlamaExitHint $code $Backend $Architecture) + " $policyHint").Trim() `
+            (Get-ODSNativeLlamaFailureClass $list $CodeIntegrity))
     }
     $devices = @(ConvertFrom-ODSNativeLlamaDeviceList ([string]$list.Output))
-    $device = Select-ODSNativeLlamaDevice -Devices $devices -AdapterName $AdapterName
+    $device = Select-ODSNativeLlamaDevice -Devices $devices -AdapterName $AdapterName -Backend $Backend
     return [pscustomobject]@{
         Build = $build
-        Commit = $match.Groups[2].Value
+        Commit = $parsed.Commit
         Devices = $devices
         Device = $device
         PolicyHint = $policyHint
+        Backend = $Backend
     }
+}
+
+# --- CUDA qualification ---------------------------------------------------------
+# A CUDA build can start, list the GPU and still answer "????" when it has no
+# kernels for the GPU's compute capability (the DGX Spark GB10 with the CUDA
+# 12.8 image, docs/DGX-SPARK-GB10-LLAMA-CPP-NOTES.md). So a CUDA runtime is
+# qualified on the GPU itself with a small model before any large download:
+# the CUDA targets llama-server reports, and a "2+2" answer.
+
+function Test-ODSNativeLlamaDriverVersion([string]$Installed, [string]$Minimum) {
+    # NVIDIA Windows driver versions (616.62) compare part by part as numbers.
+    $have = [regex]::Match(([string]$Installed).Trim(), '^([0-9]{2,4})\.([0-9]{1,3})$')
+    $need = [regex]::Match([string]$Minimum, '^([0-9]{2,4})\.([0-9]{1,3})$')
+    if (-not $have.Success -or -not $need.Success) { return $false }
+    $haveMajor = [int]$have.Groups[1].Value
+    $needMajor = [int]$need.Groups[1].Value
+    if ($haveMajor -ne $needMajor) { return $haveMajor -gt $needMajor }
+    return ([int]$have.Groups[2].Value -ge [int]$need.Groups[2].Value)
+}
+
+function Assert-ODSNativeLlamaDriver($Pin, [string]$DriverVersion) {
+    <#
+    .SYNOPSIS
+        Before any download: refuse an NVIDIA driver older than the CUDA
+        flavor's minimum (CUDA 13.4 release notes: 616.41 for the RTX Spark).
+        The exception's Data['class'] is driver.
+    #>
+    if (-not $Pin.MinDriverVersion) { return }
+    $build = if ($Pin.CudaVersion) { "llama.cpp CUDA $($Pin.CudaVersion) build" } else { 'llama.cpp build' }
+    if ([string]$DriverVersion -notmatch '^\s*[0-9]{2,4}\.[0-9]{1,3}\s*$') {
+        throw (New-ODSNativeLlamaFailure ("ODS could not read the NVIDIA driver version, which the $build needs to be $($Pin.MinDriverVersion) or newer. " +
+            'Update or reinstall the NVIDIA driver with the NVIDIA App or from nvidia.com, restart Windows and rerun setup. Nothing was downloaded or changed.') 'driver')
+    }
+    if (-not (Test-ODSNativeLlamaDriverVersion $DriverVersion $Pin.MinDriverVersion)) {
+        throw (New-ODSNativeLlamaFailure ("The NVIDIA driver ($($DriverVersion.Trim())) is older than $($Pin.MinDriverVersion), which the $build needs. " +
+            'Update it with the NVIDIA App or from nvidia.com, restart Windows and rerun setup. Do not install NVIDIA drivers inside Ubuntu. ' +
+            'Nothing was downloaded or changed.') 'driver')
+    }
+}
+
+function Get-ODSNativeLlamaCudaArchs([string]$Log) {
+    # llama-server logs "system_info: ... | CUDA : ARCHS = 860,890,1200,1210 | ...".
+    # As in ods-doctor.sh, the last such line counts; its comma-separated
+    # names are read up to the first other text. An empty list means the
+    # line is missing.
+    $line = @(([string]$Log -split "`r?`n") | Where-Object { $_.Contains('CUDA : ARCHS =') } | Select-Object -Last 1)
+    if (-not $line.Count) { return @() }
+    $value = [regex]::Match($line[0], 'CUDA : ARCHS = ([0-9A-Za-z]+(?:\s*,\s*[0-9A-Za-z]+)*)').Groups[1].Value
+    return @($value.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+}
+
+function Get-ODSNativeLlamaRequiredCudaArchs([string]$ComputeCap, $Map) {
+    # The pin's names for a compute capability (12.1: 1210, 121, 121a, the
+    # values ods-doctor.sh accepts), else the exact names derived from it
+    # (8.6: 860, 86, 86a). A device the pin does not list is checked, not
+    # refused by a list.
+    $names = $null
+    if ($Map -is [Collections.IDictionary]) { if ($Map.Contains($ComputeCap)) { $names = $Map[$ComputeCap] } }
+    elseif ($Map -and $Map.PSObject.Properties[$ComputeCap]) { $names = $Map.PSObject.Properties[$ComputeCap].Value }
+    if ($null -ne $names -and @($names).Count) { return @($names | ForEach-Object { [string]$_ }) }
+    $match = [regex]::Match([string]$ComputeCap, '^([0-9]{1,2})\.([0-9])$')
+    if (-not $match.Success) { return @() }
+    $major = [int]$match.Groups[1].Value
+    $minor = [int]$match.Groups[2].Value
+    return @([string]($major * 100 + $minor * 10), "$major$minor", "$major$($minor)a")
+}
+
+function Test-ODSNativeLlamaCudaArchsCover([string[]]$Archs, [string]$ComputeCap, $Map) {
+    $accepted = @(Get-ODSNativeLlamaRequiredCudaArchs $ComputeCap $Map)
+    return [bool](@($Archs | Where-Object { $_ -and $_ -cin $accepted }).Count)
+}
+
+function Get-ODSNativeLlamaCheckVerdict([string]$Content, [string[]]$Archs, [string]$ComputeCap, $Map) {
+    # Pure: the CUDA targets first (a build without them is never used),
+    # then the answer. Class '' means the check passed.
+    $Archs = @($Archs | Where-Object { $_ })
+    if ($ComputeCap -and -not $Archs.Count) {
+        return [pscustomobject]@{ Class = 'build'; Reason = ("llama.cpp did not report which CUDA targets it was built for (no 'CUDA : ARCHS =' line in its log), " +
+            "so ODS cannot confirm it supports this GPU (compute capability $ComputeCap). Update ODS and rerun setup.") }
+    }
+    if ($ComputeCap -and -not (Test-ODSNativeLlamaCudaArchsCover $Archs $ComputeCap $Map)) {
+        return [pscustomobject]@{ Class = 'build'; Reason = ("llama.cpp has CUDA kernels for $(@($Archs) -join ','), not for this GPU (compute capability $ComputeCap), " +
+            'so its answers would be unusable. ODS did not run a model with it. Update ODS and rerun setup to use the GPU on Windows.') }
+    }
+    if ([string]$Content -notmatch '^\s*4\b') {
+        $shown = ([string]$Content -replace '[^\x20-\x7e]', '?')
+        if ($shown.Length -gt 40) { $shown = $shown.Substring(0, 40) + '...' }
+        return [pscustomobject]@{ Class = 'generation'; Reason = ("llama.cpp started on the GPU but answered `"$shown`" to a test question (expected 4). " +
+            'That points to a build without kernels for this GPU or a driver problem. Update the NVIDIA driver with the NVIDIA App or from nvidia.com, restart Windows and rerun setup.') }
+    }
+    return [pscustomobject]@{ Class = ''; Reason = '' }
+}
+
+function Get-ODSNativeLlamaCheckExitFailure([int]$ExitCode, [string]$Architecture, $CodeIntegrity) {
+    $class = Get-ODSNativeLlamaFailureClass ([pscustomobject]@{ Started = $true; TimedOut = $false; ExitCode = $ExitCode }) $CodeIntegrity
+    $hint = Get-ODSNativeLlamaExitHint $ExitCode 'cuda' $Architecture
+    return [pscustomobject]@{ Class = $class
+        Reason = ("llama-server exited during the GPU check with code $ExitCode. $hint " + (Format-ODSNativeLlamaPolicyHint $CodeIntegrity)).Trim() }
+}
+
+function Start-ODSNativeLlamaCheckServer([string]$ExecutablePath, [string[]]$Arguments, $CodeIntegrity) {
+    # Process, or Failure when Windows refused to start it.
+    try {
+        $child = Start-Process -FilePath $ExecutablePath -ArgumentList (ConvertTo-ODSNativeLlamaArgumentString $Arguments) `
+            -WorkingDirectory (Split-Path -Parent $ExecutablePath) -WindowStyle Hidden -PassThru -ErrorAction Stop
+    } catch {
+        $cause = $_.Exception
+        while ($cause.InnerException) { $cause = $cause.InnerException }
+        $native = if ($cause -is [System.ComponentModel.Win32Exception]) { $cause.NativeErrorCode } else { 0 }
+        $class = Get-ODSNativeLlamaFailureClass ([pscustomobject]@{ Started = $false; NativeError = $native }) $CodeIntegrity
+        $reason = ("llama-server.exe could not start: $($cause.Message) " + (Get-ODSNativeLlamaStartHint $native) + ' ' +
+            (Format-ODSNativeLlamaPolicyHint $CodeIntegrity)).Trim()
+        return [pscustomobject]@{ Process = $null; Failure = [pscustomobject]@{ Class = $class; Reason = $reason } }
+    }
+    # Holding the handle keeps its exit code and stops a reused PID from
+    # ever being the one this check stops.
+    $null = $child.Handle
+    return [pscustomobject]@{ Process = $child; Failure = $null }
+}
+
+function Wait-ODSNativeLlamaCheckReady([int]$Port, $Process, [int]$TimeoutSeconds, [string]$Architecture, $CodeIntegrity) {
+    # $null once /health is 200, else the failure.
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if ($Process.HasExited) { return (Get-ODSNativeLlamaCheckExitFailure ([int]$Process.ExitCode) $Architecture $CodeIntegrity) }
+        if ((Get-ODSNativeLlamaHealthState $Port) -eq 'ready') { return $null }
+        Start-Sleep -Seconds 1
+    }
+    return [pscustomobject]@{ Class = 'timeout'
+        Reason = "llama.cpp did not load its small test model on the GPU within $TimeoutSeconds seconds. Restart Windows and rerun setup." }
+}
+
+function Get-ODSNativeLlamaCheckAnswer([int]$Port, [string]$ApiKey, $Process, [string]$Architecture, $CodeIntegrity) {
+    # The model's answer to the 2+2 question, or the failure.
+    $request = @{ messages = @(@{ role = 'user'; content = $script:ODSNativeLlamaProbeQuestion }); temperature = 0; max_tokens = 8; stream = $false }
+    $response = Invoke-ODSNativeLlamaHttp -Port $Port -Path '/v1/chat/completions' -ApiKey $ApiKey -Method POST `
+        -JsonBody ($request | ConvertTo-Json -Depth 4 -Compress) -TimeoutMilliseconds 120000
+    if ($response.StatusCode -ne 200) {
+        if ($Process.HasExited) {
+            return [pscustomobject]@{ Content = ''; Failure = (Get-ODSNativeLlamaCheckExitFailure ([int]$Process.ExitCode) $Architecture $CodeIntegrity) }
+        }
+        # llama.cpp errors are {"error":{"code":400,"message":"..."}}; any
+        # other body is left out of the message.
+        $detail = [regex]::Match([string]$response.Body, '"message"\s*:\s*"([^"\\]{1,200})"').Groups[1].Value
+        $detail = ($detail -replace '[^\x20-\x7e]', '?')
+        $suffix = if ($detail) { ": $detail" } else { '' }
+        return [pscustomobject]@{ Content = ''; Failure = [pscustomobject]@{ Class = 'generation'
+            Reason = "llama.cpp answered HTTP $($response.StatusCode) to a test question on the GPU$suffix. Restart Windows and rerun setup." } }
+    }
+    $answer = $response.Body | ConvertFrom-Json -ErrorAction Stop
+    return [pscustomobject]@{ Content = [string]@($answer.choices)[0].message.content; Failure = $null }
+}
+
+function Stop-ODSNativeLlamaCheckServer($Process, [int]$Port) {
+    # Only the process this check started, through its retained handle.
+    if (-not $Process.HasExited) {
+        try { $Process.Kill() } catch { if (-not $Process.HasExited) { throw } }
+    }
+    if (-not $Process.WaitForExit(60000)) { throw 'The llama.cpp GPU check did not exit within 60 seconds of being stopped.' }
+    # Windows can take a moment to close an exited process's socket: 10 s.
+    for ($attempt = 0; $attempt -lt 40; $attempt++) {
+        if (-not @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue).Count) { return }
+        Start-Sleep -Milliseconds 250
+    }
+    throw "Port $Port is still in use after the llama.cpp GPU check stopped; close the program using it, then rerun setup."
+}
+
+function Invoke-ODSNativeLlamaGenerationProbe {
+    <#
+    .SYNOPSIS
+        Qualify a CUDA llama-server.exe on this GPU: load a small model, ask
+        what 2+2 is, and read the CUDA targets it reports.
+    .DESCRIPTION
+        A hidden server on 127.0.0.1 with a temporary key file, 4096 tokens of
+        context, one slot, every layer on -Device and --fit off. It is stopped
+        through its retained process handle, and its port must be free again.
+        Passed needs the CUDA targets for -ComputeCap (when given) and an
+        answer that starts with 4.
+    .OUTPUTS
+        Passed, Content, Archs, Class ('' when passed; start, policy, dll,
+        exit, timeout, build or generation) and Reason (the cause and what to
+        do, ASCII; the caller adds the route it takes instead).
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$ExecutablePath,
+        [Parameter(Mandatory = $true)][string]$ModelPath,
+        [Parameter(Mandatory = $true)][string]$Device,
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$LogPath,
+        [string]$ComputeCap = '',
+        $ArchsByCompute = $null,
+        [string[]]$ReasoningArguments = @('--reasoning', 'off'),
+        [ValidateSet('x64', 'arm64', IgnoreCase = $false)][string]$Architecture = 'arm64',
+        $CodeIntegrity = $null,
+        [int]$TimeoutSeconds = 180
+    )
+    if ($Device -cnotmatch '^CUDA[0-9]{1,2}$') { throw "The llama.cpp GPU check needs a CUDA device, not '$Device'." }
+    if ($Port -lt 1 -or $Port -gt 65535) { throw 'The llama.cpp GPU check needs a port from 1 to 65535.' }
+    if (-not (Test-Path -LiteralPath $ModelPath -PathType Leaf)) { throw "The llama.cpp GPU check model is missing: $ModelPath" }
+    if (@(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue).Count) {
+        throw "Port $Port is already in use, so the llama.cpp GPU check did not start."
+    }
+    if ($null -eq $CodeIntegrity) { $CodeIntegrity = Get-ODSNativeLlamaCodeIntegrityState }
+    $logDirectory = Split-Path -Parent $LogPath
+    New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    if (Test-Path -LiteralPath $LogPath) { Remove-Item -LiteralPath $LogPath -Force }
+    $key = New-ODSNativeLlamaApiKey
+    $keyPath = Join-Path $logDirectory ('check-api-key-' + [guid]::NewGuid().ToString('N'))
+    Write-ODSNativeLlamaApiKeyFile $keyPath $key
+    $arguments = @('--model', (ConvertTo-ODSNativeLlamaArgumentPath $ModelPath), '--host', '127.0.0.1', '--port', [string]$Port,
+        '--ctx-size', [string]$script:ODSNativeLlamaProbeContext, '--parallel', '1', '--n-gpu-layers', 'all', '--device', $Device,
+        '--fit', 'off', '--no-webui', '--api-key-file', (ConvertTo-ODSNativeLlamaArgumentPath $keyPath),
+        '--log-file', (ConvertTo-ODSNativeLlamaArgumentPath $LogPath)) + @($ReasoningArguments | ForEach-Object { [string]$_ })
+    $failure = $null
+    $content = ''
+    $child = $null
+    try {
+        $start = Start-ODSNativeLlamaCheckServer $ExecutablePath $arguments $CodeIntegrity
+        $child = $start.Process
+        $failure = $start.Failure
+        if (-not $failure) { $failure = Wait-ODSNativeLlamaCheckReady $Port $child $TimeoutSeconds $Architecture $CodeIntegrity }
+        if (-not $failure) {
+            $answer = Get-ODSNativeLlamaCheckAnswer $Port $key $child $Architecture $CodeIntegrity
+            $content = $answer.Content
+            $failure = $answer.Failure
+        }
+    } finally {
+        try {
+            if ($child) { Stop-ODSNativeLlamaCheckServer $child $Port }
+        } finally {
+            if ($child) { $child.Dispose() }
+            if (Test-Path -LiteralPath $keyPath) { Remove-Item -LiteralPath $keyPath -Force }
+        }
+    }
+    $log = if (Test-Path -LiteralPath $LogPath -PathType Leaf) { [IO.File]::ReadAllText($LogPath) } else { '' }
+    $archs = @(Get-ODSNativeLlamaCudaArchs $log)
+    if (-not $failure) { $failure = Get-ODSNativeLlamaCheckVerdict $content $archs $ComputeCap $ArchsByCompute }
+    return [pscustomobject]@{ Passed = (-not $failure.Class); Content = $content; Archs = $archs; Class = $failure.Class; Reason = $failure.Reason }
 }
 
 # --- API key --------------------------------------------------------------------
@@ -704,14 +1353,30 @@ function Assert-ODSNativeLlamaPlan($Plan) {
     }
 }
 
+function Get-ODSNativeLlamaOptionsBackend($Options) {
+    # Options written before CUDA existed name no backend: Vulkan.
+    if ($null -eq $Options.Backend) { return 'vulkan' }
+    return [string]$Options.Backend
+}
+
+function Get-ODSNativeLlamaOptionsArchitecture($Options) {
+    if ($null -eq $Options.Architecture) { return 'x64' }
+    return [string]$Options.Architecture
+}
+
 function Assert-ODSNativeLlamaOptions($Options) {
     # Device 'none' is the explicit CPU route (no usable Vulkan device), and
     # only with zero GPU layers; never a silent fallback. NGpuLayers takes
     # every N_GPU_LAYERS value .env.schema.json allows: auto, all or a layer
-    # count, which llama.cpp range-checks itself.
-    $cpuRoute = [string]$Options.Device -ceq 'none'
-    if ($Options.schemaVersion -ne 1 -or
-        ([string]$Options.Device -cnotmatch '^Vulkan[0-9]{1,2}$' -and -not $cpuRoute) -or
+    # count, which llama.cpp range-checks itself. Backend (vulkan or cuda)
+    # and Architecture (x64 or arm64) are optional; the device name follows
+    # the backend, and only Vulkan has the CPU route.
+    $backend = Get-ODSNativeLlamaOptionsBackend $Options
+    $architecture = Get-ODSNativeLlamaOptionsArchitecture $Options
+    $devicePattern = if ($backend -ceq 'cuda') { '^CUDA[0-9]{1,2}$' } else { '^Vulkan[0-9]{1,2}$' }
+    $cpuRoute = $backend -ceq 'vulkan' -and [string]$Options.Device -ceq 'none'
+    if ($Options.schemaVersion -ne 1 -or $backend -cnotin @('vulkan', 'cuda') -or $architecture -cnotin @('x64', 'arm64') -or
+        ([string]$Options.Device -cnotmatch $devicePattern -and -not $cpuRoute) -or
         ($cpuRoute -and [string]$Options.NGpuLayers -cne '0') -or
         [string]$Options.NGpuLayers -cnotmatch '^(auto|all|[0-9]{1,10})$' -or
         -not [IO.Path]::IsPathRooted([string]$Options.ApiKeyPath) -or
@@ -764,6 +1429,12 @@ function New-ODSNativeLlamaLaunchArguments($Plan, $Options) {
         '--api-key-file', (ConvertTo-ODSNativeLlamaArgumentPath $Options.ApiKeyPath),
         '--log-file', (ConvertTo-ODSNativeLlamaArgumentPath $Options.LogPath)
     )
+    if ((Get-ODSNativeLlamaOptionsBackend $Options) -ceq 'cuda') {
+        # llama.cpp defaults to --fit on, which shrinks unset settings to fit
+        # device memory. Under WDDM that memory is this process's budget, so
+        # fit could move layers or experts to the CPU; the plan sized them.
+        $arguments += @('--fit', 'off')
+    }
     if ($null -ne $Plan.MmprojFile) {
         $arguments += @('--mmproj', (ConvertTo-ODSNativeLlamaArgumentPath (Join-Path $Plan.ModelsDir $Plan.MmprojFile)))
     }
@@ -777,18 +1448,31 @@ function New-ODSNativeLlamaLaunchArguments($Plan, $Options) {
 function Invoke-ODSNativeLlamaHttp {
     <#
     .SYNOPSIS
-        One bounded GET against the loopback llama-server. Returns StatusCode
-        (0 when nothing answered) and Body. The key is sent only as a header.
+        One bounded GET (or POST of a small JSON body) against the loopback
+        llama-server. Returns StatusCode (0 when nothing answered) and Body.
+        The key is sent only as a header.
     #>
-    param([int]$Port, [string]$Path, [string]$ApiKey = '', [int]$TimeoutMilliseconds = 5000)
+    param([int]$Port, [string]$Path, [string]$ApiKey = '', [int]$TimeoutMilliseconds = 5000,
+        [ValidateSet('GET', 'POST', IgnoreCase = $false)][string]$Method = 'GET', [string]$JsonBody = '')
+    $payload = $null
+    if ($Method -ceq 'POST') {
+        $payload = [Text.UTF8Encoding]::new($false).GetBytes($JsonBody)
+        if (-not $payload.Length -or $payload.Length -gt 65536) { throw 'A llama-server POST needs a JSON body of at most 64 KiB.' }
+    } elseif ($JsonBody) { throw 'Only a llama-server POST carries a body.' }
     $request = [Net.HttpWebRequest]::Create("http://127.0.0.1:$Port$Path")
-    $request.Method = 'GET'
+    $request.Method = $Method
     $request.Timeout = $TimeoutMilliseconds
     $request.ReadWriteTimeout = $TimeoutMilliseconds
     $request.Proxy = $null
     if ($ApiKey) { $request.Headers['Authorization'] = 'Bearer ' + $ApiKey }
     $response = $null
     try {
+        if ($payload) {
+            $request.ContentType = 'application/json'
+            $request.ContentLength = $payload.Length
+            $requestStream = $request.GetRequestStream()
+            try { $requestStream.Write($payload, 0, $payload.Length) } finally { $requestStream.Dispose() }
+        }
         $response = $request.GetResponse()
     } catch {
         $cause = $_.Exception
@@ -1008,11 +1692,12 @@ function Wait-ODSNativeLlamaStartup {
         Wait until /health is 200 (503 means loading). A process that exits
         first fails immediately with its exit code explained.
     #>
-    param([int]$Port, $Process, [int]$TimeoutSeconds = $script:ODSNativeLlamaStartupSeconds)
+    param([int]$Port, $Process, [int]$TimeoutSeconds = $script:ODSNativeLlamaStartupSeconds,
+        [string]$Backend = 'vulkan', [string]$Architecture = 'x64')
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         if ($Process.HasExited) {
-            $hint = Get-ODSNativeLlamaExitHint ([int]$Process.ExitCode)
+            $hint = Get-ODSNativeLlamaExitHint ([int]$Process.ExitCode) $Backend $Architecture
             throw ("llama-server exited during startup with code $($Process.ExitCode). $hint").Trim()
         }
         if ((Get-ODSNativeLlamaHealthState $Port) -eq 'ready') { return }
@@ -1052,7 +1737,8 @@ function Invoke-ODSNativeLlamaRuntime($Plan, $Options, [string]$ReadyPath) {
         $identity = [pscustomobject]@{ ProcessId = $child.Id; CreationDate = $child.StartTime
             ExecutablePath = $Plan.ExecutablePath; ExitedAt = $null }
         Write-ODSPortalProcessOwnership $ownershipPath $Plan @($identity)
-        Wait-ODSNativeLlamaStartup -Port $Plan.Port -Process $child
+        Wait-ODSNativeLlamaStartup -Port $Plan.Port -Process $child -Backend (Get-ODSNativeLlamaOptionsBackend $Options) `
+            -Architecture (Get-ODSNativeLlamaOptionsArchitecture $Options)
         Assert-ODSNativeLlamaListener $Plan.Port $child.Id $Plan.ExecutablePath
         $proof = Get-ODSNativeLlamaModelProof -Port $Plan.Port -GgufFile $Plan.GgufFile `
             -ModelPaths @($modelArgument, (Join-Path $Plan.ModelsDir $Plan.GgufFile)) -ContextSize $Plan.ContextSize -ApiKey $apiKey `

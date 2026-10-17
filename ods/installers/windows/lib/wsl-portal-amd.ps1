@@ -6,6 +6,8 @@
 # It listens on 127.0.0.1 only and requires an API key. The Linux installer
 # points LiteLLM, the model router and Pixel at it (--native-llm-*); containers
 # reach Windows loopback via host.docker.internal.
+# The task, cutover, options and port helpers are vendor-neutral: the CUDA
+# build for NVIDIA GPUs on Windows on Arm uses them too (not routed yet).
 # Requires wsl-portal-setup.ps1 (Confirm-ODSPortalPreparation) in scope.
 
 . (Join-Path $PSScriptRoot 'detection.ps1')
@@ -29,6 +31,16 @@ $script:ODSPortalRuntimeChangeWaitSeconds = 1200
 $script:ODSPortalApiKeyVariable = 'ODS_NATIVE_LLM_API_KEY'
 $script:ODSPortalRuntimeOwnedFiles = @('runtime.json', 'runtime-options.json', 'launch.ps1', 'native-llama-runtime.ps1',
     'private-file.ps1', 'api-key', 'intent.json', 'ready.json', 'process-ownership.json')
+# The scheduled task's description, by llama.cpp backend. Vulkan is the AMD
+# route and the default.
+$script:ODSPortalRuntimeTaskDescriptions = @{
+    vulkan = 'ODS: llama.cpp model server for the AMD GPU (127.0.0.1, API key). Starts at sign-in.'
+    cuda = 'ODS: llama.cpp model server for the NVIDIA GPU (127.0.0.1, API key). Starts at sign-in.'
+}
+# The CUDA build's GPU check runs on the first free of these quiet ports.
+$script:ODSPortalCheckPortCandidates = @(18090, 28090, 38090)
+# Explains the variable's AMD name wherever setup asks for it.
+$script:ODSPortalPortVariableNote = 'the AMD_INFERENCE_PORT environment variable (ODS uses that name for its Windows model server on every GPU)'
 
 function Get-ODSPortalStateDir {
     # Kept as ODS\lemonade this round: the WSL side registered this plan path
@@ -358,9 +370,9 @@ function Test-ODSPortalPortBindable([int]$Port) {
 
 function Assert-ODSPortalPortAvailable([int]$Port) {
     $owner = Get-ODSPortalPortOwner $Port
-    if ($owner) { throw "Port $Port is used by '$owner'. Choose a free port with AMD_INFERENCE_PORT, then rerun." }
+    if ($owner) { throw "Port $Port is used by '$owner'. Choose a free port with $($script:ODSPortalPortVariableNote), then rerun." }
     if (-not (Test-ODSPortalPortBindable $Port)) {
-        throw "Port $Port cannot bind Windows loopback (it may be reserved after a restart). Set AMD_INFERENCE_PORT to a free port, then rerun."
+        throw "Port $Port cannot bind Windows loopback (it may be reserved after a restart). Choose a free port with $($script:ODSPortalPortVariableNote), then rerun."
     }
 }
 
@@ -380,7 +392,19 @@ function Select-ODSPortalRuntimePort {
         $reason = if ($owner) { $owner } else { 'reserved or unavailable for binding' }
         $taken += "$port ($reason)"
     }
-    throw "No free port for the llama.cpp model server; all are in use: $($taken -join ', '). Set AMD_INFERENCE_PORT to a free port, then rerun."
+    throw "No free port for the llama.cpp model server; all are in use: $($taken -join ', '). Choose a free port with $($script:ODSPortalPortVariableNote), then rerun."
+}
+
+function Select-ODSPortalCheckPort {
+    # The CUDA build's GPU check never takes the model server's ports.
+    $taken = @()
+    foreach ($port in $script:ODSPortalCheckPortCandidates) {
+        $owner = Get-ODSPortalPortOwner $port
+        if (-not $owner -and (Test-ODSPortalPortBindable $port)) { return $port }
+        $reason = if ($owner) { $owner } else { 'reserved or unavailable for binding' }
+        $taken += "$port ($reason)"
+    }
+    throw "No free port for the llama.cpp GPU check; all are in use: $($taken -join ', '). Close the programs using them, or restart Windows, then rerun setup."
 }
 
 function Set-ODSPortalRuntimeIntent([ValidateSet('running', 'stopped')][string]$State) {
@@ -446,12 +470,15 @@ function Get-ODSPortalApiKey {
     return (New-ODSNativeLlamaApiKey)
 }
 
-function New-ODSPortalRuntimeOptions($Runtime, $Qualification) {
+function New-ODSPortalRuntimeOptions($Runtime, $Qualification, [string]$Backend = 'vulkan', [string]$Architecture = 'x64') {
+    if ($Backend -cnotin @('vulkan', 'cuda') -or $Architecture -cnotin @('x64', 'arm64')) {
+        throw "Unknown llama.cpp runtime options: backend '$Backend', architecture '$Architecture'."
+    }
     $runtimeDir = Get-ODSPortalRuntimeDir
     # Thinking off by default, as Docker's LLAMA_ARG_REASONING=off; the binary
     # is asked whether it has --reasoning before the flag is used.
     $reasoning = @(Get-ODSNativeReasoningArgs -Executable $Runtime.ExecutablePath -Mode 'off' -FallbackFormat 'none')
-    return [ordered]@{
+    $options = [ordered]@{
         schemaVersion = 1
         Device = [string]$Qualification.Device.Name
         NGpuLayers = 'auto'
@@ -466,6 +493,15 @@ function New-ODSPortalRuntimeOptions($Runtime, $Qualification) {
         # an older launcher (setup not rerun since) is never handed one.
         PlanFeatures = @('MmprojFile')
     }
+    if ($Backend -ceq 'cuda') {
+        # Vulkan (AMD) options stay exactly as they were, with no Backend or
+        # Architecture. CUDA puts every layer on the GPU; with the launcher's
+        # --fit off, llama.cpp never moves part of the model to the CPU.
+        $options.NGpuLayers = 'all'
+        $options.Backend = 'cuda'
+        $options.Architecture = $Architecture
+    }
+    return $options
 }
 
 function New-ODSPortalRuntimeAction($Plan, $Options, [string]$ApiKey, [string]$WslDistro = '', [string]$WslInstallDir = '') {
@@ -556,16 +592,18 @@ function Wait-ODSPortalRuntimeReady($Registration, [int]$Seconds = $script:ODSPo
     throw ("llama-server did not finish loading the model. Check $(Join-Path (Split-Path -Parent $Registration.ReadyPath) 'llama-server.log')." + (Get-ODSPortalLogExcerpt))
 }
 
-function Register-ODSPortalRuntimeTask($Registration) {
+function Register-ODSPortalRuntimeTask($Registration, [string]$Description = '') {
     # One task for this Windows user: starts at sign-in (so the model survives a
     # restart). It binds 127.0.0.1 only. Started separately by the caller.
+    # Without a description it is the AMD task, as before.
+    if (-not $Description) { $Description = $script:ODSPortalRuntimeTaskDescriptions['vulkan'] }
     $taskName = Get-ODSPortalRuntimeTaskName
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User (Get-ODSPortalUserSid)
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) `
         -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
     Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $Registration.Action -Trigger $trigger `
         -Settings $settings -Principal (New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited) `
-        -Description 'ODS: llama.cpp model server for the AMD GPU (127.0.0.1, API key). Starts at sign-in.' -Force | Out-Null
+        -Description $Description -Force | Out-Null
     return $taskName
 }
 
@@ -714,7 +752,9 @@ function Invoke-ODSPortalRuntimeCutover {
         Replace the previous ODS runtime with the qualified llama.cpp one and
         prove it, or restore the previous ODS runtime and fail visibly.
     #>
-    param($Existing, $Plan, $Options, [string]$ApiKey, [bool]$KeepPort, [string]$WslDistro = '', [string]$WslInstallDir = '')
+    param($Existing, $Plan, $Options, [string]$ApiKey, [bool]$KeepPort, [string]$WslDistro = '', [string]$WslInstallDir = '',
+        # Empty keeps the AMD task description.
+        [string]$TaskDescription = '')
     # One change at a time: a model switch, Unload or Resume from the
     # dashboard holds the same lock, so its stop never races this one.
     $lock = @{}
@@ -766,7 +806,7 @@ function Invoke-ODSPortalRuntimeCutover {
         try {
             if ($KeepPort) { Assert-ODSPortalPortAvailable $Plan.Port }
             $registration = New-ODSPortalRuntimeAction $Plan $Options $ApiKey $WslDistro $WslInstallDir
-            $taskName = Register-ODSPortalRuntimeTask $registration
+            $taskName = Register-ODSPortalRuntimeTask $registration $TaskDescription
             $registered = $true
             Start-ScheduledTask -TaskName $taskName -TaskPath '\' -ErrorAction Stop
             $null = Wait-ODSPortalRuntimeReady $registration
@@ -796,6 +836,47 @@ function Write-ODSPortalFitWarning($Device, [string]$ModelPath) {
     if ($modelMiB -gt $Device.TotalMiB) {
         Write-Host "         The model needs about $modelMiB MiB but Vulkan reports $($Device.TotalMiB) MiB on $($Device.Description). llama.cpp keeps the rest in system memory, which is slower; a larger UMA frame buffer in the BIOS or a smaller model avoids that."
     }
+}
+
+function Invoke-ODSPortalCudaQualification {
+    <#
+    .SYNOPSIS
+        Qualify an installed CUDA llama.cpp runtime on this NVIDIA GPU before
+        any large download: the pinned build, its CUDA device, then the GPU
+        check with a small model already in the store. Nothing routes here yet.
+    .OUTPUTS
+        Passed, Class ('' when passed; device when llama.cpp lists no CUDA GPU;
+        otherwise the GPU check's class), Reason, Qualification and Check.
+        Throws, with Data['class'], when llama-server.exe cannot run at all.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]$Pin,
+        [Parameter(Mandatory = $true)]$Runtime,
+        [Parameter(Mandatory = $true)][string]$AdapterName,
+        [Parameter(Mandatory = $true)][string]$ComputeCap,
+        [Parameter(Mandatory = $true)][string]$TestModelPath,
+        $CodeIntegrity = $null
+    )
+    if ([string]$Pin.Backend -cne 'cuda') { throw "The GPU check is for CUDA llama.cpp builds, not '$($Pin.Flavor)'." }
+    if ($null -eq $CodeIntegrity) { $CodeIntegrity = Get-ODSNativeLlamaCodeIntegrityState }
+    $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $Runtime.ExecutablePath -ExpectedBuild $Pin.Build `
+        -AdapterName $AdapterName -CodeIntegrity $CodeIntegrity -Backend cuda -Architecture $Pin.Architecture
+    if (-not $qualification.Device) {
+        $seen = @($qualification.Devices | ForEach-Object { "$($_.Name) $($_.Description)" }) -join '; '
+        if (-not $seen) { $seen = 'no devices' }
+        return [pscustomobject]@{ Passed = $false; Class = 'device'; Qualification = $qualification; Check = $null
+            Reason = ("llama.cpp found no NVIDIA CUDA GPU (it lists: $seen). The NVIDIA NPU is not used by ODS. " +
+                'Update the NVIDIA driver with the NVIDIA App or from nvidia.com, restart Windows and rerun setup.') }
+    }
+    # The check's log sits beside the runtime it qualifies (an unpinned log
+    # never invalidates a runtime) and goes with it when it is removed.
+    $reasoning = @(Get-ODSNativeReasoningArgs -Executable $Runtime.ExecutablePath -Mode 'off' -FallbackFormat 'none')
+    $check = Invoke-ODSNativeLlamaGenerationProbe -ExecutablePath $Runtime.ExecutablePath -ModelPath $TestModelPath `
+        -Device $qualification.Device.Name -Port (Select-ODSPortalCheckPort) -LogPath (Join-Path $Runtime.Directory 'gpu-check.log') `
+        -ComputeCap $ComputeCap -ArchsByCompute $Pin.RequiredCudaArchs -ReasoningArguments $reasoning `
+        -Architecture $Pin.Architecture -CodeIntegrity $CodeIntegrity
+    return [pscustomobject]@{ Passed = $check.Passed; Class = $check.Class; Reason = $check.Reason
+        Qualification = $qualification; Check = $check }
 }
 
 function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '', [string]$WslInstallDir = '') {

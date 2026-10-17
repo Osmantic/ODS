@@ -5,5 +5,48 @@
   "public_api_port": 8080,
   "public_health_url": "http://127.0.0.1:8080/health",
   "provider_name": "local-llama",
-  "provider_url": "http://llama-server:8080/v1"
+  "provider_url": "http://llama-server:8080/v1",
+  "runtime": {
+    "llama_server": {
+      "windows_arm64": {
+        "release_tag": "b11429",
+        "flavor": "win-cuda-13.4-arm64",
+        "backend": "cuda",
+        "policy_key": "windows-native-cuda",
+        "archives": [
+          {
+            "asset": "llama-b11429-bin-win-cuda-13.4-arm64.zip",
+            "sha256": "930cff325a0eb15e1232d5b5275b818c76c9c32a398788f18bb05273d3110c72",
+            "size": 145270624
+          },
+          {
+            "asset": "cudart-llama-bin-win-cuda-13.4-arm64.zip",
+            "sha256": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774",
+            "size": 153262407
+          }
+        ],
+        "required_files": [
+          "llama-server.exe",
+          "llama-server-impl.dll",
+          "llama-common.dll",
+          "llama.dll",
+          "mtmd.dll",
+          "ggml.dll",
+          "ggml-base.dll",
+          "ggml-cpu.dll",
+          "ggml-cuda.dll",
+          "libomp.dll",
+          "cudart64_13.dll",
+          "cublas64_13.dll",
+          "cublasLt64_13.dll"
+        ],
+        "min_driver_version": "616.41",
+        "cuda_archs_by_compute": {
+          "12.1": ["1210", "121", "121a"]
+        },
+        "model_ladder": ["qwen3.6-35b-a3b-ud-q4"],
+        "fallback_models": ["qwen3.5-2b-q4"]
+      }
+    }
+  }
 }
