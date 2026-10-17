@@ -78,10 +78,11 @@ it('refuses a receipt for any other folder, exactly like a model-run receipt', a
   await openExample()
   const alert = await screen.findByRole('alert')
   expect(alert).toHaveTextContent('Portal could not open elf-of-doom: its preview was not published. Check that Portal is ready, then click the project again.')
+  expect(alert.querySelector('a')).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
   expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
 })
 
-it('a deleted folder explains itself, refreshes the list and links to help', async () => {
+it('a deleted folder explains itself and refreshes the list, with no help link: it is not a failure', async () => {
   localStorage.clear()
   vi.stubGlobal('fetch', host(reply(404, {detail: 'This example project is no longer in your Portal workspace.'})))
   const refreshed = vi.fn()
@@ -94,7 +95,7 @@ it('a deleted folder explains itself, refreshes the list and links to help', asy
   const alert = await screen.findByRole('alert')
   expect(alert).toHaveTextContent('elf-of-doom is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.')
   expect(alert).not.toHaveTextContent('fresh copy')
-  expect(alert.querySelector('a')).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
+  expect(alert.querySelector('a')).toBeNull()
   expect(refreshed).toHaveBeenCalledTimes(1)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   window.removeEventListener(EXAMPLE_REFRESH_EVENT, refreshed)
@@ -112,7 +113,7 @@ it('a folder that is still there but cannot open as the example says so, apart f
   const alert = await screen.findByRole('alert')
   expect(alert).toHaveTextContent('Portal could not open elf-of-doom: the Playground/elf-of-doom folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/elf-of-doom".')
   expect(alert).not.toHaveTextContent('no longer in your Portal workspace')
-  expect(alert.querySelector('a')).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
+  expect(alert.querySelector('a')).toBeNull()
   expect(refreshed).toHaveBeenCalledTimes(1)
   window.removeEventListener(EXAMPLE_REFRESH_EVENT, refreshed)
 })

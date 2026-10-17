@@ -633,7 +633,7 @@ export default function Pixel({ systemStatus = null }) {
   const [conversationDeleted, setConversationDeleted] = useState(() => initialChat?.conversationDeleted || false)
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState('')
-  const [exampleError, setExampleError] = useState('')
+  const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
   const [activityRefresh, setActivityRefresh] = useState(0)
   const [workingElapsedSeconds, setWorkingElapsedSeconds] = useState(0)
@@ -1112,7 +1112,7 @@ export default function Pixel({ systemStatus = null }) {
       const context=teamAttempt.current.context
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
-      setExampleError('')
+      setExampleError(null)
       try {
         const team=await teams.start({request_id:requestId,task:teamCommand.task,context,...(requestedGoal?{mode:'goal'}:{})})
         if(team){setInput('');teamAttempt.current=null}
@@ -1140,7 +1140,7 @@ export default function Pixel({ systemStatus = null }) {
     updateRestoredActivity('idle')
     setStopping(false)
     setStopError('')
-    setExampleError('')
+    setExampleError(null)
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -1586,7 +1586,7 @@ export default function Pixel({ systemStatus = null }) {
     setConversationDeleted(false)
     setInterrupted(false)
     // A failed example open belongs to the task the owner just left.
-    setExampleError('')
+    setExampleError(null)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
   }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,input])
@@ -1653,7 +1653,7 @@ export default function Pixel({ systemStatus = null }) {
       exampleOpen.current?.abort()
       const controller = exampleOpen.current = new AbortController()
       const chatId = chatIdRef.current
-      setExampleError('')
+      setExampleError(null)
       try {
         const receipt = await openExampleProject(name, controller.signal)
         const published = parseVerifiedPreviewFrame({choices:[{finish_reason:'stop'}], pixel:{schemaVersion:1, preview:receipt}})
@@ -1669,13 +1669,15 @@ export default function Pixel({ systemStatus = null }) {
         if (controller.signal.aborted) return
         // The sidebar's list is stale in both cases: check it again.
         if (error?.code === 'missing' || error?.code === 'not-playable') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+        // A folder that is gone or changed is the owner's own doing: no help
+        // link. A preview that failed is a real failure.
         setExampleError(error?.code === 'missing'
-          ? `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.`
+          ? {text: `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.`}
           : error?.code === 'not-playable'
-            ? `Portal could not open ${name}: the Playground/${name} folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/${name}".`
+            ? {text: `Portal could not open ${name}: the Playground/${name} folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/${name}".`}
             : error?.code === 'not-previewable'
-              ? `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`
-              : `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`)
+              ? {text: `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`, help: true}
+              : {text: `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`, help: true})
       } finally {
         if (exampleOpen.current === controller) exampleOpen.current = null
       }
@@ -1707,7 +1709,7 @@ export default function Pixel({ systemStatus = null }) {
       setPreviewRefresh(0)
       setInput(chat.draft)
       setStopError('')
-      setExampleError('')
+      setExampleError(null)
       setInterrupted(chat.interrupted)
       setConversationDeleted(chat.conversationDeleted)
       updateRestoredActivity(chat.interrupted ? 'checking' : 'idle')
@@ -2076,7 +2078,7 @@ export default function Pixel({ systemStatus = null }) {
           </div>
           </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{stopError}</p>}
-          {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError} <HelpLink /></p>}
+          {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError.text}{exampleError.help && <> <HelpLink /></>}</p>}
           {contextControl.historyUnknown && <div className="portal-context-status" role="status">
             {contextControl.resolving && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
             <span>{contextControl.recoveryNotice || 'The previous turn could not be confirmed. Resolve it before continuing; your conversation is preserved.'}</span>
