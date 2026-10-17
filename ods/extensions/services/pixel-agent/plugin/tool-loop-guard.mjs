@@ -31,7 +31,7 @@ import { HOST_CITATION_LIMITS } from './citation-verification.mjs';
 import { createExtensionCompletionGate } from "./extension-completion-gate.mjs";
 import { parseQuestions, questionsText, requestsChoiceQuestion, choiceQuestionFromText } from "./ask-user.mjs";
 import { answersClarification, clarificationAnswerContext } from "./pending-clarification.mjs";
-import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
+import { createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, nodeReportedFailure, progressLaneStopReason, RUN_PROGRESS_STOP_REASON } from "./run-progress-budget.mjs";
 import { assistantMessageText, composeProgressFinalization, composeReadPages, createProgressFinalization, partialFinalizationAnswer,
   PROGRESS_FINALIZATION_INSTRUCTION } from "./progress-finalization.mjs";
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
@@ -223,6 +223,14 @@ export const FREE_CORRECTIONS_PER_KIND = 2;
 // Discovery never resets the round fuse, so a run of searches that changes
 // nothing still stops after RUN_PROGRESS_LIMITS.roundsWithoutProgress rounds.
 export const FREE_EMPTY_LOOKUPS_PER_RUN = 12;
+
+// Per run: how many bound exec node runs that completed and reported a failure
+// (see nodeReportedFailure) are recorded as test results instead of failures.
+// The sandbox has node so the agent can check, test and measure its JavaScript;
+// a red check after an edit is the answer that loop exists to get. Like empty
+// lookups they never reset the round fuse, and the same failing command three
+// times without an edit is still refused (failedExecRetries).
+export const FREE_NODE_RESULTS_PER_RUN = 12;
 
 // Refusals for a write that re-types existing workspace files (see
 // derivedWriteMatch). Fixed text; only the appended matched paths vary.
@@ -4810,16 +4818,38 @@ export function userMessageAuthorizesRecursiveDelete(messages, prompt = undefine
   );
 }
 
+// Inline interpreter code deletes a tree without rm: node's fs.rmSync, fs.rm,
+// fs.rmdirSync or fs.promises.rm with recursive: true, and Python's
+// shutil.rmtree. The sandbox has both interpreters and mounts the owner's
+// workspace read-write. Code saved in a script file is not visible here.
+const INLINE_RECURSIVE_DELETE_CALL = /\b(?:rmSync|rmdirSync|rm|rmdir)\s*\(((?:[^()]|\([^()]*\))*)\)/g;
+
+// A command that runs inline code: node -e/-p/--eval/--print, python -c,
+// perl or ruby -e, or a shell's -c (also in a cluster such as bash -lc). Only
+// these are scanned for a delete inside quotes or a call, so a search for the
+// text "rm -rf" or "rmSync(" (grep -rn "rm -rf" .) is not taken for a delete.
+const INLINE_CODE_COMMAND =
+  /(?:^|[\s;&|(`'"])(?:node|python3?(?:\.\d+)?|perl|ruby|sh|bash|dash|zsh)\s+(?:-[A-Za-z]*[cepE][A-Za-z]*|--(?:eval|print))(?=[\s=]|$)/;
+
 function requestsRecursiveForcedDelete(params) {
   if (!params || typeof params !== "object" || Array.isArray(params)) return false;
   const command = params.command;
   if (typeof command !== "string" || !command.trim()) return false;
-  const invocations = command.matchAll(/(?:^|[;&|]\s*)rm\s+((?:(?:--[A-Za-z-]+|-[A-Za-z]+)\s+)+)/gim);
+  // In inline code a quote, backtick or parenthesis also starts a command:
+  // sh -c 'rm -rf x', os.system("rm -rf x") and execSync(`rm -rf x`).
+  const inlineCode = INLINE_CODE_COMMAND.test(command);
+  const invocations = command.matchAll(inlineCode ? /(?:^|[;&|(`'"]\s*)rm\s+((?:(?:--[A-Za-z-]+|-[A-Za-z]+)\s+)+)/gim
+    : /(?:^|[;&|]\s*)rm\s+((?:(?:--[A-Za-z-]+|-[A-Za-z]+)\s+)+)/gim);
   for (const match of invocations) {
     const options = match[1];
     const recursive = /--recursive\b/i.test(options) || /(?:^|\s)-[A-Za-z]*[rR][A-Za-z]*(?:\s|$)/.test(options);
     const forced = /--force\b/i.test(options) || /(?:^|\s)-[A-Za-z]*f[A-Za-z]*(?:\s|$)/.test(options);
     if (recursive && forced) return true;
+  }
+  if (!inlineCode) return false;
+  if (/\brmtree\s*\(/.test(command)) return true;
+  for (const match of command.matchAll(INLINE_RECURSIVE_DELETE_CALL)) {
+    if (/\brecursive\s*:\s*(?:true|!0|1)\b/.test(match[1])) return true;
   }
   return false;
 }
@@ -10606,15 +10636,20 @@ export function createToolLoopGuard({
         state.pendingExecSessions.has(selected.params.sessionId);
       const effectiveProgressTool = toolName === 'tool_call'
         ? String(event.params?.id ?? '').split(':').at(-1) : toolName;
-      // A bound lookup that completed and found nothing is an answer: recorded
-      // as discovery (no charge, no reset) within FREE_EMPTY_LOOKUPS_PER_RUN.
-      // The model's own command is read from this call's pending record, since
+      // A bound lookup that completed and found nothing, or a bound node check,
+      // test or harness that completed and reported a failure, is an answer:
+      // recorded as discovery (no charge, no reset) within
+      // FREE_EMPTY_LOOKUPS_PER_RUN and FREE_NODE_RESULTS_PER_RUN. The model's
+      // own command is read from this call's pending record, since
       // event.params carries the cancellable wrapper.
-      const lookupReceipt = boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName);
-      const emptyLookup = Boolean(lookupReceipt) &&
-        lookupFoundNothing(pendingToolRun.selectedParams?.command, lookupReceipt.result) &&
-        recordFreeCorrection(state, 'empty-lookup', toolCallId, toolName, FREE_EMPTY_LOOKUPS_PER_RUN);
-      if (!emptyLookup) state.progressBudget.observeResult({callId: toolCallId, tool: toolName,
+      const answerReceipt = boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName);
+      const answeredCommand = pendingToolRun?.selectedParams?.command;
+      const answered = Boolean(answerReceipt) && (
+        (lookupFoundNothing(answeredCommand, answerReceipt.result) &&
+          recordFreeCorrection(state, 'empty-lookup', toolCallId, toolName, FREE_EMPTY_LOOKUPS_PER_RUN)) ||
+        (nodeReportedFailure(answeredCommand, answerReceipt.result) &&
+          recordFreeCorrection(state, 'node-result', toolCallId, toolName, FREE_NODE_RESULTS_PER_RUN)));
+      if (!answered) state.progressBudget.observeResult({callId: toolCallId, tool: toolName,
         params: event.params, failed: failedToolOutcome(event), pending: running,
         discovery:state.workspaceLaneRequested && (EXTENSION_METADATA_TOOLS.has(effectiveProgressTool) ||
           effectiveProgressTool === 'pixel_ops_inventory'),

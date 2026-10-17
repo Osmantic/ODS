@@ -13,7 +13,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REF = '2ef78e7067211a198748c5499ed5a0261f4b48b6'
+DEFAULT_REF = '4bf2203c56cce323490e41e36736062d4f74cf39'
 INGRESS_IMAGE = 'node:24-bookworm-slim'
 FRAGMENTS = ('extensions/services/pixel-model-relay/compose.yaml.disabled',
     'extensions/services/pixel-edge/compose.yaml.disabled',
@@ -56,6 +56,22 @@ ERROR_GUIDANCE = {
         'The shared Compose policy could not be loaded. Check the installed '
         'scripts/compose-cache-policy.py and the private activation receipt. Keep Pixel '
         'state intact; do not reset receipts or repeat activation automatically.',
+    'native-sandbox-build-failed':
+        'Pixel could not build its agent sandbox image. The build downloads Debian packages '
+        'from deb.debian.org and the pinned Node.js runtime from nodejs.org. Check that this Mac '
+        'can reach both and that Docker has free disk space, then run the installer or update again. '
+        'Keep Pixel state intact. Need help? https://discord.gg/4ntNp9MAwC',
+    'native-sandbox-execution-proof-failed':
+        'The agent sandbox image failed its offline check: workspace write, the pinned Node.js for '
+        'linux/arm64, and no npm, npx or corepack. Check that Docker runs linux/arm64 images, remove '
+        'the ods-pixel-native-sandbox image for this Pixel version (docker image ls '
+        'ods-pixel-native-sandbox), then run the installer or update again. Keep Pixel state intact. '
+        'Need help? https://discord.gg/4ntNp9MAwC',
+    'invalid-sandbox-node-runtime':
+        'The selected Pixel source does not pin the Node.js runtime this ODS version expects in the '
+        'agent sandbox. Use the Pixel source bundled with ODS (leave PIXEL_SOURCE_REF unset), then '
+        'run the installer or update again. Keep Pixel state intact. '
+        'Need help? https://discord.gg/4ntNp9MAwC',
     'retained-pixel-identity-rejected':
         'The retained _ods_pixel_ops account did not pass the identity-only check; the reason is shown above. '
         'For operations-identity-process-active or operations-home-not-empty-or-owned, macOS per-user agents '

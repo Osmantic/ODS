@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Portal's agent sandbox now has Node.js, so the agent can run and test the
+  JavaScript it writes. Before, it could only read its code: on a browser game
+  it tried `node` and got "not found", built stand-in harnesses in Python, and
+  canvas state leaks and a per-hit freeze shipped and survived many turns.
+  - Pixel 4.3.32 installs the official Node.js 24.21.0 `node` binary in the
+    sandbox image, pinned by SHA-256 for amd64 and arm64. npm, npx and
+    corepack are not included and the sandbox keeps no network, so the agent
+    can run `node --check`, scripts and `node --test` offline but cannot
+    install packages. Its memory, process and file limits are unchanged.
+  - The image is the same for Linux, WSL (including Arm64) and native macOS
+    Pixel. Bootstrap and macOS preparation run its `node` once offline and stop
+    before any live change if the version, architecture or package-manager
+    check fails, with the cause, the recovery step and the Discord help link.
+  - The agent's instructions say the sandbox has node without npm, and the
+    verification guide shows how to check browser code offline: syntax
+    checks, logic tests and a small harness that stubs the page and canvas.
+    Browser behaviour is still verified on the published preview.
+  - Building the sandbox image now also downloads Node.js from nodejs.org
+    (about 31 MB). Existing installations get it through a normal ODS update.
+    Rolling back restores the previous image, which has no node.
+  - A red `node --check`, `node --test` or harness run that exits 1 with
+    output is recorded as a test result, not a failed tool call, so an edit
+    and test loop no longer ends the response at the 12-failure total, nor
+    one failing syntax check per file at the 4-failure streak. A missing
+    node or script, a timeout and a crash without output still count.
+  - A macOS native update removes the previous agent sandbox container before
+    the new gateway starts, as Linux and WSL already do. Before, a container
+    used in the last five minutes kept serving the old image without node
+    while the agent was told node is there.
+  - The Node.js download gives up on a stalled connection instead of hanging
+    the install, and the Linux bootstrap's node check is bounded and removes
+    its own container. A stale sandbox image that fails that check now gets its
+    own message with the `docker image rm` command, instead of the
+    network-problem message.
+
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple
   GPU reporters instead of choosing NVIDIA tooling merely because it is

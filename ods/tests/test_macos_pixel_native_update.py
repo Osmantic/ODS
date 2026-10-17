@@ -121,6 +121,30 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
         assert dict(os.environ) == before
 
 
+@pytest.mark.parametrize('code', sorted(module.SANDBOX_ERRORS))
+def test_update_reports_sandbox_image_guidance(monkeypatch, capsys, code):
+    # An update rebuilds the sandbox image before activation. Its failure gives
+    # the cause, an update-only recovery and the help link; the trailer that
+    # follows forbids a reinstall, so the guidance must never suggest one.
+    def fail(**kwargs):
+        raise ValueError(code)
+    monkeypatch.setattr(module, 'update', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-update.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    err = capsys.readouterr().err
+    assert module.SANDBOX_GUIDANCE[code] in err
+    assert 'The installed Pixel keeps running unchanged.' in err
+    assert 'https://discord.gg/4ntNp9MAwC' in err
+    assert 'installer' not in err.lower() and 'reinstall' not in err.split('Native update stopped')[0]
+    assert 'Do not reinstall or delete state.' in err
+    assert err.index(module.SANDBOX_GUIDANCE[code]) < err.index('Native update stopped (ValueError)')
+    if code != 'invalid-sandbox-node-runtime':
+        assert 'run the update again' in module.SANDBOX_GUIDANCE[code]
+    if code == 'native-sandbox-execution-proof-failed':
+        assert 'holds no Pixel state' in err
+
+
 def test_update_reaches_installation_validation_without_license_flag(monkeypatch):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)

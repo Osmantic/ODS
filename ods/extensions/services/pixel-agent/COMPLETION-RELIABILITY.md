@@ -444,6 +444,33 @@ five empty searches were chains like the one above.
 `tests/empty_lookup_progress.test.mjs` replays the hook sequence for both the
 direct and the Tool Search transport.
 
+## Red node runs are test results
+
+The agent sandbox has `node` without npm, and the verification guide asks the
+agent to run `node --check` on each script, `node --test` with explicit test
+files, and small harness scripts. A red result is the answer that loop exists
+to get: charged as failures, an edit and red-test loop reached the 12-failure
+total, and one red `node --check` per file the 4-failure streak, before the fix.
+`nodeReportedFailure` exempts a command whose every step is a node run: `node`
+with long options and either `--check` (or `-c`) and one script, `--test` and
+its files, or a script file and its arguments, optionally behind
+`timeout DURATION` and followed by `2>&1`, joined by `;` or `&&` after one
+optional literal `cd DIR &&`. It must have completed with exit 1 and printed
+something. Inline code (`-e`, `-p`, `--eval`, `--print`), stdin, the REPL,
+`--run`, other short options, pipes, `||`, redirections, substitutions and
+environment assignments disqualify the command. node not found (127), a timeout
+(124, or OpenClaw's own), a signal or abort, a bad option (9), a run with no
+output, a shell error, and a missing script, module or file (`MODULE_NOT_FOUND`,
+`ERR_MODULE_NOT_FOUND`, `ENOENT`, node --test's `Could not find`) stay failures.
+
+The receipt binding is the one empty lookups use. A red run is recorded as
+discovery up to `FREE_NODE_RESULTS_PER_RUN` per run, never resets the round
+fuse, and never erases earlier failures. The same failing command three times
+without an edit is still refused by the direct exec retry limit, and the
+verification guide asks for one measurement before and one after an edit,
+because a third identical successful exec is refused too.
+`tests/sandbox_node_guard.test.mjs` replays both transports.
+
 ## Tool-limit finalization
 
 When the run-progress budget (`run-progress-budget.mjs`) or the research
