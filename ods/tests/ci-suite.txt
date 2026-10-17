@@ -96,6 +96,7 @@ tests/test-litellm-config-selection.sh
 tests/test-llama-memory-budget.sh
 tests/test-llama-mtp-args.sh
 tests/test-llm-cold-storage-arithmetic.py
+tests/test_cold_storage_initial_directory.py
 tests/test-local-app-auth-defaults.sh
 tests/test-locale-safe-cpu-formatting.sh
 tests/test-macos-agent-python.sh
