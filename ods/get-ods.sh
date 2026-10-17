@@ -29,12 +29,14 @@ BOOTSTRAP_REINSTALL=false
 BOOTSTRAP_RECOVER_STRANDED=false
 BOOTSTRAP_KEEP_MODELS=false
 BOOTSTRAP_HELP=false
+BOOTSTRAP_RECOVER=false
 BOOTSTRAP_INSTALL_ARGS=()
 for _arg in "$@"; do
     case "$_arg" in
         --keep-models) BOOTSTRAP_KEEP_MODELS=true; continue ;;
         -h|--help) BOOTSTRAP_HELP=true ;;
         --force) BOOTSTRAP_FORCE=true ;;
+        --recover) BOOTSTRAP_RECOVER=true ;;
         --non-interactive) BOOTSTRAP_NON_INTERACTIVE=true ;;
     esac
     BOOTSTRAP_INSTALL_ARGS+=("$_arg")
@@ -76,6 +78,14 @@ if [[ "$BOOTSTRAP_HELP" == true ]]; then
     cat <<'HELP'
 ODS Bootstrap Installer
 Usage: get-ods.sh [--force [--keep-models]] [INSTALLER OPTIONS]
+       get-ods.sh --recover [RECOVERY OPTIONS]
+  --recover       Finish a retained macOS native Pixel installation using fresh
+                  recovery code, preserving its configuration, data and models.
+                  Follows model progress and opens Portal when appropriate.
+  --opencode-choice enabled|disabled
+                  With --recover, confirm a missing historical OpenCode choice.
+  --no-watch      With --recover, leave the model worker in the background.
+  --no-open       With --recover, print the Portal address without opening it.
   --force         Replace an existing, identified ODS installation. The requested
                   installer's preflight checks this host before anything is removed.
   --keep-models   With --force, retain data/models and restore it before install.
@@ -90,6 +100,24 @@ Usage: get-ods.sh [--force [--keep-models]] [INSTALLER OPTIONS]
 Other options are passed unchanged to install.sh (see install.sh --help).
 HELP
     exit 0
+fi
+BOOTSTRAP_RECOVERY_ARGS=()
+if [[ "$BOOTSTRAP_RECOVER" == true ]]; then
+    if [[ "$BOOTSTRAP_FORCE" == true || "$BOOTSTRAP_KEEP_MODELS" == true ]]; then
+        error "--recover cannot be combined with --force or --keep-models. Recovery preserves the retained installation."
+    fi
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --recover) shift ;;
+            --non-interactive|--no-watch|--no-open)
+                BOOTSTRAP_RECOVERY_ARGS+=("$1"); shift ;;
+            --opencode-choice)
+                [[ $# -ge 2 ]] || error "--opencode-choice requires enabled or disabled."
+                case "$2" in enabled|disabled) ;; *) error "--opencode-choice requires enabled or disabled." ;; esac
+                BOOTSTRAP_RECOVERY_ARGS+=("$1" "$2"); shift 2 ;;
+            *) error "Unsupported option with --recover: $1. Use --help for recovery options." ;;
+        esac
+    done
 fi
 if [[ "$BOOTSTRAP_KEEP_MODELS" == true && "$BOOTSTRAP_FORCE" != true ]]; then
     error "--keep-models requires --force and an existing ODS installation."
@@ -421,6 +449,14 @@ detect_os() {
 OS=$(detect_os)
 log "Detected OS: $OS"
 
+if [[ "$BOOTSTRAP_RECOVER" == true ]]; then
+    [[ "$OS" == macos ]] || error "--recover currently supports retained native Pixel installations on macOS."
+    [[ "$INSTALL_DIR" == /* && -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" \
+        && -f "$INSTALL_DIR/.env" && ! -L "$INSTALL_DIR/.env" ]] \
+        || error "--recover needs the retained ODS folder and its original .env. Set ODS_INSTALL_DIR to that folder; do not reinstall or remove it."
+    command -v python3 >/dev/null 2>&1 || error "Python 3 is needed to enter the saved installer environment."
+fi
+
 if ! validate_bootstrap_model_preservation; then
     error "Cannot preserve models for this reinstall; the reason is above. Nothing was changed."
 fi
@@ -559,7 +595,7 @@ fi
 # GPU pre-check already done above — real detection happens in the installer
 
 # ── Check for existing installation ──────────────────
-if [[ -d "$INSTALL_DIR" ]]; then
+if [[ -d "$INSTALL_DIR" && "$BOOTSTRAP_RECOVER" != true ]]; then
     if [[ -f "$INSTALL_DIR/.env" ]]; then
         if [[ "$BOOTSTRAP_FORCE" == "true" ]]; then
             validate_force_reinstall_target "$INSTALL_DIR" \
@@ -569,9 +605,16 @@ if [[ -d "$INSTALL_DIR" ]]; then
         else
             warn "ODS already installed at $INSTALL_DIR"
             echo ""
-            echo "  To start:     cd \"$INSTALL_DIR\" && ./ods-cli start"
-            echo "  To reinstall: re-run this script with --force"
-            echo "  To update:    cd \"$INSTALL_DIR\" && ./ods-cli update"
+            if [[ "$OS" == macos ]]; then
+                printf '  To start: bash %q start\n' "$INSTALL_DIR/ods-macos.sh"
+                printf '  To update: bash %q update\n' "$INSTALL_DIR/ods-macos.sh"
+                echo "  To finish an interrupted native Pixel installation, keep this folder and run:"
+                printf '  curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | ODS_INSTALL_DIR=%q bash -s -- --recover\n' "$INSTALL_DIR"
+            else
+                echo "  To start:     cd \"$INSTALL_DIR\" && ./ods-cli start"
+                echo "  To reinstall: re-run this script with --force"
+                echo "  To update:    cd \"$INSTALL_DIR\" && ./ods-cli update"
+            fi
             echo ""
             exit 0
         fi
@@ -656,6 +699,18 @@ git sparse-checkout set ods 2>/dev/null || {
     cd "$TEMP_DIR/repo"
     checkout_requested_sha_ref "$ODS_REF"
 }
+
+# Recovery executes reviewed candidate helpers against the retained install.
+# Never overlay its source or enter the forced uninstall/copy path below.
+if [[ "$BOOTSTRAP_RECOVER" == true ]]; then
+    candidate_recovery="$TEMP_DIR/repo/ods/installers/macos/lib/pixel-native-resume.py"
+    [[ -f "$candidate_recovery" && ! -L "$candidate_recovery" ]] \
+        || error "Requested ODS source does not include guided macOS recovery. The retained installation was not changed."
+    log "Continuing the retained installation at $INSTALL_DIR..."
+    python3 -E "$candidate_recovery" --install-dir "$INSTALL_DIR" --ods-source "$TEMP_DIR/repo/ods" \
+        ${BOOTSTRAP_RECOVERY_ARGS[@]+"${BOOTSTRAP_RECOVERY_ARGS[@]}"}
+    exit $?
+fi
 
 # A forced reinstall must use the requested candidate's uninstaller, not the
 # potentially older installed copy. This lets a newer release safely repair a

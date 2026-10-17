@@ -230,6 +230,10 @@ def compose_flags(install_dir, process_env, *, recovery=False):
         if not resolver.is_file() or resolver.resolve(strict=True) != resolver:
             raise ValueError('installed-compose-resolver-required')
         resolver_env = {**process_env, **{key: saved.get(key, '') for key in keys}}
+        if recovery:
+            # Fresh shells do not inherit the private PyYAML venv selected by
+            # install-macos.sh. Reuse the saved interpreter, never stale PATH.
+            resolver_env = helper('pixel-native-recovery-python').prepare_environment(install_dir, resolver_env)
         raw = subprocess.run(['/bin/bash', str(resolver), '--script-dir', str(install_dir),
             '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode,
             *(['--native-recovery'] if recovery else [])],
