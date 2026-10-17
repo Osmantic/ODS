@@ -166,7 +166,8 @@ test("exposes a publish-only schema with no creative generator input", () => {
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["relativeDirectory", "sourceDirectory"]);
   assert.equal(tool.parameters.additionalProperties, false);
   assert.match(tool.description, /already exists in Pixel's writable workspace, normally one created by the active model/);
-  assert.match(tool.description, /ships one finished example game, Playground\/elf-of-doom\. It belongs to the owner: change it only when the owner's message names it, and never start new work from it unless the owner asks for a copy\. ODS never supplies starter bytes for new work/i);
+  assert.match(tool.description, /never supplies creative starter bytes/i);
+  assert.doesNotMatch(tool.description, /elf.of.doom/i, "the shipped example stays out of every turn's tools");
   assert.doesNotMatch(tool.parameters.properties.relativeDirectory.description, /model-authored/);
   assert.match(tool.description, /localStorage\/sessionStorage property getters, reads and writes may throw/);
   assert.match(tool.description, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);

@@ -305,9 +305,11 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   }
   // The owner run whose message a run works for: an owner run itself, the one
   // an announced continuation reports to, or the one whose native spawn
-  // receipt names a delegated child session. Undefined otherwise.
+  // receipt names exactly this delegated child run. A later run in that child
+  // session works for no owner turn. Undefined otherwise.
   function ownerRunOf(context) {
-    return runs.get(context?.runId)?.chain.id ?? spawned.get(context?.sessionKey)?.chainId;
+    const child = spawned.get(context?.sessionKey);
+    return runs.get(context?.runId)?.chain.id ?? (child?.runId === context?.runId ? child?.chainId : undefined);
   }
   function admission(context) {
     if (context?.agentId !== agentId) return;

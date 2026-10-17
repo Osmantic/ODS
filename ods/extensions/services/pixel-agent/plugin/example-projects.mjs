@@ -42,6 +42,10 @@ function lstatOrNull(target) {
   catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null; throw error; }
 }
 
+// A missing, unreadable or looping path: a filesystem answer, never a crash.
+// Anything else is a defect.
+export const filesystemError = error => typeof error?.code === 'string' && Boolean(error.syscall);
+
 // The owner's own entry: never a link, and on POSIX this user's (a folder
 // also private to them).
 function ownerEntry(entry, folder = false) {
@@ -102,10 +106,8 @@ function canonicalRoot(workspaceRoot) {
 // added it). Nothing is created, and a workspace the gateway cannot read has
 // no example.
 export function exampleProjectState(workspaceRoot, name, options = {}) {
-  // A missing, unreadable or looping path is a filesystem answer, never a
-  // crash: the workspace then has no example, and a folder whose record
-  // cannot be read is not playable as one. Anything else is a defect.
-  const filesystem = error => typeof error?.code === 'string' && Boolean(error.syscall);
+  // A filesystem error means the workspace has no example, and a folder
+  // whose record cannot be read is not playable as one.
   let root;
   try {
     root = canonicalRoot(workspaceRoot);
@@ -118,13 +120,13 @@ export function exampleProjectState(workspaceRoot, name, options = {}) {
     const entry = lstatOrNull(path.join(root, 'Playground', name, 'index.html'));
     if (!entry?.isFile() || entry.isSymbolicLink()) return 'not-playable';
   } catch (error) {
-    if (filesystem(error)) return 'missing';
+    if (filesystemError(error)) return 'missing';
     throw error;
   }
   try {
     return addedExampleProjects(root, options).includes(name) ? 'present' : 'not-playable';
   } catch (error) {
-    if (filesystem(error)) return 'not-playable';
+    if (filesystemError(error)) return 'not-playable';
     throw error;
   }
 }

@@ -39,7 +39,7 @@ import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDead
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
-import { createExampleGuard, EXAMPLE_NOTES, namesExample } from "./example-guard.mjs";
+import { createExampleGuard, EXAMPLE_NOTES, mentionsExample, namesExample } from "./example-guard.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -7911,6 +7911,9 @@ export function createToolLoopGuard({
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
+    // While a call of a run that names the shipped example runs, other runs
+    // leave that folder alone (example-guard.mjs).
+    if (context?.agentId === agentId) examples.callStarts(context.runId ?? event?.runId, context.toolCallId ?? event?.toolCallId);
     const originalDecision = decideToolCall(event, context, agentId);
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
@@ -10466,22 +10469,32 @@ export function createToolLoopGuard({
   }
 
   // The shipped example's guard (example-guard.mjs), told when a run starts,
-  // after every tool call and when the run finalizes and ends. A run names the
-  // example only by its owner turn's own message: a delegated child or an
-  // announced continuation uses the owner run it reports to, never its own
-  // task text, and a cron or other non-owner run never names it.
+  // when each tool call starts and ends, and when the run finalizes and ends.
+  // A run names the example only by its owner turn's own message: a delegated
+  // child or an announced continuation uses the owner run it reports to,
+  // never its own task text; an answer to a clarification card uses the
+  // request that card recorded, never the model's question; and a cron or
+  // other non-owner run never names it. A turn that mentions the example
+  // without naming it gets model-only guidance (exampleContextForRun).
   function observeExampleRun(context, agentId = "pixel") {
     const state = context?.agentId === agentId ? runs.get(context.runId) : undefined;
     if (!state) return;
     const ownerRun = exampleOwnerRun(context);
     const child = typeof context.sessionKey === 'string' && context.sessionKey.startsWith(`agent:${agentId}:subagent:`);
     const owner = ownerRun ? runs.get(ownerRun) : child ? undefined : state;
-    examples.begin(context.runId, state.configuredWorkspaceRoot,
-      owner?.artifactOwnerInteractive === true && namesExample(owner.ownerRequestText));
+    if (owner) state.exampleTurnRunId = ownerRun ?? context.runId;
+    const answered = owner?.clarificationAnswer?.request;
+    const names = owner?.artifactOwnerInteractive === true && namesExample(answered ?? owner.ownerRequestText);
+    recordExampleOutcome(context, examples.begin(context.runId, state.configuredWorkspaceRoot, names, state.runDeadline?.timeoutMs));
+    state.exampleGuidance = examples.guarding(context.runId) &&
+      (mentionsExample(owner?.ownerRequestText) || mentionsExample(answered));
+  }
+  function exampleContextForRun(runId) {
+    return typeof runId === 'string' && runs.get(runId)?.exampleGuidance ? EXAMPLE_NOTES.guidance : undefined;
   }
   // The run that holds the owner's turn: the owner run itself.
   function exampleTurn(context) {
-    return runs.get(exampleOwnerRun(context) ?? context?.runId);
+    return runs.get(runs.get(context?.runId)?.exampleTurnRunId ?? exampleOwnerRun(context) ?? context?.runId);
   }
   function recordExampleOutcome(context, outcome, toolCallId) {
     if (!outcome) return;
@@ -10503,7 +10516,8 @@ export function createToolLoopGuard({
     const toolName = context?.toolName ?? event?.toolName;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return;
-    recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
+    recordExampleOutcome({...context, runId}, examples.callEnds(runId, context?.toolCallId ?? event?.toolCallId),
+      context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
@@ -13443,6 +13457,7 @@ export function createToolLoopGuard({
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
     observeExampleRun,
+    exampleContextForRun,
     exampleNoticeForRun,
     beforeToolCall,
     invalidateWorkspaceBundle(context) {

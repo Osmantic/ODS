@@ -448,7 +448,9 @@ export default definePluginEntry({
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
       const deliveryContext = delegationDelivery.promptContext(context);
-      const prependContext = [contract?.prependContext,cancelContext,deliveryContext].filter(Boolean).join('\n\n');
+      // A turn that mentions the shipped example without naming it.
+      const exampleContext = toolLoopGuard.exampleContextForRun(context?.runId ?? event?.runId);
+      const prependContext = [contract?.prependContext,cancelContext,deliveryContext,exampleContext].filter(Boolean).join('\n\n');
       // Beside the owner turn (OpenClaw appendContext), also model-only. A
       // child's announce continuation of a clarification answer carries that
       // answer's note too: in a replacement session only the note names the

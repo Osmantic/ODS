@@ -1,61 +1,65 @@
 // Elf of Doom, the finished example game ODS ships (example-projects.mjs), is
-// the owner's game. Portal changes it only on a turn whose own owner message
-// names it, for example "In elf-of-doom, make the arrows give 7". On any other
-// turn this guard copies Playground/elf-of-doom when the run starts and puts
-// it back exactly after every tool call, and at the end of the run, that left
-// it different. It reads no commands: only the outcome counts. Only the copy
-// ODS added is guarded (its record decides); an owner's own folder of that
-// name never is. It keeps the owner's game safe from mistakes; it is not a
+// the owner's game. Portal changes it only on a turn whose owner message
+// starts with "In elf-of-doom," (namesExample). Any other change to the copy
+// ODS added is put back: this guard keeps the folder's last known-good tree
+// and, for a run that does not name it, compares Playground/elf-of-doom with
+// that tree when the run starts, after every tool call and when the run
+// finalizes and ends, and restores it exactly on any difference. It reads no
+// commands: only the outcome counts. An owner's own folder of that name is
+// never guarded. It keeps the owner's game safe from mistakes; it is not a
 // sandbox.
+//
+// The known-good tree is the folder as ODS first finds it after the gateway
+// starts, and again after each tool call and at the end of a run that names
+// it, so that run's changes stick. While such a call runs, other runs leave
+// the folder alone. The tree lives in memory only, so after a gateway restart
+// the folder as ODS first finds it is the known-good tree.
 import {randomBytes} from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
-import {addedExampleProjects} from './example-projects.mjs';
-import {requestsNewPlaygroundProject} from './playground-projects.mjs';
+import {addedExampleProjects, filesystemError} from './example-projects.mjs';
 
 export const EXAMPLE_FOLDER = 'Playground/elf-of-doom';
 const EXAMPLE = 'elf-of-doom';
 const MAX_ENTRIES = 512;
 const MAX_BYTES = 16 * 1024 * 1024;
-// Far past the 30-minute run deadline: a run this old ended unseen.
+// A run whose end ODS never saw stops counting this long after its deadline,
+// or after RUN_TTL_MS when it has none.
+const RUN_GRACE_MS = 60 * 1000;
 const RUN_TTL_MS = 2 * 60 * 60 * 1000;
 
-// What the model reads on the result of the call after which ODS acted, and
-// the one line the owner reads in that turn's reply.
+const DOCUMENTED_FORM = '"In elf-of-doom,", for example "In elf-of-doom, make the arrows faster"';
+// What the model reads (before a turn that mentions the example, and on the
+// result of a call after which ODS acted) and the one line the owner reads.
 export const EXAMPLE_NOTES = Object.freeze({
+  guidance: '[ODS Portal] Playground/elf-of-doom is ODS\'s example game and is protected on this turn. Do not change, move or '
+    + 'delete it; make new games in a new Playground folder. If the owner wants Elf of Doom itself changed, don\'t change '
+    + `it: tell them to start their message with ${DOCUMENTED_FORM}.`,
   restored: Object.freeze({
-    model: '[ODS Portal] ODS put Playground/elf-of-doom back the way it was, because the owner\'s message does not ask to change Elf of Doom. '
-      + 'Make new games in a new Playground folder. To change Elf of Doom, the owner names it, for example: '
-      + '"In elf-of-doom, make the arrows faster". Do not tell the owner that Elf of Doom changed.',
-    owner: 'ODS put Playground/elf-of-doom back the way it was: your message did not ask to change Elf of Doom. '
-      + 'To change it, name it, for example "In elf-of-doom, make the arrows faster".',
+    model: '[ODS Portal] ODS put Playground/elf-of-doom back as it was: it is protected on this turn, because the owner\'s '
+      + 'message does not start with "In elf-of-doom,". Do not change it again, and do not tell the owner it changed. Make '
+      + `new games in a new Playground folder. If the owner wants Elf of Doom changed, tell them to start their message with ${DOCUMENTED_FORM}.`,
+    owner: 'ODS put Playground/elf-of-doom back as it was. To change Elf of Doom, start your message with "In elf-of-doom,".',
   }),
   failed: Object.freeze({
-    model: '[ODS Portal] ODS could not put Playground/elf-of-doom back the way it was after this call changed it, although the owner\'s '
-      + 'message does not ask to change Elf of Doom. Do not change it further, and tell the owner it may have changed.',
-    owner: 'ODS could not put Playground/elf-of-doom back the way it was after this task changed it. Close any program that has its '
-      + 'files open and check the game; if it still looks wrong, [get help on Discord](https://discord.gg/4ntNp9MAwC).',
+    model: '[ODS Portal] Playground/elf-of-doom changed and ODS could not put it back as it was. Do not change it further, and '
+      + 'tell the owner it may have changed.',
+    owner: 'Playground/elf-of-doom changed and ODS could not put it back as it was. Close any program that has its files open, '
+      + 'then send your message again; if the game still looks wrong, [get help on Discord](https://discord.gg/4ntNp9MAwC).',
   }),
 });
 
 // ------------------------------------------------------------------ naming --
 
-const NAME = String.raw`elf[\s_-]*of[\s_-]*doom`;
-const MENTION = new RegExp(String.raw`\b${NAME}\b`, 'i');
-// The documented way to ask: "In elf-of-doom, ..." or "elf-of-doom: ...".
-const EXPLICIT = new RegExp(String.raw`^(?:in\s+${NAME}\s*,|${NAME}\s*:)`, 'i');
-// Any of these in a sentence that names the example means that sentence does
-// not ask to change it: it keeps, compares, excludes or copies it, or asks for
-// something new.
-const PROTECTIVE = new RegExp([
-  String.raw`\b(?:keep(?:s|ing)?|kept|leav(?:e|es|ing)|preserv\w*|protect\w*|spare|untouched|alone|as[\s-]is)\b`,
-  String.raw`\b(?:don['’]?t|do\s+not|never)\s+(?:touch|change|modify|edit|delete|remove)`,
-  String.raw`\b(?:except|besides|other\s+than|apart\s+from|rest\s+of|the\s+others|other\s+(?:games?|projects?|folders?))\b`,
-  String.raw`\b(?:new\s+(?:games?|projects?|folders?|versions?)|another\s+(?:game|project))\b`,
-  String.raw`\b(?:(?:un)?like|similar|inspired\s+by|based\s+on|sequels?|remakes?|clones?|copy\s+of|version\s+of)\b`,
-  String.raw`\b(?:from|out\s+of)\s+(?:(?:the|my)\s+)?(?:[\w./-]*\/)?${NAME}\b`,
-  String.raw`\b${NAME}['’]s\b`,
-].join('|'), 'i');
+const NAME = String.raw`elf[\s_-]+of[\s_-]+doom`;
+// The name standing alone, never part of another folder's name such as
+// elf-of-doom-2 or my-elf-of-doom.
+const MENTION = new RegExp(String.raw`(?<![\w-])${NAME}(?![\w-])`, 'i');
+// The documented form at the very start: "In elf-of-doom,", "In
+// elf-of-doom:", "elf-of-doom:" or "In Playground/elf-of-doom,", the name
+// followed directly by the comma or colon.
+const DOCUMENTED = new RegExp(String.raw`^(?:in\s+(?:playground\/)?${NAME}[,:]|${NAME}:)`, 'i');
+const LEADING = /^[\s"'`“”‘’„«»]+/;
 // ODS composes some turns from the owner's words plus earlier context and
 // model output; only the owner's words count. Outermost first: an agent-team
 // assignment quotes the owner's outcome last (dashboard-api
@@ -80,75 +84,108 @@ function ownerWords(message) {
   return bare(text);
 }
 
-// Whether a turn's own owner message names Elf of Doom as something to
-// change: it starts "In elf-of-doom," or "elf-of-doom:", or a sentence that
-// names it has no protective word. One protective word anywhere in that
-// sentence is enough, so "Keep elf-of-doom, delete the rest" never names it.
-// A new-game request goes to a new folder, so it names the example only in
-// the explicit form ("Make me an elf of doom game" does not).
+// Whether an owner message asks to change Elf of Doom: only when it starts
+// with the documented form, after any leading quote marks. Nothing else does,
+// however the rest is worded.
 export function namesExample(message) {
-  const words = ownerWords(message);
-  if (EXPLICIT.test(words)) return true;
-  return !requestsNewPlaygroundProject(words)
-    && words.split(/[!?;\n]+|\.(?=\s|$)/).some(sentence => MENTION.test(sentence) && !PROTECTIVE.test(sentence));
+  return DOCUMENTED.test(ownerWords(message).replace(LEADING, ''));
+}
+
+// Whether an owner message mentions Elf of Doom by name anywhere.
+export function mentionsExample(message) {
+  return MENTION.test(ownerWords(message));
 }
 
 // -------------------------------------------------------- the folder copy --
 
-const filesystemError = error => typeof error?.code === 'string' && Boolean(error.syscall);
 const modeOf = stat => stat.mode & 0o7777;
 const realDirectory = stat => Boolean(stat?.isDirectory() && !stat.isSymbolicLink());
 const sameFile = (a, b) => a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && a.ino === b.ino && a.dev === b.dev;
 const entryPath = (folder, key) => key ? path.join(folder, ...key.split('/')) : folder;
+const folderIn = root => path.join(root, ...EXAMPLE_FOLDER.split('/'));
 
 function lstatOrNull(target) {
   try { return fs.lstatSync(target); }
   catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null; throw error; }
 }
 
-// One regular file's bytes, read without following a link put in its place.
-// Null when it is no longer the file stat describes.
-function readFile(file, stat) {
+// A descriptor for the regular file stat describes, opened without following
+// a link put in its place; null when it is no longer that file.
+function openExact(file, stat) {
   let fd;
   try { fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0) | (fs.constants.O_NONBLOCK || 0)); }
   catch (error) { if (['ENOENT', 'ENOTDIR', 'ELOOP'].includes(error.code)) return null; throw error; }
+  const opened = fs.fstatSync(fd);
+  if (opened.isFile() && opened.ino === stat.ino && opened.dev === stat.dev) return fd;
+  fs.closeSync(fd);
+  return null;
+}
+
+// Exactly stat.size bytes of that file, never more; null when it is no longer
+// that file or no longer that size.
+function readFile(file, stat) {
+  const fd = openExact(file, stat);
+  if (fd === null) return null;
   try {
-    const opened = fs.fstatSync(fd);
-    return opened.isFile() && opened.ino === stat.ino && opened.dev === stat.dev ? fs.readFileSync(fd) : null;
+    const bytes = Buffer.alloc(stat.size + 1);
+    let length = 0, read;
+    while (length < bytes.length && (read = fs.readSync(fd, bytes, length, bytes.length - length, length)) > 0) length += read;
+    return length === stat.size ? bytes.subarray(0, length) : null;
   } finally { fs.closeSync(fd); }
 }
 
+// Whether root is still the canonical real folder ODS guards, holding a real
+// Playground folder or none. Anything else is the owner's layout.
+const LINKED = 'its workspace or Playground folder is a link or not a folder';
+function realLayout(root) {
+  try {
+    const playground = lstatOrNull(path.join(root, 'Playground'));
+    return fs.realpathSync(root) === root && realDirectory(fs.lstatSync(root)) && (!playground || realDirectory(playground));
+  } catch (error) {
+    if (filesystemError(error)) return false;
+    throw error;
+  }
+}
+
 // Every directory (with its sorted entry names) and regular file (with its
-// bytes) of the folder, parents first. Null when the folder is absent;
-// {skipped} when ODS cannot copy it back exactly: a link or special file, or
-// more than MAX_ENTRIES entries or MAX_BYTES.
-function takeSnapshot(folder) {
-  if (!lstatOrNull(folder)) return null;
-  const entries = new Map(), pending = [''];
+// bytes) of the example, parents first. Sizes are checked before any byte is
+// read. Null when the folder is absent (a case-only rename counts as absent);
+// {skipped} when ODS cannot copy it back exactly: a linked workspace or
+// Playground, a link, hard-linked or special file inside, or more than
+// MAX_ENTRIES entries or MAX_BYTES.
+function takeSnapshot(root) {
+  if (!realLayout(root)) return {skipped: LINKED};
+  const folder = folderIn(root);
+  if (!lstatOrNull(folder) || !fs.readdirSync(path.dirname(folder)).includes(EXAMPLE)) return null;
+  const found = [], pending = [''];
   let bytes = 0;
   while (pending.length) {
     const key = pending.shift(), target = entryPath(folder, key), stat = fs.lstatSync(target);
-    if (entries.size >= MAX_ENTRIES) return {skipped: `it holds more than ${MAX_ENTRIES} files and folders`};
+    if (found.length >= MAX_ENTRIES) return {skipped: `it holds more than ${MAX_ENTRIES} files and folders`};
     if (realDirectory(stat)) {
       const children = fs.readdirSync(target).sort();
-      entries.set(key, {mode: modeOf(stat), children});
+      found.push([key, {mode: modeOf(stat), children}]);
       pending.push(...children.map(name => key ? `${key}/${name}` : name));
-      continue;
-    }
-    if (!stat.isFile()) return {skipped: 'it holds a link or special file'};
-    const content = readFile(target, stat);
-    if (!content) return {skipped: 'it changed while ODS copied it'};
-    bytes += content.length;
-    if (bytes > MAX_BYTES) return {skipped: 'it holds more than 16 MiB'};
-    entries.set(key, {mode: modeOf(stat), bytes: content, stat});
+    } else if (stat.isFile() && stat.nlink <= 1) {
+      bytes += stat.size;
+      if (bytes > MAX_BYTES) return {skipped: 'it holds more than 16 MiB'};
+      found.push([key, {mode: modeOf(stat), stat}]);
+    } else return {skipped: 'it holds a link, a hard-linked file or a special file'};
   }
-  return {entries};
+  for (const [key, entry] of found) {
+    if (entry.children) continue;
+    entry.bytes = readFile(entryPath(folder, key), entry.stat);
+    if (!entry.bytes) return {skipped: 'it changed while ODS copied it'};
+  }
+  return {entries: new Map(found)};
 }
 
-// Whether the folder still matches the copy. A file with the same size,
-// times and identity counts as unchanged; any doubt compares its bytes.
+// Whether the example still matches the copy. A file with the same size,
+// times and identity counts as unchanged; any other doubt compares bytes,
+// and a different size, mode, kind or link count is a change without reading.
 function matches(folder, snapshot) {
-  if (!realDirectory(lstatOrNull(path.dirname(folder)))) return false;
+  const playground = path.dirname(folder);
+  if (!lstatOrNull(playground) || !fs.readdirSync(playground).includes(EXAMPLE)) return false;
   for (const [key, entry] of snapshot.entries) {
     const target = entryPath(folder, key), stat = lstatOrNull(target);
     if (!stat || modeOf(stat) !== entry.mode) return false;
@@ -156,7 +193,7 @@ function matches(folder, snapshot) {
       if (!realDirectory(stat) || fs.readdirSync(target).sort().join('/') !== entry.children.join('/')) return false;
       continue;
     }
-    if (!stat.isFile()) return false;
+    if (!stat.isFile() || stat.nlink > 1 || stat.size !== entry.bytes.length) return false;
     if (sameFile(stat, entry.stat)) continue;
     if (!readFile(target, stat)?.equals(entry.bytes)) return false;
     entry.stat = stat;
@@ -164,54 +201,84 @@ function matches(folder, snapshot) {
   return true;
 }
 
-// A file written beside its target and renamed over it. rename replaces the
-// entry itself, never what a link there points to; a link or folder in the
-// way is removed first.
+// Lets ODS list and change a real folder's entries; only a folder the owner
+// cannot fully use is touched.
+function makeUsable(target, stat, mode = 0o700) {
+  if ((stat.mode & 0o700) !== 0o700) fs.chmodSync(target, mode | 0o700);
+}
+
+// Removes one entry without following links: a link (or junction) is
+// removed itself, and a real folder is made usable and emptied first.
+function remove(target) {
+  const stat = lstatOrNull(target);
+  if (!realDirectory(stat)) { if (stat) fs.rmSync(target, {recursive: true, force: true}); return; }
+  makeUsable(target, stat);
+  for (const name of fs.readdirSync(target)) remove(path.join(target, name));
+  fs.rmdirSync(target);
+}
+
+// A file written beside its target with its mode and renamed over it. rename
+// replaces the entry itself, never what a link there points to; anything
+// other than a regular file in the way is removed first. Windows refuses to
+// replace a read-only file, so there one is made writable through its own
+// descriptor first.
 function writeFile(target, entry, stat) {
   const temporary = path.join(path.dirname(target), `.ods-restore-${randomBytes(8).toString('hex')}`);
   try {
     const fd = fs.openSync(temporary, 'wx', 0o600);
     try { fs.writeFileSync(fd, entry.bytes); fs.fchmodSync(fd, entry.mode); } finally { fs.closeSync(fd); }
-    if (stat && !stat.isFile()) fs.rmSync(target, {recursive: true, force: true});
+    if (stat && !stat.isFile()) remove(target);
+    const readOnly = process.platform === 'win32' && stat?.isFile() && !(stat.mode & 0o200) ? openExact(target, stat) : null;
+    if (readOnly !== null) try { fs.fchmodSync(readOnly, 0o600); } finally { fs.closeSync(readOnly); }
     fs.renameSync(temporary, target);
   } finally { fs.rmSync(temporary, {force: true}); }
 }
 
-// Puts the folder back exactly as the copy has it. Only the folder (and a
-// missing Playground above it) is written: directories are recreated, every
-// file is written atomically with its mode, and anything the copy does not
-// have is removed. Removing a link removes the link, never its target.
+// Puts the example back exactly as the copy has it. Only the example (and a
+// missing Playground above it) is written: a case-only rename is undone,
+// each directory is recreated or made writable before its entries are
+// touched, every file is written atomically with its mode, anything the copy
+// does not have is removed, and directory modes are set last. It changes
+// modes by path, so a racing process could still swap a folder for a link
+// between the check and the change: it is not a sandbox.
 function restore(folder, snapshot) {
-  if (!realDirectory(lstatOrNull(path.dirname(folder)))) fs.mkdirSync(path.dirname(folder), {mode: 0o700});
+  const playground = path.dirname(folder);
+  if (!lstatOrNull(playground)) fs.mkdirSync(playground, {mode: 0o700});
+  // Found under another spelling only on a disk that ignores case: the same folder.
+  const names = fs.readdirSync(playground);
+  const spelled = !names.includes(EXAMPLE) && lstatOrNull(folder) && names.find(name => name.toLowerCase() === EXAMPLE);
+  if (spelled) fs.renameSync(path.join(playground, spelled), folder);
   for (const [key, entry] of snapshot.entries) {
-    const target = entryPath(folder, key);
-    let stat = lstatOrNull(target);
+    const target = entryPath(folder, key), stat = lstatOrNull(target);
     if (!entry.children) {
-      const same = stat?.isFile() && modeOf(stat) === entry.mode && (sameFile(stat, entry.stat) || readFile(target, stat)?.equals(entry.bytes));
+      const same = stat?.isFile() && stat.nlink <= 1 && modeOf(stat) === entry.mode && stat.size === entry.bytes.length
+        && (sameFile(stat, entry.stat) || readFile(target, stat)?.equals(entry.bytes));
       if (!same) writeFile(target, entry, stat);
       continue;
     }
-    if (stat && !realDirectory(stat)) { fs.rmSync(target, {recursive: true, force: true}); stat = null; }
-    if (!stat) fs.mkdirSync(target, {mode: entry.mode});
-    for (const name of fs.readdirSync(target)) {
-      if (!entry.children.includes(name)) fs.rmSync(path.join(target, name), {recursive: true, force: true});
-    }
-    if (modeOf(fs.lstatSync(target)) !== entry.mode) fs.chmodSync(target, entry.mode);
+    if (stat && !realDirectory(stat)) remove(target);
+    if (realDirectory(stat)) makeUsable(target, stat, entry.mode);
+    else fs.mkdirSync(target, {mode: entry.mode | 0o700});
+    for (const name of fs.readdirSync(target)) if (!entry.children.includes(name)) remove(path.join(target, name));
+  }
+  for (const [key, entry] of [...snapshot.entries].reverse()) {
+    const target = entryPath(folder, key);
+    if (entry.children && modeOf(fs.lstatSync(target)) !== entry.mode) fs.chmodSync(target, entry.mode);
   }
 }
 
 // ----------------------------------------------------------------- runs --
 
-// One guard per gateway. Each run registers with whether its owner turn names
-// the example. While any active run in a workspace names it, nothing there is
-// restored; when the last such run ends, the other active runs copy the folder
-// again, so its changes stick. check() and end() return 'restored', 'failed'
-// or undefined.
+// One guard per gateway. begin(), callEnds(), check() and end() return
+// 'restored', 'failed' or undefined.
 export function createExampleGuard({warn = () => {}, now = Date.now} = {}) {
-  const spaces = new Map(), runRoots = new Map(), logged = new Set();
+  // Per canonical workspace root: the known-good tree. Per run: its root,
+  // whether its owner turn names the example, its in-flight calls (named runs
+  // only) and when it stops counting.
+  const spaces = new Map(), runs = new Map(), logged = new Set();
   const once = (key, text) => { if (!logged.has(key)) { logged.add(key); warn(text); } };
-  const folderIn = root => path.join(root, ...EXAMPLE_FOLDER.split('/'));
-  const naming = space => [...space.runs.values()].some(run => run.names);
+  const space = root => { if (!spaces.has(root)) spaces.set(root, {baseline: undefined}); return spaces.get(root); };
+  const namedCallRunning = root => [...runs.values()].some(run => run.root === root && run.names && run.calls.size && now() <= run.until);
 
   // The canonical workspace root, when its example is the copy ODS added.
   function guardedRoot(workspaceRoot) {
@@ -221,62 +288,93 @@ export function createExampleGuard({warn = () => {}, now = Date.now} = {}) {
       return addedExampleProjects(root).includes(EXAMPLE) ? root : null;
     } catch (error) {
       if (!filesystemError(error)) throw error;
-      once(workspaceRoot, `Portal is not guarding ${EXAMPLE_FOLDER} in ${workspaceRoot}: its workspace or record could not be read (${error.code}).`);
+      once(`${workspaceRoot}:root`, `Portal is not guarding ${EXAMPLE_FOLDER} in ${workspaceRoot}: its workspace or record could not be read (${error.code}).`);
       return null;
     }
   }
-  function copy(root, space) {
-    space.snapshot = undefined;
-    if (!space.runs.size || naming(space)) return;
+  // The folder as it is now becomes the known-good tree, unless ODS cannot
+  // copy it back exactly: then it is the owner's, and the log says so once.
+  function observe(root) {
     let taken;
-    try { taken = takeSnapshot(folderIn(root)); }
+    try { taken = takeSnapshot(root); }
     catch (error) { if (!filesystemError(error)) throw error; taken = {skipped: `it could not be read (${error.code})`}; }
-    if (taken?.skipped) once(root, `Portal is not guarding ${EXAMPLE_FOLDER} in ${root}: ${taken.skipped}, so it stays as the owner has it.`);
-    if (taken?.entries) space.snapshot = taken;
+    if (taken?.skipped) once(`${root}:${taken.skipped}`, `Portal is not guarding ${EXAMPLE_FOLDER} in ${root}: ${taken.skipped}, so it stays as the owner has it.`);
+    space(root).baseline = taken?.entries ? taken : undefined;
   }
-  function forget(runId) {
-    const root = runRoots.get(runId), space = spaces.get(root);
-    runRoots.delete(runId);
-    if (!space) return;
-    const named = space.runs.get(runId)?.names;
-    space.runs.delete(runId);
-    if (!space.runs.size) spaces.delete(root);
-    else if (named) copy(root, space);
-  }
-  function check(runId) {
-    const root = runRoots.get(runId), space = spaces.get(root);
-    if (!space?.snapshot || naming(space)) return undefined;
-    const folder = folderIn(root);
+  // Puts the example back to the known-good tree if it differs, unless a
+  // named run's call is running. A workspace or Playground that became a link
+  // or a file is the owner's layout at a run's start, and a failure during a
+  // run; either way ODS stops guarding it until it finds a real folder again.
+  function settle(root, atStart = false) {
+    const state = space(root);
+    if (!state.baseline || namedCallRunning(root)) return undefined;
     try {
-      if (matches(folder, space.snapshot)) return undefined;
-      restore(folder, space.snapshot);
+      if (!realLayout(root)) {
+        state.baseline = undefined;
+        once(`${root}:${LINKED}`, `Portal is not guarding ${EXAMPLE_FOLDER} in ${root}: ${LINKED}, so it stays as the owner has it.`);
+        return atStart ? undefined : 'failed';
+      }
+      const folder = folderIn(root);
+      if (matches(folder, state.baseline)) return undefined;
+      restore(folder, state.baseline);
       return 'restored';
     } catch (error) {
       if (!filesystemError(error)) throw error;
-      warn(`Portal could not put ${EXAMPLE_FOLDER} back in ${root}: ${error.code} ${error.message}`);
+      once(`${root}:${error.code}`, `Portal could not put ${EXAMPLE_FOLDER} back in ${root}: ${error.code} ${error.message}`);
       return 'failed';
     }
   }
+  // After a call or the end of a run that names the example, the folder as it
+  // is now is the known-good tree (an unchanged folder keeps its copy). After
+  // any other run's, the folder is checked.
+  function ended(run) {
+    if (!run.names) return settle(run.root);
+    const state = space(run.root);
+    try { if (state.baseline && realLayout(run.root) && matches(folderIn(run.root), state.baseline)) return undefined; }
+    catch (error) { if (!filesystemError(error)) throw error; }
+    observe(run.root);
+    return undefined;
+  }
   return {
-    // A run starts. A later attempt of the same run keeps its registration.
-    begin(runId, workspaceRoot, names) {
-      if (typeof runId !== 'string' || !runId || runRoots.has(runId)) return;
-      for (const [id, root] of runRoots) if (now() - spaces.get(root).runs.get(id).at > RUN_TTL_MS) forget(id);
-      const root = guardedRoot(workspaceRoot);
-      if (!root) return;
-      const space = spaces.get(root) ?? {runs: new Map(), snapshot: undefined};
-      spaces.set(root, space);
-      space.runs.set(runId, {names: names === true, at: now()});
-      runRoots.set(runId, root);
-      if (!space.snapshot) copy(root, space);
+    // A run starts (each attempt calls it again). A run that does not name
+    // the example gets it put back before it works.
+    begin(runId, workspaceRoot, names, timeoutMs) {
+      if (typeof runId !== 'string' || !runId) return undefined;
+      for (const [id, run] of runs) if (now() > run.until) runs.delete(id);
+      if (!runs.has(runId)) {
+        const root = guardedRoot(workspaceRoot);
+        if (!root) return undefined;
+        runs.set(runId, {root, names: names === true, calls: new Set(),
+          until: now() + (Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs + RUN_GRACE_MS : RUN_TTL_MS)});
+      }
+      const run = runs.get(runId);
+      if (!space(run.root).baseline) { observe(run.root); return undefined; }
+      return run.names ? undefined : settle(run.root, true);
     },
-    check,
+    // Whether ODS puts the example back for this run if it changes.
+    guarding(runId) {
+      const run = runs.get(runId);
+      return Boolean(run && !run.names && space(run.root).baseline);
+    },
+    callStarts(runId, callId) {
+      const run = runs.get(runId);
+      if (run?.names) run.calls.add(callId);
+    },
+    callEnds(runId, callId) {
+      const run = runs.get(runId);
+      run?.calls.delete(callId);
+      return run ? ended(run) : undefined;
+    },
+    check(runId) {
+      const run = runs.get(runId);
+      return run && !run.names ? settle(run.root) : undefined;
+    },
     end(runId) {
-      const outcome = check(runId);
-      forget(runId);
-      return outcome;
+      const run = runs.get(runId);
+      runs.delete(runId);
+      return run ? ended(run) : undefined;
     },
   };
 }
 
-export const exampleGuardTesting = Object.freeze({takeSnapshot, matches, restore, MAX_ENTRIES, MAX_BYTES, RUN_TTL_MS});
+export const exampleGuardTesting = Object.freeze({takeSnapshot, matches, restore, readFile, MAX_ENTRIES, MAX_BYTES, RUN_TTL_MS, RUN_GRACE_MS});

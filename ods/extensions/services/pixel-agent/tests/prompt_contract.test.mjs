@@ -140,8 +140,7 @@ test("preview guidance preserves project planning and requires publication evide
   assert.match(ODS_WORKSPACE_PREVIEW_CONTRACT, /Preserve existing source files and the requested framework/);
   assert.match(ODS_WORKSPACE_PREVIEW_CONTRACT, /does not establish a URL reachable by the owner/);
   assert.doesNotMatch(ODS_WORKSPACE_PREVIEW_CONTRACT, /first productive tool step|Do not call exec|Only after.*may you reply/);
-  assert.match(preview.appendSystemContext, /ODS ships one finished example game, Playground\/elf-of-doom\. It belongs to the owner: change it only when the owner's message names it, and never start new work from it unless the owner asks for a copy\. ODS supplies no starter bytes for new work/);
-  assert.match(ODS_WORKSPACE_NEW_STATIC_CONTRACT, /ODS supplies no starter bytes for new work/);
+  assert.match(preview.appendSystemContext, /ODS supplies no creative artifact bytes/);
   assert.doesNotMatch(preview.appendSystemContext, /under 7000 characters/);
   assert.doesNotMatch(preview.appendSystemContext, /<!doctype html>/i);
   assert.doesNotMatch(preview.appendSystemContext, /scaffold with|template breakout|Do not generate HTML/);
