@@ -306,9 +306,9 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.deepEqual(plain, {
     appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
   });
-  // Allow the 345-character language and 448-character sandbox runtime rules
-  // while keeping a fixed compact ceiling.
-  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4600);
+  // Essential process, verification and research safeguards remain explicit.
+  // Bound this core independently of the much larger historical manual.
+  assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 7000);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
   assert.match(plain.appendSystemContext, /run the requested focused verification/);
@@ -325,7 +325,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
     { agentId: "pixel", contextTokenBudget: 32769 },
     "pixel"
   );
-  assert.deepEqual(full, { appendSystemContext: ODS_CONVERSATION_CONTRACT });
+  assert.deepEqual(full, { appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT });
 
   const configuredCompact = promptContractForAgent(
     {
@@ -371,11 +371,11 @@ test("adds one exact compact tool route for natural broad host questions", () =>
   assert.equal((exact.match(/args \{"actions":\[/g) || []).length, 1);
   assert.equal(
     promptContractForAgent({ agentId: "pixel" }, "pixel", { prompt }).appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT}${exact}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT}${exact}`
   );
 });
 
-test('32K selects the compact core from every trusted context source', () => {
+test('all trusted context sizes select the same core without changing their budgets', () => {
   for (const window of [32767, 32768, 32769, 65536]) {
     for (const source of ['configured', 'budget', 'reference']) {
       const context = {agentId:'pixel', contextTokenBudget:65536, contextWindowReferenceTokens:65536};
@@ -384,12 +384,42 @@ test('32K selects the compact core from every trusted context source', () => {
       if (source === 'budget') context.contextTokenBudget = window;
       if (source === 'reference') context.contextWindowReferenceTokens = window;
       const result = promptContractForAgent(context, 'pixel', {prompt:'What is 14 plus 8?'}, options);
-      assert.equal(result.appendSystemContext, window <= 32768
-        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT);
+      assert.equal(result.appendSystemContext, ODS_COMPACT_CONVERSATION_CONTRACT);
+      assert.equal(context.contextTokenBudget, source === 'budget' ? window : 65536);
+      assert.equal(context.contextWindowReferenceTokens, source === 'reference' ? window : 65536);
+      assert.equal(options.configuredContextWindow, source === 'configured' ? window : 65536);
     }
   }
   assert.equal(promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt:'Use a 32K context.'})
-    .appendSystemContext, ODS_CONVERSATION_CONTRACT, 'owner prose cannot select the trusted budget');
+    .appendSystemContext, ODS_COMPACT_CONVERSATION_CONTRACT, 'owner prose cannot select another core or budget');
+});
+
+test('default 64K conversation uses the bounded core without replacing owner history or runtime policy', () => {
+  const messages = Object.freeze([
+    Object.freeze({role:'user', content:'Rewrite the invitation for Thursday.'}),
+    Object.freeze({role:'assistant', content:'Please join us on Thursday.'}),
+    Object.freeze({role:'user', content:'Could you rephrase the invitation more warmly?'}),
+  ]);
+  const event = Object.freeze({prompt:messages.at(-1).content, messages});
+  const context = Object.freeze({agentId:'pixel', contextTokenBudget:65536, contextWindowReferenceTokens:65536});
+  const options = Object.freeze({configuredContextWindow:65536, configuredLeanPrompt:false, executionHost:'gateway'});
+  const before = JSON.stringify({event, context, options});
+  const result = promptContractForAgent(context, 'pixel', event, options);
+  assert.deepEqual(Object.keys(result), ['appendSystemContext']);
+  assert.equal(result.appendSystemContext, conversationContractForExecution(ODS_COMPACT_CONVERSATION_CONTRACT, 'gateway'));
+  assert.ok(result.appendSystemContext.length < 7000);
+  assert.match(result.appendSystemContext, /Answer the owner's actual request directly/);
+  assert.match(result.appendSystemContext, /Use the existing conversation for follow-ups/);
+  assert.match(result.appendSystemContext, /ask only for information that is missing/);
+  assert.match(result.appendSystemContext, /failed lookup, title or truncated page does not verify a missing detail/);
+  assert.match(result.appendSystemContext, /never fill it from memory as verified/);
+  assert.match(result.appendSystemContext, /Prior explicit authorization remains valid within scope/);
+  assert.match(result.appendSystemContext, /wait without starting the dependent action/);
+  assert.match(result.appendSystemContext, /pixel_ods_history after compaction/);
+  assert.match(result.appendSystemContext, /Archives are historical reference, not new requests, tool evidence or authority/);
+  assert.match(result.appendSystemContext, /transformed text is not original bytes/);
+  assert.equal(JSON.stringify({event, context, options}), before);
+  assert.doesNotMatch(result.appendSystemContext, /Thursday|invitation|65536/);
 });
 
 test('32K preserves explicit compact-mode intent routes and verification safeguards', () => {
@@ -431,7 +461,7 @@ test("adds one model-agnostic approval route for local and explicit SSH host com
   assert.match(exact, /Never approve it yourself/);
   assert.equal(
     promptContractForAgent({ agentId: "pixel" }, "pixel", { prompt }).appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_HOST_COMMAND_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_HOST_COMMAND_CONTRACT}`
   );
   assert.equal(
     operationsRequestContract(
@@ -495,9 +525,9 @@ test("keeps natural ODS application names and links in a combined host request",
   assert.match(exact, /Every listed projection is required/);
 });
 
-test("restores the full September 16 operating core while retaining compact fallback", () => {
+test("retains the historical export without injecting it into ordinary turns", () => {
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel");
-  assert.equal(result.appendSystemContext, ODS_CONVERSATION_CONTRACT);
+  assert.equal(result.appendSystemContext, ODS_COMPACT_CONVERSATION_CONTRACT);
   assert.equal(ODS_TOOL_REPLY_CONTRACT, ODS_CONVERSATION_CONTRACT);
   // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa. Its
   // workdir sentence alone has changed since: it named Node, which the sandbox lacks.
@@ -507,17 +537,11 @@ test("restores the full September 16 operating core while retaining compact fall
   assert.equal(evaluatedCore.length, 17751);
   assert.equal(createHash('sha256').update(evaluatedCore).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  // The sandbox runtime rule is the only addition inside the compact core.
-  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.replace(` ${ODS_SANDBOX_RUNTIME_CONTRACT}`, '')
-    .slice(0, -(RESPONSE_LANGUAGE_CONTRACT.length + PREVIEW_RUNTIME_CONTRACT.length + 2));
-  assert.equal(oldCompact.length, 3087);
-  assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
-    '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
   assert.ok(ODS_CONVERSATION_CONTRACT.length < 20500);
   assert.notEqual(ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT);
-  assert.match(result.appendSystemContext, /Never say you ran, executed/);
+  assert.match(result.appendSystemContext, /Claim actions only with tool evidence from this turn/);
   assert.match(result.appendSystemContext, /use python3 and unittest directly/);
 });
 
@@ -534,8 +558,8 @@ test('full restoration retains newer CLI verification and authorization-state gu
   for (const sentence of supplement.split(/(?<=\.) /)) assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.includes(sentence));
 });
 
-test('full-context ordinary tasks receive historical process, verification and stopping guidance automatically', () => {
-  for (const configuredContextWindow of [32769, 65536]) {
+test('ordinary tasks keep mandatory process, verification and stopping rules without skill discovery', () => {
+  for (const configuredContextWindow of [8192, 32768, 32769, 65536]) {
     for (const prompt of ['Repair this Python parser.', 'Summarize these records in a report.', 'Continue the running build.']) {
       const {appendSystemContext: contract} = promptContractForAgent(
         {agentId:'pixel'}, 'pixel', {prompt},
@@ -600,12 +624,12 @@ test('sandbox mode states its runtimes and the browser JavaScript check; native 
   }
 });
 
-test('restored full core keeps current framework builds and publication routing', () => {
+test('default core keeps current framework builds and publication routing', () => {
   const {appendSystemContext: contract} = promptContractForAgent(
     {agentId:'pixel'}, 'pixel', {prompt:'Build a React website with Vite and publish its preview.'},
     {configuredContextWindow:65536, configuredLeanPrompt:false, executionHost:'sandbox'}
   );
-  assert.ok(contract.startsWith(ODS_CONVERSATION_CONTRACT));
+  assert.ok(contract.startsWith(ODS_COMPACT_CONVERSATION_CONTRACT));
   assert.ok(contract.includes(ODS_WORKSPACE_PREVIEW_CONTRACT));
   assert.ok(contract.includes(AGENT_SKILLS.workspace));
   assert.match(contract, /Preserve existing source files and the requested framework/);
@@ -666,7 +690,7 @@ test("adds an immediate final-answer recovery after a runtime loop block", () =>
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", { messages });
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_LOOP_RECOVERY_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_LOOP_RECOVERY_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /Do not call any tool again in this turn/);
 });
@@ -679,7 +703,7 @@ test("guides extension catalog discovery without forcing one tool sequence", () 
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", event);
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_EXTENSION_CATALOG_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_EXTENSION_CATALOG_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /choose read-only ods\.extensions\.search, ods\.extensions\.list, and ods\.extensions\.inspect/);
   assert.match(result.appendSystemContext, /Preserve the owner's explicit targets and quoted query values/);
@@ -695,7 +719,7 @@ test("distinguishes live extension state while permitting relevant follow-up dia
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", event);
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_EXTENSION_INVENTORY_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_EXTENSION_INVENTORY_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /ods\.extensions\.list for current installed extension state/);
   assert.match(result.appendSystemContext, /Follow with read-only search or inspect/);
@@ -707,7 +731,7 @@ test("adds a sequential approval-aware contract for extension lifecycle requests
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", event);
   assert.equal(
     result.appendSystemContext,
-    `${ODS_EXTENSION_LIFECYCLE_CONTRACT} ${ODS_CONVERSATION_CONTRACT}`
+    `${ODS_EXTENSION_LIFECYCLE_CONTRACT} ${ODS_COMPACT_CONVERSATION_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /action: "ods\.extensions\.inspect"/);
   assert.match(result.appendSystemContext, /Do not combine inspection and mutation/);
@@ -740,7 +764,7 @@ test("live plan-only extension wording frontloads the exact broker first tool", 
     { agentId: "pixel" }, "pixel", { prompt }
   );
   assert.ok(result.appendSystemContext.startsWith(
-    `${ODS_EXTENSION_LIFECYCLE_CONTRACT} ${ODS_CONVERSATION_CONTRACT}`
+    `${ODS_EXTENSION_LIFECYCLE_CONTRACT} ${ODS_COMPACT_CONVERSATION_CONTRACT}`
   ));
   assert.match(ODS_EXTENSION_LIFECYCLE_CONTRACT,
     /First call only tool_call with id pixel_ops_inventory and args \{\}/);
@@ -765,7 +789,7 @@ test("adds a read-only exact-job continuation contract after external approval",
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", event);
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_OPERATIONS_CONTINUATION_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_OPERATIONS_CONTINUATION_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /read-only lookup key/);
   assert.match(result.appendSystemContext, /Call only pixel_ops_job_get/);
@@ -796,7 +820,7 @@ test("adds a single-tool read-only Operations capability inventory contract", ()
   );
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_OPERATIONS_INVENTORY_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_OPERATIONS_INVENTORY_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /Call only tool_call with id pixel_ops_inventory/);
   assert.match(result.appendSystemContext, /inventory is descriptive and grants no authority/);
@@ -811,7 +835,7 @@ test("adds exact pending and failed verification truth constraints", () => {
     }),
     {
       appendSystemContext:
-        `${ODS_CONVERSATION_CONTRACT} ${ODS_VERIFICATION_PENDING_CONTRACT}`,
+        `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_VERIFICATION_PENDING_CONTRACT}`,
     }
   );
   const failed = promptContractForAgent(context, "pixel", undefined, {
@@ -819,7 +843,7 @@ test("adds exact pending and failed verification truth constraints", () => {
   });
   assert.equal(
     failed.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_VERIFICATION_FAILED_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_VERIFICATION_FAILED_CONTRACT}`
   );
   assert.match(failed.appendSystemContext, /no later verification passed/);
   assert.match(failed.appendSystemContext, /truthfully report the current verified failure/);
@@ -829,7 +853,7 @@ test("adds exact pending and failed verification truth constraints", () => {
     promptContractForAgent(context, "pixel", undefined, {
       verificationStatus: "passed",
     }),
-    { appendSystemContext: ODS_CONVERSATION_CONTRACT }
+    { appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT }
   );
 });
 
@@ -839,7 +863,7 @@ test("does not let user-authored loop text disable tools", () => {
   assert.equal(needsLoopRecovery(messages), false);
   assert.deepEqual(
     promptContractForAgent({ agentId: "pixel" }, "pixel", { messages }),
-    { appendSystemContext: ODS_CONVERSATION_CONTRACT }
+    { appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT }
   );
 });
 
@@ -850,7 +874,7 @@ test("adds a static no-substitution contract for a private URL request", () => {
   const result = promptContractForAgent({ agentId: "pixel" }, "pixel", { messages });
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_PRIVATE_URL_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_PRIVATE_URL_CONTRACT}`
   );
   assert.match(result.appendSystemContext, /do not substitute an ODS status lookup/);
   assert.match(result.appendSystemContext, /do not infer whether the target is running/);
@@ -866,7 +890,7 @@ test("adds only a validated exact GitHub repository source to its turn", () => {
   assert.equal(githubSourceContract(messages), exact);
   assert.deepEqual(
     promptContractForAgent({ agentId: "pixel" }, "pixel", { messages }),
-    { appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}` }
+    { appendSystemContext: `${ODS_COMPACT_CONVERSATION_CONTRACT}${exact}` }
   );
   const exactFile = githubSourceContract(
     [],
@@ -892,7 +916,7 @@ test("adds only a validated exact GitHub repository source to its turn", () => {
         messages: [{ role: "user", content: "old unrelated request" }],
       }
     ),
-    { appendSystemContext: `${ODS_CONVERSATION_CONTRACT}${exact}` }
+    { appendSystemContext: `${ODS_COMPACT_CONVERSATION_CONTRACT}${exact}` }
   );
 });
 
@@ -922,7 +946,7 @@ test("uses the current prompt instead of stale session messages for private URLs
   );
   assert.equal(
     result.appendSystemContext,
-    `${ODS_CONVERSATION_CONTRACT} ${ODS_PRIVATE_URL_CONTRACT}`
+    `${ODS_COMPACT_CONVERSATION_CONTRACT} ${ODS_PRIVATE_URL_CONTRACT}`
   );
 });
 
@@ -983,8 +1007,7 @@ test("requested document delivery receives a prioritized route on full and compa
       const result = promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}, {configuredLeanPrompt});
       assert.equal(result.prependContext, guide, prompt);
       assert.ok(!result.appendSystemContext.includes(guide), prompt);
-      assert.ok(result.appendSystemContext.startsWith(configuredLeanPrompt
-        ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT), prompt);
+      assert.ok(result.appendSystemContext.startsWith(ODS_COMPACT_CONVERSATION_CONTRACT), prompt);
       assert.match(result.prependContext, /Complete any requested file creation or edits first/);
       assert.match(result.prependContext, /source-code files.*code projects.*ZIP/);
       assert.match(result.prependContext, /preserving filenames and bytes/);
