@@ -81,3 +81,23 @@ it('ignores malformed diagnostic metadata and removes a stale diagnosis on the n
   await poll({available:true})
   expect(screen.queryByLabelText('Model activation')).toBeNull()
 })
+
+it('keeps unverified health blocked, polls again, and preserves the draft without replay',async()=>{
+  render(<Pixel/>);await act(async()=>{})
+  fireEvent.change(screen.getByRole('textbox'),{target:{value:'Keep my unsent request'}})
+  const unknown={available:false,state:'model_unverified',
+    detail:"Portal could not verify the local model's health. It will check again shortly; your draft is preserved."}
+  await poll(unknown)
+  expect(screen.getByText(unknown.detail)).toBeInTheDocument()
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  const previousReads=fetch.mock.calls.filter(([url])=>url==='/api/pixel/status').length
+  await poll(unknown)
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/status')).toHaveLength(previousReads+1)
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  expect(screen.getByRole('textbox')).toHaveValue('Keep my unsent request')
+  expect(JSON.parse(localStorage.getItem(CHAT_KEY)).draft).toBe('Keep my unsent request')
+  await poll({available:true})
+  expect(screen.getByTitle('Send')).toBeEnabled()
+  expect(screen.getByRole('textbox')).toHaveValue('Keep my unsent request')
+  expect(fetch.mock.calls.every(([url,options])=>options?.method!=='POST' || url==='/api/pixel/chat/context')).toBe(true)
+})
