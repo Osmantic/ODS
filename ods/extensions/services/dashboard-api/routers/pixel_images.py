@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from pixel_chat_results import owner_namespace
 from pixel_image_input import ImageInputError, MAX_IMAGE_BYTES
-from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted, custody_failure_reason
+from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted, custody_failure_reason, custody_failure_metadata
 from pixel_image_transport import ImageResolutionError, resolve_image_parts
 from pixel_image_admission import ImageWorkBudget
 from security import verify_api_key
@@ -26,6 +26,13 @@ _image_work = ImageWorkBudget(1)
 _UPLOAD_TIMEOUT_SECONDS = 30
 _PRIVATE_HEADERS = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
                     "Content-Security-Policy": "default-src 'none'; sandbox"}
+
+
+class PixelStorageUnavailable(HTTPException):
+    """Trusted local storage failure, distinct from an upstream HTTP 503."""
+
+    def __init__(self, detail):
+        super().__init__(status_code=503, detail=detail)
 
 
 def _check_scope(chat_id, image_id=None):
@@ -55,7 +62,10 @@ def _reserve():
 def _storage_failure_description(error):
     reason = custody_failure_reason(error)
     name = type(error).__name__
-    return name if reason is None else f"{name}; custody={reason}"
+    if reason is None:
+        return name
+    metadata = custody_failure_metadata(error)
+    return f"{name}; custody={reason}" + (f"; {metadata}" if metadata else "")
 
 
 async def _call(method, *args, reservation=None):
@@ -73,7 +83,7 @@ async def _call(method, *args, reservation=None):
     except Exception as exc:
         # Do not expose paths, image data, credentials, or decoder diagnostics.
         logger.warning("Portal image storage operation failed (%s)", _storage_failure_description(exc))
-        raise HTTPException(status_code=503, detail="Portal image storage is unavailable") from exc
+        raise PixelStorageUnavailable("Portal image storage is unavailable") from exc
     finally:
         if reservation is None:
             lease.release()
@@ -95,7 +105,10 @@ async def conversation_storage(method, owner, chat_id):
         raise HTTPException(507, str(exc)) from None
     except Exception as exc:
         logger.warning("Portal conversation lifecycle unavailable (%s)", _storage_failure_description(exc))
-        raise HTTPException(503, "Conversation image deletion could not be confirmed. Retry before deleting local history.") from None
+        detail = ("Portal conversation storage is unavailable. Please try again."
+                  if method == "assert_available" else
+                  "Conversation image deletion could not be confirmed. Retry before deleting local history.")
+        raise PixelStorageUnavailable(detail) from None
 
 
 @router.delete("/{chat_id}")
