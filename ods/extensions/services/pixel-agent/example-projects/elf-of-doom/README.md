@@ -38,11 +38,16 @@ See how it was made: https://odsspark.com
 ## It's yours
 
 Play it, or ask Portal to change it: start your message with
-"In elf-of-doom,", for example "In elf-of-doom, make the arrows give 7".
-Portal changes Elf of Doom only then. Any other change to this folder,
-even one you make by hand, is put back when Portal next works on
-something else.
+"In elf-of-doom," (with the comma), for example "In elf-of-doom, make
+the arrows give 7". Portal changes Elf of Doom only then. When Portal
+works on anything else and changes this folder, ODS puts it back as it
+was. Changes you make yourself while Portal is not working stay.
 
-ODS updates never overwrite or delete this folder. To delete or rename it,
-ask Portal the same way, for example "In elf-of-doom, delete this game";
-ODS then does not add it again.
+Two limits: while a chat that starts with "In elf-of-doom," is working,
+ODS does not put back what another chat changes here at the same time;
+and ODS protects this folder only while it holds at most 512 files and
+folders and 16 MiB.
+
+ODS updates never overwrite or delete this folder. To remove Elf of
+Doom, delete the Playground/elf-of-doom folder yourself; ODS does not
+add it back.

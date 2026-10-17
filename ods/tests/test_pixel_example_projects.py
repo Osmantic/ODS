@@ -166,13 +166,23 @@ def test_readme_says_where_it_is_how_to_play_and_how_it_was_made():
     # The Windows installer accepts more than one WSL distribution.
     assert 'Windows: the same path inside the WSL Linux environment ODS runs in' in prose
     assert 'Ubuntu' not in text and 'Debian' not in text
-    assert ('ODS updates never overwrite or delete this folder. To delete or rename it, ask Portal the same way, '
-            'for example "In elf-of-doom, delete this game"; ODS then does not add it again.') in prose
+    # Removing it is the owner's own folder delete, which the record keeps
+    # (test_a_deleted_or_renamed_example_is_never_added_again); Portal is
+    # never asked to delete it.
+    assert ('ODS updates never overwrite or delete this folder. To remove Elf of Doom, delete the '
+            'Playground/elf-of-doom folder yourself; ODS does not add it back.') in prose
+    assert 'delete this game' not in prose
     assert 'ODS never overwrites' not in prose and 'fresh copy' not in prose
     # The rule the plugin's guard enforces (plugin/example-guard.mjs), in plain words.
-    assert ('Play it, or ask Portal to change it: start your message with "In elf-of-doom,", for example '
-            '"In elf-of-doom, make the arrows give 7". Portal changes Elf of Doom only then. Any other change to '
-            'this folder, even one you make by hand, is put back when Portal next works on something else.') in prose
+    assert ('Play it, or ask Portal to change it: start your message with "In elf-of-doom," (with the comma), for '
+            'example "In elf-of-doom, make the arrows give 7". Portal changes Elf of Doom only then. When Portal '
+            'works on anything else and changes this folder, ODS puts it back as it was. Changes you make yourself '
+            'while Portal is not working stay.') in prose
+    assert ('Two limits: while a chat that starts with "In elf-of-doom," is working, ODS does not put back what '
+            'another chat changes here at the same time; and ODS protects this folder only while it holds at most '
+            '512 files and folders and 16 MiB.') in prose
+    guard = (ROOT / 'extensions/services/pixel-agent/plugin/example-guard.mjs').read_text(encoding='utf-8')
+    assert 'const MAX_ENTRIES = 512;' in guard and 'const MAX_BYTES = 16 * 1024 * 1024;' in guard
     assert 'later requests in that chat' not in prose and 'best-effort' not in prose
     assert 'Qwen3.8-Flash-Next' in text
     assert 'See how it was made: https://odsspark.com\n' in text
@@ -943,6 +953,13 @@ def test_linux_step_adds_the_game_quietly_then_reports_it_present(workspace, tmp
     assert second.returncode == 0, second.stderr
     assert second.stdout == 'installer continues\n'
     assert log.read_text(encoding='utf-8').endswith('Portal example projects: {"elf-of-doom":"previously-received"}\n')
+    # The owner removes it by deleting the folder: the next run never adds it back.
+    shutil.rmtree(workspace / 'Playground/elf-of-doom')
+    third = run_linux_step(workspace.parents[1], log, display=display)
+    assert third.returncode == 0, third.stderr
+    assert third.stdout == 'installer continues\n'
+    assert log.read_text(encoding='utf-8').endswith('Portal example projects: {"elf-of-doom":"previously-received"}\n')
+    assert not (workspace / 'Playground/elf-of-doom').exists()
 
 
 @POSIX_OWNER
@@ -1069,6 +1086,12 @@ def test_macos_step_adds_the_game_quietly_through_the_resolved_install(tmp_path)
     assert second.returncode == 0, second.stderr
     assert second.stdout == 'installer continues\n'
     assert log.read_text(encoding='utf-8').endswith('Portal example projects: {"elf-of-doom":"previously-received"}\n')
+    # The owner removes it by deleting the folder: the next run never adds it back.
+    shutil.rmtree(workspace / 'Playground/elf-of-doom')
+    third = run_macos_step(install, log)
+    assert third.returncode == 0, third.stderr
+    assert log.read_text(encoding='utf-8').endswith('Portal example projects: {"elf-of-doom":"previously-received"}\n')
+    assert not (workspace / 'Playground/elf-of-doom').exists()
 
 
 @POSIX_OWNER

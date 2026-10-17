@@ -19,9 +19,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   other project while the folder exists; clicking it plays the game in the
   Workspace panel with no model run. Portal changes Elf of Doom only when
   your message starts with "In elf-of-doom,", for example "In elf-of-doom,
-  make the arrows give 7"; any other change to it is put back. Existing
-  Linux and Windows (WSL2) installs get it on their next installer run; Macs
-  get it on a new install or the next native Portal update.
+  make the arrows give 7"; when Portal changes it while working on anything
+  else, ODS puts it back and says so, and changes you make yourself while
+  Portal is idle stay. To remove it, delete the folder; ODS never adds it
+  back. Existing Linux and Windows (WSL2) installs get it on their next
+  installer run; Macs get it on a new install or the next native Portal
+  update.
 
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple

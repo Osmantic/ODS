@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import socket
 import subprocess
@@ -196,9 +197,14 @@ def test_native_update_adds_example_projects_to_the_named_owner_workspace(tmp_pa
     # The record is in the state folder, never in the workspace.
     assert [path.name for path in workspace.iterdir()] == ['Playground']
     assert len(list((state / '.ods-example-projects').iterdir())) == 1
-    # The workspace has received it: a later update never adds it again.
+    # The workspace has received it: a later update never adds it again, even
+    # after the owner deleted the folder to remove it.
     assert module.add_example_projects(preparation=preparation, state_dir=state) == {
         'elf-of-doom': 'previously-received'}
+    shutil.rmtree(workspace / 'Playground/elf-of-doom')
+    assert module.add_example_projects(preparation=preparation, state_dir=state) == {
+        'elf-of-doom': 'previously-received'}
+    assert not (workspace / 'Playground/elf-of-doom').exists()
     document['agents']['list'].append({'id': 'other', 'workspace': str(workspace)})
     outcome = module.add_example_projects(preparation=preparation, state_dir=state)
     assert outcome == {'status': 'manual-review-required', 'cause': 'ValueError: native-portal-profile-agent-required'}
