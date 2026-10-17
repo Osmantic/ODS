@@ -883,7 +883,10 @@ function PreflightSummary({ preflight, loading, error }) {
         </p>
       )}
       {header?.status === 'unavailable' && header.message && refusal?.code !== 'gated' && (
-        <p className="text-theme-text-muted">Some checks could not run: {header.message}.</p>
+        <p className="text-theme-text-muted">
+          Some checks could not run: {header.message.replace(/\.*$/, '')}. Close and reopen this list to try again.{' '}
+          <HelpLink className="text-[11px]" />
+        </p>
       )}
       <p className="text-[10px] text-theme-text-muted">From the repository’s own files. How a model actually behaves shows only once you use it.</p>
     </section>
