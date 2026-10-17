@@ -19,16 +19,12 @@ Clicking outside the game pauses it. The game is plain HTML, CSS and
 JavaScript and needs no internet connection, so you can also open
 index.html in any web browser.
 
-To ask Portal for a change after opening the game from the sidebar, name
-the folder in your request, for example "In elf-of-doom, make the arrows
-give 7".
-
 ## Where it lives
 
 This folder is Playground/elf-of-doom in your Portal workspace:
 
 - Linux: ~/.openclaw/workspace-pixel/Playground/elf-of-doom
-- Windows: the same path inside the Ubuntu (WSL) environment ODS runs in
+- Windows: the same path inside the WSL Linux environment ODS runs in
 - macOS: data/pixel-native/home/.openclaw/workspace-pixel/Playground/elf-of-doom
   inside your ODS install folder
 
@@ -41,11 +37,11 @@ See how it was made: https://odsspark.com
 
 ## It's yours
 
-Play it, change it, or ask Portal to change it. Name it in your request, for
-example "In elf-of-doom, make the arrows give 7"; later requests in that chat
-can just say what to change, such as "Now make them give 9". Portal tries to
-keep new games in their own Playground folder and to change this one only
-when you name it.
+Play it, change it, or ask Portal to change it. Name the folder in every
+request that should change it, even right after opening the game from the
+sidebar: for example "In elf-of-doom, make the arrows give 7", then
+"In elf-of-doom, make them give 9". Portal tries to keep new games in their
+own Playground folder and to change this one only when you name it.
 
 ODS updates never overwrite or delete this folder. If you delete or rename
 it, ODS does not add it again.

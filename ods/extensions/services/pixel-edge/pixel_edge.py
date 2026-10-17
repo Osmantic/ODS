@@ -835,6 +835,8 @@ _EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _EXAMPLE_PREVIEW_KEYS = frozenset(("bytes", "entrySha256", "files", "kind", "port", "relativeDirectory",
                                    "schemaVersion", "sha256", "siteId", "url"))
 _SHA256 = re.compile(r"[a-f0-9]{64}")
+_EXAMPLE_REFUSALS = {404: "example-project-unavailable", 409: "example-project-not-previewable",
+                     422: "example-project-not-playable"}
 
 
 def _example_projects(value) -> dict:
@@ -907,9 +909,9 @@ async def handle_example_projects(request: web.Request):
                                             headers={"Accept": "application/json"}, allow_redirects=False))
             async with upstream_request as upstream:
                 # 404: the folder is gone. 409: the host refused files in it.
-                if opening and upstream.status in (404, 409):
-                    error = "example-project-unavailable" if upstream.status == 404 else "example-project-not-previewable"
-                    return web.json_response({"error": error}, status=upstream.status,
+                # 422: a folder of that name is there but cannot open as the example.
+                if opening and upstream.status in _EXAMPLE_REFUSALS:
+                    return web.json_response({"error": _EXAMPLE_REFUSALS[upstream.status]}, status=upstream.status,
                                              headers={"Cache-Control": "no-store"})
                 if upstream.status != 200 or upstream.content_type != "application/json":
                     raise ValueError("unavailable")

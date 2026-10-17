@@ -1,6 +1,8 @@
 """Prepare and activate a native Pixel update without replacing owner data."""
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -80,27 +82,33 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'manual-review-required'}
 
 
-def add_example_projects(*, preparation):
+def add_example_projects(*, preparation, state_dir):
     """Add the shipped example projects whenever Playground/elf-of-doom is absent
     and this workspace has never received it.
 
     Like the profile repair, this owner-side step runs after the proved update
     and outside the protected activation. It only creates an absent
-    Playground/<name> and the workspace's record of received examples, so an
-    example the owner deleted or renamed is never added again; failure changes
-    no owner content. The outcome goes only to the update's private log (see
-    log_example_projects), never to the console.
+    Playground/<name> and the record of received examples in Portal's state
+    folder (state_dir), so an example the owner deleted or renamed is never
+    added again; failure changes no owner content. Nothing reaches the
+    terminal: the helper's own notes are captured, and the outcome with them
+    goes only to the update's private log (see log_example_projects).
     """
+    notes = io.StringIO()
     try:
-        document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')
-        agent = _portal_agent(document)
-        spec = importlib.util.spec_from_file_location('native_update_example_projects',
-            HERE.parents[1] / 'lib/pixel-example-projects.py')
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.add_projects(Path(agent['workspace']))
-    except (ValueError, OSError, KeyError, TypeError):
-        return {'status': 'manual-review-required'}
+        with contextlib.redirect_stdout(notes), contextlib.redirect_stderr(notes):
+            document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')
+            agent = _portal_agent(document)
+            spec = importlib.util.spec_from_file_location('native_update_example_projects',
+                HERE.parents[1] / 'lib/pixel-example-projects.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            outcome = module.add_projects(Path(agent['workspace']), Path(state_dir))
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        outcome = {'status': 'manual-review-required', 'cause': f'{type(error).__name__}: {error}'}
+    if notes.getvalue().strip():
+        outcome = {**outcome, 'notes': notes.getvalue().strip().splitlines()}
+    return outcome
 
 
 def log_example_projects(work, outcome):
@@ -170,7 +178,8 @@ def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
-        log_example_projects(work, add_example_projects(preparation=preparation))
+        log_example_projects(work, add_example_projects(preparation=preparation,
+            state_dir=install_dir / 'data/pixel-native/home/.openclaw'))
         return outcome
     finally:
         for key, value in saved.items():

@@ -38,7 +38,7 @@ import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisR
 import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
-import { exampleChatTopics, exampleProjectRefusal, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { exampleProjectRefusal, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -6593,12 +6593,12 @@ export function userMessageRequestsWorkspaceVerificationContinuation(messages, p
   return true;
 }
 
-// What the shipped-example checks need from a run: its workspace, the
-// owner's request, the examples earlier turns of this chat named, and the
-// run's own project folder for refusal advice.
+// What the shipped-example checks need from a run: its workspace, this
+// turn's own owner request (nothing from earlier turns), and the run's own
+// project folder for refusal advice.
 function exampleProjectContext(state) {
   return {root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent,
-    earlier:state.exampleChatTopics, projectDirectory:state.playgroundRouting?.binding?.directory};
+    projectDirectory:state.playgroundRouting?.binding?.directory};
 }
 
 function workspacePreviewDirectoryFromState(state) {
@@ -7227,12 +7227,6 @@ export function createToolLoopGuard({
   let stopSynthesisFailedAt = -Infinity;
   const pendingToolRuns = new Map();
   const sessionPreviews = new Map();
-  // Per chat, the shipped example projects (Playground/elf-of-doom) an owner
-  // turn named as the thing to change, until a turn asks for something new.
-  // A later turn that asks for a change may keep changing that example
-  // without naming it again; opening or showing it never counts.
-  // In memory only: after a restart the owner names it again.
-  const exampleChatTopicsByChat = new Map();
   // A prior owner requirement is not a passing inspection. Bind it to the
   // session's real publication and carry no proof across changed snapshots.
   const sessionPreviewVisibilityObligations = new Map();
@@ -7922,8 +7916,10 @@ export function createToolLoopGuard({
     const { runId } = runIdentity(event, context);
     const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
     // The call exactly as it will run, after every rewrite above: a shipped
-    // example project (Playground/elf-of-doom) changes only when the owner
-    // names it as what to change.
+    // example project (Playground/elf-of-doom) changes only when this turn's
+    // own owner message names it as what to change. This is the last net for
+    // rewrites made after the routed check, such as an operations evidence
+    // path bound from the owner's request.
     const exampleRefusal = state && originalDecision?.block !== true ? exampleProjectRefusal({tool:toolName,
       params:originalDecision?.params ?? event?.params, ...exampleProjectContext(state),
       previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
@@ -8053,10 +8049,10 @@ export function createToolLoopGuard({
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
     if ((asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) &&
         !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
-    // A shipped example project (Playground/elf-of-doom) changes only when the
-    // owner names it as what to change. Check before routing, so a refused
-    // call leaves no routing state, and again on the final call below, after
-    // every path rewrite.
+    // A shipped example project (Playground/elf-of-doom) changes only when this
+    // turn's own owner message names it as what to change. Check before
+    // routing, so a refused call leaves no routing state, and again on the
+    // final call below, after every path rewrite.
     const exampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:normalizedParams ?? event?.params,
       ...exampleProjectContext(state), routable:true}) : undefined;
     if (exampleRefusal) return exampleRefusal;
@@ -10020,15 +10016,6 @@ export function createToolLoopGuard({
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
-      if (ownerIntent && state.exampleChatTopics === undefined) {
-        // Only the owner's own turns name an example for later turns; the
-        // first attempt of a run carries the owner's message.
-        const chat = typeof context?.sessionKey === 'string' && context.sessionKey ? context.sessionKey
-          : typeof sessionId === 'string' && sessionId ? sessionId : undefined;
-        const previous = chat && state.artifactOwnerInteractive ? exampleChatTopicsByChat.get(chat) : undefined;
-        state.exampleChatTopics = new Set(previous ?? []);
-        if (chat && state.artifactOwnerInteractive) rememberBySessionKey(exampleChatTopicsByChat, chat, exampleChatTopics(previous, ownerIntent));
-      }
       if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}

@@ -5,8 +5,9 @@ nothing of that name exists and the workspace has never received it, with the
 exact bytes Portal wrote and https://odsspark.com/game/ serves. A deleted or
 renamed example is never added again. Portal's sidebar then lists it like any
 other project; no installer prints a hint about it. These tests pin those
-bytes, the create-only copy, the record of received examples, and where each
-installer runs it.
+bytes, the create-only copy, the record of received examples (kept in Portal's
+state folder, outside the workspace the agent's sandbox mounts), and where
+each installer runs it.
 
 The copy and installer-step cases need POSIX descriptors and a non-root owner,
 and run in CI on Linux and macOS. On Windows only the shipped-file and source
@@ -15,6 +16,7 @@ checks run: there `bash` would start WSL, so no shell case runs.
 import errno
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -104,7 +106,36 @@ def workspace(tmp_path):
     root = tmp_path.resolve() / 'home/.openclaw/workspace-pixel'
     root.mkdir(parents=True)
     root.chmod(0o700)
+    root.parent.chmod(0o700)
     return root
+
+
+def state_of(workspace):
+    """Portal's state folder: the workspace's parent in every ODS layout."""
+    return workspace.parent
+
+
+def add(workspace, **kwargs):
+    return examples.add_projects(workspace, state_of(workspace), **kwargs)
+
+
+def record_path(workspace):
+    return state_of(workspace) / examples.RECORD_DIRECTORY / examples.record_name(workspace)
+
+
+def record_bytes(workspace, received, added):
+    return ('{"schemaVersion":1,"workspace":' + json.dumps(str(workspace)) + ',"received":'
+            + json.dumps(received, separators=(',', ':')) + ',"added":'
+            + json.dumps(added, separators=(',', ':')) + '}\n').encode()
+
+
+def write_record(workspace, body):
+    folder = state_of(workspace) / examples.RECORD_DIRECTORY
+    folder.mkdir(mode=0o700, exist_ok=True)
+    path = folder / examples.record_name(workspace)
+    path.write_bytes(body)
+    path.chmod(0o600)
+    return path
 
 
 # ------------------------------------------------------------ shipped files --
@@ -132,12 +163,17 @@ def test_readme_says_where_it_is_how_to_play_and_how_it_was_made():
     assert "In Portal's sidebar, open Projects, then Playground, then elf-of-doom." in prose
     assert '~/.openclaw/workspace-pixel/Playground/elf-of-doom' in text
     assert 'data/pixel-native/home/.openclaw/workspace-pixel/Playground/elf-of-doom' in text
+    # The Windows installer accepts more than one WSL distribution.
+    assert 'Windows: the same path inside the WSL Linux environment ODS runs in' in prose
+    assert 'Ubuntu' not in text and 'Debian' not in text
     assert 'ODS updates never overwrite or delete this folder. If you delete or rename it, ODS does not add it again.' in prose
     assert 'ODS never overwrites' not in prose and 'fresh copy' not in prose
-    assert '"In elf-of-doom, make the arrows give 7"' in prose
-    # Opened from the sidebar, a follow-up has no folder to go on until it is named.
-    assert ('To ask Portal for a change after opening the game from the sidebar, name the folder in your request, '
-            'for example "In elf-of-doom, make the arrows give 7".') in prose
+    # Every request that changes it names it, including the one right after
+    # opening it from the sidebar: nothing carries over between turns.
+    assert ('Name the folder in every request that should change it, even right after opening the game from the '
+            'sidebar: for example "In elf-of-doom, make the arrows give 7", then "In elf-of-doom, make them give 9".'
+            ) in prose
+    assert 'later requests in that chat' not in prose and 'Now make them give 9' not in prose
     # Best-effort routing, said as such.
     assert ('Portal tries to keep new games in their own Playground folder and to change this one only when you '
             'name it.') in prose
@@ -189,6 +225,8 @@ def test_no_installer_or_summary_advertises_the_game():
     for body in (shell_function(PHASE, '_phase11_add_example_projects'),
                  shell_function(MACOS_INSTALLER, '_macos_add_example_projects')):
         assert 'ai_ok' not in body and 'echo' not in body
+        # log() also prints in the plain display; the outcome goes to the file only.
+        assert not re.search(r'^\s*(?:\d\) )?log ', body, re.M) and 'tee' not in body
 
 
 def test_docstrings_say_when_the_example_is_added():
@@ -200,10 +238,34 @@ def test_docstrings_say_when_the_example_is_added():
         assert 'tries again' not in prose and 'adds a fresh copy' not in prose, path
 
 
-def test_the_record_is_hidden_and_never_mistaken_for_staging():
-    # Portal's preview and project routing skip names that start with '.'.
-    assert examples.RECORD.startswith('.') and examples.RECORD != examples.STAGING_PREFIX
-    assert not examples.STAGING_NAME.fullmatch(examples.RECORD)
+def test_the_record_lives_outside_the_workspace_where_the_plugin_reads_it():
+    # Hidden, never a staging name, and in Portal's state folder: the agent's
+    # sandbox mounts only the workspace, so no model tool can rewrite it.
+    assert examples.RECORD_DIRECTORY.startswith('.') and not examples.STAGING_NAME.fullmatch(examples.RECORD_DIRECTORY)
+    plugin = (ROOT / 'extensions/services/pixel-agent/plugin/example-projects.mjs').read_text(encoding='utf-8')
+    assert f"export const EXAMPLE_RECORD_DIRECTORY = '{examples.RECORD_DIRECTORY}';" in plugin
+    assert "process.env.OPENCLAW_STATE_DIR || path.join(os.homedir(), '.openclaw')" in plugin
+    assert "createHash('sha256').update(root).digest('hex')}.json" in plugin
+    assert examples.record_name('/home/owner/.openclaw/workspace-pixel') == (
+        hashlib.sha256(b'/home/owner/.openclaw/workspace-pixel').hexdigest() + '.json')
+
+
+def test_each_cause_names_what_stopped_the_copy_and_how_to_recover():
+    # The installers print this sentence as the warning's cause.
+    assert examples._cause(examples.LayoutRefused('the Portal workspace /w is not a private folder')) == (
+        'ODS does not write into this workspace layout: the Portal workspace /w is not a private folder.')
+    for error in (ValueError('example source README.md could not be read (No such file or directory)'),
+                  ValueError('example source ui.js must be a regular file'),
+                  ValueError('example source index.html does not match the shipped bytes')):
+        assert examples._cause(error) == ("ODS's own copy of the game files is damaged or incomplete. "
+                                          'Download ODS again, then rerun the installer.')
+    assert examples._cause(FileNotFoundError(errno.ENOENT, 'No such file or directory', '/w')) == (
+        'the Portal folder /w was not found. Rerun the installer so it sets Portal up again.')
+    assert examples._cause(OSError(errno.ENOSPC, 'No space left on device')) == (
+        'a file could not be written in the Portal workspace (No space left on device). '
+        "Free some disk space or fix that folder's permissions, then rerun the installer.")
+    assert examples._cause(ValueError('add example projects as the non-root workspace owner')) == (
+        'the copy stopped (add example projects as the non-root workspace owner).')
 
 
 # ------------------------------------------------------- installer wiring --
@@ -220,7 +282,7 @@ def test_linux_step_runs_after_portal_is_verified_and_before_the_stack_starts():
     body = shell_function(PHASE, '_phase11_add_example_projects')
     assert body.splitlines()[1] == '    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0'
     assert 'ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B' in body
-    assert '--workspace "$home/.openclaw/workspace-pixel"' in body
+    assert '--workspace "$home/.openclaw/workspace-pixel" --state-dir "$home/.openclaw"' in body
     assert 'ai_warn "Portal is ready' in body and '${ODS_HELP_DISCORD_URL}' in body
     assert '|| true' not in body and body.endswith('    return 0\n}\n')
 
@@ -234,7 +296,8 @@ def test_macos_step_runs_after_native_activation():
     assert script.index('ai_ok "Native Pixel activated for Dashboard/Portal"') < script.index(guarded)
     body = shell_function(MACOS_INSTALLER, '_macos_add_example_projects')
     assert 'install_root="$(cd "$INSTALL_DIR" && pwd -P)"' in body
-    assert '"$install_root/data/pixel-native/home/.openclaw/workspace-pixel"' in body
+    assert '--workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel"' in body
+    assert '--state-dir "$install_root/data/pixel-native/home/.openclaw"' in body
     assert 'ai_warn "Portal is ready' in body and '${ODS_HELP_DISCORD_URL}' in body
     assert '|| true' not in body and body.endswith('    return 0\n}\n')
 
@@ -243,20 +306,23 @@ def test_macos_update_adds_examples_after_the_proved_update():
     source = (ROOT / 'installers/macos/lib/pixel-native-update.py').read_text(encoding='utf-8')
     finalize = source.index("helper('pixel-native-finalize').finalize_update(preparation)")
     identity = source.index("outcome['portalIdentityMigration'] = migrate_public_identity(")
-    # Logged privately, never part of the outcome the update prints.
-    added = source.index("log_example_projects(work, add_example_projects(preparation=preparation))")
+    # Logged privately, never part of the outcome the update prints, and the
+    # helper's own notes are captured instead of reaching the terminal.
+    added = source.index("log_example_projects(work, add_example_projects(preparation=preparation,\n"
+                         "            state_dir=install_dir / 'data/pixel-native/home/.openclaw'))")
     assert finalize < identity < added
     assert "outcome['exampleProjects']" not in source
+    assert 'contextlib.redirect_stdout(notes), contextlib.redirect_stderr(notes)' in source
 
 
 # ------------------------------------------------------- create-only copy --
 
 @POSIX_OWNER
 def test_fresh_workspace_gets_a_private_exact_copy(workspace):
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     playground = workspace / 'Playground'
     project = playground / 'elf-of-doom'
-    for directory in (playground, project):
+    for directory in (playground, project, state_of(workspace) / examples.RECORD_DIRECTORY):
         info = directory.lstat()
         assert stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
         assert info.st_uid == os.getuid()
@@ -267,13 +333,15 @@ def test_fresh_workspace_gets_a_private_exact_copy(workspace):
         assert info.st_nlink == 1 and info.st_uid == os.getuid()
         assert (project / name).read_bytes() == (SOURCE / 'elf-of-doom' / name).read_bytes()
     assert [path.name for path in playground.iterdir()] == ['elf-of-doom']
-    record = workspace / examples.RECORD
+    record = record_path(workspace)
     info = record.lstat()
     assert stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == os.getuid()
-    assert record.read_bytes() == b'{"schemaVersion":1,"received":["elf-of-doom"],"added":["elf-of-doom"]}\n'
-    assert sorted(path.name for path in workspace.iterdir()) == [examples.RECORD, 'Playground']
+    assert record.read_bytes() == record_bytes(workspace, ['elf-of-doom'], ['elf-of-doom'])
+    # Nothing but the project in the workspace: the record is outside it.
+    assert [path.name for path in workspace.iterdir()] == ['Playground']
+    assert [path.name for path in record.parent.iterdir()] == [record.name]
     before = snapshot(project)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'previously-received'}
+    assert add(workspace) == {'elf-of-doom': 'previously-received'}
     assert snapshot(project) == before
     assert [path.name for path in playground.iterdir()] == ['elf-of-doom']
 
@@ -281,87 +349,137 @@ def test_fresh_workspace_gets_a_private_exact_copy(workspace):
 @POSIX_OWNER
 @pytest.mark.parametrize('change', ['deleted', 'renamed'])
 def test_a_deleted_or_renamed_example_is_never_added_again(workspace, change):
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     playground = workspace / 'Playground'
     if change == 'deleted':
         shutil.rmtree(playground / 'elf-of-doom')
     else:
         (playground / 'elf-of-doom').rename(playground / 'my-dungeon')
-    before = snapshot(workspace)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'previously-received'}
-    assert snapshot(workspace) == before
+    before = snapshot(state_of(workspace))
+    assert add(workspace) == {'elf-of-doom': 'previously-received'}
+    assert snapshot(state_of(workspace)) == before
     assert not (playground / 'elf-of-doom').exists()
+
+
+@POSIX_OWNER
+def test_each_workspace_has_its_own_record(workspace, tmp_path):
+    other = state_of(workspace) / 'workspace-other'
+    other.mkdir(mode=0o700)
+    assert add(workspace) == {'elf-of-doom': 'added'}
+    shutil.rmtree(workspace / 'Playground/elf-of-doom')
+    assert examples.add_projects(other, state_of(workspace)) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'previously-received'}
+    assert sorted(path.name for path in (state_of(workspace) / examples.RECORD_DIRECTORY).iterdir()) == sorted(
+        [examples.record_name(workspace), examples.record_name(other)])
 
 
 @POSIX_OWNER
 def test_an_owner_entry_of_that_name_is_recorded_so_it_is_never_replaced_later(workspace):
     (workspace / 'Playground').mkdir(mode=0o700)
     (workspace / 'Playground/elf-of-doom').mkdir()
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'present'}
+    assert add(workspace) == {'elf-of-doom': 'present'}
     # Received, but never added: Portal keeps treating it as the owner's own.
-    assert (workspace / examples.RECORD).read_bytes() == b'{"schemaVersion":1,"received":["elf-of-doom"],"added":[]}\n'
+    assert record_path(workspace).read_bytes() == record_bytes(workspace, ['elf-of-doom'], [])
     (workspace / 'Playground/elf-of-doom').rmdir()
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'previously-received'}
+    assert add(workspace) == {'elf-of-doom': 'previously-received'}
     assert list((workspace / 'Playground').iterdir()) == []
 
 
 @POSIX_OWNER
 def test_other_received_names_are_kept_in_the_record(workspace):
-    (workspace / examples.RECORD).write_bytes(
-        b'{"schemaVersion":1,"received":["future-example","owner-example"],"added":["future-example"]}\n')
-    (workspace / examples.RECORD).chmod(0o600)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
-    assert (workspace / examples.RECORD).read_bytes() == (
-        b'{"schemaVersion":1,"received":["elf-of-doom","future-example","owner-example"],'
-        b'"added":["elf-of-doom","future-example"]}\n')
+    write_record(workspace, record_bytes(workspace, ['future-example', 'owner-example'], ['future-example']))
+    assert add(workspace) == {'elf-of-doom': 'added'}
+    assert record_path(workspace).read_bytes() == record_bytes(
+        workspace, ['elf-of-doom', 'future-example', 'owner-example'], ['elf-of-doom', 'future-example'])
 
 
 @POSIX_OWNER
 @pytest.mark.parametrize('kind', ['not-json', 'wrong-shape', 'boolean-version', 'no-added', 'added-not-received',
-                                  'too-large', 'folder', 'link', 'hard-link'])
+                                  'extra-key', 'other-workspace', 'too-large', 'folder', 'link', 'hard-link',
+                                  'linked-records', 'shared-records', 'file-for-records'])
 def test_an_unusable_record_adds_nothing_and_is_left_alone(workspace, tmp_path, kind):
-    record = workspace / examples.RECORD
     outside = tmp_path.resolve() / 'outside.json'
-    outside.write_bytes(b'{"schemaVersion":1,"received":[],"added":[]}\n')
-    if kind == 'not-json':
-        record.write_bytes(b'not json\n')
-    elif kind == 'wrong-shape':
-        record.write_bytes(b'{"schemaVersion":1,"received":"elf-of-doom","added":[]}\n')
-    elif kind == 'boolean-version':
-        record.write_bytes(b'{"schemaVersion":true,"received":[],"added":[]}\n')
-    elif kind == 'no-added':
-        record.write_bytes(b'{"schemaVersion":1,"received":[]}\n')
-    elif kind == 'added-not-received':
-        record.write_bytes(b'{"schemaVersion":1,"received":[],"added":["elf-of-doom"]}\n')
-    elif kind == 'too-large':
-        record.write_bytes(b'{"schemaVersion":1,"added":[],"received":[' + b'"x",' * 2000 + b'"x"]}\n')
+    outside.write_bytes(record_bytes(workspace, [], []))
+    folder = state_of(workspace) / examples.RECORD_DIRECTORY
+    bodies = {
+        'not-json': b'not json\n',
+        'wrong-shape': record_bytes(workspace, [], []).replace(b'"received":[]', b'"received":"elf-of-doom"'),
+        'boolean-version': record_bytes(workspace, [], []).replace(b'"schemaVersion":1', b'"schemaVersion":true'),
+        'no-added': record_bytes(workspace, [], []).replace(b',"added":[]', b''),
+        'added-not-received': record_bytes(workspace, [], ['elf-of-doom']),
+        # A small record with one key too many is not the helper's own.
+        'extra-key': record_bytes(workspace, [], []).replace(b'}\n', b',"note":1}\n'),
+        'other-workspace': record_bytes(Path('/somewhere/else'), [], []),
+        'too-large': record_bytes(workspace, ['x'] * 2000, []),
+    }
+    if kind in bodies:
+        write_record(workspace, bodies[kind])
     elif kind == 'folder':
         # os.fdopen() refuses a folder descriptor outright, so the type is
         # checked on the raw descriptor first.
-        record.mkdir()
+        folder.mkdir(mode=0o700)
+        (folder / examples.record_name(workspace)).mkdir()
     elif kind == 'link':
-        record.symlink_to(outside)
+        folder.mkdir(mode=0o700)
+        (folder / examples.record_name(workspace)).symlink_to(outside)
+    elif kind == 'hard-link':
+        folder.mkdir(mode=0o700)
+        os.link(outside, folder / examples.record_name(workspace))
+    elif kind == 'linked-records':
+        elsewhere = tmp_path.resolve() / 'elsewhere'
+        elsewhere.mkdir(mode=0o700)
+        folder.symlink_to(elsewhere, target_is_directory=True)
+    elif kind == 'shared-records':
+        folder.mkdir()
+        folder.chmod(0o755)
     else:
-        os.link(outside, record)
-    before, outside_before = snapshot(workspace), snapshot(outside)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'record-unusable'}
-    assert snapshot(workspace) == before
+        folder.write_bytes(b'not a folder\n')
+    before, outside_before = snapshot(tmp_path.resolve() / 'home'), snapshot(outside)
+    assert add(workspace) == {'elf-of-doom': 'record-unusable'}
+    assert snapshot(tmp_path.resolve() / 'home') == before
     assert snapshot(outside) == outside_before
 
 
 @POSIX_OWNER
-def test_a_failed_record_write_keeps_the_added_example_and_is_logged(workspace, monkeypatch, capsys):
+def test_a_failed_record_write_keeps_the_added_example_and_the_next_run_records_it(workspace, monkeypatch, capsys):
+    real = examples._write_record
+
     def unwritable(*_args):
         raise OSError(28, 'No space left on device')
 
-    monkeypatch.setattr(examples, '_record', unwritable)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    monkeypatch.setattr(examples, '_write_record', unwritable)
+    assert add(workspace) == {'elf-of-doom': 'added'}
     assert (workspace / 'Playground/elf-of-doom/index.html').is_file()
-    assert 'could not record the added example projects' in capsys.readouterr().err
+    assert 'could not record the added example projects: OSError' in capsys.readouterr().err
+    assert not record_path(workspace).exists()
+    # The unchanged copy is recognized as ODS's own and recorded as added.
+    monkeypatch.setattr(examples, '_write_record', real)
+    assert add(workspace) == {'elf-of-doom': 'added'}
+    assert record_path(workspace).read_bytes() == record_bytes(workspace, ['elf-of-doom'], ['elf-of-doom'])
 
 
 @POSIX_OWNER
-@pytest.mark.parametrize('kind', ['edited', 'empty', 'partial', 'file', 'link', 'dangling-link'])
+def test_a_run_stopped_between_the_rename_and_the_record_is_recovered(workspace, monkeypatch):
+    class Killed(BaseException):
+        """The installer killed right after the folder was renamed into place."""
+
+    def killed(*_args):
+        raise Killed()
+
+    monkeypatch.setattr(examples, '_write_record', killed)
+    with pytest.raises(Killed):
+        add(workspace)
+    monkeypatch.undo()
+    assert (workspace / 'Playground/elf-of-doom/index.html').is_file() and not record_path(workspace).exists()
+    before = snapshot(workspace / 'Playground')
+    assert add(workspace) == {'elf-of-doom': 'added'}
+    assert snapshot(workspace / 'Playground') == before
+    assert record_path(workspace).read_bytes() == record_bytes(workspace, ['elf-of-doom'], ['elf-of-doom'])
+
+
+@POSIX_OWNER
+@pytest.mark.parametrize('kind', ['edited', 'empty', 'partial', 'extra-file', 'one-byte', 'linked-file', 'file', 'link',
+                                  'dangling-link'])
 def test_an_existing_entry_of_that_name_is_never_touched(workspace, tmp_path, kind):
     playground = workspace / 'Playground'
     playground.mkdir(mode=0o700)
@@ -377,6 +495,18 @@ def test_an_existing_entry_of_that_name_is_never_touched(workspace, tmp_path, ki
     elif kind == 'partial':
         target.mkdir()
         shutil.copyfile(SOURCE / 'elf-of-doom/index.html', target / 'index.html')
+    elif kind in ('extra-file', 'one-byte', 'linked-file'):
+        # The pinned files with one difference: an owner's own folder.
+        shutil.copytree(SOURCE / 'elf-of-doom', target)
+        if kind == 'extra-file':
+            (target / 'notes.txt').write_bytes(b'mine\n')
+        elif kind == 'one-byte':
+            body = (target / 'ui.js').read_bytes()
+            (target / 'ui.js').write_bytes(body[:-1] + bytes([body[-1] ^ 1]))
+        else:
+            shutil.copyfile(target / 'ui.js', outside / 'ui.js')
+            (target / 'ui.js').unlink()
+            (target / 'ui.js').symlink_to(outside / 'ui.js')
     elif kind == 'file':
         target.write_bytes(b'not a folder\n')
     elif kind == 'link':
@@ -384,17 +514,19 @@ def test_an_existing_entry_of_that_name_is_never_touched(workspace, tmp_path, ki
     else:
         target.symlink_to(tmp_path.resolve() / 'missing')
     before, outside_before = snapshot(playground), snapshot(outside)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'present'}
+    assert add(workspace) == {'elf-of-doom': 'present'}
     assert snapshot(playground) == before
     assert snapshot(outside) == outside_before
+    assert record_path(workspace).read_bytes() == record_bytes(workspace, ['elf-of-doom'], [])
 
 
 @POSIX_OWNER
-@pytest.mark.parametrize('fault', ['linked-workspace', 'shared-workspace', 'linked-playground', 'shared-playground'])
+@pytest.mark.parametrize('fault', ['linked-workspace', 'shared-workspace', 'linked-playground', 'shared-playground',
+                                   'linked-state', 'shared-state', 'unreadable-state'])
 def test_an_unsafe_workspace_or_playground_is_refused_without_creating_anything(workspace, tmp_path, fault):
     outside = tmp_path.resolve() / 'outside'
     outside.mkdir(mode=0o700)
-    path = workspace
+    path, state = workspace, state_of(workspace)
     if fault == 'linked-workspace':
         path = workspace.parent / 'linked-workspace'
         path.symlink_to(workspace, target_is_directory=True)
@@ -402,22 +534,36 @@ def test_an_unsafe_workspace_or_playground_is_refused_without_creating_anything(
         workspace.chmod(0o770)
     elif fault == 'linked-playground':
         (workspace / 'Playground').symlink_to(outside, target_is_directory=True)
-    else:
+    elif fault == 'shared-playground':
         (workspace / 'Playground').mkdir()
         (workspace / 'Playground').chmod(0o775)
-    before = snapshot(tmp_path.resolve())
-    with pytest.raises(examples.LayoutRefused):
-        examples.add_projects(path)
-    assert snapshot(tmp_path.resolve()) == before
+    elif fault == 'linked-state':
+        state = tmp_path.resolve() / 'linked-state'
+        state.symlink_to(state_of(workspace), target_is_directory=True)
+    elif fault == 'shared-state':
+        state.chmod(0o770)
+    else:
+        # A folder this owner cannot open (EACCES): a layout, not a disk fault.
+        state = tmp_path.resolve() / 'locked/.openclaw'
+        state.mkdir(parents=True, mode=0o700)
+        state.parent.chmod(0)
+    try:
+        before = snapshot(tmp_path.resolve())
+        with pytest.raises(examples.LayoutRefused):
+            examples.add_projects(path, state)
+        assert snapshot(tmp_path.resolve()) == before
+    finally:
+        if fault == 'unreadable-state':
+            state.parent.chmod(0o700)
 
 
 @POSIX_OWNER
 def test_root_is_refused_before_anything_is_created(workspace, monkeypatch):
-    before = snapshot(workspace)
+    before = snapshot(state_of(workspace))
     monkeypatch.setattr(examples.os, 'geteuid', lambda: 0)
     with pytest.raises(ValueError, match='non-root'):
-        examples.add_projects(workspace)
-    assert snapshot(workspace) == before
+        add(workspace)
+    assert snapshot(state_of(workspace)) == before
 
 
 @POSIX_OWNER
@@ -430,7 +576,7 @@ def test_an_entry_created_during_the_copy_is_kept_and_staging_removed(workspace,
             (workspace / 'Playground/elf-of-doom').mkdir()
 
     monkeypatch.setattr(examples, '_write', write)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'present'}
+    assert add(workspace) == {'elf-of-doom': 'present'}
     playground = workspace / 'Playground'
     assert [path.name for path in playground.iterdir()] == ['elf-of-doom']
     assert list((playground / 'elf-of-doom').iterdir()) == []
@@ -458,7 +604,7 @@ def test_an_empty_folder_made_after_the_last_check_is_never_replaced(workspace, 
 
     monkeypatch.setattr(examples, '_exists', exists)
     monkeypatch.setattr(examples, '_exclusive_rename', exclusive)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'present'}
+    assert add(workspace) == {'elf-of-doom': 'present'}
     assert exclusive_results == [False]
     assert len(calls) == 2
     playground = workspace / 'Playground'
@@ -493,7 +639,7 @@ def test_without_exclusive_rename_the_plain_rename_still_adds_the_example(worksp
         raise OSError(errno.ENOSYS, 'exclusive rename is unavailable')
 
     monkeypatch.setattr(examples, '_exclusive_rename', unavailable)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     assert [path.name for path in (workspace / 'Playground').iterdir()] == ['elf-of-doom']
 
 
@@ -504,7 +650,7 @@ def test_an_unexpected_rename_failure_propagates_and_leaves_no_staging(workspace
 
     monkeypatch.setattr(examples, '_exclusive_rename', failed)
     with pytest.raises(OSError, match='I/O error'):
-        examples.add_projects(workspace)
+        add(workspace)
     assert list((workspace / 'Playground').iterdir()) == []
 
 
@@ -520,7 +666,7 @@ def test_a_folder_swapped_in_after_the_rename_is_reported_not_claimed(workspace,
 
     monkeypatch.setattr(examples, '_rename_into_place', swapped)
     with pytest.raises(OSError, match='changed while it was being added'):
-        examples.add_projects(workspace)
+        add(workspace)
     assert list((workspace / 'Playground/elf-of-doom').iterdir()) == []
 
 
@@ -537,10 +683,10 @@ def test_a_failed_write_leaves_no_partial_project_and_a_rerun_completes(workspac
 
     monkeypatch.setattr(examples, '_write', write)
     with pytest.raises(OSError, match='No space left'):
-        examples.add_projects(workspace)
+        add(workspace)
     assert list((workspace / 'Playground').iterdir()) == []
     monkeypatch.setattr(examples, '_write', real)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
 
 
 @POSIX_OWNER
@@ -548,7 +694,7 @@ def test_an_interrupted_copy_leaves_nothing_after_the_next_run(workspace):
     playground = workspace / 'Playground'
     playground.mkdir(mode=0o700)
     staging_folder(playground, {'index.html': b'<!doctype html>', 'ui.js': b'partial'})
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     assert [path.name for path in playground.iterdir()] == ['elf-of-doom']
 
 
@@ -562,7 +708,7 @@ def test_a_leftover_that_cannot_be_inspected_is_logged_and_the_copy_still_runs(w
         raise PermissionError(13, 'Permission denied')
 
     monkeypatch.setattr(examples, '_remove_one_staging', unreadable)
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     assert 'left interrupted staging folder .ods-example-a1b2c3d4e5f60718' in capsys.readouterr().err
 
 
@@ -596,7 +742,7 @@ def test_anything_else_that_looks_like_staging_is_left_alone(workspace, tmp_path
 
     before = kept(snapshot(playground))
     assert before
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     assert kept(snapshot(playground)) == before
 
 
@@ -608,13 +754,47 @@ def test_a_changed_source_copies_nothing(workspace, tmp_path, change):
     body = index.read_bytes()
     index.write_bytes(body.replace(b'\n', b'\r\n') if change == 'crlf' else body[:-1] + bytes([body[-1] ^ 1]))
     with pytest.raises(ValueError, match='shipped bytes'):
-        examples.add_projects(workspace, source=source)
+        add(workspace, source=source)
     assert list(workspace.iterdir()) == []
 
 
 @POSIX_OWNER
+@pytest.mark.parametrize('fault', ['missing', 'folder', 'link', 'unreadable', 'no-example-folder'])
+def test_an_incomplete_ods_copy_is_named_as_such(workspace, tmp_path, fault, monkeypatch, capsys):
+    # ODS's own files, never the owner's workspace, are the cause: the
+    # installer's warning must say so on every rerun.
+    source = source_copy(tmp_path)
+    readme = source / 'elf-of-doom/README.md'
+    if fault == 'missing':
+        readme.unlink()
+    elif fault == 'folder':
+        readme.unlink()
+        readme.mkdir()
+    elif fault == 'link':
+        shutil.copyfile(readme, tmp_path.resolve() / 'README.md')
+        readme.unlink()
+        readme.symlink_to(tmp_path.resolve() / 'README.md')
+    elif fault == 'unreadable':
+        readme.chmod(0)
+    else:
+        shutil.rmtree(source / 'elf-of-doom')
+    with pytest.raises(ValueError, match='example source README.md') as raised:
+        add(workspace, source=source)
+    assert examples._cause(raised.value) == ("ODS's own copy of the game files is damaged or incomplete. "
+                                             'Download ODS again, then rerun the installer.')
+    assert list(workspace.iterdir()) == []
+    monkeypatch.setattr(examples, 'SOURCE', source)
+    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(workspace),
+                                      '--state-dir', str(state_of(workspace))])
+    assert examples.main() == examples.NOT_ADDED
+    assert capsys.readouterr().out == ("ODS's own copy of the game files is damaged or incomplete. "
+                                       'Download ODS again, then rerun the installer.\n')
+
+
+@POSIX_OWNER
 def test_the_command_names_the_cause_and_marks_a_layout_it_never_writes_into(workspace, monkeypatch, capsys):
-    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(workspace)])
+    arguments = ['pixel-example-projects.py', '--workspace', str(workspace), '--state-dir', str(state_of(workspace))]
+    monkeypatch.setattr(sys, 'argv', arguments)
     real = examples._write
 
     def full(*_args):
@@ -632,7 +812,7 @@ def test_the_command_names_the_cause_and_marks_a_layout_it_never_writes_into(wor
     assert capsys.readouterr().out == ("ODS's own copy of the game files is damaged or incomplete. "
                                        'Download ODS again, then rerun the installer.\n')
     monkeypatch.undo()
-    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(workspace)])
+    monkeypatch.setattr(sys, 'argv', arguments)
     assert examples.main() == 0
     assert capsys.readouterr().out == '{"elf-of-doom":"added"}\n'
     # A layout only the owner can change: rerunning cannot help, so none is suggested.
@@ -643,9 +823,10 @@ def test_the_command_names_the_cause_and_marks_a_layout_it_never_writes_into(wor
     assert 'private owner workspace required' in out and 'rerun' not in out.lower()
     assert 'example projects not added: LayoutRefused' in err
     missing = workspace.parent / 'missing-workspace'
-    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(missing)])
+    monkeypatch.setattr(sys, 'argv', ['pixel-example-projects.py', '--workspace', str(missing),
+                                      '--state-dir', str(state_of(workspace))])
     assert examples.main() == examples.NOT_ADDED
-    assert capsys.readouterr().out == (f'the Portal workspace folder {missing} was not found. '
+    assert capsys.readouterr().out == (f'the Portal folder {missing} was not found. '
                                        'Rerun the installer so it sets Portal up again.\n')
 
 
@@ -653,7 +834,7 @@ def test_the_command_names_the_cause_and_marks_a_layout_it_never_writes_into(wor
 def test_only_the_pinned_files_are_copied(workspace, tmp_path):
     source = source_copy(tmp_path)
     (source / 'elf-of-doom/notes.txt').write_bytes(b'not part of the example\n')
-    assert examples.add_projects(workspace, source=source) == {'elf-of-doom': 'added'}
+    assert add(workspace, source=source) == {'elf-of-doom': 'added'}
     project = workspace / 'Playground/elf-of-doom'
     assert sorted(path.name for path in project.iterdir()) == sorted(examples.EXAMPLES['elf-of-doom'])
 
@@ -666,18 +847,20 @@ def test_permissive_source_modes_and_umask_never_reach_the_workspace(workspace, 
         path.chmod(0o777)
     previous = os.umask(0o002)
     try:
-        assert examples.add_projects(workspace, source=source) == {'elf-of-doom': 'added'}
+        assert add(workspace, source=source) == {'elf-of-doom': 'added'}
     finally:
         os.umask(previous)
     project = workspace / 'Playground/elf-of-doom'
     assert stat.S_IMODE((workspace / 'Playground').stat().st_mode) == 0o700
     assert stat.S_IMODE(project.stat().st_mode) == 0o700
     assert {stat.S_IMODE(path.lstat().st_mode) for path in project.iterdir()} == {0o600}
+    assert stat.S_IMODE((state_of(workspace) / examples.RECORD_DIRECTORY).stat().st_mode) == 0o700
+    assert stat.S_IMODE(record_path(workspace).stat().st_mode) == 0o600
 
 
 @POSIX_OWNER
 def test_portal_preview_accepts_the_copied_project(workspace):
-    assert examples.add_projects(workspace) == {'elf-of-doom': 'added'}
+    assert add(workspace) == {'elf-of-doom': 'added'}
     spec = importlib.util.spec_from_file_location(
         'example_projects_preview', ROOT / 'extensions/services/pixel-agent/host/workspace_preview.py')
     preview = importlib.util.module_from_spec(spec)
@@ -688,38 +871,68 @@ def test_portal_preview_accepts_the_copied_project(workspace):
 
 # ------------------------------------------------- installer steps (bash) --
 
-def run_linux_step(home, log, enable='true'):
+# The installer's own display: the real logging.sh and ui.sh, whose log()
+# prints to the console whenever the display is not cinematic.
+DISPLAY = '''RED='' GRN='' BGRN='' DGRN='' MAG='' BMAG='' AMB='' WHT='' DIM='' NC=''
+source "$INSTALL_DIR/installers/lib/ui.sh"
+source "$INSTALL_DIR/installers/lib/logging.sh"
+'''
+DISPLAY_MODES = [{'ODS_UI_MODE': 'plain'}, {'ODS_UI_MODE': 'auto', 'CI': '1'},
+                 {'ODS_UI_MODE': 'cinematic', 'INTERACTIVE': 'true'}]
+
+
+def run_linux_step(home, log, enable='true', python=sys.executable, display=None):
     function = shell_function(PHASE, '_phase11_add_example_projects').replace(
-        '/usr/bin/python3', shlex.quote(sys.executable))
+        '/usr/bin/python3', shlex.quote(python))
     script = '''set -euo pipefail
 INSTALL_DIR="$1"; LOG_FILE="$2"; HOME_FIXTURE="$3"; ODS_HELP_DISCORD_URL="$4"
-ods_pixel_install_owner() { printf '%s\\n' owner; }
+''' + DISPLAY + '''ods_pixel_install_owner() { printf '%s\\n' owner; }
 ods_pixel_owner_home() { printf '%s\\n' "$HOME_FIXTURE"; }
 ods_pixel_run_as_owner() { printf 'run as %s\\n' "$1" >>"$LOG_FILE"; shift 2; "$@"; }
-ai_ok() { printf 'OK: %s\\n' "$1"; }
-ai_warn() { printf 'WARN: %s\\n' "$1"; }
-log() { printf '%s\\n' "$*" >>"$LOG_FILE"; }
 ''' + function + '''_phase11_add_example_projects
 printf 'installer continues\\n'
 '''
-    env = {key: value for key, value in os.environ.items() if key != 'PIXEL_SERVICE_USER'}
-    env['ENABLE_PIXEL_RUNTIME'] = enable
+    env = {key: value for key, value in os.environ.items()
+           if key not in ('PIXEL_SERVICE_USER', 'CI', 'NO_COLOR', 'ODS_INSTALLER_GUI', 'INTERACTIVE', 'ODS_UI_MODE')}
+    env.update(display or DISPLAY_MODES[0], ENABLE_PIXEL_RUNTIME=enable)
     return subprocess.run(['bash', '-c', script, 'example-test', str(ROOT), str(log), str(home), HELP_URL],
                           text=True, capture_output=True, env=env)
 
 
+def exiting_helper(tmp_path, code, out='the cause.'):
+    """A stand-in for python3 that prints one line and exits with code."""
+    stub = tmp_path.resolve() / f'python-exit-{code}'
+    stub.write_text(f'#!/bin/sh\nprintf "%s\\n" {shlex.quote(out)}\nexit {code}\n', encoding='utf-8')
+    stub.chmod(0o700)
+    return str(stub)
+
+
 @POSIX_OWNER
-def test_linux_step_adds_the_game_quietly_then_reports_it_present(workspace, tmp_path):
+@pytest.mark.parametrize('display', DISPLAY_MODES)
+def test_linux_step_adds_the_game_quietly_then_reports_it_present(workspace, tmp_path, display):
     log = tmp_path.resolve() / 'install.log'
-    first = run_linux_step(workspace.parents[1], log)
+    first = run_linux_step(workspace.parents[1], log, display=display)
     assert first.returncode == 0, first.stderr
+    # Nothing on the console in any display, though log() prints in some.
     assert first.stdout == 'installer continues\n'
     assert 'run as owner\nPortal example projects: {"elf-of-doom":"added"}\n' in log.read_text(encoding='utf-8')
     assert (workspace / 'Playground/elf-of-doom/index.html').is_file()
-    second = run_linux_step(workspace.parents[1], log)
+    assert record_path(workspace).is_file()
+    second = run_linux_step(workspace.parents[1], log, display=display)
     assert second.returncode == 0, second.stderr
     assert second.stdout == 'installer continues\n'
     assert log.read_text(encoding='utf-8').endswith('Portal example projects: {"elf-of-doom":"previously-received"}\n')
+
+
+@POSIX_OWNER
+def test_log_prints_in_the_plain_display_so_the_step_never_uses_it(tmp_path):
+    # The reason the step writes to the install log itself.
+    log = tmp_path.resolve() / 'install.log'
+    script = 'set -euo pipefail\nINSTALL_DIR="$1"; LOG_FILE="$2"\n' + DISPLAY + 'log "visible"\n'
+    env = {**os.environ, 'ODS_UI_MODE': 'plain'}
+    result = subprocess.run(['bash', '-c', script, 'log-test', str(ROOT), str(log)], text=True, capture_output=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '[INFO] visible\n'
 
 
 @POSIX_OWNER
@@ -730,8 +943,10 @@ def test_linux_step_warns_with_the_cause_and_continues_when_the_copy_fails(tmp_p
     result = run_linux_step(home, log)
     assert result.returncode == 0, result.stderr
     warning, after = result.stdout.splitlines()
-    assert warning.startswith(WARNING + f'the Portal workspace folder {home}/.openclaw/workspace-pixel was not found. '
-                              'Rerun the installer so it sets Portal up again. Nothing in your Portal workspace was replaced.')
+    # The installer's own ai_warn() line: an indented warning sign, then the text.
+    assert warning.startswith('  ') and (WARNING.replace('WARN: ', '') + f'the Portal folder {home}/.openclaw/'
+                                         'workspace-pixel was not found. Rerun the installer so it sets Portal up '
+                                         'again. Nothing in your Portal workspace was replaced.') in warning
     assert HELP_URL in warning and str(log) in warning
     assert after == 'installer continues'
     assert 'example projects not added: FileNotFoundError' in log.read_text(encoding='utf-8')
@@ -739,17 +954,44 @@ def test_linux_step_warns_with_the_cause_and_continues_when_the_copy_fails(tmp_p
 
 
 @POSIX_OWNER
-def test_linux_step_only_logs_a_workspace_layout_it_never_writes_into(workspace, tmp_path):
+@pytest.mark.parametrize('display', DISPLAY_MODES)
+def test_linux_step_only_logs_a_workspace_layout_it_never_writes_into(workspace, tmp_path, display):
     # The owner's own permissions persist across reruns: no console line, ever.
     workspace.chmod(0o770)
     log = tmp_path.resolve() / 'install.log'
     for _attempt in range(2):
-        result = run_linux_step(workspace.parents[1], log)
+        result = run_linux_step(workspace.parents[1], log, display=display)
         assert result.returncode == 0, result.stderr
         assert result.stdout == 'installer continues\n'
     text = log.read_text(encoding='utf-8')
     assert text.count('Portal example projects not added: ODS does not write into this workspace layout: ') == 2
     assert 'private owner workspace required' in text
+    assert list(workspace.iterdir()) == []
+
+
+@POSIX_OWNER
+def test_linux_step_warns_about_an_unexpected_exit_and_a_missing_owner(workspace, tmp_path):
+    log = tmp_path.resolve() / 'install.log'
+    result = run_linux_step(workspace.parents[1], log, python=exiting_helper(tmp_path, 1))
+    assert result.returncode == 0, result.stderr
+    warning, after = result.stdout.splitlines()
+    assert 'its copy step stopped unexpectedly (exit 1)' in warning and HELP_URL in warning and str(log) in warning
+    assert after == 'installer continues'
+    script = shell_function(PHASE, '_phase11_add_example_projects')
+    lookup = '''set -euo pipefail
+INSTALL_DIR="$1"; LOG_FILE="$2"; ODS_HELP_DISCORD_URL="$3"
+''' + DISPLAY + '''ods_pixel_install_owner() { return 1; }
+''' + script + '''_phase11_add_example_projects
+printf 'installer continues\\n'
+'''
+    env = {key: value for key, value in os.environ.items() if key != 'PIXEL_SERVICE_USER'}
+    env.update(ENABLE_PIXEL_RUNTIME='true', ODS_UI_MODE='plain')
+    missing = subprocess.run(['bash', '-c', lookup, 'example-test', str(ROOT), str(log), HELP_URL],
+                             text=True, capture_output=True, env=env)
+    assert missing.returncode == 0, missing.stderr
+    warning, after = missing.stdout.splitlines()
+    assert "it could not find the Portal owner's account or home folder" in warning and HELP_URL in warning
+    assert after == 'installer continues'
     assert list(workspace.iterdir()) == []
 
 
@@ -794,12 +1036,14 @@ def test_macos_step_adds_the_game_quietly_through_the_resolved_install(tmp_path)
     install, workspace = macos_install(tmp_path)
     workspace.mkdir(parents=True)
     workspace.chmod(0o700)
+    workspace.parent.chmod(0o700)
     log = tmp_path.resolve() / 'install.log'
     first = run_macos_step(install, log)
     assert first.returncode == 0, first.stderr
     assert first.stdout == 'installer continues\n'
     assert log.read_text(encoding='utf-8') == 'Portal example projects: {"elf-of-doom":"added"}\n'
     assert (workspace / 'Playground/elf-of-doom/index.html').is_file()
+    assert record_path(workspace).read_bytes() == record_bytes(workspace, ['elf-of-doom'], ['elf-of-doom'])
     second = run_macos_step(install, log)
     assert second.returncode == 0, second.stderr
     assert second.stdout == 'installer continues\n'
@@ -813,7 +1057,7 @@ def test_macos_step_warns_with_the_cause_and_continues_when_the_copy_fails(tmp_p
     result = run_macos_step(install, log)
     assert result.returncode == 0, result.stderr
     warning, after = result.stdout.splitlines()
-    assert warning.startswith(WARNING + f'the Portal workspace folder {workspace} was not found. '
+    assert warning.startswith(WARNING + f'the Portal folder {workspace} was not found. '
                               'Rerun the installer so it sets Portal up again.')
     assert HELP_URL in warning and str(log) in warning
     assert after == 'installer continues'

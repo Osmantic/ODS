@@ -123,7 +123,7 @@ async def test_open_returns_the_exact_verified_receipt():
 
 
 @pytest.mark.asyncio
-async def test_a_deleted_example_is_404_refused_files_409_and_a_wrong_receipt_503():
+async def test_a_deleted_example_is_404_refused_files_409_unplayable_422_and_a_wrong_receipt_503():
     with client(Response(status=404, body={"error": "example-project-unavailable"}), []):
         with pytest.raises(HTTPException) as raised:
             await pixel.pixel_example_project_open(pixel.ExampleProjectOpenRequest(name="elf-of-doom"))
@@ -134,6 +134,12 @@ async def test_a_deleted_example_is_404_refused_files_409_and_a_wrong_receipt_50
             await pixel.pixel_example_project_open(pixel.ExampleProjectOpenRequest(name="elf-of-doom"))
     assert raised.value.status_code == 409
     assert raised.value.detail == "Some files in this example project's folder cannot be previewed."
+    # The folder is there, but has no index.html or is not the copy ODS added.
+    with client(Response(status=422, body={"error": "example-project-not-playable"}), []):
+        with pytest.raises(HTTPException) as raised:
+            await pixel.pixel_example_project_open(pixel.ExampleProjectOpenRequest(name="elf-of-doom"))
+    assert raised.value.status_code == 422
+    assert raised.value.detail == "This example project's folder is still there, but it cannot open as the example."
     for preview in ({**PREVIEW, "relativeDirectory": "Playground/other"}, {**PREVIEW, "port": True},
                     {**PREVIEW, "url": "http://evil.example/"}, {**PREVIEW, "secret": "x"}):
         with client(Response(body={"schemaVersion": 1, "preview": preview}), []):

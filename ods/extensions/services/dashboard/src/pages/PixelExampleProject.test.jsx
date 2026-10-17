@@ -8,9 +8,10 @@ vi.mock('../lib/pixelArtifacts', async importOriginal => ({
 import {render} from '../test/test-utils'
 import {act, fireEvent, screen} from '@testing-library/react'
 import Pixel from './Pixel'
+import PixelConversationNavigation from '../components/PixelConversationNavigation'
 import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT} from '../lib/exampleProjects'
 import {ODS_HELP_DISCORD_URL} from '../lib/support'
-import {saveConversation, SELECT_EVENT} from '../lib/pixelConversations'
+import {readConversations, saveConversation, SELECT_EVENT} from '../lib/pixelConversations'
 
 const sha256 = 'c'.repeat(64), siteId = `site-${sha256.slice(0, 24)}`
 const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relativeDirectory: 'Playground/elf-of-doom', siteId, sha256,
@@ -19,7 +20,9 @@ const preview = {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', relative
 function host(open) {
   return vi.fn(async url => url === '/api/pixel/example-projects/open'
     ? open()
-    : {ok: true, status: 200, json: async () => ({available: true, model: 'pixel/default'})})
+    : url === '/api/pixel/example-projects'
+      ? {ok: true, status: 200, json: async () => ({schemaVersion: 1, projects: ['elf-of-doom']})}
+      : {ok: true, status: 200, json: async () => ({available: true, model: 'pixel/default'})})
 }
 const reply = (status, body) => () => ({ok: status === 200, status, json: async () => body})
 const openExample = () => act(async () => { window.dispatchEvent(new CustomEvent(EXAMPLE_OPEN_EVENT, {detail: {name: 'elf-of-doom'}})) })
@@ -39,15 +42,27 @@ it('opens the example in the Workspace preview without sending anything to the m
   expect(screen.queryByRole('alert')).toBeNull()
 })
 
-it('opening the example keeps an unsent draft, as any other project row does', async () => {
+it('opening the example keeps an unsent draft in the composer without saving it as another conversation', async () => {
   localStorage.clear()
   vi.stubGlobal('fetch', host(reply(200, {schemaVersion: 1, preview})))
-  render(<Pixel/>)
+  render(<><PixelConversationNavigation collapsed={false}/><Pixel/></>)
   await screen.findByText('Available')
-  fireEvent.change(screen.getByPlaceholderText(/^Message /), {target: {value: 'In elf-of-doom, make the arrows give 7'}})
-  await openExample()
+  const draft = 'Make me a snake game'
+  fireEvent.change(screen.getByPlaceholderText(/^Message /), {target: {value: draft}})
+  const example = await screen.findByTitle('Playground/elf-of-doom')
+  await act(async () => { fireEvent.click(example) })
   expect(await screen.findByTitle('Interactive Portal preview')).toBeInTheDocument()
-  expect(screen.getByPlaceholderText(/^Message /)).toHaveValue('In elf-of-doom, make the arrows give 7')
+  // The composer still holds the text.
+  expect(screen.getByPlaceholderText(/^Message /)).toHaveValue(draft)
+  // Only the conversation the owner left keeps it: no copy, and none filed
+  // under the example's folder.
+  const saved = readConversations()
+  expect(saved.filter(chat => chat.draft === draft)).toHaveLength(1)
+  expect(saved.filter(chat => chat.preview?.relativeDirectory === 'Playground/elf-of-doom')).toHaveLength(0)
+  // So the example's row still opens the game rather than unfolding.
+  const row = screen.getByTitle('Playground/elf-of-doom')
+  expect(row).toHaveAttribute('role', 'button')
+  expect(row.closest('details').open).toBe(false)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })
 
@@ -78,6 +93,23 @@ it('a deleted folder explains itself, refreshes the list and links to help', asy
   expect(alert.querySelector('a')).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
   expect(refreshed).toHaveBeenCalledTimes(1)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
+  window.removeEventListener(EXAMPLE_REFRESH_EVENT, refreshed)
+})
+
+it('a folder that is still there but cannot open as the example says so, apart from a deleted one', async () => {
+  localStorage.clear()
+  vi.stubGlobal('fetch', host(reply(422, {detail: "This example project's folder is still there, but it cannot open as the example."})))
+  const refreshed = vi.fn()
+  window.addEventListener(EXAMPLE_REFRESH_EVENT, refreshed)
+  render(<Pixel/>)
+  await screen.findByText('Available')
+  refreshed.mockClear()
+  await openExample()
+  const alert = await screen.findByRole('alert')
+  expect(alert).toHaveTextContent('Portal could not open elf-of-doom: the Playground/elf-of-doom folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/elf-of-doom".')
+  expect(alert).not.toHaveTextContent('no longer in your Portal workspace')
+  expect(alert.querySelector('a')).toHaveAttribute('href', ODS_HELP_DISCORD_URL)
+  expect(refreshed).toHaveBeenCalledTimes(1)
   window.removeEventListener(EXAMPLE_REFRESH_EVENT, refreshed)
 })
 

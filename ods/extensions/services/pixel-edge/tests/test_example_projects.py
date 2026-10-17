@@ -119,6 +119,10 @@ class ExampleProjectRelayTests(unittest.IsolatedAsyncioTestCase):
         async with self.client.post(self.url, headers=AUTH, json={"name": "elf-of-doom"}) as response:
             self.assertEqual(response.status, 409)
             self.assertEqual(await response.json(), {"error": "example-project-not-previewable"})
+        self.reply = (422, b'{"error":"example-project-not-playable","private":"/home/owner"}')
+        async with self.client.post(self.url, headers=AUTH, json={"name": "elf-of-doom"}) as response:
+            self.assertEqual(response.status, 422)
+            self.assertEqual(await response.json(), {"error": "example-project-not-playable"})
         async with self.client.get(self.url, headers=AUTH) as response:
             self.assertEqual(response.status, 503)
         for status, raw in ((503, b'{"error":"secret detail"}'), (200, b"x" * 9000),

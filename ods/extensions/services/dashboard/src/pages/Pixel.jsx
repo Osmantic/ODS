@@ -133,6 +133,15 @@ const MAX_STORED_MESSAGES = 2000
 const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
 const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
+// The draft a chat saves. A draft the composer kept when a shipped example
+// opened from the sidebar (carried) stays saved only in the conversation the
+// owner left: the example's view never saves it again, so opening the example
+// creates no conversation and its sidebar row keeps opening the game. Text
+// the owner edits or sends there is that view's own, as in any chat.
+function persistedDraft(carried, chatId, text) {
+  return carried?.chatId === chatId && carried.text === text ? '' : text
+}
+
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
 const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
 const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
@@ -663,6 +672,9 @@ export default function Pixel({ systemStatus = null }) {
   const stopRequestRef = useRef(null)
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
+  // An unsent draft the composer kept when a shipped example opened from the
+  // sidebar (see persistedDraft).
+  const carriedDraft = useRef(null)
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
   const imageWorkPending = useRef(false)
   imageWorkPending.current = images.busy
@@ -753,7 +765,7 @@ export default function Pixel({ systemStatus = null }) {
     onPendingChange:(id,chatId)=>{
       if(chatId!==chatIdRef.current)throw new Error('The conversation changed before compaction could be saved.')
       historySnapshot(messages)
-      conversationWriter.current({schema:1,chatId,requestId:requestIdRef.current,inFlight:sending,interrupted,draft:input,draftImages:images.receipts,
+      conversationWriter.current({schema:1,chatId,requestId:requestIdRef.current,inFlight:sending,interrupted,draft:persistedDraft(carriedDraft.current,chatId,input),draftImages:images.receipts,
         messages,contextStart:contextStartRef.current,compactionRequestId:id,preview,workspaceOpen})
       compactionRequestRef.current=id
     },
@@ -1047,7 +1059,7 @@ export default function Pixel({ systemStatus = null }) {
         inFlight: sending,
         interrupted,
         ...(conversationDeleted ? {conversationDeleted:true} : {}),
-        draft: input,
+        draft: persistedDraft(carriedDraft.current, chatIdRef.current, input),
         draftImages: images.receipts,
         messages: storedMessages,
         contextStart: contextStartRef.current,
@@ -1141,6 +1153,7 @@ export default function Pixel({ systemStatus = null }) {
     setStopping(false)
     setStopError('')
     setExampleError('')
+    carriedDraft.current = null
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -1178,7 +1191,7 @@ export default function Pixel({ systemStatus = null }) {
           conversationWriter.current({
             schema: 1, chatId, requestId, inFlight: true, interrupted: false,
             messages: [...visibleConversation, { role: 'assistant', content: '' }], preview,
-            draft: typeof answerOverride === 'string' ? input : '', draftImages:images.receipts, contextStart: contextStartRef.current, compactionRequestId:compactionRequestRef.current, workspaceOpen,
+            draft: typeof answerOverride === 'string' ? persistedDraft(carriedDraft.current, chatId, input) : '', draftImages:images.receipts, contextStart: contextStartRef.current, compactionRequestId:compactionRequestRef.current, workspaceOpen,
           })
         } catch (error) {
           requestIdRef.current = null
@@ -1643,7 +1656,7 @@ export default function Pixel({ systemStatus = null }) {
   // the Workspace panel. No model runs and no message is sent.
   const exampleOpen = useRef(null)
   const exampleState = useRef(null)
-  exampleState.current = {busy: sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy, startNewChat}
+  exampleState.current = {busy: sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy, startNewChat, input}
   useEffect(() => {
     const busyText = 'Stop the current task before opening another project.'
     const open = async event => {
@@ -1661,17 +1674,23 @@ export default function Pixel({ systemStatus = null }) {
         // The owner moved on (another click, chat or task) while it published.
         if (controller.signal.aborted || chatIdRef.current !== chatId) return
         if (exampleState.current.busy) { setStopError(busyText); return }
-        // Like any other project row, opening it keeps an unsent draft.
+        // The composer keeps an unsent draft, which stays saved only in the
+        // conversation the owner left (see carriedDraft).
+        const draft = exampleState.current.input
         exampleState.current.startNewChat(true)
+        carriedDraft.current = draft ? {chatId: chatIdRef.current, text: draft} : null
         setPreview(published); setPreviewRefresh(0); setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceExpanded(false)
       } catch (error) {
         if (controller.signal.aborted) return
-        if (error?.code === 'missing') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+        // The sidebar's list is stale in both cases: check it again.
+        if (error?.code === 'missing' || error?.code === 'not-playable') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
         setExampleError(error?.code === 'missing'
           ? `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.`
-          : error?.code === 'not-previewable'
-            ? `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`
-            : `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`)
+          : error?.code === 'not-playable'
+            ? `Portal could not open ${name}: the Playground/${name} folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/${name}".`
+            : error?.code === 'not-previewable'
+              ? `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`
+              : `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`)
       } finally {
         if (exampleOpen.current === controller) exampleOpen.current = null
       }

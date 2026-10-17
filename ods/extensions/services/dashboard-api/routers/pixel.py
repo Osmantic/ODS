@@ -959,6 +959,9 @@ async def pixel_example_project_open(body: ExampleProjectOpenRequest) -> dict[st
                 if response.status_code == 404:
                     raise HTTPException(status_code=404,
                                         detail="This example project is no longer in your Portal workspace.")
+                if response.status_code == 422:
+                    raise HTTPException(status_code=422,
+                                        detail="This example project's folder is still there, but it cannot open as the example.")
                 if response.status_code == 409:
                     raise HTTPException(status_code=409,
                                         detail="Some files in this example project's folder cannot be previewed.")

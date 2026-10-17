@@ -52,7 +52,7 @@ test('the relay opens one named example and returns only the validated receipt',
   assert.equal(calls.length, 1);
 });
 
-test('a missing example stays 404, refused files stay 409, and every other failure is a fixed 503', async t => {
+test('a missing example stays 404, refused files 409, an unplayable folder 422, and every other failure a fixed 503', async t => {
   let reply = [404, {error: 'example-project-unavailable', secret: '/private'}];
   const {url} = await ingress(t, () => reply);
   const missing = await open(url, {name: 'elf-of-doom'});
@@ -62,6 +62,10 @@ test('a missing example stays 404, refused files stay 409, and every other failu
   const refused = await open(url, {name: 'elf-of-doom'});
   assert.equal(refused.status, 409);
   assert.equal(await refused.text(), '{"error":"example-project-not-previewable"}');
+  reply = [422, {error: 'example-project-not-playable', secret: '/private'}];
+  const notPlayable = await open(url, {name: 'elf-of-doom'});
+  assert.equal(notPlayable.status, 422);
+  assert.equal(await notPlayable.text(), '{"error":"example-project-not-playable"}');
   // Only opening has those answers; a listing never does.
   reply = [409, {error: 'example-project-not-previewable'}];
   assert.equal((await fetch(url)).status, 503);

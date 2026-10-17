@@ -783,11 +783,13 @@ act as a capability gate:
   ODS ships one finished example project, Elf of Doom, which Portal wrote in
   ODS from natural-language prompts. The installers copy it to
   `Playground/elf-of-doom` whenever Playground/elf-of-doom is absent and the
-  workspace has never received it (the hidden `.ods-examples.json` at the
-  workspace root records each example received, so a deleted or renamed copy
-  is never added again, and each one ODS itself added), and never replace,
-  merge into or delete an existing entry of that name; it is ordinary owner
-  content. Only a folder the record says ODS added is the example: an owner's
+  workspace has never received it (a private record in the OpenClaw state
+  folder, `.ods-example-projects/<SHA-256 of the workspace path>.json`, which
+  the agent's sandbox never mounts, lists each example received, so a deleted
+  or renamed copy is never added again, and each one ODS itself added; the
+  run after one that stopped before writing it recognizes ODS's own unchanged
+  copy), and never replace, merge into or delete an existing entry of that
+  name; it is ordinary owner content. Only a folder the record says ODS added is the example: an owner's
   own earlier `Playground/elf-of-doom` is neither listed as it nor protected.
   While the folder exists, Portal's sidebar lists it under
   Projects > Playground like any other project, and clicking it publishes that
@@ -796,15 +798,15 @@ act as a capability gate:
   the ingress, the edge and `/api/pixel/example-projects`). It is never a
   starter for new work: the plugin's routing refuses writes, edits, patches,
   bundles, promoted downloads and mutating commands inside it, checked on
-  each call as it will run after every path rewrite, unless the owner's
-  request names it as what to change (for example "In elf-of-doom, make the
-  arrows give 7"), or an earlier turn of the same chat named it as what to
-  change and this turn asks for a change and nothing new (opening, showing
-  or checking it never counts). A request for something new, a sequel or
-  remake included, may neither change it, copy its files as a starting point
-  (unless the owner asks for a copy), nor publish it as its result. These are
-  best-effort routing checks for the owner's files, not a sandbox: a command
-  that hides the folder name can still reach it. The
+  each call as it will run after every path rewrite, unless that turn's own
+  owner request names it as what to change (for example "In elf-of-doom,
+  make the arrows give 7"). Nothing carries over between turns: after
+  opening, showing or changing it, "Make it faster" is refused with a note
+  that the owner must name elf-of-doom. A request for something new, a
+  sequel or remake included, may neither change it, copy its files as a
+  starting point (unless the owner asks for a copy), nor publish it as its
+  result. These are best-effort routing checks for the owner's files, not a
+  sandbox: a command that hides the folder name can still reach it. The
   adapter accepts only the existing relative directory, so safety enforcement,
   static validation, snapshot isolation, and HTTP readback cannot be confused
   with authorship. Pixel may author either a self-contained `index.html` or a

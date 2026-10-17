@@ -32,7 +32,9 @@ export async function openExampleProject(name, signal) {
   if (!response.ok) {
     const error = new Error('Example project unavailable')
     // 404: the folder is gone. 409: the host refused files in the folder.
-    error.code = response.status === 404 ? 'missing' : response.status === 409 ? 'not-previewable' : 'unavailable'
+    // 422: a folder of that name is there but cannot open as the example
+    // (its index.html is missing, or it is not the copy ODS added).
+    error.code = {404: 'missing', 409: 'not-previewable', 422: 'not-playable'}[response.status] ?? 'unavailable'
     throw error
   }
   const value = await response.json()

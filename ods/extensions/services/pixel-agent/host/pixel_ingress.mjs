@@ -1593,10 +1593,13 @@ async function handleExampleProjects(req, res, token, gatewayPort, deps) {
       method: open ? 'POST' : 'GET', headers: upstreamHeaders(false, token),
       ...(open ? {body: JSON.stringify({name})} : {}), redirect: 'error', signal: controller.signal,
     });
-    // 404: the folder is gone. 409: the host refused files in it.
-    if (open && (response.status === 404 || response.status === 409)) {
+    // 404: the folder is gone. 409: the host refused files in it. 422: a
+    // folder of that name is there but cannot open as the example.
+    const refusal = {404: 'example-project-unavailable', 409: 'example-project-not-previewable',
+      422: 'example-project-not-playable'}[response.status];
+    if (open && refusal) {
       await drain(response.body);
-      sendJson(res, response.status, {error: response.status === 404 ? 'example-project-unavailable' : 'example-project-not-previewable'});
+      sendJson(res, response.status, {error: refusal});
       return;
     }
     if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {

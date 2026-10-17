@@ -2,15 +2,18 @@
 
 Elf of Doom is copied to Playground/elf-of-doom whenever Playground/elf-of-doom
 is absent and this workspace has never received it (each example likewise to
-Playground/<name>). A hidden record in the workspace, .ods-examples.json, lists
-the examples it has received, so an example the owner deleted or renamed is
-never added again; a fresh workspace gets it on its first install or update.
-The record also lists the examples ODS itself added: only those are the
-shipped example to Portal. Anything already of that name (a folder, even
-empty, a file or a link) is ordinary owner content that ODS never overwrites,
-merges into, chmods, deletes or treats as the example. Portal's sidebar lists
-the added folder with the other projects; nothing is printed about it. Run as
-the non-root workspace owner after Portal is verified. Every shipped file's
+Playground/<name>). A private record in Portal's state folder, outside the
+workspace the agent's sandbox mounts (.ods-example-projects/<SHA-256 of the
+workspace path>.json), lists the examples the workspace has received, so an
+example the owner deleted or renamed is never added again; a fresh workspace
+gets it on its first install or update. The record also lists the examples
+ODS itself added: only those are the shipped example to Portal. Anything already of that name (a
+folder, even empty, a file or a link) is ordinary owner content that ODS never
+overwrites, merges into, chmods, deletes or treats as the example, unless it
+holds exactly the pinned files and nothing else: that is ODS's own copy from a
+run that stopped before its record was written. Portal's sidebar lists the
+added folder with the other projects; nothing is printed about it. Run as the
+non-root workspace owner after Portal is verified. Every shipped file's
 SHA-256 is pinned below; when any source file differs, nothing is copied.
 
 The command prints the outcome as JSON. Exit status 3 means the workspace
@@ -39,9 +42,11 @@ STAGING_PREFIX = '.ods-example-'
 STAGING_NAME = re.compile(re.escape(STAGING_PREFIX) + r'[0-9a-f]{16}')
 # A copy takes seconds; an older staging folder was left by an interrupted run.
 STALE_STAGING_SECONDS = 3600
-# The examples this workspace has received, at its root. Hidden like Portal's
-# own .ods-projects metadata, so Portal's preview and sidebar never show it.
-RECORD = '.ods-examples.json'
+# The records of received examples: one private folder in Portal's (OpenClaw's)
+# state folder, which the agent's sandbox never mounts, with one file per
+# workspace named by the SHA-256 of its path. Portal's plugin reads the same
+# file (plugin/example-projects.mjs).
+RECORD_DIRECTORY = '.ods-example-projects'
 MAX_RECORD_BYTES = 4096
 # Linux renameat2(2) RENAME_NOREPLACE and macOS renameatx_np(2) RENAME_EXCL.
 RENAME_NOREPLACE = 0x1
@@ -50,7 +55,7 @@ RENAME_EXCL = 0x4
 # files are exactly the bytes published at https://odsspark.com/game/.
 EXAMPLES = {
     'elf-of-doom': {
-        'README.md': '5f182eb7806f18fa36c0e690ae23960e353f1dddba3f82dcf0703f7e55e36398',
+        'README.md': '1d95a88d21a21eb69b82764e887dc09accab62cac700e949c334586de06bc25c',
         'chars.js': '161b08c8a331fef5f09ac45e6ade2cff62e03316ba7c6ac197adf8147af629db',
         'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
         'engine.js': '2f573a818c04b23554a95426bbe7a8a367780c9c583e03488fbe5e66e19dbedf',
@@ -70,48 +75,63 @@ NOT_ADDED = 4
 class LayoutRefused(ValueError):
     """The workspace layout is one this helper never writes into.
 
-    A linked folder on the workspace path, a workspace or Playground
-    that is not the owner's private folder, or a Playground that is a file or
-    a link. Only the owner can change that, so rerunning cannot help.
+    A linked folder on the workspace or state path, a workspace, state folder
+    or Playground that is not the owner's private folder, or a Playground that
+    is a file or a link. Only the owner can change that, so rerunning cannot
+    help.
     """
 
 
-def _owner_directory(path):
-    """Open the workspace with the guidance migration's checked owner walk.
-
-    That walk opens every component from / without following links, and
-    requires an owner-owned workspace that is not group- or other-writable.
-    """
+def _guidance():
     spec = importlib.util.spec_from_file_location(
         'ods_example_workspace_guidance', Path(__file__).resolve().with_name('pixel-workspace-guidance.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def _owner_directory(path, what):
+    """Open the workspace or state folder with the guidance migration's owner walk.
+
+    That walk opens every component from / without following links, and
+    requires an owner-owned folder that is not group- or other-writable.
+    """
     try:
-        return module._directory(path)
+        return _guidance()._directory(path)
     except FileNotFoundError as error:
         # Not created yet, which is not a layout the owner chose. The walk
-        # names only the missing component; name the whole workspace path.
+        # names only the missing component; name the whole path.
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(path)) from error
     except (ValueError, OSError) as error:
         if isinstance(error, OSError) and error.errno not in (errno.ELOOP, errno.ENOTDIR, errno.EACCES, errno.EPERM):
             raise
         raise LayoutRefused(
-            f'the Portal workspace {path} is not a private folder of this user reached without links ({error})') from error
+            f'the Portal {what} {path} is not a private folder of this user reached without links ({error})') from error
 
 
 def _read_source(directory, expected):
-    """Return the pinned files' bytes; any difference stops before a write."""
+    """Return the pinned files' bytes; any difference stops before a write.
+
+    A missing, linked, unreadable or non-regular source file is ODS's own copy
+    being incomplete, never a problem with the owner's workspace.
+    """
     files = {}
     for name, digest in sorted(expected.items()):
-        fd = os.open(str(directory / name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            fd = os.open(str(directory / name), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as error:
+            raise ValueError(f'example source {name} could not be read ({error.strerror})') from error
         # Checked on the raw descriptor: os.fdopen() refuses a folder outright.
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             os.close(fd)
-            raise ValueError('example source must be a regular file')
+            raise ValueError(f'example source {name} must be a regular file')
         with os.fdopen(fd, 'rb') as stream:
-            body = stream.read(MAX_BYTES + 1)
+            try:
+                body = stream.read(MAX_BYTES + 1)
+            except OSError as error:
+                raise ValueError(f'example source {name} could not be read ({error.strerror})') from error
         if len(body) > MAX_BYTES or hashlib.sha256(body).hexdigest() != digest:
-            raise ValueError('example source does not match the shipped bytes')
+            raise ValueError(f'example source {name} does not match the shipped bytes')
         files[name] = body
     return files
 
@@ -204,52 +224,125 @@ def _remove_one_staging(playground, entry):
         _discard(playground, entry, names)
 
 
+def _unchanged_copy(playground, name, files):
+    """Whether Playground/<name> holds exactly the pinned files and nothing else.
+
+    Such a folder is ODS's own copy from a run that stopped (or could not write
+    its record) after the folder was renamed into place. Any other content, a
+    link or a file the owner does not own is not.
+    """
+    try:
+        directory = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=playground)
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR, errno.ENOENT, errno.EACCES):
+            return False
+        raise
+    try:
+        if os.fstat(directory).st_uid != os.getuid() or sorted(os.listdir(directory)) != sorted(files):
+            return False
+        for filename, body in files.items():
+            try:
+                fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            except OSError as error:
+                if error.errno in (errno.ELOOP, errno.ENOENT, errno.EACCES):
+                    return False
+                raise
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                os.close(fd)
+                return False
+            with os.fdopen(fd, 'rb') as stream:
+                if stream.read(len(body) + 1) != body:
+                    return False
+        return True
+    finally:
+        os.close(directory)
+
+
 def _names(value):
     return isinstance(value, list) and all(isinstance(name, str) for name in value)
 
 
-def _received(workspace):
-    """The record's (received, added) example names, or None for an unusable record.
+class RecordUnusable(Exception):
+    """The record (or its folder) is not the owner's own private file of the expected shape."""
+
+
+def record_name(workspace):
+    """The record's file name for this workspace path: the path's SHA-256."""
+    return hashlib.sha256(os.fsencode(str(workspace))).hexdigest() + '.json'
+
+
+def _records(state, create=False):
+    """The private record folder in the state folder, or None when it is absent.
+
+    It must be the owner's own real folder that nobody else can read or
+    write; anything else at that name raises RecordUnusable.
+    """
+    if create:
+        try:
+            os.mkdir(RECORD_DIRECTORY, 0o700, dir_fd=state)
+        except FileExistsError:
+            pass
+    try:
+        records = os.open(RECORD_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=state)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        if error.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise RecordUnusable() from error
+        raise
+    info = os.fstat(records)
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        os.close(records)
+        raise RecordUnusable()
+    return records
+
+
+def _received(records, workspace):
+    """The record's (received, added) example names; RecordUnusable when it cannot be trusted.
 
     received lists every example this workspace has received; added lists the
     ones ODS itself added, which Portal treats as the shipped example. No
     record means none. A record that is not the owner's own single regular
-    file of the expected shape is unusable: it is never trusted or replaced,
-    and no example is added while it is there.
+    file of the expected shape, for this workspace, is unusable: it is never
+    trusted or replaced, and no example is added while it is there.
     """
+    if records is None:
+        return frozenset(), frozenset()
     try:
-        fd = os.open(RECORD, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=workspace)
+        fd = os.open(record_name(workspace), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=records)
     except FileNotFoundError:
         return frozenset(), frozenset()
     except OSError as error:
         if error.errno == errno.ELOOP:
-            return None  # A link where the record belongs.
+            raise RecordUnusable() from error  # A link where the record belongs.
         raise
     info = os.fstat(fd)
     # Checked on the raw descriptor: os.fdopen() refuses a folder outright.
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1:
         os.close(fd)
-        return None
+        raise RecordUnusable()
     with os.fdopen(fd, 'rb') as stream:
         body = stream.read(MAX_RECORD_BYTES + 1)
     try:
         value = json.loads(body.decode('utf-8')) if len(body) <= MAX_RECORD_BYTES else None
-    except (UnicodeDecodeError, ValueError):
-        return None
-    if (not isinstance(value, dict) or set(value) != {'schemaVersion', 'received', 'added'}
+    except (UnicodeDecodeError, ValueError) as error:
+        raise RecordUnusable() from error
+    if (not isinstance(value, dict) or set(value) != {'schemaVersion', 'workspace', 'received', 'added'}
             or type(value['schemaVersion']) is not int or value['schemaVersion'] != 1
+            or value['workspace'] != str(workspace)
             or not _names(value['received']) or not _names(value['added'])
             or not set(value['added']) <= set(value['received'])):
-        return None
+        raise RecordUnusable()
     return frozenset(value['received']), frozenset(value['added'])
 
 
-def _record(workspace, received, added):
+def _record(records, workspace, received, added):
     """Replace the record with these names: a private file renamed into place."""
-    body = (json.dumps({'schemaVersion': 1, 'received': sorted(received), 'added': sorted(added)},
-                       separators=(',', ':')) + '\n').encode()
-    temporary = '.ods-examples-' + secrets.token_hex(8) + '.tmp'
-    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=workspace)
+    body = (json.dumps({'schemaVersion': 1, 'workspace': str(workspace), 'received': sorted(received),
+                        'added': sorted(added)}, separators=(',', ':')) + '\n').encode()
+    temporary = '.' + secrets.token_hex(8) + '.tmp'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=records)
     renamed = False
     try:
         with os.fdopen(fd, 'wb') as stream:
@@ -259,13 +352,13 @@ def _record(workspace, received, added):
             os.fsync(stream.fileno())
         # rename(2) replaces a link or file at the record name itself, never
         # what a link points to; _received has just checked that entry.
-        os.rename(temporary, RECORD, src_dir_fd=workspace, dst_dir_fd=workspace)
+        os.rename(temporary, record_name(workspace), src_dir_fd=records, dst_dir_fd=records)
         renamed = True
-        os.fsync(workspace)
+        os.fsync(records)
     finally:
         if not renamed:
             try:
-                os.unlink(temporary, dir_fd=workspace)
+                os.unlink(temporary, dir_fd=records)
             except FileNotFoundError:
                 pass  # It was never created.
 
@@ -315,7 +408,9 @@ def _rename_into_place(playground, staging, name):
 
 def _add(playground, name, files):
     if _exists(playground, name):
-        return 'present'
+        # Exactly the pinned files: this helper renamed it into place, then
+        # stopped before the record was written.
+        return 'added' if _unchanged_copy(playground, name, files) else 'present'
     # Stage under a hidden sibling, which Portal's preview and project routing
     # ignore, so an interrupted copy never leaves a partial Playground/<name>.
     staging = STAGING_PREFIX + secrets.token_hex(8)
@@ -345,43 +440,73 @@ def _add(playground, name, files):
             _discard(playground, staging, files)
 
 
-def add_projects(workspace, source=SOURCE):
+def _read_record(state, workspace):
+    records = _records(state)
+    try:
+        return _received(records, workspace)
+    finally:
+        if records is not None:
+            os.close(records)
+
+
+def _write_record(state, workspace, received, added):
+    records = _records(state, create=True)
+    try:
+        _record(records, workspace, received, added)
+    finally:
+        os.close(records)
+
+
+def _deliver(root, projects, received):
+    playground = _playground(root)
+    try:
+        _remove_interrupted_staging(playground)
+        return {name: 'previously-received' if name in received else _add(playground, name, files)
+                for name, files in projects.items()}
+    finally:
+        os.close(playground)
+
+
+def add_projects(workspace, state_dir, source=SOURCE):
     """Add each shipped example this workspace has never received.
 
-    Returns each example's outcome: 'added'; 'present' when something of that
-    name already exists; 'previously-received' when the record lists it (the
-    owner may have deleted or renamed it since); or 'record-unusable' when the
-    record cannot be trusted. 'added' and 'present' are recorded as received,
-    so a later run never adds that example again, and only 'added' is recorded
-    as added: an owner's own folder of that name never becomes the example.
-    Raises LayoutRefused for a workspace layout this helper never writes into.
+    workspace is the owner's Portal workspace and state_dir Portal's state
+    folder that holds the record (OPENCLAW_STATE_DIR). Returns each example's
+    outcome: 'added'; 'present' when something else of that name already
+    exists; 'previously-received' when the record lists it (the owner may have
+    deleted or renamed it since); or 'record-unusable' when the record cannot
+    be trusted. 'added' and 'present' are recorded as received, so a later run
+    never adds that example again, and only 'added' is recorded as added: an
+    owner's own folder of that name never becomes the example. Raises
+    LayoutRefused for a workspace layout this helper never writes into.
     """
     if os.geteuid() == 0:
         raise ValueError('add example projects as the non-root workspace owner')
     projects = {name: _read_source(Path(source) / name, expected) for name, expected in sorted(EXAMPLES.items())}
-    root = _owner_directory(workspace)
+    workspace = Path(workspace)
+    root = _owner_directory(workspace, 'workspace')
     try:
-        record = _received(root)
-        if record is None:
-            return {name: 'record-unusable' for name in projects}
-        received, added = record
-        playground = _playground(root)
+        state = _owner_directory(state_dir, 'state folder')
         try:
-            _remove_interrupted_staging(playground)
-            outcome = {name: 'previously-received' if name in received else _add(playground, name, files)
-                       for name, files in projects.items()}
-        finally:
-            os.close(playground)
-        delivered = {name for name, status in outcome.items() if status in ('added', 'present')}
-        if delivered - received:
             try:
-                _record(root, received | delivered, added | {name for name, status in outcome.items() if status == 'added'})
-            except OSError as error:
-                # The examples are in place, but Portal treats an unrecorded
-                # one as ordinary owner content, and a later re-add after the
-                # owner deletes one is no longer prevented.
-                print(f'could not record the added example projects: {error}', file=sys.stderr)
-        return outcome
+                received, added = _read_record(state, workspace)
+            except RecordUnusable:
+                return {name: 'record-unusable' for name in projects}
+            outcome = _deliver(root, projects, received)
+            delivered = {name for name, status in outcome.items() if status in ('added', 'present')}
+            if delivered - received:
+                try:
+                    _write_record(state, workspace, received | delivered,
+                                  added | {name for name, status in outcome.items() if status == 'added'})
+                except (OSError, RecordUnusable) as error:
+                    # The examples are in place but unrecorded: Portal treats
+                    # one as ordinary owner content until a later run records
+                    # it, which recognizes an unchanged copy as ODS's own.
+                    print(f'could not record the added example projects: {type(error).__name__} {error}',
+                          file=sys.stderr)
+            return outcome
+        finally:
+            os.close(state)
     finally:
         os.close(root)
 
@@ -394,7 +519,7 @@ def _cause(error):
         return ("ODS's own copy of the game files is damaged or incomplete. "
                 'Download ODS again, then rerun the installer.')
     if isinstance(error, FileNotFoundError):
-        return (f'the Portal workspace folder {error.filename} was not found. '
+        return (f'the Portal folder {error.filename} was not found. '
                 'Rerun the installer so it sets Portal up again.')
     if isinstance(error, OSError):
         reason = error.strerror or type(error).__name__
@@ -406,9 +531,10 @@ def _cause(error):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--workspace', required=True, help="the owner's absolute Portal workspace path")
+    parser.add_argument('--state-dir', required=True, help="Portal's absolute state folder (OPENCLAW_STATE_DIR)")
     args = parser.parse_args()
     try:
-        outcome = add_projects(args.workspace)
+        outcome = add_projects(args.workspace, args.state_dir, SOURCE)
     except (ValueError, OSError) as error:
         # The installer logs this line and shows, or only logs, the cause.
         print(f'example projects not added: {type(error).__name__}: {error}', file=sys.stderr)

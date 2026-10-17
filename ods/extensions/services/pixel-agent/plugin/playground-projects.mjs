@@ -704,24 +704,39 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
 
 // ODS ships finished example projects (Elf of Doom) at Playground/<name>.
 // They are owner content. Portal may read and publish one, but changes it only
-// when the owner names it as the thing to change ("In elf-of-doom, make the
-// arrows give 7"), or when an earlier turn of this chat named it as the thing
-// to change and this turn only asks for a change ("Now make them give 9"),
-// with nothing new. A request for something new, a sequel or remake
-// included, gets its own folder and never starts from the example's files
-// unless the owner asks for a copy. Only a folder ODS added is the example: a
-// deleted or renamed one is ordinary owner history, and a folder of that name
-// the owner already had is never protected. These are best-effort routing
-// checks for the owner's files, never an access grant or a sandbox: core
-// tools keep their checks.
+// on a turn whose own owner message names it as the thing to change ("In
+// elf-of-doom, make the arrows give 7"). Nothing carries over between turns:
+// after opening or changing it, "Make it faster" changes nothing until the
+// owner names it again, so what may change is always visible in the request
+// itself. A request for something new, a sequel or remake included, gets its
+// own folder and never starts from the example's files unless the owner asks
+// for a copy. Only a folder ODS added is the example: a deleted or renamed one
+// is ordinary owner history, and a folder of that name the owner already had
+// is never protected. These are best-effort routing checks for the owner's
+// files, never an access grant or a sandbox: core tools keep their checks.
 
 const RANK = {mention: 1, open: 2, reuse: 3, change: 4};
 // The first word of a clause, after polite lead-ins, says what it asks for.
 const CHANGE_VERB = /^(?:make|change|edit|update|modify|fix|repair|debug|add|remove|delete|tweak|improve|adjust|set|give|increase|decrease|raise|lower|double|halve|triple|speed|slow|rename|replace|rewrite|refactor|rebalance|balance|recolou?r|restyle|extend|enhance|upgrade|convert|translate|implement|write|put|turn|swap|move|polish|redesign|rework|reskin|tune|nerf|buff|patch|insert|append|optimi[sz]e|redo|mude|mudar|altere|alterar|edite|editar|atualize|atualizar|corrija|corrigir|conserte|consertar|adicione|adicionar|remova|remover|faca|fazer|faz|coloque|colocar|troque|trocar|aumente|aumentar|diminua|diminuir|melhore|melhorar|escreva|escrever)$/i;
 // Phrases that start with a change verb but ask for a check or a try, not a
-// change: "make sure it loads", "give it a try", "make it work".
-const IDIOM = /\b(?:make\s+(?:sure|certain)|give\s+it\s+a\s+(?:try|go|shot|spin|whirl|test)|make\s+it\s+work)\b/i;
+// change: "make sure it loads", "give it a try", "give elf-of-doom a quick
+// go", "make it work". "Make it run faster" is a change.
+// A try may say where ("on my phone"); "make it work on mobile" asks for a
+// change, so "make it work" ends its clause.
+const IDIOM_END = '(?=[^A-Za-z0-9]*$|\\s+(?:now|please|first|again|today|for\\s+me|for\\s+us)\\b)';
+const TRY_END = '(?=[^A-Za-z0-9]*$|\\s+(?:now|please|first|again|today|for\\s+me|for\\s+us|on\\s+\\S+|in\\s+the\\s+preview)\\b)';
+const TRY_NOUN = '(?:\\w+\\s+)?(?:try|go|shot|spin|whirl|test(?:\\s+run)?|playthrough)';
+const IDIOM = new RegExp(`\\b(?:make\\s+(?:sure|certain)\\b|give\\s+[^,.;!?]{1,60}?\\s+an?\\s+${TRY_NOUN}${TRY_END}`
+  + `|make\\s+it\\s+(?:work|run|load|start|play|open)${IDIOM_END})`, 'i');
 const IDIOMS = new RegExp(IDIOM.source, 'gi');
+// A clause that is only a try ("give elf-of-doom a try") opens what it names.
+const TRY = new RegExp(`^(give\\s+)[^,.;!?]{1,60}?\\s+an?\\s+${TRY_NOUN}${TRY_END}`, 'i');
+// Verbs that, with the example as their object, show it rather than change it:
+// "Turn on elf of doom", "Fire up elf-of-doom", "Give me elf of doom".
+// "Turn on the sound in elf-of-doom" or "Give me more arrows in elf-of-doom"
+// still ask for a change.
+const SHOW_LEAD = /^(?:(?:turn|switch|power)\s+on|(?:fire|boot|start|load|pull|bring|call|spin)\s+up|(?:give|get|hand|bring|fetch|show)\s+(?:me|us))\s+/i;
+const ON_SCREEN = /^\s+(?:up\s+)?on\s+(?:the\s+|my\s+)?(?:screen|display|monitor|preview)\b/i;
 // Creation verbs always ask for something new; make, write, start, give and
 // get do when a new object follows ("make me a game", "start a new one",
 // "give me a new game").
@@ -749,14 +764,20 @@ const SEQUEL_WORD = /\b(?:sequels?|prequels?|remakes?|remade|reimagin\w*|reboot|
 const MAKE_WORD = '(?:make|create|build|design|develop|generate|write|faca|fazer|faz|crie|criar|construa|construir|desenvolva|desenvolver|gere|gerar|escreva|escrever)';
 const FOR_OWNER = '(?:me|us|for\\s+me|for\\s+us|pra\\s+mim|para\\s+mim)';
 const SEQUEL_NUMBER = '\\s+(?:[2-9]|ii|iii|iv|vi|two|three|four|five|dois|tres|quatro)(?=\\s*(?:$|[,.;:!?)]|\\s+(?:with|but|where|that|for|in|on|please|now|and|then|com|mas)\\b))';
-const VARIATION = '\\s+(?:with|but|except|featuring|starring|where|set\\s+in|com|mas)\\b';
-// An indefinite or new game, app or project, or a well-known game by name:
-// something new, not the example ("Turn it into a snake game", "Make it a
-// platformer", "Let's do tetris"). "Add a game over screen" names a part of a
-// game, so the noun must end its phrase.
+const VARIATION = '\\s*,?\\s+(?:with|but|except|featuring|starring|where|set\\s+in|com|mas)\\b';
+// A sequel's title made from the name: "Elf of Doom Returns", "Elf of Doom:
+// The Next Chapter", "Son of Elf of Doom". "Make elf-of-doom: add a level"
+// is a change.
+const SEQUEL_TITLE = '\\s*(?::\\s*(?:the|a|an|return|rise|revenge|legacy|origins|part|chapter|episode|book)\\b|\\s+(?:returns|reloaded|revenge|rising|reborn|redux|remastered|reforged|forever|origins|unleashed|resurrection|deluxe|legacy|the\\s+next\\s+chapter|part\\s+(?:[2-9]|ii|iii|two|three))\\b)';
+const TITLE_PREFIX = /\b(?:son|daughter|return|revenge|rise|bride|curse|ghost|heir|children|beyond)\s+of\s+(?:the\s+)?$/i;
+// A game, app or project: "as a new game", "into a separate project".
 const PROJECT_NOUN = '(?:games?|apps?|application|project|site|website|webpage|program|tool|clone|platformer|shooter|roguelike|puzzler|racer|jogo|joguinho|aplicativo|projeto|programa|ferramenta)';
-const NEW_THING = new RegExp(`\\b(?:a|an|another|new|different|separate|some|my\\s+own|our\\s+own|um|uma|novo|nova|outro|outra)\\s+(?:[A-Za-z0-9'’-]+\\s+){0,3}?${PROJECT_NOUN}(?=\\s*(?:$|[,.;:!?)]|\\s+(?:with|where|that|which|like|for|about|in|on|instead|please|now|next|and|then|but|called|named|set|com|para|como)\\b))`, 'i');
-const GAME_TITLE = /\b(?:tetris|pong|pac-?man|breakout|arkanoid|asteroids|minesweeper|sudoku|solitaire|wordle|frogger|galaga|flappy\s+bird|space\s+invaders)\b/i;
+// "Make elf-of-doom for two players as a new game", "Redo elf-of-doom from
+// scratch as a separate project": the owner asks for something new.
+const AS_NEW = new RegExp(`\\b(?:as|into)\\s+an?\\s+(?:new|separate|different|standalone|fresh|second|another)\\s+(?:[A-Za-z0-9'’-]+\\s+){0,2}?(?:${PROJECT_NOUN}|one)\\b`, 'i');
+// The example as the subject of a statement about it: "Elf of Doom is too
+// easy. Make it harder." names it as what the change is about.
+const SUBJECT_VERB = /^(?:['’]s)?\s+(?:is|are|was|feels|seems|looks|runs|plays|gets|got|has|keeps|lags|crashes|freezes|stutters|needs|isn['’]t|doesn['’]t|won['’]t|can['’]t)\b/i;
 // Phrases directly before the mention that name it as a source or model.
 const ADJACENT_REFERENCE = new RegExp(`\\b(?:(?:copy|clone|version|remix|fork|variant|style|imitation)\\s+of|alternative\\s+to|next\\s+to|after)\\s+${DETERMINERS}(?:\\/?workspace\\/)?(?:playground\\/)?$`, 'i');
 const AFTER_REFERENCE = /^(?:['’]s)?\s*(?:fans?|players?|lovers?|style|clone|copy|knock-?off|rip-?off)\b/i;
@@ -803,6 +824,8 @@ function clauseRequest(clause) {
       .some(word => CHANGE_VERB.test(word.replace(/[^A-Za-z]/g, '')));
     return {kind: asks ? 'change' : null, text, verb: ''};
   }
+  const tried = TRY.exec(text);
+  if (tried) return {kind: 'open', text, verb: tried[1]};
   if (IDIOM.exec(text)?.index === 0) return {kind: null, text, verb: ''};
   const match = /^([A-Za-z]+)\b\s*/.exec(text);
   if (!match) return {kind: null, text, verb: ''};
@@ -813,16 +836,23 @@ function clauseRequest(clause) {
 }
 // How one mention sits in its clause: 'negated', 'reuse' (copy it),
 // 'reference' (a comparison), 'strong' (the clause is only the mention, as
-// in "In elf-of-doom, ...", or a Playground/<name> path), 'weak' (after in,
-// to, of ..., a possessive, or the object of the clause's verb), or 'bare'.
+// in "In elf-of-doom, ...", or a Playground/<name> path), 'shown' (the object
+// of a verb that shows it: "Turn on elf of doom", "Give me elf of doom",
+// "Put elf-of-doom on screen"), 'subject' ("Elf of Doom is too easy"), 'weak'
+// (after in, to, of ..., a possessive, or the object of the clause's verb),
+// or 'bare'.
 function mentionPlace(request, mention, name) {
   if (request.kind === 'negated') return 'negated';
   const text = request.text, before = text.slice(0, mention.start), after = text.slice(mention.end);
+  const object = lead => new RegExp(`^${escaped(lead)}(?:(?:me|us)\\s+)?${DETERMINERS}(?:\\/?workspace\\/)?(?:playground\\/)?$`, 'i').test(before);
   if (REUSE_VERB.test(before)) return 'reuse';
   if (COMPARISON.test(before) || ADJACENT_REFERENCE.test(before) || AFTER_REFERENCE.test(after)) return 'reference';
   if (new RegExp(PURE_LOCATIVE_PREFIX + mentionSource(name) + PURE_LOCATIVE_SUFFIX, 'i').test(text) || STRONG_PATH.test(before)) return 'strong';
+  const lead = SHOW_LEAD.exec(text)?.[0];
+  if ((lead && object(lead)) || (/^put\s/i.test(text) && object('put ') && ON_SCREEN.test(after))) return 'shown';
+  if (new RegExp(`^${DETERMINERS}$`, 'i').test(before) && SUBJECT_VERB.test(after)) return 'subject';
   if (WEAK_LOCATIVE.test(before) || /^['’]s\b/.test(after) || /^\/[A-Za-z0-9_.-]/.test(after)) return 'weak';
-  if (request.verb && new RegExp(`^${escaped(request.verb)}(?:(?:me|us)\\s+)?${DETERMINERS}$`, 'i').test(before)) return 'object';
+  if (request.verb && object(request.verb)) return 'object';
   return 'bare';
 }
 
@@ -830,33 +860,34 @@ function mentionPlace(request, mention, name) {
 // remake of it, or its name made anew (SEQUEL_WORD, MAKE_WORD above).
 // "Make me elf-of-doom's arrows faster" names a part of it, not a new game.
 function derivativeRequest(sentence, name) {
-  if (!mentions(sentence, name).length) return false;
-  if (SEQUEL_WORD.test(sentence)) return true;
+  const named = mentions(sentence, name);
+  if (!named.length) return false;
+  if (SEQUEL_WORD.test(sentence) || AS_NEW.test(sentence)) return true;
+  if (named.some(mention => TITLE_PREFIX.test(sentence.slice(0, mention.start)))) return true;
   const made = new RegExp(`(?:^|[^A-Za-z0-9_])${MAKE_WORD}\\s+(${FOR_OWNER}\\s+)?${DETERMINERS}(?:\\/?workspace\\/)?(?:playground\\/)?`
-    + `${mentionSource(name)}(?![A-Za-z0-9_]|-[A-Za-z0-9])(${SEQUEL_NUMBER}|${VARIATION})?(['’]s\\b)?`, 'i').exec(sentence);
+    + `${mentionSource(name)}(?![A-Za-z0-9_]|-[A-Za-z0-9])(${SEQUEL_NUMBER}|${VARIATION}|${SEQUEL_TITLE})?(['’]s\\b)?`, 'i').exec(sentence);
   return Boolean(made && (made[2] || (made[1] && !made[3])));
 }
 
 // What the owner's current request asks of one shipped example: level is
 // 'change' (named as what to change), 'reuse' (copy it), 'open' (open, show
 // or play it), 'mention' (any other mention) or null; creation is true when
-// it asks for something new; changes is true when a clause asks for a change,
-// named or not; newThing is true when it names a new game, app or project. A
-// clause that only names the example ("In elf-of-doom, ...") or a
-// Playground/<name> path names it even in a request that also creates
-// something; "the arrows in elf-of-doom", a possessive or an object of the
-// verb names it only when nothing new is requested.
+// it asks for something new. Only this request's own words count. A clause
+// that only names the example ("In elf-of-doom, ...") or a Playground/<name>
+// path names it even in a request that also creates something; "the arrows
+// in elf-of-doom", a possessive, an object of the verb or the subject of a
+// statement ("Elf of Doom is too easy") names it only when nothing new is
+// requested.
 function exampleRequest(intent, name) {
   const fresh = requestsNewPlaygroundProject(ownerWords(intent));
   const text = ownerText(intent);
-  let level = null, creation = fresh, negated = false, topic = false, changeClause = false;
+  let level = null, creation = fresh, negated = false, topic = false;
   const raise = value => { if ((RANK[value] ?? 0) > (RANK[level] ?? 0)) level = value; };
   for (const sentence of ownerSentences(text)) {
     const requests = ownerClauses(sentence).map(clauseRequest);
     const creates = requests.some(request => request.kind === 'creation') || derivativeRequest(sentence, name);
     const strict = fresh || creates;
     creation ||= creates;
-    changeClause ||= requests.some(request => request.kind === 'change');
     const changes = requests.filter(request => request.kind === 'change' || request.kind === 'creation');
     let mentioned = false;
     for (const request of requests) {
@@ -866,8 +897,9 @@ function exampleRequest(intent, name) {
         if (place === 'negated') { negated = true; continue; }
         if (place === 'reference' || place === 'bare') { raise('mention'); continue; }
         if (place === 'reuse') { raise('reuse'); continue; }
-        const opened = request.kind === 'open';
-        const target = place === 'strong' || (!strict && (place === 'weak' || place === 'object'));
+        // A shown example is opened, whatever the verb: "Give me elf of doom".
+        const opened = request.kind === 'open' || place === 'shown';
+        const target = place === 'strong' || (!strict && ['weak', 'object', 'subject', 'shown'].includes(place));
         // "Open elf-of-doom and make the arrows give 7": the opened example
         // is what the other clause changes.
         if (target && changes.some(other => !opened || other !== request)) raise('change');
@@ -879,8 +911,7 @@ function exampleRequest(intent, name) {
     // "Open elf-of-doom. Make the arrows give 7."
     if (!mentioned && topic && !strict && changes.length) raise('change');
   }
-  const newThing = NEW_THING.test(text) || GAME_TITLE.test(text);
-  return {level, creation, negated, changes: changeClause, newThing};
+  return {level, creation, negated};
 }
 
 function ownerChangesExample(intent, name) {
@@ -891,32 +922,11 @@ function ownerChangesAnyExample(intent) {
   return SHIPPED_EXAMPLE_PROJECTS.some(name => ownerChangesExample(intent, name));
 }
 
-// The examples this chat may keep changing in its next turn: ones an owner
-// turn named as the thing to change. Opening or showing one never unlocks a
-// later change. A turn that asks for something new, names a new game, app or
-// project, or forbids changing the example ends that. Callers keep the
-// returned set per chat in memory only.
-export function exampleChatTopics(previous, intent) {
-  const earlier = new Set(previous ?? []);
-  const requests = new Map(SHIPPED_EXAMPLE_PROJECTS.map(name => [name, exampleRequest(intent, name)]));
-  const fresh = [...requests.values()].some(request => request.creation || request.newThing);
-  return new Set(SHIPPED_EXAMPLE_PROJECTS.filter(name => requests.get(name).level === 'change'
-    || (!fresh && !requests.get(name).negated && earlier.has(name))));
-}
-
-// A later turn of a chat whose earlier turn named this example to change may
-// keep changing it without naming it again, but only with a change clause of
-// its own and nothing new: "Now make them give 9", never "I want a snake
-// game" or "Turn it into a racing game".
-function continuesExampleChange(request) {
-  return !request.creation && !request.negated && !request.newThing && request.changes
-    && (request.level === null || request.level === 'open');
-}
-
 // Whether Playground/<name> is the shipped example: it exists, and the
-// workspace's record says ODS added it there. A folder of that name the
-// owner already had is ordinary owner content. A workspace or record that
-// cannot be read counts as the example.
+// installers' record for this workspace (in Portal's state folder, out of the
+// sandbox's reach) says ODS added it there. A folder of that name the owner
+// already had is ordinary owner content. A workspace or record that cannot be
+// read counts as the example.
 function examplePresent(root, name) {
   try {
     const base = safeRoot(root);
@@ -1161,7 +1171,11 @@ function execExampleUse(command, workdir, root, name, routable) {
       for (const [position, value] of args.entries()) {
         // A commit message, title or other option text is not a path.
         const option = TEXT_OPTION_VALUE.exec(value);
-        if ((position > 0 && TEXT_OPTIONS.test(args[position - 1])) || option) { plainText(option ? option[2] : value); continue; }
+        const previous = position > 0 ? args[position - 1] : '';
+        if (TEXT_OPTIONS.test(previous) || (program === 'git' && /^-[A-Za-z]+m$/.test(previous)) || option) {
+          plainText(option ? option[2] : value);
+          continue;
+        }
         account(value.includes('=') && value.startsWith('--') ? value.slice(value.indexOf('=') + 1) : value);
       }
       if (program === 'find') {
@@ -1276,18 +1290,17 @@ function exampleRefusalReason(name, kind, request, projectDirectory) {
   }
   return request.creation
     ? `Not changed: ${folder} is the finished example project ODS ships, and the owner asked for something new. Leave ${folder} as it is and do not copy its files. Write every file of the new project yourself in ${place}, and publish that folder.`
-    : `Not changed: ${folder} is the finished example project ODS ships. Portal changes it only when the owner's request names it as what to change, for example "In ${name}, make the arrows give 7". Reading and publishing it stay available. Do not copy it into another folder to get around this; tell the owner how to ask.`;
+    : `Not changed: ${folder} is the finished example project ODS ships. Portal changes it only on a turn whose own owner message names ${name} as what to change, for example "In ${name}, make it faster"; an earlier turn naming it does not count. Reading and publishing it stay available. Tell the owner to name ${name} in the request; do not copy it elsewhere to get around this.`;
 }
 
 // The refusal for a tool call that would change a shipped example the owner
-// did not ask to change, copy one for new work the owner did not ask to copy,
-// or publish one as a requested new project. Undefined when the call may
-// proceed; it never rewrites the call. earlier holds the examples an earlier
-// turn of this chat named as the thing to change (exampleChatTopics). routable
+// did not ask to change in this turn's own message, copy one for new work the
+// owner did not ask to copy, or publish one as a requested new project.
+// Undefined when the call may proceed; it never rewrites the call. routable
 // marks the check made before project routing, which may still move an exec
 // with no workdir into the run's project folder. previewDirectory is the
 // directory a preview call with none of its own publishes.
-export function exampleProjectRefusal({tool, params, root, intent, earlier, projectDirectory, previewDirectory, routable = false}) {
+export function exampleProjectRefusal({tool, params, root, intent, projectDirectory, previewDirectory, routable = false}) {
   const selected = exampleTool(tool, params);
   if (!selected || !selected.args || typeof selected.args !== 'object' || typeof root !== 'string' || !path.isAbsolute(root)) return undefined;
   if (selected.tool === 'pixel_ods_workspace_preview') {
@@ -1301,8 +1314,7 @@ export function exampleProjectRefusal({tool, params, root, intent, earlier, proj
   for (const [name, kind] of exampleUses(selected, root, routable)) {
     if (!examplePresent(root, name)) continue;
     const request = exampleRequest(intent, name);
-    const continued = earlier?.has?.(name) && continuesExampleChange(request);
-    if (request.level === 'change' || continued || (kind === 'source' && request.level === 'reuse')) continue;
+    if (request.level === 'change' || (kind === 'source' && request.level === 'reuse')) continue;
     return {block: true, blockReason: exampleRefusalReason(name, kind, request, projectDirectory)};
   }
   return undefined;
