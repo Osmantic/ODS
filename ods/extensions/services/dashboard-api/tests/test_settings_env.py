@@ -934,6 +934,61 @@ def test_settings_apply_plan_maps_hermes_env_keys():
     assert plan["manualKeys"] == []
 
 
+@pytest.mark.parametrize("key", ["TOKEN_SPY_API_KEY", "TOKEN_SPY_URL"])
+@pytest.mark.parametrize("active_services", [None, {"token-spy"}, set()])
+def test_settings_token_spy_connection_requires_restart_for_startup_consumers(key, active_services):
+    from settings import _compute_env_apply_plan
+
+    plan = _compute_env_apply_plan({key: "old-value"}, {key: "new-value"}, active_services)
+
+    assert plan["manualKeys"] == [key]
+    assert "manual stack restart" in plan["summary"]
+    assert plan["status"] == ("manual" if active_services == set() else "partial")
+    assert plan["services"] == ([] if active_services == set() else ["token-spy"])
+
+
+@pytest.mark.parametrize("key, value", [
+    ("TOKEN_SPY_API_KEY", "rotated-fixture-key"),
+    ("TOKEN_SPY_URL", "http://replacement-token-spy:8080"),
+])
+def test_settings_save_reports_remaining_token_spy_restart(test_client, settings_env_fixture, monkeypatch, key, value):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8") + f"{key}=old-value\n", encoding="utf-8")
+    monkeypatch.setattr("main._active_settings_apply_services", lambda: {"token-spy"})
+
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {key: value}})
+
+    assert response.status_code == 200
+    plan = response.json()["applyPlan"]
+    assert plan["status"] == "partial"
+    assert plan["services"] == ["token-spy"]
+    assert plan["manualKeys"] == [key]
+    assert "manual stack restart" in plan["summary"]
+    assert f"{key}={value}" in env_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("changed", [True, False])
+def test_settings_save_distinguishes_staged_ready_and_unchanged(test_client, settings_env_fixture, monkeypatch, enabled, changed):
+    env_path = settings_env_fixture["env_path"]
+    env_path.write_text(env_path.read_text(encoding="utf-8") + "N8N_PORT=5678\n", encoding="utf-8")
+    monkeypatch.setattr("main._active_settings_apply_services", lambda: {"n8n"} if enabled else set())
+    value = "5679" if changed else "5678"
+
+    response = test_client.put("/api/settings/env", headers=test_client.auth_headers,
+                               json={"mode": "form", "values": {"N8N_PORT": value}})
+
+    assert response.status_code == 200
+    plan = response.json()["applyPlan"]
+    expected_status = ("ready" if enabled else "staged") if changed else "none"
+    assert plan["status"] == expected_status
+    assert plan["services"] == (["n8n"] if enabled and changed else [])
+    assert plan["inactiveServices"] == (["n8n"] if not enabled and changed else [])
+    assert plan["manualKeys"] == []
+    assert f"N8N_PORT={value}" in env_path.read_text(encoding="utf-8")
+
+
 def test_settings_apply_plan_restarts_hermes_for_dashboard_token_rotation():
     from settings import _compute_env_apply_plan
 
