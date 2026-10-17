@@ -5,6 +5,7 @@
   "nodes": [
     {
       "parameters": {
+        "authentication": "headerAuth",
         "httpMethod": "POST",
         "path": "comfyui-dynamic-workflow",
         "options": {}
@@ -13,11 +14,17 @@
       "name": "ComfyUI Image Gen Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [250, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\nconst headers = $json.headers || {};\n\nconst expectedKey = $env.COMFYUI_DYNAMIC_API_KEY;\nconst providedKey = headers['x-api-key'] || headers['X-API-Key'];\n\nfunction timingSafeEqual(a, b) {\n  if (a.length !== b.length) return false;\n  let result = 0;\n  for (let i = 0; i < a.length; i++) {\n    result |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  }\n  return result === 0;\n}\n\nif (expectedKey && expectedKey.length > 0) {\n  if (!providedKey) {\n    return [{ json: { error: 'Authentication required', code: 401 } }];\n  }\n  if (!timingSafeEqual(expectedKey, providedKey)) {\n    return [{ json: { error: 'Invalid API key', code: 403 } }];\n  }\n} else if (providedKey) {\n  return [{ json: { error: 'Server not configured for API key auth', code: 401 } }];\n}\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'local-model',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
+        "jsCode": "const body = $json.body || $json;\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'local-model',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
       },
       "id": "validate-and-auth",
       "name": "Validate and Auth",
@@ -27,7 +34,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.LLM_HOST || 'localhost') + ':' + ($env.LLM_API_PORT || '8080') + '/v1/chat/completions' }}",
+        "url": "http://llama-server:8080/v1/chat/completions",
         "method": "POST",
         "headers": {
           "list": [
@@ -60,7 +67,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'localhost') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
+        "url": "http://comfyui:8188/prompt",
         "method": "POST",
         "headers": {
           "list": [

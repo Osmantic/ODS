@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.RVC_HOST || 'localhost') + ':' + ($env.RVC_PORT || '7809') + '/voice-convert' }}",
+        "url": "http://rvc:7865/voice-convert",
         "method": "POST",
         "headers": {
           "list": [

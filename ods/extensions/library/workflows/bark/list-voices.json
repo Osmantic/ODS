@@ -17,7 +17,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.BARK_HOST || 'localhost') + ':' + ($env.BARK_PORT || '9200') + '/voices' }}",
+        "url": "http://bark:9200/voices",
         "method": "GET",
         "options": {
           "timeout": 30000

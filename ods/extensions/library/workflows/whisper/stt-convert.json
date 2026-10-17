@@ -5,6 +5,7 @@
   "nodes": [
     {
       "parameters": {
+        "authentication": "headerAuth",
         "httpMethod": "POST",
         "path": "whisper-stt",
         "options": {}
@@ -17,11 +18,17 @@
       "position": [
         250,
         300
-      ]
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "// API Key authentication check - timing-safe comparison\nconst headers = $input.first().json.headers || {};\n\n// Case-insensitive header lookup (defense against platform normalization changes)\nconst headerKeys = Object.keys(headers);\nconst apiKeyHeader = headerKeys.find(k => k.toLowerCase() === 'x-api-key');\nconst providedKeyRaw = apiKeyHeader !== undefined ? headers[apiKeyHeader] : undefined;\nconst expectedKey = $env.WHISPER_API_KEY;\n\n// Limit key length to prevent DoS via multi-megabyte payloads\nconst MAX_KEY_LENGTH = 256;\nconst providedKey = typeof providedKeyRaw === 'string' ? providedKeyRaw.slice(0, MAX_KEY_LENGTH) : '';\n\n// Timing-safe comparison - constant time regardless of input length\nfunction timingSafeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string') return false;\n  const MAX_LEN = 256;\n  if (a.length > MAX_LEN || b.length > MAX_LEN) return false;\n\n  let result = 0;\n  // Constant-time comparison: always iterate MAX_LEN, use 0 for out-of-bounds\n  for (let i = 0; i < MAX_LEN; i++) {\n    const charA = i < a.length ? a.charCodeAt(i) : 0;\n    const charB = i < b.length ? b.charCodeAt(i) : 0;\n    result |= charA ^ charB;\n  }\n  // Include length check in constant-time result (CRITICAL: prevents length oracle attacks)\n  result |= (a.length === b.length) ? 0 : 1;\n  return result === 0;\n}\n\n// CRITICAL: Always validate API key if provided, regardless of expectedKey\n// This prevents fail-open vulnerability when env var is unset\n// Authentication logic:\n// - If server has expectedKey configured: client MUST provide matching key\n// - If server has NO expectedKey configured: reject any request that provides a key (unauthorized)\n// - If neither configured: allow (no auth required)\nif ((expectedKey || providedKey) && !timingSafeEqual(providedKey || '', expectedKey || '')) {\n  throw new Error('Authentication failed');\n}\n\nconst input = $input.first().json || {};\nconst audio = input.audio || '';\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\n\n// === AUDIO VALIDATION ===\nif (!audio || audio.trim().length === 0) {\n  throw new Error('Missing required field: audio (base64)');\n}\nif (audio.length > 2097152) { // ~2MB base64 \u2248 1.5MB binary\n  throw new Error('Audio too large: max ~2MB base64 encoded');\n}\n\n// === CHANNEL VALIDATION ===\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  throw new Error('Invalid channel: must be alphanumeric, dash, or underscore only');\n}\nconst channel = channelRaw;\n\nreturn [{\n  json: {\n    audio: audio.trim(),\n    channel: channel\n  }\n}];"
+        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst input = $input.first().json || {};\nconst audio = input.audio || '';\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\n\n// === AUDIO VALIDATION ===\nif (!audio || audio.trim().length === 0) {\n  throw new Error('Missing required field: audio (base64)');\n}\nif (audio.length > 2097152) { // ~2MB base64 \u2248 1.5MB binary\n  throw new Error('Audio too large: max ~2MB base64 encoded');\n}\n\n// === CHANNEL VALIDATION ===\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  throw new Error('Invalid channel: must be alphanumeric, dash, or underscore only');\n}\nconst channel = channelRaw;\n\nreturn [{\n  json: {\n    audio: audio.trim(),\n    channel: channel\n  }\n}];"
       },
       "id": "validate-input",
       "name": "Validate Input",
@@ -36,7 +43,7 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.WHISPER_HOST || 'localhost') + ':' + ($env.WHISPER_PORT || '9000') + '/inference' }}",
+        "url": "http://whisper:8000/v1/audio/transcriptions",
         "method": "POST",
         "headers": {
           "list": [

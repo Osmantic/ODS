@@ -9,26 +9,28 @@
       "id": "webhook-llm-trigger",
       "name": "Webhook Trigger",
       "parameters": {
+        "authentication": "headerAuth",
         "httpMethod": "POST",
         "path": "llm-inference",
         "responseMode": "lastNode",
-        "options": {
-          "headerAuth": {
-            "name": "X-Webhook-Auth",
-            "value": "={{ $env.WEBHOOK_AUTH_TOKEN }}"
-          }
-        }
+        "options": {}
       },
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
       "position": [250, 300],
-      "webhookId": "llm-inference-webhook"
+      "webhookId": "llm-inference-webhook",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "id": "validate-input",
       "name": "Validate Input",
       "parameters": {
-        "jsCode": "// API Key authentication check - timing-safe comparison\nconst headers = $input.first().json.headers || {};\n\n// Case-insensitive header lookup\nconst headerKeys = Object.keys(headers);\nconst apiKeyHeader = headerKeys.find(k => k.toLowerCase() === 'x-api-key');\nconst providedKey = apiKeyHeader !== undefined ? headers[apiKeyHeader] : '';\nconst expectedKey = $env.WEBHOOK_API_KEY || '';\n\n// Timing-safe comparison - prevents timing attacks on API key\nfunction timingSafeEqual(a, b) {\n  if (typeof a !== 'string' || typeof b !== 'string') return false;\n  const MAX_LEN = 256;\n\n  // Include bounds check in result (constant-time, no branch)\n  let result = (a.length > MAX_LEN || b.length > MAX_LEN) ? 1 : 0;\n  // Constant-time comparison: always iterate MAX_LEN, use 0 for out-of-bounds\n  for (let i = 0; i < MAX_LEN; i++) {\n    const charA = i < a.length ? a.charCodeAt(i) : 0;\n    const charB = i < b.length ? b.charCodeAt(i) : 0;\n    result |= charA ^ charB;\n  }\n  // Include length check in constant-time result (CRITICAL: prevents length oracle attacks)\n  result |= (a.length === b.length) ? 0 : 1;\n  return result === 0;\n}\n\n// Authentication logic:\n// - If server has expectedKey configured: client MUST provide matching key\n// - If client provides a key but server has none: reject (unauthorized)\n// - If neither configured: allow (no auth required)\nif ((expectedKey || providedKey) && !timingSafeEqual(providedKey || '', expectedKey || '')) {\n  return [{ json: { valid: false, error: 'Authentication failed' } }];\n}\n\nconst input = $input.first().json || {};\n\n// === TYPE VALIDATION ===\nif (typeof input.message !== 'string') {\n  return [{ json: { valid: false, error: 'Invalid message: must be a string' } }];\n}\n\nconst message = input.message || '';\nconst model = input.model || ($env.DEFAULT_LLM_MODEL || 'default');\nconst temperature = input.temperature;\nconst maxTokens = input.max_tokens;\n\n// === MODEL VALIDATION ===\nconst validModelPattern = /^[a-zA-Z0-9._-]+$/;\nif (!validModelPattern.test(model)) {\n  return [{ json: { valid: false, error: 'Invalid model name: must be alphanumeric, dot, dash, or underscore only' } }];\n}\nif (model.length > 100) {\n  return [{ json: { valid: false, error: 'Model name too long: max 100 characters' } }];\n}\n\n// === MESSAGE LENGTH VALIDATION ===\nif (typeof message !== 'string') {\n  return [{ json: { valid: false, error: 'Invalid message: must be a string' } }];\n}\nif (message.length > 32768) {\n  return [{ json: { valid: false, error: 'Message too long: max 32768 characters' } }];\n}\nif (message.length === 0) {\n  return [{ json: { valid: false, error: 'Missing required field: message' } }];\n}\n\n// === TEMPERATURE VALIDATION ===\nconst tempValue = temperature !== undefined ? parseFloat(temperature) : 0.7;\nif (isNaN(tempValue) || tempValue < 0.0 || tempValue > 2.0) {\n  return [{ json: { valid: false, error: 'Invalid temperature: must be a number between 0.0 and 2.0' } }];\n}\n\n// === MAX TOKENS VALIDATION ===\nconst tokensValue = maxTokens !== undefined ? parseInt(maxTokens, 10) : 1024;\nif (isNaN(tokensValue) || tokensValue < 100 || tokensValue > 4096) {\n  return [{ json: { valid: false, error: 'Invalid max_tokens: must be an integer between 100 and 4096' } }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    message: message,\n    model: model,\n    temperature: tempValue,\n    max_tokens: tokensValue\n  }\n}];"
+        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst item = $input.first().json || {};\nconst input = item.body || item;\n\n// === TYPE VALIDATION ===\nif (typeof input.message !== 'string') {\n  return [{ json: { valid: false, error: 'Invalid message: must be a string' } }];\n}\n\nconst message = input.message || '';\nconst model = input.model || 'default';\nconst temperature = input.temperature;\nconst maxTokens = input.max_tokens;\n\n// === MODEL VALIDATION ===\nconst validModelPattern = /^[a-zA-Z0-9._-]+$/;\nif (!validModelPattern.test(model)) {\n  return [{ json: { valid: false, error: 'Invalid model name: must be alphanumeric, dot, dash, or underscore only' } }];\n}\nif (model.length > 100) {\n  return [{ json: { valid: false, error: 'Model name too long: max 100 characters' } }];\n}\n\n// === MESSAGE LENGTH VALIDATION ===\nif (typeof message !== 'string') {\n  return [{ json: { valid: false, error: 'Invalid message: must be a string' } }];\n}\nif (message.length > 32768) {\n  return [{ json: { valid: false, error: 'Message too long: max 32768 characters' } }];\n}\nif (message.length === 0) {\n  return [{ json: { valid: false, error: 'Missing required field: message' } }];\n}\n\n// === TEMPERATURE VALIDATION ===\nconst tempValue = temperature !== undefined ? parseFloat(temperature) : 0.7;\nif (isNaN(tempValue) || tempValue < 0.0 || tempValue > 2.0) {\n  return [{ json: { valid: false, error: 'Invalid temperature: must be a number between 0.0 and 2.0' } }];\n}\n\n// === MAX TOKENS VALIDATION ===\nconst tokensValue = maxTokens !== undefined ? parseInt(maxTokens, 10) : 1024;\nif (isNaN(tokensValue) || tokensValue < 100 || tokensValue > 4096) {\n  return [{ json: { valid: false, error: 'Invalid max_tokens: must be an integer between 100 and 4096' } }];\n}\n\nreturn [{\n  json: {\n    valid: true,\n    message: message,\n    model: model,\n    temperature: tempValue,\n    max_tokens: tokensValue\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -79,31 +81,13 @@
       "id": "llm-api-call",
       "name": "LLM API Call",
       "parameters": {
-        "url": "={{ (() => { const url = $env.ODS_URL || 'http://localhost:8000'; const withProtocol = url.match(/^https?:\\/\\//) ? url : 'http://' + url; return withProtocol.replace(/\\/+$/, '') + '/v1/chat/completions'; })() }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": {
-          "model": "={{ $json.model }}",
-          "messages": [
-            {
-              "role": "user",
-              "content": "={{ $json.message }}"
-            }
-          ],
-          "temperature": "={{ $json.temperature }}",
-          "max_tokens": "={{ $json.max_tokens }}",
-          "stream": false
-        },
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.model, messages: [{ role: 'user', content: $json.message }], temperature: $json.temperature, max_tokens: $json.max_tokens, stream: false }) }}",
         "options": {
-          "timeout": 120000,
-          "continueOnFail": true
+          "timeout": 120000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
