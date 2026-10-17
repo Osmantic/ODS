@@ -2,6 +2,30 @@
 # Bash completion for ods-cli
 # Source this file or place in /etc/bash_completion.d/ or ~/.local/share/bash-completion/completions/
 
+# Remember the installed copy even if the user later changes directory.
+_ods_completion_source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
+
+_ods_complete_presets() {
+    local install_root="${INSTALL_DIR:-${ODS_HOME:-${ODS_INSTALL_DIR:-}}}" path name
+    if [[ -z "$install_root" ]]; then
+        if [[ -f "$_ods_completion_source_root/docker-compose.base.yml" || -f "$_ods_completion_source_root/docker-compose.yml" ]]; then
+            install_root="$_ods_completion_source_root"
+        else
+            install_root="$HOME/ods"
+        fi
+    fi
+    local preset_dir="$install_root/presets"
+    COMPREPLY=()
+    # Names are directory names, not .preset files. Keep each array element
+    # intact (including spaces), without changing the user's glob options.
+    for path in "$preset_dir"/[!.]* "$preset_dir"/.[!.]* "$preset_dir"/..?*; do
+        [[ -d "$path" ]] || continue
+        name="${path##*/}"
+        [[ "$name" == "$cur"* ]] && COMPREPLY+=("$name")
+    done
+    compopt -o filenames 2>/dev/null || true
+}
+
 _ods_completion() {
     local cur prev words cword
     _init_completion || return
@@ -26,7 +50,7 @@ _ods_completion() {
                     return 0
                     ;;
                 preset|p)
-                    COMPREPLY=($(compgen -W "save load list delete export import" -- "$cur"))
+                    COMPREPLY=($(compgen -W "save load list delete export import diff" -- "$cur"))
                     return 0
                     ;;
                 mode|m)
@@ -81,22 +105,8 @@ _ods_completion() {
                     ;;
                 preset|p)
                     case $prev in
-                        save|load|delete)
-                            # Complete with existing preset names
-                            local preset_dir="${ODS_HOME:-$HOME/ods}/.presets"
-                            if [[ -d "$preset_dir" ]]; then
-                                local presets=$(ls -1 "$preset_dir" 2>/dev/null | sed 's/\.preset$//')
-                                COMPREPLY=($(compgen -W "$presets" -- "$cur"))
-                            fi
-                            return 0
-                            ;;
-                        export)
-                            # Complete with existing preset names for export
-                            local preset_dir="${ODS_HOME:-$HOME/ods}/.presets"
-                            if [[ -d "$preset_dir" ]]; then
-                                local presets=$(ls -1 "$preset_dir" 2>/dev/null | sed 's/\.preset$//')
-                                COMPREPLY=($(compgen -W "$presets" -- "$cur"))
-                            fi
+                        save|s|load|l|delete|rm|export|e|diff|d)
+                            _ods_complete_presets
                             return 0
                             ;;
                         import)
@@ -134,7 +144,11 @@ _ods_completion() {
             case "${words[1]}" in
                 preset|p)
                     case "${words[2]}" in
-                        export)
+                        diff|d)
+                            _ods_complete_presets
+                            return 0
+                            ;;
+                        export|e)
                             # Complete with .tar.gz filename for export destination
                             COMPREPLY=($(compgen -f -X '!*.tar.gz' -- "$cur"))
                             return 0
