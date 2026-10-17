@@ -260,7 +260,7 @@ function directGatewayFetch(url, options = {}) {
       reject(error);
     });
     connectTimer = setTimeout(() => {
-      request.destroy(new Error("gateway connect timeout"));
+      request.destroy(Object.assign(new Error("gateway connect timeout"), {code: "ODS_GATEWAY_CONNECT_TIMEOUT"}));
     }, CONNECT_TIMEOUT_MS);
     connectTimer.unref?.();
     request.end(options.body);
@@ -1170,10 +1170,31 @@ function registerActiveGatewayTransport(activeGatewayTransports, user, controlle
   };
 }
 
+// Observation only: preserve AbortController's original reason and first cause.
+const gatewayAbortCategories = new WeakMap();
+function abortGatewayTransport(controller, category) {
+  if (!controller.signal.aborted) gatewayAbortCategories.set(controller, category);
+  controller.abort();
+}
+
 function abortActiveGatewayTransports(activeGatewayTransports, user) {
   const controllers = activeGatewayTransports.get(user);
   if (!controllers) return;
-  for (const controller of [...controllers]) controller.abort();
+  for (const controller of [...controllers]) abortGatewayTransport(controller, 'cancel_control');
+}
+
+function gatewayFailureCategory(error) {
+  if (error instanceof GatewayConnectRefused) return 'gateway_connect_refused';
+  if (error instanceof HistoryError) return 'history_error';
+  switch (error?.code) {
+    case 'ODS_GATEWAY_CONNECT_TIMEOUT': return 'gateway_connect_timeout';
+    case 'ECONNREFUSED': return 'connection_refused';
+    case 'ECONNRESET': return 'connection_reset';
+    case 'ETIMEDOUT': return 'timeout';
+    case 'ABORT_ERR': return 'aborted';
+    case 'ERR_STREAM_PREMATURE_CLOSE': return 'premature_close';
+    default: return 'unclassified';
+  }
 }
 
 function isEmptyAssistantFailure(completion) {
@@ -1282,9 +1303,9 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
   const controller = new AbortController();
   const unregisterGatewayTransport = registerActiveGatewayTransport(activeGatewayTransports, outgoing.user, controller);
   hooks.onController?.(controller);
-  const totalTimer = deps.setTimeout(() => controller.abort(), TOTAL_TIMEOUT_MS);
+  const totalTimer = deps.setTimeout(() => abortGatewayTransport(controller, 'total_deadline'), TOTAL_TIMEOUT_MS);
   const abortOnDownstreamClose = () => {
-    if (!res.writableEnded) controller.abort();
+    if (!res.writableEnded) abortGatewayTransport(controller, 'downstream_close');
   };
   // Socket close remains transport cleanup only. The explicit /v1/chat/cancel
   // control path owns run cancellation and draining, because an intermediate
@@ -1293,6 +1314,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
   const wantsStream = outgoing.stream === true;
   let stopActivity;
   let gatewayResponsePending = false;
+  let requestStage = 'history_preparation';
   // OpenClaw's OpenAI-compatible streaming route concatenates assistant block
   // replies from every tool continuation. Its non-stream route returns only
   // the terminal assistant reply. This ingress already withholds response
@@ -1318,6 +1340,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
     hooks.onSubmitted?.();
     gatewayResponsePending = true;
+    requestStage = 'gateway_request';
     const upstream = await deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
@@ -1329,7 +1352,9 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       }
     );
     gatewayResponsePending = false;
+    requestStage = 'gateway_response';
     if (upstream.status < 200 || upstream.status >= 300) {
+      requestStage = 'http_error_response';
       await drain(upstream.body);
       // Classify only the gateway's status, never its potentially sensitive body.
       // A failed tool turn must not be replayed automatically.
@@ -1347,6 +1372,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
 
     const contentType = (upstream.headers.get("content-type") || "").toLowerCase();
     if (!contentType.startsWith("application/json")) {
+      requestStage = 'invalid_content_type_response';
       await drain(upstream.body);
       if (wantsStream) {
         res.write('data: {"error":{"message":"invalid upstream response","type":"pixel_ingress_error"}}\n\n');
@@ -1400,6 +1426,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       }
       return;
     }
+    requestStage = 'nonstream_completion';
     const body = await readBounded(upstream.body, MAX_NONSTREAM_RESPONSE);
     let completion;
     try {
@@ -1433,6 +1460,16 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     });
     res.end(responseBody);
   } catch (error) {
+    // One failure record, never exception text, URLs, bodies or session IDs.
+    // Like first-use diagnostics, a broken log sink cannot affect the request.
+    try {
+      const requestId = typeof hooks.requestId === 'string' &&
+        /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(hooks.requestId)
+        ? hooks.requestId : 'unavailable';
+      console.warn('pixel-ingress transport failed ' + JSON.stringify({requestId,
+        stage: requestStage, error: gatewayFailureCategory(error),
+        abort: gatewayAbortCategories.get(controller) ?? (controller.signal.aborted ? 'external_abort' : 'none')}));
+    } catch { /* Diagnostic failure is not transport authority. */ }
     // Only an actual refusal to connect to this exact loopback gateway proves
     // that its chat POST never arrived. Timeouts, resets, missing run IDs and
     // failures after a response/continuation remain execution uncertainty.
@@ -1910,7 +1947,7 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
   const user = computeSessionUser({ user: parsed.user });
   try {
     const pending=ledger?.read(user),local=historyAborters?.get(user);
-    if(local && pending && local.requestId===pending.requestId) local.controller.abort();
+    if(local && pending && local.requestId===pending.requestId) abortGatewayTransport(local.controller, 'cancel_control');
     const aborted=await abortGatewayRun(user, token, gatewayPort, deps);
     if(aborted) {
       // The run acknowledgment covers OpenClaw; also close the matching
@@ -2021,7 +2058,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     const outgoing = buildOutgoing(parsed, user ?? (!parsed.history_snapshot ? `ods-${randomBytes(32).toString('hex')}` : undefined));
     if(historyLedger && user) release=historyLedger.lock(user);
     if(historyLedger && user && historyLedger.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
-    if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
+    if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{requestId:parsed.request_id},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
     const hasImages=parsed.history_snapshot?.messages?.some(message=>message?.images?.length);
@@ -2054,6 +2091,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     // snapshot is data only; it cannot introduce system/developer instructions.
     outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...nativeHistoryMessages(prepared.delta.slice(0,-1)),nativeLatest];
     await forwardChat(res,outgoing,token,gatewayPort,deps,{
+      requestId: prepared.state.requestId,
       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
       beforeRequest:async signal=>{
         if(!prepared.hydrate) return;

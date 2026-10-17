@@ -18,20 +18,30 @@ const close=server=>new Promise(resolve=>{server.close(resolve);server.closeAllC
 async function fixture(t,host='127.0.0.1') {
   const tempParent=path.resolve(os.tmpdir());
   const directory=fs.mkdtempSync(path.join(tempParent,'ods-connect-refusal-'));fs.chmodSync(directory,0o700);
-  const ledger=createChatHistoryLedger(directory),chats=[],errors=[];
-  let fault=null,attempts=0,beforeRefusal;
+  const ledger=createChatHistoryLedger(directory),chats=[],errors=[],diagnostics=[];
+  t.mock.method(console,'warn',line=>{
+    if(line.startsWith('pixel-ingress transport failed ')) diagnostics.push(JSON.parse(line.slice(31)));
+  });
+  let fault=null,attempts=0,beforeRefusal,totalDeadline,observeChat,chatSignal;
+  const chatObserved=new Promise(resolve=>{observeChat=resolve});
   const gateway=http.createServer(async(req,res)=>{
     let raw='';for await(const chunk of req)raw+=chunk;
     const body=JSON.parse(raw||'{}');res.setHeader('content-type','application/json');
     res.setHeader('connection','close'); // Each chat must establish a real fresh TCP connection.
     if(req.url==='/health')return res.end('{}');
+    if(req.url==='/pixel-ods/abort')return res.end('{"aborted":true}');
     if(req.url==='/pixel-ods/context')return res.end(JSON.stringify(native));
+    if(req.url==='/pixel-ods/history')return res.end('{"hydrated":false}');
     if(req.url==='/pixel-ods/verification')return res.end('{"status":"none"}');
     if(req.url==='/pixel-ods/subagent-delivery')return res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'}));
     if(req.url==='/pixel-ods/read-only-extension-continuation')return res.end(JSON.stringify({
       schemaVersion:1,kind:'ods-extension-read-only-continuation',eligible:true,chatId:rawUser,requestId:'uncertain'}));
     if(req.url==='/v1/chat/completions'){
       chats.push(body);
+      observeChat();
+      if(fault==='reset-before-headers')return req.socket.destroy();
+      if(fault==='wait-before-headers')return;
+      if(fault==='http-error'){res.statusCode=503;return res.end('private-provider-error');}
       if(fault==='truncated')return res.end('{"id":');
       if(fault==='continuation-refused')return res.end(JSON.stringify({...completion,choices:[{
         finish_reason:'stop',message:a("\u26a0\ufe0f Agent couldn't generate a response. Please try again.") }]}));
@@ -41,12 +51,17 @@ async function fixture(t,host='127.0.0.1') {
   });
   const gatewayPort=await listen(gateway,0,host);
   const transport=createLoopbackGatewayFetch(); // Unmodified production HTTP transport and discovery.
-  const deps={setTimeout,clearTimeout,fetch:async(url,options)=>{
+  const deps={setTimeout:(callback,ms)=>{
+    if(ms===1920000) totalDeadline=callback;
+    return setTimeout(callback,ms);
+  },clearTimeout,fetch:async(url,options)=>{
     const chat=String(url).endsWith('/v1/chat/completions');
     if(chat){
+      chatSignal=options.signal;
       attempts++;
       if(fault==='refused' || fault==='continuation-refused' && attempts===2){
         beforeRefusal?.();await close(gateway);
+      }else if(fault instanceof Error){throw fault;
       }else if(fault && typeof fault==='object'){
         throw new TypeError('fetch failed',{cause:{code:'ECONNREFUSED',syscall:'connect',address:'127.0.0.1',port:gatewayPort,...fault}});
       }
@@ -63,13 +78,81 @@ async function fixture(t,host='127.0.0.1') {
     assert.equal(path.dirname(directory),tempParent);assert.match(path.basename(directory),/^ods-connect-refusal-/);
     fs.rmSync(directory,{recursive:true,force:true});
   });
-  return {ledger,chats,errors,get attempts(){return attempts},setFault(value,hook){fault=value;beforeRefusal=hook},
+  return {ledger,chats,errors,diagnostics,chatObserved,deadline:()=>totalDeadline(),get signal(){return chatSignal},
+    get attempts(){return attempts},setFault(value,hook){fault=value;beforeRefusal=hook},
+    async cancel(){return fetch(`http://127.0.0.1:${port}/v1/chat/cancel`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser})})},
     async restore(){fault=null;await listen(gateway,gatewayPort,host)},
-    async chat(request_id,messages){
-      const response=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});
+    async chat(request_id,messages,{signal,history=true}={}){
+      const response=await fetch(`http://127.0.0.1:${port}/v1/chat/completions`,{method:'POST',signal,headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,...(history?{history_snapshot:{schemaVersion:1,messages}}:{}),messages,stream:true})});
       try{return {status:response.status,text:await response.text()}}catch(error){return {status:response.status,streamError:error.name}}
     }};
 }
+
+const diagnosticId='11111111-2222-4333-8444-555555555555';
+test('a real gateway reset is request-bound without changing interrupted history or replay safety',async t=>{
+  const f=await fixture(t);f.setFault('reset-before-headers');
+  const result=await f.chat(diagnosticId,[u('private prompt')]);
+  assert.equal(result.status,200);assert.equal(result.streamError,'TypeError');
+  assert.deepEqual(f.diagnostics,[{requestId:diagnosticId,stage:'gateway_request',error:'connection_reset',abort:'none'}]);
+  assert.equal(f.ledger.projection(user).status,'unknown');assert.equal(f.attempts,1);assert.equal(f.chats.length,1);
+  assert.equal((await f.chat('successor',[u('private prompt')])).status,409);
+  assert.equal(f.attempts,1);
+});
+
+test('history preparation failure is correlated before any chat submission',async t=>{
+  const f=await fixture(t);
+  const result=await f.chat(diagnosticId,[u('old'),a('old answer'),u('new')]);
+  assert.equal(result.status,200);assert.equal(result.streamError,'TypeError');
+  assert.deepEqual(f.diagnostics,[{requestId:diagnosticId,stage:'history_preparation',error:'history_error',abort:'none'}]);
+  assert.equal(f.attempts,0);assert.equal(f.chats.length,0);assert.equal(f.ledger.projection(user).status,'ready');
+});
+
+for(const [label,requestId] of [['arbitrary','private-id'],['newline',diagnosticId+'\n'],['object',{secret:'private'}],['missing',undefined]])
+test(`failure diagnostics refuse ${label} request identity without changing legacy routing`,async t=>{
+  const f=await fixture(t);f.setFault(new Error('private URL / credential / body'));
+  const result=await f.chat(requestId,[u('private prompt')],{history:false});
+  assert.equal(result.status,200);assert.equal(result.streamError,'TypeError');
+  assert.deepEqual(f.diagnostics,[{requestId:'unavailable',stage:'gateway_request',error:'unclassified',abort:'none'}]);
+  assert.equal(f.attempts,1);
+});
+
+for(const [code,category] of [['ODS_GATEWAY_CONNECT_TIMEOUT','gateway_connect_timeout'],['ETIMEDOUT','timeout'],['SECRET_CODE','unclassified']])
+test(`fixed error classification ${category} never logs exception text or invents refusal proof`,async t=>{
+  const f=await fixture(t);f.setFault(Object.assign(new Error('private exception text'),{code}));
+  await f.chat(diagnosticId,[u('private')]);
+  assert.deepEqual(f.diagnostics,[{requestId:diagnosticId,stage:'gateway_request',error:category,abort:'none'}]);
+  assert.equal(f.ledger.projection(user).status,'unknown');assert.equal(f.attempts,1);
+});
+
+for(const action of ['cancel_control','total_deadline','downstream_close'])
+test(`failure diagnostics identify ${action} without changing abort reason`,async t=>{
+  const f=await fixture(t);f.setFault('wait-before-headers');
+  const controller=new AbortController();
+  const response=f.chat(diagnosticId,[u('private')],{signal:controller.signal});
+  // Prevent an expected client disconnect from becoming an unhandled rejection.
+  const settled=response.catch(error=>({clientError:error.name}));
+  await f.chatObserved;
+  if(action==='cancel_control')assert.deepEqual(await (await f.cancel()).json(),{aborted:true});
+  else if(action==='total_deadline')f.deadline();
+  else controller.abort();
+  await settled;
+  for(let i=0;i<100 && !f.diagnostics.length;i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.deepEqual(f.diagnostics,[{requestId:diagnosticId,stage:'gateway_request',error:'aborted',abort:action}]);
+  assert.ok(f.signal.reason instanceof DOMException);assert.equal(f.signal.reason.name,'AbortError');
+  assert.equal(f.attempts,1);assert.equal(f.chats.length,1);
+});
+
+test('normal HTTP failure stays structured and a broken diagnostic sink cannot prevent settlement',async t=>{
+  const f=await fixture(t);f.setFault('http-error');
+  const result=await f.chat(diagnosticId,[u('private')]);
+  assert.match(result.text,/pixel request rejected/);assert.doesNotMatch(result.text,/private-provider-error/);
+  assert.deepEqual(f.diagnostics,[]);assert.equal(f.attempts,1);
+  // A fresh fixture avoids the intentionally unresolved history from HTTP 503.
+  const second=await fixture(t);second.setFault('refused');
+  t.mock.method(console,'warn',()=>{throw new Error('broken sink')});
+  const refused=await second.chat(diagnosticId,[u('task')]);
+  assert.match(refused.text,/gateway_connect_refused/);assert.equal(second.ledger.projection(user).status,'ready');
+});
 
 for(const host of ['127.0.0.1','::1'])for(const prior of [false,true])test(`real ${host} refused connection abandons only the unsubmitted ${prior?'follow-up':'first'} input`,async t=>{
   const f=await fixture(t,host);
