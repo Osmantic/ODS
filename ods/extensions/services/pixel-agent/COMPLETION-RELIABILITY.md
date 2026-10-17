@@ -424,7 +424,10 @@ lookup. None of those other steps can exit 1, so exit 1 still means a search
 found nothing. OpenClaw merges stdout and stderr, and an error line in the output
 (grep's warnings and binary-match notices aside) disqualifies the command. rg 13
 prints some errors with no recognisable prefix, so `rg` may only be the last
-step, where its own exit status separates an error from an empty search. Options
+step, where its own exit status separates an error from an empty search. The
+same restriction applies to `grep`, `egrep` and `fgrep` with `-s` or
+`--no-messages`, including clustered or quoted options: an earlier error could
+otherwise be silent and its exit status replaced by the last lookup. Options
 that run programs or write files (`rg --pre`, `git grep -O`, `sort -o`, `sed -i`)
 disqualify the command too. The reasoning assumes the sandbox's GNU tools and
 rg 13 under dash.

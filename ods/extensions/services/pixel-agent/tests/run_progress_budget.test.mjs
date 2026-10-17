@@ -1,6 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {mkdtempSync, rmSync, writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
+
+test('actual GNU grep errors hidden by a later empty lookup are not discovery', t => {
+  const options = {encoding:'utf8', timeout:5000, windowsHide:true};
+  const version = spawnSync('dash', ['-c', 'grep --version'], options);
+  if (process.platform !== 'linux' && !version.stdout?.startsWith('grep (GNU grep)')) {
+    return t.skip('requires dash and GNU grep (mandatory on Linux)');
+  }
+  assert.equal(version.status, 0, version.stderr || version.error?.message);
+  assert.match(version.stdout, /^grep \(GNU grep\)/);
+  const dir = mkdtempSync(join(tmpdir(), 'pixel-empty-lookup-'));
+  t.after(() => rmSync(dir, {recursive:true, force:true}));
+  writeFileSync(join(dir, 'ui.js'), 'const x = 1;\n');
+  const run = command => {
+    const result = spawnSync('dash', ['-c', command], {...options, cwd:dir});
+    assert.ifError(result.error);
+    assert.equal(result.signal, null);
+    const output = result.stdout + result.stderr;
+    const receipt = {details:{status:'completed', exitCode:result.status, aggregated:output}};
+    return {result, output, empty:lookupFoundNothing(command, receipt)};
+  };
+  for (const first of [
+    'grep -s x absent.js', 'grep -ns x absent.js', 'grep -sn x absent.js',
+    'grep --no-messages x absent.js', 'grep --no-m x absent.js',
+    "grep '-ns' x absent.js", 'grep "--no-messages" x absent.js',
+    'grep --no-"messages" x absent.js', 'grep x absent.js -s',
+    'egrep -s x absent.js', 'fgrep -s x absent.js',
+    'grep -s x absent.js | head && echo ===',
+  ]) {
+    if (!first.includes('|')) {
+      const solo = run(first);
+      assert.equal(solo.result.status, 2, first);
+      // Newer GNU grep warns about the egrep/fgrep aliases even with -s.
+      assert.equal(solo.output.replace(/^[ef]grep: warning: .*\r?\n/gm, ''), '', first);
+    }
+    const command = `${first}; grep -n z ui.js`;
+    const {result, output, empty} = run(command);
+    assert.equal(result.status, 1, command);
+    assert.doesNotMatch(output, /No such file|cannot|error/i, command);
+    assert.equal(empty, false, command);
+  }
+  // A final bare lookup retains its own status, including with suppressed diagnostics.
+  for (const command of ['grep -s z ui.js', 'grep -n x ui.js; grep --no-messages z ui.js',
+    'grep -n x ui.js | head; echo ===; grep -n z ui.js']) {
+    const {result, empty} = run(command);
+    assert.equal(result.status, 1, command);
+    assert.equal(empty, true, command);
+  }
+  const alone = run('grep -s x absent.js');
+  assert.equal(alone.result.status, 2);
+  assert.equal(alone.output, '');
+  assert.equal(alone.empty, false);
+});
 
 test('a single lookup found nothing only when it completed with exit 1 and printed no error', () => {
   const receipt = (exitCode, text = '', details = {}) => ({content:[{type:'text', text:`${text}\n\n(Command exited with code ${exitCode})`}],
