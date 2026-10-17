@@ -2216,6 +2216,35 @@ _ods_pixel_install_response_language() {
         'umask 077 && printf "en\n" > "$1.new" && mv -f -- "$1.new" "$1"' sh "$target"
 }
 
+# Pixel bootstrap ends with this exact message when its sandbox candidate does
+# not run the pinned Node.js (vendor/pixel/scripts/bootstrap.sh). Print that
+# candidate's tag, so the owner is told which image to remove.
+_ods_pixel_failed_sandbox_proof_candidate() {
+    local log="$1" line
+    line="$(tail -n 5 -- "$log" | grep -F '[pixel] ERROR: Sandbox runtime proof failed: ' | tail -n 1)" || return 1
+    [[ "$line" =~ Sandbox\ runtime\ proof\ failed:\ (pixel-sandbox-candidate:[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}-uid-[1-9][0-9]*)\  ]] \
+        || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# Portal tells the agent its sandbox has node (pixel-agent prompt-contract.mjs).
+# The bundled Pixel bootstrap proves that before it succeeds; a developer
+# PIXEL_SOURCE_URL checkout older than Pixel 4.3.32 builds a sandbox without
+# node and has no such proof. Require the candidate bootstrap just prepared to
+# carry the Node.js label, as macOS preparation requires the pinned runtime.
+_ods_pixel_sandbox_candidate_has_node() {
+    local owner="$1" home="$2" pixel_root="$3" version uid label
+    [[ -f "$pixel_root/VERSION" && ! -L "$pixel_root/VERSION" ]] || return 1
+    version="$(ods_pixel_run_as_owner "$owner" "$home" sed -n '1p' "$pixel_root/VERSION")" || return 1
+    [[ "$version" =~ ^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || return 1
+    uid="$(id -u "$owner")" || return 1
+    [[ "$uid" =~ ^[1-9][0-9]*$ ]] || return 1
+    label="$(ods_pixel_run_as_owner "$owner" "$home" docker image inspect \
+        --format '{{index .Config.Labels "org.osmantic.pixel.sandbox-node"}}' \
+        "pixel-sandbox-candidate:$version-uid-$uid")" || return 1
+    [[ "$label" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]
+}
+
 _ods_pixel_recreate_agent_sandbox() {
     local owner="$1" home="$2" openclaw_bin="$3" remaining
     [[ "$openclaw_bin" == /* && -x "$openclaw_bin" ]] || return 1
@@ -5296,7 +5325,7 @@ ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
     local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
-    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false
+    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false stale_sandbox=""
     # The access coordinator's proof ceremony inspects Pixel Edge's durable
     # transition gate. Start the edge before the host ingress is installed;
     # its transition endpoint is independent of upstream chat readiness, and
@@ -5495,8 +5524,18 @@ ods_pixel_install_default_agent() {
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
         # Phase 11 can stop here without reaching the installer's help trap,
-        # so this message carries the cause, recovery and help link itself.
-        ai_bad "Pixel could not finish preparing its runtime and agent sandbox. It downloads pinned packages, including Debian packages from deb.debian.org and the sandbox's Node.js runtime from nodejs.org. Check this machine's internet access and free disk space, then run the ODS install or update again. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        # so these messages carry the cause, recovery and help link themselves.
+        # A failed check of an existing candidate is not a download problem.
+        stale_sandbox="$(_ods_pixel_failed_sandbox_proof_candidate "$pixel_log")" || stale_sandbox=""
+        if [[ -n "$stale_sandbox" ]]; then
+            ai_bad "Pixel stopped before applying its new release: the agent sandbox image $stale_sandbox did not pass the offline check for the pinned Node.js runtime without npm, npx or corepack. The image holds no projects or settings. Remove it with docker image rm $stale_sandbox, then run the ODS install or update again so Pixel rebuilds it. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        else
+            ai_bad "Pixel could not finish preparing its runtime and agent sandbox. It downloads pinned packages, including Debian packages from deb.debian.org and the sandbox's Node.js runtime from nodejs.org. Check this machine's internet access and free disk space, then run the ODS install or update again. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        fi
+        return 1
+    fi
+    if ! _ods_pixel_sandbox_candidate_has_node "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
+        ai_bad "The selected Pixel source builds an agent sandbox without the Node.js runtime that Portal's agent is told it has, so ODS stopped before applying it. Use the Pixel source bundled with ODS (leave PIXEL_SOURCE_URL and PIXEL_SOURCE_REF unset), then run the ODS install or update again. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
         return 1
     fi
     openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")"

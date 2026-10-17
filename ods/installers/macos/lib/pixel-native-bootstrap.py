@@ -284,6 +284,39 @@ def stage(*, source, ref, destination, node, npm):
         shutil.rmtree(temporary)
 
 
+# The sandbox execution proof prepare_sandbox runs in a new image, also run by
+# tests/test_pixel_sandbox_image.py against the image CI builds. node must be
+# the pinned version for this architecture; npm, npx and corepack must be
+# absent so nothing can be installed in the sandbox.
+SANDBOX_PROOF_PROGRAM = (
+    'import json,os,pathlib,shutil,subprocess; '
+    'p=pathlib.Path("/workspace/ods-proof.txt"); p.write_text("ods-sandbox-proof"); '
+    'n=shutil.which("node"); '
+    'r=subprocess.run([n,"-p","JSON.stringify([process.version,process.arch])"],'
+    'capture_output=True,text=True,timeout=30) if n else None; '
+    'print(json.dumps({"uid":os.getuid(),"readback":p.read_text(),'
+    '"tools":all(shutil.which(x) for x in '
+    '["bash","curl","git","jq","python3","rg","rsync"]),'
+    '"node":json.loads(r.stdout) if r and r.returncode==0 else None,'
+    '"packageManagers":[x for x in ["npm","npx","corepack"] if shutil.which(x)]}))')
+
+
+def sandbox_proof_expected(uid, node_version, arch='arm64'):
+    """The proof's output for an image owned by uid; native macOS is arm64."""
+    return {'uid': uid, 'readback': 'ods-sandbox-proof', 'tools': True,
+            'node': ['v' + node_version, arch], 'packageManagers': []}
+
+
+def sandbox_proof_run_args(*, name, workspace, image_id):
+    """docker arguments for the proof: offline, read-only, bounded, one workspace."""
+    return ['run', '--rm', '--name', name,
+            '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+            '--security-opt', 'no-new-privileges:true', '--pids-limit', '128',
+            '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
+            '--mount', 'type=bind,source=' + workspace + ',target=/workspace',
+            '--entrypoint', '/usr/bin/python3', image_id, '-c', SANDBOX_PROOF_PROGRAM]
+
+
 def prepare_sandbox(*, source, ref, docker):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise BootstrapError('native-macos-owner-required')
@@ -331,31 +364,14 @@ def prepare_sandbox(*, source, ref, docker):
         return value['Id']
     image_id = inspect()
     name = 'ods-pixel-sandbox-proof-' + uuid.uuid4().hex
-    # node must be the pinned version for linux/arm64; npm, npx and corepack
-    # must be absent so nothing can be installed in the sandbox.
-    program = ('import json,os,pathlib,shutil,subprocess; '
-               'p=pathlib.Path("/workspace/ods-proof.txt"); p.write_text("ods-sandbox-proof"); '
-               'n=shutil.which("node"); '
-               'r=subprocess.run([n,"-p","JSON.stringify([process.version,process.arch])"],'
-               'capture_output=True,text=True,timeout=30) if n else None; '
-               'print(json.dumps({"uid":os.getuid(),"readback":p.read_text(),'
-               '"tools":all(shutil.which(x) for x in '
-               '["bash","curl","git","jq","python3","rg","rsync"]),'
-               '"node":json.loads(r.stdout) if r and r.returncode==0 else None,'
-               '"packageManagers":[x for x in ["npm","npx","corepack"] if shutil.which(x)]}))')
-    expected = {'uid': uid, 'readback': 'ods-sandbox-proof', 'tools': True,
-                'node': ['v' + node_version, 'arm64'], 'packageManagers': []}
+    expected = sandbox_proof_expected(uid, node_version)
     # Colima does not share macOS's per-user TMPDIR (/var/folders) with its VM.
     # The selected source is staged beside the installed ODS data, a filesystem
     # already shared with Docker, and the proof must not dirty the Git checkout.
     with tempfile.TemporaryDirectory(prefix='ods-sandbox-workspace-', dir=source.parent) as workspace:
         try:
-            result = json.loads(command([docker, 'run', '--rm', '--name', name,
-                '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-                '--security-opt', 'no-new-privileges:true', '--pids-limit', '128',
-                '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
-                '--mount', 'type=bind,source=' + workspace + ',target=/workspace',
-                '--entrypoint', '/usr/bin/python3', image_id, '-c', program], cwd=source, timeout=60))
+            result = json.loads(command([docker, *sandbox_proof_run_args(
+                name=name, workspace=workspace, image_id=image_id)], cwd=source, timeout=60))
             host_readback = (Path(workspace) / 'ods-proof.txt').read_text()
         except BootstrapError as error:
             raise BootstrapError('native-sandbox-execution-proof-failed') from error

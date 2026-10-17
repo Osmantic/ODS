@@ -11,9 +11,25 @@ import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
-# Sandbox image failures with owner guidance in pixel-native-install.py.
-SANDBOX_ERRORS = frozenset(('native-sandbox-build-failed', 'native-sandbox-execution-proof-failed',
-                            'invalid-sandbox-node-runtime'))
+# Preparation builds and checks the new sandbox image before activation, so
+# these failures leave the installed Pixel running unchanged. The recovery is
+# to run the update again, never a reinstall (see the trailer in main()).
+SANDBOX_GUIDANCE = {
+    'native-sandbox-build-failed':
+        'Pixel could not build the agent sandbox image for this update. The build downloads Debian '
+        'packages from deb.debian.org and the pinned Node.js runtime from nodejs.org. Check that this '
+        'Mac can reach both and that Docker has free disk space, then run the update again.',
+    'native-sandbox-execution-proof-failed':
+        'The new agent sandbox image failed its offline check: workspace write, the pinned Node.js for '
+        'linux/arm64, and no npm, npx or corepack. Check that Docker runs linux/arm64 images. Removing '
+        'the ods-pixel-native-sandbox image for this Pixel version (docker image ls '
+        'ods-pixel-native-sandbox) is safe because it holds no Pixel state. Then run the update again.',
+    'invalid-sandbox-node-runtime':
+        'The selected Pixel source does not pin the Node.js runtime this ODS version expects in the '
+        'agent sandbox. Update with the Pixel source bundled with ODS (leave PIXEL_SOURCE_REF unset).',
+}
+SANDBOX_ERRORS = frozenset(SANDBOX_GUIDANCE)
+HELP = 'Need help? https://discord.gg/4ntNp9MAwC'
 
 
 def helper(name):
@@ -148,8 +164,8 @@ def main():
                 'review the protected runtime, or run sudo -v and retry from the same terminal. '
                 'Interactive updates may use --prompt-for-sudo.', file=sys.stderr)
         if str(error) in SANDBOX_ERRORS:
-            # The same static cause and recovery the initial install reports.
-            print(helper('pixel-native-install').ERROR_GUIDANCE[str(error)], file=sys.stderr)
+            print(SANDBOX_GUIDANCE[str(error)] + ' The installed Pixel keeps running unchanged. ' + HELP,
+                file=sys.stderr)
         print('Native update stopped (' + type(error).__name__ +
             '); retain its preparation and protected recovery journal. Do not reinstall or delete state.', file=sys.stderr)
         return 1

@@ -59,7 +59,9 @@ def test_dockerfile_installs_exactly_the_pinned_artifacts():
     # Any other architecture stops the build instead of guessing.
     assert '      *) echo "Pixel sandbox: no pinned Node.js build for $arch" >&2; exit 1 ;; \\' in lines
     assert 'arch="$(dpkg --print-architecture)"; \\' in text
-    assert "curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o /tmp/node.tar.xz \"$node_url\"" in text
+    # A stalled nodejs.org download ends on its own: bootstrap's build has no timeout.
+    assert ("curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 30 --speed-limit 1024 --speed-time 60 \\\n"
+            "      --max-time 1800 --retry 3 --retry-connrefused -o /tmp/node.tar.xz \"$node_url\"") in text
     assert 'echo "$node_sha256  /tmp/node.tar.xz" | sha256sum -c - >/dev/null' in text
     assert 'did not match its pinned SHA-256; nothing was installed' in text
     assert f'test "$(/usr/local/bin/node --version)" = "v{VERSION}"; \\' in text
@@ -123,6 +125,10 @@ def test_linux_bootstrap_proves_the_runtime_before_any_live_change():
         assert flag in body, flag
     assert '["npm", "npx", "corepack"]' in body
     assert '[[ "$observed" == "v$expected_version $expected_arch none" ]]' in body
+    # A wedged Docker daemon cannot hang bootstrap, and a timed-out run's
+    # container is removed by the unique name the proof gave it.
+    assert 'if ! observed=$(timeout 120 docker run --rm --name "$name" --network none' in body
+    assert 'docker rm -f -- "$name"' in body
 
 
 def test_macos_preparation_proves_node_and_no_package_manager():
@@ -130,7 +136,10 @@ def test_macos_preparation_proves_node_and_no_package_manager():
     assert "release.get('sandboxNodeRuntime')" in source
     assert '"-p","JSON.stringify([process.version,process.arch])"' in source
     assert '["npm","npx","corepack"]' in source
-    assert "'node': ['v' + node_version, 'arm64'], 'packageManagers': []" in source
+    assert "'node': ['v' + node_version, arch], 'packageManagers': []" in source
+    # Native macOS is linux/arm64; the image test passes the runner's architecture.
+    assert "def sandbox_proof_expected(uid, node_version, arch='arm64'):" in source
+    assert 'expected = sandbox_proof_expected(uid, node_version)' in source
 
 
 def test_prompt_claims_node_exactly_as_the_image_provides_it():

@@ -11,6 +11,7 @@ ODS_TEST_PIXEL_SANDBOX_IMAGE=1 enables it. ODS_TEST_PIXEL_SANDBOX_PLATFORM adds
 --platform (macOS native Pixel builds linux/arm64), and
 ODS_TEST_PIXEL_SANDBOX_IIDFILE keeps the built image ID for later CI steps.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -155,6 +156,29 @@ class PixelSandboxImageTests(unittest.TestCase):
         self.assertEqual(identity, f'v{NODE_VERSION} {self.node_arch} {self.uid}')
         self.assertLess(int(size), NODE_BINARY_CEILING)
         print(json.dumps({'nodeBinaryBytes': int(size)}))
+
+    def test_install_proofs_accept_this_image(self):
+        # The checks Linux/WSL bootstrap (scripts/lib/common.sh) and macOS native
+        # preparation (pixel-native-bootstrap.py) run before any live change,
+        # exactly as they run them, against this real image.
+        linux = subprocess.run(['bash', '-c', 'source "$1"; pixel_prove_sandbox_runtime "$2" "$3"', '_',
+                                str(PIXEL / 'scripts/lib/common.sh'), self.image, NODE_VERSION],
+                               capture_output=True, text=True, timeout=180)
+        self.assertEqual(linux.returncode, 0, linux.stdout + linux.stderr)
+        spec = importlib.util.spec_from_file_location(
+            'ods_pixel_native_bootstrap', ROOT / 'installers/macos/lib/pixel-native-bootstrap.py')
+        bootstrap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bootstrap)
+        name = 'ods-pixel-sandbox-proof-' + uuid.uuid4().hex
+        try:
+            native = docker(*bootstrap.sandbox_proof_run_args(
+                name=name, workspace=str(self.workspace), image_id=self.image), check=False)
+        finally:
+            subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=60)
+        self.assertEqual(native.returncode, 0, native.stderr)
+        self.assertEqual(json.loads(native.stdout),
+                         bootstrap.sandbox_proof_expected(self.uid, NODE_VERSION, self.node_arch))
+        self.assertEqual((self.workspace / 'ods-proof.txt').read_text(encoding='utf-8'), 'ods-sandbox-proof')
 
     def test_node_check_reports_syntax_errors(self):
         self.write('good.js', 'const total = [1, 2, 3].reduce((a, b) => a + b, 0);\nconsole.log(total);\n')

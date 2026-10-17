@@ -382,7 +382,7 @@ pixel_validate_sandbox_image() {
 # it must be the pinned version for this host's architecture, and npm, npx and
 # corepack must be absent. Returns nonzero, without live changes, otherwise.
 pixel_prove_sandbox_runtime() {
-  local image_id=$1 expected_version=$2 expected_arch observed program
+  local image_id=$1 expected_version=$2 expected_arch observed program name
   [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
   [[ "$expected_version" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || return 1
   case "$(uname -m)" in
@@ -395,10 +395,18 @@ const found = ["npm", "npx", "corepack"].filter((name) => (process.env.PATH || "
   try { accessSync(join(dir, name), constants.X_OK); return true; } catch { return false; }
 }));
 console.log(process.version + " " + process.arch + " " + (found.join(",") || "none"));'
-  observed=$(docker run --rm --network none --read-only --cap-drop ALL \
+  # A wedged Docker daemon must not hang bootstrap. A timed-out client does not
+  # stop its container, so the proof names its own and removes it on failure.
+  name="ods-pixel-sandbox-proof-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+  [[ "$name" =~ ^ods-pixel-sandbox-proof-[a-f0-9]{16}$ ]] || return 1
+  if ! observed=$(timeout 120 docker run --rm --name "$name" --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges:true --pids-limit 128 --memory 512m \
     --tmpfs /tmp:rw,nosuid,nodev,size=16m --user sandbox \
-    --entrypoint /usr/local/bin/node "$image_id" -e "$program") || return 1
+    --entrypoint /usr/local/bin/node "$image_id" -e "$program"); then
+    # --rm normally removed it already; a missing container is the expected case.
+    docker rm -f -- "$name" >/dev/null 2>&1 || true
+    return 1
+  fi
   [[ "$observed" == "v$expected_version $expected_arch none" ]]
 }
 

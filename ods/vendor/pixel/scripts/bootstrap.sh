@@ -175,8 +175,9 @@ else
 fi
 candidate_sandbox_id=$(pixel_validate_sandbox_image "$candidate_sandbox_ref" "$pixel_version" "$sandbox_uid") \
   || pixel_die "Sandbox candidate image verification failed"
+# ODS's installer turns this exact message into owner guidance; keep its prefix.
 pixel_prove_sandbox_runtime "$candidate_sandbox_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION" \
-  || pixel_die "Sandbox candidate $candidate_sandbox_ref did not run the pinned Node.js $PIXEL_GENERATED_SANDBOX_NODE_VERSION for this architecture without npm, npx or corepack. Remove it with docker image rm $candidate_sandbox_ref, then re-run with --apply."
+  || pixel_die "Sandbox runtime proof failed: $candidate_sandbox_ref did not run the pinned Node.js $PIXEL_GENERATED_SANDBOX_NODE_VERSION for this architecture without npm, npx or corepack. Remove it with docker image rm $candidate_sandbox_ref, then re-run with --apply."
 
 if [[ "$web_courier_enabled" == 1 ]]; then
   requirements="$ROOT/deploy/web-courier/requirements.lock"

@@ -11,6 +11,8 @@ RUN apt-get update \
 # nodejs.org build for this architecture, pinned by SHA-256 in
 # RELEASE-MANIFEST.json (sandboxNodeRuntime) and generated into the rows below.
 # Only bin/node and LICENSE are extracted, so npm, npx and corepack never exist.
+# Bootstrap's docker build has no timeout, so a stalled download must end on its
+# own: under 1 KB/s for 60 s, or 30 minutes per attempt.
 # Plain RUN syntax keeps legacy Docker builders working.
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
@@ -19,7 +21,8 @@ RUN set -eu; \
       arm64) node_url=https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.xz node_sha256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2 ;; \
       *) echo "Pixel sandbox: no pinned Node.js build for $arch" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL --proto '=https' --tlsv1.2 --retry 3 -o /tmp/node.tar.xz "$node_url" \
+    curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+      --max-time 1800 --retry 3 --retry-connrefused -o /tmp/node.tar.xz "$node_url" \
       || { echo "Pixel sandbox: could not download $node_url; check access to nodejs.org" >&2; exit 1; }; \
     echo "$node_sha256  /tmp/node.tar.xz" | sha256sum -c - >/dev/null \
       || { echo "Pixel sandbox: $node_url did not match its pinned SHA-256; nothing was installed" >&2; rm -f /tmp/node.tar.xz; exit 1; }; \

@@ -195,6 +195,9 @@ JSON
     for required in '--rm' '--network none' '--read-only' '--cap-drop ALL' '--user sandbox' '--entrypoint /usr/local/bin/node'; do
       [[ " $* " == *" $required "* ]] || fake_docker_die "run is limited to the offline sandbox runtime proof (missing $required)"
     done
+    # The proof names its container so it can remove it after a client timeout.
+    [[ " $* " =~ \ --name\ ods-pixel-sandbox-proof-[a-f0-9]{16}\  ]] \
+      || fake_docker_die "run requires the proof's unique container name"
     (( $# >= 4 )) || fake_docker_die "run requires IMAGE -e PROGRAM"
     run_image=${@: -3:1}
     [[ ${@: -2:1} == -e ]] || fake_docker_die "run requires IMAGE -e PROGRAM"

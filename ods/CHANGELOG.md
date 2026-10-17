@@ -27,6 +27,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Building the sandbox image now also downloads Node.js from nodejs.org
     (about 31 MB). Existing installations get it through a normal ODS update.
     Rolling back restores the previous image, which has no node.
+  - A red `node --check`, `node --test` or harness run that exits 1 with
+    output is recorded as a test result, not a failed tool call, so an edit
+    and test loop no longer ends the response at the 12-failure total, nor
+    one failing syntax check per file at the 4-failure streak. A missing
+    node or script, a timeout and a crash without output still count.
+  - A macOS native update removes the previous agent sandbox container before
+    the new gateway starts, as Linux and WSL already do. Before, a container
+    used in the last five minutes kept serving the old image without node
+    while the agent was told node is there.
+  - The Node.js download gives up on a stalled connection instead of hanging
+    the install, and the Linux bootstrap's node check is bounded and removes
+    its own container. A stale sandbox image that fails that check now gets its
+    own message with the `docker image rm` command, instead of the
+    network-problem message.
 
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple

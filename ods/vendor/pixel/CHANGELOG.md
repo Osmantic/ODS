@@ -6,7 +6,12 @@
   pinned by SHA-256 for amd64 and arm64 in `RELEASE-MANIFEST.json`
   (`sandboxNodeRuntime`). npm, npx and corepack are not installed.
 - Bootstrap runs the candidate's node offline and refuses another version,
-  architecture or a package manager before any live change.
+  architecture or a package manager before any live change. The check is
+  bounded at 120 seconds, removes its own named container on failure, and
+  fails with a fixed `Sandbox runtime proof failed:` message that names the
+  image to remove.
+- The Node.js download stops on a stalled connection (under 1 KB/s for 60
+  seconds, or 30 minutes per attempt) instead of hanging the build.
 - Keep the sandbox networkless with a read-only root and unchanged limits.
 
 ## 4.3.31 - ODS-maintained candidate

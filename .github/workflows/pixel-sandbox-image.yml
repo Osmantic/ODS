@@ -3,9 +3,10 @@ name: Pixel sandbox image
 # Builds Portal's agent sandbox image (ods/vendor/pixel/deploy/sandbox) the way
 # Pixel bootstrap does and runs it with the production confinement on amd64 and
 # arm64: the pinned Node.js, offline syntax checks and tests, no package
-# manager, no network. Then the agent's exec tool runs node through the real
-# pinned OpenClaw Docker sandbox. The weekly run catches a moved nodejs.org or
-# Debian artifact before an owner's install does.
+# manager, no network, and the Linux bootstrap and macOS native install proofs.
+# Then the agent's exec tool runs node through the real pinned OpenClaw Docker
+# sandbox. The weekly run catches a moved nodejs.org or Debian artifact before
+# an owner's install does.
 on:
   pull_request:
     paths:
@@ -16,8 +17,13 @@ on:
       - 'ods/vendor/pixel/scripts/generated/**'
       - 'ods/vendor/pixel/scripts/bootstrap.sh'
       - 'ods/vendor/pixel/scripts/lib/common.sh'
+      - 'ods/vendor/pixel/scripts/render-config.mjs'
+      - 'ods/installers/lib/pixel-host-install.sh'
       - 'ods/installers/macos/lib/pixel-native-bootstrap.py'
       - 'ods/extensions/services/pixel-agent/plugin/prompt-contract.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/tool-loop-guard.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/run-progress-budget.mjs'
+      - 'ods/extensions/services/pixel-agent/host/cancellable-exec.sh'
       - 'ods/extensions/services/pixel-agent/tests/runtime_sandbox_node.integration.mjs'
       - 'ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs'
       - 'ods/tests/test_pixel_sandbox_image.py'
@@ -33,8 +39,13 @@ on:
       - 'ods/vendor/pixel/scripts/generated/**'
       - 'ods/vendor/pixel/scripts/bootstrap.sh'
       - 'ods/vendor/pixel/scripts/lib/common.sh'
+      - 'ods/vendor/pixel/scripts/render-config.mjs'
+      - 'ods/installers/lib/pixel-host-install.sh'
       - 'ods/installers/macos/lib/pixel-native-bootstrap.py'
       - 'ods/extensions/services/pixel-agent/plugin/prompt-contract.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/tool-loop-guard.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/run-progress-budget.mjs'
+      - 'ods/extensions/services/pixel-agent/host/cancellable-exec.sh'
       - 'ods/extensions/services/pixel-agent/tests/runtime_sandbox_node.integration.mjs'
       - 'ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs'
       - 'ods/tests/test_pixel_sandbox_image.py'
@@ -70,6 +81,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: '3.12'

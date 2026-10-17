@@ -540,7 +540,7 @@ PY
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
         _ods_pixel_write_onboarding _ods_pixel_harden_operations_state_profiles \
-        _ods_pixel_verify_operations_policy_custody; do
+        _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node; do
         eval "$stub() { :; }"
     done
     eval "_repair_run_as_owner() $(declare -f ods_pixel_run_as_owner | tail -n +2)"
@@ -859,6 +859,60 @@ if (
 else
     pass "Pixel sandbox recreation rejects a stale unregistered container"
 fi
+
+# Bootstrap's sandbox Node.js proof failure names the candidate to remove; only
+# this run's final error counts, and a malformed tag is never echoed.
+proof_log="$TEST_ROOT/pixel-proof.log"
+printf '%s\n' '[pixel] Building the pinned Pixel sandbox candidate image' \
+    '[pixel] ERROR: Sandbox runtime proof failed: pixel-sandbox-candidate:4.3.32-uid-1000 did not run the pinned Node.js 24.21.0 for this architecture without npm, npx or corepack. Remove it with docker image rm pixel-sandbox-candidate:4.3.32-uid-1000, then re-run with --apply.' \
+    > "$proof_log"
+check test "$(_ods_pixel_failed_sandbox_proof_candidate "$proof_log")" = pixel-sandbox-candidate:4.3.32-uid-1000
+for proof_tail in '[pixel] ERROR: Building the Pixel sandbox image failed.' \
+    '[pixel] ERROR: Sandbox runtime proof failed: pixel-sandbox-candidate:4.3.32-uid-1000;id did not run'; do
+    printf '%s\n' "$proof_tail" > "$proof_log"
+    if _ods_pixel_failed_sandbox_proof_candidate "$proof_log" >/dev/null; then
+        fail "sandbox proof failure parsed from: $proof_tail"
+    else
+        pass "no sandbox candidate parsed from: $proof_tail"
+    fi
+done
+{ printf '%s\n' '[pixel] ERROR: Sandbox runtime proof failed: pixel-sandbox-candidate:4.3.32-uid-1000 did not run'
+  printf '[pixel] later line %s\n' 1 2 3 4 5; } > "$proof_log"
+if _ods_pixel_failed_sandbox_proof_candidate "$proof_log" >/dev/null; then
+    fail "an earlier run's sandbox proof failure was treated as this run's"
+else
+    pass "only the final lines of the Pixel log name a failed sandbox proof"
+fi
+
+# A bootstrap that succeeds without the sandbox Node.js label (a developer
+# source older than 4.3.32) stops before apply.
+node_label_root="$TEST_ROOT/node-label-pixel"
+mkdir -p "$node_label_root"
+printf '4.3.32\n' > "$node_label_root/VERSION"
+for node_label in 24.21.0 '<no value>' ''; do
+    if (
+        ods_pixel_run_as_owner() {
+            shift 2
+            if [[ "$1" == docker ]]; then
+                [[ "$*" == "docker image inspect --format {{index .Config.Labels \"org.osmantic.pixel.sandbox-node\"}} pixel-sandbox-candidate:4.3.32-uid-$(id -u "$owner")" \
+                    && -n "$node_label" ]] || return 1
+                printf '%s\n' "$node_label"
+                return 0
+            fi
+            "$@"
+        }
+        _ods_pixel_sandbox_candidate_has_node "$owner" "$home" "$node_label_root"
+    ); then
+        node_label_result=accepted
+    else
+        node_label_result=refused
+    fi
+    if [[ "$node_label_result" == "$([[ "$node_label" == 24.21.0 ]] && echo accepted || echo refused)" ]]; then
+        pass "sandbox candidate with label '$node_label' $node_label_result"
+    else
+        fail "sandbox candidate with label '$node_label' $node_label_result"
+    fi
+done
 
 plugin_registry_bin="$TEST_ROOT/openclaw-plugin-registry"
 cat > "$plugin_registry_bin" <<SH
@@ -3142,6 +3196,16 @@ bootstrap_failure = installer[pixel_bootstrap:native_search_digest]
 assert "Node.js runtime from nodejs.org" in bootstrap_failure
 assert "then run the ODS install or update again" in bootstrap_failure
 assert "https://discord.gg/4ntNp9MAwC" in bootstrap_failure
+# A failed check of an existing candidate names that image and its removal
+# instead of blaming the network.
+stale = bootstrap_failure.index("stale_sandbox=\"$(_ods_pixel_failed_sandbox_proof_candidate \"$pixel_log\")\"")
+assert stale < bootstrap_failure.index("Remove it with docker image rm $stale_sandbox, then run the ODS install or update again") \
+    < bootstrap_failure.index("internet access and free disk space")
+assert bootstrap_failure.count("https://discord.gg/4ntNp9MAwC") == 3
+# A developer source without the sandbox Node.js runtime stops before apply.
+node_label = installer.index("if ! _ods_pixel_sandbox_candidate_has_node \"$owner\" \"$home\" \"$pixel_root\"")
+assert pixel_bootstrap < node_label < installer.index("\"$pixel_root/pixel\" apply --confirm")
+assert "leave PIXEL_SOURCE_URL and PIXEL_SOURCE_REF unset" in installer[node_label:native_search_digest]
 assert "Pixel configure failed. See $pixel_log" in text
 assert "Pixel plan failed. See $pixel_log" in text
 assert "Pixel configure or plan failed" not in text

@@ -11,7 +11,8 @@ test('guide lookup returns only the selected bounded topic', async () => {
     assert.equal(result.isError, undefined);
     assert.deepEqual(result.details, {kind: 'ods-operating-guide', topic, readOnly: true});
     assert.equal(result.content[0].text, AGENT_SKILLS[topic]);
-    assert.ok(result.content[0].text.length < (['workspace', 'verification'].includes(topic) ? 3200 : 2600));
+    const ceiling = {workspace: 3200, verification: 3400}[topic] ?? 2600;
+    assert.ok(result.content[0].text.length < ceiling, `${topic}: ${result.content[0].text.length}`);
     for (const other of Object.keys(AGENT_SKILLS).filter(name => name !== topic)) {
       assert.ok(!result.content[0].text.includes(AGENT_SKILLS[other]));
     }
@@ -65,14 +66,20 @@ test('owner-named items keep their names: one constant sentence, the same bytes 
 // canvas game, so a save() leak and a per-hit freeze survived many turns.
 test('verification guide shows offline node checks for browser JavaScript, scoped to the sandbox', () => {
   const guide = AGENT_SKILLS.verification;
-  assert.match(guide, /In the Docker sandbox, node \(no npm\) checks JavaScript offline/);
-  assert.match(guide, /run node --check on each script/);
-  assert.match(guide, /importing it under node --test/);
-  assert.match(guide, /stubs document, window and the canvas 2D context \(for example, count save\/restore balance per frame\)/);
-  assert.match(guide, /performance\.now over many frames before and after a change/);
+  assert.match(guide, /In the Docker sandbox, node \(no npm\) checks JavaScript offline: run node --check on each script/);
+  // Bare node --test discovers every test file below the working directory.
+  assert.match(guide, /node --test and explicit test files from the project directory/);
+  // A harness is a script file: inline node -e code is not a test result
+  // (nodeReportedFailure in run-progress-budget.mjs).
+  assert.match(guide, /a small harness script that stubs document, window and the canvas 2D context \(for example, count save\/restore balance per frame\)/);
+  // A third identical successful exec without an edit is refused.
+  assert.match(guide, /performance\.now over many frames, once before and once after an edit/);
+  // Only exit 1 with output is recorded as a test result instead of a failure
+  // (tests/sandbox_node_guard.test.mjs).
+  assert.match(guide, /A harness prints what it measured and exits 1 only when a check fails; a node run that exits 1 with output is a test result to fix, not a tool failure/);
   assert.match(guide, /Wrap long harnesses in timeout 60/);
   // The private-network guard blocks loopback URLs in exec commands.
   assert.match(guide, /never start servers or put loopback URLs in commands/);
   assert.match(guide, /A node result does not replace publication and inspection/);
-  assert.doesNotMatch(guide, /npm (?:install|test|ci|run)|npx /);
+  assert.doesNotMatch(guide, /npm (?:install|test|ci|run)|npx |rmSync|rmtree/);
 });

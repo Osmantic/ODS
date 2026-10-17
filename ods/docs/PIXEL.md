@@ -545,7 +545,20 @@ package manager before any live change. Building the image downloads Debian
 packages from deb.debian.org and Node.js from nodejs.org. Full Access runs
 commands natively instead, and its prompt makes no claim about installed
 runtimes. Existing installations pick up the runtime through a normal ODS
-update, which brings a new Pixel version and rebuilds the sandbox image.
+update, which brings a new Pixel version and rebuilds the sandbox image. The
+update also removes the previous agent sandbox container before the new
+gateway starts (Linux and WSL through `openclaw sandbox recreate`, a macOS
+native update through Docker while every Pixel job is stopped). OpenClaw would
+otherwise keep a container used in the last five minutes on the old image. The
+container holds no state, because the workspace is a bind mount.
+
+A node check, test or harness that exits 1 with output is recorded as a test
+result, not as a failed tool call, up to `FREE_NODE_RESULTS_PER_RUN` per
+response, so the edit and test loop the agent is asked to run does not end the
+response at the run's failure limits. A missing node, a missing script, a
+timeout, a crash without output and inline `node -e` code still count as
+failures. `extensions/services/pixel-agent/COMPLETION-RELIABILITY.md` has the
+exact rules.
 
 ### Cancellation and sandbox execution
 

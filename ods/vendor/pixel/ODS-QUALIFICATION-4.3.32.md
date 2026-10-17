@@ -24,8 +24,14 @@ README). Plain `RUN` syntax keeps legacy Docker builders working.
 
 `pixel bootstrap` runs a new or reused candidate's node once with no network, a
 read-only root and no capabilities. It requires the pinned version for the host
-architecture and no package manager before any live change. Native macOS
-preparation runs the same check in its linux/arm64 image.
+architecture and no package manager before any live change. The check is
+bounded at 120 seconds, removes its own uniquely named container when it fails,
+and ends bootstrap with a fixed `Sandbox runtime proof failed:` message that
+names the candidate to remove; the ODS installer shows that removal as the
+recovery. Native macOS preparation runs the same check in its linux/arm64
+image. The Node.js download gives up on a stalled connection (under 1 KB/s for
+60 seconds, or 30 minutes per attempt), because bootstrap's image build has no
+timeout of its own.
 
 The runtime confinement is unchanged: network none, read-only root, the same
 tmpfs, memory, process and file limits, and the same single workspace bind.
@@ -42,12 +48,22 @@ unchanged.
   claims node exactly as the image provides it.
 - `tests/e2e.sh` exercises the bootstrap proof against the fake Docker: the
   pinned runtime passes; a wrong version, a wrong architecture, a package
-  manager, empty output, a failed run and an unknown image are refused.
+  manager, empty output, a failed run and an unknown image are refused, also
+  when the proof is called inside an `if` as bootstrap's `||` calls it, and a
+  failed run removes the proof's own container.
 - `.github/workflows/pixel-sandbox-image.yml` (ODS) builds this image on amd64
   with BuildKit and the legacy builder and on arm64 natively and with
-  `--platform linux/arm64`, runs it with the production confinement, and runs
-  node through the real pinned OpenClaw Docker sandbox. Its results belong
-  in the ODS pull request.
+  `--platform linux/arm64`, runs it with the production confinement, runs both
+  install proofs (Linux bootstrap and macOS native) against it, and runs node
+  through the real pinned OpenClaw Docker sandbox. Its results belong in the
+  ODS pull request.
+- ODS records a red `node --check`, `node --test` or harness run (exit 1 with
+  output) as a test result rather than a failed tool call
+  (ODS `extensions/services/pixel-agent/tests/sandbox_node_guard.test.mjs`).
+- A macOS native update removes the previous agent sandbox containers while
+  every Pixel job is stopped and before the new gateway starts
+  (ODS `tests/test_macos_pixel_migration_selection.py`,
+  `tests/test_macos_pixel_access_install.py`).
 
 ## Fleet qualification still required
 
@@ -57,7 +73,11 @@ Spark, and a macOS native update; in Sandbox mode and with Full Access.
 - `docker exec` into the live `pixel-sbx-agent-pixel-*` container prints
   `node --version` as `v24.21.0` and finds no npm.
 - A Portal turn syntax-checks and tests a project's JavaScript with node.
-- On macOS, the running sandbox container uses the new image ID after update.
+- On macOS, run an exec turn in Portal, update within five minutes, and run a
+  `node --version` turn within five minutes of the update. It prints
+  `v24.21.0`, and the running sandbox container uses the new image ID. OpenClaw
+  keeps a container used in the last five minutes, so waiting longer would
+  hide a missed retirement.
 - Rolling back to 4.3.31 restores the preserved image; the agent then reports
   node as missing once instead of probing for it.
 

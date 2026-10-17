@@ -352,8 +352,13 @@ prove_sandbox_runtime() {
 }
 case "$(uname -m)" in x86_64) host_node_arch=x64 ;; aarch64|arm64) host_node_arch=arm64 ;; *) host_node_arch=unknown ;; esac
 prove_sandbox_runtime "$candidate_sandbox_image_id"
-grep -F -- "run --rm --network none --read-only --cap-drop ALL" "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
+grep -E -- "^run --rm --name ods-pixel-sandbox-proof-[a-f0-9]{16} --network none --read-only --cap-drop ALL " "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
 grep -F -- "--entrypoint /usr/local/bin/node $candidate_sandbox_image_id -e" "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
+# A successful proof leaves nothing to clean up; --rm removed its container.
+if grep -E -- "^rm -f -- ods-pixel-sandbox-proof-" "$PIXEL_FAKE_DOCKER_LOG" >/dev/null; then
+  echo "Sandbox runtime proof removed a container after a successful run" >&2
+  exit 1
+fi
 for bad_runtime in "v0.0.0 $host_node_arch none" "v$PIXEL_GENERATED_SANDBOX_NODE_VERSION wrong-arch none" \
   "v$PIXEL_GENERATED_SANDBOX_NODE_VERSION $host_node_arch npm,npx,corepack" ""; do
   if PIXEL_FAKE_DOCKER_RUN_OUTPUT="$bad_runtime" prove_sandbox_runtime "$candidate_sandbox_image_id"; then
@@ -363,6 +368,17 @@ for bad_runtime in "v0.0.0 $host_node_arch none" "v$PIXEL_GENERATED_SANDBOX_NODE
 done
 if PIXEL_FAKE_DOCKER_RUN_STATUS=127 prove_sandbox_runtime "$candidate_sandbox_image_id" 2>/dev/null; then
   echo "Sandbox runtime proof accepted an image whose node did not run" >&2
+  exit 1
+fi
+# A failed or timed-out run removes the proof's own named container.
+failed_proof_name=$(grep -E -- "^run --rm --name ods-pixel-sandbox-proof-" "$PIXEL_FAKE_DOCKER_LOG" | tail -n 1 | cut -d' ' -f4)
+grep -Fx -- "rm -f -- $failed_proof_name" "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
+# Bootstrap calls the proof in an || list, where errexit does not apply inside
+# it: the failed run must still be refused, even with the expected output.
+if PIXEL_FAKE_DOCKER_RUN_STATUS=127 bash -c 'source scripts/lib/common.sh
+  if pixel_prove_sandbox_runtime "$1" "$2"; then exit 0; fi
+  exit 1' _ "$candidate_sandbox_image_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION" 2>/dev/null; then
+  echo "Sandbox runtime proof accepted a failed run when called as bootstrap calls it" >&2
   exit 1
 fi
 if prove_sandbox_runtime sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd 2>/dev/null; then
