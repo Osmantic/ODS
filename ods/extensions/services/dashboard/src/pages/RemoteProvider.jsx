@@ -24,6 +24,7 @@ const REQUEST_TIMEOUT_MS = 12000
 const PROBE_TIMEOUT_MS = 1805000
 const LIFECYCLE_TIMEOUT_MS = 1805000
 const PEER_MODELS_TIMEOUT_MS = 30000
+const PEER_DOWNLOAD_POLL_MS = 2000
 const PEER_MODEL_LOAD_TIMEOUT_MS = 2705000
 const INITIAL_FORM = {
   baseUrl: '',
@@ -431,10 +432,15 @@ export default function RemoteProvider({ compact = false }) {
     if (!quiet) setPeerModelsLoading(true)
     setPeerModelsError(null)
     try {
-      const [modelsPayload, downloadPayload] = await Promise.all([
+      let [modelsPayload, downloadPayload] = await Promise.all([
         fetchJson('/api/remote-provider/peer/models', {}, PEER_MODELS_TIMEOUT_MS),
         fetchJson('/api/remote-provider/peer/models/download-status', {}, PEER_MODELS_TIMEOUT_MS),
       ])
+      // The parallel inventory read can precede the download's final rename.
+      // Refresh after completion is observed before retiring its polling timer.
+      if (downloadPayload?.status === 'complete') {
+        modelsPayload = await fetchJson('/api/remote-provider/peer/models', {}, PEER_MODELS_TIMEOUT_MS)
+      }
       setPeerModelsData(modelsPayload)
       setPeerDownloadStatus(downloadPayload)
       return modelsPayload
@@ -460,6 +466,21 @@ export default function RemoteProvider({ compact = false }) {
     }
     void loadPeerModels()
   }, [loadPeerModels, statusData?.capabilities?.odsPeerLifecycle, statusData])
+
+  useEffect(() => {
+    if (!statusData?.capabilities?.odsPeerLifecycle || !peerDownloadActive(peerDownloadStatus)) return undefined
+    let pending = false
+    const timer = setInterval(async () => {
+      if (pending) return
+      pending = true
+      try {
+        await loadPeerModels({ quiet: true })
+      } finally {
+        pending = false
+      }
+    }, PEER_DOWNLOAD_POLL_MS)
+    return () => clearInterval(timer)
+  }, [loadPeerModels, peerDownloadStatus, statusData?.capabilities?.odsPeerLifecycle])
 
 
   const updateForm = (key, value) => {
