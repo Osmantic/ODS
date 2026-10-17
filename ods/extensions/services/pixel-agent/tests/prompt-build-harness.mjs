@@ -177,6 +177,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
     toolLoopGuard: {observeRun() {}, ownerIntentEventForRun: (_id, event) => event, verificationStatus: () => undefined,
       observeRepositorySource() {}, promptContextForRun: () => undefined,
+      observeExampleRun() {}, exampleContextForRun: () => undefined,
       clarificationContextForRun: id => (id === 'run' ? clarificationNote : undefined)},
     goalProgress: {begin() {}, active: () => goal}, taskActivity: {begin() {}},
     promptContractForAgent, configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,

@@ -22,10 +22,11 @@ import {EXAMPLE_NOTES} from '../plugin/example-guard.mjs';
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
+import {inResponseLanguage, responseLanguageTurnContext} from '../plugin/response-language.mjs';
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 import {compactToolResultEnvelope} from '../plugin/tool-result-envelope.mjs';
-import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {createToolLoopGuard, managedTeamRole} from '../plugin/tool-loop-guard.mjs';
 import {createWorkspaceArtifactAdmission} from '../plugin/workspace-artifact.mjs';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 
@@ -95,6 +96,7 @@ function entry(root) {
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
     goalProgress: {...quiet, finalize: (_event, _context, {guardDecision}) => guardDecision}, taskActivity: quiet,
     promptContractForAgent, configuredContextWindow: undefined, configuredLeanPrompt: false,
+    configuredResponseLanguage: undefined, inResponseLanguage, responseLanguageTurnContext, managedTeamRole,
     extensionRepositoryContext: async () => '', GOAL_CONTRACT: '', ACTIVITY_CONTRACT: '',
     executionLocationContext: () => '', executionContext: () => '',
     conversationImageLifecycle: {observe() {}}, managedRuntime: undefined,
