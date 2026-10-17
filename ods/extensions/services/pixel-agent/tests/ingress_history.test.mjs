@@ -15,7 +15,7 @@ const state=()=>({schemaVersion:1,status:'ready',sessionExists:true,sessionRevis
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
 async function fixture(t, verification={status:'none'}) {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-ingress-history-'));fs.chmodSync(dir,0o700);
-  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer',spoof=null;
+  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer',spoof=null,rotateTo=null;
   const gateway=http.createServer(async(req,res)=>{
     if(req.url==='/health') {res.setHeader('content-type','application/json');return res.end('{"ok":true}');}
     let raw='';for await(const part of req) raw+=part;
@@ -27,7 +27,7 @@ async function fixture(t, verification={status:'none'}) {
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify(verification));
     if(req.url==='/pixel-ods/subagent-delivery') return res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'}));
-    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}const completion={id:runId,...(spoof?{pixel_artifacts:spoof}:{}),choices:[{finish_reason:'stop',message:{role:'assistant',content:answer}}]};if(body.stream){res.setHeader('content-type','text/event-stream');return res.end(`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`)}return res.end(JSON.stringify(completion));}
+    if(req.url==='/v1/chat/completions') {if(rotateTo){native.sessionRevision=rotateTo;rotateTo=null}if(chatFailure){res.statusCode=500;return res.end('{}')}const completion={id:runId,...(spoof?{pixel_artifacts:spoof}:{}),choices:[{finish_reason:'stop',message:{role:'assistant',content:answer}}]};if(body.stream){res.setHeader('content-type','text/event-stream');return res.end(`data: ${JSON.stringify(completion)}\n\ndata: [DONE]\n\n`)}return res.end(JSON.stringify(completion));}
     res.statusCode=404;res.end('{}');
   });
   const imageStore=createChatImageStore(path.join(dir,'images'));
@@ -36,7 +36,7 @@ async function fixture(t, verification={status:'none'}) {
   t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(dir,{recursive:true,force:true})});
   async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json',...(body.messages?.at(-1)?.images?{'x-ods-image-turn':'1'}:{})},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
   const chat=(request_id,messages)=>post('/v1/chat/completions',{user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages:[{role:'system',content:'Trusted identity'},...messages.slice(-3,-1),u(messages.at(-1).content+'\nDelivery contract')],stream:false});
-  return {ledger,imageStore,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}},async rawChat(body){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,text:await response.text()}}};
+  return {ledger,imageStore,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},rotateDuringNextChat:value=>{rotateTo=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}},async rawChat(body){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,text:await response.text()}}};
 }
 
 test('anonymous Open WebUI chat forwards with an ephemeral identity when history storage is installed',async t=>{
@@ -107,6 +107,27 @@ test('initial archived conversation is hydrated and compacted before current inp
   assert.deepEqual(f.calls.find(c=>c.path==='/v1/chat/completions').body.messages,[{role:'system',content:'Trusted identity'},u('new request\nDelivery contract')]);
 });
 
+test('a delta that ran in a replacement native session restores the archive before the next turn',async t=>{
+  const f=await fixture(t);
+  assert.equal((await f.chat('first',[u('Increase enemies by 10%')])).status,200);
+  const answered=[u('Increase enemies by 10%'),a('answer'),u('Spawn count')];
+  // OpenClaw replaces the session while admitting this run, after the
+  // ingress chose delta-only delivery from the pre-run revision.
+  f.rotateDuringNextChat('b'.repeat(64));
+  assert.equal((await f.chat('answer',answered)).status,200);
+  assert.deepEqual(f.calls.filter(c=>c.path==='/v1/chat/completions').at(-1).body.messages,[{role:'system',content:'Trusted identity'},u('Spawn count\nDelivery contract')]);
+  assert.equal(f.ledger.read(user).sessionRevision,'a'.repeat(64));
+  const start=f.calls.length,later=[...answered,a('answer'),u('Do it')];
+  assert.equal((await f.chat('next',later)).status,200);
+  const calls=f.calls.slice(start),paths=calls.map(c=>c.path);
+  assert.equal(paths.filter(p=>p==='/v1/chat/completions').length,1);
+  assert.ok(paths.indexOf('/pixel-ods/history')>=0);
+  assert.ok(paths.indexOf('/pixel-ods/history')<paths.indexOf('/pixel-ods/compact'));
+  assert.ok(paths.indexOf('/pixel-ods/compact')<paths.indexOf('/v1/chat/completions'));
+  assert.deepEqual(calls.find(c=>c.path==='/pixel-ods/history').body.messages,later.slice(0,-1));
+  assert.deepEqual(calls.find(c=>c.path==='/v1/chat/completions').body.messages,[{role:'system',content:'Trusted identity'},u('Do it\nDelivery contract')]);
+  assert.equal(f.ledger.read(user).sessionRevision,'b'.repeat(64));
+});
 test('missing answer persists its incomplete outcome and cached delivery never reruns the task',async t=>{
   const f=await fixture(t);f.setAnswer('NO_REPLY');
   const first=await f.chat('silent',[u('Check the existing report without modifying it')]);
