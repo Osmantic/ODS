@@ -155,7 +155,11 @@ workspace write events, the exact published files and digest, and independent
 verification of requested behavior. A repository search and negative adapter
 test must also prove that ODS has no creative artifact generator or accepted
 content-bearing preview parameter. Any pre-authored harness artifact is a test
-fixture only and cannot count as a capability pass.
+fixture only and cannot count as a capability pass. The one finished example
+project ODS ships into every Portal workspace, `Playground/elf-of-doom`, is
+such a pre-authored artifact: a VIS run must not publish it, edit it, or count
+it as evidence, and its own workspace writes and publication must name a
+different folder.
 
 ## Acceptance
 

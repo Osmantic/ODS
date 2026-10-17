@@ -1,28 +1,43 @@
 """Add the finished example projects ODS ships to an owner's Portal workspace.
 
-Each example is copied once to Playground/<name>, and only when nothing of that
-name exists there. After that it is ordinary owner content: ODS never
-overwrites, merges into, chmods or deletes it. Run as the non-root workspace
-owner after Portal is verified. Every shipped file's SHA-256 is pinned below;
-when any source file differs, nothing is copied.
+Elf of Doom is copied to the workspace whenever Playground/elf-of-doom is
+absent (each example likewise to Playground/<name>): a fresh install adds it,
+and so does a later installer run after the owner deleted it. Anything already
+of that name (a folder, even empty, a file or a link) is ordinary owner content
+that ODS never overwrites, merges into, chmods or deletes. Portal's sidebar
+lists the folder with the other projects; nothing is printed about it. Run as
+the non-root workspace owner after Portal is verified. Every shipped file's
+SHA-256 is pinned below; when any source file differs, nothing is copied.
 """
 import argparse
+import ctypes
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import stat
+import sys
+import time
 
 SOURCE = Path(__file__).resolve().parents[2] / 'extensions/services/pixel-agent/example-projects'
 MAX_BYTES = 4 * 1024 * 1024
+# Hidden: Portal's preview and project routing skip names that start with '.'.
 STAGING_PREFIX = '.ods-example-'
+STAGING_NAME = re.compile(re.escape(STAGING_PREFIX) + r'[0-9a-f]{16}')
+# A copy takes seconds; an older staging folder was left by an interrupted run.
+STALE_STAGING_SECONDS = 3600
+# Linux renameat2(2) RENAME_NOREPLACE and macOS renameatx_np(2) RENAME_EXCL.
+RENAME_NOREPLACE = 0x1
+RENAME_EXCL = 0x4
 # Elf of Doom: written in ODS by Portal from natural-language prompts. The game
 # files are exactly the bytes published at https://odsspark.com/game/.
 EXAMPLES = {
     'elf-of-doom': {
-        'README.md': 'ab083d7279daf47a43f0e29df7368df8a2f4b61da8ae7234a62a8ccfd280ebd8',
+        'README.md': '0cd372716e60198997fd8ae30ea93054829536ad008f9d031c5c843781a89010',
         'chars.js': '161b08c8a331fef5f09ac45e6ade2cff62e03316ba7c6ac197adf8147af629db',
         'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
         'engine.js': '2f573a818c04b23554a95426bbe7a8a367780c9c583e03488fbe5e66e19dbedf',
@@ -33,6 +48,7 @@ EXAMPLES = {
         'world.js': 'b45864ccd2bed3d9413e571a167683f8b44cba29559bbee856a9f4d56ff8aff5',
     },
 }
+PINNED_NAMES = frozenset(name for files in EXAMPLES.values() for name in files)
 
 
 def _owner_directory(path):
@@ -98,7 +114,7 @@ def _write(directory, name, body):
 
 
 def _discard(playground, staging, names):
-    """Remove only this run's staging folder and the files it wrote there."""
+    """Remove one staging folder and the pinned files written there."""
     directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=playground)
     try:
         for name in names:
@@ -109,6 +125,76 @@ def _discard(playground, staging, names):
     finally:
         os.close(directory)
     os.rmdir(staging, dir_fd=playground)
+
+
+def _remove_interrupted_staging(playground):
+    """Remove staging folders an interrupted earlier copy left behind.
+
+    Only an owner-owned real folder named exactly like this helper's staging
+    folders, unchanged for an hour (so never a copy still running), holding
+    nothing but regular files with pinned example names, is removed. Anything
+    else that merely looks similar is left alone.
+    """
+    for entry in os.listdir(playground):
+        if not STAGING_NAME.fullmatch(entry):
+            continue
+        info = os.stat(entry, dir_fd=playground, follow_symlinks=False)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or time.time() - info.st_mtime < STALE_STAGING_SECONDS):
+            continue
+        directory = os.open(entry, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=playground)
+        try:
+            names = os.listdir(directory)
+            only_pinned = all(
+                name in PINNED_NAMES and stat.S_ISREG(os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode)
+                for name in names)
+        finally:
+            os.close(directory)
+        if only_pinned:
+            _discard(playground, entry, names)
+
+
+def _exclusive_rename(directory, source, target):
+    """Rename source to target in one folder only while target does not exist.
+
+    Linux renameat2(RENAME_NOREPLACE) and macOS renameatx_np(RENAME_EXCL) refuse
+    an existing target atomically, even an empty folder, which a plain rename
+    would replace. Returns False when the target exists. Raises OSError with
+    ENOSYS or EINVAL when this system or filesystem has no exclusive rename;
+    nothing was renamed then.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith('linux'):
+        call, flag = getattr(libc, 'renameat2', None), RENAME_NOREPLACE
+    elif sys.platform == 'darwin':
+        call, flag = getattr(libc, 'renameatx_np', None), RENAME_EXCL
+    else:
+        call, flag = None, 0
+    if call is None:
+        raise OSError(errno.ENOSYS, 'exclusive rename is unavailable')
+    call.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    call.restype = ctypes.c_int
+    if call(directory, os.fsencode(source), directory, os.fsencode(target), flag) == 0:
+        return True
+    code = ctypes.get_errno()
+    if code == errno.EEXIST:
+        return False
+    raise OSError(code, os.strerror(code))
+
+
+def _rename_into_place(playground, staging, name):
+    try:
+        return _exclusive_rename(playground, staging, name)
+    except OSError as error:
+        if error.errno not in (errno.ENOSYS, errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+    # No exclusive rename here (an old C library or filesystem). rename(2)
+    # still refuses a non-empty folder, a file or a link; only an empty folder
+    # created after this last check could be replaced.
+    if _exists(playground, name):
+        return False
+    os.rename(staging, name, src_dir_fd=playground, dst_dir_fd=playground)
+    return True
 
 
 def _add(playground, name, files):
@@ -123,18 +209,20 @@ def _add(playground, name, files):
         directory = os.open(staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=playground)
         try:
             os.fchmod(directory, 0o700)
+            staged = os.fstat(directory)
             for filename, body in sorted(files.items()):
                 _write(directory, filename, body)
             os.fsync(directory)
         finally:
             os.close(directory)
-        if _exists(playground, name):
+        if _exists(playground, name) or not _rename_into_place(playground, staging, name):
             return 'present'
-        # rename(2) refuses a non-empty folder, a file or a link here. Only an
-        # empty folder created after the check above could be replaced.
-        os.rename(staging, name, src_dir_fd=playground, dst_dir_fd=playground)
         renamed = True
         os.fsync(playground)
+        # The project folder must be the folder this run filled, nothing else.
+        placed = os.stat(name, dir_fd=playground, follow_symlinks=False)
+        if not stat.S_ISDIR(placed.st_mode) or (placed.st_dev, placed.st_ino) != (staged.st_dev, staged.st_ino):
+            raise OSError(errno.EEXIST, 'example folder changed while it was being added')
         return 'added'
     finally:
         if not renamed:
@@ -151,6 +239,7 @@ def add_projects(workspace, source=SOURCE):
     finally:
         os.close(root)
     try:
+        _remove_interrupted_staging(playground)
         return {name: _add(playground, name, files) for name, files in projects.items()}
     finally:
         os.close(playground)

@@ -38,7 +38,7 @@ import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisR
 import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
-import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { exampleProjectRefusal, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -8033,6 +8033,12 @@ export function createToolLoopGuard({
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
     if ((asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) &&
         !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
+    // A shipped example project (Playground/elf-of-doom) changes only when the
+    // owner names it as what to change. Check before routing, so a refused
+    // call leaves no routing state, and again on the routed call below.
+    const exampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:normalizedParams ?? event?.params,
+      root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent}) : undefined;
+    if (exampleRefusal) return exampleRefusal;
     if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
       && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
       state.playgroundRouting ??= {};
@@ -8043,7 +8049,12 @@ export function createToolLoopGuard({
         continueProject:state.workspaceVisualContinuationRequested,
         existingPaths:[...state.successfulReadPaths]});
       if (projectRoute?.block) return projectRoute;
-      if (projectRoute?.params) normalizedParams = projectRoute.params;
+      if (projectRoute?.params) {
+        normalizedParams = projectRoute.params;
+        const routedExampleRefusal = exampleProjectRefusal({tool:toolName, params:normalizedParams,
+          root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent});
+        if (routedExampleRefusal) return routedExampleRefusal;
+      }
       const routedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
         toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
       if (routedRestriction) return {block:true, blockReason:routedRestriction};

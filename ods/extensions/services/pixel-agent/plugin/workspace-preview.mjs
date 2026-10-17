@@ -303,7 +303,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
+      "Publish and verify a static visual artifact that already exists in Pixel's writable workspace, normally one created by the active model. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS ships one finished example game in Playground but never supplies starter bytes for new work. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -313,7 +313,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
         relativeDirectory: {
           type: "string",
           description:
-            "Static-site directory relative to the Pixel workspace; it must already contain model-authored index.html. Each path component must start with a letter or digit, followed by letters, digits, dots, underscores or hyphens; hidden directories are not publishable. Maximum 128 characters per component, 12 components and 512 characters total.",
+            "Static-site directory relative to the Pixel workspace; it must already contain index.html. Each path component must start with a letter or digit, followed by letters, digits, dots, underscores or hyphens; hidden directories are not publishable. Maximum 128 characters per component, 12 components and 512 characters total.",
         },
       },
     },
@@ -347,6 +347,22 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
         return failedResult(signal?.aborted ? "cancelled" : undefined);
       }
     },
+  };
+}
+
+// Owner-initiated publication of one existing workspace directory, used when
+// Portal's sidebar opens a shipped example project. It is the same create-only
+// snapshot, host validation and receipt check as the model tool, with no model
+// run; it returns only a verified receipt and throws on any failure.
+export function createWorkspacePreviewPublisher({request, transport = "unix"} = {}) {
+  if (!["unix", "docker-desktop"].includes(transport)) throw new Error("invalid preview transport");
+  request ??= transport === "docker-desktop" ? dockerWorkspacePreviewRequest : socketRequest;
+  return async (relativeDirectory, {signal} = {}) => {
+    const normalized = normalizeWorkspacePreviewParams({relativeDirectory});
+    const raw = await request(normalized, {signal});
+    signal?.throwIfAborted();
+    if (validatedFailureCode(raw)) throw new Error("Pixel workspace preview publication failed");
+    return validResponse(raw, normalized);
   };
 }
 

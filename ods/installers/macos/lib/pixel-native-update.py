@@ -38,6 +38,20 @@ def activation_command(preparation, prepared, *, install_dir, ods_source, owner,
     return command
 
 
+def _portal_agent(document):
+    """The candidate profile's one Portal agent entry.
+
+    A malformed document (agents not a list, or an entry that is not an
+    object) is a ValueError like any other wrong profile, never an
+    AttributeError that would escape after the proved update.
+    """
+    agents = document['agents']['list'] if isinstance(document, dict) and isinstance(document.get('agents'), dict) else None
+    if (not isinstance(agents, list) or len(agents) != 1 or not isinstance(agents[0], dict)
+            or agents[0].get('id') != 'pixel'):
+        raise ValueError('native-portal-profile-agent-required')
+    return agents[0]
+
+
 def migrate_public_identity(*, source, preparation, node):
     """Refresh only unmodified legacy profiles after a proved native update.
 
@@ -48,10 +62,7 @@ def migrate_public_identity(*, source, preparation, node):
     try:
         candidate = preparation / 'candidate'
         document = helper('pixel-native-config').private_json(candidate / 'openclaw.json')
-        agents = document['agents']['list']
-        if len(agents) != 1 or agents[0].get('id') != 'pixel':
-            raise ValueError('native-portal-profile-agent-required')
-        workspace = Path(agents[0]['workspace'])
+        workspace = Path(_portal_agent(document)['workspace'])
         if not workspace.is_absolute() or not workspace.is_dir() or workspace.resolve(strict=True) != workspace:
             raise ValueError('native-portal-profile-workspace-required')
         generated = candidate / 'workspace'
@@ -70,7 +81,7 @@ def migrate_public_identity(*, source, preparation, node):
 
 
 def add_example_projects(*, preparation):
-    """Add the shipped example projects to the live owner workspace once.
+    """Add the shipped example projects whenever Playground/elf-of-doom is absent.
 
     Like the profile repair, this owner-side step runs after the proved update
     and outside the protected activation. It only creates an absent
@@ -78,14 +89,12 @@ def add_example_projects(*, preparation):
     """
     try:
         document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')
-        agents = document['agents']['list']
-        if len(agents) != 1 or agents[0].get('id') != 'pixel':
-            raise ValueError('native-portal-profile-agent-required')
+        agent = _portal_agent(document)
         spec = importlib.util.spec_from_file_location('native_update_example_projects',
             HERE.parents[1] / 'lib/pixel-example-projects.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        return module.add_projects(Path(agents[0]['workspace']))
+        return module.add_projects(Path(agent['workspace']))
     except (ValueError, OSError, KeyError, TypeError):
         return {'status': 'manual-review-required'}
 

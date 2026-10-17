@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Archive, Folder, Plus } from 'lucide-react'
 import {groupProjectConversations} from '../lib/conversationProjects'
+import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, exampleProjectRows, readExampleProjects} from '../lib/exampleProjects'
 import { CHAT_KEY, LIBRARY_EVENT, SELECT_EVENT, DELETE_EVENT, readConversations, conversationTitle } from '../lib/pixelConversations'
 import { conversationLabels } from '../lib/pixelConversationLabels'
 import PixelConversationRow, {ConversationTitle} from './PixelConversationRow'
@@ -20,6 +21,7 @@ export default function PixelConversationNavigation({ collapsed }) {
   const [deleting,setDeleting]=useState(false)
   const [exportError, setExportError] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const [examples, setExamples] = useState([])
   const archiveToggle = useRef(null)
 
   const dialog = useRef(null)
@@ -65,13 +67,31 @@ export default function PixelConversationNavigation({ collapsed }) {
     window.addEventListener('storage', refresh)
     return () => { window.removeEventListener(LIBRARY_EVENT, refresh); window.removeEventListener('storage', refresh) }
   }, [])
+  useEffect(() => {
+    // Shipped example projects whose folder is in the owner's workspace.
+    // Checked again when the window regains focus, so a deleted or renamed
+    // folder quietly leaves the list. Any failure lists none.
+    let controller = null
+    const load = () => {
+      controller?.abort()
+      const current = controller = new AbortController()
+      readExampleProjects(current.signal)
+        .then(names => { if (!current.signal.aborted) setExamples(names) })
+        .catch(() => { if (!current.signal.aborted) setExamples([]) })
+    }
+    load()
+    window.addEventListener('focus', load)
+    window.addEventListener(EXAMPLE_REFRESH_EVENT, load)
+    return () => { controller?.abort(); window.removeEventListener('focus', load); window.removeEventListener(EXAMPLE_REFRESH_EVENT, load) }
+  }, [])
   if (collapsed) return <button ref={newTask} className="pixel-nav-item" aria-label="New task" title="New task" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/></button>
   const labeled = chats.map(chat => ({chat, labels:conversationLabels(chat.chatId)}))
   const visible = labeled.filter(item => item.labels.archived === showArchived)
   const pinned = visible.filter(item => item.labels.pinned).map(item => item.chat)
   const regular = visible.filter(item => !item.labels.pinned).map(item => item.chat)
   const {projects,recent}=groupProjectConversations(regular)
-  const playground=projects.filter(project=>project.root==='Playground')
+  const shipped=showArchived?[]:exampleProjectRows(examples,projects)
+  const playground=[...projects.filter(project=>project.root==='Playground'),...shipped]
   const legacy=projects.filter(project=>!project.root)
   const chevron = <svg className="rail-chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg>
   function rows(items, empty) {
@@ -82,7 +102,11 @@ export default function PixelConversationNavigation({ collapsed }) {
 
   }
   function projectRows(items) {
-    return items.map(project=><details className="rail-project" key={project.path} open={project.chats.some(chat=>chat.chatId===active) || undefined}>
+    // A shipped example with no conversations yet opens its game on click,
+    // exactly where the folder sits; otherwise it is the same project row.
+    return items.map(project=>project.example ? <details className="rail-project" key={project.path}>
+      <summary title={project.path} onClick={event=>{event.preventDefault();window.dispatchEvent(new CustomEvent(EXAMPLE_OPEN_EVENT,{detail:{name:project.name}}))}}><Folder size={16}/><span>{project.name}</span>{chevron}</summary>
+    </details> : <details className="rail-project" key={project.path} open={project.chats.some(chat=>chat.chatId===active) || undefined}>
       <summary title={project.path}><Folder size={16}/><span>{project.name}</span>{chevron}</summary>
       <LimitedList items={project.chats} label={`conversations in ${project.path}`}>{items=>rows(items,'')}</LimitedList>
     </details>)
@@ -99,7 +123,7 @@ export default function PixelConversationNavigation({ collapsed }) {
     <button ref={newTask} className="pixel-nav-item" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
     <div className="pixel-original-sections">
       {pinned.length > 0 && <details className="rail-section" open><summary>Pinned{chevron}</summary>{rows(pinned, '')}</details>}
-      {projects.length>0 && <details className="rail-section" open>
+      {projects.length+shipped.length>0 && <details className="rail-section" open>
         <summary>Projects{chevron}</summary>
         {playground.length>0 && <details className="rail-project rail-playground" open>
           <summary><Folder size={16}/><span>Playground</span>{chevron}</summary>

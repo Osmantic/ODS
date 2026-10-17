@@ -82,7 +82,8 @@ import {
   createHostObserveTool,
 } from "./host-observe.mjs";
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
-import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
+import { createWorkspacePreviewPublisher, createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
+import { createExampleProjectRoute } from "./example-projects.mjs";
 import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.mjs";
 import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWorkspaceBundleTool} from './workspace-bundle.mjs';
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
@@ -767,6 +768,20 @@ export default definePluginEntry({
         sendJson(res, 200, blocked);
         return true;
       },
+    });
+    // Portal's sidebar lists the shipped example project (Elf of Doom) like
+    // any other Playground project while its folder exists, and opens it with
+    // a create-only preview publication of that folder: no model run.
+    api.registerHttpRoute({
+      path: "/pixel-ods/example-projects",
+      auth: "gateway",
+      match: "exact",
+      handler: createExampleProjectRoute({
+        workspaceRoot: () => api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
+          ?? api.config?.agents?.defaults?.workspace,
+        publish: createWorkspacePreviewPublisher({transport: api.pluginConfig?.workspacePreviewTransport}),
+        sendJson,
+      }),
     });
 
     registerTool(

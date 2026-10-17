@@ -12819,9 +12819,9 @@ for (const wrapped of [false, true]) {
   });
 }
 
-test("the Elf of Doom README prompt opens the shipped example as an existing project", () => {
-  // installers/lib/pixel-example-projects.py copies the game to this folder;
-  // its README tells owners to ask Portal exactly this.
+test("asking Portal to open the shipped Elf of Doom example opens it as an existing project", () => {
+  // installers/lib/pixel-example-projects.py adds the game to this folder;
+  // Portal's sidebar opens it without a model run, and an owner may also ask.
   const prompt = "Open the existing Playground/elf-of-doom/index.html preview.";
   assert.equal(workspacePreviewMode([], prompt), "existing-project");
   assert.equal(requestsNewPlaygroundProject(prompt), false, "never a new Playground folder");

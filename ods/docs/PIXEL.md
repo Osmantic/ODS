@@ -781,13 +781,21 @@ act as a capability gate:
   preview adapter can publish them. The adapter never supplies or fabricates
   creative bytes, and new creative work is always written by the active model.
   ODS ships one finished example project, Elf of Doom, which Portal wrote in
-  ODS from natural-language prompts. The installers copy it once to
-  `Playground/elf-of-doom`, and only when nothing of that name exists; after
-  that it is ordinary owner content, published through the same path as any
-  other project. It is not offered as a starter for new work. The adapter
-  accepts only the existing relative directory, so safety enforcement, static
-  validation, snapshot isolation, and HTTP readback cannot be confused with
-  authorship. Pixel may author either a self-contained `index.html` or a
+  ODS from natural-language prompts. The installers copy it to
+  `Playground/elf-of-doom` whenever Playground/elf-of-doom is absent and never
+  replace, merge into or delete an existing entry of that name; it is ordinary
+  owner content. While the folder exists, Portal's sidebar lists it under
+  Projects > Playground like any other project, and clicking it publishes that
+  existing folder through the same create-only preview service with no model
+  run (the plugin's gateway route `/pixel-ods/example-projects`, relayed by
+  the ingress, the edge and `/api/pixel/example-projects`). It is never a
+  starter for new work: the plugin's routing refuses writes, edits, patches
+  and mutating commands inside it unless the owner's request names it as what
+  to change (for example "In elf-of-doom, make the arrows give 7"), and a
+  new-project request may neither change nor publish it as its result. The
+  adapter accepts only the existing relative directory, so safety enforcement,
+  static validation, snapshot isolation, and HTTP readback cannot be confused
+  with authorship. Pixel may author either a self-contained `index.html` or a
   richer set of local files; ODS imposes no creative-size ceiling and publishes
   only the exact completed snapshot.
 

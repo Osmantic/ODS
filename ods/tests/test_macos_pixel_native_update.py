@@ -191,3 +191,16 @@ def test_native_update_adds_example_projects_to_the_named_owner_workspace(tmp_pa
 
 def test_native_update_does_not_claim_example_projects_without_candidate(tmp_path):
     assert module.add_example_projects(preparation=tmp_path) == {'status': 'manual-review-required'}
+
+
+@pytest.mark.parametrize('document', [
+    {'agents': {'list': ['pixel']}}, {'agents': {'list': [None]}}, {'agents': {'list': 'pixel'}},
+    {'agents': ['pixel']}, ['agents'], {'agents': {'list': [{'id': 'pixel', 'workspace': 7}]}},
+])
+def test_a_malformed_candidate_profile_is_manual_review_not_a_crash(monkeypatch, tmp_path, document):
+    # A non-object agent entry once raised AttributeError after activation had
+    # already succeeded, losing the update outcome.
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    assert module.add_example_projects(preparation=tmp_path) == {'status': 'manual-review-required'}
+    assert module.migrate_public_identity(source=tmp_path, preparation=tmp_path, node=Path('/node')) == {
+        'status': 'manual-review-required'}

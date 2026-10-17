@@ -3,6 +3,7 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 import {createHash, randomBytes} from 'node:crypto';
+import {SHIPPED_EXAMPLE_PROJECTS} from './example-projects.mjs';
 
 const LIMIT = 256;
 const MAX_STATE_BYTES = 2048;
@@ -687,3 +688,174 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     return {block:true,blockReason:'The project folder could not be safely prepared or restored. Preserve existing files. Inspect the workspace with pwd or ls and check the project metadata before retrying; do not bypass this by writing elsewhere.'};
   }
 }
+
+// ODS ships finished example projects (Elf of Doom) at Playground/<name>. They
+// are owner content: Portal may read and publish them, but changes one only
+// when the owner's own request names it as the thing to change, for example
+// "In elf-of-doom, make the arrows give 7". A request for something new gets
+// its own folder, and a request to open or show the example changes nothing.
+// This is a routing convention for the owner's files, never an access grant.
+const EXAMPLE_CHANGE_VERB = /\b(?:make|change|edit|update|modify|fix|repair|debug|add|remove|delete|tweak|improve|adjust|set|give|increase|decrease|raise|lower|double|halve|speed|slow|rename|replace|rewrite|refactor|rebalance|balance|recolou?r|restyle|extend|enhance|upgrade|convert|translate|implement|create|build|write|put|turn|swap|work|mude|mudar|altere|alterar|edite|editar|atualize|atualizar|corrija|corrigir|conserte|consertar|adicione|adicionar|remova|remover|faca|fazer|coloque|troque|aumente|diminua|melhore)\b/i;
+// "don't change anything" names a verb the owner forbids, not one requested.
+const NEGATED_FRAGMENT = /\b(?:do\s+not|don['’]t|never|without|nao|nunca|sem)\b[^.;!?\n,]*/gi;
+// Words before a mention that make it a reference, not the target: "like
+// elf-of-doom", "a copy of Elf of Doom", "inspired by elf-of-doom".
+const COMPARATIVE = /\b(?:like|unlike|than|similar\s+to|based\s+on|inspired\s+by|in\s+the\s+style\s+of|(?:copy|clone|version|remix|fork|variant|sequel)\s+of|as|como|parecido\s+com|igual\s+ao?)\s+(?:(?:the|my|your|our|this|that|o|a|ods['’]?s?)\s+)?(?:(?:existing|example|shipped)\s+)?(?:(?:game|project|folder|jogo|projeto|pasta)\s+)?$/i;
+// Words before a mention that make it the place to change: "in elf-of-doom",
+// "to Playground/elf-of-doom", "inside the elf-of-doom folder".
+const LOCATIVE = /\b(?:in|inside|into|within|on|to|for|of|under|em|no|na|dentro\s+d[aeo])\s+(?:(?:the|my|your|our|this|that|o|a|meu|minha|seu|sua|ods['’]?s?)\s+){0,3}(?:(?:existing|example|shipped|current)\s+){0,2}(?:(?:game|project|folder|directory|jogo|projeto|pasta)\s+)?(?:\/?workspace\/)?(?:playground\/)?$/i;
+const READ_ONLY_PROGRAM = /^(?:ls|dir|cat|head|tail|wc|stat|file|grep|egrep|fgrep|rg|tree|du|sha1sum|sha256sum|sha512sum|md5sum|shasum|cksum|b2sum|diff|cmp|pwd|echo|printf|sort|uniq|cut|nl|od|xxd|hexdump|strings|basename|dirname|realpath|readlink|test|\[|\[\[|true|cd|pushd|popd|find|less|more|column|jq|get-childitem|get-content|get-location|select-string)$/;
+const RUN_PREFIX = /^(?:sudo|env|nohup|time|command|builtin|exec|nice|if|then|else|elif|while|until|do|done|fi|!|\{|\})$/;
+
+// Only the owner's words: ODS appends routing contracts ("[ODS Portal ...
+// route: ...]") to the turn, and their verbs are not the owner's request.
+function ownerWords(intent) {
+  return String(intent ?? '').split(/\n\s*\[ODS (?:Portal|Pixel) /)[0];
+}
+function ownerText(intent) {
+  return plainIntent(ownerWords(intent)).replaceAll('\\', '/');
+}
+
+// How the owner's text names one example: 'target' when it is the place to
+// change (a path into it, a possessive, or after in/to/inside...), 'bare' for
+// any other mention that is not a comparison, otherwise null. The folder name
+// and its spaced title (Elf of Doom) both count.
+function exampleMention(text, name) {
+  const words = name.split('-').map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`(^|[^A-Za-z0-9_.-])(${words.join('[\\s_-]+')})(?![A-Za-z0-9_]|-[A-Za-z0-9])`, 'gi');
+  let bare = false;
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index + match[1].length;
+    const before = text.slice(Math.max(0, start - 96), start);
+    const after = text.slice(start + match[2].length);
+    if (COMPARATIVE.test(before)) continue;
+    if (/^\/[A-Za-z0-9_.-]/.test(after) || /^['’]s\b/i.test(after) || LOCATIVE.test(before)
+        || /(?:^|[^A-Za-z0-9_.-])(?:\/?workspace\/)?playground\/$/i.test(before)) return 'target';
+    bare = true;
+  }
+  return bare ? 'bare' : null;
+}
+
+// True only when the owner asks to change this example by name. An open,
+// show or publish request without a change verb never changes it, and a
+// request for a new project changes it only when it names the example as the
+// place to change ("In elf-of-doom, create a new boss").
+function ownerChangesExample(intent, name) {
+  const text = ownerText(intent);
+  if (!EXAMPLE_CHANGE_VERB.test(text.replace(NEGATED_FRAGMENT, ' '))) return false;
+  const mention = exampleMention(text, name);
+  return mention === 'target' || (mention === 'bare' && !requestsNewPlaygroundProject(ownerWords(intent)));
+}
+
+// The shipped example a tool path is inside, matched without case as a
+// case-insensitive workspace would resolve it. A path is workspace-relative,
+// under /workspace/ or the configured root, or relative to base (the exec
+// directory); with a null base a relative path cannot be resolved.
+function examplePath(value, root, base = '') {
+  if (typeof value !== 'string' || !value || value.length > 4096) return null;
+  let text = value.replaceAll('\\', '/');
+  const configured = root.replaceAll('\\', '/').replace(/\/+$/, '');
+  if (text === configured || text.startsWith(`${configured}/`)) text = text.slice(configured.length + 1);
+  else if (text === '/workspace' || text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
+  else if (text.startsWith('/') || base === null) return null;
+  else if (base) text = `${base}/${text}`;
+  const normalized = path.posix.normalize(text || '.');
+  if (normalized === '..' || normalized.startsWith('../')) return null;
+  const segments = normalized.split('/');
+  if (segments.length < 2 || segments[0].toLowerCase() !== 'playground') return null;
+  return SHIPPED_EXAMPLE_PROJECTS.find(name => name === segments[1].toLowerCase()) ?? null;
+}
+
+// An exec workdir as a workspace-relative directory: '' for the workspace
+// root, null for a directory outside the workspace.
+function execDirectory(workdir, root) {
+  if (workspaceCwd(workdir, root)) return '';
+  if (typeof workdir !== 'string') return null;
+  let text = workdir.replaceAll('\\', '/');
+  const configured = root.replaceAll('\\', '/').replace(/\/+$/, '');
+  if (text.startsWith(`${configured}/`)) text = text.slice(configured.length + 1);
+  else if (text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
+  else if (text.startsWith('/')) return null;
+  const normalized = path.posix.normalize(text).replace(/\/+$/, '');
+  return normalized === '.' ? '' : normalized === '..' || normalized.startsWith('../') ? null : normalized;
+}
+
+// A command that only reads: every program is a reading program, nothing is
+// substituted, and output goes nowhere but /dev/null or another descriptor.
+function readOnlyCommand(command) {
+  if (typeof command !== 'string' || /\$\(|`|[<>]\(/.test(command)) return false;
+  let program = null, redirect = null;
+  for (const token of shellTokens(command)) {
+    if (['separator', 'open', 'close'].includes(token.type)) { program = null; redirect = null; continue; }
+    if (token.type === 'redirect') { redirect = token.op; continue; }
+    const text = token.text;
+    if (redirect) {
+      const output = /[>]/.test(redirect) && redirect !== '<<' && redirect !== '<<-';
+      if (output && text !== '/dev/null' && !(redirect.endsWith('&') && /^(?:\d+|-)$/.test(text))) return false;
+      redirect = null;
+      continue;
+    }
+    if (program === null) {
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(text) || RUN_PREFIX.test(text)) continue;
+      program = text.replaceAll('\\', '/').split('/').at(-1).toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, '');
+      if (!READ_ONLY_PROGRAM.test(program)) return false;
+      continue;
+    }
+    if (program === 'find' && /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/.test(text)) return false;
+    if (program === 'sort' && /^-(?:o|-output)/.test(text)) return false;
+  }
+  return true;
+}
+
+// The shipped examples a tool call would change, by name. A read never
+// changes anything; an exec changes an example only when it touches one and
+// is not a read-only command.
+function examplesChanged(selected, root) {
+  const args = selected.args, found = new Set();
+  const add = name => { if (name) found.add(name); };
+  if (selected.tool === 'write' || selected.tool === 'edit') {
+    for (const key of ['path', 'file_path', 'filePath']) add(examplePath(args[key], root));
+  } else if (selected.tool === 'apply_patch') {
+    if (typeof args.input === 'string') for (const match of args.input.matchAll(PATCH_HEADER)) add(examplePath(match[2].trim(), root));
+  } else if (selected.tool === 'exec') {
+    const command = typeof args.command === 'string' ? args.command : '';
+    const touched = new Set([examplePath(args.workdir, root)].filter(Boolean));
+    // A relative path word resolves against the exec directory until the
+    // command changes directory; the cd target is itself a path word.
+    const directory = execDirectory(args.workdir, root);
+    for (const word of shellPathWords(command, root)) {
+      const name = examplePath(word.text, root, word.rooted ? directory : null);
+      if (name) touched.add(name);
+    }
+    if (touched.size && !readOnlyCommand(command)) for (const name of touched) found.add(name);
+  }
+  return found;
+}
+
+function exampleChangeReason(name, fresh) {
+  const folder = `Playground/${name}`;
+  return fresh
+    ? `Not changed: ${folder} is the finished example project ODS ships, and the owner asked for a new project. Leave ${folder} as it is. Put every file of the new project in its own descriptive folder, for example Playground/dungeon-crawler/index.html, and publish that folder.`
+    : `Not changed: ${folder} is the finished example project ODS ships. Portal changes it only when the owner's request names it as what to change, for example "In ${name}, make the arrows give 7". Reading and publishing it stay available. Do not copy it into another folder to get around this; tell the owner how to ask.`;
+}
+
+// The refusal for a tool call that would change a shipped example the owner
+// did not ask to change, or that would publish one as a requested new project.
+// Undefined when the call may proceed; it never rewrites the call.
+export function exampleProjectRefusal({tool, params, root, intent}) {
+  const selected = selectTool(tool, params);
+  if (!selected || !selected.args || typeof root !== 'string' || !path.isAbsolute(root)) return undefined;
+  const fresh = requestsNewPlaygroundProject(ownerWords(intent));
+  if (selected.tool === 'pixel_ods_workspace_preview') {
+    const name = examplePath(selected.args.relativeDirectory, root);
+    if (!name || !fresh || exampleMention(ownerText(intent), name)) return undefined;
+    return {block:true, blockReason:`Not published: Playground/${name} is the finished example project ODS ships, not the new project the owner asked for. Write the new project in its own descriptive Playground folder and publish that folder.`};
+  }
+  if (!['write', 'edit', 'apply_patch', 'exec'].includes(selected.tool)) return undefined;
+  for (const name of examplesChanged(selected, root)) {
+    if (!ownerChangesExample(intent, name)) return {block:true, blockReason:exampleChangeReason(name, fresh)};
+  }
+  return undefined;
+}
+
+export const exampleProjectTesting = Object.freeze({exampleMention, ownerChangesExample, readOnlyCommand, examplePath});

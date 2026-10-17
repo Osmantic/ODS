@@ -521,8 +521,10 @@ HERMES_AUTH_VERIFY_PY
 }
 
 # Copy the finished example projects ODS ships (Elf of Doom) into the owner's
-# native Portal workspace, once and only where nothing of that name exists.
-# Runs after native activation; a failure warns and never fails the install.
+# native Portal workspace whenever Playground/elf-of-doom is absent. Portal's
+# sidebar then lists it with the other projects; the installer prints nothing
+# about it. Runs after native activation; a failure warns and never fails the
+# install.
 _macos_add_example_projects() {
     local install_root status
     # The native workspace path is built from the resolved install directory,
@@ -531,9 +533,6 @@ _macos_add_example_projects() {
         && status="$(/usr/bin/python3 -B "$INSTALL_DIR/installers/lib/pixel-example-projects.py" \
             --workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel" 2>>"$ODS_LOG_FILE")"; then
         printf 'Portal example projects: %s\n' "$status" >>"$ODS_LOG_FILE"
-        if [[ "$status" == *'"elf-of-doom":"added"'* ]]; then
-            ai_ok "Portal has a game to try: ask Portal to \"Open the existing Playground/elf-of-doom/index.html preview.\" to play Elf of Doom."
-        fi
     else
         ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project. Nothing in your Portal workspace was replaced. The next Portal update tries again; for help, ask on Discord: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)"
     fi

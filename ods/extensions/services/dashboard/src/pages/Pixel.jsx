@@ -6,6 +6,7 @@ import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import {validSourceReview} from '../lib/pixelSourceReview'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
+import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, openExampleProject} from '../lib/exampleProjects'
 import { Link } from 'react-router-dom'
 import HelpLink from '../components/HelpLink'
 import PixelAdvice from '../components/PixelAdvice.jsx'
@@ -632,6 +633,7 @@ export default function Pixel({ systemStatus = null }) {
   const [conversationDeleted, setConversationDeleted] = useState(() => initialChat?.conversationDeleted || false)
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState('')
+  const [exampleError, setExampleError] = useState('')
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
   const [activityRefresh, setActivityRefresh] = useState(0)
   const [workingElapsedSeconds, setWorkingElapsedSeconds] = useState(0)
@@ -1626,6 +1628,46 @@ export default function Pixel({ systemStatus = null }) {
     return () => window.removeEventListener('ods:pixel-new-task', startNewChat)
   }, [startNewChat])
 
+  // A shipped example project opens from the sidebar like a saved preview:
+  // the host publishes the owner's existing folder, this page checks the
+  // receipt exactly like one from a model run, and a new task shows it in
+  // the Workspace panel. No model runs and no message is sent.
+  const exampleOpen = useRef(null)
+  const exampleState = useRef(null)
+  exampleState.current = {busy: sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy, startNewChat}
+  useEffect(() => {
+    const busyText = 'Stop the current task before opening another project.'
+    const open = async event => {
+      const name = event.detail?.name
+      if (typeof name !== 'string') return
+      if (exampleState.current.busy) { setStopError(busyText); return }
+      exampleOpen.current?.abort()
+      const controller = exampleOpen.current = new AbortController()
+      const chatId = chatIdRef.current
+      setExampleError('')
+      try {
+        const receipt = await openExampleProject(name, controller.signal)
+        const published = parseVerifiedPreviewFrame({choices:[{finish_reason:'stop'}], pixel:{schemaVersion:1, preview:receipt}})
+        if (!published || published.relativeDirectory !== `Playground/${name}`) throw Object.assign(new Error('Invalid example receipt'), {code:'unavailable'})
+        // The owner moved on (another click, chat or task) while it published.
+        if (controller.signal.aborted || chatIdRef.current !== chatId) return
+        if (exampleState.current.busy) { setStopError(busyText); return }
+        exampleState.current.startNewChat()
+        setPreview(published); setPreviewRefresh(0); setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceExpanded(false)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        if (error?.code === 'missing') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+        setExampleError(error?.code === 'missing'
+          ? `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name; if you deleted it, the next ODS install or upgrade adds a fresh copy.`
+          : `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`)
+      } finally {
+        if (exampleOpen.current === controller) exampleOpen.current = null
+      }
+    }
+    window.addEventListener(EXAMPLE_OPEN_EVENT, open)
+    return () => { window.removeEventListener(EXAMPLE_OPEN_EVENT, open); exampleOpen.current?.abort() }
+  }, [])
+
   useEffect(() => {
     const select = event => {
       if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) {
@@ -2017,6 +2059,7 @@ export default function Pixel({ systemStatus = null }) {
           </div>
           </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{stopError}</p>}
+          {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError} <HelpLink /></p>}
           {contextControl.historyUnknown && <div className="portal-context-status" role="status">
             {contextControl.resolving && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
             <span>{contextControl.recoveryNotice || 'The previous turn could not be confirmed. Resolve it before continuing; your conversation is preserved.'}</span>

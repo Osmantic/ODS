@@ -831,6 +831,94 @@ async def handle_runtime_identity(request: web.Request):
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
+_EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_EXAMPLE_PREVIEW_KEYS = frozenset(("bytes", "entrySha256", "files", "kind", "port", "relativeDirectory",
+                                   "schemaVersion", "sha256", "siteId", "url"))
+_SHA256 = re.compile(r"[a-f0-9]{64}")
+
+
+def _example_projects(value) -> dict:
+    """The shipped example projects present in the owner's workspace."""
+    projects = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(projects, list) or len(projects) > 8
+            or any(not isinstance(name, str) or not _EXAMPLE_PROJECT_NAME.fullmatch(name) for name in projects)
+            or len(set(projects)) != len(projects)):
+        raise ValueError("invalid example projects")
+    return {"schemaVersion": 1, "projects": list(projects)}
+
+
+def _example_preview(value, name: str) -> dict:
+    """One verified receipt for Playground/<name>, exactly as a model run delivers it."""
+    preview = value.get("preview") if isinstance(value, dict) else None
+
+    def integer(key, low, high):
+        return type(preview.get(key)) is int and low <= preview[key] <= high
+
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "preview"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(preview, dict) or set(preview) != _EXAMPLE_PREVIEW_KEYS
+            or type(preview["schemaVersion"]) is not int or preview["schemaVersion"] != 1
+            or preview["kind"] != "ods-pixel-workspace-preview"
+            or preview["relativeDirectory"] != f"Playground/{name}"
+            or not isinstance(preview["sha256"], str) or not _SHA256.fullmatch(preview["sha256"])
+            or not isinstance(preview["entrySha256"], str) or not _SHA256.fullmatch(preview["entrySha256"])
+            or preview["siteId"] != f"site-{preview['sha256'][:24]}"
+            or not integer("port", 1, 65535) or not integer("files", 1, 128) or not integer("bytes", 1, 16 * 1024 * 1024)
+            or preview["url"] != f"http://{preview['siteId']}.localhost:{preview['port']}/{preview['siteId']}/"):
+        raise ValueError("invalid example preview")
+    return {"schemaVersion": 1, "preview": {key: preview[key] for key in sorted(_EXAMPLE_PREVIEW_KEYS)}}
+
+
+async def handle_example_projects(request: web.Request):
+    """List the shipped example projects, or open one with no model run.
+
+    Portal's sidebar shows Playground/elf-of-doom like any other project while
+    its folder exists. Opening it asks the host to publish that existing
+    folder through the create-only preview service; nothing is written to the
+    workspace and no model runs.
+    """
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.query_string:
+        return web.json_response({"error": "invalid request"}, status=400)
+    opening = request.method == "POST"
+    name = None
+    if opening:
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+        try:
+            data = strict_json(await _read_bounded(request.content, _MAX_CANCEL_BODY))
+            if (not isinstance(data, dict) or set(data) != {"name"} or not isinstance(data["name"], str)
+                    or not _EXAMPLE_PROJECT_NAME.fullmatch(data["name"])):
+                raise ValueError("invalid example project request")
+            name = data["name"]
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return web.json_response({"error": "invalid example project request"}, status=400)
+    try:
+        timeout = ClientTimeout(total=38 if opening else 4, sock_connect=2)
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=timeout) as session:
+            upstream_request = (session.post("http://pixel-upstream/v1/example-projects", json={"name": name},
+                                             headers={"Accept": "application/json"}, allow_redirects=False)
+                                if opening else
+                                session.get("http://pixel-upstream/v1/example-projects",
+                                            headers={"Accept": "application/json"}, allow_redirects=False))
+            async with upstream_request as upstream:
+                if opening and upstream.status == 404:
+                    return web.json_response({"error": "example-project-unavailable"}, status=404,
+                                             headers={"Cache-Control": "no-store"})
+                if upstream.status != 200 or upstream.content_type != "application/json":
+                    raise ValueError("unavailable")
+                value = strict_json(await _read_bounded(upstream.content, 8192))
+        result = _example_preview(value, name) if opening else _example_projects(value)
+    except (ValueError, TypeError, UnicodeError, RecursionError, OSError, asyncio.TimeoutError, ClientError):
+        error = "example-project-preview-unavailable" if opening else "example-projects-unavailable"
+        return web.json_response({"error": error}, status=503, headers={"Cache-Control": "no-store"})
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
 async def handle_activity(request: web.Request):
     """Return only the number of in-flight turns for safe model coordination."""
     fail = _check_auth(request)
@@ -1815,6 +1903,8 @@ def create_app() -> web.Application:
     app.router.add_get("/preview/{site_id}/{tail:.*}", handle_preview)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/v1/runtime-identity", handle_runtime_identity, allow_head=False)
+    app.router.add_get("/v1/example-projects", handle_example_projects, allow_head=False)
+    app.router.add_post("/v1/example-projects", handle_example_projects)
     app.router.add_get("/v1/activity", handle_activity)
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)

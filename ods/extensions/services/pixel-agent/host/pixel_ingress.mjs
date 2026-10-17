@@ -1530,6 +1530,85 @@ export function projectRuntimeIdentity(value) {
   };
 }
 
+// Shipped example projects (Elf of Doom). Portal's sidebar lists the ones whose
+// folder is in the owner's workspace and opens one with a create-only preview
+// publication of that folder, with no model run. The gateway decides which
+// names exist; this relay forwards one fixed request shape and returns only a
+// validated projection, never upstream text.
+const EXAMPLE_PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const EXAMPLE_PROJECT_BODY = 256;
+const EXAMPLE_PROJECT_RESPONSE = 8192;
+// The gateway's preview transport bounds one publication at 30 seconds.
+const EXAMPLE_PROJECT_OPEN_TIMEOUT_MS = 35000;
+
+export function projectExampleProjects(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join() !== 'projects,schemaVersion' || value.schemaVersion !== 1
+      || !Array.isArray(value.projects) || value.projects.length > 8
+      || value.projects.some(name => typeof name !== 'string' || !EXAMPLE_PROJECT_NAME.test(name))
+      || new Set(value.projects).size !== value.projects.length) throw new Error('invalid example projects');
+  return {schemaVersion: 1, projects: [...value.projects]};
+}
+
+export function projectExamplePreview(value, name) {
+  const preview = value?.preview;
+  const keys = 'bytes,entrySha256,files,kind,port,relativeDirectory,schemaVersion,sha256,siteId,url';
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join() !== 'preview,schemaVersion' || value.schemaVersion !== 1
+      || !preview || typeof preview !== 'object' || Array.isArray(preview)
+      || Object.keys(preview).sort().join() !== keys || preview.schemaVersion !== 1
+      || preview.kind !== 'ods-pixel-workspace-preview' || preview.relativeDirectory !== `Playground/${name}`
+      || !/^[a-f0-9]{64}$/.test(preview.sha256) || !/^[a-f0-9]{64}$/.test(preview.entrySha256)
+      || preview.siteId !== `site-${preview.sha256.slice(0, 24)}`
+      || !Number.isInteger(preview.port) || preview.port < 1 || preview.port > 65535
+      || preview.url !== `http://${preview.siteId}.localhost:${preview.port}/${preview.siteId}/`
+      || !Number.isInteger(preview.files) || preview.files < 1 || preview.files > 128
+      || !Number.isInteger(preview.bytes) || preview.bytes < 1 || preview.bytes > 16 * 1024 * 1024) {
+    throw new Error('invalid example preview');
+  }
+  return {schemaVersion: 1, preview: Object.fromEntries(keys.split(',').map(key => [key, preview[key]]))};
+}
+
+async function handleExampleProjects(req, res, token, gatewayPort, deps) {
+  if (req.method !== 'GET' && req.method !== 'POST') { sendError(res, 405, 'method not allowed'); return; }
+  if (req.url !== '/v1/example-projects') { sendError(res, 400, 'invalid request'); return; }
+  const open = req.method === 'POST';
+  let name;
+  if (open) {
+    if (String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+      sendError(res, 415, 'content type must be application/json');
+      return;
+    }
+    try {
+      const body = JSON.parse((await readBody(req, EXAMPLE_PROJECT_BODY)).toString('utf8'));
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).join() !== 'name'
+          || typeof body.name !== 'string' || !EXAMPLE_PROJECT_NAME.test(body.name)) throw new Error('invalid');
+      name = body.name;
+    } catch { sendError(res, 400, 'invalid example project request'); return; }
+  }
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), open ? EXAMPLE_PROJECT_OPEN_TIMEOUT_MS : GATEWAY_PROBE_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/example-projects`, {
+      method: open ? 'POST' : 'GET', headers: upstreamHeaders(false, token),
+      ...(open ? {body: JSON.stringify({name})} : {}), redirect: 'error', signal: controller.signal,
+    });
+    if (open && response.status === 404) {
+      await drain(response.body);
+      sendJson(res, 404, {error: 'example-project-unavailable'});
+      return;
+    }
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {
+      await drain(response.body);
+      throw new Error('unavailable');
+    }
+    const value = JSON.parse((await readBounded(response.body, EXAMPLE_PROJECT_RESPONSE)).toString('utf8'));
+    sendJson(res, 200, open ? projectExamplePreview(value, name) : projectExampleProjects(value));
+  } catch {
+    sendJson(res, 503, {error: open ? 'example-project-preview-unavailable' : 'example-projects-unavailable'});
+  } finally { deps.clearTimeout(timer); }
+}
+
 async function handleRuntimeIdentity(res, token, gatewayPort, deps) {
   const controller = new AbortController();
   const timer = deps.setTimeout(() => controller.abort(), GATEWAY_PROBE_TIMEOUT_MS);
@@ -1829,6 +1908,11 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
     if (pathname === '/v1/runtime-identity') {
       if (req.method !== 'GET' || req.url !== pathname) { sendError(res, 400, 'invalid request'); return; }
       void handleRuntimeIdentity(res, token, gatewayPort, deps);
+      return;
+    }
+
+    if (pathname === '/v1/example-projects') {
+      void handleExampleProjects(req, res, token, gatewayPort, deps);
       return;
     }
 
