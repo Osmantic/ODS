@@ -48,6 +48,62 @@ test('durable cursor sends only new input after restart and native compaction ro
   assert.equal(restored.projection(user).acknowledgedMessages,3);
   assert.deepEqual(restored.search(user,{query:'Hello'}).messages.map(m=>m.index),[0,1]);
 });
+test('a delta run in an unexplained replacement session is not adopted and the next turn restores the archive',t=>{
+  const {ledger}=fixture(t), first=ledger.prepare(user,'first',snapshot([u('Increase enemies by 10%')]),{...ready,sessionRevision:'zero'});
+  // A first turn carries the whole conversation, so its run session is adopted.
+  ledger.complete(user,first,{},null,ready);
+  assert.equal(ledger.read(user).sessionRevision,'one');
+  const answered=[u('Increase enemies by 10%'),a('Which enemies?'),u('Spawn count')];
+  const answer=ledger.prepare(user,'answer',snapshot(answered),ready);
+  assert.equal(answer.hydrate,false);assert.deepEqual(answer.delta,[u('Spawn count')]);
+  ledger.complete(user,answer,{},null,{...ready,sessionRevision:'two',compaction:{count:0}});
+  assert.equal(ledger.read(user).sessionRevision,'one');
+  assert.equal(ledger.read(user).compactionCount,0);
+  assert.equal(ledger.projection(user).acknowledgedMessages,3);
+  const later=[...answered,a('Apply it in world.js'),u('Do it')];
+  const next=ledger.prepare(user,'next',snapshot(later),{...ready,sessionRevision:'two'});
+  assert.equal(next.hydrate,true);assert.deepEqual(next.archive,later.slice(0,-1));assert.deepEqual(next.delta,[u('Do it')]);
+  ledger.complete(user,next,{},null,{...ready,sessionRevision:'two',compaction:{count:1}});
+  assert.equal(ledger.read(user).sessionRevision,'two');
+});
+test('a delta rotated by a native compaction adopts the new session and the next turn stays delta-only',t=>{
+  const {ledger}=fixture(t), first=ledger.prepare(user,'first',snapshot([u('hello')]),ready);
+  ledger.complete(user,first,{},null,ready);
+  const answered=[u('hello'),a('Hello!'),u('continue')];
+  const delta=ledger.prepare(user,'delta',snapshot(answered),ready);
+  assert.equal(delta.hydrate,false);
+  ledger.complete(user,delta,{},null,{...ready,sessionRevision:'two',compaction:{count:1}});
+  assert.equal(ledger.read(user).sessionRevision,'two');assert.equal(ledger.read(user).compactionCount,1);
+  const next=ledger.prepare(user,'next',snapshot([...answered,a('Continuing.'),u('again')]),{...ready,sessionRevision:'two',compaction:{count:1}});
+  assert.equal(next.hydrate,false);assert.deepEqual(next.delta,[u('again')]);
+});
+test('a hydrated turn that ran in a replacement session restores the archive again',t=>{
+  // The chat request carries only the latest message; the archive went into
+  // the pre-run session, which the run did not use.
+  const {ledger}=fixture(t), first=ledger.prepare(user,'first',snapshot([u('hello')]),ready);
+  ledger.complete(user,first,{},null,ready);
+  const later=[u('hello'),a('Hello!'),u('continue')];
+  const hydrated=ledger.prepare(user,'hydrated',snapshot(later),{...ready,sessionRevision:'two'});
+  assert.equal(hydrated.hydrate,true);assert.deepEqual(hydrated.delta,[u('continue')]);
+  ledger.complete(user,hydrated,{},null,{...ready,sessionRevision:'three'});
+  assert.equal(ledger.read(user).sessionRevision,'two');
+  const again=[...later,a('Continuing.'),u('again')];
+  const next=ledger.prepare(user,'next',snapshot(again),{...ready,sessionRevision:'three'});
+  assert.equal(next.hydrate,true);assert.deepEqual(next.archive,again.slice(0,-1));
+  ledger.complete(user,next,{},null,{...ready,sessionRevision:'three'});
+  assert.equal(ledger.read(user).sessionRevision,'three');
+  assert.equal(ledger.prepare(user,'settled',snapshot([...again,a('Again.'),u('more')]),{...ready,sessionRevision:'three'}).hydrate,false);
+});
+test('a stopped delta keeps its pre-run session too, so the next turn after a replacement restores the archive',t=>{
+  const {ledger}=fixture(t), first=ledger.prepare(user,'first',snapshot([u('hello')]),ready);
+  ledger.complete(user,first,{},null,ready);
+  const answered=[u('hello'),a('Hello!'),u('continue')];
+  ledger.prepare(user,'stopped',snapshot(answered),ready);
+  assert.equal(ledger.interrupt(user,'stopped'),true);
+  assert.equal(ledger.read(user).sessionRevision,'one');
+  const next=ledger.prepare(user,'next',snapshot([...answered,u('again')]),{...ready,sessionRevision:'two'});
+  assert.equal(next.hydrate,true);assert.deepEqual(next.archive,answered);
+});
 test('legacy adoption and missing native sessions rehydrate all history without replaying old tasks',t=>{
   const {ledger}=fixture(t), messages=[u('old request'),a('old answer'),u('new request')];
   const first=ledger.prepare(user,'first',snapshot(messages),ready);

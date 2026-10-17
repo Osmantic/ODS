@@ -160,8 +160,20 @@ export function createChatHistoryLedger(directory) {
   function complete(user,prepared,completion,verification,native) {
     const current=read(user);
     if(current?.requestId!==prepared.state.requestId || !['pending','unknown'].includes(current.status)) return null;
-    const state={...prepared.state,status:'ready',reason:null,acknowledgedMessages:prepared.state.messages.length,
-      sessionRevision:native?.sessionRevision || prepared.state.sessionRevision,compactionCount:native?.compaction?.count ?? prepared.state.compactionCount,
+    // OpenClaw decides session reuse again when it admits the run. A turn with
+    // earlier conversation that ran in a replacement session without a
+    // compaction went to a transcript lacking it: a delta never carries it,
+    // and a hydrated turn wrote its archive into the session it replaced (the
+    // chat request carries only the latest message). Keep the pre-run
+    // revision so the next prepare sees an uncovered rotation and restores
+    // the archive. A first turn has nothing to lose and adopts.
+    // A typed /new or /reset is not a native reset on /v1/chat/completions:
+    // OpenClaw 2026.6.33 resolves that session by freshness policy only.
+    const replaced=prepared.state.messages.length>1
+      && Boolean(prepared.state.sessionRevision && native?.sessionRevision) && native.sessionRevision!==prepared.state.sessionRevision
+      && !(Number.isInteger(native?.compaction?.count) && native.compaction.count>(prepared.state.compactionCount || 0));
+    const adopted=replaced ? {} : {sessionRevision:native?.sessionRevision || prepared.state.sessionRevision,compactionCount:native?.compaction?.count ?? prepared.state.compactionCount};
+    const state={...prepared.state,status:'ready',reason:null,acknowledgedMessages:prepared.state.messages.length,...adopted,
       requests:prepared.state.requests.map(item=>item.id===prepared.state.requestId?{...item,status:'completed'}:item),
       lastResult:{requestId:prepared.state.requestId,revision:prepared.state.revision,completion,verification}};
     write(user,state);
