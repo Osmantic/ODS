@@ -1026,6 +1026,15 @@ native_lifecycle_compose() {
 
 cmd_start() {
     local service="${1:-}"
+    if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+        test_install_dir
+        cd "$INSTALL_DIR"
+        ensure_llama_cpu_budget
+        macos_wait_for_bootstrap_compose_safe "start" || return 1
+        start_native_llama || return 1
+        macos_maybe_resume_bootstrap_upgrade || true
+        return 0
+    fi
     test_install
     cd "$INSTALL_DIR"
     [[ "$NATIVE_LIFECYCLE_CHILD" == true ]] || ensure_llama_cpu_budget
@@ -1152,6 +1161,14 @@ cmd_stop() {
 
 cmd_restart() {
     local service="${1:-}"
+    if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+        test_install_dir
+        cd "$INSTALL_DIR"
+        ensure_llama_cpu_budget
+        macos_wait_for_bootstrap_compose_safe "restart" || return 1
+        start_native_llama true || return 1
+        return 0
+    fi
     test_install
     cd "$INSTALL_DIR"
     [[ "$NATIVE_LIFECYCLE_CHILD" == true ]] || ensure_llama_cpu_budget
