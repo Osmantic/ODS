@@ -67,3 +67,21 @@ test('reconciles removed categories and never exposes an empty listbox', () => {
   expect(trigger).toHaveAttribute('aria-expanded','false')
   expect(trigger).not.toHaveAttribute('aria-activedescendant')
 })
+
+test('shows placeholder when selected value is filtered out and empty label only when options are empty', () => {
+  const { rerender } = render(<PanelSelect label="Category" value="missing" options={options} onChange={vi.fn()} />)
+  const trigger = screen.getByRole('combobox')
+  expect(trigger).toHaveTextContent('Select category')
+  expect(trigger).not.toHaveTextContent('No matching categories')
+  expect(trigger).not.toBeDisabled()
+
+  rerender(<PanelSelect label="Category" value="missing" options={[]} onChange={vi.fn()} />)
+  expect(trigger).toHaveTextContent('No matching categories')
+  expect(trigger).toBeDisabled()
+
+  rerender(<PanelSelect label="Category" value="missing" options={options} placeholder="Select section" emptyLabel="Nothing found" onChange={vi.fn()} />)
+  expect(trigger).toHaveTextContent('Select section')
+
+  rerender(<PanelSelect label="Category" value="missing" options={[]} placeholder="Select section" emptyLabel="Nothing found" onChange={vi.fn()} />)
+  expect(trigger).toHaveTextContent('Nothing found')
+})

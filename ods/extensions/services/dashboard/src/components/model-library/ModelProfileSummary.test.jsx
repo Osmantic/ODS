@@ -211,6 +211,47 @@ test('the activation notice names the first-time check', () => {
   expect(screen.getByText('Checking what this model can do (first time only)')).toBeVisible()
 })
 
+test('can minimize and expand the model switch failed notice with persistence', () => {
+  localStorage.clear()
+  const {rerender} = render(
+    <MemoryRouter>
+      <ModelActivationNotice
+        value={{active: false, outcome: 'rolled_back', failureCode: 'runtime_readiness_failed'}}
+        portal
+        available
+      />
+    </MemoryRouter>
+  )
+
+  expect(screen.getByText('Model switch failed; previous model restored')).toBeVisible()
+  expect(screen.getByText('Portal is available again.')).toBeVisible()
+  const minimizeBtn = screen.getByRole('button', {name: /minimize notice/i})
+  fireEvent.click(minimizeBtn)
+
+  expect(screen.getByText('Model switch failed; previous model restored')).toBeVisible()
+  expect(screen.queryByText('Portal is available again.')).toBeNull()
+  expect(localStorage.getItem('ods-model-activation-notice-minimized')).toBe('true')
+
+  // Re-rendering simulating page refresh with persisted state
+  rerender(
+    <MemoryRouter>
+      <ModelActivationNotice
+        value={{active: false, outcome: 'rolled_back', failureCode: 'runtime_readiness_failed'}}
+        portal
+        available
+      />
+    </MemoryRouter>
+  )
+  expect(screen.getByText('Model switch failed; previous model restored')).toBeVisible()
+  expect(screen.queryByText('Portal is available again.')).toBeNull()
+
+  // Clicking expand restores full details
+  const expandBtn = screen.getByRole('button', {name: /expand notice/i})
+  fireEvent.click(expandBtn)
+  expect(screen.getByText('Portal is available again.')).toBeVisible()
+  expect(localStorage.getItem('ods-model-activation-notice-minimized')).toBe('false')
+})
+
 test('refreshes a delayed first profile after the model lifecycle settles without rechecking', async () => {
   profileBody.profile = null
   const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
