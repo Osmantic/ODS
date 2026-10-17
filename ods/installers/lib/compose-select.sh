@@ -62,14 +62,15 @@ resolve_compose_config() {
                 COMPOSE_FILE="docker-compose.amd.yml"
             fi
         elif [[ "$TIER" == "ARC" || "$TIER" == "ARC_LITE" || "$GPU_BACKEND" == "intel" || "$GPU_BACKEND" == "sycl" ]]; then
-            # Prefer docker-compose.arc.yml (oneAPI build-from-source) when present;
-            # fall back to docker-compose.intel.yml (pre-built image) if arc.yml is absent.
-            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.arc.yml" ]]; then
-                COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.arc.yml"
-                COMPOSE_FILE="docker-compose.arc.yml"
-            elif [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.intel.yml" ]]; then
+            # Prefer docker-compose.intel.yml (pre-built pinned llama.cpp image,
+            # the same image phase 08 pulls) over docker-compose.arc.yml
+            # (oneAPI source build, ~10-20 min and too old for Battlemage).
+            if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.intel.yml" ]]; then
                 COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.intel.yml"
                 COMPOSE_FILE="docker-compose.intel.yml"
+            elif [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.arc.yml" ]]; then
+                COMPOSE_FLAGS="-f docker-compose.base.yml -f docker-compose.arc.yml"
+                COMPOSE_FILE="docker-compose.arc.yml"
             fi
         else
             if [[ -f "$SCRIPT_DIR/docker-compose.base.yml" && -f "$SCRIPT_DIR/docker-compose.nvidia.yml" ]]; then
