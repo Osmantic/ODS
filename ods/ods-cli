@@ -52,6 +52,18 @@ _resolve_cli_install_dir() {
 }
 
 INSTALL_DIR="$(_resolve_cli_install_dir)"
+
+# Most commands cd into INSTALL_DIR before they read the paths the user typed.
+# Resolve those paths against the directory ods was run from, as the user meant.
+ODS_CALLER_DIR="$PWD"
+_from_caller_dir() {
+    if [[ -z "$1" || "$1" == /* ]]; then
+        printf '%s' "$1"
+    else
+        printf '%s/%s' "$ODS_CALLER_DIR" "$1"
+    fi
+}
+
 VERSION="3.0.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
@@ -2777,11 +2789,11 @@ cmd_doctor() {
                 ;;
             --report)
                 [[ -n "${2:-}" ]] || { echo "Error: --report requires a path argument" >&2; return 1; }
-                report_file="$2"
+                report_file="$(_from_caller_dir "$2")"
                 shift 2
                 ;;
             *)
-                report_file="$1"
+                report_file="$(_from_caller_dir "$1")"
                 shift
                 ;;
         esac
@@ -4524,7 +4536,7 @@ _remote_provider_write_payload() {
             --api-key-file)
                 [[ $# -ge 2 ]] || error "--api-key-file requires a value"
                 secret_option_seen="true"
-                api_key_file="${2:-}"; shift 2 ;;
+                api_key_file="$(_from_caller_dir "${2:-}")"; shift 2 ;;
             --api-key-env)
                 [[ $# -ge 2 ]] || error "--api-key-env requires a value"
                 secret_option_seen="true"
@@ -4534,7 +4546,7 @@ _remote_provider_write_payload() {
             --ssh-private-key-file)
                 [[ $# -ge 2 ]] || error "--ssh-private-key-file requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
-                ssh_private_key_file="${2:-}"; shift 2 ;;
+                ssh_private_key_file="$(_from_caller_dir "${2:-}")"; shift 2 ;;
             --ssh-private-key-env)
                 [[ $# -ge 2 ]] || error "--ssh-private-key-env requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
@@ -4542,7 +4554,7 @@ _remote_provider_write_payload() {
             --ssh-known-hosts-file)
                 [[ $# -ge 2 ]] || error "--ssh-known-hosts-file requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
-                ssh_known_hosts_file="${2:-}"; shift 2 ;;
+                ssh_known_hosts_file="$(_from_caller_dir "${2:-}")"; shift 2 ;;
             --ssh-known-hosts-env)
                 [[ $# -ge 2 ]] || error "--ssh-known-hosts-env requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
@@ -5317,8 +5329,30 @@ cmd_backup() {
         return
     fi
 
-    # Default: create backup (pass all args through)
-    "$INSTALL_DIR/ods-backup.sh" "$@"
+    # Default: create backup. Pass the arguments through, with an --output
+    # directory resolved against the caller's directory (we are in INSTALL_DIR).
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o|--output)
+                args+=("$1")
+                [[ $# -ge 2 ]] && { args+=("$(_from_caller_dir "$2")"); shift; }
+                ;;
+            -t|--type|-d|--delete|--description)
+                args+=("$1")
+                [[ $# -ge 2 ]] && { args+=("$2"); shift; }
+                ;;
+            verify)
+                args+=("$@")
+                break
+                ;;
+            *)
+                args+=("$1")
+                ;;
+        esac
+        shift
+    done
+    "$INSTALL_DIR/ods-backup.sh" ${args[@]+"${args[@]}"}
 }
 
 cmd_restore() {
