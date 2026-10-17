@@ -789,29 +789,25 @@ act as a capability gate:
   or renamed copy is never added again, and each one ODS itself added; the
   run after one that stopped before writing it recognizes ODS's own unchanged
   copy), and never replace, merge into or delete an existing entry of that
-  name; it is ordinary owner content. Only a folder the record says ODS added is the example: an owner's
-  own earlier `Playground/elf-of-doom` is neither listed as it nor protected.
+  name; it is ordinary owner content. Only a folder the record says ODS
+  added is the example: an owner's own earlier `Playground/elf-of-doom` is
+  neither listed as it nor guarded.
   While the folder exists, Portal's sidebar lists it under
   Projects > Playground like any other project, and clicking it publishes that
   existing folder through the same create-only preview service with no model
   run (the plugin's gateway route `/pixel-ods/example-projects`, relayed by
-  the ingress, the edge and `/api/pixel/example-projects`). It is never a
-  starter for new work: the plugin's routing refuses writes, edits, patches,
-  bundles, promoted downloads and mutating commands inside it, checked on
-  each call as it will run after every path rewrite, unless that turn's own
-  owner request names it as what to change (for example "In elf-of-doom,
-  make the arrows give 7"). Nothing carries over between turns: after
-  opening, showing or changing it, "Make it faster" is refused with a note
-  that the owner must name elf-of-doom. A request for something new, a
-  sequel or remake included, may neither change it, copy its files as a
-  starting point (unless the owner asks for a copy), nor publish it as its
-  result. These are best-effort routing checks for the owner's files, not a
-  sandbox: a command that hides the folder name can still reach it. The
-  adapter accepts only the existing relative directory, so safety enforcement,
-  static validation, snapshot isolation, and HTTP readback cannot be confused
-  with authorship. Pixel may author either a self-contained `index.html` or a
-  richer set of local files; ODS imposes no creative-size ceiling and publishes
-  only the exact completed snapshot.
+  the ingress, the edge and `/api/pixel/example-projects`). Portal changes
+  it only when the owner's message names it, for example "In elf-of-doom,
+  make the arrows give 7"; when a run that does not name it changes it
+  anyway, ODS puts the folder back exactly (the plugin copies it when such a
+  run starts and compares after every tool call and at the end of the run)
+  and the reply says so. This keeps the owner's game safe from mistakes; it
+  is not a sandbox. The adapter accepts only the existing relative
+  directory, so safety enforcement, static validation, snapshot isolation,
+  and HTTP readback cannot be confused with authorship. Pixel may author
+  either a self-contained `index.html` or a richer set of local files; ODS
+  imposes no creative-size ceiling and publishes only the exact completed
+  snapshot.
 
 The status tools read only `/run/ods-pixel/ods-status.json`. The plugin does not
 receive the Docker socket, Dashboard API key, Open WebUI key, host shell, or ODS

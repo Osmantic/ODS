@@ -380,6 +380,7 @@ export default definePluginEntry({
       pendingClarifications,
       warn: (message) => api.logger.warn(message),
       info: (message) => api.logger.info?.(message),
+      exampleOwnerRun: context => delegationDelivery.ownerRunOf(context),
     });
     const bundleExecution = createWorkspaceBundleExecution({
       readConfig: () => api.runtime?.config?.current?.() ?? api.config,
@@ -398,6 +399,7 @@ export default definePluginEntry({
         return getSessionEntry({sessionKey,storePath:resolveStorePath(config?.session?.store,{agentId:AGENT_ID})});
       },
       verificationForRun:runId => toolLoopGuard.deliveryVerificationForRun(runId),
+      noticeForRun:runId => toolLoopGuard.exampleNoticeForRun(runId),
       abortSession:async sessionKey => {
         const sessionId=resolveActiveEmbeddedRunSessionId(sessionKey);
         if (!sessionId) return true; // Native active-run registry reports no running harness.
@@ -428,7 +430,9 @@ export default definePluginEntry({
       // The run deadline the runtime just armed for this attempt.
       const runTimeoutSeconds = (api.runtime?.config?.current?.() ?? api.config)?.agents?.defaults?.timeoutSeconds;
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost, runTimeoutSeconds });
-      if (!accessRuntime.isProbe(context)) delegationDelivery.observe(event,context);
+      // After delegation custody, which links a child or continuation to its
+      // owner run: the shipped example's guard starts with the run.
+      if (!accessRuntime.isProbe(context)) { delegationDelivery.observe(event,context); toolLoopGuard.observeExampleRun(context, AGENT_ID); }
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {

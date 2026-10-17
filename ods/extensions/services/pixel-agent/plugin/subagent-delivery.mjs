@@ -32,7 +32,7 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   maximumRuns = 64, maximumChildren = 32, ttlMs = 32 * 60 * 1000,
   accessIdentity = () => 'fixture', resolveOwnerSession = () => undefined,
   verificationForRun = () => ({status:'none'}), abortSession = async () => false,
-  finalText = () => undefined} = {}) {
+  finalText = () => undefined, noticeForRun = () => undefined} = {}) {
   const roots = new Map(), runs = new Map(), spawned = new Map();
   const prefix = `agent:${agentId}:openai-user:`;
   const childPrefix = `agent:${agentId}:subagent:`;
@@ -246,7 +246,9 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     // server-side so existing public verification schemas remain unchanged.
     const verification = verificationForRun(chain.ready.runId);
     chain.delivered = true;
-    return {...base,status:'ready',text:chain.ready.text,verification};
+    // A host notice for this turn (the shipped example's) follows the answer.
+    const notice = noticeForRun(chain.ready.runId);
+    return {...base,status:'ready',text:notice ? `${chain.ready.text}\n\n${notice}` : chain.ready.text,verification};
   }
   async function cancel(user) {
     const provisional=chain=>[...spawned.entries()].filter(([,record])=>record.chainId===chain.id || record.cancelledChainIds?.includes(chain.id));
@@ -300,6 +302,12 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   function ownerRunFor(context) {
     const run = owned(context);
     return run && run.id !== run.chain.id && run.id === run.chain.currentRun ? run.chain.id : undefined;
+  }
+  // The owner run whose message a run works for: an owner run itself, the one
+  // an announced continuation reports to, or the one whose native spawn
+  // receipt names a delegated child session. Undefined otherwise.
+  function ownerRunOf(context) {
+    return runs.get(context?.runId)?.chain.id ?? spawned.get(context?.sessionKey)?.chainId;
   }
   function admission(context) {
     if (context?.agentId !== agentId) return;
@@ -361,6 +369,6 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       return {block:true,blockReason:'No registered child completion event is pending. Review the current event and the earlier child results supplied in this run, then consolidate the owner response. This yield was not executed.'};
     }
   }
-  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,ownerRunFor,admission,hasPendingChildren,
+  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,ownerRunFor,ownerRunOf,admission,hasPendingChildren,
     invalidate:() => {for (const chain of roots.values()) fail(chain);}};
 }

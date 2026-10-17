@@ -168,16 +168,10 @@ def test_readme_says_where_it_is_how_to_play_and_how_it_was_made():
     assert 'Ubuntu' not in text and 'Debian' not in text
     assert 'ODS updates never overwrite or delete this folder. If you delete or rename it, ODS does not add it again.' in prose
     assert 'ODS never overwrites' not in prose and 'fresh copy' not in prose
-    # Every request that changes it names it, including the one right after
-    # opening it from the sidebar: nothing carries over between turns.
-    assert ('Name the folder in every request that should change it, even right after opening the game from the '
-            'sidebar: for example "In elf-of-doom, make the arrows give 7", then "In elf-of-doom, make them give 9".'
-            ) in prose
-    assert 'later requests in that chat' not in prose and 'Now make them give 9' not in prose
-    # Best-effort routing, said as such.
-    assert ('Portal tries to keep new games in their own Playground folder and to change this one only when you '
-            'name it.') in prose
-    assert 'always gets its own' not in prose and 'changes this folder only when' not in prose
+    # The rule the plugin's guard enforces (plugin/example-guard.mjs), in plain words.
+    assert ('Portal changes Elf of Doom only when your message names it, for example "In elf-of-doom, make the '
+            'arrows give 7"; anything else that changes it is put back.') in prose
+    assert 'later requests in that chat' not in prose and 'best-effort' not in prose
     assert 'Qwen3.8-Flash-Next' in text
     assert 'See how it was made: https://odsspark.com\n' in text
     # The folder is read inside a workspace, where a relative link resolves to nothing.

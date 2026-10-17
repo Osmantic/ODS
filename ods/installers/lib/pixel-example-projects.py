@@ -55,7 +55,7 @@ RENAME_EXCL = 0x4
 # files are exactly the bytes published at https://odsspark.com/game/.
 EXAMPLES = {
     'elf-of-doom': {
-        'README.md': '1d95a88d21a21eb69b82764e887dc09accab62cac700e949c334586de06bc25c',
+        'README.md': '7547ad63a13be52e2bf5a0ea2a521bfb0b2a6d61c2182d7ba659a6a875d2cab7',
         'chars.js': '161b08c8a331fef5f09ac45e6ade2cff62e03316ba7c6ac197adf8147af629db',
         'dungeon.js': '80dfc2e0517cb89bce4f445d75e6a85a4a9c2317893a6762d87666b5b136004c',
         'engine.js': '2f573a818c04b23554a95426bbe7a8a367780c9c583e03488fbe5e66e19dbedf',

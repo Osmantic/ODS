@@ -37,11 +37,9 @@ See how it was made: https://odsspark.com
 
 ## It's yours
 
-Play it, change it, or ask Portal to change it. Name the folder in every
-request that should change it, even right after opening the game from the
-sidebar: for example "In elf-of-doom, make the arrows give 7", then
-"In elf-of-doom, make them give 9". Portal tries to keep new games in their
-own Playground folder and to change this one only when you name it.
+Play it, change it, or ask Portal to change it. Portal changes Elf of Doom
+only when your message names it, for example "In elf-of-doom, make the
+arrows give 7"; anything else that changes it is put back.
 
 ODS updates never overwrite or delete this folder. If you delete or rename
 it, ODS does not add it again.

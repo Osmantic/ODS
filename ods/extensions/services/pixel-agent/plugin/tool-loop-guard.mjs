@@ -38,7 +38,8 @@ import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisR
 import { createRunDeadline, runDeadlineReached, runDeadlineStopText, takeRunDeadlineNotice } from "./run-deadline.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
-import { exampleProjectRefusal, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { createExampleGuard, EXAMPLE_NOTES, namesExample } from "./example-guard.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -6593,14 +6594,6 @@ export function userMessageRequestsWorkspaceVerificationContinuation(messages, p
   return true;
 }
 
-// What the shipped-example checks need from a run: its workspace, this
-// turn's own owner request (nothing from earlier turns), and the run's own
-// project folder for refusal advice.
-function exampleProjectContext(state) {
-  return {root:state.configuredWorkspaceRoot, intent:state.playgroundOwnerIntent,
-    projectDirectory:state.playgroundRouting?.binding?.directory};
-}
-
 function workspacePreviewDirectoryFromState(state) {
   const indexDirectories = new Set(
     [...(state?.successfulWritePaths ?? []), ...(state?.successfulReadPaths ?? [])]
@@ -7203,8 +7196,15 @@ export function createToolLoopGuard({
   warn = () => {},
   info = () => {},
   now = Date.now,
+  // The owner run a delegated child or announced continuation reports to
+  // (subagent-delivery.mjs ownerRunOf), for the shipped example's guard.
+  exampleOwnerRun = () => undefined,
+  exampleGuard,
 } = {}) {
   const effective = normalizedLimits(limits);
+  const examples = exampleGuard ?? createExampleGuard({warn, now});
+  // The guard's outcome per tool call, for that call's persisted result.
+  const exampleNotes = new Map();
   // This intentionally stays plugin-local. OpenClaw's runContext write API is
   // disabled for this non-bundled hook path. Bound the cache itself instead of
   // requesting conversation access merely for cleanup.
@@ -7912,22 +7912,14 @@ export function createToolLoopGuard({
   // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
     const originalDecision = decideToolCall(event, context, agentId);
-    const toolName = context?.toolName ?? event?.toolName;
-    const { runId } = runIdentity(event, context);
-    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
-    // The call exactly as it will run, after every rewrite above: a shipped
-    // example project (Playground/elf-of-doom) changes only when this turn's
-    // own owner message names it as what to change. This is the last net for
-    // rewrites made after the routed check, such as an operations evidence
-    // path bound from the owner's request.
-    const exampleRefusal = state && originalDecision?.block !== true ? exampleProjectRefusal({tool:toolName,
-      params:originalDecision?.params ?? event?.params, ...exampleProjectContext(state),
-      previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
     // their existing decisions. Fixed text preserves identical-outcome checks.
-    const decision = exampleRefusal ?? (nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
-      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision);
+    const decision = nativeDelegationPending === true && originalDecision?.blockReason === PHANTOM_PROCESS_REASON
+      ? {...originalDecision,blockReason:NATIVE_DELEGATION_WAIT_REASON} : originalDecision;
+    const toolName = context?.toolName ?? event?.toolName;
+    const { runId } = runIdentity(event, context);
+    const state = context?.agentId === agentId && runId ? runs.get(runId) : undefined;
     if (!state || workspaceReadOnlyCall(toolName, event?.params)) return decision;
     const callId = context?.toolCallId ?? event?.toolCallId;
     if (decision?.block === true && typeof callId === 'string' && callId) {
@@ -8049,13 +8041,6 @@ export function createToolLoopGuard({
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
     if ((asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) &&
         !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
-    // A shipped example project (Playground/elf-of-doom) changes only when this
-    // turn's own owner message names it as what to change. Check before
-    // routing, so a refused call leaves no routing state, and again on the
-    // final call below, after every path rewrite.
-    const exampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:normalizedParams ?? event?.params,
-      ...exampleProjectContext(state), routable:true}) : undefined;
-    if (exampleRefusal) return exampleRefusal;
     if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
       && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
       state.playgroundRouting ??= {};
@@ -8503,14 +8488,6 @@ export function createToolLoopGuard({
         },
       };
     }
-    // After the last path and workdir rewrite: project routing, the visual
-    // continuation binding and the task-directory adaptations above may have
-    // moved a relative path or a command into a shipped example's folder.
-    // Checked here, before the preview target is recorded and the call is
-    // remembered; beforeToolCall checks the returned call once more.
-    const routedExampleRefusal = state ? exampleProjectRefusal({tool:toolName, params:pendingParams,
-      ...exampleProjectContext(state), previewDirectory:workspacePreviewDirectoryFromState(state)}) : undefined;
-    if (routedExampleRefusal) return routedExampleRefusal;
     const pendingSelectedName =
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)
@@ -10488,11 +10465,45 @@ export function createToolLoopGuard({
     return cancelled;
   }
 
+  // The shipped example's guard (example-guard.mjs), told when a run starts,
+  // after every tool call and when the run finalizes and ends. A run names the
+  // example only by its owner turn's own message: a delegated child or an
+  // announced continuation uses the owner run it reports to, never its own
+  // task text, and a cron or other non-owner run never names it.
+  function observeExampleRun(context, agentId = "pixel") {
+    const state = context?.agentId === agentId ? runs.get(context.runId) : undefined;
+    if (!state) return;
+    const ownerRun = exampleOwnerRun(context);
+    const child = typeof context.sessionKey === 'string' && context.sessionKey.startsWith(`agent:${agentId}:subagent:`);
+    const owner = ownerRun ? runs.get(ownerRun) : child ? undefined : state;
+    examples.begin(context.runId, state.configuredWorkspaceRoot,
+      owner?.artifactOwnerInteractive === true && namesExample(owner.ownerRequestText));
+  }
+  // The run that holds the owner's turn: the owner run itself.
+  function exampleTurn(context) {
+    return runs.get(exampleOwnerRun(context) ?? context?.runId);
+  }
+  function recordExampleOutcome(context, outcome, toolCallId) {
+    if (!outcome) return;
+    const turn = exampleTurn(context);
+    if (turn) turn.exampleOutcome = outcome;
+    if (typeof toolCallId !== 'string' || !toolCallId) return;
+    exampleNotes.delete(toolCallId);
+    exampleNotes.set(toolCallId, outcome);
+    while (exampleNotes.size > MAX_TRACKED_RUNS) exampleNotes.delete(exampleNotes.keys().next().value);
+  }
+  // The owner's one line for a turn in which ODS put the example back.
+  function exampleNoticeForRun(runId) {
+    const outcome = typeof runId === 'string' && runId ? exampleTurn({runId})?.exampleOutcome : undefined;
+    return outcome ? EXAMPLE_NOTES[outcome].owner : undefined;
+  }
+
   function afterToolCall(event, context, agentId = "pixel") {
     if (context?.agentId !== agentId) return;
     const toolName = context?.toolName ?? event?.toolName;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return;
+    recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
@@ -11951,6 +11962,9 @@ export function createToolLoopGuard({
     const toolCallId = context?.toolCallId ?? event?.toolCallId ?? event?.message?.toolCallId;
     const pending = pendingToolRuns.get(toolCallId);
     pendingToolRuns.delete(toolCallId);
+    // ODS put the shipped example back after this call (example-guard.mjs).
+    const exampleOutcome = exampleNotes.get(toolCallId);
+    exampleNotes.delete(toolCallId);
     // A Tool Search child's result is folded into this outer receipt and never
     // persisted on its own, so its pending run ends here. Otherwise it stays
     // pending and finalization can never compare the published bytes.
@@ -12350,7 +12364,8 @@ export function createToolLoopGuard({
       !controlNameRepair &&
       !sandboxPathCorrection &&
       !executionGuidance &&
-      !deadlineNotice
+      !deadlineNotice &&
+      !exampleOutcome
     ) {
       return undefined;
     }
@@ -12420,6 +12435,7 @@ export function createToolLoopGuard({
         text: `${OPERATIONS_TRUSTED_CONTINUATION_PREFIX} ${continuation.instruction}`,
       });
     }
+    if (exampleOutcome) content.push({type: 'text', text: EXAMPLE_NOTES[exampleOutcome].model});
     // Last, and a block of its own: the per-result cap keeps short blocks whole.
     if (deadlineNotice) content.push({type: 'text', text: deadlineNotice});
     return {
@@ -12724,7 +12740,9 @@ export function createToolLoopGuard({
   // limit, recursive-delete refusal or any other guard abort) has its own
   // delivery text.
   function observeAgentEnd(event, context) {
-    const state = runs.get(context?.runId ?? event?.runId);
+    const runId = context?.runId ?? event?.runId;
+    recordExampleOutcome({...context, runId}, examples.end(runId));
+    const state = runs.get(runId);
     if (!state) return;
     state.runEnded = true;
     state.runDeadlineReached = !state.clientCancelled && !state.odsAborted && !state.progressBudget.exhausted &&
@@ -12763,6 +12781,8 @@ export function createToolLoopGuard({
     if (context?.agentId !== agentId) return undefined;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return undefined;
+    // Before the reply, so the owner's notice can travel with it.
+    recordExampleOutcome({...context, runId}, examples.check(runId));
     const state = runs.get(runId);
     if (state?.recursiveDeleteDenied && !state.clientCancelled && !state.recursiveDeleteAbortAttempted) {
       if ((context?.sessionId && context.sessionId !== state.currentSessionId) ||
@@ -13265,6 +13285,12 @@ export function createToolLoopGuard({
         ? `${missing}\n\n${result.text}`.slice(0, MAX_INGRESS_VERIFICATION_TEXT) : missing};
       delete result.deliveryMode;
     }
+    // Text that replaces the reply keeps the shipped example's notice; an
+    // appended or absent text leaves it to the reply (replyPayloadSending).
+    const exampleNotice = exampleNoticeForRun(runId);
+    if (exampleNotice && result.text && result.status !== 'pending' && result.deliveryMode !== 'append' && !result.text.includes(exampleNotice)) {
+      result = {...result, text: `${result.text.slice(0, MAX_INGRESS_VERIFICATION_TEXT - exampleNotice.length - 2)}\n\n${exampleNotice}`};
+    }
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
       ? {...result,artifacts:structuredClone(artifacts)} : result;
   }
@@ -13362,7 +13388,15 @@ export function createToolLoopGuard({
     }
     const verification = deliveryVerificationForRun(event?.runId);
     const authoritativeText = verification.text;
-    if (!authoritativeText) return undefined;
+    // The shipped example's notice follows the model's own reply; a text that
+    // replaces the reply already carries it (deliveryVerificationForRun).
+    const exampleNotice = exampleNoticeForRun(event?.runId);
+    const reply = typeof event.payload?.text === "string" && event.payload.text.trim() && exampleNotice &&
+      !event.payload.text.includes(exampleNotice) ? `${event.payload.text}\n\n${exampleNotice}` : event.payload?.text;
+    if (!authoritativeText) {
+      return reply === event.payload?.text ? undefined
+        : {payload: {...event.payload, text: reply}, reason: "Tell the owner ODS put their example project back."};
+    }
     if (verification.deliveryMode === "append" &&
         typeof event.payload?.text === "string" && event.payload.text.trim()) {
       const scope = verification.preview
@@ -13373,7 +13407,7 @@ export function createToolLoopGuard({
       const evidence = `${authoritativeText}\n${scope}`;
       return {
         payload: { ...(event.payload ?? {}), text: event.payload.text.endsWith(evidence)
-          ? event.payload.text : `${event.payload.text}\n\n${evidence}` },
+          ? event.payload.text : `${reply}\n\n${evidence}` },
         reason: "Preserve the model's task reply alongside separately scoped evidence.",
       };
     }
@@ -13408,6 +13442,8 @@ export function createToolLoopGuard({
       const ownerIntent = runs.get(runId)?.subagentOwnerIntent;
       return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
+    observeExampleRun,
+    exampleNoticeForRun,
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

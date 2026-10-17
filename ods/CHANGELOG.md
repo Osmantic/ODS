@@ -17,13 +17,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   earlier `Playground/elf-of-doom` stays ordinary owner content. The added
   game sits in Portal's sidebar under Projects > Playground like any other
   project while the folder exists; clicking it plays the game in the
-  Workspace panel with no model run. Portal's project routing tries to change
-  the folder only on a turn whose own request names it as what to change
-  (nothing carries over to the next turn), and to keep new projects, sequels
-  included, out of it and off its files. These are best-effort routing
-  checks, not a sandbox. Existing Linux and Windows (WSL2)
-  installs get it on their next installer run; Macs get it on a new install
-  or the next native Portal update.
+  Workspace panel with no model run. Portal changes Elf of Doom only when
+  your message names it, for example "In elf-of-doom, make the arrows give
+  7"; anything else that changes it is put back. Existing Linux and Windows
+  (WSL2) installs get it on their next installer run; Macs get it on a new
+  install or the next native Portal update.
 
 ### Fixed
 - `ods status` now respects `GPU_BACKEND`, using the existing AMD and Apple
