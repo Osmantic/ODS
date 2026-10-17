@@ -137,9 +137,10 @@ test('a mention is the name standing alone in the owner\'s own words, never part
 function sha256(bytes) { return createHash('sha256').update(bytes).digest('hex'); }
 // Every entry below folder, without following links: kind, mode, link count
 // and bytes.
-function tree(folder, {links = true} = {}) {
+function tree(folder, {links = true, skip = () => false} = {}) {
   const entries = {};
   const walk = relative => {
+    if (skip(relative)) return;
     const target = path.join(folder, relative), stat = fs.lstatSync(target), key = relative || '.';
     if (stat.isSymbolicLink()) entries[key] = 'link';
     else if (stat.isDirectory()) {
@@ -159,7 +160,7 @@ const listing = root => fs.readdirSync(path.join(root, 'Playground')).sort();
 // lowers the outside file's count.
 function outsideExample(root, others = []) {
   const example = new RegExp(String.raw`^Playground/elf-of-doom(?:/|$)`, IGNORES_CASE ? 'i' : '');
-  const all = Object.entries(tree(root, {links: false})).filter(([key]) => key !== 'Playground' && !example.test(key));
+  const all = Object.entries(tree(root, {links: false, skip: key => example.test(key)})).filter(([key]) => key !== 'Playground');
   return {workspace: Object.fromEntries(all), others: others.map(folder => tree(folder, {links: false}))};
 }
 
