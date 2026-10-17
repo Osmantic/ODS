@@ -5494,7 +5494,9 @@ ods_pixel_install_default_agent() {
         initial_access_reproved=true
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
-        ai_bad "Pixel bootstrap failed. See $pixel_log for the exact Pixel error."
+        # Phase 11 can stop here without reaching the installer's help trap,
+        # so this message carries the cause, recovery and help link itself.
+        ai_bad "Pixel could not finish preparing its runtime and agent sandbox. It downloads pinned packages, including Debian packages from deb.debian.org and the sandbox's Node.js runtime from nodejs.org. Check this machine's internet access and free disk space, then run the ODS install or update again. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
         return 1
     fi
     openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")"

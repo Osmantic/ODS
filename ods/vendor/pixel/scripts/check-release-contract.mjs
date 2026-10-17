@@ -335,6 +335,7 @@ const pinValues = new Set([
   manifest.baseImage,
   ...Object.values(manifest.openclawPluginPackages).map((item) => item.url),
   ...Object.values(manifest.referenceImages),
+  ...Object.values(manifest.sandboxNodeRuntime.artifacts).map((item) => item.url),
 ]);
 const ignoredDirectories = new Set([".git", ".generated", ".openclaw", ".runtime", ".secrets", "dist", "node_modules", "secrets", "__pycache__"]);
 const authoredTextExtensions = new Set(["", ".env", ".js", ".json", ".json5", ".md", ".mjs", ".sh", ".yaml", ".yml"]);
@@ -1287,6 +1288,13 @@ const contracts = [
   ["deploy/compose.yaml", "internal: true"],
   ["deploy/sandbox/Dockerfile", "python3-pil"],
   ["deploy/sandbox/Dockerfile", "rsync"],
+  ["deploy/sandbox/Dockerfile", "xz-utils"],
+  ...Object.values(manifest.sandboxNodeRuntime.artifacts).flatMap((artifact) => [
+    ["deploy/sandbox/Dockerfile", artifact.url],
+    ["deploy/sandbox/Dockerfile", artifact.sha256],
+  ]),
+  ["deploy/sandbox/Dockerfile", `LABEL org.osmantic.pixel.sandbox-node="${manifest.sandboxNodeRuntime.version}"`],
+  ["scripts/bootstrap.sh", 'pixel_prove_sandbox_runtime "$candidate_sandbox_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION"'],
   ["deploy/compose.yaml", manifest.referenceImages.searxng],
   ["deploy/compose.yaml", 'driver: "none"'],
   ["deploy/searxng/settings.yml.template", 'method: "POST"'],

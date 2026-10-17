@@ -140,6 +140,7 @@ def release():
     value['openclawPluginPackages'] = {key: {**value['openclawPackage'],
         'url': 'https://registry.npmjs.org/' + name + '/-/' + name.split('/')[-1] + '-2026.6.33.tgz'}
         for key, _, name in bootstrap.PLUGINS}
+    value['sandboxNodeRuntime'] = {'version': '24.21.0', 'artifacts': {}}
     return value
 
 
@@ -404,12 +405,22 @@ def test_plugin_probe_checks_loaded_identity_and_isolated_state(tmp_path, monkey
         run()
 
 
-@pytest.mark.parametrize('fault', [None, 'root', 'arch', 'user', 'label', 'uid', 'tools', 'run', 'changed'])
+NODE_PROOF_FAULTS = {
+    'node-missing': None,
+    'node-version': ['v22.23.1', 'arm64'],
+    'node-arch': ['v24.21.0', 'x64'],
+}
+
+
+@pytest.mark.parametrize('fault', [None, 'root', 'arch', 'user', 'label', 'uid', 'tools', 'run', 'changed',
+                                   'build', 'no-node-pin', 'npm-present', *NODE_PROOF_FAULTS])
 @pytest.mark.parametrize('existing', [False, True])
 def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch, fault, existing):
     monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
     monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 0 if fault == 'root' else 501)
     monkeypatch.setattr(bootstrap.os, 'getuid', lambda: 501)
+    if fault == 'no-node-pin':
+        del release['sandboxNodeRuntime']
     monkeypatch.setattr(bootstrap, 'selected_release', lambda *a: release)
     docker = tmp_path / 'docker'
     docker.touch()
@@ -419,6 +430,7 @@ def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch,
         if args[1:3] == ['image', 'ls']: return '{}' if existing else ''
         if args[1] == 'build':
             assert 'PIXEL_SANDBOX_UID=501' in args and 'linux/arm64' in args
+            if fault == 'build': raise bootstrap.BootstrapError('native-bootstrap-command-failed')
             return ''
         if args[1:3] == ['image', 'inspect']:
             inspections.append(True)
@@ -440,20 +452,35 @@ def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch,
         assert workspace.name.startswith('ods-sandbox-workspace-')
         assert workspace.parent == tmp_path.parent
         (workspace / 'ods-proof.txt').write_text('ods-sandbox-proof')
+        # The proof runs node inside the image and lists any package manager.
+        program = args[args.index('-c') + 1]
+        assert '"-p","JSON.stringify([process.version,process.arch])"' in program
+        assert '["npm","npx","corepack"]' in program
         return json.dumps({'uid': 0 if fault == 'uid' else 501,
-                           'readback': 'ods-sandbox-proof', 'tools': fault != 'tools'})
+                           'readback': 'ods-sandbox-proof', 'tools': fault != 'tools',
+                           'node': NODE_PROOF_FAULTS.get(fault, ['v24.21.0', 'arm64']),
+                           'packageManagers': ['npm', 'npx'] if fault == 'npm-present' else []})
     monkeypatch.setattr(bootstrap, 'command', command)
     cleanups = []
     monkeypatch.setattr(bootstrap.subprocess, 'run', lambda args, **kwargs: cleanups.append(args))
     def run():
         return bootstrap.prepare_sandbox(source=tmp_path, ref='a' * 40, docker=docker)
-    if fault:
-        with pytest.raises(bootstrap.BootstrapError): run()
+    expected_error = {'build': 'native-sandbox-build-failed', 'no-node-pin': 'invalid-sandbox-node-runtime',
+        'run': 'native-sandbox-execution-proof-failed', 'tools': 'native-sandbox-execution-proof-failed',
+        'npm-present': 'native-sandbox-execution-proof-failed',
+        **{name: 'native-sandbox-execution-proof-failed' for name in NODE_PROOF_FAULTS}}.get(fault)
+    if fault == 'build' and existing:
+        receipt = run()  # an existing tag is not rebuilt; it still passes the proof
+        assert receipt['imageId'] == 'sha256:' + 'a' * 64
+    elif fault:
+        with pytest.raises(bootstrap.BootstrapError, match=expected_error): run()
     else:
         receipt = run()
         assert receipt['ownerUid'] == 501 and receipt['imageId'] == 'sha256:' + 'a' * 64
-    if fault != 'root':
+    if fault not in ('root', 'no-node-pin'):
         assert any(args[1] == 'build' for args in calls) is not existing
+    if fault == 'no-node-pin':
+        assert calls == [], 'refuse before building or running anything'
     ran = [args for args in calls if args[1] == 'run']
     assert bool(cleanups) == bool(ran)
     if ran:

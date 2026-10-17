@@ -170,10 +170,13 @@ else
   docker build --build-arg "PIXEL_SANDBOX_UID=$sandbox_uid" \
     --label "org.osmantic.pixel.sandbox-version=$pixel_version" \
     --label "org.osmantic.pixel.sandbox-uid=$sandbox_uid" \
-    -t "$candidate_sandbox_ref" "$ROOT/deploy/sandbox"
+    -t "$candidate_sandbox_ref" "$ROOT/deploy/sandbox" \
+    || pixel_die "Building the Pixel sandbox image failed. The build downloads Debian packages from deb.debian.org and the pinned Node.js runtime from nodejs.org; check this host's access to both and its free disk space, then re-run with --apply."
 fi
-pixel_validate_sandbox_image "$candidate_sandbox_ref" "$pixel_version" "$sandbox_uid" >/dev/null \
+candidate_sandbox_id=$(pixel_validate_sandbox_image "$candidate_sandbox_ref" "$pixel_version" "$sandbox_uid") \
   || pixel_die "Sandbox candidate image verification failed"
+pixel_prove_sandbox_runtime "$candidate_sandbox_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION" \
+  || pixel_die "Sandbox candidate $candidate_sandbox_ref did not run the pinned Node.js $PIXEL_GENERATED_SANDBOX_NODE_VERSION for this architecture without npm, npx or corepack. Remove it with docker image rm $candidate_sandbox_ref, then re-run with --apply."
 
 if [[ "$web_courier_enabled" == 1 ]]; then
   requirements="$ROOT/deploy/web-courier/requirements.lock"

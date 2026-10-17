@@ -3137,6 +3137,11 @@ native_search_provision = installer.index("--base-dir \"$INSTALL_DIR/data/pixel/
 pixel_bootstrap = installer.index("\"$pixel_root/pixel\" bootstrap --apply")
 native_search_digest = installer.index("\"$pixel_root/pixel\" extension-hash \"$parallel_path\"")
 assert native_search_provision < pixel_bootstrap < native_search_digest
+# A bootstrap failure names the downloads it needs, the recovery and the help link.
+bootstrap_failure = installer[pixel_bootstrap:native_search_digest]
+assert "Node.js runtime from nodejs.org" in bootstrap_failure
+assert "then run the ODS install or update again" in bootstrap_failure
+assert "https://discord.gg/4ntNp9MAwC" in bootstrap_failure
 assert "Pixel configure failed. See $pixel_log" in text
 assert "Pixel plan failed. See $pixel_log" in text
 assert "Pixel configure or plan failed" not in text

@@ -291,6 +291,10 @@ def prepare_sandbox(*, source, ref, docker):
     version, uid = release['pixel'], os.getuid()
     if not re.fullmatch(r'\d{1,6}\.\d{1,6}\.\d{1,6}', version) or uid <= 0:
         raise BootstrapError('invalid-sandbox-owner-or-version')
+    # The agent's prompt says the sandbox has node; the image must prove it.
+    node_version = (release.get('sandboxNodeRuntime') or {}).get('version')
+    if not isinstance(node_version, str) or not re.fullmatch(r'\d{1,4}\.\d{1,4}\.\d{1,4}', node_version):
+        raise BootstrapError('invalid-sandbox-node-runtime')
     docker = str(Path(docker).resolve(strict=True))
     source = Path(source).resolve(strict=True)
     context = source / 'deploy/sandbox'
@@ -300,11 +304,15 @@ def prepare_sandbox(*, source, ref, docker):
     images = json.loads(command([docker, 'image', 'ls', '--no-trunc', '--format', 'json',
                                  '--filter', 'reference=' + tag], cwd=source) or 'null')
     if images is None:
-        command([docker, 'build', '--platform', 'linux/arm64',
-                 '--build-arg', 'PIXEL_SANDBOX_UID=' + str(uid),
-                 '--label', 'org.osmantic.pixel.sandbox-version=' + version,
-                 '--label', 'org.osmantic.pixel.source-ref=' + ref,
-                 '-t', tag, str(context)], cwd=source, timeout=1800)
+        try:
+            command([docker, 'build', '--platform', 'linux/arm64',
+                     '--build-arg', 'PIXEL_SANDBOX_UID=' + str(uid),
+                     '--label', 'org.osmantic.pixel.sandbox-version=' + version,
+                     '--label', 'org.osmantic.pixel.source-ref=' + ref,
+                     '-t', tag, str(context)], cwd=source, timeout=1800)
+        except BootstrapError as error:
+            # The build downloads Debian packages and the pinned Node.js runtime.
+            raise BootstrapError('native-sandbox-build-failed') from error
     if selected_release(source, ref) != release:
         raise BootstrapError('sandbox-build-source-changed')
     def inspect():
@@ -323,11 +331,20 @@ def prepare_sandbox(*, source, ref, docker):
         return value['Id']
     image_id = inspect()
     name = 'ods-pixel-sandbox-proof-' + uuid.uuid4().hex
-    program = ('import json,os,pathlib,shutil; '
+    # node must be the pinned version for linux/arm64; npm, npx and corepack
+    # must be absent so nothing can be installed in the sandbox.
+    program = ('import json,os,pathlib,shutil,subprocess; '
                'p=pathlib.Path("/workspace/ods-proof.txt"); p.write_text("ods-sandbox-proof"); '
+               'n=shutil.which("node"); '
+               'r=subprocess.run([n,"-p","JSON.stringify([process.version,process.arch])"],'
+               'capture_output=True,text=True,timeout=30) if n else None; '
                'print(json.dumps({"uid":os.getuid(),"readback":p.read_text(),'
                '"tools":all(shutil.which(x) for x in '
-               '["bash","curl","git","jq","python3","rg","rsync"])}))')
+               '["bash","curl","git","jq","python3","rg","rsync"]),'
+               '"node":json.loads(r.stdout) if r and r.returncode==0 else None,'
+               '"packageManagers":[x for x in ["npm","npx","corepack"] if shutil.which(x)]}))')
+    expected = {'uid': uid, 'readback': 'ods-sandbox-proof', 'tools': True,
+                'node': ['v' + node_version, 'arm64'], 'packageManagers': []}
     # Colima does not share macOS's per-user TMPDIR (/var/folders) with its VM.
     # The selected source is staged beside the installed ODS data, a filesystem
     # already shared with Docker, and the proof must not dirty the Git checkout.
@@ -340,11 +357,13 @@ def prepare_sandbox(*, source, ref, docker):
                 '--mount', 'type=bind,source=' + workspace + ',target=/workspace',
                 '--entrypoint', '/usr/bin/python3', image_id, '-c', program], cwd=source, timeout=60))
             host_readback = (Path(workspace) / 'ods-proof.txt').read_text()
+        except BootstrapError as error:
+            raise BootstrapError('native-sandbox-execution-proof-failed') from error
         finally:
             # A timed-out Docker client does not necessarily stop its container.
             subprocess.run([docker, 'rm', '-f', name], cwd=source, stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
-    if (result != {'uid': uid, 'readback': 'ods-sandbox-proof', 'tools': True}
+    if (result != expected
             or host_readback != 'ods-sandbox-proof' or inspect() != image_id):
         raise BootstrapError('native-sandbox-execution-proof-failed')
     return {'image': tag, 'imageId': image_id, 'ownerUid': uid, 'pixelSourceRef': ref}

@@ -377,6 +377,31 @@ pixel_validate_sandbox_image() {
   printf '%s\n' "$image_id"
 }
 
+# Labels name the release that built a sandbox image, not what it contains.
+# Run the image's own node once, offline and read-only like the agent sandbox:
+# it must be the pinned version for this host's architecture, and npm, npx and
+# corepack must be absent. Returns nonzero, without live changes, otherwise.
+pixel_prove_sandbox_runtime() {
+  local image_id=$1 expected_version=$2 expected_arch observed program
+  [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+  [[ "$expected_version" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]] || return 1
+  case "$(uname -m)" in
+    x86_64) expected_arch=x64 ;;
+    aarch64|arm64) expected_arch=arm64 ;;
+    *) return 1 ;;
+  esac
+  program='const {accessSync, constants} = require("fs"), {join} = require("path");
+const found = ["npm", "npx", "corepack"].filter((name) => (process.env.PATH || "").split(":").some((dir) => {
+  try { accessSync(join(dir, name), constants.X_OK); return true; } catch { return false; }
+}));
+console.log(process.version + " " + process.arch + " " + (found.join(",") || "none"));'
+  observed=$(docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges:true --pids-limit 128 --memory 512m \
+    --tmpfs /tmp:rw,nosuid,nodev,size=16m --user sandbox \
+    --entrypoint /usr/local/bin/node "$image_id" -e "$program") || return 1
+  [[ "$observed" == "v$expected_version $expected_arch none" ]]
+}
+
 pixel_preserve_sandbox_image() {
   local source=$1 version=$2 uid=$3 preserve image_id preserved_id
   preserve=$(pixel_sandbox_preserve_tag "$version" "$uid")

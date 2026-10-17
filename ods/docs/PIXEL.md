@@ -523,6 +523,30 @@ count, SHA-256 digest, bound HTTPS source, `executable=false`, and
 workspace substitute, or a broker staging receipt can never satisfy this
 contract.
 
+### What the agent sandbox can run
+
+In Sandbox mode, Portal's `exec` commands run in Pixel's Docker sandbox
+(`vendor/pixel/deploy/sandbox/Dockerfile`). It has bash, python3 without pip,
+git, rg, jq, rsync, curl, OCR and PDF tools, and Node.js: the official `node`
+binary, pinned by SHA-256 for amd64 and arm64 in
+`vendor/pixel/RELEASE-MANIFEST.json` (`sandboxNodeRuntime`). npm, npx and
+corepack are not in the image, and the sandbox has no network, so the agent can
+run `node --check`, plain scripts and `node --test` offline but cannot install
+packages. There is no DOM or canvas; browser behaviour is still checked on the
+published preview with `pixel_ods_workspace_preview_inspect`. Workspace npm
+projects with dependencies use the separate `pixel_ods_project_build` service
+where it is installed.
+
+The same image definition serves Linux, WSL (including Arm64) and native macOS
+Pixel, which builds it for `linux/arm64`. Bootstrap (`pixel bootstrap --apply`)
+on Linux and WSL, and native preparation on macOS, run the new image's `node`
+once offline and refuse an image with another version or architecture or with a
+package manager before any live change. Building the image downloads Debian
+packages from deb.debian.org and Node.js from nodejs.org. Full Access runs
+commands natively instead, and its prompt makes no claim about installed
+runtimes. Existing installations pick up the runtime through a normal ODS
+update, which brings a new Pixel version and rebuilds the sandbox image.
+
 ### Cancellation and sandbox execution
 
 The Dashboard cancel path is an execution boundary, not only a UI gesture.

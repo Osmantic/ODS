@@ -11,6 +11,9 @@ import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
+# Sandbox image failures with owner guidance in pixel-native-install.py.
+SANDBOX_ERRORS = frozenset(('native-sandbox-build-failed', 'native-sandbox-execution-proof-failed',
+                            'invalid-sandbox-node-runtime'))
 
 
 def helper(name):
@@ -144,6 +147,9 @@ def main():
             print('Protected runtime verification or sudo authorization failed. Retain the preparation; '
                 'review the protected runtime, or run sudo -v and retry from the same terminal. '
                 'Interactive updates may use --prompt-for-sudo.', file=sys.stderr)
+        if str(error) in SANDBOX_ERRORS:
+            # The same static cause and recovery the initial install reports.
+            print(helper('pixel-native-install').ERROR_GUIDANCE[str(error)], file=sys.stderr)
         print('Native update stopped (' + type(error).__name__ +
             '); retain its preparation and protected recovery journal. Do not reinstall or delete state.', file=sys.stderr)
         return 1

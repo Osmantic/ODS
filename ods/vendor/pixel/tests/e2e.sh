@@ -345,6 +345,30 @@ candidate_sandbox_ref="pixel-sandbox-candidate:$pixel_version-uid-$(id -u)"
 docker build --build-arg "PIXEL_SANDBOX_UID=$(id -u)" -t "$candidate_sandbox_ref" .
 test "$(sed -n '1p' "$PIXEL_FAKE_DOCKER_IMAGE_STATE_DIR/shared.state")" = 0.9.0
 test "$(sed -n '1p' "$PIXEL_FAKE_DOCKER_IMAGE_STATE_DIR/candidate.state")" = "$pixel_version"
+# Bootstrap runs the candidate's own node offline before any live change: the
+# pinned version for this architecture, with no npm, npx or corepack.
+prove_sandbox_runtime() {
+  bash -c 'source scripts/lib/common.sh; pixel_prove_sandbox_runtime "$1" "$2"' _ "$1" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION"
+}
+case "$(uname -m)" in x86_64) host_node_arch=x64 ;; aarch64|arm64) host_node_arch=arm64 ;; *) host_node_arch=unknown ;; esac
+prove_sandbox_runtime "$candidate_sandbox_image_id"
+grep -F -- "run --rm --network none --read-only --cap-drop ALL" "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
+grep -F -- "--entrypoint /usr/local/bin/node $candidate_sandbox_image_id -e" "$PIXEL_FAKE_DOCKER_LOG" >/dev/null
+for bad_runtime in "v0.0.0 $host_node_arch none" "v$PIXEL_GENERATED_SANDBOX_NODE_VERSION wrong-arch none" \
+  "v$PIXEL_GENERATED_SANDBOX_NODE_VERSION $host_node_arch npm,npx,corepack" ""; do
+  if PIXEL_FAKE_DOCKER_RUN_OUTPUT="$bad_runtime" prove_sandbox_runtime "$candidate_sandbox_image_id"; then
+    echo "Sandbox runtime proof accepted: ${bad_runtime:-no output}" >&2
+    exit 1
+  fi
+done
+if PIXEL_FAKE_DOCKER_RUN_STATUS=127 prove_sandbox_runtime "$candidate_sandbox_image_id" 2>/dev/null; then
+  echo "Sandbox runtime proof accepted an image whose node did not run" >&2
+  exit 1
+fi
+if prove_sandbox_runtime sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd 2>/dev/null; then
+  echo "Sandbox runtime proof accepted an unknown image" >&2
+  exit 1
+fi
 if bash -c 'source scripts/lib/common.sh; pixel_load_env; pixel_remove_sandbox_tag_exact "$PIXEL_SANDBOX_IMAGE" 0.9.0 "$(id -u)" sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' >/dev/null 2>&1; then
   echo "Exact sandbox-tag removal accepted the wrong image ID" >&2
   exit 1

@@ -121,6 +121,22 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
         assert dict(os.environ) == before
 
 
+@pytest.mark.parametrize('code', sorted(module.SANDBOX_ERRORS))
+def test_update_reports_sandbox_image_guidance(monkeypatch, capsys, code):
+    # An update rebuilds the sandbox image; its failure carries the same static
+    # cause, recovery and help link as the initial install.
+    def fail(**kwargs):
+        raise ValueError(code)
+    monkeypatch.setattr(module, 'update', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-update.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    err = capsys.readouterr().err
+    assert module.helper('pixel-native-install').ERROR_GUIDANCE[code] in err
+    assert 'https://discord.gg/4ntNp9MAwC' in err
+    assert 'Native update stopped (ValueError)' in err
+
+
 def test_update_reaches_installation_validation_without_license_flag(monkeypatch):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
