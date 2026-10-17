@@ -2,6 +2,7 @@
 // hook receipts can link an owner request to a later announced parent answer.
 // Nothing here reads transcripts, starts a run, or grants a tool permission.
 import {silentReplyText} from './owner-visible-reply.mjs';
+import {claimsNativeDelegation} from './native-delegation-claims.mjs';
 import {createHash} from 'node:crypto';
 
 const ORIGINAL = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -32,7 +33,7 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   maximumRuns = 64, maximumChildren = 32, ttlMs = 32 * 60 * 1000,
   accessIdentity = () => 'fixture', resolveOwnerSession = () => undefined,
   verificationForRun = () => ({status:'none'}), abortSession = async () => false,
-  finalText = () => undefined} = {}) {
+  finalText = () => undefined, nativeDelegationRequested = () => false} = {}) {
   const roots = new Map(), runs = new Map(), spawned = new Map();
   const prefix = `agent:${agentId}:openai-user:`;
   const childPrefix = `agent:${agentId}:subagent:`;
@@ -117,7 +118,8 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     }
     if (roots.size >= maximumRuns) return; // Never evict a live owner's request.
     const chain = {id:context.runId,sessionId:context.sessionId,sessionKey:context.sessionKey,
-      started:now(),access:access(),children:new Map(),announcementBytes:0,continuations:0,delegated:false,failed:false,ready:null,currentRun:context.runId};
+      started:now(),access:access(),children:new Map(),announcementBytes:0,continuations:0,delegated:false,failed:false,ready:null,currentRun:context.runId,
+      nativeDelegationRequested:nativeDelegationRequested(context.runId) === true};
     roots.set(chain.id,chain);
     runs.set(chain.id,{chain,id:chain.id,calls:new Map(),yielded:false,candidate:null,ended:false});
   }
@@ -186,6 +188,12 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   }
   function finalize(event, context, decision) {
     const run = owned(context);
+    // An echo, model-authored task label, failed spawn or prior-turn receipt
+    // cannot substantiate an affirmative claim about this owner's delegation.
+    // Reject delivery only; never replay work or force another model/tool pass.
+    if (run?.id === run?.chain.id && run?.chain.nativeDelegationRequested
+        && !run.chain.children.size && decision?.action !== 'revise'
+        && claimsNativeDelegation(event?.lastAssistantMessage)) {fail(run.chain); return;}
     if (!run || run.id === run.chain.id || run.id !== run.chain.currentRun || run.yielded || decision?.action === 'revise') return;
     const text = event?.lastAssistantMessage;
     // A successful native announcement can deliberately say NO_REPLY while
