@@ -87,7 +87,7 @@ describe('TemplatePreview apply result', () => {
     expect(screen.queryByText(/all services.*already active/i)).not.toBeInTheDocument()
   })
 
-  test('shows targeted restart recovery when a service failed to start', async () => {
+  test('shows the failed service reason and directs recovery to its extension card', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({
         changes: { to_enable: ['svc-a'], already_enabled: [], incompatible: [] },
@@ -98,7 +98,7 @@ describe('TemplatePreview apply result', () => {
         started_count: 0,
         failed_services: ['svc-a'],
         skipped_services: [],
-        warnings: [],
+        warnings: ['svc-a: host port 8642 is already in use'],
         restart_required: true,
       }))
     vi.stubGlobal('fetch', fetchMock)
@@ -107,6 +107,8 @@ describe('TemplatePreview apply result', () => {
     fireEvent.click(await screen.findByRole('button', { name: /apply template/i }))
 
     await waitFor(() => expect(screen.getByText(/failed to start: svc-a/i)).toBeInTheDocument())
-    expect(screen.getByText(/run ods restart to retry/i)).toBeInTheDocument()
+    expect(screen.getByText(/retry from the affected extension cards/i)).toBeInTheDocument()
+    expect(screen.queryByText(/ods restart/i)).not.toBeInTheDocument()
+    expect(screen.getByText('svc-a: host port 8642 is already in use')).toBeInTheDocument()
   })
 })

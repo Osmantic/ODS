@@ -2340,6 +2340,12 @@ class TestSetupStateWire:
             raising=False,
         )
         monkeypatch.setattr(_mod, "DATA_DIR", host_data)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path / "ods")
+        _mod.INSTALL_DIR.mkdir()
+        env_path = _mod.INSTALL_DIR / ".env"
+        # macOS env-generator.sh does not persist TIER.
+        retained_env = "GPU_BACKEND=apple\nODS_MODE=local\nDASHBOARD_API_KEY=private-fixture-value\n"
+        env_path.write_text(retained_env, encoding="utf-8")
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "wire-test-secret")
 
         server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
@@ -2371,6 +2377,13 @@ class TestSetupStateWire:
             assert status_response.status_code == 200
             assert status_response.json()["persona"] == "coding"
             assert status_response.json()["step"] == 2
+            assert status_response.json()["first_run"] is True
+            assert status_response.json()["installation"] == {
+                "selection_saved": True, "tier": None, "gpu_backend": "apple", "mode": "local",
+            }
+            assert "private-fixture-value" not in status_response.text
+            assert not (host_data / "config" / "setup-complete.json").exists()
+            assert env_path.read_text(encoding="utf-8") == retained_env
 
             complete = test_client.post(
                 "/api/setup/complete",
@@ -2409,6 +2422,19 @@ class TestSetupStateWire:
 
 
 class TestSetupStateTransactions:
+    @pytest.mark.parametrize("env_text", [
+        "", "TIER=4\n", "TIER=4\nGPU_BACKEND=owner-secret\nODS_MODE=local\n",
+    ])
+    def test_missing_or_invalid_selection_is_not_an_installed_stack(self, tmp_path, monkeypatch, env_text):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path / "data")
+        (tmp_path / ".env").write_text(env_text, encoding="utf-8")
+        state = _mod._setup_state_payload()
+        assert state["first_run"] is True
+        assert state["installation"]["selection_saved"] is False
+        assert "owner-secret" not in json.dumps(state)
+        assert not (tmp_path / "data").exists()
+
     def test_persona_write_rolls_back_both_files_on_partial_failure(
         self,
         tmp_path,

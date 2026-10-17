@@ -60,6 +60,7 @@ async def setup_status(api_key: str = Depends(verify_api_key)):
         "step": step,
         "persona": persona,
         "personas_available": list(PERSONAS.keys()),
+        "installation": state.get("installation"),
     }
 
 
