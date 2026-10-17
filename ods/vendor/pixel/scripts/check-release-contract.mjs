@@ -1287,6 +1287,7 @@ const contracts = [
   ["deploy/compose.yaml", "internal: true"],
   ["deploy/sandbox/Dockerfile", "python3-pil"],
   ["deploy/sandbox/Dockerfile", "rsync"],
+  ["deploy/sandbox/Dockerfile", "python-is-python3"],
   ["deploy/compose.yaml", manifest.referenceImages.searxng],
   ["deploy/compose.yaml", 'driver: "none"'],
   ["deploy/searxng/settings.yml.template", 'method: "POST"'],
