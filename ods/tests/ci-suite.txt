@@ -140,6 +140,7 @@ tests/test-ods-doctor-install-diagnoses.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
 tests/test-install-failure-message.sh
+tests/test-release-gate-syntax.sh
 tests/test-remote-provider-cli-output.sh
 tests/test-doctor-fresh-report.sh
 tests/test-model-recover-cli.sh
