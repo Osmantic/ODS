@@ -32,7 +32,7 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   maximumRuns = 64, maximumChildren = 32, ttlMs = 32 * 60 * 1000,
   accessIdentity = () => 'fixture', resolveOwnerSession = () => undefined,
   verificationForRun = () => ({status:'none'}), abortSession = async () => false,
-  finalText = () => undefined, noticeForRun = () => undefined} = {}) {
+  finalText = () => undefined} = {}) {
   const roots = new Map(), runs = new Map(), spawned = new Map();
   const prefix = `agent:${agentId}:openai-user:`;
   const childPrefix = `agent:${agentId}:subagent:`;
@@ -246,9 +246,7 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     // server-side so existing public verification schemas remain unchanged.
     const verification = verificationForRun(chain.ready.runId);
     chain.delivered = true;
-    // A host notice for this turn (the shipped example's) follows the answer.
-    const notice = noticeForRun(chain.ready.runId);
-    return {...base,status:'ready',text:notice ? `${chain.ready.text}\n\n${notice}` : chain.ready.text,verification};
+    return {...base,status:'ready',text:chain.ready.text,verification};
   }
   async function cancel(user) {
     const provisional=chain=>[...spawned.entries()].filter(([,record])=>record.chainId===chain.id || record.cancelledChainIds?.includes(chain.id));

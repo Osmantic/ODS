@@ -38,6 +38,9 @@ const MAX_STREAM_RESPONSE = 4 * 1024 * 1024; // 4 MiB terminal completion cap fo
 // Keep this channel far below the normal completion cap while allowing the
 // guard's structurally rendered evidence to cross the private ingress intact.
 const MAX_VERIFICATION_TEXT = 32 * 1024;
+// One host line for the owner after the delivered reply (the plugin's
+// shipped-example guard, plugin/example-guard.mjs).
+const MAX_VERIFICATION_NOTICE = 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
@@ -780,7 +783,8 @@ function validSourceReview(value, directory) {
     && Object.values(value.omitted).every(n => Number.isInteger(n) && n >= 0 && n <= 16384);
 }
 
-function parseVerificationResponse(value, runId) {
+// Exported for tests of the exact delivery path.
+export function parseVerificationResponse(value, runId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -813,6 +817,9 @@ function parseVerificationResponse(value, runId) {
   if (hasTask) expectedKeys.push("task");
   const hasQuestions = Object.prototype.hasOwnProperty.call(value, 'questions');
   if (hasQuestions) expectedKeys.push('questions');
+  // A pending question card carries no notice.
+  const hasNotice = status !== 'pending' && Object.hasOwn(value, 'notice');
+  if (hasNotice) expectedKeys.push('notice');
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
@@ -869,7 +876,9 @@ function parseVerificationResponse(value, runId) {
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text))) ||
     (hasArtifacts && (!['none','passed','failed'].includes(status) || !validDeliveredArtifacts(value.artifacts))) ||
     !previewValid || (hasTask && !parseTaskActivity(value.task, runId)) ||
-    (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions)))
+    (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions))) ||
+    (hasNotice && (typeof value.notice !== 'string' || !value.notice.trim() ||
+      value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice)))
   ) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -1010,11 +1019,25 @@ function deliveryVerification(completion, verification) {
   };
 }
 
-function applyVerificationToCompletion(completion, verification) {
-  const result=baseApplyVerificationToCompletion(completion,verification);
+// Exported for tests of the exact delivery path.
+export function applyVerificationToCompletion(completion, verification) {
+  const result=withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice);
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
+}
+
+// The host's one owner line follows the reply as delivered (kept, appended
+// to or replaced), once.
+function withNotice(completion, notice) {
+  const choice = completion?.choices?.[0];
+  const content = choice?.message?.content;
+  if (!notice || typeof content !== 'string' || content.includes(notice)) return completion;
+  return {
+    ...completion,
+    choices: [{ ...choice, message: { ...choice.message, content: content.trim() ? `${content}\n\n${notice}` : notice } },
+      ...completion.choices.slice(1)],
+  };
 }
 
 function baseApplyVerificationToCompletion(completion, verification) {

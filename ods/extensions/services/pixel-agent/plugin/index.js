@@ -399,7 +399,6 @@ export default definePluginEntry({
         return getSessionEntry({sessionKey,storePath:resolveStorePath(config?.session?.store,{agentId:AGENT_ID})});
       },
       verificationForRun:runId => toolLoopGuard.deliveryVerificationForRun(runId),
-      noticeForRun:runId => toolLoopGuard.exampleNoticeForRun(runId),
       abortSession:async sessionKey => {
         const sessionId=resolveActiveEmbeddedRunSessionId(sessionKey);
         if (!sessionId) return true; // Native active-run registry reports no running harness.

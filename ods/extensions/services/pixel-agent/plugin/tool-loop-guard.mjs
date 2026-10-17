@@ -7911,9 +7911,6 @@ export function createToolLoopGuard({
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
   function beforeToolCall(event, context, agentId = "pixel", nativeDelegationPending = false) {
-    // While a call of a run that names the shipped example runs, other runs
-    // leave that folder alone (example-guard.mjs).
-    if (context?.agentId === agentId) examples.callStarts(context.runId ?? event?.runId, context.toolCallId ?? event?.toolCallId);
     const originalDecision = decideToolCall(event, context, agentId);
     // Only refine an already-proven phantom process refusal. Real exec
     // sessions, earlier denials, correction allowances and failure fuses keep
@@ -8050,7 +8047,9 @@ export function createToolLoopGuard({
       const projectRoute = routePlaygroundTool({state:state.playgroundRouting,tool:toolName,
         params:normalizedParams ?? event?.params,root:state.configuredWorkspaceRoot,
         session:state.currentSessionKey ?? state.currentSessionId,intent:state.playgroundOwnerIntent,
-        preserveExisting:state.workspaceVisualContinuationRequested && !state.workspaceTaskDirectory?.startsWith('Playground/'),
+        // A turn that names the shipped example works in its real folder.
+        preserveExisting:state.exampleNamed === true ||
+          (state.workspaceVisualContinuationRequested && !state.workspaceTaskDirectory?.startsWith('Playground/')),
         continueProject:state.workspaceVisualContinuationRequested,
         existingPaths:[...state.successfulReadPaths]});
       if (projectRoute?.block) return projectRoute;
@@ -10469,13 +10468,14 @@ export function createToolLoopGuard({
   }
 
   // The shipped example's guard (example-guard.mjs), told when a run starts,
-  // when each tool call starts and ends, and when the run finalizes and ends.
-  // A run names the example only by its owner turn's own message: a delegated
-  // child or an announced continuation uses the owner run it reports to,
-  // never its own task text; an answer to a clarification card uses the
-  // request that card recorded, never the model's question; and a cron or
-  // other non-owner run never names it. A turn that mentions the example
-  // without naming it gets model-only guidance (exampleContextForRun).
+  // after each tool call, and when the run finalizes and ends. A run names
+  // the example only by its owner turn's own message: a delegated child or
+  // an announced continuation uses the owner run it reports to, never its own
+  // task text; an answer to a clarification card uses the request that card
+  // recorded, never the model's question; and a cron or other non-owner run
+  // never names it. Project routing keeps a naming turn's paths in the real
+  // folder (exampleNamed). A turn that mentions the example without naming
+  // it gets model-only guidance (exampleContextForRun).
   function observeExampleRun(context, agentId = "pixel") {
     const state = context?.agentId === agentId ? runs.get(context.runId) : undefined;
     if (!state) return;
@@ -10484,8 +10484,9 @@ export function createToolLoopGuard({
     const owner = ownerRun ? runs.get(ownerRun) : child ? undefined : state;
     if (owner) state.exampleTurnRunId = ownerRun ?? context.runId;
     const answered = owner?.clarificationAnswer?.request;
-    const names = owner?.artifactOwnerInteractive === true && namesExample(answered ?? owner.ownerRequestText);
-    recordExampleOutcome(context, examples.begin(context.runId, state.configuredWorkspaceRoot, names, state.runDeadline?.timeoutMs));
+    state.exampleNamed = owner?.artifactOwnerInteractive === true && namesExample(answered ?? owner.ownerRequestText);
+    recordExampleOutcome(context, examples.begin(context.runId, state.configuredWorkspaceRoot, state.exampleNamed,
+      state.runDeadline?.timeoutMs));
     state.exampleGuidance = examples.guarding(context.runId) &&
       (mentionsExample(owner?.ownerRequestText) || mentionsExample(answered));
   }
@@ -10516,8 +10517,7 @@ export function createToolLoopGuard({
     const toolName = context?.toolName ?? event?.toolName;
     const runId = context?.runId ?? event?.runId;
     if (typeof runId !== "string" || !runId) return;
-    recordExampleOutcome({...context, runId}, examples.callEnds(runId, context?.toolCallId ?? event?.toolCallId),
-      context?.toolCallId ?? event?.toolCallId);
+    recordExampleOutcome({...context, runId}, examples.check(runId), context?.toolCallId ?? event?.toolCallId);
     const state = stateFor(runId);
     state.completionAssurance.observe(toolName, event);
     if (state.extensionCompletionGate && !state.workspaceExtensionIsolated && !state.extensionMutationExcluded) {
@@ -13299,12 +13299,11 @@ export function createToolLoopGuard({
         ? `${missing}\n\n${result.text}`.slice(0, MAX_INGRESS_VERIFICATION_TEXT) : missing};
       delete result.deliveryMode;
     }
-    // Text that replaces the reply keeps the shipped example's notice; an
-    // appended or absent text leaves it to the reply (replyPayloadSending).
-    const exampleNotice = exampleNoticeForRun(runId);
-    if (exampleNotice && result.text && result.status !== 'pending' && result.deliveryMode !== 'append' && !result.text.includes(exampleNotice)) {
-      result = {...result, text: `${result.text.slice(0, MAX_INGRESS_VERIFICATION_TEXT - exampleNotice.length - 2)}\n\n${exampleNotice}`};
-    }
+    // The shipped example's one owner line, which Portal's ingress adds after
+    // the reply it delivers (host/pixel_ingress.mjs). A pending question card
+    // carries none.
+    const notice = result.status === 'pending' ? undefined : exampleNoticeForRun(runId);
+    if (notice) result = {...result, notice};
     return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
       ? {...result,artifacts:structuredClone(artifacts)} : result;
   }
@@ -13402,15 +13401,7 @@ export function createToolLoopGuard({
     }
     const verification = deliveryVerificationForRun(event?.runId);
     const authoritativeText = verification.text;
-    // The shipped example's notice follows the model's own reply; a text that
-    // replaces the reply already carries it (deliveryVerificationForRun).
-    const exampleNotice = exampleNoticeForRun(event?.runId);
-    const reply = typeof event.payload?.text === "string" && event.payload.text.trim() && exampleNotice &&
-      !event.payload.text.includes(exampleNotice) ? `${event.payload.text}\n\n${exampleNotice}` : event.payload?.text;
-    if (!authoritativeText) {
-      return reply === event.payload?.text ? undefined
-        : {payload: {...event.payload, text: reply}, reason: "Tell the owner ODS put their example project back."};
-    }
+    if (!authoritativeText) return undefined;
     if (verification.deliveryMode === "append" &&
         typeof event.payload?.text === "string" && event.payload.text.trim()) {
       const scope = verification.preview
@@ -13421,7 +13412,7 @@ export function createToolLoopGuard({
       const evidence = `${authoritativeText}\n${scope}`;
       return {
         payload: { ...(event.payload ?? {}), text: event.payload.text.endsWith(evidence)
-          ? event.payload.text : `${reply}\n\n${evidence}` },
+          ? event.payload.text : `${event.payload.text}\n\n${evidence}` },
         reason: "Preserve the model's task reply alongside separately scoped evidence.",
       };
     }

@@ -3,6 +3,7 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 import {createHash, randomBytes} from 'node:crypto';
+import {namesExample} from './example-guard.mjs';
 import {SHIPPED_EXAMPLE_PROJECTS} from './example-projects.mjs';
 
 const LIMIT = 256;
@@ -32,6 +33,9 @@ function plainIntent(value) {
     .replace(/^\s*>.*$/gm, ' ');
 }
 export function requestsNewPlaygroundProject(intent) {
+  // A change to the shipped example ("In elf-of-doom, make a game over
+  // screen") works in that folder, however the rest is worded.
+  if (namesExample(intent)) return false;
   // Filenames and path components are operands, not project-category words.
   // For example, creating macos-tool-check/probe.txt is not creating a tool.
   const text = plainIntent(intent).replace(/\b[A-Za-z0-9_]+(?:[-./\\][A-Za-z0-9_]+)+\b/g, ' ')

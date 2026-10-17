@@ -1,12 +1,15 @@
 // The shipped example's guard (plugin/example-guard.mjs) driven through the
 // real tool-loop guard hooks the plugin entry calls: before_prompt_build
 // (observeRun, observeExampleRun, exampleContextForRun), before_tool_call,
-// after_tool_call, tool_result_persist, before_agent_finalize,
-// reply_payload_sending and agent_end. Each workspace holds the real shipped
-// game files and the installers' record in a temporary OPENCLAW_STATE_DIR,
-// and every model command really runs in bash (Git Bash on Windows) in that
-// workspace. example_guard_wiring.test.mjs runs the same hooks through the
-// plugin entry's own registration code.
+// after_tool_call, tool_result_persist, before_agent_finalize and agent_end.
+// The reply the owner reads is the one Portal's ingress delivers: the run's
+// verification as the gateway serves it, parsed and applied by the ingress's
+// own functions (host/pixel_ingress.mjs), and over real loopback HTTP at the
+// end of this file. Each workspace holds the real shipped game files and the
+// installers' record in a temporary OPENCLAW_STATE_DIR, and every model
+// command really runs in bash (Git Bash on Windows) in that workspace.
+// example_guard_wiring.test.mjs runs the same hooks through the plugin
+// entry's own registration code.
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -17,9 +20,12 @@ import path from 'node:path';
 import test, {after} from 'node:test';
 import {fileURLToPath} from 'node:url';
 
+import {applyVerificationToCompletion, createIngressServer, parseVerificationResponse} from '../host/pixel_ingress.mjs';
 import {exampleRecordDirectory, exampleRecordFile} from '../plugin/example-projects.mjs';
+import {createAskUserTool} from '../plugin/ask-user.mjs';
 import {createExampleGuard, EXAMPLE_NOTES, exampleGuardTesting, mentionsExample, namesExample} from '../plugin/example-guard.mjs';
 import {createPendingClarifications} from '../plugin/pending-clarification.mjs';
+import {requestsNewPlaygroundProject} from '../plugin/playground-projects.mjs';
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 
@@ -166,8 +172,7 @@ function outsideExample(root, others = []) {
 
 // A workspace holding the real shipped game, the installers' record (by
 // default saying ODS added it) and two of the owner's own games.
-function workspace({record = 'added'} = {}) {
-  const root = scratch('ods-example-guard-');
+function workspace({record = 'added', root = scratch('ods-example-guard-')} = {}) {
   fs.cpSync(SHIPPED, path.join(root, 'Playground', 'elf-of-doom'), {recursive: true});
   for (const game of ['snake-game', 'space-race']) {
     const folder = path.join(root, 'Playground', game);
@@ -193,6 +198,19 @@ function shell(root, command, env = {}) {
   assert.equal(result.status, 0, `${command}\n${result.stderr}`);
   return result.stdout;
 }
+
+// The reply Portal receives for a run whose model wrote text: the run's
+// verification as the gateway's /pixel-ods/verification route serves it
+// (JSON), parsed and applied by the ingress.
+function delivered(guard, runId, text) {
+  const served = JSON.parse(JSON.stringify(guard.deliveryVerificationForRun(runId)));
+  return deliver(text, served, runId);
+}
+function deliver(text, served, runId = 'run') {
+  const completion = {id: runId, object: 'chat.completion', choices: [{index: 0, message: {role: 'assistant', content: text}, finish_reason: 'stop'}]};
+  return applyVerificationToCompletion(completion, parseVerificationResponse(served, runId)).choices[0].message.content;
+}
+const count = (text, part) => text.split(part).length - 1;
 
 const OWNER = `agent:pixel:openai-user:ods-${'a'.repeat(64)}`;
 const chat = letter => `agent:pixel:openai-user:ods-${letter.repeat(64)}`;
@@ -235,12 +253,17 @@ function turn(guard, prompt, root, {sessionKey = OWNER, runId = `run-${++runs}`,
       return `Successfully wrote ${used.path}`;
     }),
     read: file => call('read', {path: file}, used => fs.readFileSync(path.join(root, ...used.path.split('/')), 'utf8')),
-    // The model's final reply as the owner receives it, then the run's end.
+    edit: (file, oldText, newText) => call('edit', {path: file, oldText, newText}, used => {
+      const target = path.join(root, ...used.path.split('/'));
+      fs.writeFileSync(target, fs.readFileSync(target, 'utf8').replace(oldText, newText));
+      return `Successfully replaced text in ${used.path}.`;
+    }),
+    // The run's finalize and end, then the reply as Portal receives it: the
+    // ingress reads the verification after the run ended.
     finish(text = 'Done.') {
       guard.beforeAgentFinalize({runId, lastAssistantMessage: text}, context, 'pixel');
-      const reply = guard.replyPayloadSending({runId, kind: 'final', payload: {text}})?.payload?.text ?? text;
       guard.observeAgentEnd({runId, success: true}, context);
-      return reply;
+      return delivered(guard, runId, text);
     },
   };
 }
@@ -433,6 +456,49 @@ test('nothing carries over: after a named change, "Make it faster" is put back t
   assert.ok(next.finish().endsWith(RESTORED.owner));
 });
 
+// Wordings that ask for a new project on their own. After the documented
+// form they are changes to the example, made in its own folder.
+const NEW_PROJECT_WORDING = ['make a game over screen', 'make a mobile version of the game', 'build a new game mode with a boss',
+  'write a test script', 'create a game manual', 'create an app icon'];
+
+for (const wording of NEW_PROJECT_WORDING) {
+  test(`"In elf-of-doom, ${wording}" works in Playground/elf-of-doom itself, never a new folder`, {skip: NO_BASH}, () => {
+    assert.equal(requestsNewPlaygroundProject(wording), true, 'on its own it asks for a new project');
+    assert.equal(requestsNewPlaygroundProject(`In elf-of-doom, ${wording}`), false);
+    const {root, example} = workspace();
+    const run = turn(createToolLoopGuard(), `In elf-of-doom, ${wording}`, root);
+    run.read('Playground/elf-of-doom/index.html');
+    const page = run.edit('Playground/elf-of-doom/index.html', '</body>', '<script src="extra.js"></script></body>');
+    assert.equal(page.params.path, 'Playground/elf-of-doom/index.html');
+    assert.equal(run.write('Playground/elf-of-doom/extra.js', '// extra\n').params.path, 'Playground/elf-of-doom/extra.js');
+    assert.equal(run.edit('Playground/elf-of-doom/engine.js', 'const ', 'let ').params.path, 'Playground/elf-of-doom/engine.js');
+    const check = run.start('exec', {command: 'node --check engine.js', workdir: '/workspace/Playground/elf-of-doom'});
+    assert.equal(check.params.workdir, '/workspace/Playground/elf-of-doom');
+    check.end();
+    assert.doesNotMatch(run.exec("sed -i 's/var /let /' Playground/elf-of-doom/engine.js").text, /\[ODS Portal\]/);
+    assert.doesNotMatch(run.finish('Done.'), /ODS put|could not put/);
+    assert.deepEqual(listing(root), ['elf-of-doom', 'snake-game', 'space-race'], 'no new folder');
+    assert.match(fs.readFileSync(path.join(example, 'index.html'), 'utf8'), /<script src="extra\.js"><\/script><\/body>/);
+    assert.equal(fs.readFileSync(path.join(example, 'extra.js'), 'utf8'), '// extra\n');
+  });
+}
+
+test('a chat whose earlier new game went to elf-of-doom-2 still changes the real game on "In elf-of-doom,"', {skip: NO_BASH}, () => {
+  const {root, example} = workspace();
+  const guard = createToolLoopGuard();
+  const first = turn(guard, 'Make me a new game', root, {sessionKey: chat('7')});
+  assert.equal(first.write('Playground/elf-of-doom/index.html', '<!doctype html><title>New game</title>\n').params.path,
+    'Playground/elf-of-doom-2/index.html');
+  first.finish('Your new game is ready.');
+  const named = turn(guard, 'In elf-of-doom, make the arrows give 7', root, {sessionKey: chat('7')});
+  assert.equal(named.read('Playground/elf-of-doom/engine.js').params.path, 'Playground/elf-of-doom/engine.js');
+  assert.equal(named.edit('Playground/elf-of-doom/engine.js', 'const ', 'let ').params.path, 'Playground/elf-of-doom/engine.js');
+  named.exec("sed -i 's/const /let /' Playground/elf-of-doom/engine.js");
+  assert.equal(named.finish('The arrows give 7 now.'), 'The arrows give 7 now.');
+  assert.doesNotMatch(fs.readFileSync(path.join(example, 'engine.js'), 'utf8'), /\bconst /);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'Playground', 'elf-of-doom-2')), ['index.html']);
+});
+
 // ---------------------------------------------- clarification answers --
 
 const QUESTION = [{id: 'scope', question: 'Should I change the font in Elf of Doom too?', options: ['Yes', 'No']}];
@@ -464,50 +530,93 @@ test('an answer to a clarification card is named by the request it answers, neve
   assert.notDeepEqual(tree(example), original);
 });
 
-// ------------------------------------------- the known-good tree --
-
-test('a change made between runs is put back when the next run that does not name it starts, and the owner hears it', () => {
+test('an answer to a card about a turn that mentions it gets guidance too', {skip: NO_BASH}, () => {
   const {root, example, original} = workspace();
-  const guard = createToolLoopGuard();
-  turn(guard, 'Make the snake faster', root).finish();
-  // A background process the run started, or a hand edit, writes later.
-  fs.appendFileSync(path.join(example, 'ui.js'), '\n// formatted\n');
-  fs.rmSync(path.join(example, 'legacy.js'));
-  const next = turn(guard, 'What can you do?', root);
-  assert.deepEqual(tree(example), original, 'put back before the run works');
-  assert.equal(next.finish('I can build games.'), `I can build games.\n\n${RESTORED.owner}`);
+  const run = answer('Make elf-of-doom harder', HARDER, 'More enemies', root);
+  assert.equal(run.guidance, EXAMPLE_NOTES.guidance, 'the request the card answers mentions it');
+  assert.ok(run.exec(ENGINE_EDIT).text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), original);
+  assert.ok(run.finish().endsWith(RESTORED.owner));
 });
 
-test('a run that names it does not undo a change made before it, and its end makes that tree the known-good one', () => {
+test('an answer to a card of a turn that names it works in the real folder, even when the answer reads like a new project', {skip: NO_BASH}, () => {
+  const {root, example} = workspace();
+  const run = answer('In elf-of-doom, make it harder', HARDER, 'Create a new game mode with a boss', root);
+  assert.equal(requestsNewPlaygroundProject(`${HARDER[0].question}\nCreate a new game mode with a boss`), true);
+  assert.equal(run.write('Playground/elf-of-doom/boss.js', '// boss\n').params.path, 'Playground/elf-of-doom/boss.js');
+  assert.doesNotMatch(run.finish('There is a boss mode now.'), /ODS put|could not put/);
+  assert.equal(fs.readFileSync(path.join(example, 'boss.js'), 'utf8'), '// boss\n');
+  assert.deepEqual(listing(root), ['elf-of-doom', 'snake-game', 'space-race']);
+});
+
+// ------------------------------------------- the known-good tree --
+
+test('a change made while Portal is idle is the owner\'s: the next run keeps it and puts back only what it changes itself', {skip: NO_BASH}, () => {
+  const {root, example} = workspace();
+  const guard = createToolLoopGuard();
+  assert.equal(turn(guard, 'Make the snake faster', root).finish('Done.'), 'Done.');
+  // The owner edits the game by hand (or a background process an earlier
+  // run started writes after that run ended).
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// my own change\n');
+  fs.rmSync(path.join(example, 'legacy.js'));
+  const mine = tree(example);
+  const next = turn(guard, 'Change the font in all my games', root);
+  assert.deepEqual(tree(example), mine, 'a run never restores when it starts');
+  assert.ok(next.exec(`${SED_FONT} Playground/*/style.css`).text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), mine, 'put back to the owner\'s tree, not the shipped one');
+  assert.equal(next.finish('Done.'), `Done.\n\n${RESTORED.owner}`);
+  assert.equal(turn(guard, 'What can you do?', root).finish('I can build games.'), 'I can build games.');
+  assert.deepEqual(tree(example), mine);
+});
+
+test('a folder the owner deletes by hand stays deleted: no later run brings it back or says anything', {skip: NO_BASH}, () => {
   const {root, example} = workspace();
   const guard = createToolLoopGuard();
   turn(guard, 'Make the snake faster', root).finish();
-  fs.appendFileSync(path.join(example, 'ui.js'), '\n// my own change\n');
-  const named = turn(guard, 'In elf-of-doom, keep my change', root);
-  const kept = tree(example);
-  assert.equal(named.finish('Kept.'), 'Kept.');
-  assert.equal(turn(guard, 'Make the snake slower', root).finish('Done.'), 'Done.');
-  assert.deepEqual(tree(example), kept);
+  fs.rmSync(example, {recursive: true});
+  for (const prompt of ['Delete my snake game', 'What can you do?']) {
+    const run = turn(guard, prompt, root);
+    assert.equal(run.guidance, undefined);
+    run.read('Playground/space-race/game.js');
+    if (prompt.startsWith('Delete')) run.exec('rm -r Playground/snake-game');
+    assert.equal(run.finish('Done.'), 'Done.');
+  }
+  assert.deepEqual(listing(root), ['space-race']);
+});
+
+test('a run that starts while another works keeps the known-good tree, so the first run\'s change is still put back', () => {
+  const {root, example, original} = workspace();
+  const guard = createToolLoopGuard();
+  const first = turn(guard, 'Reformat all my games', root, {sessionKey: chat('b')});
+  const reformat = first.start('exec', {command: 'reformat', workdir: '/workspace'});
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// formatted\n');
+  const second = turn(guard, 'What can you do?', root, {sessionKey: chat('c')});
+  assert.deepEqual(second.guidance, undefined);
+  assert.ok(reformat.end().text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), original);
+  assert.equal(second.finish('I can build games.'), 'I can build games.');
+  assert.ok(first.finish('Reformatted.').endsWith(RESTORED.owner));
 });
 
 test('after a gateway restart the folder as ODS first finds it is the known-good tree', () => {
   const {root, example} = workspace();
   fs.appendFileSync(path.join(example, 'ui.js'), '\n// before the restart\n');
-  const restarted = createToolLoopGuard();
-  const first = turn(restarted, 'Make the snake faster', root);
+  const run = turn(createToolLoopGuard(), 'Make the snake faster', root);
   const found = tree(example);
-  assert.equal(first.finish('Done.'), 'Done.');
-  fs.appendFileSync(path.join(example, 'ui.js'), '\n// after\n');
-  assert.ok(turn(restarted, 'Make the snake slower', root).finish().endsWith(RESTORED.owner));
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// during the run\n');
+  assert.ok(run.finish('Done.').endsWith(RESTORED.owner));
   assert.deepEqual(tree(example), found);
 });
 
-test('a change made outside any tool call is put back at the end of the run, before the reply', () => {
+test('a change made outside any tool call is put back at finalize, so the reply can say so before the run ends', () => {
   const {root, example, original} = workspace();
-  const run = turn(createToolLoopGuard(), 'Make the snake faster', root);
+  const guard = createToolLoopGuard();
+  const run = turn(guard, 'Make the snake faster', root);
   fs.appendFileSync(path.join(example, 'ui.js'), '\n// late\n');
-  assert.ok(run.finish('The snake is faster.').endsWith(RESTORED.owner));
+  guard.beforeAgentFinalize({runId: run.context.runId, lastAssistantMessage: 'The snake is faster.'}, run.context, 'pixel');
   assert.deepEqual(tree(example), original);
+  assert.equal(guard.deliveryVerificationForRun(run.context.runId).notice, RESTORED.owner);
+  assert.ok(run.finish('The snake is faster.').endsWith(RESTORED.owner));
 });
 
 test('a run that ends without finalizing (stopped or failed) is still checked when it ends', () => {
@@ -520,7 +629,20 @@ test('a run that ends without finalizing (stopped or failed) is still checked wh
   assert.equal(guard.exampleNoticeForRun(run.context.runId), RESTORED.owner);
 });
 
-test('a reply ODS replaces with its own text keeps the notice, for the reply and the ingress alike', {skip: NO_BASH}, () => {
+test('a later attempt of a run that does not name it gets that run\'s earlier changes put back', () => {
+  const {root, example, original} = workspace();
+  const guard = createToolLoopGuard();
+  const run = turn(guard, 'Make the snake faster', root);
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// first attempt\n');
+  // The runtime retries the attempt: before_prompt_build runs again.
+  guard.observeExampleRun(run.context);
+  assert.deepEqual(tree(example), original);
+  assert.equal(run.finish('Done.'), `Done.\n\n${RESTORED.owner}`);
+});
+
+// ------------------------------------------------- what Portal delivers --
+
+test('a reply ODS replaces with its own text is followed by the notice, once', {skip: NO_BASH}, () => {
   const {root, example, original} = workspace();
   const guard = createToolLoopGuard();
   // The owner asked for a download that never arrives: ODS's failure text replaces the reply.
@@ -531,8 +653,8 @@ test('a reply ODS replaces with its own text keeps the notice, for the reply and
   const verification = guard.deliveryVerificationForRun(run.context.runId);
   assert.equal(verification.status, 'failed');
   assert.match(verification.text, /^The requested download was not attached/);
-  assert.ok(verification.text.endsWith(`\n\n${RESTORED.owner}`));
-  assert.equal(reply, verification.text);
+  assert.equal(verification.notice, RESTORED.owner);
+  assert.equal(reply, `${verification.text}\n\n${RESTORED.owner}`);
 });
 
 // The host's preview receipt digest (workspace-preview.mjs) for one file.
@@ -547,24 +669,59 @@ function previewReceipt(relativeDirectory, content) {
     entrySha256: sha256(bytes), httpStatus: 200, readbackVerified: true, executable: false, overwritten: false};
 }
 
-test('a new game\'s verified preview reply keeps the notice before the preview evidence', () => {
+// A new game with a verified preview, during which a stray change to the
+// example was put back.
+function previewTurn(runId = undefined) {
   const {root, example, original} = workspace();
   const guard = createToolLoopGuard();
-  const run = turn(guard, 'Make me a new space game', root, {sessionKey: chat('d')});
+  const run = turn(guard, 'Make me a new space game', root, {sessionKey: chat('d'), ...(runId ? {runId} : {})});
   const content = '<!doctype html><title>Space game</title>';
   const {params} = run.write('Playground/space-game/index.html', content);
-  const directory = path.posix.dirname(params.path);
-  // A stray change to the example while the model checks its new file.
   const stray = run.start('read', {path: params.path});
   fs.appendFileSync(path.join(example, 'ui.js'), 'x\n');
   assert.ok(stray.end(content).text.endsWith(RESTORED.model));
-  const preview = run.start('pixel_ods_workspace_preview', {relativeDirectory: directory});
+  const preview = run.start('pixel_ods_workspace_preview', {relativeDirectory: path.posix.dirname(params.path)});
   preview.end('Published.', previewReceipt(preview.params.relativeDirectory, content));
-  assert.equal(guard.deliveryVerificationForRun(run.context.runId).deliveryMode, 'append');
-  const reply = run.finish('Your new space game is ready.');
-  assert.ok(reply.startsWith(`Your new space game is ready.\n\n${RESTORED.owner}\n\n`), reply);
-  assert.match(reply, /Publication scope/);
   assert.deepEqual(tree(example), original);
+  return {guard, run};
+}
+
+test('a new game\'s verified preview reply keeps the model\'s text and the evidence, then the notice, once', () => {
+  const {guard, run} = previewTurn();
+  const reply = run.finish('Your new space game is ready.');
+  assert.equal(guard.deliveryVerificationForRun(run.context.runId).deliveryMode, 'append');
+  assert.ok(reply.startsWith('Your new space game is ready.\n\n'), reply);
+  assert.match(reply, /\nPublication scope: [^\n]+\n\nODS put Playground\/elf-of-doom back as it was\./);
+  assert.ok(reply.endsWith(RESTORED.owner), reply);
+  assert.equal(count(reply, RESTORED.owner), 1);
+});
+
+test('the ingress adds the notice once, and only one plain line that is not on a question card', () => {
+  const runId = 'run-notice';
+  assert.equal(deliver(`Done.\n\n${RESTORED.owner}`, {status: 'none', notice: RESTORED.owner}), `Done.\n\n${RESTORED.owner}`);
+  assert.equal(deliver('', {status: 'failed', text: 'Stopped.', notice: RESTORED.owner}), `Stopped.\n\n${RESTORED.owner}`);
+  for (const value of [{status: 'pending', text: 'Which one?', notice: RESTORED.owner}, {status: 'none', notice: ''},
+    {status: 'none', notice: 'two\nlines'}, {status: 'none', notice: 'x'.repeat(1025)}, {status: 'none', notice: 7}]) {
+    assert.throws(() => parseVerificationResponse(value, runId), /verification state unavailable/, JSON.stringify(value));
+  }
+});
+
+test('a question card carries no notice', {skip: NO_BASH}, async () => {
+  const {root, example, original} = workspace();
+  const guard = createToolLoopGuard();
+  const run = turn(guard, 'Change the font in all my games', root);
+  run.exec(`${SED_FONT} Playground/*/style.css`);
+  assert.deepEqual(tree(example), original);
+  const questions = [{id: 'font', question: 'Which font?', options: ['Comic Sans', 'Georgia']}];
+  const result = await createAskUserTool().execute('ask', {questions});
+  const ask = {...run.context, toolName: 'pixel_ods_ask_user', toolCallId: 'ask'};
+  guard.beforeToolCall({toolName: 'pixel_ods_ask_user', params: {questions}, toolCallId: 'ask'}, ask, 'pixel');
+  guard.afterToolCall({toolName: 'pixel_ods_ask_user', toolCallId: 'ask', params: {questions}, result}, ask, 'pixel');
+  guard.beforeAgentFinalize({runId: run.context.runId, lastAssistantMessage: 'Which font?'}, run.context, 'pixel');
+  const verification = guard.deliveryVerificationForRun(run.context.runId);
+  assert.equal(verification.status, 'pending');
+  assert.equal(Object.hasOwn(verification, 'notice'), false);
+  assert.doesNotMatch(delivered(guard, run.context.runId, 'Which font?'), /ODS put/);
 });
 
 // ------------------------------------------------------- restore safety --
@@ -699,8 +856,20 @@ test('when Playground is replaced during a run, the owner hears it with the help
   assert.ok(run.finish('Your workspace is empty now.').endsWith(EXAMPLE_NOTES.failed.owner));
   assert.match(EXAMPLE_NOTES.failed.owner, /https:\/\/discord\.gg\/4ntNp9MAwC/);
   assert.equal(turn(guard, 'What can you do?', root).finish('I can build games.'), 'I can build games.');
-  assert.equal(warnings.length, 1, warnings.join('\n'));
-  assert.match(warnings[0], /is not guarding Playground\/elf-of-doom.*link or not a folder/);
+  assert.equal(warnings.length, 2, warnings.join('\n'));
+  assert.match(warnings[0], /could not put Playground\/elf-of-doom back.*link or not a folder/);
+  assert.match(warnings[1], /is not guarding Playground\/elf-of-doom.*link or not a folder/);
+});
+
+test('a Playground linked away for one call is put back at a later call, once it is a real folder again', {skip: NO_BASH}, () => {
+  const {root, example, original} = workspace();
+  const outside = outsideFolder();
+  const run = turn(createToolLoopGuard(), 'Move my projects to a shared drive', root, {others: [outside], env: {OUT: outside}});
+  const linked = run.exec(`mv Playground "$OUT/pg" && node -e "require('fs').symlinkSync(process.env.OUT + '/pg', 'Playground', '${DIRECTORY_LINK}')"`);
+  assert.ok(linked.text.endsWith(EXAMPLE_NOTES.failed.model));
+  assert.ok(run.exec('rm Playground && mv "$OUT/pg" Playground && rm Playground/elf-of-doom/*.js').text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), original);
+  assert.ok(run.finish('Moved them back.').endsWith(RESTORED.owner));
 });
 
 test('a workspace replaced by a link during a run is never written through', () => {
@@ -715,6 +884,41 @@ test('a workspace replaced by a link during a run is never written through', () 
   assert.equal(examples.check('swapped'), 'failed');
   assert.deepEqual(fs.readdirSync(outside), [], 'nothing is written where the link points');
   fs.rmSync(root, {recursive: true, force: true});
+});
+
+test('a workspace whose parent folder is swapped for a link during a run is never written through', () => {
+  const parent = scratch('ods-example-guard-parent-');
+  const {root, example} = workspace({root: path.join(parent, 'ws')});
+  const examples = createExampleGuard();
+  examples.begin('parent-swapped', root, false);
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// changed\n');
+  // Through the link, the same path names another real workspace.
+  const outside = outsideFolder();
+  fs.mkdirSync(path.join(outside, 'ws', 'Playground', 'elf-of-doom'), {recursive: true});
+  fs.writeFileSync(path.join(outside, 'ws', 'Playground', 'elf-of-doom', 'ui.js'), 'outside\n');
+  const before = tree(outside);
+  fs.renameSync(parent, `${parent}-moved`);
+  temporary.push(`${parent}-moved`);
+  fs.symlinkSync(outside, parent, DIRECTORY_LINK);
+  try {
+    assert.equal(examples.check('parent-swapped'), 'failed');
+    assert.deepEqual(tree(outside), before, 'nothing is written where the link points');
+  } finally { fs.rmSync(parent, {recursive: true, force: true}); }
+});
+
+test('putting a file back never changes the read-only flag it shares with another name', {skip: NO_BASH}, () => {
+  const {root, example, original} = workspace();
+  const shared = path.join(root, 'Playground', 'snake-game', 'game.js');
+  fs.chmodSync(shared, 0o444);
+  const run = turn(createToolLoopGuard(), 'Share the engine between my games', root);
+  try {
+    assert.ok(run.exec('rm Playground/elf-of-doom/engine.js && ln Playground/snake-game/game.js Playground/elf-of-doom/engine.js')
+      .text.endsWith(RESTORED.model));
+    assert.deepEqual(tree(example), original);
+    assert.equal(fs.statSync(shared).mode & 0o222, 0, 'the other name is still read-only');
+    assert.equal(fs.readFileSync(shared, 'utf8'), 'const speed = 1;\n');
+    run.finish();
+  } finally { fs.chmodSync(shared, 0o644); }
 });
 
 // ------------------------------------------------------------- whose copy --
@@ -873,6 +1077,49 @@ test('a file read is exact: never the bytes of another file than the one checked
   assert.equal(readFile(path.join(folder, 'gone.txt'), fs.lstatSync(path.join(folder, 'b.txt'))), null);
 });
 
+test('a read never returns more or fewer bytes than the size it was asked for', () => {
+  const folder = outsideFolder();
+  const file = path.join(folder, 'grows.txt');
+  fs.writeFileSync(file, 'four');
+  const stat = fs.lstatSync(file);
+  fs.appendFileSync(file, ' and more');
+  assert.equal(exampleGuardTesting.readFile(file, stat), null);
+  fs.writeFileSync(file, 'fo');
+  assert.equal(exampleGuardTesting.readFile(file, stat), null);
+});
+
+test('a hard-linked file in the game when ODS first copies it leaves the game to the owner: the link stays, no notice, logged once', () => {
+  const {root, example} = workspace();
+  fs.linkSync(path.join(example, 'engine.js'), path.join(outsideFolder(), 'engine.js'));
+  const warnings = [];
+  const guard = createToolLoopGuard({warn: message => warnings.push(message)});
+  for (const prompt of ['Make the snake faster', 'Make the snake slower']) assert.equal(turn(guard, prompt, root).finish('Done.'), 'Done.');
+  assert.equal(fs.statSync(path.join(example, 'engine.js')).nlink, 2);
+  assert.equal(warnings.length, 1, warnings.join('\n'));
+  assert.match(warnings[0], /is not guarding Playground\/elf-of-doom.*hard-linked/);
+});
+
+test('a file that changes while ODS copies the game leaves the game to the owner', () => {
+  const {root, example} = workspace();
+  const engine = path.join(example, 'engine.js');
+  const original = commonFs.openSync;
+  // Something writes engine.js between the size check and the read.
+  commonFs.openSync = (file, ...rest) => {
+    if (path.resolve(String(file)) === engine) { commonFs.openSync = original; syncBuiltinESMExports(); fs.appendFileSync(engine, '//'); }
+    return original(file, ...rest);
+  };
+  syncBuiltinESMExports();
+  let taken;
+  try { taken = exampleGuardTesting.takeSnapshot(root); } finally { commonFs.openSync = original; syncBuiltinESMExports(); }
+  assert.deepEqual(taken, {skipped: 'it changed while ODS copied it'});
+});
+
+test('on a disk that ignores case, a folder found only under another spelling is not copied as the example', {skip: !IGNORES_CASE && 'case-sensitive disk'}, () => {
+  const {root, example} = workspace();
+  fs.renameSync(example, path.join(root, 'Playground', 'ELF-OF-DOOM'));
+  assert.equal(exampleGuardTesting.takeSnapshot(root), null);
+});
+
 // ------------------------------------------------------------ other runs --
 
 test('a cron run never names it, whatever its text says', () => {
@@ -884,55 +1131,90 @@ test('a cron run never names it, whatever its text says', () => {
   assert.deepEqual(tree(example), original);
 });
 
-test('a named run that is between calls does not hold another run\'s restore back', () => {
-  const {root, example, original} = workspace();
-  const guard = createToolLoopGuard();
-  const named = turn(guard, 'In elf-of-doom, make the arrows give 7', root);
-  const edit = named.start('exec', {command: 'edit', workdir: '/workspace'});
-  fs.appendFileSync(path.join(example, 'engine.js'), '\n// arrows give 7\n');
-  edit.end();
-  const arrows = tree(example);
-  assert.notDeepEqual(arrows, original);
-  const other = turn(guard, 'Delete all my old games', root, {sessionKey: chat('e')});
-  const deletion = other.start('exec', {command: 'rm -r Playground/*', workdir: '/workspace'});
-  fs.rmSync(example, {recursive: true});
-  assert.ok(deletion.end().text.endsWith(RESTORED.model));
-  assert.deepEqual(tree(example), arrows, 'put back to the named run\'s change');
-  other.finish();
-  named.finish();
-  assert.deepEqual(tree(example), arrows);
-});
-
-test('while a named run\'s call is running, other runs leave the folder alone, and that change sticks', () => {
+// Two chats at once: from the start of a run that names the example until it
+// ends, no other run's change to it is undone.
+test('from its start to its end, a run that names it holds other runs\' restores back; its end keeps the tree, and then restores resume', {skip: NO_BASH}, () => {
   const {root, example} = workspace();
   const guard = createToolLoopGuard();
-  const other = turn(guard, 'Make the snake faster', root, {sessionKey: chat('f')});
+  const named = turn(guard, 'In elf-of-doom, make the arrows give 7', root);
+  named.exec("echo '// arrows give 7' >> Playground/elf-of-doom/engine.js");
+  // Between the named run's calls, another chat's run changes the game too.
+  const other = turn(guard, 'Reformat all my games', root, {sessionKey: chat('e')});
+  assert.doesNotMatch(other.exec("echo '// formatted' >> Playground/elf-of-doom/ui.js").text, /\[ODS Portal\]/);
+  assert.equal(other.finish('Reformatted.'), 'Reformatted.');
+  const both = tree(example);
+  assert.equal(named.finish('The arrows give 7 now.'), 'The arrows give 7 now.');
+  assert.deepEqual(tree(example), both, 'what the other chat changed meanwhile stays');
+  // Once the named run has ended, another run's change is put back to that tree.
+  const later = turn(guard, 'Delete all my old games', root, {sessionKey: chat('f')});
+  assert.ok(later.exec('rm -r Playground/*').text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), both);
+  assert.ok(later.finish('Deleted.').endsWith(RESTORED.owner));
+});
+
+test('a run still working when a run that names it ends keeps that run\'s change, and puts back only its own', () => {
+  const {root, example} = workspace();
+  const guard = createToolLoopGuard();
+  const other = turn(guard, 'Make the snake faster', root, {sessionKey: chat('e')});
   const named = turn(guard, 'In elf-of-doom, make the arrows give 7', root);
   const edit = named.start('exec', {command: 'edit', workdir: '/workspace'});
   fs.appendFileSync(path.join(example, 'engine.js'), '\n// arrows give 7\n');
-  assert.doesNotMatch(other.read('Playground/snake-game/game.js').text, /\[ODS Portal\]/);
   edit.end();
-  const kept = tree(example);
-  assert.equal(other.finish('Done.'), 'Done.');
-  named.finish();
-  assert.deepEqual(tree(example), kept);
+  assert.equal(named.finish('The arrows give 7 now.'), 'The arrows give 7 now.');
+  const arrows = tree(example);
+  assert.doesNotMatch(other.read('Playground/snake-game/game.js').text, /\[ODS Portal\]/);
+  assert.deepEqual(tree(example), arrows, 'the named change is the known-good tree now');
+  const stray = other.start('exec', {command: 'format', workdir: '/workspace'});
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// formatted\n');
+  assert.ok(stray.end().text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), arrows);
+  assert.ok(other.finish('The snake is faster.').endsWith(RESTORED.owner));
 });
 
-test('a named run whose end ODS never saw stops holding restores back after its deadline', () => {
+test('a run that names it holds restores back while its backgrounded command still writes', () => {
+  const {root, example} = workspace();
+  const guard = createToolLoopGuard();
+  const named = turn(guard, 'In elf-of-doom, reformat every file', root);
+  // OpenClaw backgrounds the exec after yieldMs: after_tool_call fires while it runs.
+  const exec = named.start('exec', {command: 'reformat-all', workdir: '/workspace', yieldMs: 1000});
+  fs.appendFileSync(path.join(example, 'engine.js'), '\n// formatted\n');
+  exec.end('Command still running (session s1).', {status: 'running', sessionId: 's1'});
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// formatted\n');
+  assert.equal(turn(guard, 'What can you do?', root, {sessionKey: chat('8')}).finish('I can build games.'), 'I can build games.');
+  fs.appendFileSync(path.join(example, 'world.js'), '\n// formatted\n');
+  assert.doesNotMatch(named.finish('I reformatted every file.'), /ODS put/);
+  for (const file of ['engine.js', 'ui.js', 'world.js']) {
+    assert.match(fs.readFileSync(path.join(example, file), 'utf8'), /\/\/ formatted\n$/, file);
+  }
+});
+
+test('a run that names it and whose end ODS never saw stops counting after its deadline and grace; that ends it', () => {
   let clock = 0;
+  const minutes = value => value * 60 * 1000;
   const examples = createExampleGuard({now: () => clock});
-  const {root, example, original} = workspace();
-  examples.begin('lost-named-run', root, true, 30 * 60 * 1000);
-  examples.callStarts('lost-named-run', 'call-1');
+  const {root, example} = workspace();
+  examples.begin('lost-named-run', root, true, minutes(30));
+  fs.appendFileSync(path.join(example, 'engine.js'), '\n// arrows give 7\n');
   examples.begin('other-run', root, false);
-  fs.appendFileSync(path.join(example, 'engine.js'), '\n// not asked\n');
-  assert.equal(examples.check('other-run'), undefined, 'held back while that call may still run');
-  clock += 30 * 60 * 1000 + exampleGuardTesting.RUN_GRACE_MS + 1;
+  assert.equal(examples.guarding('other-run'), true);
+  // A later attempt of the named run counts from that attempt.
+  clock = minutes(20);
+  examples.begin('lost-named-run', root, true, minutes(30));
+  clock = minutes(50) + exampleGuardTesting.RUN_GRACE_MS;
+  // Two changes and checks: had the named run stopped counting, the first
+  // check would end it and the second would put its change back.
+  for (const step of ['first', 'second']) {
+    fs.appendFileSync(path.join(example, 'ui.js'), `\n// ${step}, held back\n`);
+    assert.equal(examples.check('other-run'), undefined, 'held back until the attempt\'s deadline plus the grace');
+  }
+  assert.ok(exampleGuardTesting.RUN_GRACE_MS >= 120 * 1000, 'the ingress gives a response 120 s past the deadline');
+  const named = tree(example);
+  clock += 1;
+  assert.equal(examples.check('other-run'), undefined, 'its end keeps the tree as it is');
+  fs.appendFileSync(path.join(example, 'ui.js'), '\n// not asked\n');
   assert.equal(examples.check('other-run'), 'restored');
-  assert.deepEqual(tree(example), original);
-  examples.begin('later-run', root, false);
-  assert.equal(examples.guarding('lost-named-run'), false, 'forgotten');
-  assert.equal(examples.end('later-run'), undefined);
+  assert.deepEqual(tree(example), named);
+  assert.equal(examples.end('other-run'), undefined);
 });
 
 // ------------------------------------------------------ delegated work --
@@ -942,12 +1224,12 @@ const OWNER_RUN = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const CHILD = 'agent:pixel:subagent:22222222-2222-4333-8444-555555555555';
 const CHILD_RUN = '33333333-2222-4333-8444-555555555555';
 // The plugin entry's wiring: delegation custody maps a child and the announced
-// continuation to the owner run (index.js exampleOwnerRun, noticeForRun).
+// continuation to the owner run (index.js exampleOwnerRun).
 function delegation() {
   let guard;
   const delivery = createSubagentDelivery({resolveOwnerSession: key => key === OWNER ? {sessionId: `session-${OWNER_RUN}`} : null,
     finalText: message => message.content.filter(block => block.type === 'text').map(block => block.text).join('\n'),
-    verificationForRun: runId => guard.deliveryVerificationForRun(runId), noticeForRun: runId => guard.exampleNoticeForRun(runId)});
+    verificationForRun: runId => guard.deliveryVerificationForRun(runId)});
   guard = createToolLoopGuard({exampleOwnerRun: context => delivery.ownerRunOf(context)});
   return {guard, delivery};
 }
@@ -969,6 +1251,8 @@ function delegate({guard, delivery}, ownerPrompt, childPrompt, root) {
   const child = turn(guard, childPrompt, root, {runId: CHILD_RUN, sessionKey: CHILD, trigger: undefined});
   return {owner, child};
 }
+// The announced continuation's answer as Portal receives it: the delegated
+// delivery read, applied by the ingress like any other reply.
 function announce({guard, delivery}, owner, root, text) {
   const continuation = {...owner, runId: `announce:v1:${CHILD}:${CHILD_RUN}`,
     inputProvenance: {kind: 'inter_session', sourceTool: 'subagent_announce', sourceSessionKey: CHILD}};
@@ -979,20 +1263,20 @@ function announce({guard, delivery}, owner, root, text) {
   delivery.finalize({lastAssistantMessage: text}, continuation);
   delivery.end({success: true, messages: [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text}]}]}, continuation);
   guard.observeAgentEnd({runId: continuation.runId, success: true}, continuation);
-  return delivery.read(USER, OWNER_RUN);
+  const read = JSON.parse(JSON.stringify(delivery.read(USER, OWNER_RUN)));
+  assert.equal(read.status, 'ready');
+  return deliver(read.text, read.verification, OWNER_RUN);
 }
 
 test('a delegated child uses its owner run\'s message, never its own task text', {skip: NO_BASH}, () => {
   const {root, example, original} = workspace();
   const wired = delegation();
-  const {owner, child} = delegate(wired, 'Make the snake game faster', 'In elf-of-doom, make the arrows give 7', root);
+  const {owner, child} = delegate(wired, 'Make the snake faster', 'In elf-of-doom, make the arrows give 7', root);
   assert.equal(child.guidance, undefined, 'the owner\'s message does not mention it');
   assert.ok(child.exec(ENGINE_EDIT).text.endsWith(RESTORED.model));
   assert.deepEqual(tree(example), original);
   child.finish('Done in elf-of-doom.');
-  const delivered = announce(wired, owner, root, 'The snake game is faster.');
-  assert.equal(delivered.status, 'ready');
-  assert.equal(delivered.text, `The snake game is faster.\n\n${RESTORED.owner}`);
+  assert.equal(announce(wired, owner, root, 'The snake is faster.'), `The snake is faster.\n\n${RESTORED.owner}`);
 });
 
 test('a delegated child of a turn that names it may change it', {skip: NO_BASH}, () => {
@@ -1002,21 +1286,25 @@ test('a delegated child of a turn that names it may change it', {skip: NO_BASH},
   assert.doesNotMatch(child.exec(ENGINE_EDIT).text, /\[ODS Portal\]/);
   child.finish();
   assert.notDeepEqual(tree(example), original);
-  assert.equal(announce(wired, owner, root, 'The arrows give 7 now.').text, 'The arrows give 7 now.');
+  assert.equal(announce(wired, owner, root, 'The arrows give 7 now.'), 'The arrows give 7 now.');
 });
 
-test('a named turn\'s child that outlives it does not unguard the owner\'s next turn', {skip: NO_BASH}, () => {
+test('two chats at once: while a named turn\'s child works, another chat\'s change stays; after it, changes are put back', {skip: NO_BASH}, () => {
   const {root, example} = workspace();
   const wired = delegation();
   const {child} = delegate(wired, 'In elf-of-doom, add three new realms', 'Add three realms to world.js', root);
   child.exec("echo '// realms' >> Playground/elf-of-doom/world.js");
-  const realms = tree(example);
-  const next = turn(wired.guard, 'Never mind. Delete all my games.', root);
-  assert.ok(next.exec('rm -r Playground/*').text.endsWith(RESTORED.model));
-  assert.deepEqual(tree(example), realms);
-  assert.ok(next.finish('Deleted all your games.').endsWith(RESTORED.owner));
+  const other = turn(wired.guard, 'Delete all my old games', root, {sessionKey: chat('9')});
+  assert.doesNotMatch(other.exec('rm -r Playground/*/legacy.js').text, /\[ODS Portal\]/);
+  assert.equal(other.finish('Deleted.'), 'Deleted.');
   child.finish();
-  assert.deepEqual(tree(example), realms);
+  const kept = tree(example);
+  assert.equal(kept['legacy.js'], undefined, 'the documented limit: that change stays');
+  assert.match(kept['world.js'], /^file /);
+  const next = turn(wired.guard, 'Never mind. Delete all my games.', root, {sessionKey: chat('9')});
+  assert.ok(next.exec('rm -r Playground/*').text.endsWith(RESTORED.model));
+  assert.deepEqual(tree(example), kept);
+  assert.ok(next.finish('Deleted all your games.').endsWith(RESTORED.owner));
 });
 
 test('a later run in a finished child\'s session works for no owner turn', {skip: NO_BASH}, () => {
@@ -1040,3 +1328,112 @@ test('a child with no known owner run never names it', () => {
   run.finish();
   assert.deepEqual(tree(example), original);
 });
+
+test('a run whose owner run ODS no longer tracks never names it by its own text', () => {
+  for (const sessionKey of [CHILD, OWNER]) {
+    const {root, example, original} = workspace();
+    const guard = createToolLoopGuard({exampleOwnerRun: () => 'chatcmpl_99999999-2222-4333-8444-555555555555'});
+    const run = turn(guard, 'In elf-of-doom, make the arrows give 7', root, {sessionKey});
+    fs.appendFileSync(path.join(example, 'engine.js'), '\n// arrows give 7\n');
+    run.finish();
+    assert.deepEqual(tree(example), original, sessionKey);
+  }
+});
+
+test('the per-call notes stay bounded: a call whose result was never persisted drops its note', () => {
+  const {root, example} = workspace();
+  const guard = createToolLoopGuard();
+  const run = turn(guard, 'Make the snake faster', root);
+  const unpersisted = [];
+  for (let i = 0; i < 300; i++) {
+    const toolCallId = `${run.context.runId}-loose-${i}`, ctx = {...run.context, toolName: 'read', toolCallId};
+    fs.appendFileSync(path.join(example, 'ui.js'), 'x');
+    guard.afterToolCall({toolName: 'read', runId: run.context.runId, params: {path: 'Playground/snake-game/game.js'}, toolCallId,
+      result: {content: [{type: 'text', text: 'ok'}]}}, ctx, 'pixel');
+    unpersisted.push(ctx);
+  }
+  const persist = ctx => guard.toolResultPersist({toolName: 'read', toolCallId: ctx.toolCallId,
+    message: {role: 'toolResult', toolName: 'read', toolCallId: ctx.toolCallId, content: [{type: 'text', text: 'ok'}]}}, ctx, 'pixel');
+  assert.equal(persist(unpersisted[0]), undefined, 'the oldest note was dropped');
+  assert.ok(persist(unpersisted.at(-1)).message.content.at(-1).text.endsWith(RESTORED.model));
+  run.finish();
+});
+
+// ------------------------------------------------- over the real ingress --
+
+const PORTAL_RUN = 'chatcmpl_66666666-2222-4333-8444-555555555555';
+// Portal's chat request through the real ingress over loopback HTTP. The
+// gateway is the plugin's guard: its chat completion runs the turn (the run
+// ends inside that request) and its verification route serves
+// deliveryVerificationForRun, as index.js does.
+async function portal(t, guard, finish, stream) {
+  let reply;
+  const server = createIngressServer({token: 'test-gateway-token-0123456789abcdef', gatewayPort: 18789, deps: {setTimeout, clearTimeout,
+    fetch: async (url, options) => {
+      const body = options?.body ? JSON.parse(options.body) : null;
+      let result;
+      switch (new URL(url).pathname) {
+        case '/v1/chat/completions':
+          reply = finish();
+          result = {id: PORTAL_RUN, object: 'chat.completion', choices: [{index: 0, message: {role: 'assistant', content: reply}, finish_reason: 'stop'}]};
+          break;
+        case '/pixel-ods/verification': result = guard.deliveryVerificationForRun(body.runId); break;
+        case '/pixel-ods/subagent-delivery': result = {schemaVersion: 1, kind: 'ods-subagent-delivery', runId: body.runId, status: 'not-delegated'}; break;
+        case '/pixel-ods/read-only-extension-continuation': result = {schemaVersion: 1, kind: 'ods-extension-read-only-continuation', eligible: false}; break;
+        case '/pixel-ods/unfinished-extension-decision': result = {schemaVersion: 1, kind: 'ods-extension-unfinished-decision', eligible: false}; break;
+        case '/pixel-ods/activity': result = {task: null}; break;
+        case '/health': result = {ok: true}; break;
+        default: return new Response('', {status: 404});
+      }
+      return new Response(JSON.stringify(result), {status: 200, headers: {'content-type': 'application/json'}});
+    }}});
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/v1/chat/completions`, {method: 'POST',
+    headers: {'content-type': 'application/json', connection: 'close'}, signal: AbortSignal.timeout(10000),
+    body: JSON.stringify({user: 'ods-example-guard-portal', stream, messages: [{role: 'user', content: 'hello'}]})});
+  const body = await response.text();
+  assert.equal(response.status, 200, body);
+  return stream ? body.split(/\r?\n/).filter(line => line.startsWith('data: {')).map(line => JSON.parse(line.slice(6)))
+    .map(frame => frame.choices?.[0]?.delta?.content ?? '').join('') : JSON.parse(body).choices[0].message.content;
+}
+const portalTurn = (guard, prompt, root) => turn(guard, prompt, root, {runId: PORTAL_RUN});
+
+for (const stream of [false, true]) {
+  test(`Portal receives the restore notice after the model's reply over the real ingress, stream=${stream}`, {skip: NO_BASH}, async t => {
+    const {root, example, original} = workspace();
+    const guard = createToolLoopGuard();
+    const run = portalTurn(guard, 'Change the font to Comic Sans in all my games', root);
+    run.exec(`${SED_FONT} Playground/*/style.css`);
+    assert.deepEqual(tree(example), original);
+    const text = await portal(t, guard, () => { run.finish(); return 'I changed the font in all your games.'; }, stream);
+    assert.equal(text, `I changed the font in all your games.\n\n${RESTORED.owner}`);
+  });
+
+  test(`Portal receives a preview reply, its evidence and then the notice over the real ingress, stream=${stream}`, async t => {
+    const {guard, run} = previewTurn(PORTAL_RUN);
+    const text = await portal(t, guard, () => { run.finish(); return 'Your new space game is ready.'; }, stream);
+    assert.ok(text.startsWith('Your new space game is ready.\n\n'), text);
+    assert.match(text, /Publication scope: [^\n]+\n\nODS put Playground\/elf-of-doom back as it was\./);
+    assert.ok(text.endsWith(RESTORED.owner));
+    assert.equal(count(text, RESTORED.owner), 1);
+  });
+
+  test(`Portal receives the failure notice with the help link over the real ingress, stream=${stream}`, {skip: NO_BASH}, async t => {
+    const {root} = workspace();
+    const guard = createToolLoopGuard();
+    const run = portalTurn(guard, 'Start over with an empty workspace', root);
+    run.exec('rm -r Playground && echo "not a folder" > Playground');
+    const text = await portal(t, guard, () => { run.finish(); return 'Your workspace is empty now.'; }, stream);
+    assert.equal(text, `Your workspace is empty now.\n\n${EXAMPLE_NOTES.failed.owner}`);
+    assert.match(text, /\[get help on Discord\]\(https:\/\/discord\.gg\/4ntNp9MAwC\)\.$/);
+  });
+
+  test(`a turn ODS did not need to act on reaches Portal unchanged over the real ingress, stream=${stream}`, async t => {
+    const {root} = workspace();
+    const guard = createToolLoopGuard();
+    const run = portalTurn(guard, 'What can you do?', root);
+    run.read('Playground/snake-game/game.js');
+    assert.equal(await portal(t, guard, () => { run.finish(); return 'I can build games.'; }, stream), 'I can build games.');
+  });
+}

@@ -1,11 +1,12 @@
 // The shipped example's guard through the plugin entry's own registration
 // code (plugin/index.js): its before_prompt_build, before_tool_call,
 // after_tool_call, tool_result_persist, before_agent_finalize,
-// reply_payload_sending and agent_end callbacks, and the two construction
-// options that link a delegated run to its owner turn (exampleOwnerRun,
-// noticeForRun), run in a vm with a real tool-loop guard and delegation
-// custody. This is a source composition fixture, not gateway qualification;
-// example_guard.test.mjs covers the guard's behaviour itself.
+// reply_payload_sending and agent_end callbacks, and the construction option
+// that links a delegated run to its owner turn (exampleOwnerRun), run in a vm
+// with a real tool-loop guard and delegation custody. The owner's reply is
+// what Portal's ingress delivers from the run's verification
+// (host/pixel_ingress.mjs). This is a source composition fixture, not gateway
+// qualification; example_guard.test.mjs covers the guard's behaviour itself.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -14,6 +15,7 @@ import test, {after} from 'node:test';
 import {fileURLToPath} from 'node:url';
 import vm from 'node:vm';
 
+import {applyVerificationToCompletion, parseVerificationResponse} from '../host/pixel_ingress.mjs';
 import {withCronCommandPayloadBlock} from '../plugin/cron-command-payload-guard.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {EXAMPLE_NOTES} from '../plugin/example-guard.mjs';
@@ -65,6 +67,13 @@ const USER = `ods-${'a'.repeat(64)}`;
 const OWNER_RUN = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const CHILD = 'agent:pixel:subagent:22222222-2222-4333-8444-555555555555';
 const CHILD_RUN = '33333333-2222-4333-8444-555555555555';
+// The reply Portal receives: the model's text with the verification the
+// gateway serves (JSON), parsed and applied by the ingress.
+function delivered(text, served, runId) {
+  const completion = {id: runId, choices: [{index: 0, message: {role: 'assistant', content: text}, finish_reason: 'stop'}]};
+  return applyVerificationToCompletion(completion, parseVerificationResponse(JSON.parse(JSON.stringify(served)), runId))
+    .choices[0].message.content;
+}
 
 // The entry's hooks around a real tool-loop guard and delegation custody,
 // each built with the entry's own option expressions.
@@ -72,9 +81,8 @@ function entry(root) {
   const callbacks = {}, links = {};
   const linked = vm.createContext(links);
   const ownerRun = vm.runInContext(`(${option('exampleOwnerRun')})`, linked);
-  const noticeForRun = vm.runInContext(`(${option('noticeForRun')})`, linked);
   links.toolLoopGuard = createToolLoopGuard({exampleOwnerRun: ownerRun});
-  links.delegationDelivery = createSubagentDelivery({noticeForRun,
+  links.delegationDelivery = createSubagentDelivery({
     resolveOwnerSession: key => key === OWNER ? {sessionId: `session-${OWNER_RUN}`} : null,
     finalText: message => message.content.filter(block => block.type === 'text').map(block => block.text).join('\n'),
     verificationForRun: runId => links.toolLoopGuard.deliveryVerificationForRun(runId)});
@@ -96,12 +104,12 @@ function entry(root) {
     bundleAdmission: createWorkspaceBundleAdmission(), artifactAdmission: createWorkspaceArtifactAdmission(),
     projectRunControl: createProjectRunControl(), compactToolResultEnvelope,
   });
-  return {callbacks, delivery: links.delegationDelivery};
+  return {callbacks, delivery: links.delegationDelivery, guard: links.toolLoopGuard};
 }
 
 // One run through the entry's callbacks: its prompt build (returning what
 // the model is given), tool calls that act on the workspace, and its end.
-async function run({callbacks}, context, prompt) {
+async function run({callbacks, guard}, context, prompt) {
   const built = await callbacks.before_prompt_build({prompt, messages: [{role: 'user', content: prompt}]}, context);
   let calls = 0;
   return {
@@ -117,12 +125,15 @@ async function run({callbacks}, context, prompt) {
       const persisted = callbacks.tool_result_persist({toolName, toolCallId, message}, ctx)?.message ?? message;
       return persisted.content.map(block => block.text).join('\n');
     },
+    // The run's finalize and end, then the reply as Portal's ingress
+    // delivers it. The channel reply hook never carries the notice.
     async finish(text) {
       await callbacks.before_agent_finalize({runId: context.runId, lastAssistantMessage: text}, context);
-      const reply = callbacks.reply_payload_sending({runId: context.runId, kind: 'final', payload: {text}})?.payload?.text ?? text;
+      assert.doesNotMatch(callbacks.reply_payload_sending({runId: context.runId, kind: 'final', payload: {text}})?.payload?.text ?? '',
+        /ODS put|could not put/);
       callbacks.agent_end({runId: context.runId, success: true,
         messages: [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text}]}]}, context);
-      return reply;
+      return delivered(text, guard.deliveryVerificationForRun(context.runId), context.runId);
     },
   };
 }
@@ -152,6 +163,20 @@ test('a turn that starts with "In elf-of-doom," changes it through the entry\'s 
   assert.match(ui(), /\/\/ faster\n$/);
 });
 
+test('a turn that starts with "In elf-of-doom," writes in the real folder through the entry\'s hooks, even worded like a new game', async () => {
+  const {root, example} = workspace();
+  const wired = entry(root);
+  const turn = await run(wired, owner(), 'In elf-of-doom, make a game over screen');
+  const params = {path: 'Playground/elf-of-doom/gameover.js', content: '// game over\n'};
+  const decision = await wired.callbacks.before_tool_call({toolName: 'write', params, toolCallId: 'write-1'},
+    {...owner(), toolName: 'write', toolCallId: 'write-1'});
+  assert.notEqual(decision?.block, true, decision?.blockReason);
+  assert.equal((decision?.params ?? params).path, 'Playground/elf-of-doom/gameover.js');
+  fs.writeFileSync(path.join(example, 'gameover.js'), params.content);
+  assert.doesNotMatch(await turn.finish('There is a game over screen now.'), /ODS put/);
+  assert.deepEqual(fs.readdirSync(path.join(root, 'Playground')), ['elf-of-doom']);
+});
+
 // The owner run delegates one child and yields, as delegation custody sees it.
 async function delegate(wired, prompt) {
   const turn = await run(wired, owner(), prompt);
@@ -169,7 +194,9 @@ async function announce(wired, text) {
   const continuation = {...owner(), runId: `announce:v1:${CHILD}:${CHILD_RUN}`,
     inputProvenance: {kind: 'inter_session', sourceTool: 'subagent_announce', sourceSessionKey: CHILD}};
   await (await run(wired, continuation, 'The child finished.')).finish(text);
-  return wired.delivery.read(USER, OWNER_RUN);
+  const read = wired.delivery.read(USER, OWNER_RUN);
+  assert.equal(read.status, 'ready');
+  return delivered(read.text, read.verification, OWNER_RUN);
 }
 
 test('a delegated child of a turn that names it keeps its change through the entry\'s hooks', async () => {
@@ -180,7 +207,7 @@ test('a delegated child of a turn that names it keeps its change through the ent
     () => fs.appendFileSync(path.join(example, 'ui.js'), '// boss\n')), /\[ODS Portal\]/);
   await child.finish('Added a boss.');
   assert.match(ui(), /\/\/ boss\n$/);
-  assert.equal((await announce(wired, 'There is a boss now.')).text, 'There is a boss now.');
+  assert.equal(await announce(wired, 'There is a boss now.'), 'There is a boss now.');
 });
 
 test('a delegated child of a turn that does not name it is put back, and the delivered answer says so', async () => {
@@ -192,6 +219,5 @@ test('a delegated child of a turn that does not name it is put back, and the del
     () => fs.appendFileSync(path.join(example, 'ui.js'), '// snake\n'))).endsWith(EXAMPLE_NOTES.restored.model));
   await child.finish('Done.');
   assert.equal(ui(), original);
-  const delivered = await announce(wired, 'The snake is faster.');
-  assert.equal(delivered.text, `The snake is faster.\n\n${EXAMPLE_NOTES.restored.owner}`);
+  assert.equal(await announce(wired, 'The snake is faster.'), `The snake is faster.\n\n${EXAMPLE_NOTES.restored.owner}`);
 });
