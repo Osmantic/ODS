@@ -1105,11 +1105,30 @@ else
             fi
         fi
 
-        SDXL_MODEL="sdxl_lightning_4step.safetensors"
-        SDXL_URL="https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_4step.safetensors"
+        # Keep the optional 6.94 GB checkpoint tied to one reviewed upstream
+        # revision. The background download is promoted only after size and
+        # SHA256 verification; a partial or changed response is never loaded.
+        . "$SCRIPT_DIR/installers/lib/comfy-checkpoint.sh"
+        SDXL_MODEL="$ODS_SDXL_LIGHTNING_FILE"
+        SDXL_URL="$ODS_SDXL_LIGHTNING_URL"
 
+        if [[ -L "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
+            ai_bad "SDXL Lightning checkpoint is a symlink; expected an owned regular file."
+            exit 1
+        fi
         if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-            ai "Downloading SDXL Lightning 4-step (~6.5GB) for image generation..."
+            # Keep the lock outside the ComfyUI container-writable bind mount.
+            # The root install directory is not mounted into ComfyUI.
+            SDXL_LOCK_FILE="$INSTALL_DIR/.sdxl-checkpoint.lock"
+            if [[ -L "$SDXL_LOCK_FILE" || ( -e "$SDXL_LOCK_FILE" && ! -f "$SDXL_LOCK_FILE" ) ]]; then
+                ai_bad "The optional SDXL checkpoint lock path is not a regular file."
+                exit 1
+            fi
+            if ! command -v flock >/dev/null 2>&1; then
+                ai_bad "The optional SDXL checkpoint download requires flock for safe single-writer access."
+                exit 1
+            fi
+            ai "Downloading SDXL Lightning 4-step (6.94 GB) for image generation..."
 
             # Source background task tracking
             if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
@@ -1125,17 +1144,72 @@ else
                     SDXL_CHECKPOINT_DIR="$SDXL_CHECKPOINT_DIR" \
                     SDXL_MODEL="$SDXL_MODEL" \
                     SDXL_URL="$SDXL_URL" \
+                    SDXL_EXPECTED_BYTES="$ODS_SDXL_LIGHTNING_BYTES" \
+                    SDXL_EXPECTED_SHA256="$ODS_SDXL_LIGHTNING_SHA256" \
+                    SDXL_LOCK_FILE="$SDXL_LOCK_FILE" \
+                    SDXL_VERIFY_HELPER="$SCRIPT_DIR/installers/lib/comfy-checkpoint.sh" \
                     bash -c '
+                        . "$SDXL_VERIFY_HELPER"
                         echo "[SDXL] Starting SDXL Lightning model download..."
+                        if ods_acquire_checkpoint_lock "$SDXL_LOCK_FILE"; then
+                            :
+                        else
+                            lock_result=$?
+                            if [[ "$lock_result" -eq 75 ]]; then
+                                echo "[SDXL] Another checkpoint download is already running"
+                                exit 0
+                            fi
+                            echo "[SDXL] ERROR: Could not acquire checkpoint download lock"
+                            exit 1
+                        fi
                         if [[ ! -f "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" ]]; then
-                            echo "[SDXL] Downloading $SDXL_MODEL (~6.5GB)..."
-                            curl -fSL -C - --connect-timeout 30 --max-time 3600 \
-                                --retry 5 --retry-delay 10 --retry-all-errors \
-                                -o "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" \
-                                "$SDXL_URL" 2>&1 && \
-                                mv "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" && \
-                                echo "[SDXL] $SDXL_MODEL complete" || \
-                                echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
+                            part="$SDXL_CHECKPOINT_DIR/$SDXL_MODEL.part"
+                            meta="$part.meta"
+                            expected_meta="$SDXL_EXPECTED_BYTES $SDXL_EXPECTED_SHA256"
+                            if [[ -L "$part" || -L "$meta" ]]; then
+                                echo "[SDXL] ERROR: Partial checkpoint or metadata is a symlink"
+                                exit 1
+                            fi
+                            if [[ ( -e "$part" && ! -f "$part" ) || ( -e "$meta" && ! -f "$meta" ) ]]; then
+                                echo "[SDXL] ERROR: Partial checkpoint or metadata is not a regular file"
+                                exit 1
+                            fi
+                            # Old unpinned partials cannot safely resume from
+                            # the new immutable revision. Retain only partials
+                            # started by this exact size/hash selection.
+                            if [[ ( -e "$part" && ! -f "$meta" ) ||
+                                  ( -f "$meta" && "$(cat "$meta")" != "$expected_meta" ) ]]; then
+                                rm -f -- "$part" "$meta"
+                            fi
+                            if [[ -f "$part" ]]; then
+                                part_bytes="$(wc -c < "$part")"
+                                part_bytes="${part_bytes//[[:space:]]/}"
+                                if [[ "$part_bytes" -ge "$SDXL_EXPECTED_BYTES" ]] &&
+                                    ! ods_verify_checkpoint_file "$part" "$SDXL_EXPECTED_BYTES" "$SDXL_EXPECTED_SHA256"; then
+                                    rm -f -- "$part" "$meta"
+                                fi
+                            fi
+                            if [[ ! -f "$meta" ]]; then
+                                printf '%s\n' "$expected_meta" > "$meta"
+                            fi
+                            if ! ods_verify_checkpoint_file "$part" "$SDXL_EXPECTED_BYTES" "$SDXL_EXPECTED_SHA256"; then
+                                echo "[SDXL] Downloading $SDXL_MODEL (6.94 GB)..."
+                                if ! curl -fSL -C - --connect-timeout 30 --max-time 3600 \
+                                    --retry 5 --retry-delay 10 --retry-all-errors \
+                                    -o "$part" "$SDXL_URL" 2>&1; then
+                                    echo "[SDXL] ERROR: Failed to download $SDXL_MODEL"
+                                    exit 1
+                                fi
+                            fi
+                            if ods_promote_verified_checkpoint "$part" "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" \
+                                "$SDXL_EXPECTED_BYTES" "$SDXL_EXPECTED_SHA256"; then
+                                rm -f -- "$meta"
+                                echo "[SDXL] $SDXL_MODEL verified and complete"
+                            else
+                                echo "[SDXL] ERROR: Checkpoint size or SHA256 did not match the pinned model"
+                                rm -f -- "$part" "$meta"
+                                exit 1
+                            fi
                         fi
                         echo "[SDXL] SDXL Lightning model download finished."
                     ' > "$INSTALL_DIR/logs/sdxl-download.log" 2>&1
@@ -1149,9 +1223,15 @@ else
             fi
 
             log "Background SDXL download started (PID: $sdxl_pid). Check: tail -f $INSTALL_DIR/logs/sdxl-download.log"
-            ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
+            ai "SDXL Lightning downloading in background (6.94 GB). ComfyUI can use it if verification succeeds; check logs/sdxl-download.log for the result."
         else
-            ai_ok "SDXL Lightning model already present"
+            if ods_verify_checkpoint_file "$SDXL_CHECKPOINT_DIR/$SDXL_MODEL" \
+                "$ODS_SDXL_LIGHTNING_BYTES" "$ODS_SDXL_LIGHTNING_SHA256"; then
+                ai_ok "SDXL Lightning model already present and verified"
+            else
+                ai_bad "SDXL Lightning checkpoint is present but does not match the pinned size and SHA256. Keep the file for inspection; remove or replace it before continuing."
+                exit 1
+            fi
         fi
     fi
 
