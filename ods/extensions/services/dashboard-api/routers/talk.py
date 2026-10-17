@@ -434,16 +434,19 @@ def _tts_url() -> str:
     return (os.environ.get("KOKORO_URL") or os.environ.get("TTS_URL") or "http://tts:8880").rstrip("/")
 
 
+# Compose passes the AUDIO_* speech settings to Open WebUI, not dashboard-api,
+# so read them from the mounted .env: the installer-selected STT model (e.g.
+# large-v3-turbo on CUDA) is the only one Speaches has downloaded.
 def _stt_model() -> str:
-    return os.environ.get("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
+    return read_live_env_value("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
 
 
 def _tts_model() -> str:
-    return os.environ.get("AUDIO_TTS_MODEL") or "kokoro"
+    return read_live_env_value("AUDIO_TTS_MODEL") or "kokoro"
 
 
 def _tts_voice() -> str:
-    return os.environ.get("AUDIO_TTS_VOICE") or os.environ.get("TTS_VOICE") or "af_heart"
+    return read_live_env_value("AUDIO_TTS_VOICE") or read_live_env_value("TTS_VOICE") or "af_heart"
 
 
 async def _transcribe_bytes(data: bytes, filename: str, content_type: str) -> str:
