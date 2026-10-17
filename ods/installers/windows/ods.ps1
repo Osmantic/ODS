@@ -2517,17 +2517,32 @@ function Invoke-Chat {
         return
     }
 
-    $body = @{
-        model    = "default"
-        messages = @(
-            @{ role = "user"; content = $Message }
-        )
-    } | ConvertTo-Json -Depth 3
-
-    $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
     try {
+        $envMap = Read-ODSEnv
+        $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -EnvMap $envMap `
+            -NativeBackend (Get-NativeInferenceBackend)
+        $modelId = "default"
+        $headers = @{}
+        if ((Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("ODS_MODEL_SWITCHBOARD")).ToLowerInvariant() -eq "enabled") {
+            $key = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("LITELLM_KEY")
+            if (-not $key) { throw "Chat switchboard requires LITELLM_KEY in .env." }
+            $port = Get-WindowsODSEnvPort -EnvMap $envMap -Name "LITELLM_PORT" -DefaultPort 4000
+            $llmEndpoint = @{ ChatCompletionsUrl = "http://127.0.0.1:$port/v1/chat/completions" }
+            $modelId = "ods/current"
+            $headers.Authorization = "Bearer $key"
+        } elseif ($llmEndpoint.Backend -eq "native-llama-server") {
+            $key = [string]$llmEndpoint.ApiKey
+            if (-not $key) { throw "Native chat requires LLAMA_SERVER_API_KEY in .env." }
+            $modelId = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("GGUF_FILE") -Default "default"
+            $headers.Authorization = "Bearer $key"
+        }
+        $body = @{
+            model = $modelId
+            messages = @(@{ role = "user"; content = $Message })
+        } | ConvertTo-Json -Depth 3
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
-            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
+            -Method POST -Headers $headers -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
+            -ContentType "application/json; charset=utf-8" -TimeoutSec 120
 
         if ($resp.choices -and $resp.choices[0].message) {
             Write-Host ""
