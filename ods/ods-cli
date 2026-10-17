@@ -4147,7 +4147,13 @@ cmd_model() {
 
             if [[ "$http_code" != "200" ]]; then
                 local activation_error
-                activation_error=$(jq -r '.error // empty' "$response_file" 2>/dev/null || true)
+                activation_error=$(jq -r '
+                    def activation_text: select(type == "string" and test("\\S"));
+                    ((.code | activation_text) // (.error | activation_text) // null) as $code |
+                    ((.message | activation_text) // (.reason | activation_text) // null) as $detail |
+                    if $code and $detail and $code != $detail then "\($code): \($detail)"
+                    else $detail // $code // empty end
+                ' "$response_file" 2>/dev/null || true)
                 [[ -z "$activation_error" ]] && activation_error=$(head -c 500 "$response_file")
                 rm -f "$response_file"
                 trap - INT TERM HUP
