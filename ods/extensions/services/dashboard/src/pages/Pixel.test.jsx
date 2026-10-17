@@ -980,6 +980,7 @@ describe('Pixel', () => {
   const MODEL_ADVISORY_TEXT = {
     'context-too-small': 'This model runs with less than 16K tokens of context, too small for Portal tasks. Set its context to 16K or more in Models, or switch model.',
     'tools-unavailable': 'This model failed the tool-call check, so Portal tasks that use tools will likely fail. Chat still works.',
+    'streaming-tools-unavailable': 'This model failed the streaming tool check. Portal tasks that use tools may be unreliable; chat and experiments remain available.',
     'not-profiled': 'ODS has not checked this model yet, so Portal tasks may not work. To check it, choose Check again on the running model in Models.',
     'thinking-always-on': 'This model always thinks before it answers, so Portal tasks are slower and use more of its context.',
   }
@@ -1005,12 +1006,12 @@ describe('Pixel', () => {
     }
   )
 
-  it('never disables sending while a model advisory is shown', async () => {
+  it.each(['tools-unavailable', 'streaming-tools-unavailable'])('never disables sending while the %s advisory is shown', async reason => {
     globalThis.fetch.mockImplementation(async url => url === '/api/pixel/chat/stream'
       ? sseResponse([JSON.stringify({ choices: [{ delta: { content: 'Chat still answers' } }] }), '[DONE]'])
       : response({
         available: true, model: 'pixel/default',
-        modelSupport: { tier: 'adaptive', detail: 'Tools failed.', reason: 'tools-unavailable' },
+        modelSupport: { tier: 'adaptive', detail: 'Tools failed.', reason },
       }))
     render(<Pixel />)
     await screen.findByRole('status', { name: 'Model capability' })
@@ -1023,7 +1024,7 @@ describe('Pixel', () => {
     const sends = globalThis.fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')
     expect(sends).toHaveLength(1)
     expect(JSON.parse(sends[0][1].body).messages.at(-1).content).toBe('run a task anyway')
-    expect(screen.getByRole('status', { name: 'Model capability' })).toHaveTextContent(MODEL_ADVISORY_TEXT['tools-unavailable'])
+    expect(screen.getByRole('status', { name: 'Model capability' })).toHaveTextContent(MODEL_ADVISORY_TEXT[reason])
   })
 
   it('keeps a specific advisory when an older model gate refuses a send', async () => {
