@@ -1,10 +1,21 @@
+import importlib.util
 import json
 import os
+import random
 import subprocess
 import sys
+from itertools import combinations
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "../scripts/assign_gpus.py")
 FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures/topology_json")
+
+# Load assign_gpus as a module so the subset-selection functions can be called and
+# compared directly, not only through the CLI subprocess. Register it in
+# sys.modules before executing so its dataclasses resolve their own module.
+_spec = importlib.util.spec_from_file_location("assign_gpus", SCRIPT)
+assign_gpus = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = assign_gpus
+_spec.loader.exec_module(assign_gpus)
 
 def fixture_path(name):
     return os.path.join(FIXTURES_DIR, name)
@@ -218,6 +229,42 @@ class TestTwoGpuBusyPeer:
         assert rc == 0, stderr
         assert llama(out)["gpus"] == [self.GPU0]
         assert parallelism(out)["mode"] == "none"
+
+
+class TestRankZeroTieBreakFollowsInputOrder:
+    """When link-less GPUs tie on VRAM, selection follows topology input order
+    rather than GPU-index order. Listing the GPUs as (2, 0, 1) makes a regression
+    to sorted(..., key=g.index) fail visibly: it would pick [0, 2] not [2, 0].
+    """
+
+    def _topology(self):
+        return {
+            "vendor": "nvidia",
+            "gpu_count": 3,
+            "links": [],
+            "gpus": [
+                {"index": idx, "uuid": f"GPU-{idx}", "name": "24 GB GPU",
+                 "memory_gb": 24, "memory_free_gb": 24}
+                for idx in (2, 0, 1)
+            ],
+        }
+
+    def test_two_gpu_tie_keeps_input_order(self, tmp_path):
+        path = tmp_path / "unordered.json"
+        path.write_text(json.dumps(self._topology()), encoding="utf-8")
+        # 40 GB model needs 2 of the 24 GB GPUs; all tie on VRAM.
+        rc, out, stderr = run(str(path), 40000)
+        assert rc == 0, stderr
+        assert llama(out)["gpu_indices"] == [2, 0]
+        assert llama(out)["gpus"] == ["GPU-2", "GPU-0"]
+
+    def test_single_gpu_tie_keeps_first_in_input_order(self, tmp_path):
+        path = tmp_path / "unordered.json"
+        path.write_text(json.dumps(self._topology()), encoding="utf-8")
+        # 20 GB model fits one 24 GB GPU; first in input order (index 2) wins.
+        rc, out, stderr = run(str(path), 20000)
+        assert rc == 0, stderr
+        assert llama(out)["gpu_indices"] == [2]
 
 
 # ── 4 GPU — SOC / cross-NUMA PCIe ────────────────────────────────────────────
@@ -652,3 +699,247 @@ class TestParallelismModeSelection:
     def test_mem_util_pipeline_is_095(self):
         _, out, _ = run(fixture_path("nvidia_smi_topo_matrix_4gpus_soc.json"), 100000)
         assert parallelism(out)["gpu_memory_utilization"] == 0.95
+
+
+# ── Subset-selection algorithm: direct unit coverage ──────────────────────────
+#
+# The tests below call assign_gpus.find_llama_subset() directly (bypassing the CLI
+# and the downstream service rebalancing) to lock the selection semantics of the
+# non-exhaustive tier search. Selection order is: min_link_rank DESC, subset size
+# ASC, total_vram DESC, with VRAM ties resolved by topology input order.
+
+GB = 1024  # MB per GB
+
+
+def _gpu(index, memory_mb):
+    return assign_gpus.GPU(
+        index=index, uuid=f"GPU-{index}", name=f"{memory_mb}mb",
+        memory_mb=float(memory_mb), memory_total_mb=float(memory_mb),
+    )
+
+
+def _gpus(order, memory_by_index):
+    """GPU objects listed in `order` (their input/topology order), each sized by
+    memory_by_index[gpu_index]."""
+    return [_gpu(idx, memory_by_index[idx]) for idx in order]
+
+
+def _indices(subset):
+    return None if subset is None else [g.index for g in subset.gpus]
+
+
+def _full_mesh(indices, rank):
+    return {(a, b): rank for a, b in combinations(sorted(indices), 2)}
+
+
+# ---- Brute-force reference (recreates the old exhaustive selection) ----------
+
+def _all_subsets_ranked(gpus, rank_matrix):
+    """The old enumerate_subsets(): every non-empty subset, ordered by
+    (min_link_rank DESC, size ASC, total_vram DESC). Kept in the test only, as the
+    ground-truth oracle the new tier search must reproduce."""
+    all_subsets = []
+    for size in range(1, len(gpus) + 1):
+        for combo in combinations(gpus, size):
+            all_subsets.append(assign_gpus.compute_subset(list(combo), rank_matrix))
+    all_subsets.sort(
+        key=lambda s: (s.min_link_rank, -len(s.gpus), s.total_vram_mb),
+        reverse=True,
+    )
+    return all_subsets
+
+
+def _brute_force_find_llama_subset(ranked_subsets, model_size_mb):
+    """The old find_llama_subset(): first ranked subset that covers the model and
+    can host an equal split. Takes the pre-ranked subsets so a topology's subsets
+    are enumerated once and reused across model sizes. Returns None if none fit."""
+    for subset in ranked_subsets:
+        if (subset.total_vram_mb >= model_size_mb
+                and assign_gpus.subset_can_host_equal_split(subset, model_size_mb)):
+            return subset
+    return None
+
+
+# ---- Random topology generator (deterministic) -------------------------------
+
+def _random_memories(rng, n):
+    mode = rng.choice(["equal", "equal", "heterogeneous", "mixed"])
+    if mode == "equal":
+        m = rng.choice([16, 24, 32, 48, 80]) * GB
+        return [m] * n
+    if mode == "heterogeneous":
+        return [rng.choice([8, 12, 16, 24, 32, 48, 80]) * GB for _ in range(n)]
+    sizes = rng.sample([8, 12, 16, 24, 32, 48, 80], k=3)
+    return [rng.choice(sizes) * GB for _ in range(n)]
+
+
+def _random_rank_matrix(rng, n):
+    """Keyed by GPU index (identity), independent of input order."""
+    if n < 2:
+        return {}
+    mode = rng.choice(["none", "full", "partial", "islands", "multitier"])
+    ranks = [10, 20, 30, 80, 100]
+    if mode == "none":
+        return {}
+    if mode == "full":
+        return _full_mesh(range(n), rng.choice(ranks))
+    if mode == "partial":  # fully random sparse graph (missing links)
+        rm = {}
+        for a in range(n):
+            for b in range(a + 1, n):
+                if rng.random() < 0.5:
+                    rm[(a, b)] = rng.choice(ranks)
+        return rm
+    if mode == "islands":  # disjoint fully-connected groups at differing ranks
+        idxs = list(range(n))
+        rng.shuffle(idxs)
+        rm = {}
+        i = 0
+        while i < n:
+            size = rng.randint(1, n - i)
+            island = idxs[i:i + size]
+            rm.update(_full_mesh(island, rng.choice(ranks)))
+            i += size
+        return rm
+    # multitier: complete graph, each edge an independent rank tier (some dropped)
+    rm = {}
+    for a in range(n):
+        for b in range(a + 1, n):
+            r = rng.choice(ranks + [0, 0])
+            if r > 0:
+                rm[(a, b)] = r
+    return rm
+
+
+def _random_input_order(rng, n):
+    order = list(range(n))
+    if rng.random() < 0.5:
+        rng.shuffle(order)
+    return order
+
+
+def _model_sizes(memory_by_index):
+    """Sizes that exercise fit-on-1/2/3+, and a size that fits nothing."""
+    total = sum(memory_by_index)
+    candidates = [1, int(total * 0.15), int(total * 0.4),
+                  int(total * 0.7), int(total * 0.95), int(total * 1.5) + 1]
+    return sorted({s for s in candidates if s > 0})
+
+
+class TestFindLlamaSubsetMatchesBruteForce:
+    """The tier search must return the exact same subset the old exhaustive
+    enumeration would, including the precise GPU indices and their order.
+
+    Random topologies from 1..10 GPUs cover shuffled input order, equal-VRAM
+    ties, heterogeneous VRAM, no links, full mesh, partial graphs, disjoint
+    islands, multiple rank tiers, and missing links; model sizes span fit-on-one
+    through fits-nothing. n<=10 keeps the 2^n oracle affordable.
+    """
+
+    def test_matches_exhaustive_reference(self):
+        rng = random.Random(20260925)
+        checked = 0
+        for n in range(1, 11):
+            iterations = 15 if n <= 7 else 6
+            for _ in range(iterations):
+                memory_by_index = _random_memories(rng, n)
+                order = _random_input_order(rng, n)
+                gpus = _gpus(order, memory_by_index)
+                rank_matrix = _random_rank_matrix(rng, n)
+                # Build the oracle once per topology; reuse across model sizes.
+                ranked = _all_subsets_ranked(gpus, rank_matrix)
+                for model in _model_sizes(memory_by_index):
+                    expected = _brute_force_find_llama_subset(ranked, model)
+                    actual = assign_gpus.find_llama_subset(gpus, rank_matrix, model)
+                    assert _indices(actual) == _indices(expected), (
+                        f"n={n} model={model} order={order} "
+                        f"mem={memory_by_index} links={rank_matrix} "
+                        f"expected={_indices(expected)} actual={_indices(actual)}"
+                    )
+                    if expected is not None:
+                        # min_link_rank must match too, since it drives parallelism.
+                        assert actual.min_link_rank == expected.min_link_rank
+                    checked += 1
+        assert checked > 500  # guard against the loop silently degenerating
+
+
+class TestLargeSyntheticTopologies:
+    """Server-scale GPU counts (16/32/64) with pre-known winners.
+
+    These tests do not use the exhaustive reference implementation and therefore
+    verify large topologies without materializing and sorting all 2^n subsets.
+    (The production search still runs bounded combinations() on positive tiers;
+    the win is that it never builds or sorts the full subset set.) Each asserts
+    the exact winning indices.
+    """
+
+    def test_64_disconnected_smallest_fitting_group_in_input_order(self):
+        n = 64
+        gpus = _gpus(range(n), [24 * GB] * n)
+        # size 1 needs >24 GB (no), size 2 needs 30 GB/GPU (no), size 3 needs
+        # 20 GB/GPU (yes) → smallest fitting count is 3, taken in input order.
+        model = 60 * GB
+        result = assign_gpus.find_llama_subset(gpus, {}, model)
+        assert _indices(result) == [0, 1, 2]
+        assert result.min_link_rank == 0
+
+    def test_64_full_mesh_returns_smallest_pair_without_enumeration(self):
+        n = 64
+        gpus = _gpus(range(n), [24 * GB] * n)
+        rank_matrix = _full_mesh(range(n), 100)
+        model = 40000  # fits on 2
+        result = assign_gpus.find_llama_subset(gpus, rank_matrix, model)
+        assert _indices(result) == [0, 1]
+        assert result.min_link_rank == 100
+
+    def test_32_full_mesh_smallest_fitting_count_wins(self):
+        n = 32
+        gpus = _gpus(range(n), [24 * GB] * n)
+        rank_matrix = _full_mesh(range(n), 80)
+        # Fits on exactly 2; must not grab a third GPU.
+        result = assign_gpus.find_llama_subset(gpus, rank_matrix, 40000)
+        assert _indices(result) == [0, 1]
+
+    def test_32_islands_highest_rank_island_wins(self):
+        n = 32
+        gpus = _gpus(range(n), [24 * GB] * n)
+        rank_matrix = {}
+        rank_matrix.update(_full_mesh(range(0, 4), 100))   # island A
+        rank_matrix.update(_full_mesh(range(4, 8), 80))    # island B
+        # Pair-sized model: highest-rank island wins.
+        assert _indices(assign_gpus.find_llama_subset(gpus, rank_matrix, 40000)) == [0, 1]
+        # Four-GPU model: only island A forms a rank-100 clique of size 4.
+        model4 = 3 * 24 * GB + 1000  # needs 4 GPUs at ~18.7 GB/GPU
+        result = assign_gpus.find_llama_subset(gpus, rank_matrix, model4)
+        assert sorted(_indices(result)) == [0, 1, 2, 3]
+        assert result.min_link_rank == 100
+
+    def test_16_high_rank_beats_higher_vram_group(self):
+        n = 16
+        memory_by_index = [24 * GB] * n
+        memory_by_index[0] = memory_by_index[1] = 16 * GB   # island A: small VRAM
+        memory_by_index[2] = memory_by_index[3] = 48 * GB   # island B: large VRAM
+        gpus = _gpus(range(n), memory_by_index)
+        rank_matrix = {(0, 1): 100, (2, 3): 80}
+        # Both pairs cover the model; the higher-ranked (smaller-VRAM) pair wins.
+        result = assign_gpus.find_llama_subset(gpus, rank_matrix, 30000)
+        assert _indices(result) == [0, 1]
+        assert result.min_link_rank == 100
+
+    def test_same_rank_and_size_prefers_more_vram(self):
+        # Two rank-100 pairs of the same size; the higher-VRAM pair must win,
+        # locking the third ranking criterion (total_vram DESC) after rank/size.
+        memory_by_index = [24 * GB, 24 * GB, 48 * GB, 48 * GB]
+        gpus = _gpus(range(4), memory_by_index)
+        rank_matrix = {(0, 1): 100, (2, 3): 100}
+        result = assign_gpus.find_llama_subset(gpus, rank_matrix, 40000)
+        assert _indices(result) == [2, 3]
+        assert result.min_link_rank == 100
+
+    def test_32_disconnected_tiebreak_follows_input_order(self):
+        n = 32
+        gpus = _gpus([7, 3, 20, 1] + [i for i in range(n) if i not in (7, 3, 20, 1)],
+                     [24 * GB] * n)
+        # Rank 0, all equal VRAM, model fits on 2 → first two in input order.
+        result = assign_gpus.find_llama_subset(gpus, {}, 40000)
+        assert _indices(result) == [7, 3]
