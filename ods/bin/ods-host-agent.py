@@ -17246,6 +17246,34 @@ def _render_model_router_runtime_configs(
         logger.warning("%s; switchboard mode is %s", message, switchboard_mode)
 
 
+def _render_switchboard_for_install_mode(install_dir: Path, env: dict) -> bool:
+    """Render the LiteLLM switchboard for the configured mode at agent start.
+
+    The checked-in switchboard.yaml is the hybrid render. Linux and macOS
+    installers re-render it; the Windows installer only copies it, so without
+    this a local install would serve hybrid-only cloud routes until the first
+    model activation. Windows starts this agent before docker compose up.
+    """
+    ods_mode = _normalize_ods_mode(env.get("ODS_MODE"))
+    if ods_mode in ("cloud", "hybrid", "unknown") or _normal_switchboard_mode(env) != "enabled":
+        return False
+    rendered = _render_runtime_config(
+        install_dir,
+        "litellm-switchboard",
+        model=str(env.get("LLM_MODEL") or "default"),
+        gguf_file=str(env.get("GGUF_FILE") or "model.gguf"),
+        litellm_key=_litellm_render_key(env),
+        llm_base_url=_runtime_llama_api_base(env),
+        llm_api_key_env=_runtime_api_key_env(env),
+        ods_mode=ods_mode,
+        gpu_backend=str(env.get("GPU_BACKEND") or "nvidia"),
+        switchboard_mode="enabled",
+    )
+    if not rendered:
+        raise RuntimeError("Failed to render the LiteLLM switchboard for the install mode")
+    return True
+
+
 def _container_llama_rollback_image(env: dict) -> str:
     """Image to recreate a rolled-back container with ("" keeps the inspected).
 
@@ -21040,6 +21068,10 @@ def main():
         except (OSError, RuntimeError, ValueError) as exc:
             # The route stays fail-closed; the next start retries the rewrite.
             logger.warning("legacy route migration failed: %s", exc)
+        try:
+            _render_switchboard_for_install_mode(INSTALL_DIR, env)
+        except RuntimeError as exc:
+            logger.warning("switchboard mode render failed: %s", exc)
         _schedule_initial_switchboard_verification("startup")
     STARTUP_ODS_MODE = _normalize_ods_mode(env.get("ODS_MODE"))
     TIER = env.get("TIER", "1")
