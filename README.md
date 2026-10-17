@@ -62,6 +62,10 @@ Choose your system, copy the block, run it in a normal terminal. ODS installs th
 
 **Linux or macOS**
 
+Docker must be installed and running before you use this command. On macOS,
+start Docker Desktop and wait until `docker info` succeeds; see the
+[macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) if Docker is not ready.
+
 ```bash
 curl -fsSL https://install.osmantic.com/ods.sh | bash
 ```
@@ -83,8 +87,6 @@ curl -fsSL https://install.osmantic.com/ods.sh | bash
     & $odsEntry
 }
 ```
-
-Linux and macOS: Docker must be installed and running.
 
 Windows: open a **normal PowerShell window** (not "Run as administrator"), paste the block, and answer the prompts. Nothing else needs to be installed first. The installer:
 
