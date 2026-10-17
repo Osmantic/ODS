@@ -163,6 +163,9 @@ function Get-ODSNativeReasoningArgs {
         $value = $value.Substring(1, $value.Length - 2)
     }
     if (-not $value) { $value = "off" }
+    # Modes are case-insensitive, as in ods-host-agent.py and the launchers'
+    # own switch; llama-server only accepts the lowercase spelling.
+    if ($value -in @("off", "on", "auto")) { $value = $value.ToLowerInvariant() }
     if ($value -cin @("off", "on", "auto") -and (Test-ODSLlamaServerHelpFlag -Executable $Executable -Flag "--reasoning")) {
         return @("--reasoning", $value)
     }
