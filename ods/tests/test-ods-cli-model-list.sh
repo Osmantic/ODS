@@ -49,4 +49,22 @@ if grep -q 'qwen3-30b-a3b' <<< "$output"; then
 fi
 
 [[ "$failures" -eq 0 ]] || { printf '%s\n' "$output"; exit 1; }
+
+# A gemma4 install (or auto, which resolves to Gemma above tier 0) lists the
+# Gemma family that `swap` would load, from the install's own .env profile
+# rather than the caller's shell.
+printf 'model\n' > "$INSTALL_DIR/data/models/gemma-4-E2B-it-Q4_K_M.gguf"
+for profile in '"gemma4"' auto; do
+    printf 'MODEL_PROFILE=%s\n' "$profile" > "$INSTALL_DIR/.env"
+    profile_output="$(env -u MODEL_PROFILE ODS_HOME="$INSTALL_DIR" NO_COLOR=1 HOST_ARCH=amd64 \
+        "$ROOT_DIR/ods-cli" model list 2>&1)"
+    read -r model gguf < <(MODEL_PROFILE=gemma4 HOST_ARCH=amd64 expected_model 1)
+    line="$(grep -E '^  T1 ' <<< "$profile_output" || true)"
+    if [[ "$line" != *" $model "* || "$line" != *"[downloaded]"* ]]; then
+        echo "[FAIL] MODEL_PROFILE=$profile T1 should list downloaded $model ($gguf); got: ${line:-<missing>}"
+        failures=$((failures + 1))
+    fi
+done
+
+[[ "$failures" -eq 0 ]] || { printf '%s\n' "$profile_output"; exit 1; }
 echo "[PASS] ods model list matches the tier map and marks downloaded models"
