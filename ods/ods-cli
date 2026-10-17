@@ -3488,6 +3488,7 @@ validate_preset_compatibility() {
     [[ -f "$preset_dir/meta.txt" ]] || { error "Invalid preset: missing meta.txt"; return 1; }
     [[ -f "$preset_dir/extensions.list" ]] || { error "Invalid preset: missing extensions.list"; return 1; }
     [[ -f "$preset_dir/env" ]] || { warn "Preset missing .env file (will not restore config)"; }
+    [[ ! -f "$preset_dir/env" ]] || _preset_env_is_valid "$preset_dir/env" || { error "Invalid preset: env must contain only KEY=value lines or comments"; return 1; }
 
     # Check if referenced extensions still exist
     local missing_exts=()
@@ -3512,12 +3513,99 @@ validate_preset_compatibility() {
     return 0
 }
 
+# Preset names become directory names under presets/.
+_preset_require_name() {
+    local name="$1"
+    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || error "Invalid preset name: '$name' (use letters, digits, '.', '_' or '-')"
+}
+
+_preset_env_is_valid() {
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'
+'}"
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
+    done < "$1"
+}
+
+# Copy an env file without secret keys. Requires _cmd_config_load_secret_schema.
+_preset_env_without_secrets() {
+    local src="$1" dst="$2" line key
+    : > "$dst"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'
+'}"
+        if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+            key="${BASH_REMATCH[1]}"
+            _cmd_config_is_secret "$key" && continue
+        fi
+        printf '%s
+' "$line" >> "$dst"
+    done < "$src"
+}
+
+# Merge a preset env's non-secret keys into the current .env. Current secrets
+# always win. Writes atomically, mode 0600, and keeps .env.preset-backup.
+# Requires _cmd_config_load_secret_schema.
+_preset_merge_env() {
+    local preset_env="$1" target="$INSTALL_DIR/.env" line key
+    local -A preset_values=() seen=()
+    local -a preset_order=() ignored=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%$'
+'}"
+        [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
+        key="${BASH_REMATCH[1]}"
+        if _cmd_config_is_secret "$key"; then
+            ignored+=("$key")
+            continue
+        fi
+        [[ -n "${preset_values[$key]+x}" ]] || preset_order+=("$key")
+        preset_values[$key]="$line"
+    done < "$preset_env"
+
+    local tmp
+    tmp="$(mktemp "${target}.XXXXXX")"
+    chmod 600 "$tmp"
+    if [[ -f "$target" ]]; then
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line%$'
+'}"
+            if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
+                key="${BASH_REMATCH[1]}"
+                if [[ -n "${preset_values[$key]+x}" ]]; then
+                    [[ -n "${seen[$key]+x}" ]] && continue
+                    seen[$key]=1
+                    line="${preset_values[$key]}"
+                fi
+            fi
+            printf '%s
+' "$line" >> "$tmp"
+        done < "$target"
+        cp -p "$target" "$INSTALL_DIR/.env.preset-backup"
+        chmod 600 "$INSTALL_DIR/.env.preset-backup"
+    fi
+    for key in "${preset_order[@]}"; do
+        [[ -n "${seen[$key]+x}" ]] || printf '%s
+' "${preset_values[$key]}" >> "$tmp"
+    done
+    mv -f "$tmp" "$target"
+    if [[ ${#ignored[@]} -gt 0 ]]; then
+        log "Note: preset env contains secret keys from an older ODS version; kept current values for: ${ignored[*]}"
+    fi
+}
+
 cmd_preset() {
     check_install
     sr_load
 
     local action="${1:-list}"
     local name="${2:-}"
+    case "$action" in
+        save|s|load|l|delete|rm|export|e)
+            [[ -n "$name" ]] && _preset_require_name "$name" ;;
+    esac
 
     case "$action" in
         save|s)
@@ -3525,9 +3613,11 @@ cmd_preset() {
             local preset_dir="${PRESETS_DIR}/${name}"
             mkdir -p "$preset_dir"
 
-            # Save .env (contains mode, model, and all config)
+            # Save .env settings without secrets: they belong to this
+            # install, and presets are exported and shared.
             if [[ -f "$INSTALL_DIR/.env" ]]; then
-                cp "$INSTALL_DIR/.env" "$preset_dir/env"
+                _cmd_config_load_secret_schema
+                _preset_env_without_secrets "$INSTALL_DIR/.env" "$preset_dir/env"
             fi
 
             # Save enabled/disabled extension state
@@ -3536,19 +3626,18 @@ cmd_preset() {
             for sid in "${SERVICE_IDS[@]}"; do
                 local cat="${SERVICE_CATEGORIES[$sid]}"
                 [[ "$cat" == "core" ]] && continue
-                local cf="${SERVICE_COMPOSE[$sid]}"
                 # Match restore and Dashboard: a user extension shadows the
                 # bundled extension with the same service ID.
-                local user_ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
-                [[ -L "$user_ext_dir" ]] && error "Invalid user extension: $sid"
-                if [[ -d "$user_ext_dir" ]]; then
-                    cf="$user_ext_dir/compose.yaml"
-                fi
-                if [[ -n "$cf" && -f "$cf" ]]; then
+                local ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+                [[ -L "$ext_dir" ]] && error "Invalid user extension: $sid"
+                [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/extensions/services/$sid"
+                if [[ -f "$ext_dir/compose.yaml" ]]; then
                     echo "enabled:$sid" >> "$state_file"
-                else
+                elif [[ -f "$ext_dir/compose.yaml.disabled" ]]; then
                     echo "disabled:$sid" >> "$state_file"
                 fi
+                # Host-managed services (no Compose file) have no selection
+                # marker; the restore helper would reject them.
             done
 
             # Save metadata
@@ -3560,7 +3649,7 @@ tier=${TIER:-unknown}
 META
 
             success "Preset '${name}' saved to presets/${name}/"
-            log "Contains: .env, mode, profiles, extension state"
+            log "Contains: .env settings (secrets excluded), mode, profiles, extension state"
             ;;
 
         load|l)
@@ -3585,7 +3674,7 @@ META
                 echo ""
             fi
 
-            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r || REPLY=""
+            read -p "Restore this preset? This will update current .env settings (secrets are kept). [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
@@ -3625,7 +3714,8 @@ META
             # Apply environment settings only after extension selection passed.
             # A malformed preset must not overwrite an otherwise working .env.
             if [[ -f "$preset_dir/env" ]]; then
-                if ! cp "$preset_dir/env" "$INSTALL_DIR/.env"; then
+                _cmd_config_load_secret_schema
+                if ! _preset_merge_env "$preset_dir/env"; then
                     warn "Extensions were selected, but preset .env could not be restored. Resolve the file error and retry 'ods preset load $name'."
                     return 1
                 fi
@@ -3741,6 +3831,7 @@ META
             local archive_name
             archive_name=$(tar tzf "$archive" 2>/dev/null | sed -n '1p' | cut -d/ -f1)
             [[ -z "$archive_name" ]] && error "Invalid archive structure"
+            _preset_require_name "$archive_name"
 
             # Check if preset already exists
             if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then

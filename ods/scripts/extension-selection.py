@@ -765,13 +765,17 @@ def restore_preset(
                     raise SelectionError(
                         f"Compose content changed since validation: {service_id}"
                     )
-        for service_id in entries:
+        for service_id in list(entries):
             if service_id not in directories:
                 continue
             directory = directories[service_id]
             if not ((directory / "compose.yaml").exists()
                     or (directory / "compose.yaml.disabled").exists()):
-                raise SelectionError(f"No Compose selection file for {service_id}")
+                if strict:
+                    raise SelectionError(f"No Compose selection file for {service_id}")
+                # Host-managed services (e.g. opencode) have no Compose
+                # marker to move. Older presets listed them; ignore them.
+                del entries[service_id]
         desired = current.copy()
         desired.update({service_id: enabled for service_id, enabled in entries.items()
                         if service_id in directories})
