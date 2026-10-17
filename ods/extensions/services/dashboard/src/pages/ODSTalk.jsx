@@ -936,7 +936,7 @@ export default function ODSTalk() {
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  if (canSend) sendText(input)
+                  if (canSend) submit(event)
                 }
               }}
               rows={1}
