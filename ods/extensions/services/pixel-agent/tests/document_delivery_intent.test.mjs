@@ -15,11 +15,13 @@ function fresh(request=handoff,ctx=context,guard=createToolLoopGuard()) {
   guard.observeRun(ctx,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:'/workspace'});
   return guard;
 }
-function observeWrite(guard) {
+function observeWrite(guard,{requireAdmission=false}={}) {
   const ctx={...context,toolCallId:'write-handoff',toolName:'write'};
   const event={toolName:'write',toolCallId:ctx.toolCallId,params:{path:'Playground/handoff.md',content:answer}};
-  // Real hook functions, simulated observed success: no filesystem tool runs.
-  assert.notEqual(guard.beforeToolCall(event,ctx)?.block,true);
+  // Inject historical observed success independently of current admission;
+  // no-files turns now block this write. Explicit download controls still
+  // verify admission. No filesystem tool runs in either case.
+  if(requireAdmission)assert.notEqual(guard.beforeToolCall(event,ctx)?.block,true);
   guard.afterToolCall({...event,result:{content:[{type:'text',text:'Successfully wrote handoff.md'}]}},ctx);
 }
 
@@ -35,7 +37,7 @@ test('text-only handoff receives neither document guidance nor a false download 
   assert.deepEqual(guard.deliveryVerificationForRun(context.runId),{status:'none'});
   assert.equal(guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:answer}}),undefined);
   const requested=fresh('Give me handoff.md as a download.');
-  observeWrite(requested);
+  observeWrite(requested,{requireAdmission:true});
   assert.match(requested.deliveryVerificationForRun(context.runId).text,/requested download was not attached/);
 });
 
