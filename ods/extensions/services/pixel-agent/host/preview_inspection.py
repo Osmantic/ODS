@@ -19,22 +19,26 @@ from preview_inspection_protocol import (
     Invalid,
     KIND,
     MAX_BUNDLE,
-    MAX_REQUEST,
+    MAX_REQUEST_FRAME,
     MAX_RESULT,
+    MAX_SCREENSHOT_RESULT,
     SELECT_CAPABILITY,
     FILL_CAPABILITY,
     DOWNLOAD_CAPABILITY,
     PRESS_CAPABILITY,
     PAINT_CAPABILITY,
+    SCREENSHOT_CAPABILITY,
     canonical,
     exact,
     failure,
     inspection_scope,
     plan_hash,
+    plan_request,
     read_only_wsl_docker,
     strict_json,
     validate_bundle,
     validate_request,
+    validate_screenshot,
 )
 
 SOCKET = pathlib.Path("/run/ods-pixel-inspection/control.sock")
@@ -304,8 +308,21 @@ def inspect_request(request, config, cancelled=None):
             b'', timeout=5, limit=128, cancelled=cancelled)
         if capability.decode().strip() != PAINT_CAPABILITY:
             return failure('unsupported_capability', request)
+    # The snapshot and its export never carry the screenshot directive, so an
+    # older publisher-side export helper keeps working and the bundle binds the
+    # plan alone. An image without the label still runs the plan; only the
+    # screenshot is omitted, with that reason.
+    plan = plan_request(request)
+    directive, omitted = request.get("screenshot"), None
+    if directive is not None:
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.screenshot"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != SCREENSHOT_CAPABILITY:
+            directive, omitted = None, {"status": "omitted", "reason": "capability_missing"}
     if config["transport"] == "local":
-        bundle = snapshot_bundle(config["snapshotRoot"], request, config["ownerUid"])
+        bundle = snapshot_bundle(config["snapshotRoot"], plan, config["ownerUid"])
     else:
         raw = bounded_process(
             [
@@ -317,25 +334,30 @@ def inspect_request(request, config, cancelled=None):
                 "/source/preview_inspection.py",
                 "export",
             ],
-            canonical(request),
+            canonical(plan),
             timeout=15,
             limit=MAX_BUNDLE,
             cancelled=cancelled,
         )
         bundle = strict_json(raw)
         bound, _files = validate_bundle(bundle)
-        if bound != request:
+        if bound != plan:
             raise Invalid("snapshot mismatch")
+    if directive is not None:
+        bundle = {**bundle, "request": {**plan, "screenshot": directive}}
     name = "ods-preview-inspection-" + uuid.uuid4().hex
     try:
         raw = bounded_process(
             capsule_argv(config, name),
             canonical(bundle),
             timeout=45,
-            limit=MAX_RESULT,
+            limit=MAX_RESULT if directive is None else MAX_SCREENSHOT_RESULT,
             cancelled=cancelled,
         )
         result = strict_json(raw)
+        # A full receipt answers a directive with exactly one screenshot member
+        # (captured or omitted); a failure receipt and an undirected run carry none.
+        screenshot = result.pop("screenshot", None) if isinstance(result, dict) else None
         if (
             not isinstance(result, dict)
             or result.get("kind") != KIND
@@ -345,8 +367,14 @@ def inspect_request(request, config, cancelled=None):
             or result.get("planSha256") != plan_hash(request)
             or result.get("status") not in ("passed", "failed")
             or result.get("scope") != inspection_scope(request)
+            or len(canonical(result)) > MAX_RESULT
+            or (screenshot is None) != (directive is None or "errorCode" in result)
         ):
             raise Invalid("invalid capsule receipt")
+        if screenshot is not None:
+            result["screenshot"] = validate_screenshot(screenshot, directive)
+        elif omitted is not None and "errorCode" not in result:
+            result["screenshot"] = omitted
         return result
     finally:
         # Killing `docker run` alone does not stop its container. This random
@@ -360,8 +388,8 @@ def inspect_request(request, config, cancelled=None):
 
 
 def read_request(stream):
-    raw = stream.read(MAX_REQUEST + 1)
-    if len(raw) > MAX_REQUEST:
+    raw = stream.read(MAX_REQUEST_FRAME + 1)
+    if len(raw) > MAX_REQUEST_FRAME:
         raise Invalid("request too large")
     return validate_request(strict_json(raw))
 
@@ -376,14 +404,14 @@ def handle(connection, config):
             raise Invalid("unauthorized")
         connection.settimeout(5)
         raw = bytearray()
-        while len(raw) <= MAX_REQUEST:
+        while len(raw) <= MAX_REQUEST_FRAME:
             chunk = connection.recv(1024)
             if not chunk:
                 raise Invalid("invalid framing")
             raw.extend(chunk)
             if b"\n" in raw:
                 break
-        if len(raw) > MAX_REQUEST or raw.count(b"\n") != 1 or not raw.endswith(b"\n"):
+        if len(raw) > MAX_REQUEST_FRAME or raw.count(b"\n") != 1 or not raw.endswith(b"\n"):
             raise Invalid("invalid framing")
         request = validate_request(strict_json(raw))
 

@@ -84,6 +84,7 @@ import {
 import { createEvidenceArtifactWriter } from "./evidence-artifact.mjs";
 import { createWorkspacePreviewTool, createWorkspacePreviewVerifier } from "./workspace-preview.mjs";
 import { createWorkspacePreviewInspectTool } from "./workspace-preview-inspect.mjs";
+import { previewScreenshotCapability } from "./preview-screenshot.mjs";
 import {createWorkspaceBundleAdmission, createWorkspaceBundleService, createWorkspaceBundleTool} from './workspace-bundle.mjs';
 import {createWorkspaceBundleExecution} from './workspace-bundle-execution.mjs';
 import { createTaskActivity } from "./task-activity.mjs";
@@ -899,12 +900,19 @@ export default definePluginEntry({
     });
 
     if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
-      registerTool(api, createWorkspacePreviewInspectTool({
+      // Per run context: the screenshot gate reads this run's model.
+      api.registerTool(onlyPixel(context => createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
         // Finalize-time revisions do not reach the model after a plugin tool
         // call; an untested requested show/hide change is reported here.
         transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
-      }), { names: ["pixel_ods_workspace_preview_inspect"] });
+        // One bounded screenshot for a model declared to accept images, the
+        // same declaration Portal's owner-image path reads.
+        screenshots: {
+          capability: () => previewScreenshotCapability(api.runtime?.config?.current?.() ?? api.config, context?.activeModel),
+          reserve: (toolCallId, params) => toolLoopGuard.reservePreviewScreenshot(toolCallId, params),
+        },
+      })), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 
   },

@@ -41,6 +41,7 @@ import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, 
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
+import {MAX_PREVIEW_SCREENSHOTS_PER_RUN} from './preview-screenshot.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
   boundInspectionPageErrors, boundInspectionControls, boundRenderedPreviewInspection, renderedInspectionInstruction,
   pageErrorRepairInstruction, visibilityInspectionMatches,
@@ -7500,13 +7501,33 @@ export function createToolLoopGuard({
   // by the inspection result itself. Bound to this exact pending call (direct,
   // or a Tool Search child of a pending tool_call) of the active run; a
   // passing transition of the same snapshot earlier in the run satisfies it.
-  function previewInspectionTransition(toolCallId, params) {
-    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return undefined;
+  // The pending records of exactly this inspection call: direct, or a Tool
+  // Search child of a pending tool_call, with the same params.
+  function pendingPreviewInspection(toolCallId, params) {
+    if (!workspacePreviewInspectionAvailable || typeof toolCallId !== 'string' || !toolCallId) return [];
     const parent = toolCallId.startsWith('tool_search_code:')
       ? [...pendingToolRuns].find(([id, run]) => !id.startsWith('tool_search_code:') && run.transport === 'tool_call' &&
         toolCallId.startsWith(toolSearchChildPrefix(id)))?.[1] : undefined;
-    const bound = [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
+    return [pendingToolRuns.get(toolCallId), parent].filter(run => run?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
       isDeepStrictEqual(run.selectedParams, params));
+  }
+
+  // One preview screenshot per inspection call, at most
+  // MAX_PREVIEW_SCREENSHOTS_PER_RUN per run of the active session. Reserved
+  // before the inspector runs, so parallel calls cannot exceed the bound; a
+  // capture that comes back omitted still counts.
+  function reservePreviewScreenshot(toolCallId, params) {
+    const bound = pendingPreviewInspection(toolCallId, params);
+    const runId = bound[0]?.runId, state = runs.get(runId);
+    if (!state || bound.some(run => run.runId !== runId) ||
+        (state.currentSessionId && sessionRuns.get(state.currentSessionId) !== runId)) return 'unbound';
+    if ((state.previewScreenshots ?? 0) >= MAX_PREVIEW_SCREENSHOTS_PER_RUN) return 'budget';
+    state.previewScreenshots = (state.previewScreenshots ?? 0) + 1;
+    return 'reserved';
+  }
+
+  function previewInspectionTransition(toolCallId, params) {
+    const bound = pendingPreviewInspection(toolCallId, params);
     const runId = bound[0]?.runId, state = runs.get(runId);
     if (!state?.workspaceVisibilityInteractionRequired || bound.some(run => run.runId !== runId ||
         run.inspectionSessionId !== state.currentSessionId || run.inspectionSessionKey !== state.currentSessionKey) ||
@@ -13401,6 +13422,7 @@ export function createToolLoopGuard({
     },
     afterToolCall,
     previewInspectionTransition,
+    reservePreviewScreenshot,
     toolResultPersist,
     beforeAgentFinalize,
     recoverWorkspacePreview,

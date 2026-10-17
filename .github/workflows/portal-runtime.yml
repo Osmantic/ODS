@@ -82,6 +82,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_tool_result_projection.integration.mjs
+      - name: Verify preview screenshots leave the model context by the pinned runtime rules
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_screenshot_context.integration.mjs
       - name: Verify native compaction lock and abort ownership
         shell: bash
         env:
