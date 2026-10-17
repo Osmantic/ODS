@@ -269,6 +269,21 @@ def _build_upstream_headers(request: Request, scrubbed_len: int | None) -> dict:
     return headers
 
 
+def _upstream_url(path: str) -> str:
+    """Join a client path onto TARGET_API_BASE without repeating the version.
+
+    TARGET_API_BASE is an OpenAI-style base that already ends in the API
+    version (Compose ships ``${LLM_API_URL}/v1``), while clients call the
+    shield like any OpenAI endpoint (``/v1/chat/completions``). When the base
+    carries the version, drop the client's leading ``v1`` segment so upstream
+    sees it exactly once. An unversioned base passes the path through as-is.
+    """
+    base = TARGET_API_BASE.rstrip("/")
+    if base.endswith("/v1") and (path == "v1" or path.startswith("v1/")):
+        path = path[len("v1"):].lstrip("/")
+    return f"{base}/{path}" if path else base
+
+
 @app.post("/{path:path}", dependencies=[Depends(verify_api_key)])
 @app.get("/{path:path}", dependencies=[Depends(verify_api_key)])
 async def proxy(request: Request, path: str):
@@ -302,7 +317,7 @@ async def proxy(request: Request, path: str):
         scrubbed_body, metadata = shield.process_request(body_str)
         outbound = scrubbed_body.encode("utf-8")
 
-    target_url = f"{TARGET_API_BASE}/{path}"
+    target_url = _upstream_url(path)
     method = request.method
     upstream_headers = _build_upstream_headers(
         request, len(outbound) if method == "POST" else None
@@ -462,9 +477,8 @@ async def proxy_websocket(client_ws: WebSocket, path: str):
         await client_ws.close(code=1011, reason="WebSocket passthrough unavailable")
         return
 
-    base = TARGET_API_BASE.split("//", 1)[-1]
     scheme = "wss" if TARGET_API_BASE.startswith("https") else "ws"
-    upstream_url = f"{scheme}://{base}/{path}"
+    upstream_url = f"{scheme}://{_upstream_url(path).split('//', 1)[-1]}"
     if client_ws.url.query:
         upstream_url += f"?{client_ws.url.query}"
 
