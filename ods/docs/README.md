@@ -179,6 +179,7 @@ canonical source and treat older recipes as context.
 | [WINDOWS-QUICKSTART.md](WINDOWS-QUICKSTART.md) | Operators | Windows install guide |
 | [WINDOWS-INSTALL-WALKTHROUGH.md](WINDOWS-INSTALL-WALKTHROUGH.md) | Operators | Detailed Windows walkthrough |
 | [WINDOWS-TROUBLESHOOTING-GUIDE.md](WINDOWS-TROUBLESHOOTING-GUIDE.md) | Operators | Windows-specific issues |
+| [RTX-SPARK.md](RTX-SPARK.md) | Operators | NVIDIA RTX Spark (Windows on Arm): the native llama.cpp route, memory, prompts |
 | [WSL2-GPU-PASSTHROUGH.md](WSL2-GPU-PASSTHROUGH.md) | Operators | WSL2 GPU setup |
 | [WSL2-GPU-TROUBLESHOOTING.md](WSL2-GPU-TROUBLESHOOTING.md) | Operators | WSL2 GPU issues |
 | [WINDOWS-WSL2-GPU-GUIDE.md](WINDOWS-WSL2-GPU-GUIDE.md) | Operators | Combined WSL2 GPU guide |
