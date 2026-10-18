@@ -15,7 +15,8 @@
   ],
   "WslConfig": {
     "GiB": 16,
-    "Owner": "ods"
+    "Owner": "ods",
+    "PendingGiB": null
   },
   "WslNowGiB": null,
   "RunningModelGiB": 0,

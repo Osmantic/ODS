@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -173,6 +174,32 @@ def test_preflight_refuses_an_architecture_this_build_lacks(test_client, preflig
     assert body["refusal"]["code"] == "runtime_architecture_unsupported"
     assert body["refusal"]["overridable"] is True
     assert "b9014" in body["refusal"]["message"]
+
+
+@pytest.mark.parametrize("named,key,build,supported", [
+    ("windows-native-cuda", "windows-native-cuda", "b11429", True),
+    ("", "windows-native", "b9014", False),
+    ("windows-native-rocm", "windows-native", "b9014", False),
+])
+def test_preflight_judges_a_windows_runtime_by_the_build_setup_named(test_client, preflight_env, monkeypatch, tmp_path,
+                                                                     named, key, build, supported):
+    models_router, state = preflight_env
+    policy = {**POLICY, "backendBuilds": {**cast(dict[str, str], POLICY["backendBuilds"]), "windows-native": "b9014", "windows-native-cuda": "b11429"}}
+    policy_path = tmp_path / "windows-policy.json"
+    policy_path.write_text(json.dumps(policy), encoding="utf-8")
+    monkeypatch.setattr(models_router, "_ARCHITECTURES_PATH", policy_path)
+    monkeypatch.setattr(models_router, "_windows_hosted_runtime", lambda: True)
+    monkeypatch.setattr(models_router, "read_live_env_values",
+                        lambda keys: {name: named if name == "NATIVE_LLM_RUNTIME_POLICY" else "" for name in keys})
+    # nanbeige is in b11429, not b9014.
+    state["header"] = _dense_header("nanbeige")
+
+    body = _preflight(test_client).json()
+
+    assert body["runtime"] == {"key": key, "build": build, "architectureSupported": supported}
+    assert (body["refusal"] is None) is supported
+    if not supported:
+        assert body["refusal"]["code"] == "runtime_architecture_unsupported" and "b9014" in body["refusal"]["message"]
 
 
 def test_preflight_names_a_reranker_from_its_header(test_client, preflight_env):

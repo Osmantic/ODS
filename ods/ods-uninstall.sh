@@ -434,12 +434,19 @@ fi
 
 # Disable and settle the bound Windows login startup before removing Pixel:
 # a sign-in coordinator must not restart services during their retirement.
-# The Windows-side runtime files and model library remain installed.
+# The Windows-side runtime files and model library remain installed; the
+# helper also says what stays on Windows, printed when uninstall finishes.
+ODS_WINDOWS_KEPT_SUMMARY=""
 if [[ -n "${_ods_wsl_retire_helper:-}" ]]; then
-    if ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR"; then
+    _ods_windows_kept="$(mktemp "${TMPDIR:-/tmp}/ods-windows-kept.XXXXXX")"
+    if ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR" --kept-summary "$_ods_windows_kept"; then
+        rm -f "$_ods_windows_kept"
         log_error "Windows startup retirement failed; installation files retained; startup may already be disabled"
         exit 1
     fi
+    ODS_WINDOWS_KEPT_SUMMARY="$(cat "$_ods_windows_kept")"
+    rm -f "$_ods_windows_kept"
+    unset _ods_windows_kept
 fi
 
 # Validate and remove Pixel before stopping its recovery host-agent or deleting
@@ -802,6 +809,13 @@ echo -e "${GREEN}╚════════════════════
 echo ""
 if $KEEP_MODELS; then
     print_model_retention_summary
+fi
+if [[ -n "$ODS_WINDOWS_KEPT_SUMMARY" ]]; then
+    echo "On Windows:"
+    while IFS= read -r _ods_windows_line; do
+        [[ -n "$_ods_windows_line" ]] && echo "  $_ods_windows_line"
+    done <<< "$ODS_WINDOWS_KEPT_SUMMARY"
+    unset _ods_windows_line
 fi
 if $KEEP_DATA; then
     echo "Your user data was preserved at: $INSTALL_DIR/data/"

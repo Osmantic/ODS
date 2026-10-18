@@ -47,7 +47,7 @@ sys.exit(1 if errors else 0)
 PY
 
 echo "[contract] schema and example document the host-native keys"
-for key in NATIVE_LLM_BASE_URL NATIVE_LLM_CONTAINER_BASE_URL ODS_HOST_LLM_TRANSPORT LLAMA_SERVER_API_KEY; do
+for key in NATIVE_LLM_BASE_URL NATIVE_LLM_CONTAINER_BASE_URL NATIVE_LLM_RUNTIME_POLICY ODS_HOST_LLM_TRANSPORT LLAMA_SERVER_API_KEY; do
     jq -e --arg key "$key" '.properties[$key]' .env.schema.json >/dev/null \
         || fail ".env.schema.json missing $key"
     grep -q "$key=" .env.example || fail ".env.example missing $key"

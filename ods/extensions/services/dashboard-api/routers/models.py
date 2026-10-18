@@ -1261,6 +1261,9 @@ async def _hf_preflight_gate(
         policy,
         GPU_BACKEND,
         windows_hosted=_windows_hosted_runtime(),
+        # The build of the Windows model server (the RTX Spark's CUDA build),
+        # read with the other live .env values; absent on every other host.
+        native_runtime_policy=read_live_env_values(("NATIVE_LLM_RUNTIME_POLICY",)).get("NATIVE_LLM_RUNTIME_POLICY"),
     )
     single_artifact = len(details.get("artifacts") or []) == 1
     header_architecture = (header or {}).get("architecture")

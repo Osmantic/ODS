@@ -13,7 +13,8 @@
   "PagingFiles": [],
   "WslConfig": {
     "GiB": null,
-    "Owner": null
+    "Owner": null,
+    "PendingGiB": null
   },
   "WslNowGiB": null,
   "RunningModelGiB": 0,

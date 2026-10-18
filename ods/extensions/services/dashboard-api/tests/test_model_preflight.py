@@ -1,6 +1,7 @@
 """Pre-download facts about a Hugging Face GGUF (pure functions)."""
 
 import json
+from typing import cast
 
 import pytest
 
@@ -55,6 +56,50 @@ def test_load_runtime_policy_rejects_missing_or_malformed(tmp_path):
 ])
 def test_effective_build_follows_the_backend_policy(backend, windows_hosted, key, build):
     assert preflight.effective_build(POLICY, backend, windows_hosted=windows_hosted) == (key, build)
+
+
+# The RTX Spark's Windows model server is the CUDA build (b11429), named by
+# Windows setup in .env as NATIVE_LLM_RUNTIME_POLICY=windows-native-cuda.
+POLICY_WITH_CUDA = {**POLICY, "backendBuilds": {**cast(dict[str, str], POLICY["backendBuilds"]), "windows-native-cuda": "b11429"}}
+
+
+@pytest.mark.parametrize("named,key,build", [
+    ("windows-native-cuda", "windows-native-cuda", "b11429"),
+    (" windows-native-cuda ", "windows-native-cuda", "b11429"),
+    ("windows-native", "windows-native", "b9014"),
+    ("", "windows-native", "b9014"),
+    (None, "windows-native", "b9014"),
+    # Unknown or not a Windows key: the narrower b9014 list, never a wider one.
+    ("windows-native-rocm", "windows-native", "b9014"),
+    ("nvidia", "windows-native", "b9014"),
+    ("Windows-Native-CUDA", "windows-native", "b9014"),
+])
+def test_a_windows_hosted_runtime_uses_the_build_windows_setup_named(named, key, build):
+    assert preflight.effective_build(POLICY_WITH_CUDA, "cpu", windows_hosted=True, native_runtime_policy=named) == (key, build)
+
+
+def test_the_named_windows_build_applies_only_to_a_windows_hosted_runtime():
+    assert preflight.effective_build(POLICY_WITH_CUDA, "nvidia", windows_hosted=False,
+                                     native_runtime_policy="windows-native-cuda") == ("nvidia", "b11429")
+    assert preflight.effective_build(POLICY_WITH_CUDA, "cpu", windows_hosted=False,
+                                     native_runtime_policy="windows-native-cuda") == ("cpu", "b9014")
+    # Without the policy file the named key is never trusted.
+    assert preflight.runtime_policy_key("cpu", windows_hosted=True, native_runtime_policy="windows-native-cuda") == "windows-native"
+    assert preflight.effective_build(None, "cpu", windows_hosted=True,
+                                     native_runtime_policy="windows-native-cuda") == ("windows-native", None)
+
+
+def test_the_committed_policy_names_the_rtx_spark_cuda_build():
+    import json
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parents[4]
+    policy = json.loads((source / "config" / "llama-cpp-architectures.json").read_text(encoding="utf-8"))
+    pin = json.loads((source / "config" / "backends" / "nvidia.json").read_text(encoding="utf-8"))["runtime"]["llama_server"]["windows_arm64"]
+    assert pin["policy_key"] == "windows-native-cuda"
+    assert policy["backendBuilds"]["windows-native-cuda"] == pin["release_tag"] == "b11429"
+    assert policy["backendBuilds"]["windows-native"] == "b9014"
+    assert pin["release_tag"] in policy["builds"]
 
 
 def test_a_model_image_names_its_own_build():

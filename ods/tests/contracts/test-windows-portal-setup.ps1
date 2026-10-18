@@ -118,6 +118,9 @@ function Reset-Scenario {
 }
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Test-ODSSparkWindowsArm64 { $script:calls.Add('arm64-check'); return $script:arm64 }
+# These PCs are never an RTX Spark (test-windows-portal-spark.ps1 covers that
+# route); setup still asks once per run.
+function Get-ODSSparkHost { $script:calls.Add('spark-host'); return $null }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
 function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$script:dockerInstalled; Exe='docker-desktop.exe'; Cli='docker.exe' } }
 function Install-ODSPortalDockerDesktop {
@@ -221,7 +224,7 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
     return [pscustomobject]@{ Code=$code; Output=$output; Error=$stderr }
 }
 try {
-    foreach ($file in @('wsl-portal-setup.ps1', 'wsl-portal-prereqs.ps1', 'wsl-portal-spark.ps1')) {
+    foreach ($file in @('wsl-portal-setup.ps1', 'wsl-portal-prereqs.ps1', 'wsl-portal-spark.ps1', 'wsl-portal-spark-route.ps1', 'spark-memory.ps1')) {
         $parsed = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "../../installers/windows/lib/$file"), [ref]$null, [ref]$null)
         $bad = $parsed.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -ne '?' -and $n.VariablePath.UserPath.EndsWith('?') }, $true)
         Check (@($bad).Count -eq 0) "$file never interpolates a variable followed by ? (PowerShell reads `$name? as one variable)"
@@ -254,8 +257,10 @@ try {
     try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
     Check ($message -match 'did not start' -and $message -match 'Catastrophic failure' -and $message -notmatch 'Pixel requires') 'a distro that fails to start reports the WSL error, not a wrong release'
     Reset-Scenario
-    Check ((Invoke-ODSPortalSetup @{DryRun=$true} 'unused') -eq 0) 'dry run succeeds'
+    $dryRunText = @(& { $script:dryRunResult = Invoke-ODSPortalSetup @{DryRun=$true} 'unused' } 6>&1 | ForEach-Object { [string]$_ }) -join "`n"
+    Check ($script:dryRunResult -eq 0) 'dry run succeeds'
     Check ($script:calls.Count -eq 0) 'dry run performs no native calls'
+    Check ($dryRunText -match 'with an AMD GPU, download the pinned llama\.cpp Vulkan server to Windows and load the model on the GPU; with an NVIDIA GPU on Windows on Arm, download the pinned llama\.cpp CUDA build to Windows, check it on the GPU, size memory for the chosen model and load it there; run the Linux installer') 'dry run names the Windows on Arm NVIDIA route next to the AMD one'
     Reset-Scenario
     $options = @{All=$true; NoLangfuse=$true; Tier='2'; InstallDir='/home/user/ODS data'; SummaryJsonPath='/home/user/result.json'; StateRoot='C:\ODS private\state'}
     Check ((Invoke-ODSPortalSetup $options 'unused') -eq 0) 'ready host delegates successfully'
@@ -377,6 +382,17 @@ try {
     Check ((Invoke-ODSPortalSetup @{Cloud=$true} 'unused') -eq 0) 'cloud mode does not require local NVIDIA readiness'
     Check (-not ($script:calls -match 'nvidia-smi|Runtimes')) 'cloud mode performs no GPU probes'
     Check (-not $script:calls.Contains('amd-plan')) 'cloud mode does not plan an AMD GPU route'
+    Check (-not $script:calls.Contains('spark-host')) 'cloud mode never checks for an RTX Spark'
+    Reset-Scenario
+    $null = Invoke-ODSPortalSetup @{ ExternalLlmUrl = 'https://api.example.test'; ExternalLlmModel = 'm' } 'unused'
+    Check (-not $script:calls.Contains('spark-host') -and -not $script:calls.Contains('amd-plan')) 'API mode never checks for an RTX Spark or plans a GPU route'
+    Reset-Scenario
+    $script:nvidiaDriver = 576
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'an x64 NVIDIA PC still installs'
+    $order = $script:calls.ToArray()
+    Check (@($order | Where-Object { $_ -eq 'spark-host' }).Count -eq 1 -and [Array]::IndexOf($order, 'spark-host') -lt [Array]::IndexOf($order, '--status') -and
+        $script:calls.Contains('--distribution Ubuntu-24.04 --exec docker info --format {{json .Runtimes}}') -and
+        -not ($script:capturedArguments -join ' ').Contains('--native-llm')) 'an x64 NVIDIA PC is checked once for an RTX Spark in stage 1, then keeps the NVIDIA container gate and gets no native flags'
     # AMD: the model runs in llama.cpp on Windows; Linux gets --native-llm-*.
     $fixturePlan = [pscustomobject]@{ GpuName='AMD Radeon RX 9070 XT'; VramMB=16304; Model='qwen3.5-9b'; LinuxTier='2' }
     $fixtureNativeArgs = @('--native-llm-url', 'http://localhost:8080', '--native-llm-host-transport', 'model-router',

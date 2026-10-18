@@ -962,6 +962,11 @@ SERVICE_PORT_DEFAULTS
     NATIVE_LLM_CONTAINER_BASE_URL_VALUE=""
     NATIVE_LLM_PORT_VALUE=""
     LLAMA_SERVER_API_KEY_VALUE=""
+    # The Models page's llama.cpp build policy for the native server; only
+    # Windows setup passes it (--native-llm-runtime, the RTX Spark's CUDA
+    # build). Without it the .env has no such key (not even an empty line)
+    # and the policy is windows-native, as before.
+    NATIVE_LLM_RUNTIME_POLICY_VALUE=""
     ODS_HOST_LLM_TRANSPORT_VALUE=direct
     if ods_native_llm_requested; then
         NATIVE_LLM_ACTIVE=true
@@ -974,6 +979,7 @@ SERVICE_PORT_DEFAULTS
         # Windows setup supplies the key on every run; a rerun without it keeps
         # the saved key, which the Windows runtime still uses.
         LLAMA_SERVER_API_KEY_VALUE="${LLAMA_SERVER_API_KEY:-$(_env_get LLAMA_SERVER_API_KEY "")}"
+        NATIVE_LLM_RUNTIME_POLICY_VALUE="${NATIVE_LLM_RUNTIME_POLICY:-}"
         ODS_HOST_LLM_TRANSPORT_VALUE="$(_env_get_explicit_first ODS_HOST_LLM_TRANSPORT direct)"
         case "$ODS_HOST_LLM_TRANSPORT_VALUE" in
             direct|model-router) ;;
@@ -1590,7 +1596,7 @@ AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo 
 AMD_INFERENCE_MANAGED=$(if [[ "$NATIVE_LLM_ACTIVE" == "true" || "$AMD_LOCAL_RUNTIME" == "true" ]]; then echo "true"; fi)
 ODS_HOST_LLM_TRANSPORT=$(dotenv_value "${ODS_HOST_LLM_TRANSPORT_VALUE}")
 NATIVE_LLM_BASE_URL=$(dotenv_value "${NATIVE_LLM_BASE_URL_VALUE}")
-NATIVE_LLM_CONTAINER_BASE_URL=$(dotenv_value "${NATIVE_LLM_CONTAINER_BASE_URL_VALUE}")
+NATIVE_LLM_CONTAINER_BASE_URL=$(dotenv_value "${NATIVE_LLM_CONTAINER_BASE_URL_VALUE}")$(if [[ -n "${NATIVE_LLM_RUNTIME_POLICY_VALUE}" ]]; then printf '\nNATIVE_LLM_RUNTIME_POLICY=%s' "$(dotenv_value "$NATIVE_LLM_RUNTIME_POLICY_VALUE")"; fi)
 $(if [[ -n "$LLAMA_SERVER_API_KEY_VALUE" ]]; then printf 'LLAMA_SERVER_API_KEY=%s' "$(dotenv_value "$LLAMA_SERVER_API_KEY_VALUE")"; fi)
 $(if [[ -n "${ODS_WINDOWS_SYSTEM_DIRECTORY}" ]]; then printf 'ODS_WINDOWS_SYSTEM_DIRECTORY=%s' "$(dotenv_value "$ODS_WINDOWS_SYSTEM_DIRECTORY")"; fi)
 $(if [[ -n "${ODS_WSL_STATE_ROOT}" ]]; then printf 'ODS_WSL_STATE_ROOT=%s' "$(dotenv_value "$ODS_WSL_STATE_ROOT")"; fi)

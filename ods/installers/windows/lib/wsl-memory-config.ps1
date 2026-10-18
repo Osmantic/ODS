@@ -158,16 +158,72 @@ function Get-ODSWslRecordedGiB {
     return [double]$record.Value
 }
 
+function Get-ODSWindowsLastBootUtc {
+    # When Windows last started, read unelevated; $null when WMI does not say.
+    $boot = (Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop).LastBootUpTime
+    if ($null -eq $boot) { return $null }
+    return ([datetime]$boot).ToUniversalTime()
+}
+
+function Get-ODSWslPendingLimit($Record, $LastBootUtc) {
+    <#
+    .SYNOPSIS
+        The record's Pending { SinceUnix; InEffectGiB } while WSL may still
+        run with the limit it had before ODS wrote its own (pure): until
+        Windows starts again after SinceUnix. ODS clears it when it restarts
+        WSL itself. An unknown boot time keeps it, so ODS never plans with
+        memory WSL may not have given back. $null when nothing waits.
+    #>
+    if ($null -eq $Record -or $null -eq $Record.Pending -or $null -eq $Record.Pending.SinceUnix) { return $null }
+    if ($null -ne $LastBootUtc) {
+        $boot = [DateTimeOffset]::new(([datetime]$LastBootUtc).ToUniversalTime()).ToUnixTimeSeconds()
+        if ($boot -gt [long]$Record.Pending.SinceUnix) { return $null }
+    }
+    return $Record.Pending
+}
+
+function Resolve-ODSWslConfigState($Configured, $Record, $LastBootUtc) {
+    <#
+    .SYNOPSIS
+        The WSL memory limit in effect (pure; PR B design 4.3: after a
+        declined WSL restart ODS plans with the limit WSL runs with until it
+        restarts). GiB and Owner ('ods' or 'owner') of the memory= WSL runs
+        with, both $null for WSL's default, and PendingGiB, the limit ODS
+        wrote that applies only when WSL restarts ($null when none waits).
+        ODS only lowers the limit (it writes one only while the limit in
+        effect is above its bound), so the limit in effect is also the
+        larger one: safe to plan with now and after WSL restarts.
+    #>
+    $pending = if ($Configured -and [string]$Configured.Owner -ceq 'ods') { Get-ODSWslPendingLimit $Record $LastBootUtc } else { $null }
+    if ($pending) {
+        $inEffect = if ($null -ne $pending.InEffectGiB) { [double]$pending.InEffectGiB } else { $null }
+        return [pscustomobject]@{ GiB = $inEffect; Owner = $(if ($null -ne $inEffect) { 'ods' } else { $null }); PendingGiB = [double]$Configured.GiB }
+    }
+    return [pscustomobject]@{ GiB = $(if ($Configured) { $Configured.GiB } else { $null })
+        Owner = $(if ($Configured) { $Configured.Owner } else { $null }); PendingGiB = $null }
+}
+
+function Get-ODSWslConfigState {
+    # Resolve-ODSWslConfigState for this account's .wslconfig and record.
+    $file = Read-ODSWslConfigFile
+    $record = Get-ODSWindowsSettingsValue (Read-ODSWindowsSettings) 'WslConfig'
+    $recorded = if ($null -ne $record -and $null -ne $record.Value) { [double]$record.Value } else { $null }
+    $configured = if ($file.Text) { Read-ODSWslConfigMemory $file.Text $recorded } else { $null }
+    # Only a limit that waits for WSL to restart needs the boot time.
+    $boot = if ($null -ne $record -and $null -ne $record.Pending) { Get-ODSWindowsLastBootUtc } else { $null }
+    return (Resolve-ODSWslConfigState $configured $record $boot)
+}
+
 function Get-ODSWslEffectiveMemory([double]$VisibleGiB) {
     <#
     .SYNOPSIS
         The memory limit WSL uses: GiB and Source 'wslconfig' (the owner's
-        memory=), 'ods' (the value ODS wrote) or 'default' (half of visible).
+        memory=), 'ods' (the value ODS wrote, once WSL runs with it) or
+        'default' (half of visible).
     #>
-    $file = Read-ODSWslConfigFile
-    $configured = if ($file.Text) { Read-ODSWslConfigMemory $file.Text (Get-ODSWslRecordedGiB) } else { $null }
-    if ($configured -and $null -ne $configured.GiB) {
-        return [pscustomobject]@{ GiB = $configured.GiB; Source = $(if ($configured.Owner -ceq 'ods') { 'ods' } else { 'wslconfig' }) }
+    $state = Get-ODSWslConfigState
+    if ($null -ne $state.GiB) {
+        return [pscustomobject]@{ GiB = $state.GiB; Source = $(if ($state.Owner -ceq 'ods') { 'ods' } else { 'wslconfig' }) }
     }
     return [pscustomobject]@{ GiB = (Get-ODSWslDefaultMemoryGiB $VisibleGiB); Source = 'default' }
 }
@@ -183,13 +239,15 @@ function Write-ODSWslConfig([int]$GiB) {
         Write ODS's WSL memory limit to .wslconfig after backing up the old
         file, and record it. Result 'written', 'owner' (the owner's memory= is
         kept, nothing written) or 'unsupported' (a file ODS cannot edit as
-        plain text, nothing written). Takes effect when WSL restarts.
+        plain text, nothing written). Takes effect when WSL restarts: the
+        record keeps the limit WSL runs with until then (Pending).
     #>
     $file = Read-ODSWslConfigFile
     $recorded = Get-ODSWslRecordedGiB
     if (-not $file.Editable) { return [pscustomobject]@{ Result = 'unsupported'; Path = $file.Path; Backup = '' } }
     $text = Set-ODSWslConfigMemoryText $file.Text $GiB $recorded
     if ($null -eq $text) { return [pscustomobject]@{ Result = 'owner'; Path = $file.Path; Backup = '' } }
+    $inEffect = (Get-ODSWslConfigState).GiB
     $backup = ''
     if ($file.Exists) {
         $backup = Join-Path (Get-ODSWindowsSettingsDir) ('wslconfig-backup-' + [datetime]::UtcNow.ToString('yyyyMMddTHHmmssZ') + '.txt')
@@ -199,6 +257,6 @@ function Write-ODSWslConfig([int]$GiB) {
     $bytes = [byte[]]($encoding.GetPreamble() + $encoding.GetBytes($text))
     # A plain write keeps the owner's file and its permissions as they were.
     [IO.File]::WriteAllBytes($file.Path, $bytes)
-    Save-ODSWindowsWslConfigChange -Value $GiB -HadFile $file.Exists -Backup $backup -WrittenSha256 (Get-ODSSha256Hex $bytes)
+    Save-ODSWindowsWslConfigChange -Value $GiB -HadFile $file.Exists -Backup $backup -WrittenSha256 (Get-ODSSha256Hex $bytes) -InEffectGiB $inEffect
     return [pscustomobject]@{ Result = 'written'; Path = $file.Path; Backup = $backup }
 }

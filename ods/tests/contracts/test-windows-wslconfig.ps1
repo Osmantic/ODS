@@ -53,14 +53,56 @@ try {
     Check ((Remove-ODSWslConfigMemoryText "[wsl2]${crlf}${marker}${crlf}memory=16GB${crlf}processors=8${crlf}") -ceq "[wsl2]${crlf}processors=8${crlf}") 'the restore transform removes only ODS''s marker and its memory= line'
     Check ((Remove-ODSWslConfigMemoryText "[wsl2]${crlf}memory=24GB${crlf}") -ceq "[wsl2]${crlf}memory=24GB${crlf}") 'without ODS''s marker the restore transform changes nothing'
 
+    # --- The limit in effect until WSL restarts (pure) -----------------------------------
+    $since = 1792000000
+    $waiting = [pscustomobject]@{ Value = 16; Pending = [pscustomobject]@{ SinceUnix = $since; InEffectGiB = $null } }
+    $before = [DateTimeOffset]::FromUnixTimeSeconds($since - 3600).UtcDateTime
+    $after = [DateTimeOffset]::FromUnixTimeSeconds($since + 60).UtcDateTime
+    Check ($null -eq (Get-ODSWslPendingLimit $null $after) -and $null -eq (Get-ODSWslPendingLimit ([pscustomobject]@{ Value = 16; Pending = $null }) $before) -and
+        $null -eq (Get-ODSWslPendingLimit ([pscustomobject]@{ Value = 16 }) $before)) 'no record, or a record without Pending (written before this release), waits for nothing'
+    Check ((Get-ODSWslPendingLimit $waiting $before).SinceUnix -eq $since -and (Get-ODSWslPendingLimit $waiting $null).SinceUnix -eq $since -and
+        $null -eq (Get-ODSWslPendingLimit $waiting $after)) 'a written limit waits until Windows starts after it was written; an unknown boot time keeps it waiting'
+    $odsValue = [pscustomobject]@{ GiB = 16.0; Owner = 'ods' }
+    $state = Resolve-ODSWslConfigState $odsValue $waiting $before
+    Check ($null -eq $state.GiB -and $null -eq $state.Owner -and $state.PendingGiB -eq 16) 'while ODS''s 16 GB waits for a WSL restart, WSL''s default is the limit in effect (PR B design 4.3)'
+    $fromOds = [pscustomobject]@{ Value = 16; Pending = [pscustomobject]@{ SinceUnix = $since; InEffectGiB = 20 } }
+    $state = Resolve-ODSWslConfigState $odsValue $fromOds $before
+    Check ($state.GiB -eq 20 -and $state.Owner -ceq 'ods' -and $state.PendingGiB -eq 16) 'a new ODS value waits while the earlier ODS value stays in effect'
+    $state = Resolve-ODSWslConfigState $odsValue $waiting $after
+    Check ($state.GiB -eq 16 -and $state.Owner -ceq 'ods' -and $null -eq $state.PendingGiB) 'after a Windows start the value ODS wrote is in effect'
+    $state = Resolve-ODSWslConfigState ([pscustomobject]@{ GiB = 24.0; Owner = 'owner' }) $waiting $before
+    Check ($state.GiB -eq 24 -and $state.Owner -ceq 'owner' -and $null -eq $state.PendingGiB) 'an owner''s memory= is planned with, as before'
+    $state = Resolve-ODSWslConfigState $null $null $null
+    Check ($null -eq $state.GiB -and $null -eq $state.Owner -and $null -eq $state.PendingGiB) 'without memory= WSL runs with its default and nothing waits'
+
     # --- Write-ODSWslConfig: backup, record, restore script ----------------------------
+    $script:lastBoot = [datetime]::UtcNow.AddHours(-1)
+    function Get-ODSWindowsLastBootUtc { return $script:lastBoot }
     $path = Join-Path $env:USERPROFILE '.wslconfig'
     $settingsPath = Get-ODSWindowsSettingsPath
     $restore = Get-ODSWindowsRestoreScriptPath
+    $start = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $written = Write-ODSWslConfig 16
     $record = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).WslConfig
     Check ($written.Result -ceq 'written' -and -not $written.Backup -and [IO.File]::ReadAllText($path) -ceq "[wsl2]${crlf}${marker}${crlf}memory=16GB${crlf}" -and
         $record.Value -eq 16 -and $record.HadFile -eq $false -and $record.WrittenSha256 -cmatch '^[0-9a-f]{64}$') 'with no .wslconfig ODS creates one and records that there was none'
+    Check ($record.Pending.SinceUnix -ge $start -and $record.Pending.SinceUnix -le [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() -and $null -eq $record.Pending.InEffectGiB -and
+        (Get-ODSWslEffectiveMemory 62.5).Source -ceq 'default' -and (Get-ODSWslEffectiveMemory 62.5).GiB -eq 31.25 -and
+        (Get-ODSWslConfigState).PendingGiB -eq 16) 'the record keeps WSL''s default as the limit in effect until WSL restarts; the written 16 GB waits'
+    $sha = $record.WrittenSha256
+    Complete-ODSWindowsWslConfigApplied
+    $record = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).WslConfig
+    Check ($null -eq $record.Pending -and $record.Value -eq 16 -and $record.HadFile -eq $false -and $record.WrittenSha256 -ceq $sha -and
+        (Get-ODSWslEffectiveMemory 62.5).Source -ceq 'ods' -and (Get-ODSWslEffectiveMemory 62.5).GiB -eq 16 -and $null -eq (Get-ODSWslConfigState).PendingGiB) 'once ODS restarted WSL the value ODS wrote reads back as ODS''s and nothing else in the record changes'
+    $null = Write-ODSWslConfig 20
+    $null = Write-ODSWslConfig 24
+    $record = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).WslConfig
+    Check ($record.Value -eq 24 -and $record.Pending.InEffectGiB -eq 16 -and (Get-ODSWslEffectiveMemory 62.5).GiB -eq 16 -and (Get-ODSWslConfigState).PendingGiB -eq 24) 'values written again before WSL restarts keep the one WSL runs with (16 GB) in effect'
+    $script:lastBoot = [datetime]::UtcNow.AddMinutes(5)
+    Check ((Get-ODSWslEffectiveMemory 62.5).GiB -eq 24 -and (Get-ODSWslEffectiveMemory 62.5).Source -ceq 'ods') 'a Windows start after the write puts the latest value in effect'
+    $script:lastBoot = [datetime]::UtcNow.AddHours(-1)
+    $null = Write-ODSWslConfig 16
+    Complete-ODSWindowsWslConfigApplied
     Check ((Get-ODSWslEffectiveMemory 62.5).Source -ceq 'ods' -and (Get-ODSWslEffectiveMemory 62.5).GiB -eq 16) 'the value ODS wrote reads back as ODS''s'
     $bytes = [IO.File]::ReadAllBytes($restore)
     $tokens = $null; $errors = $null

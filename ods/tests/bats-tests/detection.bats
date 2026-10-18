@@ -252,6 +252,40 @@ _spark_row() {
     assert_equal "$GPU_COMPUTE_CAP" "12.1"
 }
 
+@test "detect_gpu: a Windows model server owns the RTX Spark GPU, so WSL claims none" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    _mock_nvidia_rows "$(_spark_row)"
+    export NATIVE_LLM_BASE_URL=http://localhost:8080
+    export NATIVE_LLM_GPU_NAME="NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+    ai() { echo "AI: $*"; }
+
+    run detect_gpu
+    assert_output --partial "the model runs on NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU) through llama-server on Windows"
+    detect_gpu || true
+    assert_equal "$GPU_BACKEND" "cpu"
+    assert_equal "$GPU_COUNT" "0"
+    assert_equal "$GPU_VRAM" "0"
+    # No compute capability either, so phase 06 maps no CUDA 13 image.
+    assert_equal "$GPU_COMPUTE_CAP" ""
+}
+
+@test "detect_gpu: the native route without the Windows GPU name still reads the GPU" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    _mock_nvidia_rows "$(_spark_row)"
+    export NATIVE_LLM_BASE_URL=http://localhost:8080
+    unset NATIVE_LLM_GPU_NAME
+
+    detect_gpu
+    assert_equal "$GPU_BACKEND" "nvidia"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_VRAM" "98240"
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
+}
+
 @test "detect_gpu: a lone [N/A] row (GB10) is still unified memory" {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         skip "detect_gpu uses GNU grep -oP, not available on macOS"

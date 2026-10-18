@@ -25,6 +25,12 @@
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
 
+# Isolated reuse (tests, helpers) gets the route predicate that
+# installers/lib/native-llm.sh gives install-core: a Windows model server owns
+# the host GPU.
+declare -F ods_native_llm_owns_host_gpu >/dev/null 2>&1 \
+    || ods_native_llm_owns_host_gpu() { [[ -n "${NATIVE_LLM_BASE_URL:-}" && -n "${NATIVE_LLM_GPU_NAME:-}" ]]; }
+
 # WSL2 forwards Docker-published ports through the Windows host. A port can
 # therefore look free to lsof/ss inside Linux while Docker Desktop still
 # refuses the bind because a native Windows process already owns it. Query the
@@ -399,6 +405,10 @@ detect_gpu() {
     if ! $_nvidia_hw && grep -qiE "microsoft|wsl" /proc/sys/kernel/osrelease 2>/dev/null; then
         command -v nvidia-smi &>/dev/null && _nvidia_hw=true
     fi
+    # A Windows model server owns the host GPU (WSL still lists an RTX
+    # Spark's N1X): no NVIDIA claim here, so the CPU fallback below says the
+    # model runs on that GPU through llama-server on Windows.
+    if ods_native_llm_owns_host_gpu; then _nvidia_hw=false; fi
     if $_nvidia_hw && command -v nvidia-smi &> /dev/null; then
         local raw
         if raw=$(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null) && [[ -n "$raw" ]]; then

@@ -48,7 +48,7 @@
           "12.1": ["1210", "121", "121a"]
         },
         "model_ladder": ["qwen3.6-35b-a3b-ud-q4"],
-        "fallback_models": ["qwen3.5-2b-q4"]
+        "fallback_models": ["qwen3.5-9b-q4", "qwen3.5-4b-q4", "qwen3.5-2b-q4"]
       }
     }
   }

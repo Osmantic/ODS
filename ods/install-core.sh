@@ -201,6 +201,10 @@ NATIVE_LLM_CONTEXT_SIZE=""
 NATIVE_LLM_GPU_NAME=""
 NATIVE_LLM_GPU_VRAM_MB=""
 NATIVE_LLM_API_KEY_ENV=""
+# The llama.cpp build policy key of the native server (config/llama-cpp-
+# architectures.json backendBuilds), for the Models page. Windows setup
+# passes it for the RTX Spark's CUDA build; empty means windows-native.
+NATIVE_LLM_RUNTIME_POLICY=""
 ODS_WINDOWS_SYSTEM_DIRECTORY="${ODS_WINDOWS_SYSTEM_DIRECTORY:-}"
 # Retired Lemonade flags, kept parseable for one release (see the shims below).
 _legacy_lemonade_flags=()
@@ -259,6 +263,9 @@ Options:
     --native-llm-api-key-env VAR
                       Name of an environment variable holding the native server's API
                       key (never the key itself)
+    --native-llm-runtime KEY
+                      llama.cpp build policy of the native server (windows-native-cuda for
+                      the RTX Spark); the Models page checks imports against that build
     --windows-system-directory PATH
                       Windows System32 directory supplied by Windows setup
     --use-existing-lemonade, --lemonade-*
@@ -369,6 +376,9 @@ while [[ $# -gt 0 ]]; do
         --native-llm-api-key-env)
             [[ "${2:-}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo "--native-llm-api-key-env requires an environment variable name" >&2; exit 1; }
             NATIVE_LLM_API_KEY_ENV="$2"; shift 2 ;;
+        --native-llm-runtime)
+            [[ "${2:-}" =~ ^windows-native(-[a-z0-9]{1,16})?$ ]] || { echo "--native-llm-runtime requires a windows-native build policy key, for example windows-native-cuda" >&2; exit 1; }
+            NATIVE_LLM_RUNTIME_POLICY="$2"; shift 2 ;;
         --windows-system-directory)
             [[ -n "${2:-}" && "${2:-}" != --* ]] || { echo "--windows-system-directory requires a Windows System32 path" >&2; exit 1; }
             ODS_WINDOWS_SYSTEM_DIRECTORY="$2"
@@ -587,8 +597,8 @@ if [[ -n "$NATIVE_LLM_BASE_URL" ]]; then
     ODS_MODE_EXPLICIT=true
     # LiteLLM holds the native server's key; every other service uses it.
     ENABLE_RECOMMENDED=true
-elif [[ -n "$NATIVE_LLM_MODEL$NATIVE_LLM_CONTEXT_SIZE$NATIVE_LLM_API_KEY_ENV" ]]; then
-    echo "--native-llm-model, --native-llm-context-size and --native-llm-api-key-env require --native-llm-url" >&2
+elif [[ -n "$NATIVE_LLM_MODEL$NATIVE_LLM_CONTEXT_SIZE$NATIVE_LLM_API_KEY_ENV$NATIVE_LLM_RUNTIME_POLICY" ]]; then
+    echo "--native-llm-model, --native-llm-context-size, --native-llm-api-key-env and --native-llm-runtime require --native-llm-url" >&2
     exit 1
 fi
 unset NATIVE_LLM_API_KEY_ENV

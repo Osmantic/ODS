@@ -94,6 +94,21 @@ function Assert-ODSPortalControlModel($Plan) {
     }
 }
 
+function Assert-ODSPortalControlModelParts($Plan) {
+    # M19: llama.cpp loads the other parts of a split GGUF from the first, so
+    # every part must be in the store before anything is stopped.
+    $parts = @(Get-ODSGgufSplitSiblings ([string]$Plan.GgufFile))
+    if ($parts.Count -lt 2) { return }
+    foreach ($part in $parts) {
+        $file = Join-Path $Plan.ModelsDir $part
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+            ((Get-Item -LiteralPath $file -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            Throw-ODSPortalControlError 'model_missing' ("$($Plan.GgufFile) is split into $($parts.Count) files and $part is missing from " +
+                "the Windows model store. Download it again from the Models page. $script:ODSNativeHelpLine")
+        }
+    }
+}
+
 function Get-ODSPortalManagedConfiguration($Request) {
     $runtimeDir = Get-ODSPortalRuntimeDir
     $path = Join-Path $runtimeDir 'runtime.json'
@@ -407,6 +422,8 @@ function Invoke-ODSPortalModelControl($Request) {
             if ($null -ne $Request.plan.MmprojFile) { $next.MmprojFile = $Request.plan.MmprojFile }
         }
         if ($Request.action -cne 'stop') { Assert-ODSPortalControlModel $next }
+        # The CUDA route (RTX Spark) also needs every part of a split model.
+        if ($configuration.Backend -ceq 'cuda' -and $Request.action -cne 'stop') { Assert-ODSPortalControlModelParts $next }
         $memoryPlan = $null
         if ($configuration.Backend -ceq 'cuda' -and $Request.action -ceq 'activate') {
             # Only a switch is ever refused, and before anything is disarmed.

@@ -29,6 +29,8 @@
 # native-llm.sh gives install-core: a host-native llama-server is in use.
 declare -F ods_native_llm_requested >/dev/null 2>&1 \
     || ods_native_llm_requested() { [[ -n "${NATIVE_LLM_BASE_URL:-}" ]]; }
+declare -F ods_native_llm_owns_host_gpu >/dev/null 2>&1 \
+    || ods_native_llm_owns_host_gpu() { ods_native_llm_requested && [[ -n "${NATIVE_LLM_GPU_NAME:-}" ]]; }
 
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 . "$SCRIPT_DIR/installers/lib/wsl-memory.sh"
@@ -114,7 +116,12 @@ else
     ai "Detecting GPU..."
     detect_gpu || true
 
-    if [[ "${CAP_PROFILE_LOADED:-false}" == "true" ]]; then
+    # The capability profile still sees a GPU that a Windows model server
+    # owns (an RTX Spark's N1X through WSL). It must not hand that GPU to this
+    # stack; a CPU profile applies as before.
+    if [[ "${CAP_PROFILE_LOADED:-false}" == "true" && "${CAP_LLM_BACKEND:-}" != "cpu" ]] && ods_native_llm_owns_host_gpu; then
+        log "Capability profile sees ${CAP_GPU_NAME:-a GPU}; the model server on Windows uses it, so this stack keeps GPU_BACKEND=${GPU_BACKEND}."
+    elif [[ "${CAP_PROFILE_LOADED:-false}" == "true" ]]; then
         case "${CAP_LLM_BACKEND:-}" in
             amd)    GPU_BACKEND="amd" ;;
             intel)  GPU_BACKEND="intel" ;;
@@ -212,8 +219,11 @@ log "Host architecture: ${HOST_ARCH}"
 # Secure Boot + NVIDIA auto-fix
 #-----------------------------------------------------------------------------
 # If detect_gpu found no working GPU, check if it's a fixable driver/Secure Boot issue
-# (Only for NVIDIA — AMD APU is handled above)
-if [[ "${GPU_BACKEND_FORCED_CPU:-false}" != "true" && $GPU_COUNT -eq 0 && "$GPU_BACKEND" != "amd" ]] && ! $DRY_RUN; then
+# (Only for NVIDIA — AMD APU is handled above). A Windows model server owns
+# the host GPU on purpose, so there is nothing to fix here (and no WSL GPU
+# warning to show).
+if [[ "${GPU_BACKEND_FORCED_CPU:-false}" != "true" && $GPU_COUNT -eq 0 && "$GPU_BACKEND" != "amd" ]] && ! $DRY_RUN \
+    && ! ods_native_llm_owns_host_gpu; then
     fix_nvidia_secure_boot || true
 fi
 

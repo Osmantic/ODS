@@ -7,7 +7,8 @@
 # points LiteLLM, the model router and Pixel at it (--native-llm-*); containers
 # reach Windows loopback via host.docker.internal.
 # The task, cutover, options and port helpers are vendor-neutral: the CUDA
-# build for NVIDIA GPUs on Windows on Arm uses them too (not routed yet).
+# build for NVIDIA GPUs on Windows on Arm uses them too (the RTX Spark route,
+# wsl-portal-spark-route.ps1).
 # Requires wsl-portal-setup.ps1 (Confirm-ODSPortalPreparation) in scope.
 
 . (Join-Path $PSScriptRoot 'detection.ps1')
@@ -126,6 +127,73 @@ function Get-ODSPortalModel($Plan) {
     return $modelsDir
 }
 
+function Assert-ODSPortalModelArtifact($Artifact) {
+    # A catalog file this setup may download: an ASCII GGUF basename, a
+    # Hugging Face HTTPS address and a pinned SHA-256 (required here).
+    $file = [string]$Artifact.File
+    if ($file -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._+-]{0,239}\.gguf$') { throw "The ODS catalog names a model file ODS cannot store safely: $file" }
+    if ([string]$Artifact.Url -cnotmatch '^https://huggingface\.co/[^\s?#]+$') {
+        throw "Refusing to download $file from an address that is not a Hugging Face file: $($Artifact.Url)"
+    }
+    if ([string]$Artifact.Sha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw "$file has no pinned SHA-256 in the ODS catalog, so it cannot be verified; nothing was downloaded."
+    }
+}
+
+function Save-ODSPortalModelArtifacts([object[]]$Artifacts) {
+    <#
+    .SYNOPSIS
+        Download every file of a catalog model (each part of a split GGUF, and
+        its vision projector) into the Windows model store, verified.
+    .DESCRIPTION
+        Each artifact is { File; Url; Sha256; SizeBytes } from
+        Test-ODSCatalogModelArtifacts. A file already in the store with its
+        SHA-256 is kept. Otherwise it is downloaded to <file>.partial, resumed
+        when a previous run stopped (curl --continue-at -), and checked for
+        size and SHA-256 before it takes its name. Every address is checked
+        before the first download starts.
+    #>
+    $list = @($Artifacts | Where-Object { $_ })
+    foreach ($artifact in $list) { Assert-ODSPortalModelArtifact $artifact }
+    $modelsDir = Get-ODSPortalModelsDir
+    New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
+    for ($index = 0; $index -lt $list.Count; $index++) {
+        $artifact = $list[$index]
+        $file = [string]$artifact.File
+        $size = [long]$artifact.SizeBytes
+        $target = Join-Path $modelsDir $file
+        if (Test-Path -LiteralPath $target -PathType Leaf) {
+            if ((Get-ODSNativeLlamaFileSha256 $target) -ceq [string]$artifact.Sha256) {
+                Write-Host "         Model file already downloaded: $file"
+                continue
+            }
+            Write-Host "         $file does not match its checksum; downloading it again."
+        }
+        $partial = "$target.partial"
+        # A partial longer than the file can never become it.
+        if ($size -gt 0 -and (Test-Path -LiteralPath $partial -PathType Leaf) -and (Get-Item -LiteralPath $partial).Length -gt $size) {
+            Remove-Item -LiteralPath $partial -Force
+        }
+        $part = if ($list.Count -gt 1) { " (file $($index + 1) of $($list.Count))" } else { '' }
+        $about = if ($size -gt 0) { ", about $([math]::Round($size / 1e9, 1)) GB" } else { '' }
+        Write-Host "         Downloading $file$part$about. A stopped download resumes when you rerun setup."
+        & curl.exe --fail --location --proto '=https' --proto-redir '=https' --continue-at - --output $partial ([string]$artifact.Url)
+        if ($LASTEXITCODE -ne 0) { throw "Downloading $file failed (curl exit $LASTEXITCODE). Check the internet connection, then rerun the same command to resume it." }
+        $length = (Get-Item -LiteralPath $partial).Length
+        if ($size -gt 0 -and $length -ne $size) {
+            Remove-Item -LiteralPath $partial -Force
+            throw "The downloaded $file is $length bytes, not the $size the ODS catalog pins; it was deleted. Rerun the same command."
+        }
+        $actual = Get-ODSNativeLlamaFileSha256 $partial
+        if ($actual -cne [string]$artifact.Sha256) {
+            Remove-Item -LiteralPath $partial -Force
+            throw "The downloaded $file does not match its checksum ($actual, expected $($artifact.Sha256)); it was deleted. Rerun the same command."
+        }
+        Move-Item -LiteralPath $partial -Destination $target -Force
+    }
+    return $modelsDir
+}
+
 function Get-ODSPortalUserSid([string]$UserId) {
     if (-not $UserId) { return [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
     if ($UserId -match '^S-1-') { return (New-Object Security.Principal.SecurityIdentifier($UserId)).Value }
@@ -169,33 +237,42 @@ function Get-ODSPortalLauncherArguments {
     return ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + (Join-Path (Get-ODSPortalRuntimeDir) 'launch.ps1') + '"')
 }
 
+function New-ODSPortalForeignRuntimeRefusal([string]$Message) {
+    # A refusal that says the task under ODS's name runs something ODS cannot
+    # prove it started. The text is unchanged for every caller; only the RTX
+    # Spark route reads Data['refusal'] to offer replacing a disabled task.
+    $exception = [Management.Automation.RuntimeException]::new($Message)
+    $exception.Data['refusal'] = 'foreign'
+    return $exception
+}
+
 function Get-ODSPortalRuntimeOwnedLaunch($Task) {
     # The llama.cpp task runs exactly the durable launcher beside its private
     # plan, and that plan names an ODS llama-server.exe and model store.
     $actions = @($Task.Actions)
-    if ($actions.Count -ne 1) { throw 'The Portal model runtime task has an unrecognized action; no process was stopped.' }
+    if ($actions.Count -ne 1) { throw (New-ODSPortalForeignRuntimeRefusal 'The Portal model runtime task has an unrecognized action; no process was stopped.') }
     $action = $actions[0]
     $runtimeDir = Get-ODSPortalRuntimeDir
     $shells = @(Get-Command pwsh.exe, powershell.exe -CommandType Application -ErrorAction SilentlyContinue)
     $shell = @($shells | Where-Object { $_.Source -ieq $action.Execute -or $_.Name -ieq $action.Execute })
     if ($shell.Count -ne 1 -or $action.Arguments -cne (Get-ODSPortalLauncherArguments) -or $action.WorkingDirectory -ine $runtimeDir) {
-        throw 'The Portal model runtime task does not use the managed durable launcher; no process was stopped.'
+        throw (New-ODSPortalForeignRuntimeRefusal 'The Portal model runtime task does not use the managed durable launcher; no process was stopped.')
     }
     $taskName = if ($Task.TaskName) { $Task.TaskName } else { Get-ODSPortalRuntimeTaskName }
     $planPath = Join-Path $runtimeDir 'runtime.json'
     # Uninstall keeps the task registered; deleting ODS files afterwards
     # leaves it without the plan that proves which process it started.
     if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
-        throw ("The Portal model runtime task $taskName has no saved runtime plan ($planPath), so ODS cannot prove " +
+        throw (New-ODSPortalForeignRuntimeRefusal ("The Portal model runtime task $taskName has no saved runtime plan ($planPath), so ODS cannot prove " +
             "which process it started; no process was stopped. If you deleted ODS files, remove the task from normal " +
-            "PowerShell, then rerun setup: Unregister-ScheduledTask -TaskPath '\' -TaskName '$taskName' -Confirm:`$false")
+            "PowerShell, then rerun setup: Unregister-ScheduledTask -TaskPath '\' -TaskName '$taskName' -Confirm:`$false"))
     }
     $plan = Read-ODSNativeLlamaJson $planPath
     if (-not [IO.Path]::IsPathRooted([string]$plan.ExecutablePath) -or
         [IO.Path]::GetFileName([string]$plan.ExecutablePath) -ine 'llama-server.exe' -or
         $plan.ModelsDir -ine (Get-ODSPortalModelsDir) -or
         ($plan.Port -isnot [int] -and $plan.Port -isnot [long])) {
-        throw 'The saved Portal runtime plan does not match the managed llama-server; no process was stopped.'
+        throw (New-ODSPortalForeignRuntimeRefusal 'The saved Portal runtime plan does not match the managed llama-server; no process was stopped.')
     }
     return [pscustomobject]@{ TaskName = $taskName; Action = $action; ActionExe = $shell[0].Source
         ExecutablePath = [string]$plan.ExecutablePath; Port = [int]$plan.Port; Plan = $plan }
@@ -658,14 +735,55 @@ function Register-ODSPortalRuntimeTask($Registration, [string]$Description = '')
     return $taskName
 }
 
+function Get-ODSPortalReplacedTasksDir { return (Join-Path (Split-Path -Parent (Get-ODSPortalStateDir)) 'replaced-tasks') }
+
+function Get-ODSPortalForeignRuntime($Task) {
+    <#
+    .SYNOPSIS
+        Kind 'foreign' when the task under ODS's runtime task name runs a
+        model server ODS cannot prove it started (another engine, or its plan
+        is gone), else $null. Replaceable only when that task is disabled, not
+        running, and the port its plan names has no listener.
+    #>
+    try {
+        $null = Get-ODSPortalRuntimeOwnedLaunch $Task
+        return $null
+    } catch {
+        if ([string]$_.Exception.Data['refusal'] -cne 'foreign') { throw }
+        $refusal = $_.Exception.Message
+    }
+    $taskName = if ($Task.TaskName) { [string]$Task.TaskName } else { Get-ODSPortalRuntimeTaskName }
+    $planPath = Join-Path (Get-ODSPortalRuntimeDir) 'runtime.json'
+    $plan = if (Test-Path -LiteralPath $planPath -PathType Leaf) { Read-ODSNativeLlamaJsonOrNull $planPath } else { $null }
+    $port = if ($plan -and ($plan.Port -is [int] -or $plan.Port -is [long]) -and $plan.Port -ge 1 -and $plan.Port -le 65535) { [int]$plan.Port } else { 0 }
+    $actions = @($Task.Actions)
+    $executable = if ($plan -and $plan.ExecutablePath) { [string]$plan.ExecutablePath } elseif ($actions.Count) { [string]$actions[0].Execute } else { 'unknown' }
+    $state = [string]$Task.State
+    $listener = if ($port) { Get-ODSPortalPortOwner $port } else { $null }
+    return [pscustomobject]@{ Kind = 'foreign'; Task = $Task; Launch = $null; WasEnabled = ($state -ne 'Disabled'); Launches = @()
+        Selection = $null; TaskName = $taskName; State = $state; Running = ($state -eq 'Running'); Port = $port
+        Listener = $listener; Executable = $executable; Refusal = $refusal
+        Replaceable = ($state -eq 'Disabled' -and -not $listener) }
+}
+
 function Get-ODSPortalExistingRuntime {
     <#
     .SYNOPSIS
         What ODS already runs for this user, validated before anything
         changes: the llama.cpp task, ODS-owned Lemonade tasks, or nothing.
+        -AllowForeign (the RTX Spark route only) reports a task ODS cannot
+        prove as Kind 'foreign' instead of refusing.
     #>
+    param([switch]$AllowForeign)
     $task = Get-ODSPortalRuntimeTask
     $launches = @(Get-ODSPortalLemonadeLaunches)
+    if ($task -and $AllowForeign) {
+        $foreign = Get-ODSPortalForeignRuntime $task
+        if ($foreign) {
+            $foreign.Launches = $launches
+            return $foreign
+        }
+    }
     if ($task) {
         $launch = Get-ODSPortalRuntimeOwnedLaunch $task
         return [pscustomobject]@{ Kind = 'llama-server'; Task = $task; Launch = $launch
@@ -682,18 +800,25 @@ function Get-ODSPortalExistingRuntime {
     return [pscustomobject]@{ Kind = 'none'; Task = $null; Launch = $null; WasEnabled = $false; Launches = @(); Selection = $null }
 }
 
-function Resolve-ODSPortalRuntimeSelection($Existing, $Plan) {
+function Resolve-ODSPortalRuntimeSelection($Existing, $Plan, [switch]$RequireAllParts) {
     # A rerun keeps the model and context the user selected (from the owned
     # plan, never from a Lemonade search) when that GGUF is still in the store.
+    # -RequireAllParts (the RTX Spark route) also needs every part of a split
+    # GGUF, so a model missing a part is never carried.
     $saved = $Existing.Selection
     if ($saved -and $saved.GgufFile) {
         $name = [string]$saved.GgufFile
         $context = $saved.ContextSize
         $file = Join-Path (Get-ODSPortalModelsDir) $name
+        $missing = @()
         $usable = $name -cmatch '^[\x20-\x7e]{1,240}$' -and $name -match '\.gguf$' -and $name -notmatch '[\\/:*?"<>|]' -and
             -not $name.StartsWith('.') -and $name -eq $name.Trim() -and
             ($context -is [int] -or $context -is [long]) -and $context -ge 4096 -and $context -le 262144 -and
             (Test-Path -LiteralPath $file -PathType Leaf)
+        if ($usable -and $RequireAllParts) {
+            $missing = @(Get-ODSGgufSplitSiblings $name | Where-Object { -not (Test-Path -LiteralPath (Join-Path (Get-ODSPortalModelsDir) $_) -PathType Leaf) })
+            $usable = $missing.Count -eq 0
+        }
         if ($usable) {
             if ($name -ne $Plan.GgufFile -or $context -ne $Plan.ContextSize) {
                 Write-Host "         Keeping your selected model $name with $context tokens of context."
@@ -706,7 +831,11 @@ function Resolve-ODSPortalRuntimeSelection($Existing, $Plan) {
             return [pscustomobject]@{ GgufFile = $name; ContextSize = [int]$context; Carried = $true
                 MmprojFile = $(if ($keepProjector) { $projector } else { $null }) }
         }
-        Write-Host "         The previously selected model $name cannot run on llama.cpp here; using the recommended $($Plan.GgufFile)."
+        if ($missing.Count) {
+            Write-Host "         Your selected model $name is missing $($missing[0]) in the Windows model store; using the recommended $($Plan.GgufFile)."
+        } else {
+            Write-Host "         The previously selected model $name cannot run on llama.cpp here; using the recommended $($Plan.GgufFile)."
+        }
     }
     return [pscustomobject]@{ GgufFile = [string]$Plan.GgufFile; ContextSize = [int]$Plan.ContextSize; Carried = $false; MmprojFile = $null }
 }
@@ -753,7 +882,48 @@ function Restore-ODSPortalRuntimeDirectory([string]$Backup) {
     }
 }
 
-function Undo-ODSPortalRuntimeCutover($Existing, [string]$Backup, [bool]$Registered) {
+function Save-ODSPortalForeignRuntime($Existing) {
+    <#
+    .SYNOPSIS
+        Before ODS replaces a disabled model task it does not manage: that
+        task's definition (Export-ScheduledTask, the owner's own task, no
+        elevation) and a full copy of the runtime folder, both kept under
+        %LOCALAPPDATA%\ODS\replaced-tasks so the owner can bring them back.
+    #>
+    $folder = Get-ODSPortalReplacedTasksDir
+    New-Item -ItemType Directory -Force -Path $folder | Out-Null
+    $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+    $xmlPath = Join-Path $folder "$($Existing.TaskName)-$stamp.xml"
+    $copy = Join-Path $folder "portal-runtime-$stamp"
+    $runtimeDir = Get-ODSPortalRuntimeDir
+    try {
+        $xml = [string](Export-ScheduledTask -TaskName $Existing.TaskName -TaskPath '\' -ErrorAction Stop)
+        if (-not $xml.Trim()) { throw "Windows returned an empty definition for $($Existing.TaskName)." }
+        # Task Scheduler XML declares UTF-16, which schtasks /create /xml also reads.
+        [IO.File]::WriteAllText($xmlPath, $xml, [Text.Encoding]::Unicode)
+        if (Test-Path -LiteralPath $runtimeDir -PathType Container) {
+            Copy-Item -LiteralPath $runtimeDir -Destination $copy -Recurse -ErrorAction Stop
+        }
+    } catch {
+        $cause = $_.Exception.Message
+        foreach ($path in @($xmlPath, $copy)) {
+            # Only this attempt's own partial copies; failing to remove one
+            # must not hide why the copy failed.
+            if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        throw "Setup could not save a copy of the model task $($Existing.TaskName) and its files ($cause), so it did not replace them; nothing was changed."
+    }
+    return [pscustomobject]@{ Xml = $xmlPath; Copy = $copy; Folder = $folder }
+}
+
+function Restore-ODSPortalForeignTask($Existing, $Replaced) {
+    # The replaced task comes back from its saved definition, disabled as it was.
+    $xml = [IO.File]::ReadAllText($Replaced.Xml)
+    Register-ScheduledTask -Xml $xml -TaskName $Existing.TaskName -TaskPath '\' -Force -ErrorAction Stop | Out-Null
+    Disable-ScheduledTask -TaskName $Existing.TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+}
+
+function Undo-ODSPortalRuntimeCutover($Existing, [string]$Backup, [bool]$Registered, $Replaced = $null) {
     if ($Registered) {
         # Only the proven tree of the new task is stopped.
         Stop-ODSPortalRuntime
@@ -762,7 +932,9 @@ function Undo-ODSPortalRuntimeCutover($Existing, [string]$Backup, [bool]$Registe
         }
     }
     Restore-ODSPortalRuntimeDirectory $Backup
-    if ($Existing.Kind -eq 'lemonade') {
+    if ($Existing.Kind -eq 'foreign') {
+        if ($Registered) { Restore-ODSPortalForeignTask $Existing $Replaced }
+    } elseif ($Existing.Kind -eq 'lemonade') {
         Restore-ODSPortalLemonadeLaunches $Existing.Launches
     } elseif ($Existing.Kind -eq 'llama-server') {
         if (@($Existing.Launches).Count) { Restore-ODSPortalLemonadeLaunches $Existing.Launches }
@@ -779,6 +951,9 @@ function Get-ODSPortalRestoredRuntimeNote($Existing) {
     # running again only once it proves its model, as a fresh start must; a
     # cause that persists (a port another program took) stops it too.
     if ($Existing.Kind -eq 'none') { return 'Nothing was left running.' }
+    if ($Existing.Kind -eq 'foreign') {
+        return "The model task $($Existing.TaskName) is back as it was (disabled), with its files."
+    }
     if ($Existing.Kind -eq 'lemonade') {
         if (@($Existing.Launches | Where-Object { $_.Launch.WasEnabled }).Count) {
             return 'The previous ODS runtime was restored and its task was started again.'
@@ -808,7 +983,12 @@ function Invoke-ODSPortalRuntimeCutover {
         [string]$TaskDescription = '',
         # The CUDA route's memory-plan.json record. It is written with the new
         # plan after the backup, so a rollback restores the old pair.
-        $MemoryPlan = $null)
+        $MemoryPlan = $null,
+        # Runs with BeforeStartArgument once the previous runtime is stopped,
+        # before the new one is registered (the RTX Spark's deferred GPU
+        # check). A throw restores and restarts the previous runtime;
+        # Data['gpuCheck'] keeps its own text.
+        [scriptblock]$BeforeStart = $null, $BeforeStartArgument = $null)
     # One change at a time: a model switch, Unload or Resume from the
     # dashboard holds the same lock, so its stop never races this one.
     $lock = @{}
@@ -817,12 +997,19 @@ function Invoke-ODSPortalRuntimeCutover {
         # Setup read what ODS runs before it took the lock. A switch, Unload or
         # Resume that finished meanwhile is the owner's latest choice: stop
         # with nothing changed instead of undoing it.
-        $current = Get-ODSPortalExistingRuntime
+        $foreign = $Existing.Kind -eq 'foreign'
+        $current = if ($foreign) { Get-ODSPortalExistingRuntime -AllowForeign } else { Get-ODSPortalExistingRuntime }
+        if ($foreign -and ($current.Kind -ne 'foreign' -or -not $current.Replaceable)) {
+            throw ("The model task $($Existing.TaskName) or its server started while setup was running, so setup did not replace it; " +
+                'nothing was changed. Stop and disable it again, then rerun setup.')
+        }
         if ($current.Kind -ne $Existing.Kind -or $current.WasEnabled -ne $Existing.WasEnabled -or
             ($current.Selection | ConvertTo-Json -Compress) -cne ($Existing.Selection | ConvertTo-Json -Compress)) {
             throw ('The model was changed from the dashboard while setup was running, so setup did not change the model ' +
                 'runtime. Run setup again; it keeps that change.')
         }
+        # A task ODS does not manage is saved whole before anything changes.
+        $replaced = if ($foreign) { Save-ODSPortalForeignRuntime $Existing } else { $null }
         $label = if ($Existing.Kind -eq 'lemonade') { 'lemonade-backup' } else { 'backup' }
         $backup = if ($Existing.Kind -ne 'none') { Backup-ODSPortalRuntimeDirectory $label } else { '' }
         # Quiesce only proven ODS identities. A user's own Lemonade keeps running.
@@ -858,6 +1045,7 @@ function Invoke-ODSPortalRuntimeCutover {
         }
         $registered = $false
         try {
+            if ($BeforeStart) { & $BeforeStart $BeforeStartArgument }
             if ($KeepPort) { Assert-ODSPortalPortAvailable $Plan.Port }
             $registration = New-ODSPortalRuntimeAction $Plan $Options $ApiKey $WslDistro $WslInstallDir $MemoryPlan
             $taskName = Register-ODSPortalRuntimeTask $registration $TaskDescription
@@ -866,18 +1054,22 @@ function Invoke-ODSPortalRuntimeCutover {
             $null = Wait-ODSPortalRuntimeReady $registration
         } catch {
             $failure = $_.Exception.Message
+            $lead = if ($_.Exception.Data['gpuCheck']) { "$failure" } else { "The llama.cpp runtime did not start: $failure" }
             try {
-                Undo-ODSPortalRuntimeCutover $Existing $backup $registered
+                Undo-ODSPortalRuntimeCutover $Existing $backup $registered $replaced
             } catch {
                 throw "The llama.cpp runtime did not start ($failure), and restoring the previous runtime also failed: $($_.Exception.Message) Rerun setup; ODS changed only its own files under $(Get-ODSPortalStateDir), and its backup is kept there."
             }
             # The previous files are back in place; the backup is now redundant,
             # and one that cannot be removed must not hide the cause.
             if ($backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
-            throw "The llama.cpp runtime did not start: $failure $(Get-ODSPortalRestoredRuntimeNote $Existing)"
+            throw "$lead $(Get-ODSPortalRestoredRuntimeNote $Existing)"
         }
         if (@($Existing.Launches).Count) { Complete-ODSPortalLemonadeRetirement $Existing.Launches }
-        if ($backup -and $Existing.Kind -eq 'llama-server') { Remove-Item -LiteralPath $backup -Recurse -Force }
+        if ($backup -and $Existing.Kind -in @('llama-server', 'foreign')) { Remove-Item -LiteralPath $backup -Recurse -Force }
+        if ($replaced) {
+            Write-Host "         ODS replaced the model task $($Existing.TaskName). Its definition is kept in $($replaced.Xml) and its files in $($replaced.Copy)."
+        }
         return $registration
     } finally {
         Exit-ODSPortalRuntimeChange $lock
@@ -897,7 +1089,7 @@ function Invoke-ODSPortalCudaQualification {
     .SYNOPSIS
         Qualify an installed CUDA llama.cpp runtime on this NVIDIA GPU before
         any large download: the pinned build, its CUDA device, then the GPU
-        check with a small model already in the store. Nothing routes here yet.
+        check with a small model already in the store (the RTX Spark route).
     .OUTPUTS
         Passed, Class ('' when passed; device when llama.cpp lists no CUDA GPU;
         otherwise the GPU check's class), Reason, Qualification and Check.
@@ -909,12 +1101,18 @@ function Invoke-ODSPortalCudaQualification {
         [Parameter(Mandatory = $true)][string]$AdapterName,
         [Parameter(Mandatory = $true)][string]$ComputeCap,
         [Parameter(Mandatory = $true)][string]$TestModelPath,
-        $CodeIntegrity = $null
+        $CodeIntegrity = $null,
+        # The build and device check when the caller already ran it (the RTX
+        # Spark route runs it before downloading the test model).
+        $Qualification = $null
     )
     if ([string]$Pin.Backend -cne 'cuda') { throw "The GPU check is for CUDA llama.cpp builds, not '$($Pin.Flavor)'." }
     if ($null -eq $CodeIntegrity) { $CodeIntegrity = Get-ODSNativeLlamaCodeIntegrityState }
-    $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $Runtime.ExecutablePath -ExpectedBuild $Pin.Build `
-        -AdapterName $AdapterName -CodeIntegrity $CodeIntegrity -Backend cuda -Architecture $Pin.Architecture
+    $qualification = $Qualification
+    if ($null -eq $qualification) {
+        $qualification = Test-ODSNativeLlamaQualification -ExecutablePath $Runtime.ExecutablePath -ExpectedBuild $Pin.Build `
+            -AdapterName $AdapterName -CodeIntegrity $CodeIntegrity -Backend cuda -Architecture $Pin.Architecture
+    }
     if (-not $qualification.Device) {
         $seen = @($qualification.Devices | ForEach-Object { "$($_.Name) $($_.Description)" }) -join '; '
         if (-not $seen) { $seen = 'no devices' }
