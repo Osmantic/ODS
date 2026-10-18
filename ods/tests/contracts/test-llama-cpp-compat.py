@@ -36,6 +36,8 @@
    build for every backend as BACKEND_BUILDS and the macOS native pin, and
    lists architectures for exactly those builds (regenerate it with
    scripts/generate-llama-architectures.py --write after a pin change).
+   windows-native-cuda, the RTX Spark's Windows CUDA build, is the release
+   tag config/backends/nvidia.json pins as runtime.llama_server.windows_arm64.
 
 Run from ods/:  python3 tests/contracts/test-llama-cpp-compat.py
 """
@@ -65,6 +67,9 @@ BACKEND_BUILDS = {
     "apple": "b9014",
     "arc": "b9014",
     "windows-native": "b9014",
+    # The RTX Spark (NVIDIA on Windows on Arm): config/backends/nvidia.json
+    # runtime.llama_server.windows_arm64, checked in check_architecture_lists.
+    "windows-native-cuda": "b11429",
 }
 
 # Every place that repeats a default image outside Compose.
@@ -275,6 +280,7 @@ ARCHITECTURE_POLICY_SOURCES = {
     "intel": ("intel",),
     "sycl": ("arc",),
     "windows-native": ("windows-native",),
+    "windows-native-cuda": ("windows-native-cuda",),
 }
 
 
@@ -298,6 +304,14 @@ def check_architecture_lists(errors: list[str]) -> None:
     )
     if not macos or backend_builds.get("apple") != macos.group(1):
         errors.append("llama-cpp-architectures.json: backendBuilds.apple must be the macOS native pin in constants.sh")
+    nvidia = json.loads((ROOT_DIR / "config/backends/nvidia.json").read_text(encoding="utf-8"))
+    arm64 = ((nvidia.get("runtime") or {}).get("llama_server") or {}).get("windows_arm64") or {}
+    if arm64.get("policy_key") != "windows-native-cuda" \
+            or backend_builds.get("windows-native-cuda") != arm64.get("release_tag"):
+        errors.append(
+            "llama-cpp-architectures.json: backendBuilds.windows-native-cuda must be the release_tag that "
+            "config/backends/nvidia.json pins for runtime.llama_server.windows_arm64 (policy_key windows-native-cuda)"
+        )
     unknown_keys = set(backend_builds) - set(ARCHITECTURE_POLICY_SOURCES) - {"apple"}
     if unknown_keys:
         errors.append(f"llama-cpp-architectures.json: backendBuilds has keys without a pin: {sorted(unknown_keys)}")

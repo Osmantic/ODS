@@ -44,9 +44,29 @@ def load_runtime_policy(path: Path) -> dict[str, Any] | None:
     return policy
 
 
-def runtime_policy_key(gpu_backend: Any, *, windows_hosted: bool) -> str:
-    """The release-policy key of the llama.cpp runtime this host runs."""
+_WINDOWS_POLICY_KEY = re.compile(r"windows-native(?:-[a-z0-9]{1,16})?")
+
+
+def runtime_policy_key(
+    gpu_backend: Any,
+    *,
+    windows_hosted: bool,
+    native_runtime_policy: Any = None,
+    policy: dict[str, Any] | None = None,
+) -> str:
+    """The release-policy key of the llama.cpp runtime this host runs.
+
+    A Windows-hosted runtime is ``windows-native`` (the AMD Vulkan build)
+    unless Windows setup named another windows-native key in .env
+    (``NATIVE_LLM_RUNTIME_POLICY``, ``windows-native-cuda`` on an RTX Spark)
+    that the policy lists. An unknown value keeps ``windows-native``: the
+    narrower architecture list, never a wider one.
+    """
     if windows_hosted:
+        named = str(native_runtime_policy or "").strip()
+        if (_WINDOWS_POLICY_KEY.fullmatch(named) and policy is not None
+                and isinstance(policy.get("backendBuilds"), dict) and named in policy["backendBuilds"]):
+            return named
         return "windows-native"
     backend = str(gpu_backend or "").strip().lower()
     if backend in {"", "none", "unknown"}:
@@ -66,9 +86,11 @@ def effective_build(
     *,
     windows_hosted: bool,
     model_image: Any = None,
+    native_runtime_policy: Any = None,
 ) -> tuple[str, str | None]:
     """(policy key, llama.cpp build) that would serve a model on this host."""
-    key = runtime_policy_key(gpu_backend, windows_hosted=windows_hosted)
+    key = runtime_policy_key(gpu_backend, windows_hosted=windows_hosted,
+                             native_runtime_policy=native_runtime_policy, policy=policy)
     image_build = build_from_image(model_image) if not windows_hosted else None
     if image_build:
         return key, image_build

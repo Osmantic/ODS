@@ -8,7 +8,8 @@
     "apple": "b9014",
     "intel": "b9014",
     "sycl": "b9014",
-    "windows-native": "b9014"
+    "windows-native": "b9014",
+    "windows-native-cuda": "b11429"
   },
   "builds": {
     "b9014": {
