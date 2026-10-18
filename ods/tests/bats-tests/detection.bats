@@ -267,6 +267,8 @@ _spark_row() {
     assert_equal "$GPU_BACKEND" "cpu"
     assert_equal "$GPU_COUNT" "0"
     assert_equal "$GPU_VRAM" "0"
+    # No compute capability either, so phase 06 maps no CUDA 13 image.
+    assert_equal "$GPU_COMPUTE_CAP" ""
 }
 
 @test "detect_gpu: the native route without the Windows GPU name still reads the GPU" {
@@ -281,6 +283,7 @@ _spark_row() {
     assert_equal "$GPU_BACKEND" "nvidia"
     assert_equal "$GPU_COUNT" "1"
     assert_equal "$GPU_VRAM" "98240"
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
 }
 
 @test "detect_gpu: a lone [N/A] row (GB10) is still unified memory" {

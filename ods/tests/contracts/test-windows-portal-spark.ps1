@@ -797,7 +797,7 @@ try {
     $script:s.EnvGrep = [pscustomobject]@{ Code = 0; Output = "GPU_BACKEND=`"nvidia`"`nNATIVE_LLM_BASE_URL=" }
     $script:s.ContainerIds = @('0123456789ab')
     Check ((Invoke-Setup) -eq 0 -and (Get-Index 'wsl:--distribution Ubuntu-24.04 --exec docker stop 0123456789ab') -lt (Get-Index 'cutover') -and
-        (Get-Output).Contains('This PC ran the model in a container in Ubuntu, which cannot use this GPU correctly. ODS now stops that container and runs the model with llama.cpp on Windows; chat is back when setup finishes. Model files in Ubuntu stay until you delete them on the Models page.')) 'an older install''s ODS model container (compose project ods, service llama-server) is stopped before the cutover (M22)'
+        (Get-Output).Contains('This PC ran the model in a container in Ubuntu. On an RTX Spark ODS now runs it with llama.cpp on Windows, so it stops that container; chat is back when setup finishes. Model files in Ubuntu stay until you delete them on the Models page.')) 'an older install''s ODS model container (compose project ods, service llama-server) is stopped before the cutover (M22)'
     Reset-Spark
     Add-Answers @($true)
     $script:s.EnvGrep = [pscustomobject]@{ Code = 0; Output = "GPU_BACKEND=nvidia`nNATIVE_LLM_BASE_URL=http://localhost:8080" }

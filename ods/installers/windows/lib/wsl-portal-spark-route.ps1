@@ -533,9 +533,10 @@ function Stop-ODSSparkContainerModel([string]$WslDistro, [string]$WslInstallDir)
     }
     $ids = @(([string]$list.Output -split "`r?`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9a-f]{12,64}$' })
     if (-not $ids.Count) { return @() }
-    Write-Host ('         This PC ran the model in a container in Ubuntu, which cannot use this GPU correctly. ODS now stops that container ' +
-        'and runs the model with llama.cpp on Windows; chat is back when setup finishes. Model files in Ubuntu stay until you delete them ' +
-        'on the Models page.')
+    # Releases before the CUDA 13 image ran a build that answers "????" on
+    # this GPU; with it, the container works but holds the GPU's memory.
+    Write-Host ('         This PC ran the model in a container in Ubuntu. On an RTX Spark ODS now runs it with llama.cpp on Windows, so it ' +
+        'stops that container; chat is back when setup finishes. Model files in Ubuntu stay until you delete them on the Models page.')
     $stop = Invoke-ODSPortalWsl -Arguments (@('--distribution', $WslDistro, '--exec', 'docker', 'stop') + $ids)
     if ($stop.Code -ne 0) {
         throw ("ODS could not stop its model container in $WslDistro (docker stop exit $($stop.Code)): $($stop.Error) Nothing else was " +
@@ -689,8 +690,10 @@ function Add-ODSPortalSparkArguments([string[]]$LinuxArgs, [System.Collections.I
     #>
     if ([string]$Foundation.Route -cne 'native') {
         Write-ODSPortalStage 3 'NVIDIA GPU' "$($SparkHost.GpuName): the model runs on the CPU inside Ubuntu (slower) this time, for the reason shown above."
-        # Ubuntu still sees the GPU through WSL and would pick a CUDA image
-        # that cannot run on it, so the CPU route is forced.
+        # Ubuntu still sees the GPU through WSL and would otherwise run the
+        # model in a CUDA container, a route this release does not offer
+        # here (it needs a 7 GB image and the owner's consent), so the CPU
+        # route is forced.
         return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{ GPU_BACKEND = 'cpu' }; WindowsModelRoute = $false }
     }
     $wslInstallDir = Resolve-ODSPortalWslBinding $Options $WslDistro

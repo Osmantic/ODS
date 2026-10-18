@@ -172,8 +172,9 @@ Register-ScheduledTask -TaskPath '\' -TaskName '<task name>' -Xml (Get-Content -
 ## An older install that ran the model in a container
 
 An RTX Spark installed with an earlier ODS release ran the model in a
-container in Ubuntu, which cannot use this GPU correctly. Rerunning setup
-stops ODS's own model container (only that one), starts the model with
+container in Ubuntu (the oldest releases with a CUDA 12 build that cannot use
+this GPU correctly). Rerunning setup stops ODS's own model container (only
+that one), so it no longer holds the GPU's memory, starts the model with
 llama.cpp on Windows, and then updates Ubuntu. Model files in Ubuntu stay until
 you delete them on the Models page. If the switch fails, setup starts the old
 container again.
