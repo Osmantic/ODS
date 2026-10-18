@@ -122,6 +122,26 @@ got="$(parse --native-llm-gpu-vram-mb 08)"
 [[ "$got" == *"|8|local|"* ]] || fail "an octal-looking VRAM must normalize to decimal: $got"
 ok "VRAM normalizes leading zeros as decimal"
 
+# The Models page's llama.cpp build policy for the native server: Windows
+# setup passes windows-native-cuda for the RTX Spark's CUDA build.
+policy_of() (
+    ODS_MODE=local ODS_MODE_EXPLICIT=false ENABLE_RECOMMENDED=false
+    eval "$defaults"
+    eval "$parser"
+    eval "$native_checks"
+    printf '%s' "$NATIVE_LLM_RUNTIME_POLICY"
+)
+got="$(policy_of --native-llm-url http://localhost:8080 --native-llm-model a.gguf --native-llm-runtime windows-native-cuda)"
+[[ "$got" == windows-native-cuda ]] || fail "--native-llm-runtime must reach the installer: $got"
+got="$(policy_of --native-llm-url http://localhost:8080 --native-llm-model a.gguf)"
+[[ -z "$got" ]] || fail "without --native-llm-runtime there is no build policy (the AMD route): $got"
+ok "--native-llm-runtime carries the build policy key; the AMD route passes none"
+for bad in nvidia windows-native-CUDA windows-native- 'windows-native-cuda x' '' --pixel; do
+    rejects "runtime policy '$bad'" 'windows-native build policy key' \
+        --native-llm-url http://localhost:8080 --native-llm-model a.gguf --native-llm-runtime "$bad"
+done
+rejects 'a runtime policy without a URL' 'require --native-llm-url' --native-llm-runtime windows-native-cuda
+
 # ── Retired Lemonade flags (one release) ─────────────────────────────────────
 got="$(parse --lemonade-url http://localhost:13305/api/v1 --lemonade-host-transport model-router \
     --lemonade-model extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --lemonade-context-size 32768 \
@@ -219,8 +239,9 @@ error() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 # route CASE EXPECTED_TRANSPORT: INHERITED/PERSISTED_* describe the run.
 route() (
     local label="$1" expected="$2"
-    unset ODS_HOST_LLM_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT LLAMA_SERVER_API_KEY
+    unset ODS_HOST_LLM_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT LLAMA_SERVER_API_KEY NATIVE_LLM_RUNTIME_POLICY
     NATIVE_LLM_BASE_URL=http://localhost:13305
+    [[ -z "${INHERITED_RUNTIME_POLICY:-}" ]] || NATIVE_LLM_RUNTIME_POLICY="$INHERITED_RUNTIME_POLICY"
     [[ -z "${INHERITED_TRANSPORT:-}" ]] || ODS_HOST_LLM_TRANSPORT="$INHERITED_TRANSPORT"
     [[ -z "${INHERITED_SYSTEM_DIRECTORY:-}" ]] || ODS_WINDOWS_SYSTEM_DIRECTORY="$INHERITED_SYSTEM_DIRECTORY"
     [[ -z "${INHERITED_STATE_ROOT:-}" ]] || ODS_WSL_STATE_ROOT="$INHERITED_STATE_ROOT"
@@ -238,9 +259,20 @@ route() (
     eval 'cat > "$tmp/route.env" << ENV_EOF
 '"$template"'
 ENV_EOF'
-    unset ODS_HOST_LLM_TRANSPORT NATIVE_LLM_BASE_URL NATIVE_LLM_CONTAINER_BASE_URL
+    unset ODS_HOST_LLM_TRANSPORT NATIVE_LLM_BASE_URL NATIVE_LLM_CONTAINER_BASE_URL NATIVE_LLM_RUNTIME_POLICY
     unset ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT
     load_env_file "$tmp/route.env"
+    [[ "${NATIVE_LLM_RUNTIME_POLICY:-}" == "${EXPECTED_RUNTIME_POLICY:-}" ]] \
+        || fail "$label: runtime policy '${NATIVE_LLM_RUNTIME_POLICY:-}'"
+    if [[ -z "${EXPECTED_RUNTIME_POLICY:-}" ]]; then
+        # Not even an empty line: the AMD .env stays byte for byte as before.
+        ! grep -q 'NATIVE_LLM_RUNTIME_POLICY' "$tmp/route.env" || fail "$label wrote a runtime policy"
+        grep -A1 '^NATIVE_LLM_CONTAINER_BASE_URL=' "$tmp/route.env" | sed -n 2p | grep -q . \
+            || fail "$label: a line was added after NATIVE_LLM_CONTAINER_BASE_URL"
+    else
+        grep -A1 '^NATIVE_LLM_CONTAINER_BASE_URL=' "$tmp/route.env" | sed -n 2p | grep -qx "NATIVE_LLM_RUNTIME_POLICY=$EXPECTED_RUNTIME_POLICY" \
+            || fail "$label: the runtime policy must follow NATIVE_LLM_CONTAINER_BASE_URL on its own line"
+    fi
     [[ "$ODS_HOST_LLM_TRANSPORT" == "$expected" ]] || fail "$label: transport $ODS_HOST_LLM_TRANSPORT, expected $expected"
     [[ "$NATIVE_LLM_BASE_URL" == http://localhost:13305 \
        && "$NATIVE_LLM_CONTAINER_BASE_URL" == http://host.docker.internal:13305 ]] \
@@ -254,6 +286,8 @@ ENV_EOF'
     printf 'PASS: %s\n' "$label"
 )
 route 'Omitted transport defaults to direct' direct
+INHERITED_RUNTIME_POLICY=windows-native-cuda EXPECTED_RUNTIME_POLICY=windows-native-cuda \
+    route 'The RTX Spark build policy is written beside the native origin' direct
 INHERITED_TRANSPORT=model-router route 'Explicit model-router transport' model-router
 PERSISTED_TRANSPORT=model-router route 'A rerun keeps the saved model-router transport' model-router
 INHERITED_TRANSPORT=direct PERSISTED_TRANSPORT=model-router route 'An explicit transport overrides the saved one' direct

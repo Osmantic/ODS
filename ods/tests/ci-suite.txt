@@ -6,6 +6,7 @@
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
+tests/contracts/test-native-llm-gpu-owner.sh
 tests/contracts/test-installer-hardening.sh
 tests/contracts/test-llama-metrics-flag.sh
 tests/contracts/test-llama-reasoning-format.sh

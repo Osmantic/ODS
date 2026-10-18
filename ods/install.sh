@@ -5,7 +5,7 @@
 # --hermes --pixel --all --non-interactive --no-bootstrap --bootstrap --offline
 # --native-llm-url --native-llm-host-transport --native-llm-model
 # --native-llm-context-size --native-llm-api-key-env --native-llm-gpu-name
-# --native-llm-gpu-vram-mb
+# --native-llm-gpu-vram-mb --native-llm-runtime
 #   (the retired --use-existing-lemonade/--lemonade-* flags map onto these or
 #   onto --external-llm-* for one release)
 # --preflight-only (environment checks only; used by get-ods.sh --force through
