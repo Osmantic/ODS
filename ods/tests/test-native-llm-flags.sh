@@ -235,6 +235,9 @@ for reader in _env_get _env_get_explicit_first; do
     eval "$definition"
 done
 error() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
+# Each template line renders as one .env line, empty when its value is unset
+# (the API key and the Windows paths in most cases below).
+template_lines="$(printf '%s\n' "$template" | wc -l)"
 
 # route CASE EXPECTED_TRANSPORT: INHERITED/PERSISTED_* describe the run.
 route() (
@@ -264,14 +267,17 @@ ENV_EOF'
     load_env_file "$tmp/route.env"
     [[ "${NATIVE_LLM_RUNTIME_POLICY:-}" == "${EXPECTED_RUNTIME_POLICY:-}" ]] \
         || fail "$label: runtime policy '${NATIVE_LLM_RUNTIME_POLICY:-}'"
+    rendered_lines="$(wc -l < "$tmp/route.env")"
     if [[ -z "${EXPECTED_RUNTIME_POLICY:-}" ]]; then
         # Not even an empty line: the AMD .env stays byte for byte as before.
         ! grep -q 'NATIVE_LLM_RUNTIME_POLICY' "$tmp/route.env" || fail "$label wrote a runtime policy"
-        grep -A1 '^NATIVE_LLM_CONTAINER_BASE_URL=' "$tmp/route.env" | sed -n 2p | grep -q . \
-            || fail "$label: a line was added after NATIVE_LLM_CONTAINER_BASE_URL"
+        (( rendered_lines == template_lines )) \
+            || fail "$label: $rendered_lines .env lines from a $template_lines-line template (a line was added)"
     else
         grep -A1 '^NATIVE_LLM_CONTAINER_BASE_URL=' "$tmp/route.env" | sed -n 2p | grep -qx "NATIVE_LLM_RUNTIME_POLICY=$EXPECTED_RUNTIME_POLICY" \
             || fail "$label: the runtime policy must follow NATIVE_LLM_CONTAINER_BASE_URL on its own line"
+        (( rendered_lines == template_lines + 1 )) \
+            || fail "$label: $rendered_lines .env lines from a $template_lines-line template (the policy adds exactly one)"
     fi
     [[ "$ODS_HOST_LLM_TRANSPORT" == "$expected" ]] || fail "$label: transport $ODS_HOST_LLM_TRANSPORT, expected $expected"
     [[ "$NATIVE_LLM_BASE_URL" == http://localhost:13305 \
