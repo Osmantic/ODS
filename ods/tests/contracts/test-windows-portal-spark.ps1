@@ -101,6 +101,9 @@ try {
         $script:cutover = $null
         $script:wingetCalls = [Collections.Generic.List[string]]::new()
         $script:s = @{ Existing = $none; Layout = $Layout; Change = $Change; WslPresent = $true; WslReady = $true; FreeGB = 200
+            # RealWslConfig: the real .wslconfig writer and record, read back
+            # by the layout; LastBoot: when Windows last started.
+            RealWslConfig = $false; LastBoot = [datetime]::UtcNow.AddHours(-1)
             RuntimeInstalled = $false; DockerInstalled = $true; Winget = $true; WingetCode = 0
             Builds = [Collections.Generic.Queue[object]]::new(); Checks = [Collections.Generic.Queue[object]]::new()
             Gpu = $null; Commit = $null; PageFileResult = [pscustomobject]@{ Result = 'set'; ExitCode = 0 }
@@ -110,6 +113,15 @@ try {
             if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
         }
         $null = New-Item -ItemType Directory -Path $modelsDir -Force
+    }
+    function Reset-SparkRun {
+        # The next setup run on the same PC: its files stay, the logs start again.
+        $script:calls = [Collections.Generic.List[string]]::new()
+        $script:prompts = [Collections.Generic.List[string]]::new()
+        $script:answers = [Collections.Generic.Queue[object]]::new()
+        $script:output = [Collections.Generic.List[string]]::new()
+        $script:linux = $null
+        $script:cutover = $null
     }
     function Add-Answers([bool[]]$Answers) { foreach ($answer in $Answers) { $script:answers.Enqueue($answer) } }
     function Set-RuntimeInstalled { $script:s.RuntimeInstalled = $true; $null = New-Item -ItemType Directory -Path $script:runtimeDir -Force }
@@ -341,6 +353,7 @@ try {
     }
 
     # Every host boundary is a fixture from here on.
+    $realWriteWslConfig = ${function:Write-ODSWslConfig}
     function Get-ODSSparkHost { $script:calls.Add('spark-host'); return $script:s.Host }
     function Get-ODSPortalExistingRuntime { param([switch]$AllowForeign) $script:calls.Add("existing:$([bool]$AllowForeign)"); return $script:s.Existing }
     function Get-ODSSparkMemoryLayout {
@@ -348,8 +361,11 @@ try {
         $script:calls.Add('layout')
         $layout = Get-Content -LiteralPath (Join-Path $script:fixtures $script:s.Layout) -Raw -Encoding UTF8 | ConvertFrom-Json
         foreach ($key in $script:s.Change.Keys) { $layout.$key = $script:s.Change[$key] }
+        # The reader's own WSL part (.wslconfig and the record) on request.
+        if ($script:s.RealWslConfig) { $layout.WslConfig = Get-ODSWslConfigState }
         return $layout
     }
+    function Get-ODSWindowsLastBootUtc { return $script:s.LastBoot }
     function Get-ODSPortalFreeSystemGB { $script:calls.Add('disk-check'); return $script:s.FreeGB }
     function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $true }
     function Test-ODSPortalAdministrator { return $false }
@@ -437,7 +453,11 @@ try {
     function Get-ODSNativeGpuMemoryState { param([string]$GpuName = '') return $script:s.Gpu }
     function Get-ODSNativeCommitState { return $script:s.Commit }
     function Set-ODSSparkPageFile([int]$SizeGiB) { $script:calls.Add("pagefile:$SizeGiB"); return $script:s.PageFileResult }
-    function Write-ODSWslConfig([int]$GiB) { $script:calls.Add("wslconfig:$GiB"); return [pscustomobject]@{ Result = 'written'; Path = 'C:\Users\fixture\.wslconfig' } }
+    function Write-ODSWslConfig([int]$GiB) {
+        $script:calls.Add("wslconfig:$GiB")
+        if ($script:s.RealWslConfig) { return (& $script:realWriteWslConfig $GiB) }
+        return [pscustomobject]@{ Result = 'written'; Path = 'C:\Users\fixture\.wslconfig' }
+    }
     function Test-ODSSparkWslPresent { return $script:s.WslPresent }
     function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed = $script:s.DockerInstalled; Exe = 'docker-desktop.exe'; Cli = 'docker.exe' } }
     function Install-ODSPortalDockerDesktop {
@@ -719,6 +739,57 @@ try {
     Add-Answers @($true, $false, $false)
     Check ((Invoke-Setup) -eq 0 -and $script:cutover.Plan.GgufFile -ceq 'Qwen3.5-9B-Q4_K_M.gguf' -and
         (Get-Output) -match 'ODS uses Qwen 3\.5 9B \(64K context\) .+the largest model proven on this PC that fits') 'a factory Spark that declines both offers gets the 9B fallback that fits (M3)'
+
+    # --- The WSL limit is planned with only once WSL runs with it (design 4.3) --------
+    # The real .wslconfig writer and its record; the layout reads them back.
+    $settingsPath = Get-ODSWindowsSettingsPath
+    $wslConfigPath = Join-Path $env:USERPROFILE '.wslconfig'
+    function Get-WslRecord { return (Get-Content -LiteralPath $script:settingsPath -Raw | ConvertFrom-Json).WslConfig }
+    $nineFile = 'Qwen3.5-9B-Q4_K_M.gguf'
+    Reset-Spark -Layout 'memory-factory-64.json'
+    $script:s.RealWslConfig = $true
+    # M10 yes, M8 (limit WSL to 16 GB) yes, M9 (restart WSL now) no.
+    Add-Answers @($true, $true, $false)
+    $code = Invoke-Setup
+    $record = Get-WslRecord
+    Check ($code -eq 0 -and $script:prompts.Count -eq 3 -and $script:prompts[1] -match '^Ubuntu and Docker \(WSL\) may use up to .+Limit WSL to 16 GB\?' -and
+        $script:prompts[2] -match '^Restart WSL now' -and -not $script:calls.Contains('wsl:--shutdown') -and
+        [IO.File]::ReadAllText($wslConfigPath).Contains('memory=16GB') -and $null -ne $record.Pending -and $null -eq $record.Pending.InEffectGiB) 'a factory Spark that accepts the WSL limit (M8) but declines the WSL restart (M9): the limit is written and recorded as waiting, WSL''s default still in effect'
+    Check ($script:cutover.Plan.GgufFile -ceq $nineFile -and $script:cutover.Plan.ContextSize -eq 65536 -and $script:cutover.MemoryPlan.GgufFile -ceq $nineFile -and
+        [math]::Abs([double]$script:cutover.MemoryPlan.WslGiB - 31.25) -lt 0.01 -and -not $script:calls.Contains("download:$topFile") -and
+        (@($script:linux.Arguments) -join ' ') -match '--native-llm-model Qwen3\.5-9B-Q4_K_M\.gguf --native-llm-context-size 65536' -and
+        (Get-Output) -match 'WSL gets the new memory limit only after it restarts\. ODS uses Qwen 3\.5 9B \(64K context\)') 'stage 3 plans with the limit WSL runs with (the 31.25 GiB default): the cutover starts the 9B setup announced, never 35B-A3B, and memory-plan.json records 31.25 GiB for WSL'
+    # A later run before WSL or Windows restarted.
+    Reset-SparkRun
+    $script:s.Existing = New-Existing $nineFile 65536
+    $code = Invoke-Setup @{ NonInteractive = $true }
+    Check ($code -eq 0 -and $script:prompts.Count -eq 0 -and [math]::Abs([double]$script:cutover.MemoryPlan.WslGiB - 31.25) -lt 0.01 -and
+        $script:cutover.Plan.GgufFile -ceq $nineFile -and (Get-Output) -match 'WSL gets the new memory limit only after it restarts\.' -and
+        $null -ne (Get-WslRecord).Pending) 'a rerun while the limit still waits plans with the limit in effect again'
+    Reset-SparkRun
+    $script:s.Existing = New-Existing $nineFile 65536
+    Add-Answers @($true)
+    $code = Invoke-Setup
+    Check ($code -eq 0 -and $script:prompts.Count -eq 1 -and $script:prompts[0] -match '^Restart WSL now' -and $script:calls.Contains('wsl:--shutdown') -and
+        (Get-Index 'wsl:--shutdown') -lt (Get-Index 'cutover') -and (Get-Output).Contains("ODS already limited WSL to 16 GB in $wslConfigPath; WSL applies it when it restarts.") -and
+        -not ($script:calls -like 'wslconfig:*') -and $script:cutover.MemoryPlan.WslGiB -eq 16 -and $null -eq (Get-WslRecord).Pending) 'a rerun asks only to restart WSL (the limit is already written); after a yes, stage 3 plans with 16 GB for WSL'
+    Reset-Spark -Layout 'memory-factory-64.json'
+    $script:s.RealWslConfig = $true
+    Add-Answers @($true, $true, $false)
+    $null = Invoke-Setup
+    Reset-SparkRun
+    $script:s.Existing = New-Existing $nineFile 65536
+    $script:s.LastBoot = [datetime]::UtcNow.AddMinutes(5)
+    $code = Invoke-Setup
+    Check ($code -eq 0 -and $script:prompts.Count -eq 0 -and $script:cutover.MemoryPlan.WslGiB -eq 16 -and -not $script:calls.Contains('wsl:--shutdown') -and
+        -not ((Get-Output) -match 'WSL gets the new memory limit')) 'after Windows has restarted, the limit ODS wrote is in effect: nothing is asked and WSL is planned at 16 GB'
+    Reset-Spark -Layout 'memory-factory-64.json'
+    $script:s.RealWslConfig = $true
+    Add-Answers @($true, $true, $true)
+    $code = Invoke-Setup
+    Check ($code -eq 0 -and $script:prompts.Count -eq 3 -and $script:calls.Contains('wsl:--shutdown') -and (Get-Index 'wsl:--shutdown') -lt (Get-Index "download:$topFile") -and
+        $null -eq (Get-WslRecord).Pending -and $script:cutover.Plan.GgufFile -ceq $topFile -and $script:cutover.Plan.ContextSize -eq 131072 -and
+        $script:cutover.MemoryPlan.WslGiB -eq 16 -and $script:cutover.MemoryPlan.CommitNeedGiB -eq 25.8) 'accepting the WSL restart (M9) puts the 16 GB limit in effect before any model download: stage 3 starts 35B-A3B at 128K with 16 GB for WSL'
 
     # --- Migrating an older container install (M22) -----------------------------------
     Reset-Spark

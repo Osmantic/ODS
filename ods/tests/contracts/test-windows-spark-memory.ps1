@@ -29,6 +29,7 @@ function Read-Host { throw 'Read-Host must not run in the planner tests' }
 function Invoke-ODSPortalWsl([string[]]$Arguments) { throw "WSL must not run here: $($Arguments -join ' ')" }
 function Start-ODSElevatedProcess([string]$FilePath, [string]$Arguments) { throw 'UAC must not be requested here' }
 function Get-ODSPortalDockerDesktop { throw 'Docker Desktop must not be queried here' }
+function Get-ODSWindowsLastBootUtc { throw 'the boot time must not be read from WMI here' }
 $helpLine = 'Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC'
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-spark-memory-' + [guid]::NewGuid().ToString('N'))
@@ -233,6 +234,22 @@ try {
         [IO.File]::WriteAllText([IO.Path]::Combine($env:LOCALAPPDATA, 'Docker', 'wsl', 'disk', 'docker_data.vhdx'), 'fixture')
         $withWsl = Get-ODSSparkMemoryLayout -CarveOutMiB 98240 -ModelsDir $modelsDir
         Check ($withWsl.WslNowGiB -eq 15 -and $withWsl.StackPresent) 'the WSL commit is read when Windows shows it, and Docker Desktop''s data disk means an installed stack'
+        # A limit ODS wrote while WSL kept running (the owner said no to the
+        # WSL restart) is not in effect until WSL restarts.
+        $script:lastBoot = [datetime]::UtcNow.AddHours(-1)
+        function Get-ODSWindowsLastBootUtc { return $script:lastBoot }
+        $null = Write-ODSWslConfig 16
+        $waiting = Get-ODSSparkMemoryLayout -CarveOutMiB 98240 -ModelsDir $modelsDir
+        $nested = @((Read-Layout 'memory-raised-96.json').WslConfig.PSObject.Properties | ForEach-Object { $_.Name })
+        Check ((@($waiting.WslConfig.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') -ceq ($nested -join ',') -and
+            (@($layout.WslConfig.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') -ceq ($nested -join ',')) 'the WSL part of the layout has the fixture shape too (GiB, Owner, PendingGiB)'
+        Check ($null -eq $waiting.WslConfig.GiB -and $null -eq $waiting.WslConfig.Owner -and $waiting.WslConfig.PendingGiB -eq 16 -and
+            (Get-ODSSparkWslMemory $waiting).Source -ceq 'default') 'a WSL limit ODS wrote that waits for WSL to restart is PendingGiB; the layout plans with the limit in effect (WSL''s default)'
+        $script:lastBoot = [datetime]::UtcNow.AddMinutes(5)
+        $restarted = Get-ODSSparkMemoryLayout -CarveOutMiB 98240 -ModelsDir $modelsDir
+        Check ($restarted.WslConfig.GiB -eq 16 -and $restarted.WslConfig.Owner -ceq 'ods' -and $null -eq $restarted.WslConfig.PendingGiB -and
+            (Get-ODSSparkWslMemory $restarted).Source -ceq 'ods') 'once Windows has started again the limit ODS wrote is the one in effect'
+        foreach ($path in @((Join-Path $env:USERPROFILE '.wslconfig'), (Get-ODSWindowsSettingsPath), (Get-ODSWindowsRestoreScriptPath))) { Remove-Item -LiteralPath $path -Force }
     }
 
     # --- Page-file setter: one UAC prompt, read back, original recorded ------------
@@ -298,7 +315,8 @@ try {
         }
         function Set-ODSSparkPageFile([int]$SizeGiB) { $script:pageFileCalls.Add($SizeGiB); return $script:pageFileResult }
         function Test-ODSSparkWslPresent { return $script:wslPresent }
-        function Invoke-ODSPortalWsl([string[]]$Arguments) { $script:wslCalls.Add($Arguments -join ' '); return [pscustomobject]@{ Code = 0; Output = ''; Error = '' } }
+        $script:shutdownCode = 0
+        function Invoke-ODSPortalWsl([string[]]$Arguments) { $script:wslCalls.Add($Arguments -join ' '); return [pscustomobject]@{ Code = $script:shutdownCode; Output = ''; Error = '' } }
         function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed = $true; Exe = 'C:\fixture\Docker Desktop.exe' } }
         function Test-ODSPortalDockerEngine($Desktop) { return $false }
         function Start-ODSPortalDockerDesktop($Desktop) { $script:dockerStarts++ }
@@ -306,9 +324,10 @@ try {
         function Reset-Offer([bool[]]$Answers = @()) {
             $script:answers.Clear(); foreach ($answer in $Answers) { $script:answers.Enqueue($answer) }
             $script:prompts.Clear(); $script:pageFileCalls.Clear(); $script:wslCalls.Clear(); $script:dockerStarts = 0; $script:output = @()
-            $script:pageFileResult = [pscustomobject]@{ Result = 'set'; ExitCode = 0 }; $script:wslPresent = $true
+            $script:pageFileResult = [pscustomobject]@{ Result = 'set'; ExitCode = 0 }; $script:wslPresent = $true; $script:shutdownCode = 0
             foreach ($path in @($wslConfig, (Get-ODSWindowsSettingsPath), (Get-ODSWindowsRestoreScriptPath))) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } }
         }
+        function Read-Settings { return (Get-Content -LiteralPath (Get-ODSWindowsSettingsPath) -Raw | ConvertFrom-Json) }
         function Invoke-Offer($Layout, [bool]$NonInteractive = $false, [bool]$RestartPending = $false, [string[]]$Ladder = $pin.ModelLadder) {
             $arguments = @{ Catalog = $catalog; Ladder = $Ladder; Fallback = $pin.FallbackModels; Layout = $Layout; ModelsDir = $modelsDir
                 PresentFiles = @(); SetupArtifacts = $setup }
@@ -332,20 +351,47 @@ try {
         Check ($text -ceq "[wsl2]`r`n# Set by ODS setup: memory limit for WSL. Rerun ODS setup to change it.`r`nmemory=16GB`r`n" -and
             $result.Plan.Model -ceq $top -and $result.Plan.WslGiB -eq 16 -and $result.Plan.WslSource -ceq 'ods' -and
             @($result.Done).Count -eq 1 -and -not $result.RestartReason) 'the accepted offer plans 35B-A3B with the 16 GB WSL limit ODS marked as its own'
+        Check ($null -eq (Read-Settings).WslConfig.Pending) 'after ODS restarted WSL nothing waits: the record says the 16 GB limit is in effect'
         Reset-Offer @($true, $false)
         $result = Invoke-Offer $factory
-        Check ($result.Plan.Model -ceq $nine -and (Test-Path -LiteralPath $wslConfig) -and $script:wslCalls.Count -eq 0 -and
-            (Get-Output) -match 'WSL keeps its current limit until it restarts' -and (Get-Output) -match 'WSL gets the new memory limit only after it restarts\.') 'without a WSL restart the limit waits for one, and ODS plans with the current limit'
+        Check ($result.Plan.Model -ceq $nine -and (Near $result.Plan.WslGiB 31.25) -and (Test-Path -LiteralPath $wslConfig) -and $script:wslCalls.Count -eq 0 -and
+            (Get-Output) -match 'WSL keeps its current limit until it restarts, so ODS plans with that limit for now\. To use the new one, restart Windows, or rerun setup and let it restart WSL\.' -and
+            (Get-Output) -match 'WSL gets the new memory limit only after it restarts\.') 'without a WSL restart the limit waits for one, and ODS plans with the current limit'
+        $pending = (Read-Settings).WslConfig.Pending
+        Check ($null -ne $pending -and $pending.SinceUnix -gt 0 -and $null -eq $pending.InEffectGiB) 'the record keeps the limit as waiting, with WSL''s default as the one in effect, for stage 3 and later runs'
+        # A later run before WSL restarted: the limit is already written.
+        $waiting = Read-Layout 'memory-factory-64.json' @{ WslConfig = [pscustomobject]@{ GiB = $null; Owner = $null; PendingGiB = 16.0 } }
+        Reset-Offer @($true)
+        $null = Write-ODSWslConfig 16
+        $result = Invoke-Offer $waiting
+        Check ($script:prompts.Count -eq 1 -and $script:prompts[0] -match '^Restart WSL now' -and ($script:wslCalls -join ';') -ceq '--shutdown' -and
+            (Get-Output).Contains("ODS already limited WSL to 16 GB in $wslConfig; WSL applies it when it restarts.") -and $result.Plan.Model -ceq $top -and
+            $result.Plan.WslGiB -eq 16 -and $null -eq (Read-Settings).WslConfig.Pending) 'a rerun while the limit waits never asks for it again; a yes to the WSL restart (M9) applies it and plans 35B-A3B'
+        Reset-Offer @($false)
+        $null = Write-ODSWslConfig 16
+        $result = Invoke-Offer $waiting
+        Check ($script:prompts.Count -eq 1 -and $script:prompts[0] -match '^Restart WSL now' -and $script:wslCalls.Count -eq 0 -and $result.Plan.Model -ceq $nine -and
+            (Near $result.Plan.WslGiB 31.25) -and (Get-Output) -match 'WSL gets the new memory limit only after it restarts\. ODS uses Qwen 3\.5 9B' -and
+            $null -ne (Read-Settings).WslConfig.Pending) 'a rerun that declines the WSL restart again keeps planning with the limit in effect: the 9B'
+        Reset-Offer
+        $result = Invoke-Offer $waiting -NonInteractive $true
+        Check ($script:prompts.Count -eq 0 -and $result.Plan.Model -ceq $nine -and (Get-Output) -match 'WSL gets the new memory limit only after it restarts\. ODS uses Qwen 3\.5 9B' -and
+            -not ((Get-Output) -match 'WSL memory limit not changed')) 'non-interactive, a waiting limit is reported as waiting, and the 9B that fits now is planned'
+        Reset-Offer @($true, $true)
+        $script:shutdownCode = 1
+        $result = Invoke-Offer $factory
+        Check ($result.Plan.Model -ceq $nine -and ($script:wslCalls -join ';') -ceq '--shutdown' -and $script:dockerStarts -eq 0 -and $null -ne (Read-Settings).WslConfig.Pending -and
+            (Get-Output) -match 'wsl --shutdown did not finish \(exit 1\); WSL keeps its current limit, so ODS plans with that limit for now\.') 'a WSL restart that fails keeps the limit waiting, and the plan uses the limit WSL still runs with'
         Reset-Offer @($false)
         $result = Invoke-Offer $factory
         Check ($result.Plan.Model -ceq $nine -and -not (Test-Path -LiteralPath $wslConfig) -and (Get-Output) -match 'WSL memory limit not changed\.') 'a declined WSL limit changes nothing and keeps the model that fits'
         Reset-Offer @($true)
         $result = Invoke-Offer $factory -RestartPending $true
-        Check ($result.Plan.Model -ceq $top -and $script:prompts.Count -eq 1 -and $script:wslCalls.Count -eq 0) 'with a Windows restart coming anyway, WSL is not restarted'
+        Check ($result.Plan.Model -ceq $top -and $script:prompts.Count -eq 1 -and $script:wslCalls.Count -eq 0 -and $null -ne (Read-Settings).WslConfig.Pending) 'with a Windows restart coming anyway, WSL is not restarted, and the limit waits for that restart'
         Reset-Offer @($true)
         $script:wslPresent = $false
         $result = Invoke-Offer $factory
-        Check ($result.Plan.Model -ceq $top -and $script:prompts.Count -eq 1) 'before WSL is installed the limit applies at its first start'
+        Check ($result.Plan.Model -ceq $top -and $script:prompts.Count -eq 1 -and $null -eq (Read-Settings).WslConfig.Pending) 'before WSL is installed the limit applies at its first start: nothing waits'
         Reset-Offer @($true)
         $result = Invoke-Offer $noPageFile
         Check ($script:prompts[0] -match 'fixed 32 GB page file on C:' -and $script:prompts[0] -match 'commit limit' -and
@@ -377,7 +423,7 @@ try {
             $plan.Offer.WslBoundGiB -eq 16) 'changes are tried WSL alone, page file alone, then both: here the 48 GB page file does not fit the disk, so both'
         Reset-Offer @($true, $true)
         $result = Invoke-Offer $both -Ladder $ladder
-        Check ($result.Plan.Model -ceq 'qwen3-coder-next-q4' -and $script:prompts.Count -eq 2 -and $script:wslCalls.Count -eq 0 -and $result.RestartReason) 'accepting both needs no WSL restart: the page file''s Windows restart applies the WSL limit too'
+        Check ($result.Plan.Model -ceq 'qwen3-coder-next-q4' -and $script:prompts.Count -eq 2 -and $script:wslCalls.Count -eq 0 -and $result.RestartReason -and $null -ne (Read-Settings).WslConfig.Pending) 'accepting both needs no WSL restart: the page file''s Windows restart applies the WSL limit too, so the limit waits for it'
         Reset-Offer @($true, $false, $true)
         $result = Invoke-Offer $both -Ladder $ladder
         Check ($result.Plan.Model -ceq $top -and $script:prompts.Count -eq 3 -and ($script:wslCalls -join ';') -ceq '--shutdown' -and

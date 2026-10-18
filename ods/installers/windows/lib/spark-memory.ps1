@@ -96,8 +96,9 @@ function Get-ODSSparkMemoryLayout {
         default { $activeGiB }
     }
     if ($automatic) { $configuredGiB = $activeGiB }
-    $wslFile = Read-ODSWslConfigFile
-    $wsl = if ($wslFile.Text) { Read-ODSWslConfigMemory $wslFile.Text (Get-ODSWslRecordedGiB) } else { $null }
+    # The WSL limit in effect: one ODS wrote that waits for WSL to restart is
+    # PendingGiB, never planned with (PR B design 4.3).
+    $wsl = Get-ODSWslConfigState
     $modelsDrive = if ($ModelsDir -match '^([A-Za-z]:)') { $Matches[1].ToUpperInvariant() } else { $drive }
     $free = [ordered]@{}
     foreach ($name in @($drive.ToUpperInvariant(), $modelsDrive) | Select-Object -Unique) { $free[$name] = Get-ODSDriveFreeGiB $name }
@@ -114,7 +115,7 @@ function Get-ODSSparkMemoryLayout {
         PageFileAutomatic = $automatic
         PageFilePending = (-not $automatic -and $entry.Kind -in @('fixed', 'none') -and [math]::Abs($configuredGiB - $activeGiB) -ge 0.5)
         PagingFiles = $paging
-        WslConfig = [pscustomobject]@{ GiB = $(if ($wsl) { $wsl.GiB } else { $null }); Owner = $(if ($wsl) { $wsl.Owner } else { $null }) }
+        WslConfig = $wsl
         WslNowGiB = (Get-ODSSparkWslNowGiB)
         RunningModelGiB = (Get-ODSSparkRunningModelGiB (Get-ODSPortalRuntimeDir))
         ModelsDrive = $modelsDrive
@@ -126,8 +127,9 @@ function Get-ODSSparkMemoryLayout {
 # --- Pure planning ----------------------------------------------------------------
 
 function Get-ODSSparkWslMemory($Layout) {
-    # The WSL memory limit: Source 'wslconfig' (the owner's memory=), 'ods'
-    # (the value ODS wrote) or 'default' (half of what Windows sees).
+    # The WSL memory limit in effect: Source 'wslconfig' (the owner's
+    # memory=), 'ods' (the value ODS wrote, once WSL runs with it) or
+    # 'default' (half of what Windows sees).
     if ($Layout.WslConfig -and $null -ne $Layout.WslConfig.GiB) {
         $source = if ([string]$Layout.WslConfig.Owner -ceq 'ods') { 'ods' } else { 'wslconfig' }
         return [pscustomobject]@{ GiB = [double]$Layout.WslConfig.GiB; Source = $source }
@@ -458,13 +460,14 @@ function Restart-ODSSparkWsl([bool]$NonInteractive) {
     $consent = 'Restart WSL now so the new limit applies? This stops every WSL distribution: Ubuntu, ODS''s services and any Portal agent ' +
         'task that is running, and Docker Desktop''s containers. Save any work open in Ubuntu first. Setup starts Docker Desktop again afterwards.'
     if (-not (Confirm-ODSPortalPreparation $consent $NonInteractive)) {
-        Write-Host ("         WSL keeps its current limit until it restarts (wsl --shutdown, or a Windows restart). ODS plans with the current " +
-            "limit until then. $script:ODSNativeHelpLine")
+        Write-Host ("         WSL keeps its current limit until it restarts, so ODS plans with that limit for now. To use the new one, restart " +
+            "Windows, or rerun setup and let it restart WSL. $script:ODSNativeHelpLine")
         return $false
     }
     $result = Invoke-ODSPortalWsl -Arguments @('--shutdown')
     if ($result.Code -ne 0) {
-        Write-Host "         wsl --shutdown did not finish (exit $($result.Code)); WSL keeps its current limit until Windows restarts. $script:ODSNativeHelpLine"
+        Write-Host ("         wsl --shutdown did not finish (exit $($result.Code)); WSL keeps its current limit, so ODS plans with that limit for now. " +
+            "Restart Windows, or rerun setup to try again. $script:ODSNativeHelpLine")
         return $false
     }
     $desktop = Get-ODSPortalDockerDesktop
@@ -509,14 +512,20 @@ function Invoke-ODSSparkMemoryOffers {
     $offer = $plan.Offer
     if (-not $offer) { return [pscustomobject]@{ Plan = $plan; RestartReason = ''; Done = @() } }
     $fallback = Format-ODSSparkModelName $plan
+    # An earlier run wrote this limit and WSL has not restarted since: only
+    # the restart (M9) is left.
+    $pending = $layout.WslConfig.PendingGiB
+    $alreadyWritten = [bool]$offer.WslBoundGiB -and $null -ne $pending -and [math]::Abs([double]$pending - [double]$offer.WslBoundGiB) -lt 0.01
     if ($NonInteractive) {
-        Write-Host "         $(Get-ODSSparkKeptPlanNotice $plan $offer (Get-ODSSparkOfferLead $offer $false $false $false))"
+        Write-Host "         $(Get-ODSSparkKeptPlanNotice $plan $offer (Get-ODSSparkOfferLead $offer $alreadyWritten $false $false))"
         return [pscustomobject]@{ Plan = $plan; RestartReason = ''; Done = @() }
     }
     $done = @()
     $restartReason = ''
-    $wslWritten = $false
-    if ($offer.WslBoundGiB -and (Confirm-ODSPortalPreparation (Get-ODSSparkWslOfferText $plan $offer.WslBoundGiB) $false)) {
+    $wslWritten = $alreadyWritten
+    if ($alreadyWritten) {
+        Write-Host "         ODS already limited WSL to $($offer.WslBoundGiB) GB in $(Get-ODSWslConfigPath); WSL applies it when it restarts."
+    } elseif ($offer.WslBoundGiB -and (Confirm-ODSPortalPreparation (Get-ODSSparkWslOfferText $plan $offer.WslBoundGiB) $false)) {
         $written = Write-ODSWslConfig $offer.WslBoundGiB
         if ($written.Result -ceq 'written') {
             $wslWritten = $true
@@ -544,8 +553,19 @@ function Invoke-ODSSparkMemoryOffers {
         }
     }
     # A Windows restart (the page file, or WSL's own features) applies the
-    # new WSL limit; otherwise WSL itself must restart, with consent.
-    $wslEffective = $wslWritten -and ($RestartPending -or $pageFileSet -or (-not (Test-ODSSparkWslPresent)) -or (Restart-ODSSparkWsl $false))
+    # new WSL limit; setup stops for it before stage 3, and the record keeps
+    # the limit pending until Windows has started again. Otherwise WSL
+    # itself must restart, with consent; on a no, the limit in effect stays
+    # the one planned with, in stage 3 and on reruns, until WSL restarts.
+    $wslEffective = $false
+    if ($wslWritten) {
+        if ($RestartPending -or $pageFileSet) {
+            $wslEffective = $true
+        } elseif (-not (Test-ODSSparkWslPresent) -or (Restart-ODSSparkWsl $false)) {
+            Complete-ODSWindowsWslConfigApplied
+            $wslEffective = $true
+        }
+    }
     $lead = Get-ODSSparkOfferLead $offer $wslWritten $wslEffective $pageFileSet
     if (-not $lead) {
         return [pscustomobject]@{ Plan = (ConvertTo-ODSSparkAcceptedPlan $plan); RestartReason = $restartReason; Done = $done }
@@ -555,7 +575,7 @@ function Invoke-ODSSparkMemoryOffers {
     $arguments = @{} + $PlanArguments
     if ($wslEffective) {
         $changed = $layout.PSObject.Copy()
-        $changed.WslConfig = [pscustomobject]@{ GiB = [double]$offer.WslBoundGiB; Owner = 'ods' }
+        $changed.WslConfig = [pscustomobject]@{ GiB = [double]$offer.WslBoundGiB; Owner = 'ods'; PendingGiB = $null }
         $arguments.Layout = $changed
     }
     $kept = Select-ODSSparkModelPlan @arguments -AllowPageFile $false -AllowWslBound $false

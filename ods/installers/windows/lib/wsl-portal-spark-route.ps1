@@ -636,6 +636,8 @@ function Initialize-ODSPortalSparkRuntime($SparkHost, $Foundation, [string]$Sour
     $stopped = @(Stop-ODSSparkContainerModel $WslDistro $WslInstallDir)
     try {
         $catalog = Get-ODSSparkCatalog $SourceRoot
+        # The WSL limit in effect: one stage 1 wrote while the owner declined
+        # the WSL restart (M9) is still pending and not planned with.
         $layout = Get-ODSSparkMemoryLayout -CarveOutMiB $SparkHost.CarveOutMiB
         $planArguments = New-ODSSparkPlanArguments $catalog $binary.Pin $layout $binary.Test $binary.Runtime
         $plan = Select-ODSSparkModelPlan @planArguments -AllowPageFile $false -AllowWslBound $false

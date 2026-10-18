@@ -100,7 +100,10 @@ setup offers them only when a better model would then fit:
   file in `%LOCALAPPDATA%\ODS`, and writes
   `%LOCALAPPDATA%\ODS\restore-windows-settings.ps1`, which puts it back. The new
   limit applies when WSL restarts; setup asks before it restarts WSL (that
-  stops Ubuntu, the ODS services and Docker Desktop's containers).
+  stops Ubuntu, the ODS services and Docker Desktop's containers). If you say
+  no, WSL keeps its old limit, and setup plans the model with that one until
+  Windows restarts or a later setup run restarts WSL. That later run asks only
+  about the restart.
 - **A larger page file** on the system drive: a fixed size, in steps of
   16 GB, never smaller than the one you have. Windows asks for administrator
   permission once, and the change applies after a restart. Use **Restart**,
@@ -123,7 +126,7 @@ programs fail when memory really runs out.
 |---|---|---|
 | Download llama.cpp for NVIDIA GPUs on Windows on Arm, and the test model? | First install | The model runs on the CPU inside Ubuntu (slower). |
 | Install the Microsoft Visual C++ Redistributable for Arm64? | llama.cpp cannot start because it is missing (0xC0000135) | The model runs on the CPU. You can also install it from https://aka.ms/vs/17/release/vc_redist.arm64.exe and rerun setup. |
-| Limit WSL to 16 GB? Restart WSL now? | A WSL limit lets a better model fit | Nothing changes; the plan uses the memory Windows has now. |
+| Limit WSL to 16 GB? Restart WSL now? | A WSL limit lets a better model fit | Nothing changes; the plan uses the memory Windows has now. A no to the restart only: the limit waits for WSL to restart, and the plan uses the limit WSL has now. |
 | Set a larger page file? | A page file lets a better model fit | Nothing changes; setup installs the model that fits now. |
 | Continue with the model on the CPU? | The free disk is too small for any GPU model | Setup stops; nothing was downloaded or changed. |
 

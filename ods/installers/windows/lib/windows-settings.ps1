@@ -61,9 +61,13 @@ function Complete-ODSWindowsPageFileChange([int]$SizeGB) {
     Write-ODSWindowsRestoreScript
 }
 
-function Save-ODSWindowsWslConfigChange([int]$Value, [bool]$HadFile, [string]$Backup, [string]$WrittenSha256) {
+function Save-ODSWindowsWslConfigChange([int]$Value, [bool]$HadFile, [string]$Backup, [string]$WrittenSha256, $InEffectGiB = $null) {
     # The first change keeps the owner's original file (HadFile, Backup);
-    # later ones update only the value and what ODS wrote.
+    # later ones update only the value and what ODS wrote. WSL applies the
+    # value when it restarts; until then Pending holds the limit WSL still
+    # runs with (InEffectGiB, $null for WSL's default) and when ODS wrote it.
+    # Complete-ODSWindowsWslConfigApplied clears it after ODS restarts WSL; a
+    # Windows start after SinceUnix ends it too (Get-ODSWslPendingLimit).
     $settings = Read-ODSWindowsSettings
     $record = Get-ODSWindowsSettingsValue $settings 'WslConfig'
     if ($null -ne $record) {
@@ -71,9 +75,24 @@ function Save-ODSWindowsWslConfigChange([int]$Value, [bool]$HadFile, [string]$Ba
         $Backup = [string]$record.Backup
     }
     $settings['WslConfig'] = [ordered]@{ Value = $Value; HadFile = $HadFile; Backup = $Backup; WrittenSha256 = $WrittenSha256
-        SetAt = [datetime]::UtcNow.ToString('o') }
+        SetAt = [datetime]::UtcNow.ToString('o')
+        Pending = [ordered]@{ SinceUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            InEffectGiB = $(if ($null -ne $InEffectGiB) { [double]$InEffectGiB } else { $null }) } }
     Save-ODSWindowsSettings $settings
     Write-ODSWindowsRestoreScript
+}
+
+function Complete-ODSWindowsWslConfigApplied {
+    # WSL runs with ODS's value now (ODS restarted it, or nothing ran in WSL
+    # yet): nothing waits any more.
+    $settings = Read-ODSWindowsSettings
+    $record = Get-ODSWindowsSettingsValue $settings 'WslConfig'
+    if ($null -eq $record -or $null -eq $record.Pending) { return }
+    $updated = [ordered]@{}
+    foreach ($property in @($record.PSObject.Properties)) { $updated[$property.Name] = $property.Value }
+    $updated['Pending'] = $null
+    $settings['WslConfig'] = $updated
+    Save-ODSWindowsSettings $settings
 }
 
 function Format-ODSPagingFilesDescription([string[]]$PagingFiles, [bool]$Automatic, [string]$Drive = 'C:') {
