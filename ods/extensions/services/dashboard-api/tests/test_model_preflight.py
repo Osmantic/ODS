@@ -1,6 +1,7 @@
 """Pre-download facts about a Hugging Face GGUF (pure functions)."""
 
 import json
+from typing import cast
 
 import pytest
 
@@ -59,7 +60,7 @@ def test_effective_build_follows_the_backend_policy(backend, windows_hosted, key
 
 # The RTX Spark's Windows model server is the CUDA build (b11429), named by
 # Windows setup in .env as NATIVE_LLM_RUNTIME_POLICY=windows-native-cuda.
-POLICY_WITH_CUDA = {**POLICY, "backendBuilds": {**POLICY["backendBuilds"], "windows-native-cuda": "b11429"}}
+POLICY_WITH_CUDA = {**POLICY, "backendBuilds": {**cast(dict[str, str], POLICY["backendBuilds"]), "windows-native-cuda": "b11429"}}
 
 
 @pytest.mark.parametrize("named,key,build", [

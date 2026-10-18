@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -183,7 +184,7 @@ def test_preflight_refuses_an_architecture_this_build_lacks(test_client, preflig
 def test_preflight_judges_a_windows_runtime_by_the_build_setup_named(test_client, preflight_env, monkeypatch, tmp_path,
                                                                      named, key, build, supported):
     models_router, state = preflight_env
-    policy = {**POLICY, "backendBuilds": {**POLICY["backendBuilds"], "windows-native": "b9014", "windows-native-cuda": "b11429"}}
+    policy = {**POLICY, "backendBuilds": {**cast(dict[str, str], POLICY["backendBuilds"]), "windows-native": "b9014", "windows-native-cuda": "b11429"}}
     policy_path = tmp_path / "windows-policy.json"
     policy_path.write_text(json.dumps(policy), encoding="utf-8")
     monkeypatch.setattr(models_router, "_ARCHITECTURES_PATH", policy_path)
