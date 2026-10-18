@@ -1,6 +1,7 @@
 """Windows retirement uses mocked controllers and disposable files only."""
 
 import importlib.util
+import json
 from pathlib import Path
 import stat
 import tempfile
@@ -232,6 +233,112 @@ class RetirementTests(unittest.TestCase):
         self.disable_startup.assert_not_called()
 
 
+class WindowsKeptSummaryTests(unittest.TestCase):
+    """M25: what stays on Windows after uninstall, each line only when it applies."""
+
+    STORE = r'C:\Users\owner\AppData\Local\ODS\lemonade\models'
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.ods = Path(temporary.name).resolve() / 'mnt/c/Users/owner/AppData/Local/ODS'
+        self.store = self.ods / 'lemonade/models'
+        self.store.mkdir(parents=True)
+        self.managed = {'managed': True, 'planDigest': 'a' * 64, 'modelStoreWindowsPath': self.STORE}
+        patcher = patch.object(helper.wsl_lemonade, 'model_store', return_value=self.store)
+        self.model_store = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def summary(self):
+        return helper.windows_kept_summary(Path('/home/owner/ods'), ENV, self.managed)
+
+    def test_nothing_on_windows_gives_no_lines(self):
+        self.assertEqual(self.summary(), [])
+        self.model_store.assert_called_once_with(Path('/home/owner/ods'), ENV, self.managed)
+
+    def test_model_store_and_llama_cpp_with_their_sizes(self):
+        (self.store / 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf').write_bytes(b'x' * 1500)
+        llama = self.ods / 'llama.cpp/b11429-win-cuda-13.4-arm64'
+        llama.mkdir(parents=True)
+        (llama / 'llama-server.exe').write_bytes(b'x' * 500)
+        lines = self.summary()
+        self.assertEqual(lines, [
+            "Windows keeps ODS's model files (" + self.STORE + ", 0.0 GB) and llama.cpp "
+            "(C:\\Users\\owner\\AppData\\Local\\ODS\\llama.cpp, 0.0 GB) so a reinstall needs no download; delete the folders to free the space."])
+
+    def test_sizes_are_in_gigabytes(self):
+        with patch.object(helper, '_tree_bytes', side_effect=[22_134_528_992, 298_533_031]):
+            (self.ods / 'llama.cpp').mkdir()
+            lines = self.summary()
+        self.assertIn('lemonade\\models, 22.1 GB) and llama.cpp', lines[0])
+        self.assertIn('ODS\\llama.cpp, 0.3 GB)', lines[0])
+
+    def test_page_file_line_only_when_ods_set_it(self):
+        settings = self.ods / 'windows-settings.json'
+        settings.write_text(json.dumps({'schemaVersion': 1, 'PageFile': {'Original': [], 'OriginalAutomatic': True, 'SetGB': None}}))
+        self.assertEqual(self.summary(), [])
+        settings.write_text(json.dumps({'schemaVersion': 1, 'PageFile': {
+            'Original': ['C:\\pagefile.sys 16384 16384'], 'OriginalAutomatic': False, 'SetGB': 32, 'SetAt': '2026-10-17T00:00:00Z'}}))
+        self.assertEqual(self.summary(), [
+            'ODS set the page file to 32 GB (it was a fixed 16384 MB page file on C:); to change it, see System Properties > '
+            'Advanced > Performance > Settings > Advanced > Virtual memory.'])
+        settings.write_text(json.dumps({'PageFile': {'Original': [], 'OriginalAutomatic': True, 'SetGB': 16}}))
+        self.assertIn('(it was managed automatically by Windows)', self.summary()[0])
+
+    def test_wsl_line_only_with_the_record_and_its_restore_script(self):
+        settings = self.ods / 'windows-settings.json'
+        settings.write_text(json.dumps({'WslConfig': {'Value': 16, 'HadFile': False, 'Backup': '', 'WrittenSha256': 'b' * 64}}))
+        self.assertEqual(self.summary(), [])
+        (self.ods / 'restore-windows-settings.ps1').write_text('# restore')
+        self.assertEqual(self.summary(), [
+            'ODS limited WSL memory; to undo that, run in PowerShell: '
+            '& "C:\\Users\\owner\\AppData\\Local\\ODS\\restore-windows-settings.ps1"'])
+
+    def test_unreadable_settings_and_unmounted_drives_print_nothing(self):
+        (self.ods / 'windows-settings.json').write_bytes(b'\xff{not json')
+        self.assertEqual(self.summary(), [])
+        self.model_store.side_effect = helper.wsl_lemonade.BridgeError('The owned Windows path is not available as a canonical WSL path')
+        self.assertEqual(self.summary(), [])
+
+    def test_only_an_ods_owned_store_is_measured(self):
+        self.managed['modelStoreWindowsPath'] = r'D:\Models'
+        self.assertEqual(self.summary(), [])
+        self.model_store.assert_not_called()
+        self.assertEqual(helper.windows_kept_summary(Path('/home/owner/ods'), ENV, {'managed': False}), [])
+
+
+class KeptSummaryFlagTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        (self.root / '.env').write_text('ODS_HOST_LLM_TRANSPORT=model-router\n'
+                                      'ODS_WINDOWS_SYSTEM_DIRECTORY="C:\\Windows\\System32"\n')
+        managed = {'managed': True, 'planDigest': 'a' * 64, 'modelStoreWindowsPath': WindowsKeptSummaryTests.STORE}
+        for target, name, value in ((helper.platform, 'system', 'Linux'), (helper.platform, 'release', 'microsoft-WSL2'),
+                                    (helper, '_owner', None), (helper.wsl_lemonade, 'candidate', True),
+                                    (helper.wsl_lemonade, 'status', managed), (helper.wsl_lemonade, 'stop', {'managed': True}),
+                                    (helper.wsl_lemonade, 'disable_startup', {'state': 'disabled'}),
+                                    (helper, 'windows_kept_summary', ['line one', 'line two'])):
+            patcher = patch.object(target, name, return_value=value)
+            setattr(self, name, patcher.start())
+            self.addCleanup(patcher.stop)
+
+    def test_retire_reports_the_summary_only_when_asked(self):
+        self.assertNotIn('windowsKept', helper.retire(self.root))
+        self.windows_kept_summary.assert_not_called()
+        self.assertEqual(helper.retire(self.root, kept_summary=True)['windowsKept'], ['line one', 'line two'])
+        self.assertEqual(helper.retire(self.root, validate_only=True, kept_summary=True), {'state': 'validated', 'startup': 'disabled'})
+
+    def test_main_writes_the_lines_and_keeps_the_json_line_unchanged(self):
+        target = self.root / 'kept.txt'
+        argv = ['retire-wsl-runtime.py', '--install-dir', str(self.root), '--kept-summary', str(target)]
+        with patch.object(helper.sys, 'argv', argv), patch('builtins.print') as printed:
+            self.assertEqual(helper.main(), 0)
+        self.assertEqual(target.read_text(encoding='utf-8'), 'line one\nline two\n')
+        self.assertEqual(json.loads(printed.call_args.args[0]), {'state': 'retired', 'startup': 'disabled'})
+
+
 class OwnerTests(unittest.TestCase):
     def test_root_cannot_borrow_install_owner_windows_authority(self):
         with patch.object(helper.os, 'getuid', return_value=0, create=True):
@@ -262,7 +369,7 @@ class HookOrderTests(unittest.TestCase):
         pixel_check = script.index('if ! ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed')
         upgrade_stop = script.index("# Stop this installation's background full-model upgrade")
         pixel = script.index('if ! ods_pixel_uninstall_managed')
-        apply = script.index('if ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR";')
+        apply = script.index('if ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR" --kept-summary')
         host = script.index('if ! ods_uninstall_system_units')
         # A Pixel refusal must come before anything changes, Windows startup included.
         self.assertLess(precheck, pixel_check)
@@ -272,6 +379,16 @@ class HookOrderTests(unittest.TestCase):
         self.assertLess(apply, pixel)
         self.assertLess(pixel, host)
         self.assertIn('Windows startup changes already applied for this uninstall remain in effect.', script)
+
+    def test_windows_summary_is_collected_at_retirement_and_printed_last(self):
+        script = (SOURCE / 'ods-uninstall.sh').read_text(encoding='utf-8')
+        collect = script.index('ODS_WINDOWS_KEPT_SUMMARY="$(cat "$_ods_windows_kept")"')
+        removal = script.index('log_info "Removing installation directory..."')
+        banner = script.index('ODS has been uninstalled.')
+        printed = script.index('echo "On Windows:"')
+        # Collected while the helper and the Windows paths still exist; shown last.
+        self.assertLess(collect, removal)
+        self.assertLess(banner, printed)
 
 
 if __name__ == '__main__':
