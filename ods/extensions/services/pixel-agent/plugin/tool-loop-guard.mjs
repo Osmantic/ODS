@@ -170,6 +170,20 @@ export const VISIBLE_REPLY_REQUIRES_FINAL_REASON =
 export const OWNER_NO_TOOLS_REASON =
   "The owner explicitly requested no tools for this turn. No tool was run. Answer directly from the information already available; do not call another tool.";
 
+export const OWNER_NO_FILES_REASON =
+  "The owner requested no file changes for this turn. This call did not run. Read or research only when needed, ask the owner if a necessary clarification is missing, and answer in chat. Do not write, edit, publish, download, run commands, operate services, or delegate these actions.";
+const OWNER_NO_FILES_READ_TOOLS = new Set([
+  'read', 'web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research',
+  'tool_search', 'tool_describe', 'pixel_ods_ask_user', 'session_status',
+  'memory_search', 'memory_get', 'pixel_ods_status', 'pixel_ods_apps_list',
+  'openclaw:core:read', 'openclaw:core:web_search', 'openclaw:core:web_fetch',
+  'openclaw:core:tool_search', 'openclaw:core:tool_describe',
+  'openclaw:core:session_status', 'openclaw:core:memory_search', 'openclaw:core:memory_get',
+  'openclaw:pixel-ods:pixel_ods_ask_user', 'openclaw:pixel-ods:pixel_ods_web_extract',
+  'openclaw:pixel-ods:pixel_ods_research', 'openclaw:pixel-ods:pixel_ods_status',
+  'openclaw:pixel-ods:pixel_ods_apps_list',
+]);
+
 export const EDIT_CREATE_REQUIRES_WRITE_REASON =
   "edit cannot create a new file because every edit replacement requires a non-empty oldText copied from existing content. Use the visible tool_call control now with id write and args containing the same path plus the exact newText as content. Do not retry edit.";
 
@@ -4673,6 +4687,20 @@ function ownerForbidsTools(text) {
   return false;
 }
 
+function ownerForbidsFileChanges(text) {
+  const clauses = ownerLaneText(text).split(/[!?;\n]+|\.(?=\s|$)|\b(?:and|but|then)\b/i)
+    .map(clause => clause.trim()).filter(Boolean);
+  // Deliberately limited to standalone owner directives. Named/new/other-file
+  // exclusions, edit/write-only bans and narrative prose keep their own guards.
+  const excluded = clauses.filter(clause => /^(?:please\s+)?(?:you\s+)?(?:(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+create\s+(?:any\s+)?files?|without\s+creating\s+(?:any\s+)?files?|no\s+file\s+changes)\s*$/i.test(clause));
+  if (!excluded.length) return false;
+  // A create-only exclusion alongside an explicit existing-file edit is not
+  // a read-only task. Leave those scoped edits to their existing guards.
+  const creationOnly = excluded.every(clause => /\b(?:create|creating)\b/i.test(clause));
+  const existingEdit = clauses.some(clause => /^(?:please\s+)?(?:edit|update|modify|patch|fix|repair)\s+(?:(?:the|existing)\s+)*(?:[`"']?[A-Za-z0-9][A-Za-z0-9._/-]*\.[A-Za-z0-9]{1,10}[`"']?(?=$|\s)|code\b)/i.test(clause));
+  return !(creationOnly && existingEdit);
+}
+
 function ownerWorkspaceLaneRequested(text, workspaceRequested) {
   if (workspaceRequested) return true;
   // Repository investigation named within an extension slash route belongs to
@@ -8046,6 +8074,10 @@ export function createToolLoopGuard({
       state?.configuredWorkspaceRoot, state?.playgroundOwnerIntent);
     if (malformedPath) return {block:true, blockReason:malformedPath};
     const delegatedName=typeof toolName==='string' && toolName==='tool_call' ? String((normalizedParams ?? event?.params)?.id ?? '').split(':').at(-1) : toolName;
+    const noFilesTool = toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.id : toolName;
+    if (state?.ownerNoFiles && !OWNER_NO_FILES_READ_TOOLS.has(noFilesTool)) {
+      return {block:true, blockReason:OWNER_NO_FILES_REASON};
+    }
     const requestedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
       toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
     if (requestedRestriction) return {block:true, blockReason:requestedRestriction};
@@ -10056,6 +10088,7 @@ export function createToolLoopGuard({
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
+      if (ownerIntent && state.ownerNoFiles === undefined) state.ownerNoFiles=ownerForbidsFileChanges(ownerIntent);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;

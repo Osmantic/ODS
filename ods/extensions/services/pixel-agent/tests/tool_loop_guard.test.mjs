@@ -615,6 +615,7 @@ for (const prompt of [
   "Please preview log-viewer-lab.",
   "Could you show the updated log-viewer-lab for testing?",
   "Do not edit any files. Publish the current log-viewer-lab.",
+  "Do not write any files. Publish the current log-viewer-lab.",
 ]) {
   test("publishes a verified project by name in its own session: " + prompt, () => {
     const guard = createToolLoopGuard();
