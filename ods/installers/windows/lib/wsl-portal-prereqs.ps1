@@ -370,11 +370,18 @@ function Register-ODSPortalResume([string]$InstallerRoot, [System.Collections.ID
     Set-ItemProperty -LiteralPath $key -Name $script:ODSPortalResumeValue -Value $command
 }
 
-function Request-ODSPortalRestart([string]$InstallerRoot, [System.Collections.IDictionary]$Options, [string]$Reason) {
+function Request-ODSPortalRestart([string]$InstallerRoot, [System.Collections.IDictionary]$Options, [string]$Reason, [string[]]$Done = @()) {
+    # Done names what setup already downloaded or changed before the restart
+    # (the RTX Spark route), so the owner knows the restart is not a start over.
     Register-ODSPortalResume $InstallerRoot $Options
     Write-Host ''
     Write-Host "  $Reason" -ForegroundColor Yellow
     Write-Host '  Save your work and restart Windows. After you sign in again, ODS setup continues automatically in a new window.'
-    Write-Host '  ODS has not been installed yet.'
+    $already = @($Done | Where-Object { $_ })
+    if ($already.Count) {
+        Write-Host ('  ODS itself is not installed yet. Already done: ' + ($already -join '; ') + '.')
+    } else {
+        Write-Host '  ODS has not been installed yet.'
+    }
     return 3010
 }

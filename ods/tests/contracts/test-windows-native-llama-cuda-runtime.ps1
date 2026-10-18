@@ -66,7 +66,7 @@ try {
     Check ($pin.MinDriverVersion -ceq '616.41' -and (@($pin.RequiredCudaArchs['12.1']) -join ',') -ceq '1210,121,121a') 'the pin needs driver 616.41 (CUDA 13.4 notes, RTX Spark) and names the sm_121 archs ods-doctor.sh accepts'
     $library = [IO.File]::ReadAllText((Join-Path $root 'config/model-library.json')) | ConvertFrom-Json
     $ids = @($library.models | ForEach-Object { [string]$_.id })
-    Check (($pin.ModelLadder -join ',') -ceq 'qwen3.6-35b-a3b-ud-q4' -and ($pin.FallbackModels -join ',') -ceq 'qwen3.5-2b-q4' -and
+    Check (($pin.ModelLadder -join ',') -ceq 'qwen3.6-35b-a3b-ud-q4' -and ($pin.FallbackModels -join ',') -ceq 'qwen3.5-9b-q4,qwen3.5-4b-q4,qwen3.5-2b-q4' -and
         @(@($pin.ModelLadder) + @($pin.FallbackModels) | Where-Object { $_ -cnotin $ids }).Count -eq 0) 'the ladder and fallback ids are catalog models'
     $lock = [IO.File]::ReadAllText((Join-Path $root 'config/dependency-lock.json')) | ConvertFrom-Json
     $locked = @($lock.entries | Where-Object { $_.type -ceq 'archive' -and $_.path -ceq 'config/backends/nvidia.json' } | ForEach-Object { $_.value })

@@ -318,4 +318,23 @@ if ($IsLinux) {
     $global:LASTEXITCODE = 0
 }
 
+# The restart notice: unchanged without Done; with it (the RTX Spark route)
+# it names what setup already did.
+$restart = & {
+    $script:resumes = 0
+    $script:shown = [Collections.Generic.List[string]]::new()
+    function Register-ODSPortalResume([string]$InstallerRoot, [System.Collections.IDictionary]$Options) { $script:resumes++ }
+    function Write-Host { param([Parameter(Position = 0)][object]$Object, [object]$ForegroundColor) $script:shown.Add([string]$Object) }
+    $code = Request-ODSPortalRestart 'C:\ods\installers' @{} 'WSL was prepared and Windows needs a restart.'
+    $plain = ($script:shown -join "`n")
+    $script:shown.Clear()
+    $done = Request-ODSPortalRestart 'C:\ods\installers' @{} 'A 32 GB page file was set for the GPU model.' @('llama.cpp b11429 downloaded', '', 'page file on C: set to 32 GB')
+    [pscustomobject]@{ Code = $code; Done = $done; Resumes = $script:resumes; Plain = $plain; With = ($script:shown -join "`n") }
+}
+Check ($restart.Code -eq 3010 -and $restart.Done -eq 3010 -and $restart.Resumes -eq 2) 'a restart request registers the resume and returns 3010'
+Check ($restart.Plain -ceq ("`n  WSL was prepared and Windows needs a restart.`n  Save your work and restart Windows. After you sign in again, ODS setup continues automatically in a new window.`n" +
+    '  ODS has not been installed yet.')) 'without Done the restart notice is exactly as before'
+Check ($restart.With.EndsWith('  ODS itself is not installed yet. Already done: llama.cpp b11429 downloaded; page file on C: set to 32 GB.') -and
+    -not $restart.With.Contains('ODS has not been installed yet.')) 'with Done the notice says what setup already did (empty items are left out)'
+
 Write-Host "Passed $script:checks Windows Portal prerequisite contracts."

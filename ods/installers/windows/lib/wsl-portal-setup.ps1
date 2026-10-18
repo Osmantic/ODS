@@ -2,6 +2,8 @@
 . (Join-Path $PSScriptRoot 'wsl-portal-prereqs.ps1')
 . (Join-Path $PSScriptRoot 'wsl-portal-amd.ps1')
 . (Join-Path $PSScriptRoot 'wsl-portal-spark.ps1')
+. (Join-Path $PSScriptRoot 'spark-memory.ps1')
+. (Join-Path $PSScriptRoot 'wsl-portal-spark-route.ps1')
 
 function Write-ODSPortalStage([int]$Step, [string]$Title, [string]$Detail) {
     Write-Host ''
@@ -305,23 +307,48 @@ function Install-ODSPortalDockerBeforeRestart([bool]$NonInteractive) {
     if (Confirm-ODSPortalPreparation $script:ODSPortalDockerConsent $NonInteractive) { $null = Install-ODSPortalDockerDesktop }
 }
 
-function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive) {
+function Write-ODSPortalPendingRestartStop([string]$PendingRestartReason) {
+    # Setup stops before its restart while a change still waits for one (M24).
+    if (-not $PendingRestartReason) { return }
+    Write-Host ('         The page file change waits for a restart. Use Restart, not Shut down (with Fast Startup, Shut down ' +
+        'may not apply it). It applies at your next restart.')
+}
+
+function Initialize-ODSPortalWindowsFoundation([System.Collections.IDictionary]$Options, [string]$InstallerRoot, [bool]$NonInteractive,
+    # A restart an earlier stage-1 step needs (the RTX Spark's page file), and
+    # what that step already did. Empty on every other PC: the flow is as before.
+    [string]$PendingRestartReason = '', [string[]]$Done = @()) {
     # Returns $null when WSL is ready, otherwise the exit code to stop with.
     $present = [bool](Get-Command wsl.exe -ErrorAction SilentlyContinue)
     $ready = $present -and ((Invoke-ODSPortalWsl -Arguments @('--status')).Code -eq 0)
     Assert-ODSPortalHostCapacity $ready
-    if ($ready) { return $null }
+    if ($ready) {
+        if (-not $PendingRestartReason) { return $null }
+        # The page file is the one restart: Docker Desktop installs first and
+        # shares it.
+        Install-ODSPortalDockerBeforeRestart $NonInteractive
+        return (Request-ODSPortalRestart $InstallerRoot $Options $PendingRestartReason $Done)
+    }
     if (-not $present) {
-        if (-not (Confirm-ODSPortalPreparation 'WSL is not installed. Enable Windows Subsystem for Linux and Virtual Machine Platform? Windows will ask for administrator permission, then a restart is needed.' $NonInteractive)) { return 1 }
+        if (-not (Confirm-ODSPortalPreparation 'WSL is not installed. Enable Windows Subsystem for Linux and Virtual Machine Platform? Windows will ask for administrator permission, then a restart is needed.' $NonInteractive)) {
+            Write-ODSPortalPendingRestartStop $PendingRestartReason
+            return 1
+        }
         $featureCode = Install-ODSPortalWslFeatures -MissingExecutable
         if ($featureCode -notin @(0, 3010)) { throw "Windows feature preparation failed (exit $featureCode). Check Windows Update and virtualization support. See https://learn.microsoft.com/windows/wsl/install-manual ." }
     } else {
-        if (-not (Confirm-ODSPortalPreparation 'WSL is not ready. Prepare it with wsl --install --no-distribution? Windows will ask for administrator permission; a restart may be needed.' $NonInteractive)) { return 1 }
+        if (-not (Confirm-ODSPortalPreparation 'WSL is not ready. Prepare it with wsl --install --no-distribution? Windows will ask for administrator permission; a restart may be needed.' $NonInteractive)) {
+            Write-ODSPortalPendingRestartStop $PendingRestartReason
+            return 1
+        }
         $featureCode = Install-ODSPortalWslFeatures
         if ($featureCode -notin @(0, 3010)) { throw "WSL feature preparation failed (exit $featureCode). Run wsl --status to inspect the Windows error." }
     }
     Install-ODSPortalDockerBeforeRestart $NonInteractive
-    return (Request-ODSPortalRestart $InstallerRoot $Options 'WSL was prepared and Windows needs a restart.')
+    # WSL's restart also applies the other pending change: one restart.
+    $reason = 'WSL was prepared and Windows needs a restart.'
+    if ($PendingRestartReason) { $reason = "$reason $PendingRestartReason" }
+    return (Request-ODSPortalRestart $InstallerRoot $Options $reason $Done)
 }
 
 function Get-ODSPortalDistroNames {
@@ -388,13 +415,10 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
     return $null
 }
 
-function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '') {
-    # An AMD GPU runs the model through llama.cpp (llama-server.exe, Vulkan)
-    # on Windows; everything else keeps the in-WSL route. An explicit -Tier
-    # stays the user's choice. Returns the Linux arguments and the environment
-    # (the API key) forwarded to the Linux installer.
-    $plan = Get-ODSPortalAmdPlan $SourceRoot
-    if ($null -eq $plan) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
+function Resolve-ODSPortalWslBinding([System.Collections.IDictionary]$Options, [string]$WslDistro) {
+    # The Linux installation directory a Windows model server is bound to:
+    # -InstallDir, else ~/ods of the distro's normal user. It is pinned into
+    # the options, so windows.ps1 and the Linux installer use the same one.
     $wslInstallDir = [string]$Options['InstallDir']
     if ($WslDistro) {
         if (-not $wslInstallDir) {
@@ -405,9 +429,19 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
             $wslInstallDir = $linuxHome.Output.TrimEnd('/') + '/ods'
         }
         Assert-ODSPortalWslBinding $WslDistro $wslInstallDir
-        # Pin the same directory into windows.ps1 and the Linux installer.
         $Options['InstallDir'] = $wslInstallDir
     }
+    return $wslInstallDir
+}
+
+function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '') {
+    # An AMD GPU runs the model through llama.cpp (llama-server.exe, Vulkan)
+    # on Windows; everything else keeps the in-WSL route. An explicit -Tier
+    # stays the user's choice. Returns the Linux arguments and the environment
+    # (the API key) forwarded to the Linux installer.
+    $plan = Get-ODSPortalAmdPlan $SourceRoot
+    if ($null -eq $plan) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
+    $wslInstallDir = Resolve-ODSPortalWslBinding $Options $WslDistro
     Write-ODSPortalStage 3 'AMD GPU' "$($plan.GpuName) ($([math]::Round($plan.VramMB / 1024)) GB): model $($plan.Model) runs through llama.cpp (Vulkan) on Windows."
     $route = Initialize-ODSPortalAmdRuntime $plan $SourceRoot $NonInteractive $WslDistro $wslInstallDir
     if ($null -eq $route) { return [pscustomobject]@{ Arguments = @($LinuxArgs); Environment = @{} } }
@@ -442,7 +476,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
-        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, download the pinned llama.cpp Vulkan server to Windows and load the model on the GPU; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
+        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, download the pinned llama.cpp Vulkan server to Windows and load the model on the GPU; with an NVIDIA GPU on Windows on Arm, download the pinned llama.cpp CUDA build to Windows, check it on the GPU, size memory for the chosen model and load it there; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
         Write-Host ('A new installation also gets: ' + ($script:ODSPortalNewInstallationArguments -join ' ') + '. A rerun keeps the installed Hermes selection.')
         return 0
@@ -451,7 +485,16 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if (Test-ODSPortalAdministrator) { throw 'This window is running as Administrator. Setup requires a non-elevated user session. Open PowerShell without "Run as administrator" and rerun. If every window is elevated because UAC is disabled or this is the built-in Administrator account, use a standard Windows account or enable UAC and sign in again. UAC-disabled elevated sessions are not supported. Setup requests elevation separately only for Windows prerequisites.' }
     if (Test-ODSNativeWindowsInstall) { throw 'An existing native Windows ODS installation was found. It is not automatically migrated or deleted. Stop and migrate/remove that installation before creating a WSL stack, to avoid shared ports and Compose project conflicts. See ods/docs/WINDOWS-QUICKSTART.md.' }
     Write-ODSPortalStage 1 'WINDOWS FOUNDATION' 'Checking disk space, virtualization and WSL.'
-    $stop = Initialize-ODSPortalWindowsFoundation $Options $InstallerRoot $nonInteractive
+    # An NVIDIA RTX Spark runs the model with llama.cpp on Windows. Its own
+    # checks, downloads and memory offers come first and share Windows' one
+    # restart. Every other PC gets $null here and the flow is as before.
+    $sparkHost = $null
+    $spark = [pscustomobject]@{ RestartReason = ''; Done = @(); Route = '' }
+    if (-not $Options['Cloud'] -and -not $Options['ExternalLlmUrl']) { $sparkHost = Get-ODSSparkHost }
+    if ($sparkHost) {
+        $spark = Initialize-ODSPortalSparkFoundation $sparkHost $Options $InstallerRoot $nonInteractive (Split-Path -Parent $InstallerRoot)
+    }
+    $stop = Initialize-ODSPortalWindowsFoundation $Options $InstallerRoot $nonInteractive ([string]$spark.RestartReason) @($spark.Done)
     if ($null -ne $stop) { return $stop }
     Assert-ODSPortalWslVersion
     Write-ODSPortalStage 2 'YOUR UBUNTU WORKSPACE' 'Finding an existing Ubuntu before offering a download.'
@@ -497,7 +540,15 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
         $forwardEnvironment['ODS_EXTERNAL_LLM_API_KEY'] = Read-ODSPortalExternalLlmKey ([string]$Options['ExternalLlmKeyFile'])
     }
     # An API-mode or cloud install runs no model on this computer.
-    if (-not $Options['Cloud'] -and -not $Options['ExternalLlmUrl']) {
+    if ($sparkHost) {
+        # The RTX Spark's GPU belongs to llama.cpp on Windows (or the CPU
+        # route), never to the NVIDIA container route, so its gate never runs.
+        # The CPU route forwards an environment too, so the route is explicit.
+        $route = Add-ODSPortalSparkArguments $linuxArgs $Options $sparkHost $spark $distro (Split-Path -Parent $InstallerRoot)
+        $linuxArgs = @($route.Arguments)
+        $forwardEnvironment = $route.Environment
+        $windowsModelRoute = [bool]$route.WindowsModelRoute
+    } elseif (-not $Options['Cloud'] -and -not $Options['ExternalLlmUrl']) {
         $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
         Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
         if ($null -eq $nvidiaDriver) {

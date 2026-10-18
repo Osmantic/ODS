@@ -17,8 +17,8 @@
 #
 # Requires wsl-portal-amd.ps1 (tier-map.ps1, native-llama-runtime.ps1) and,
 # for the offers, wsl-portal-setup.ps1 (Confirm-ODSPortalPreparation,
-# Invoke-ODSPortalWsl, the Docker Desktop helpers) in scope. Nothing routes a
-# Spark here yet: setup wiring comes with the native Spark route.
+# Invoke-ODSPortalWsl, the Docker Desktop helpers) in scope. Setup reaches it
+# through the native RTX Spark route (wsl-portal-spark-route.ps1).
 
 . (Join-Path $PSScriptRoot 'pagefile-entries.ps1')
 . (Join-Path $PSScriptRoot 'wsl-memory-config.ps1')
@@ -185,7 +185,9 @@ function Get-ODSSparkDiskNeedGiB {
     foreach ($name in @($PresentFiles)) { if ($name) { $present[([string]$name).ToLowerInvariant()] = $true } }
     $bytes = [double]0
     foreach ($artifact in @($Artifacts | Where-Object { $_ })) {
-        if (-not $present.ContainsKey(([string]$artifact.File).ToLowerInvariant())) { $bytes += [double]$artifact.SizeBytes }
+        # A file is downloaded once, even when the model is also setup's test model.
+        $key = ([string]$artifact.File).ToLowerInvariant()
+        if (-not $present.ContainsKey($key)) { $bytes += [double]$artifact.SizeBytes; $present[$key] = $true }
     }
     $download = [math]::Round($bytes / 1GB, 2)
     $reserve = if ($StackPresent) { $script:ODSSparkStackReserveGiB } else { $script:ODSSparkStackReserveFreshGiB }

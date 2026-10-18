@@ -61,7 +61,9 @@ try {
     function Get-Skip($Plan, [string]$Id) { return (@($Plan.Skipped | Where-Object { $_.Id -ceq $Id } | ForEach-Object { $_.Reason }) -join ',') }
     $top = 'qwen3.6-35b-a3b-ud-q4'
     $small = 'qwen3.5-2b-q4'
-    Check ((@($pin.ModelLadder) -join ',') -ceq $top -and (@($pin.FallbackModels) -join ',') -ceq $small) 'the pinned ladder is the 35B-A3B floor and the fallback list the 2B test model (larger rungs need their own hardware proof)'
+    $nine = 'qwen3.5-9b-q4'
+    $four = 'qwen3.5-4b-q4'
+    Check ((@($pin.ModelLadder) -join ',') -ceq $top -and (@($pin.FallbackModels) -join ',') -ceq "$nine,$four,$small") 'the pinned ladder is the 35B-A3B floor and the fallback list the 9B, 4B and the 2B test model, best first (larger rungs need their own hardware proof)'
 
     # --- The layouts of PR B design 6.4, run through the planner ----------------
     $raised = Read-Layout 'memory-raised-96.json' @{ FreeGiB = $room }
@@ -74,14 +76,15 @@ try {
         $record.CommitNeedGiB -eq 25.8 -and (Near $record.WslGiB 15.25) -and $record.Source -ceq 'catalog' -and
         (Test-ODSNativeMemoryPlanRecord ([pscustomobject]$record))) 'the chosen plan becomes the memory-plan.json record the launcher checks at every start'
     $measured = Get-Plan (Read-Layout 'memory-raised-96.json')
-    Check ($measured.Model -ceq $small -and $measured.Source -ceq 'fallback' -and (Get-Skip $measured $top) -ceq 'disk' -and $null -eq $measured.Offer) 'with the 26.9 GB it has free on C:, the measured Spark skips 35B-A3B for disk and plans the fallback (no memory change can help)'
+    Check ($measured.Model -ceq $four -and $measured.Source -ceq 'fallback' -and (Get-Skip $measured $top) -ceq 'disk' -and (Get-Skip $measured $nine) -ceq 'disk' -and
+        $null -eq $measured.Offer) 'with the 26.9 GB it has free on C:, the measured Spark skips 35B-A3B and the 9B for disk and plans the 4B fallback (no memory change can help)'
     $carried = Get-Plan (Read-Layout 'memory-raised-96.json') -Present @('Qwen3.6-35B-A3B-UD-Q4_K_M.gguf')
     Check ($carried.Model -ceq $top -and $carried.DiskNeedGiB -lt 25.05) 'a model already in the store needs no download, so the same disk fits it'
     $factory = Read-Layout 'memory-factory-64.json'
     $plan = Get-Plan $factory
-    Check ((Near $plan.CommitCapacityGiB 13.25) -and $plan.Model -ceq $small -and $plan.Source -ceq 'fallback' -and (Get-Skip $plan $top) -ceq 'commit' -and
+    Check ((Near $plan.CommitCapacityGiB 13.25) -and $plan.Model -ceq $nine -and $plan.Source -ceq 'fallback' -and (Get-Skip $plan $top) -ceq 'commit' -and
         $plan.Offer.Model -ceq $top -and $plan.Offer.WslBoundGiB -eq 16 -and $null -eq $plan.Offer.PageFileGiB -and $plan.Offer.Reason -ceq 'wsl-bound' -and
-        (Near $plan.Offer.CommitCapacityGiB 28.5)) 'a factory Spark (64 GB split, no page file) lends 13.25 GiB: the 2B now, and an offer of 35B-A3B with a 16 GB WSL limit (28.5 GiB, no UAC)'
+        (Near $plan.Offer.CommitCapacityGiB 28.5)) 'a factory Spark (64 GB split, no page file) lends 13.25 GiB: the 9B (9.34 GiB) now, and an offer of 35B-A3B with a 16 GB WSL limit (28.5 GiB, no UAC)'
     $plan = Get-Plan $factory -Wsl $false
     Check ($plan.Offer.Model -ceq $top -and $plan.Offer.PageFileGiB -eq 16 -and $null -eq $plan.Offer.WslBoundGiB -and (Near $plan.Offer.CommitCapacityGiB 29.25)) 'without the WSL limit the factory offer is a 16 GB page file (29.25 GiB)'
     $plan = Get-Plan (Read-Layout 'memory-factory-64-pf64.json')
@@ -118,20 +121,20 @@ try {
     # --- GPU fit uses the device figure, commit fit the total ------------------------
     $tight = Read-Layout 'memory-raised-96.json' @{ CarveOutMiB = 24000; FreeGiB = $room }
     $plan = Get-Plan $tight
-    Check ((Get-Skip $plan $top) -ceq 'device' -and $plan.Model -ceq $small) 'a carve-out under 35B-A3B''s 23.83 GiB (with the fit margin) skips it for the GPU'
+    Check ((Get-Skip $plan $top) -ceq 'device' -and $plan.Model -ceq $nine) 'a carve-out under 35B-A3B''s 23.83 GiB (with the fit margin) skips it for the GPU'
     $between = Read-Layout 'memory-96-nopf.json' @{ PageFileConfiguredGiB = 27.26; PageFileActiveGiB = 27.26 }
     $plan = Get-Plan $between
     Check (($plan.CommitCapacityGiB -gt 23.83) -and ($plan.CommitCapacityGiB -lt 25.8) -and (Get-Skip $plan $top) -ceq 'commit' -and
-        $plan.Model -ceq $small -and $plan.Offer.PageFileGiB -eq 32) 'with 24.5 GiB lendable, 35B-A3B fits its GPU need (23.83) but not its commit (25.80), so the commit decides'
+        $plan.Model -ceq $nine -and $plan.Offer.PageFileGiB -eq 32) 'with 24.5 GiB lendable, 35B-A3B fits its GPU need (23.83) but not its commit (25.80), so the commit decides'
 
     # --- Disk ------------------------------------------------------------------------
     $plan = Get-Plan (Read-Layout 'memory-factory-64.json' @{ FreeGiB = [pscustomobject]@{ 'C:' = 80 } }) -Wsl $false
-    Check ($plan.Model -ceq $small -and $null -eq $plan.Offer) 'a page-file offer needs room for its growth: 80 GiB free holds 35B-A3B and a fresh stack but not 16 GB more'
+    Check ($plan.Model -ceq $nine -and $null -eq $plan.Offer) 'a page-file offer needs room for its growth: 80 GiB free holds 35B-A3B and a fresh stack but not 16 GB more'
     $plan = Get-Plan (Read-Layout 'memory-factory-64.json' @{ FreeGiB = [pscustomobject]@{ 'C:' = 90 } }) -Wsl $false
     Check ($plan.Offer.PageFileGiB -eq 16) 'with 90 GiB free the same offer is made'
     $twoDrives = Read-Layout 'memory-factory-64.json' @{ FreeGiB = [pscustomobject]@{ 'C:' = 5; 'D:' = 300 }; ModelsDrive = 'D:' }
     $plan = Get-Plan $twoDrives -Wsl $false -ModelsDir 'D:\ODS-fixture\models'
-    Check ($plan.Model -ceq $small -and $null -eq $plan.Offer) 'models on D: with room, but no room on C: for the page file: no page-file offer'
+    Check ($plan.Model -ceq $nine -and $null -eq $plan.Offer) 'models on D: with room, but no room on C: for the page file: no page-file offer'
     $disk = Get-ODSSparkDiskNeedGiB -Layout $factory -Artifacts @([pscustomobject]@{ File = 'a.gguf'; SizeBytes = 10GB }) -ModelsDir $modelsDir `
         -PageFileGrowthGiB 16 -StackPresent $false
     Check ((Near $disk.DownloadGiB 10) -and (Near $disk.NeedGiB 76) -and $disk.Fits) 'disk need: download + page-file growth on the same drive + 40 GiB for a fresh stack + 10 GiB margin'
@@ -318,8 +321,8 @@ try {
             $result.Plan.Model -ceq $top) 'a page file waiting for its restart: no offer and no second UAC prompt, the restart notice (M24), and the plan at the configured size'
         Reset-Offer
         $result = Invoke-Offer $factory -NonInteractive $true
-        Check ($result.Plan.Model -ceq $small -and $script:prompts.Count -eq 0 -and -not (Test-Path -LiteralPath $wslConfig) -and
-            (Get-Output) -match 'WSL memory limit not changed\. ODS uses Qwen 3\.5 2B \(64K context\)' -and (Get-Output) -match 'Qwen 3\.6 35B-A3B later' -and
+        Check ($result.Plan.Model -ceq $nine -and $script:prompts.Count -eq 0 -and -not (Test-Path -LiteralPath $wslConfig) -and
+            (Get-Output) -match 'WSL memory limit not changed\. ODS uses Qwen 3\.5 9B \(64K context\)' -and (Get-Output) -match 'Qwen 3\.6 35B-A3B later' -and
             (Get-Output).Contains($helpLine)) 'non-interactive setup changes nothing, keeps the model that fits and says how to get the larger one (M3)'
         Reset-Offer @($true, $true)
         $result = Invoke-Offer $factory
@@ -331,11 +334,11 @@ try {
             @($result.Done).Count -eq 1 -and -not $result.RestartReason) 'the accepted offer plans 35B-A3B with the 16 GB WSL limit ODS marked as its own'
         Reset-Offer @($true, $false)
         $result = Invoke-Offer $factory
-        Check ($result.Plan.Model -ceq $small -and (Test-Path -LiteralPath $wslConfig) -and $script:wslCalls.Count -eq 0 -and
+        Check ($result.Plan.Model -ceq $nine -and (Test-Path -LiteralPath $wslConfig) -and $script:wslCalls.Count -eq 0 -and
             (Get-Output) -match 'WSL keeps its current limit until it restarts' -and (Get-Output) -match 'WSL gets the new memory limit only after it restarts\.') 'without a WSL restart the limit waits for one, and ODS plans with the current limit'
         Reset-Offer @($false)
         $result = Invoke-Offer $factory
-        Check ($result.Plan.Model -ceq $small -and -not (Test-Path -LiteralPath $wslConfig) -and (Get-Output) -match 'WSL memory limit not changed\.') 'a declined WSL limit changes nothing and keeps the model that fits'
+        Check ($result.Plan.Model -ceq $nine -and -not (Test-Path -LiteralPath $wslConfig) -and (Get-Output) -match 'WSL memory limit not changed\.') 'a declined WSL limit changes nothing and keeps the model that fits'
         Reset-Offer @($true)
         $result = Invoke-Offer $factory -RestartPending $true
         Check ($result.Plan.Model -ceq $top -and $script:prompts.Count -eq 1 -and $script:wslCalls.Count -eq 0) 'with a Windows restart coming anyway, WSL is not restarted'
@@ -364,7 +367,7 @@ try {
         Reset-Offer @($false)
         $owned = Read-Layout 'memory-factory-64.json' @{ WslConfig = [pscustomobject]@{ GiB = 31.25; Owner = 'owner' } }
         $result = Invoke-Offer $owned
-        Check ($script:prompts.Count -eq 1 -and $script:prompts[0] -match 'page file' -and $result.Plan.Model -ceq $small) 'an owner''s own WSL memory= is never offered a change; the page file is'
+        Check ($script:prompts.Count -eq 1 -and $script:prompts[0] -match 'page file' -and $result.Plan.Model -ceq $nine) 'an owner''s own WSL memory= is never offered a change; the page file is'
         # Both changes: room on C: for a 32 GB page file but not 48, so the
         # WSL limit plus 32 GB is the offer for Coder Next.
         $both = Read-Layout 'memory-factory-64.json' @{ FreeGiB = [pscustomobject]@{ 'C:' = 135 } }

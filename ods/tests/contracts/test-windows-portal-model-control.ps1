@@ -420,6 +420,17 @@ try {
     $imported = Invoke-ODSPortalModelControl (New-SwitchRequest 'Original-9B.gguf' 65536)
     $memory = Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json
     Assert-Control ($imported.running -and $memory.GgufFile -ceq 'Original-9B.gguf' -and $memory.Source -ceq 'files' -and $memory.CommitNeedGiB -eq 2) 'a model outside the catalog is sized from its files plus 2 GiB'
+    # A split model needs every part in the store before anything is stopped (M19).
+    foreach ($part in @('Split-00001-of-00003.gguf', 'Split-00002-of-00003.gguf')) { [IO.File]::WriteAllText((Join-Path $models $part), 'fixture') }
+    $before = $script:events.Count
+    $digest = Get-ODSPortalPlanDigest $planPath
+    $missingPart = Assert-ControlError (New-SwitchRequest 'Split-00001-of-00003.gguf' 65536) 'model_missing'
+    Assert-Control ($missingPart.Message -ceq "Split-00001-of-00003.gguf is split into 3 files and Split-00003-of-00003.gguf is missing from the Windows model store. Download it again from the Models page. $help" -and
+        $script:events.Count -eq $before -and (Get-ODSPortalPlanDigest $planPath) -ceq $digest) 'a split model missing a part is refused (model_missing) before anything is disarmed (M19)'
+    [IO.File]::WriteAllText((Join-Path $models 'Split-00003-of-00003.gguf'), 'fixture')
+    $split = Invoke-ODSPortalModelControl (New-SwitchRequest 'Split-00001-of-00003.gguf' 65536)
+    $memory = Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json
+    Assert-Control ($split.running -and $split.plan.GgufFile -ceq 'Split-00001-of-00003.gguf' -and $memory.Source -ceq 'files' -and $memory.CommitNeedGiB -eq 2) 'with every part present the split model starts, sized from all of its files'
     $previousPlan = $imported.plan | ConvertTo-Json | ConvertFrom-Json
     $null = Invoke-ODSPortalModelControl (New-SwitchRequest $catalogModel 131072)
     $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 30.49; CommittedGiB = 14 }
@@ -496,6 +507,9 @@ try {
     $amdSwitch = Invoke-ODSPortalModelControl (New-SwitchRequest 'Small-0.6B.gguf' 65536)
     Assert-Control ($amdSwitch.running -and $script:memoryReads -eq 0 -and
         (Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json).GgufFile -cne 'Small-0.6B.gguf') 'a Vulkan switch reads no memory figures and writes no memory plan'
+    Remove-Item -LiteralPath (Join-Path $models 'Split-00003-of-00003.gguf')
+    $amdSplit = Invoke-ODSPortalModelControl (New-SwitchRequest 'Split-00001-of-00003.gguf' 65536)
+    Assert-Control ($amdSplit.running -and $amdSplit.plan.GgufFile -ceq 'Split-00001-of-00003.gguf') 'a Vulkan (AMD) switch keeps its earlier rule: only the first file of a split model is checked'
     # The real entrypoint must return one JSON error and a nonzero process exit.
     # Invalid actions fail before any task/process/network inspection can occur.
     $entry = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../installers/windows/portal-model-control.ps1'))

@@ -162,6 +162,17 @@ jobs:
           ./tests/contracts/test-windows-spark-memory.ps1
           ./tests/contracts/test-windows-wslconfig.ps1
 
+      # The native route drives the real cutover (private ACL files, task SIDs).
+      - name: Windows RTX Spark Native Route Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-spark.ps1
+
+      - name: Windows RTX Spark Native Route Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-spark.ps1
+
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
         shell: bash

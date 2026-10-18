@@ -7,12 +7,11 @@
 #          installer. WSL2 cannot drive an AMD GPU, so the model runs here.
 #
 # Flavors: a runtime is one llama.cpp release build, chosen by GPU backend
-# and Windows architecture. win-vulkan-x64 (AMD) is the only routed flavor and
-# keeps every behaviour below. win-cuda-<version>-arm64 (NVIDIA GPUs on
-# Windows on Arm, config/backends/nvidia.json) ships as two archives, writes
-# pin.json schemaVersion 2 with its own required-file list, launches with
-# --fit off and is qualified by a short generation check. Nothing routes to it
-# yet.
+# and Windows architecture. win-vulkan-x64 (AMD) keeps every behaviour below.
+# win-cuda-<version>-arm64 (NVIDIA GPUs on Windows on Arm, the RTX Spark route,
+# config/backends/nvidia.json) ships as two archives, writes pin.json
+# schemaVersion 2 with its own required-file list, launches with --fit off and
+# is qualified by a short generation check.
 #
 # Contract (Round F, section 5):
 #   - Binary: %LOCALAPPDATA%\ODS\llama.cpp\<tag>-win-vulkan-x64\ with pin.json
