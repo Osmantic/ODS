@@ -1443,6 +1443,7 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
     chat_id = data.get("user")
     cancel_event = None
     activity = {"terminal": False}
+    diagnostic_request_id = data.get("request_id")
     upstream_data["model"] = _UPSTREAM_REWRITE
 
     fwd_headers = _sanitize_headers(dict(request.headers))
@@ -1487,7 +1488,7 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                 if "text/event-stream" in ctype:
                     return await _stream_upstream(
                         request, resp, empty_reply_fallback, cancel_event, activity,
-                        response_model=req_model
+                        response_model=req_model, diagnostic_request_id=diagnostic_request_id
                     )
 
                 if "application/json" not in ctype:
@@ -1582,6 +1583,28 @@ async def handle_chat_cancel(request: web.Request):
         return web.json_response({"error": "Portal cancellation failed"}, status=502)
 
 
+def _log_stream_failure(exc, request_id):
+    # Fixed categories and an opaque Portal attempt UUID only. Never messages,
+    # payloads, paths or arbitrary caller IDs; logging cannot affect delivery.
+    try:
+        request_id = (request_id if isinstance(request_id, str) and re.fullmatch(
+            r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", request_id) else "unavailable")
+        category = {
+            "ClientPayloadError": "payload_error",
+            "ConnectionResetError": "connection_reset",
+            "ConnectionError": "connection_error",
+            "OSError": "io_error",
+            "TimeoutError": "timeout",
+            "ServerTimeoutError": "timeout",
+            "SocketTimeoutError": "timeout",
+            "ValueError": "stream_format_or_limit",
+        }.get(type(exc).__name__, "unclassified")
+        print("pixel-edge stream failed " + json.dumps({"requestId": request_id,
+              "stage": "sse_forward", "error": category, "abort": "none"}), file=sys.stderr)
+    except Exception:
+        pass
+
+
 async def _stream_upstream(
     request: web.Request,
     resp,
@@ -1589,6 +1612,7 @@ async def _stream_upstream(
     cancel_event: asyncio.Event | None = None,
     activity: dict | None = None,
     response_model: str = _LEGACY_MODEL,
+    diagnostic_request_id: str | None = None,
 ):
     """Stream bounded SSE while replacing only a reserved/empty final reply."""
     response = web.StreamResponse(
@@ -1744,13 +1768,13 @@ async def _stream_upstream(
             await response.write(b"data: [DONE]\n\n")
         else:
             # Fixed diagnostic category only, never payloads or exception text.
-            print(f'pixel-edge stream failed ({type(exc).__name__})', file=sys.stderr)
+            _log_stream_failure(exc, diagnostic_request_id)
             await response.write(b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
     except Exception as exc:
         if cancel_event is not None and cancel_event.is_set():
             await response.write(b"data: [DONE]\n\n")
         else:
-            print(f'pixel-edge stream failed ({type(exc).__name__})', file=sys.stderr)
+            _log_stream_failure(exc, diagnostic_request_id)
             await response.write(b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n')
     return response
 
