@@ -338,8 +338,6 @@ export default definePluginEntry({
     // One system prompt for every Pixel chat: no per-chat session key or id.
     registerStableRuntimeLine(api);
     const statusFile = statusFileFromEnv();
-    const configuredContextWindow = api.pluginConfig?.modelContextWindow;
-    const configuredLeanPrompt = api.pluginConfig?.leanPrompt === true;
     // An owner can fix Pixel to English (PIXEL_RESPONSE_LANGUAGE=en in .env).
     const configuredResponseLanguage = readResponseLanguage(undefined, message => api.logger.warn(message));
     // OpenClaw registers gateway HTTP routes and per-agent runtime hooks in
@@ -434,8 +432,11 @@ export default definePluginEntry({
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
       const executionHost = executionHostForAgent(api.config, AGENT_ID);
+      const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
+      // Model switches hot-reload these settings without registering new hooks.
+      const promptConfig = runtimeConfig?.plugins?.entries?.['pixel-ods']?.config ?? api.pluginConfig;
       // The run deadline the runtime just armed for this attempt.
-      const runTimeoutSeconds = (api.runtime?.config?.current?.() ?? api.config)?.agents?.defaults?.timeoutSeconds;
+      const runTimeoutSeconds = runtimeConfig?.agents?.defaults?.timeoutSeconds;
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost, runTimeoutSeconds });
       // After delegation custody, which links a child or continuation to its
       // owner run: the shipped example's guard starts with the run.
@@ -444,12 +445,18 @@ export default definePluginEntry({
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
-        configuredContextWindow,
-        configuredLeanPrompt,
+        configuredContextWindow: promptConfig?.modelContextWindow,
+        configuredLeanPrompt: promptConfig?.leanPrompt === true,
         configuredResponseLanguage,
         privateBrowserAccess,
         executionHost,
       });
+      // Structural diagnostics only: no owner text, tool arguments or secrets.
+      api.logger?.debug?.(`Pixel prompt budget: ${JSON.stringify({
+        contextWindow: Number.isSafeInteger(promptConfig?.modelContextWindow) ? promptConfig.modelContextWindow : null,
+        leanPrompt: promptConfig?.leanPrompt === true,
+        contractChars: contract?.appendSystemContext?.length ?? 0,
+      })}`);
       const repositoryEvidence = contract ? await extensionRepositoryContext(ownerEvent,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
