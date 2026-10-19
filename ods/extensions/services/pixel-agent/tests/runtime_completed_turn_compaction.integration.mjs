@@ -48,7 +48,7 @@ const messages=()=>[{role:'user',content:'List the workspace read-only. Do not c
 const rows=messages=>messages.map((message,i)=>({type:'message',id:`entry${i}`,parentId:i?`entry${i-1}`:null,message}));
 const read=file=>fs.readFileSync(file,'utf8').trim().split('\n').map(JSON.parse);
 
-async function fixture(t,history,{context=8192,trigger='overflow',mode='success',controller}={}) {
+async function fixture(t,history,{context=8192,trigger='overflow',mode='success',controller,summaryBudget,summaryText,summaryStop='stop'}={}) {
   let responseMode=mode;
   const requests=[];
   const server=http.createServer(async(req,res)=>{
@@ -56,10 +56,10 @@ async function fixture(t,history,{context=8192,trigger='overflow',mode='success'
     requests.push(JSON.parse(text));
     if(responseMode==='abort') {setTimeout(()=>controller.abort(),10);return;}
     if(responseMode==='error') {res.writeHead(400,{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'Synthetic summary failure'}}));return;}
-    const summary='The owner requested a read-only workspace listing. The completed answer listed 46 files. No files were changed. Any new request still requires fresh evidence.';
+    const summary=summaryText??'The owner requested a read-only workspace listing. The completed answer listed 46 files. No files were changed. Any new request still requires fresh evidence.';
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:summary},finish_reason:null}]})+'\n\n');
-    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:1000,completion_tokens:40,total_tokens:1040}})+'\n\ndata: [DONE]\n\n');
+    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:summaryStop}],usage:{prompt_tokens:1000,completion_tokens:40,total_tokens:1040}})+'\n\ndata: [DONE]\n\n');
   });
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
@@ -69,7 +69,7 @@ async function fixture(t,history,{context=8192,trigger='overflow',mode='success'
   const config={agents:{defaults:{workspace,model:'fixture/model',...typeof context==='number'?{contextTokens:context}:{},compaction:{reserveTokens:3277,reserveTokensFloor:0,keepRecentTokens:512}},list:[{id:'pixel',workspace,agentDir}]},plugins:{enabled:false},
     models:{providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,apiKey:'fixture-only',models:[{id:'model',name:'Fixture',...typeof context==='number'?{contextWindow:context}:{},maxTokens:2048,reasoning:false,input:['text','image']}]}}}};
   fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
-  const invoke=(abortSignal=controller?.signal,invokeTrigger=trigger)=>compact({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:fixture-'+sessionId,workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',trigger:invokeTrigger,abortSignal});
+  const invoke=(abortSignal=controller?.signal,invokeTrigger=trigger)=>compact({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:fixture-'+sessionId,workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',trigger:invokeTrigger,abortSignal,odsSummaryCharBudget:summaryBudget});
   return {invoke,sessionFile,input,requests,setMode:value=>{responseMode=value;},entries:()=>read(sessionFile),context:()=>SessionManager.open(sessionFile).buildSessionContext().messages};
 }
 
@@ -145,5 +145,43 @@ for(const mode of ['error','abort']) test(`${mode} keeps raw history and an iner
   f.setMode('success');const recovered=await f.invoke(new AbortController().signal);
   assert.equal(recovered.ok,true);assert.equal(recovered.compacted,true);
   assert.equal(f.entries().filter(e=>e.customType===marker).length,1,'retry reuses the same boundary');
+  assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
+});
+
+for(const scenario of [
+  {name:'no available summary room',summaryBudget:0,calls:0},
+  {name:'provider exceeds character budget',summaryBudget:100,calls:1},
+  {name:'non-Latin text exceeds weighted budget',summaryBudget:100,summaryText:'用户要求只读列出工作区。不要修改文件。结果已经显示，但后续请求需要新的工具证据。',calls:1},
+  {name:'provider stops at its output limit',summaryBudget:800,summaryStop:'length',calls:1},
+  {name:'provider returns an empty checkpoint',summaryBudget:800,summaryText:'',calls:1},
+]) test('completed-turn budget rejects '+scenario.name+' without saving a checkpoint',async t=>{
+  const f=await fixture(t,messages(),scenario),result=await f.invoke();
+  assert.equal(result.ok,false);
+  assert.equal(f.requests.length,scenario.calls);
+  assert.equal(f.entries().filter(e=>e.type==='compaction').length,0);
+  assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
+});
+
+test('completed-turn budget bounds summary generation without changing chat reserves',async t=>{
+  const f=await fixture(t,messages(),{summaryBudget:200}),result=await f.invoke();
+  assert.equal(result.ok,true);assert.equal(result.compacted,true);
+  assert.equal(f.requests[0].max_tokens??f.requests[0].max_completion_tokens,50);
+  assert.ok(f.entries().find(e=>e.type==='compaction').summary.includes('No files were changed'));
+});
+
+test('larger-context manual compaction ignores the completed-turn-only budget',async t=>{
+  const f=await fixture(t,messages(),{context:32768,trigger:'manual',summaryBudget:0}),result=await f.invoke();
+  assert.equal(result.ok,true);assert.equal(result.compacted,true);
+  assert.ok(f.requests.every(r=>(r.max_tokens??r.max_completion_tokens)>50));
+});
+
+test('unfinished split-turn compaction ignores a completed-turn-only zero budget',async t=>{
+  const history=messages();history[1]=final({stopReason:'length'});
+  const f=await fixture(t,history,{summaryBudget:0}),result=await f.invoke();
+  assert.equal(result.ok,true);assert.equal(result.compacted,true);
+  assert.equal(f.entries().some(e=>e.customType===marker),false);
+  const checkpoint=f.entries().find(e=>e.type==='compaction');
+  assert.ok(checkpoint.summary.includes('Turn Context (split turn)'));
+  assert.ok(checkpoint.summary.includes('Current unfinished user request'));
   assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
 });

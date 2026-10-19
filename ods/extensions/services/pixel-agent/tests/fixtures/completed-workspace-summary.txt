@@ -1,0 +1,33 @@
+## Goal
+Provide a read-only listing of files and folders at the top of the current workspace, reporting only the tool's output without creating or changing any files.
+
+## Constraints & Preferences
+- Use a workspace tool for directory listing.
+- Report only the tool's output.
+- Do not create, modify, or delete files.
+- Do not navigate deeply into subdirectories.
+
+## Progress
+### Done
+- [x] Executed `ls -la /workspace` (or equivalent root directory listing) to capture the full directory structure.
+- [x] Analyzed output revealing a mix of configuration/documentation files (`.md`) and numerous fleet-related directories.
+- [x] Noted specific directory structures including `.fleet-document-baseline.txt`, `.home`, `.ods-projects`, `.openclaw`, `AGENTS.md`, `TOOLS.md`, `SOUL.md`, `USER.md`, and multiple `fleet-qualification-*` timestamped directories.
+
+### In Progress
+- [ ] Assess if the file listing output is complete or requires further verification (context suggests a large directory structure).
+
+### Blocked
+- None currently.
+
+## Key Decisions
+- **[Decision]**: The initial listing was executed to satisfy the read-only constraint. The output provides a comprehensive view of the top-level workspace, including hidden files and project artifacts.
+
+## Next Steps
+1. Review the full listing output to ensure no critical information was missed due to potential truncation in the display.
+2. Await user instruction on how to proceed with this directory structure (e.g., opening specific files, analyzing content, or navigating into specific folders).
+
+## Critical Context
+- The workspace contains a rich set of metadata files (`AGENTS.md`, `TOOLS.md`, `SOUL.md`, `IDENTITY.md`, `MEMORY.md`) likely used for agent configuration.
+- There are numerous `fleet-qualification-*` directories dated in October 2026, suggesting a history of testing or qualification runs.
+- Several `fleet-webui-*` and `fleet-ui-*` check files exist, indicating a focus on UI-related workflows.
+- The listing includes a `Playground` directory with 44 entries and a `library` directory, indicating active development or resource storage areas.

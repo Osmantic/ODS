@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "0cb612bf4a5c25e09e99b31d89cef12ff6151a6c20b4c960d0c5e06465236aff",
-  "patchedSha256": "02109f130ed761fcf09021f84f676a32f5f31a0b28d1d75c50c21b5c873a36d5",
+  "patchedSha256": "7f7039b34818e89b64780ff912608887b713ee4fa7e8fff76962eca1050ffd1f",
   "replacements": [
     [
       "\tconst fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);",
@@ -42,6 +42,30 @@
     [
       "\tconst cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);",
       "\tlet cutPoint;\n\tif (odsCompletedBoundaryId !== void 0) {\n\t\tconst index = pathEntries.findIndex((entry) => entry.id === odsCompletedBoundaryId);\n\t\tconst boundary = pathEntries[index];\n\t\tconst previousMessage = pathEntries.slice(boundaryStart, index).findLast((entry) => entry.type === \"message\");\n\t\tif (index !== pathEntries.length - 1 || index <= boundaryStart || boundary?.type !== \"custom\" || boundary.customType !== \"ods.completed-turn-pressure-boundary\" || previousMessage?.id !== boundary.data?.afterEntryId || previousMessage?.message?.role !== \"assistant\" || previousMessage.message.stopReason !== \"stop\") return err(new CompactionError(\"invalid_session\", \"Invalid completed-turn compaction boundary\"));\n\t\tcutPoint = { firstKeptEntryIndex: index, turnStartIndex: -1, isSplitTurn: false };\n\t} else cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);"
+    ],
+    [
+      "async function generateSummary(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime) {",
+      "async function generateSummary(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime, summaryCharBudget) {"
+    ],
+    [
+      "\tconst maxTokens = Math.min(Math.floor(.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);\n\tlet basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;",
+      "\tconst boundedSummary = Number.isSafeInteger(summaryCharBudget) && summaryCharBudget >= 0;\n\tif (boundedSummary && summaryCharBudget < 4) return err(new CompactionError(\"summarization_failed\", \"The next request leaves no room for a completed-turn summary; history remains unchanged.\"));\n\tconst maxTokens = Math.min(Math.floor(.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY, boundedSummary ? Math.floor(summaryCharBudget / 4) : Number.POSITIVE_INFINITY);\n\tlet basePrompt = boundedSummary\n\t\t? `Write a concise factual checkpoint in at most ${summaryCharBudget} weighted characters (non-Latin characters count as four). Preserve the user's constraints, important decisions, verified results and unresolved work. Do not invent approval, actions or completion. Omit headings and repetitive narration. Do not continue the conversation.`\n\t\t: previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;"
+    ],
+    [
+      "\treturn ok(response.content.filter((c) => c.type === \"text\").map((c) => c.text).join(\"\\n\"));\n}\n/** Prepare session entries for compaction",
+      "\tif (boundedSummary && response.stopReason !== \"stop\") return err(new CompactionError(\"summarization_failed\", \"Completed-turn summary did not finish within the next request budget; history remains unchanged.\"));\n\treturn ok(response.content.filter((c) => c.type === \"text\").map((c) => c.text).join(\"\\n\"));\n}\n/** Prepare session entries for compaction"
+    ],
+    [
+      "\tlet summary;\n\tif (isSplitTurn && turnPrefixMessages.length > 0) {",
+      "\tconst summaryCharBudget = Number.isSafeInteger(preparation.odsSummaryCharBudget) && preparation.odsSummaryCharBudget >= 0 && !isSplitTurn ? preparation.odsSummaryCharBudget : void 0;\n\tconst { readFiles, modifiedFiles } = computeFileLists(fileOps);\n\tconst fileOperationsText = formatFileOperations(readFiles, modifiedFiles);\n\tconst generatedSummaryBudget = summaryCharBudget === void 0 ? void 0 : Math.max(0, summaryCharBudget - estimateStringChars(fileOperationsText));\n\tlet summary;\n\tif (isSplitTurn && turnPrefixMessages.length > 0) {"
+    ],
+    [
+      "\t\tconst summaryResult = await generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime);",
+      "\t\tconst summaryResult = await generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime, generatedSummaryBudget);"
+    ],
+    [
+      "\tconst { readFiles, modifiedFiles } = computeFileLists(fileOps);\n\tsummary += formatFileOperations(readFiles, modifiedFiles);\n\treturn ok({\n\t\tsummary,\n\t\tfirstKeptEntryId,",
+      "\tsummary += fileOperationsText;\n\tif (summaryCharBudget !== void 0 && (!summary.trim() || estimateStringChars(summary) > summaryCharBudget)) return err(new CompactionError(\"summarization_failed\", \"Completed-turn summary does not fit the next request; history remains unchanged.\"));\n\treturn ok({\n\t\tsummary,\n\t\tfirstKeptEntryId,"
     ]
   ],
   "previousReplacements": {
@@ -101,6 +125,48 @@
       [
         "\t\t\t\ttext: `<conversation>\\n${serializeConversation(convertToLlm(messages))}\\n</conversation>\\n\\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`",
         "\t\t\t\ttext: `<conversation>\\n${conversation}\\n</conversation>\\n\\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`"
+      ]
+    ],
+    "02109f130ed761fcf09021f84f676a32f5f31a0b28d1d75c50c21b5c873a36d5": [
+      [
+        "\tconst fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);",
+        "\t// Keeping the entire history cannot produce a useful compaction checkpoint.\n\tif (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return ok(void 0);\n\tconst fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);"
+      ],
+      [
+        "\tconst { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;",
+        "\tconst { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;\n\tif (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return err(new CompactionError(\"summarization_failed\", \"No compactable conversation messages; history remains unchanged\"));"
+      ],
+      [
+        "\t\t\tif (!preparation) throw new AgentHarnessError(\"compaction\", \"Nothing to compact\");",
+        "\t\t\t// Typed pre-provider no-work outcome; never classify provider error text as success.\n\t\t\tif (!preparation) throw new AgentHarnessError(\"compaction_not_needed\", \"Nothing to compact\");"
+      ],
+      [
+        "import { n as EventStream } from \"./event-stream-ReMmOTzX.js\";",
+        "import { n as EventStream } from \"./event-stream-ReMmOTzX.js\";\nimport { t as estimateStringChars } from \"./cjk-chars-BtjJDifS.js\";"
+      ],
+      [
+        "/** Generate or update a conversation summary for compaction. */",
+        "// ODS: a summary request must fit the model's context with its output. Its\n// input is held to the bound of an ordinary turn at the compaction threshold:\n// the openai-completions transport's own estimate (estimateStringChars, 4\n// characters per token, 1.25 margin) plus the compaction reserve fits the\n// window. The reserve covers the summary output, which is at most 0.8 of it,\n// and leaves tokenizer headroom an unmeasured request needs. Above the window\n// the transport cuts the summary to one token or the server rejects it, and\n// the run that needed this compaction fails. A conversation within the budget\n// is sent unchanged; the session transcript is never modified.\nconst SUMMARY_INPUT_TOKEN_MARGIN = 1.25;\nconst SUMMARY_KEEP_WHOLE_CHARS = 320;\nconst SUMMARY_FRAME = \"<conversation>\\n\\n</conversation>\\n\\n\";\nfunction summaryConversationBudget(model, reserveTokens, fixedText) {\n\tconst contextTokens = model.contextTokens > 0 ? model.contextTokens : model.contextWindow;\n\tif (!(contextTokens > 0 && Number.isFinite(contextTokens) && Number.isFinite(reserveTokens))) return Number.POSITIVE_INFINITY;\n\tconst inputChars = Math.floor((contextTokens - reserveTokens - 2) * 4 / SUMMARY_INPUT_TOKEN_MARGIN);\n\treturn inputChars - estimateStringChars(SUMMARIZATION_SYSTEM_PROMPT) - estimateStringChars(SUMMARY_FRAME) - estimateStringChars(fixedText);\n}\nfunction summaryNotice(chars) {\n\treturn `[${chars} characters omitted to fit the summary request]`;\n}\n// Like the live prompt projection: long tool output, tool-call arguments and\n// reasoning become a notice; short values, requests and replies stay whole.\nfunction reduceMessageForSummary(message) {\n\tif (message.role === \"toolResult\") {\n\t\tconst chars = message.content.filter((c) => c.type === \"text\").reduce((sum, c) => sum + c.text.length, 0);\n\t\treturn chars > SUMMARY_KEEP_WHOLE_CHARS ? { ...message, content: [{ type: \"text\", text: summaryNotice(chars) }] } : message;\n\t}\n\tif (message.role !== \"assistant\") return message;\n\tconst content = message.content.map((block) => {\n\t\tif (block.type === \"thinking\" && block.thinking.length > SUMMARY_KEEP_WHOLE_CHARS) return { ...block, thinking: summaryNotice(block.thinking.length) };\n\t\tif (block.type !== \"toolCall\") return block;\n\t\tconst args = Object.entries(block.arguments).map(([key, value]) => {\n\t\t\tconst chars = safeJsonStringify$1(value).length;\n\t\t\treturn [key, chars > SUMMARY_KEEP_WHOLE_CHARS ? summaryNotice(chars) : value];\n\t\t});\n\t\treturn { ...block, arguments: Object.fromEntries(args) };\n\t});\n\treturn { ...message, content };\n}\n/** Serialize messages within maxChars: reduce the oldest messages first, then omit them.\n * Returns undefined when not even the newest reduced message fits. */\nfunction serializeConversationWithinBudget(messages, maxChars) {\n\tconst text = serializeConversation(messages);\n\tif (estimateStringChars(text) <= maxChars) return text;\n\tconst parts = messages.map((message) => serializeConversation([message]));\n\tconst size = (part) => part ? estimateStringChars(part) + 2 : 0;\n\tlet total = parts.reduce((sum, part) => sum + size(part), 0);\n\tfor (let index = 0; index < parts.length && total > maxChars; index++) {\n\t\tconst reduced = serializeConversation([reduceMessageForSummary(messages[index])]);\n\t\ttotal += size(reduced) - size(parts[index]);\n\t\tparts[index] = reduced;\n\t}\n\t// Only conversation text that cannot be reduced loses its oldest messages.\n\tconst marker = (count) => `[${count} earlier messages omitted to fit the summary request]`;\n\tlet omitted = 0;\n\tif (total > maxChars) {\n\t\tconst reserve = size(marker(parts.length));\n\t\twhile (omitted < parts.length && total + reserve > maxChars) total -= size(parts[omitted++]);\n\t}\n\tconst kept = parts.slice(omitted).filter(Boolean);\n\t// A request without any of this conversation would save a summary that\n\t// silently drops the work since the last checkpoint. Fail it instead.\n\tif (omitted > 0 && kept.length === 0) return void 0;\n\tif (omitted > 0) kept.unshift(marker(omitted));\n\treturn kept.join(\"\\n\\n\");\n}\nfunction summaryBudgetError(kind) {\n\treturn new CompactionError(\"summarization_failed\", `${kind} failed: its fixed text leaves no room for the newest message within the model context`);\n}\n/** Generate or update a conversation summary for compaction. */"
+      ],
+      [
+        "\tlet promptText = `<conversation>\\n${serializeConversation(convertToLlm(currentMessages))}\\n</conversation>\\n\\n`;\n\tif (previousSummary) promptText += `<previous-summary>\\n${previousSummary}\\n</previous-summary>\\n\\n`;",
+        "\t// ODS: the conversation is bounded so the whole request fits the model.\n\tconst previousSummaryText = previousSummary ? `<previous-summary>\\n${previousSummary}\\n</previous-summary>\\n\\n` : \"\";\n\tconst conversation = serializeConversationWithinBudget(convertToLlm(currentMessages), summaryConversationBudget(model, reserveTokens, previousSummaryText + basePrompt));\n\tif (conversation === void 0) return err(summaryBudgetError(\"Summarization\"));\n\tlet promptText = `<conversation>\\n${conversation}\\n</conversation>\\n\\n`;\n\tpromptText += previousSummaryText;"
+      ],
+      [
+        "\tconst maxTokens = Math.min(Math.floor(.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);",
+        "\tconst maxTokens = Math.min(Math.floor(.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);\n\t// ODS: the prefix is bounded so the whole request fits the model.\n\tconst conversation = serializeConversationWithinBudget(convertToLlm(messages), summaryConversationBudget(model, reserveTokens, TURN_PREFIX_SUMMARIZATION_PROMPT));\n\tif (conversation === void 0) return err(summaryBudgetError(\"Turn prefix summarization\"));"
+      ],
+      [
+        "\t\t\t\ttext: `<conversation>\\n${serializeConversation(convertToLlm(messages))}\\n</conversation>\\n\\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`",
+        "\t\t\t\ttext: `<conversation>\\n${conversation}\\n</conversation>\\n\\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`"
+      ],
+      [
+        "function prepareCompaction(pathEntries, settings) {",
+        "function prepareCompaction(pathEntries, settings, odsCompletedBoundaryId) {"
+      ],
+      [
+        "\tconst cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);",
+        "\tlet cutPoint;\n\tif (odsCompletedBoundaryId !== void 0) {\n\t\tconst index = pathEntries.findIndex((entry) => entry.id === odsCompletedBoundaryId);\n\t\tconst boundary = pathEntries[index];\n\t\tconst previousMessage = pathEntries.slice(boundaryStart, index).findLast((entry) => entry.type === \"message\");\n\t\tif (index !== pathEntries.length - 1 || index <= boundaryStart || boundary?.type !== \"custom\" || boundary.customType !== \"ods.completed-turn-pressure-boundary\" || previousMessage?.id !== boundary.data?.afterEntryId || previousMessage?.message?.role !== \"assistant\" || previousMessage.message.stopReason !== \"stop\") return err(new CompactionError(\"invalid_session\", \"Invalid completed-turn compaction boundary\"));\n\t\tcutPoint = { firstKeptEntryIndex: index, turnStartIndex: -1, isSplitTurn: false };\n\t} else cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);"
       ]
     ]
   }

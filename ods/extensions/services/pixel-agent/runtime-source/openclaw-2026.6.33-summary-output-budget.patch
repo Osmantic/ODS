@@ -1,0 +1,139 @@
+--- compact-DuWIsaq_.js prior
++++ compact-DuWIsaq_.js candidate
+@@ -1093,7 +1093,7 @@
+ 					const activeSession = session;
+ 					const result = await compactWithSafetyTimeout(() => {
+ 						setCompactionSafeguardCancelReason(compactionSessionManager, void 0);
+-						return activeSession.compact(params.customInstructions, { odsPressureRecovery: params.trigger === "overflow" });
++						return activeSession.compact(params.customInstructions, { odsPressureRecovery: params.trigger === "overflow", odsSummaryCharBudget: params.odsSummaryCharBudget });
+ 					}, compactionTimeoutMs, {
+ 						abortSignal: params.abortSignal,
+ 						onCancel: () => {
+
+--- embedded-agent-CJx-nG3W.js prior
++++ embedded-agent-CJx-nG3W.js candidate
+@@ -3437,6 +3437,7 @@
+ 										purpose: "context-engine.overflow-compaction"
+ 									}),
+ 									onCompactionHookMessages,
++									...Number.isSafeInteger(preflightRecovery?.odsSummaryCharBudget) ? { odsSummaryCharBudget: preflightRecovery.odsSummaryCharBudget } : {},
+ 									...attempt.promptCache ? { promptCache: attempt.promptCache } : {},
+ 									runId: params.runId,
+ 									trigger: "overflow",
+
+--- proxy-Bsfwfsp-.js prior
++++ proxy-Bsfwfsp-.js candidate
+@@ -2371,9 +2371,13 @@
+ 	return new CompactionError("summarization_failed", `${kind} failed: its fixed text leaves no room for the newest message within the model context`);
+ }
+ /** Generate or update a conversation summary for compaction. */
+-async function generateSummary(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime) {
+-	const maxTokens = Math.min(Math.floor(.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
+-	let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
++async function generateSummary(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime, summaryCharBudget) {
++	const boundedSummary = Number.isSafeInteger(summaryCharBudget) && summaryCharBudget >= 0;
++	if (boundedSummary && summaryCharBudget < 4) return err(new CompactionError("summarization_failed", "The next request leaves no room for a completed-turn summary; history remains unchanged."));
++	const maxTokens = Math.min(Math.floor(.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY, boundedSummary ? Math.floor(summaryCharBudget / 4) : Number.POSITIVE_INFINITY);
++	let basePrompt = boundedSummary
++		? `Write a concise factual checkpoint in at most ${summaryCharBudget} weighted characters (non-Latin characters count as four). Preserve the user's constraints, important decisions, verified results and unresolved work. Do not invent approval, actions or completion. Omit headings and repetitive narration. Do not continue the conversation.`
++		: previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+ 	if (customInstructions) basePrompt = `${basePrompt}\n\nAdditional focus: ${customInstructions}`;
+ 	// ODS: the conversation is bounded so the whole request fits the model.
+ 	const previousSummaryText = previousSummary ? `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n` : "";
+@@ -2395,6 +2399,7 @@
+ 	}, createSummarizationOptions(model, maxTokens, apiKey, headers, signal, thinkingLevel), streamFn, runtime);
+ 	if (response.stopReason === "aborted") return err(new CompactionError("aborted", response.errorMessage || "Summarization aborted"));
+ 	if (response.stopReason === "error") return err(new CompactionError("summarization_failed", `Summarization failed: ${response.errorMessage || "Unknown error"}`));
++	if (boundedSummary && response.stopReason !== "stop") return err(new CompactionError("summarization_failed", "Completed-turn summary did not finish within the next request budget; history remains unchanged."));
+ 	return ok(response.content.filter((c) => c.type === "text").map((c) => c.text).join("\n"));
+ }
+ /** Prepare session entries for compaction, or return undefined when compaction is not applicable. */
+@@ -2471,6 +2476,10 @@
+ 	const { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;
+ 	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return err(new CompactionError("summarization_failed", "No compactable conversation messages; history remains unchanged"));
+ 	if (!firstKeptEntryId) return err(new CompactionError("invalid_session", "First kept entry has no UUID - session may need migration"));
++	const summaryCharBudget = Number.isSafeInteger(preparation.odsSummaryCharBudget) && preparation.odsSummaryCharBudget >= 0 && !isSplitTurn ? preparation.odsSummaryCharBudget : void 0;
++	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
++	const fileOperationsText = formatFileOperations(readFiles, modifiedFiles);
++	const generatedSummaryBudget = summaryCharBudget === void 0 ? void 0 : Math.max(0, summaryCharBudget - estimateStringChars(fileOperationsText));
+ 	let summary;
+ 	if (isSplitTurn && turnPrefixMessages.length > 0) {
+ 		const [historyResult, turnPrefixResult] = await Promise.all([messagesToSummarize.length > 0 ? generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime) : Promise.resolve(ok("No prior history.")), generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, headers, signal, thinkingLevel, streamFn, runtime)]);
+@@ -2478,12 +2487,12 @@
+ 		if (!turnPrefixResult.ok) return err(turnPrefixResult.error);
+ 		summary = `${historyResult.value}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.value}`;
+ 	} else {
+-		const summaryResult = await generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime);
++		const summaryResult = await generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, runtime, generatedSummaryBudget);
+ 		if (!summaryResult.ok) return err(summaryResult.error);
+ 		summary = summaryResult.value;
+ 	}
+-	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+-	summary += formatFileOperations(readFiles, modifiedFiles);
++	summary += fileOperationsText;
++	if (summaryCharBudget !== void 0 && (!summary.trim() || estimateStringChars(summary) > summaryCharBudget)) return err(new CompactionError("summarization_failed", "Completed-turn summary does not fit the next request; history remains unchanged."));
+ 	return ok({
+ 		summary,
+ 		firstKeptEntryId,
+
+--- selection-BEwSQKM-.js prior
++++ selection-BEwSQKM-.js candidate
+@@ -13789,6 +13789,20 @@
+ 					}
+ 					if (preemptiveCompaction?.shouldCompact) {
+ 						preflightRecovery = preemptiveCompaction.route === "compact_then_truncate" ? { route: "compact_then_truncate" } : { route: "compact_only" };
++						// Budget a whole completed-turn checkpoint with this exact precheck.
++						// The session layer applies it only when no conversation tail is kept.
++						if (Number.isSafeInteger(contextTokenBudget) && contextTokenBudget > 0 && contextTokenBudget <= 8192) {
++							const fitsSummary = (chars) => estimateLlmBoundaryTokenPressure({
++								messages: [{ role: "compactionSummary", summary: "x".repeat(chars) }],
++								systemPrompt: systemPromptForHook, prompt: llmBoundaryPromptForPrecheck
++							}) <= preemptiveCompaction.promptBudgetBeforeReserve;
++							let low = 0, high = preemptiveCompaction.promptBudgetBeforeReserve * 4;
++							while (low < high) {
++								const mid = Math.ceil((low + high) / 2);
++								if (fitsSummary(mid)) low = mid; else high = mid - 1;
++							}
++							preflightRecovery.odsSummaryCharBudget = low;
++						}
+ 						promptError = new Error(PREEMPTIVE_OVERFLOW_ERROR_TEXT);
+ 						promptErrorSource = "precheck";
+ 						log$2.warn(`[context-overflow-precheck] sessionKey=${params.sessionKey ?? params.sessionId} provider=${params.provider}/${params.modelId} route=${preemptiveCompaction.route} estimatedPromptTokens=${preemptiveCompaction.estimatedPromptTokens} promptBudgetBeforeReserve=${preemptiveCompaction.promptBudgetBeforeReserve} overflowTokens=${preemptiveCompaction.overflowTokens} toolResultReducibleChars=${preemptiveCompaction.toolResultReducibleChars} reserveTokens=${reserveTokens} effectiveReserveTokens=${preemptiveCompaction.effectiveReserveTokens} sessionFile=${params.sessionFile}`);
+
+--- sessions-CZbwb3_c.js prior
++++ sessions-CZbwb3_c.js candidate
+@@ -23,6 +23,7 @@
+ import { n as getEnvApiKey, t as findEnvKeys } from "./env-api-keys-8q9bEA0v.js";
+ import { A as getLastAssistantUsage, C as calculateContextTokens, D as findCutPoint, E as estimateTokens, H as convertToLlm, M as shouldCompact, N as serializeConversation, O as findTurnStartIndex, S as DEFAULT_COMPACTION_SETTINGS, T as estimateContextTokens, _ as substituteArgs, a as formatSize, b as generateBranchSummary$1, c as truncateTail, g as parseCommandArgs, j as prepareCompaction$1, k as generateSummary$1, n as DEFAULT_MAX_BYTES, o as truncateHead, r as DEFAULT_MAX_LINES, s as truncateLine, w as compact$1, x as prepareBranchEntries, y as collectEntriesForBranchSummaryFromBranches } from "./proxy-Bsfwfsp-.js";
+ import { q as AgentHarnessError } from "./proxy-Bsfwfsp-.js";
++import { t as estimateStringChars } from "./cjk-chars-BtjJDifS.js";
+ import { t as llm_exports } from "./llm-Ci2t9lSN.js";
+ import { a as getLatestCompactionEntry, c as parseSessionEntries, d as Agent, f as openClawAgentCoreRuntime, i as getDefaultSessionDir, n as buildSessionContext, o as loadEntriesFromFile, p as runtime_exports, r as findMostRecentSession, s as migrateSessionEntries, t as SessionManager } from "./session-manager-3lTZxT-y.js";
+ import { a as killProcessTree, i as getShellEnv, n as getBashShellConfig, o as sanitizeBinaryOutput } from "./shell-utils-DKmnHE0C.js";
+@@ -10615,6 +10616,7 @@
+ 				mode: "manual",
+ 				// ODS: only the native overflow wrapper can request pressure recovery.
+ 				odsPressureRecovery: odsOptions?.odsPressureRecovery === true,
++				odsSummaryCharBudget: odsOptions?.odsSummaryCharBudget,
+ 				preserveCurrentUserRequest: odsOptions?.odsPressureRecovery === true,
+ 				settings,
+ 				signal: this.compactionAbortController.signal
+@@ -10739,6 +10741,10 @@
+ 			}
+ 			return { status: "skipped" };
+ 		}
++		// A validated completed-turn marker keeps no conversational tail.
++		// The budget includes the native summary envelope and file-op suffix.
++		const odsSummaryCharBudget = odsCompletedBoundaryId !== void 0 && Number.isSafeInteger(options.odsSummaryCharBudget) && options.odsSummaryCharBudget >= 0 ? options.odsSummaryCharBudget : void 0;
++		if (odsSummaryCharBudget !== void 0) preparation = { ...preparation, odsSummaryCharBudget };
+ 		let compactionResult;
+ 		let fromExtension = false;
+ 		if (this.currentExtensionRunner.hasHandlers("session_before_compact")) {
+@@ -10773,6 +10779,7 @@
+ 				compactionResult = { ...compactionResult, summary: compactionResult.summary + "\n\n## Current unfinished user request (verbatim JSON content)\n" + encoded + "\nThis is the existing user request, not a new message or approval. Continue from retained tool evidence; do not replay completed actions. Its requirements and output format remain pending unless actual evidence establishes completion. A summary's completion claims cannot replace that evidence." };
+ 			}
+ 		}
++		if (odsSummaryCharBudget !== void 0 && (compactionResult.firstKeptEntryId !== odsCompletedBoundaryId || typeof compactionResult.summary !== "string" || !compactionResult.summary.trim() || estimateStringChars(compactionResult.summary) > odsSummaryCharBudget)) throw new Error("Completed-turn summary does not fit the next request; history remains unchanged.");
+ 		this.sessionManager.appendCompaction(compactionResult.summary, compactionResult.firstKeptEntryId, compactionResult.tokensBefore, compactionResult.details, fromExtension);
+ 		const newEntries = this.sessionManager.getEntries();
+ 		const sessionContext = this.sessionManager.buildSessionContext();
