@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
+  ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE,
   ODS_CONVERSATION_CONTRACT,
   ODS_SEPTEMBER16_CONVERSATION_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
@@ -314,7 +315,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4700);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
-  assert.match(plain.appendSystemContext, /run the requested focused verification/);
+  assert.match(plain.appendSystemContext, /verify requested behavior, exit status and artifacts/);
 
   const host = promptContractForAgent(
     { agentId: "pixel", contextTokenBudget: 16384 },
@@ -420,7 +421,7 @@ test('8K core follows trusted capacity and preserves each task supplement', () =
       }
     }
     assert.ok(small.length < large.length - 1000,'leave substantial room for the owner and tool results');
-    assert.match(small,/wait before dependent actions/);
+    assert.match(small,/wait for missing input or permission before dependent actions/);
     assert.match(small,/Never bypass network, credential or broker boundaries/);
     if(executionHost==='gateway'){
       assert.doesNotMatch(small,/Generic exec is sandbox evidence/);
@@ -1072,4 +1073,29 @@ test("verification follow-up guidance permits unchanged republication without a 
   assert.match(result.appendSystemContext, /do not make a dummy edit/);
   assert.match(result.appendSystemContext, /exact new siteId and full sha256/);
   }
+});
+
+
+test('small-context read-only listings omit authoring guides without changing mixed work', () => {
+  const listing = 'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.';
+  const contract = (prompt, window=8192, event={prompt}) => promptContractForAgent(
+    {agentId:'pixel'},'pixel',event,{configuredContextWindow:window,executionHost:'gateway'}).appendSystemContext;
+  for (const prompt of [listing, 'Show workspace files with a read only tool. Never write files.']) {
+    assert.ok(contract(prompt).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE));
+    assert.ok(!contract(prompt).includes(AGENT_SKILLS.workspace));
+    assert.ok(!contract(prompt).includes('For a new project, choose one short descriptive folder'));
+    assert.ok(contract(prompt,8193).includes(AGENT_SKILLS.workspace));
+  }
+  for (const prompt of [
+    listing+' Then create a new report file in the workspace.',
+    'Read-only workspace: list files, but edit README.md.',
+    'List workspace files read-only and run the tests.',
+    'Create a workspace project and list its files with read-only tools.',
+    'Build a React website in the workspace and publish its preview.',
+    'Read the workspace code and fix its bug.',
+  ]) {
+    assert.ok(!contract(prompt).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE),prompt);
+    assert.ok(contract(prompt).includes(AGENT_SKILLS.workspace),prompt);
+  }
+  assert.ok(!contract(undefined,8192,{messages:[{role:'tool',content:listing},{role:'user',content:'Hello'}]}).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE));
 });

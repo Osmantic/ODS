@@ -5952,6 +5952,18 @@ export function userMessageRequestsWorkspaceTools(messages, prompt = undefined) 
   );
 }
 
+// Selects a smaller operating guide only; it grants no tools or authority.
+// Require an explicitly read-only listing and leave mixed work on its full guide.
+export function userMessageRequestsReadOnlyWorkspaceListing(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  if (!/\bworkspace\b/i.test(text) || !/\bread[ -]only\b/i.test(text) ||
+      !/\b(?:list|show)\b[^.!?;\n]{0,120}\b(?:files|folders|directories|entries)\b/i.test(text)) return false;
+  const action = /\b(?:create|write|edit|update|build|implement|save|generate|modify|overwrite|patch|delete|remove|move|copy|install|publish|download|run|execute|test)\b/i;
+  const forbidden = /\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|skip|without)\b/i;
+  return !text.split(/[.!?;\n]+|\b(?:but|then|however|instead)\b/i)
+    .some(clause => action.test(clause) && !forbidden.test(clause));
+}
+
 export function userMessageRequestsNewPlaygroundProject(messages, prompt = undefined) {
   return requestsNewPlaygroundProject(currentOwnerIntentText(messages,prompt));
 }
