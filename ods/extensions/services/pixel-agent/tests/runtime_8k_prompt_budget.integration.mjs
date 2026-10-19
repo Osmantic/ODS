@@ -69,7 +69,7 @@ for (const scenario of [
   let contract;
   await t.test('assemble all real before_prompt_build instructions', async child => {
     const build = await realPromptBuild(child, {
-      pluginConfig: {modelContextWindow: 65536, leanPrompt: false},
+      pluginConfig: {modelContextWindow: 65536, leanPrompt: false, projectBuildSocket: '/not-contacted/project.sock'},
       currentConfig: () => ({plugins: {entries: {'pixel-ods': {config: {modelContextWindow: 8192, leanPrompt: true}}}}}),
     });
     contract = await build(prompt);
@@ -94,7 +94,8 @@ for (const scenario of [
   assert.equal(requests.length,1,'one real provider request, no repeated compaction\n'+trace);
   assert.equal(requests[0].max_tokens??requests[0].max_completion_tokens,2048);
   assert.equal(result.payloads?.map(p=>p.text??'').join(''),'A ripe banana is yellow.',trace);
-  assert.ok(requests[0].messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.includes(contract.appendSystemContext.trim())),
+  const normalize = text => text.replace(/\s+/g, ' ').trim();
+  assert.ok(requests[0].messages.some(m=>m.role==='system'&&typeof m.content==='string'&&normalize(m.content).includes(normalize(contract.appendSystemContext))),
     'the provider receives the complete registered production hook output');
   assert.equal(JSON.stringify(requests[0].messages).split(prompt).length-1,1);
 });

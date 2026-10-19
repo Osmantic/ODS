@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import {createProjectBuildTool} from '../plugin/project-build.mjs';
 
 const modulePath = process.env.OPENCLAW_TOOL_SEARCH_MODULE;
 const manifest = JSON.parse(readFileSync(new URL("../host/openclaw-image-envelope.json", import.meta.url)));
@@ -35,6 +36,27 @@ test("8K exposes three controls while deferred tools remain discoverable and cal
   const answer = await result.tools.find(t => t.name === "tool_call").execute("test-call", {id: read.id, input: {path: "fixture.txt"}});
   assert.ok(JSON.stringify(answer).includes("fixture.txt"));
   assert.equal(ctx.catalogRef.current.callCount, 1);
+});
+
+test('the real managed-project description and capability call remain accessible at 8K', async () => {
+  const {ctx, tools, runtime} = setup();
+  const requests = [];
+  const project = createProjectBuildTool({request: async value => {
+    requests.push(value);
+    return {schemaVersion:1,kind:'ods-project-capabilities',runtime:'python',scope:'installed-image-only',
+      status:'unavailable',reason:'runtime-not-installed'};
+  }});
+  const result = apply({...ctx, tools:[...tools, project]});
+  assert.deepEqual(names(result), ['tool_call', 'tool_describe', 'tool_search']);
+  const match = (await runtime.search('pixel_ods_project_build')).find(t => t.name === project.name);
+  assert.ok(match);
+  const described = await runtime.describe(match.id);
+  assert.equal(described.description, project.description);
+  assert.deepEqual(described.parameters, project.parameters);
+  const answer = await runtime.call(match.id, {action:'capabilities',runtime:'python'});
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].action, 'capabilities');
+  assert.match(JSON.stringify(answer), /runtime-not-installed/);
 });
 
 test("64K to 8K to 64K recomputes visibility even when reusing a catalog", () => {
