@@ -230,6 +230,7 @@ export const UNREAD_SOURCES_REVISION_INSTRUCTION = [
   'When each item needs its own source, such as one page per event, prefer that item\'s own page over a shared listing page. ' +
   'A search snippet, failed fetch or HTTP error is not a successful page read. A successful read alone does not verify every claim: check the actual returned evidence. ' +
   'Return the completed answer in the owner\'s original requested language and format, including any length, sentence-count or output-only constraint. ' +
+  'Include source links within that format: for a sentence-count constraint, put citations inside those sentences instead of appending a separate sources block. ' +
   'Do not add a revision preface or narrate your source-check process. Keep any necessary honest limitation in the requested format; ' +
   'never hide a limitation or claim verification merely to satisfy the format.',
 ];
