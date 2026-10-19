@@ -266,7 +266,7 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
         # a new installation does not inherit the stop its uninstall recorded.
         if ($DockerDesktopPath -or (Test-Path -LiteralPath (Join-Path $lifetimeIdentity.directory 'startup-config.json'))) {
             Enable-ODSWslStartup $lifetimeIdentity $DockerDesktopPath -NewInstallation:$newInstallation
-            Write-Host "Durable lifecycle: powershell -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+            Write-Host "Durable lifecycle: powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
         } else {
             Write-Warning 'Use the Windows Portal setup entry point to enable verified sign-in recovery.'
         }
