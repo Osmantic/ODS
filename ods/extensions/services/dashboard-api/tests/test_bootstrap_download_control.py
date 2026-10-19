@@ -56,6 +56,12 @@ def test_stale_generation_does_not_cancel_new_download(tmp_path):
     assert control.supervise([sys.executable, "-c", "raise SystemExit(7)"], request, GEN) == 7
 
 
+def test_child_failure_cannot_impersonate_cancellation(tmp_path):
+    assert control.supervise(
+        [sys.executable, "-c", "raise SystemExit(76)"], tmp_path / "request", GEN
+    ) == 1
+
+
 def test_preexisting_request_prevents_spawning(tmp_path):
     request = tmp_path / "cancel.json"
     request.write_text(json.dumps({"generation": GEN}))

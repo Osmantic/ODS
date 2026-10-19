@@ -71,6 +71,10 @@ def supervise(command, request_path, generation, *, interrupted=None):
                 return CANCELLED
             code = child.poll()
             if code is not None:
+                # This exit status is our cancellation acknowledgement. A
+                # child's own failure must not impersonate that protocol.
+                if code == CANCELLED:
+                    return 1
                 return code if code >= 0 else 128 - code
             time.sleep(0.25)
     finally:
