@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from env_values import parse_env_value
 import hf_gguf_header
 import model_preflight
+from bootstrap_download_control import valid_generation
 from config import (
     DATA_DIR,
     GPU_BACKEND,
@@ -2063,6 +2064,9 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
     status_path = Path(DATA_DIR) / "model-download-status.json"
     if not status_path.exists():
         bootstrap_status = _read_bootstrap_status_file()
+        if _is_cancelled_download_status(bootstrap_status):
+            terminal = {**bootstrap_status, "error": "Download cancelled by user; partial file preserved."}
+            return _idle_download_status(last_terminal_status=terminal)
         if _is_stale_active_bootstrap_status(bootstrap_status):
             return _stale_bootstrap_download_status(bootstrap_status)
         bootstrap_info = get_bootstrap_status()
@@ -2776,6 +2780,46 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
 @router.post("/api/models/download/cancel")
 def cancel_download(api_key: str = Depends(verify_api_key)):
     """Cancel an in-progress model download."""
+    bootstrap = _read_bootstrap_status_file()
+    if bootstrap and bootstrap.get("status") in _ACTIVE_BOOTSTRAP_STATUSES:
+        if bootstrap.get("status") not in {"starting", "downloading"}:
+            raise HTTPException(status_code=409, detail="The full model has finished downloading and is being activated. It cannot be cancelled now.")
+        generation = bootstrap.get("downloadGeneration")
+        if not valid_generation(generation):
+            raise HTTPException(status_code=409, detail="This full-model download worker does not support cancellation acknowledgements. It is still running.")
+        # This is a nonce, not a secret. The native owner must be able to read
+        # a request written by the API container; only the API writes requests.
+        directory = Path(DATA_DIR)
+        request_path = directory / "bootstrap-download.cancel.json"
+        temporary = None
+        try:
+            fd, temporary = tempfile.mkstemp(prefix=".bootstrap-cancel-", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"generation": generation}, handle)
+                handle.flush()
+                os.fchmod(handle.fileno(), 0o644)
+                os.fsync(handle.fileno())
+            os.replace(temporary, request_path)
+        except OSError:
+            raise HTTPException(status_code=503, detail="The download cancellation request could not be delivered. The download may still be running.") from None
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            current = _read_bootstrap_status_file()
+            if not current or current.get("downloadGeneration") != generation:
+                raise HTTPException(status_code=409, detail="The download changed before cancellation was acknowledged. Check its current progress.")
+            state = current.get("status")
+            if state == "cancelled":
+                return {"status": "cancelled", "cancelled": True, "downloadGeneration": generation}
+            if state not in {"starting", "downloading"}:
+                raise HTTPException(status_code=409, detail="The download finished or changed before it could be cancelled. Check its current progress.")
+            time.sleep(0.2)
+        raise HTTPException(status_code=409, detail="The download has not acknowledged cancellation yet. Check progress before retrying.")
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
 
