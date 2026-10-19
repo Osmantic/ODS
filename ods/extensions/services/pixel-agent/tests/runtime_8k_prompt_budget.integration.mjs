@@ -55,12 +55,18 @@ for (const scenario of [
   {id:'listing-correction', prompt:'The command used head -20, so that was incomplete. Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.'},
 ]) test('8K '+scenario.id+' full plugin hook reaches the provider with unchanged reserves', {timeout:60000}, async t=>{
   const requests=[];
+  const listing=['| Exact name | Type |','| --- | --- |',
+    ...Array.from({length:44},(_,i)=>`| acceptance-project-${String(i+1).padStart(2,'0')}-configuration-and-notes.txt | file |`),
+    '| .settings | folder |','| scripts | folder |'].join('\n');
+  let reply=scenario.id==='listing'?listing:'A ripe banana is yellow.';
+  const isSummary=request=>request.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('You are a context summarization assistant.'));
   const upstream=http.createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
-    requests.push(JSON.parse(Buffer.concat(chunks)));
+    const request=JSON.parse(Buffer.concat(chunks));requests.push(request);
+    const content=isSummary(request)?'The owner requested a read-only listing. The completed answer listed 46 entries. No files were changed. A new request requires fresh evidence.':reply;
     res.writeHead(200,{'Content-Type':'text/event-stream'});
-    res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:'A ripe banana is yellow.'},finish_reason:null}]})+'\n\n');
-    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:4000,completion_tokens:7,total_tokens:4007}})+'\n\ndata: [DONE]\n\n');
+    res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content},finish_reason:null}]})+'\n\n');
+    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:4000,completion_tokens:Math.ceil(content.length/4),total_tokens:4000+Math.ceil(content.length/4)}})+'\n\ndata: [DONE]\n\n');
   });
   upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
   t.after(async()=>{upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));});
@@ -94,9 +100,43 @@ for (const scenario of [
   assert.equal(result.meta?.error,undefined,trace);
   assert.equal(requests.length,1,'one real provider request, no repeated compaction\n'+trace);
   assert.equal(requests[0].max_tokens??requests[0].max_completion_tokens,2048);
-  assert.equal(result.payloads?.map(p=>p.text??'').join(''),'A ripe banana is yellow.',trace);
+  assert.equal(result.payloads?.map(p=>p.text??'').join(''),reply,trace);
   const normalize = text => text.replace(/\s+/g, ' ').trim();
   assert.ok(requests[0].messages.some(m=>m.role==='system'&&typeof m.content==='string'&&normalize(m.content).includes(normalize(contract.appendSystemContext))),
     'the provider receives the complete registered production hook output');
   assert.equal(JSON.stringify(requests[0].messages).split(prompt).length-1,1);
+  if(scenario.id==='listing') {
+    reply=listing.replaceAll('acceptance-project','second-project');
+    const secondAnswer=reply;
+    const correction='Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.';
+    const followup=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:8k-fixture-'+scenario.id,workspaceDir:workspace,agentDir,
+      config,provider:'fixture',model:'model',prompt:correction,runId:'8k-followup',trigger:'user',timeoutMs:30000});
+    assert.equal(followup.meta?.error,undefined,JSON.stringify(followup));
+    assert.equal(followup.payloads?.map(p=>p.text??'').join(''),reply);
+    assert.equal(requests.length,3,'one first turn, one compaction, one follow-up');
+    assert.equal(requests.filter(isSummary).length,1);
+    assert.ok(JSON.stringify(requests.find(isSummary)).includes('acceptance-project-44-configuration-and-notes.txt'),'summarize the bulky completed answer');
+    const resumed=requests.at(-1);
+    assert.equal(resumed.max_tokens??resumed.max_completion_tokens,2048);
+    assert.equal(JSON.stringify(resumed.messages).split(correction).length-1,1,'current request is submitted once');
+    assert.ok(resumed.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&normalize(m.content).includes(normalize(contract.appendSystemContext))),
+      'complete hook instructions remain after compaction');
+    const entries=fs.readFileSync(sessionFile,'utf8').trim().split('\n').map(JSON.parse);
+    const original=entries.find(e=>e.type==='message'&&e.message?.role==='assistant');
+    assert.equal(original.message.content.filter(b=>b.type==='text').map(b=>b.text).join(''),listing,'raw original answer remains intact');
+    assert.equal(entries.filter(e=>e.customType==='ods.completed-turn-pressure-boundary').length,1);
+    reply='The third turn also reached the provider.';
+    const thirdPrompt='Without tools, reply exactly: The third turn also reached the provider.';
+    const third=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:8k-fixture-'+scenario.id,workspaceDir:workspace,agentDir,
+      config,provider:'fixture',model:'model',prompt:thirdPrompt,runId:'8k-third-turn',trigger:'user',timeoutMs:30000});
+    assert.equal(third.meta?.error,undefined,JSON.stringify(third));
+    assert.equal(third.payloads?.map(p=>p.text??'').join(''),reply);
+    assert.equal(requests.length,5,'each follow-up needs only one summary and one continuation');
+    assert.equal(requests.filter(isSummary).length,2);
+    assert.equal(JSON.stringify(requests.at(-1).messages).split(thirdPrompt).length-1,1);
+    const afterThird=fs.readFileSync(sessionFile,'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(afterThird.filter(e=>e.customType==='ods.completed-turn-pressure-boundary').length,2);
+    assert.ok(afterThird.some(e=>e.type==='message'&&e.message?.role==='assistant'&&e.message.content.filter(b=>b.type==='text').map(b=>b.text).join('')===secondAnswer),
+      'a later boundary does not rewrite the previous completed answer');
+  }
 });
