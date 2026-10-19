@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
+  ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
   ODS_SEPTEMBER16_CONVERSATION_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
@@ -39,6 +40,7 @@ test('language fallback reaches website and ordinary requests on full, lean and 
     {configuredContextWindow:65536},
     {configuredContextWindow:65536, configuredLeanPrompt:true},
     {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
   ]) {
     for (const executionHost of ['sandbox', 'gateway']) {
       for (const prompt of ['Build a website for me.', 'Crie um site para mim.', 'Reply in Portuguese and build a website.', 'OK']) {
@@ -63,6 +65,7 @@ test('full, lean and small-context routes teach the actual preview runtime bound
     {configuredContextWindow:65536},
     {configuredContextWindow:65536, configuredLeanPrompt:true},
     {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
   ]) {
     for (const executionHost of ['sandbox', 'gateway']) {
       const {appendSystemContext: contract} = promptContractForAgent(
@@ -304,7 +307,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
     "pixel"
   );
   assert.deepEqual(plain, {
-    appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    appendSystemContext: ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
   });
   // Allow the 345-character language and 556-character sandbox runtime rules
   // while keeping a fixed compact ceiling.
@@ -338,7 +341,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
     { configuredContextWindow: 8192 }
   );
   assert.deepEqual(configuredCompact, {
-    appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    appendSystemContext: ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
   });
 
   const configuredLeanLargeContext = promptContractForAgent(
@@ -390,6 +393,40 @@ test('32K selects the compact core from every trusted context source', () => {
   }
   assert.equal(promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt:'Use a 32K context.'})
     .appendSystemContext, ODS_CONVERSATION_CONTRACT, 'owner prose cannot select the trusted budget');
+});
+
+test('8K core follows trusted capacity and preserves each task supplement', () => {
+  for (const window of [8191, 8192, 8193, 32768, 65536]) {
+    for (const source of ['configured', 'budget', 'reference']) {
+      const context = {agentId:'pixel', contextTokenBudget:65536, contextWindowReferenceTokens:65536};
+      const options = {configuredContextWindow:65536};
+      if (source === 'configured') options.configuredContextWindow = window;
+      if (source === 'budget') context.contextTokenBudget = window;
+      if (source === 'reference') context.contextWindowReferenceTokens = window;
+      assert.equal(promptContractForAgent(context,'pixel',undefined,options).appendSystemContext,
+        window <= 8192 ? ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT : window <= 32768
+          ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT);
+    }
+  }
+  for (const executionHost of ['sandbox','gateway']) {
+    const small = conversationContractForExecution(ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,executionHost);
+    const large = conversationContractForExecution(ODS_COMPACT_CONVERSATION_CONTRACT,executionHost);
+    for (const prompt of ['Install Flowise on the ODS host.','Make a playable Breakout game.',
+      'Read http://192.168.1.20.','Give me the existing report.pdf as a download.']) {
+      for (const verificationStatus of ['pending','failed']) {
+        const build = capacity => promptContractForAgent({agentId:'pixel'},'pixel',{prompt},
+          {configuredContextWindow:capacity,executionHost,verificationStatus}).appendSystemContext;
+        assert.equal(build(8192).slice(small.length),build(16384).slice(large.length),prompt);
+      }
+    }
+    assert.ok(small.length < large.length - 1000,'leave substantial room for the owner and tool results');
+    assert.match(small,/wait before dependent actions/);
+    assert.match(small,/Never bypass network, credential or broker boundaries/);
+    if(executionHost==='gateway'){
+      assert.doesNotMatch(small,/Generic exec is sandbox evidence/);
+      assert.match(small,/Native exec follows the configured owner access policy/);
+    }
+  }
 });
 
 test('32K preserves explicit compact-mode intent routes and verification safeguards', () => {
