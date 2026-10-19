@@ -45,9 +45,8 @@ export function deliveredArtifactMetadata(message) {
 // Model-authored hosts never authorize a download. A canonical snapshot/file
 // path may select exactly one verified receipt from this completed response;
 // the download control still fetches and checks the ODS snapshot's bytes.
-export function deliveredArtifactForHref(href, artifacts) {
-  const delivered = parseDeliveredArtifacts(artifacts)
-  if (!delivered?.length || typeof href !== 'string' || !/^https?:\/\//i.test(href)
+function authoredArtifactPath(href) {
+  if (typeof href !== 'string' || !/^https?:\/\//i.test(href)
     || /[\s\\]/.test(href)) return null
   let url
   try { url = new URL(href) } catch { return null }
@@ -57,12 +56,32 @@ export function deliveredArtifactForHref(href, artifacts) {
   // URL parsing normalizes dot segments and backslashes. Never let that turn
   // an unrelated or traversal-shaped URL into a receipt match.
   if (rawPath !== url.pathname) return null
+  return rawPath
+}
+
+export function deliveredArtifactForHref(href, artifacts) {
+  const delivered = parseDeliveredArtifacts(artifacts)
+  const rawPath = authoredArtifactPath(href)
+  if (!delivered?.length || !rawPath) return null
   const matches = delivered.filter(({siteId, file}) => [
     `/${siteId}/${file.path}`,
     `/${siteId.slice(5)}/${file.path}`,
     `/pixel-preview/${siteId}/${file.path}`,
     `/preview/${siteId}/${file.path}`,
   ].includes(rawPath))
+  return matches.length === 1 ? matches[0] : null
+}
+
+// Called only for an explicit Download-labelled link in ordinary answer prose.
+// The filename can select one completed receipt; the URL never supplies a host,
+// snapshot ID or bytes. Ambiguous names and URL paths requiring normalization
+// cannot bind.
+export function deliveredArtifactForDownloadHref(href, artifacts) {
+  const delivered = parseDeliveredArtifacts(artifacts)
+  const rawPath = authoredArtifactPath(href)
+  if (!delivered?.length || !rawPath) return null
+  const name = rawPath.split('/').at(-1)
+  const matches = delivered.filter(({file}) => file.path === name)
   return matches.length === 1 ? matches[0] : null
 }
 

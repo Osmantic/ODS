@@ -5925,8 +5925,10 @@ test("routes one local host command to a canonical immutable approval proposal",
   assert.deepEqual(routed, {
     params: { id: "pixel_ods_host_command_propose", args: { command: "uname -sr" } },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-command-call" },
     event: {
+      toolCallId: "host-command-call",
       params: routed.params,
       result: {
         details: {
@@ -5948,8 +5950,10 @@ test("routes one local host command to a canonical immutable approval proposal",
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const persisted = persistToolResult(guard, "tool_call", "host-command-call", {
+    ...completedHost.event.result,
     content: [{ type: "text", text: "oversized raw command receipt" }],
   });
   assert.equal(persisted.message.content.length, 1);
@@ -7878,16 +7882,18 @@ test("persists compact receipt-bound host evidence before the trusted continuati
     "pixel",
     { prompt: "Inspect the ODS host hostname and active model." }
   );
-  call(guard, "tool_call", {
+  const routed = call(guard, "tool_call", {
     event: {
       toolCallId: "host-call",
       params: { id: "pixel_ods_host_observe", args: { actions: ["host.identity"] } },
     },
     context: { toolCallId: "host-call" },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-call" },
     event: {
-      params: { id: "pixel_ods_host_observe", args: { actions: ["host.identity"] } },
+      toolCallId: "host-call",
+      params: routed.params,
       result: {
         details: {
           tool: {
@@ -7911,8 +7917,10 @@ test("persists compact receipt-bound host evidence before the trusted continuati
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const persisted = persistToolResult(guard, "tool_call", "host-call", {
+    ...completedHost.event.result,
     content: [{ type: "text", text: "oversized raw terminal receipt" }],
   });
   assert.equal(persisted.message.content.length, 2);
@@ -7922,19 +7930,14 @@ test("persists compact receipt-bound host evidence before the trusted continuati
   assert.match(persisted.message.content[0].text, /full terminal evidence remains bound/);
   assert.match(persisted.message.content[1].text, /id pixel_ods_status and args \{\}/);
 
-  const wrapped = persistToolResult(guard, "tool_call", "host-call", {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        tool: {
-          id: "openclaw:pixel-ods:pixel_ods_host_observe",
-          source: "openclaw",
-          sourceName: "pixel-ods",
-          name: "pixel_ods_host_observe",
-        },
-        result: { details: { jobId } },
-      }),
-    }],
+  // Older runtimes store the complete envelope only in the text block.
+  // It still needs its own admitted call and validated after-hook receipt.
+  call(guard, "tool_call", {event: {toolCallId: "host-call-json", params: completedHost.event.params},
+    context: {toolCallId: "host-call-json"}});
+  afterCall(guard, "tool_call", {event: {...completedHost.event, toolCallId: "host-call-json"},
+    context: {toolCallId: "host-call-json"}});
+  const wrapped = persistToolResult(guard, "tool_call", "host-call-json", {
+    content: [{type: "text", text: JSON.stringify(completedHost.event.result.details)}],
   });
   assert.doesNotMatch(wrapped.message.content[0].text, /\"tool\"/);
   assert.match(wrapped.message.content[0].text, /Hostname: `light-worker`/);
@@ -7964,8 +7967,10 @@ test("accepts a structurally bound status projection from the synchronous host o
       args: { actions: ["host.identity"], includeOdsStatus: true },
     },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-status-call" },
     event: {
+      toolCallId: "host-status-call",
       params: routed.params,
       result: {
         details: {
@@ -7996,12 +8001,13 @@ test("accepts a structurally bound status projection from the synchronous host o
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const verification = guard.verificationForRun("run-1");
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /Hostname: `light-worker`/);
   assert.match(verification.text, /model `Qwen3\.5-2B-Q4_K_M\.gguf`/);
-  const persisted = persistToolResult(guard, "tool_call", "host-status-call");
+  const persisted = persistToolResult(guard, "tool_call", "host-status-call", completedHost.event.result);
   assert.match(persisted.message.content[0].text, /Qwen3\.5-2B-Q4_K_M\.gguf/);
   assert.match(persisted.message.content.at(-1).text, /id pixel_ods_evidence_report/);
   assert.doesNotMatch(persisted.message.content.at(-1).text, /id pixel_ods_status/);
@@ -8036,8 +8042,10 @@ test("atomically writes and reads a receipt-bound evidence report after one host
     },
     context: { toolCallId: "host-status-call" },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-status-call" },
     event: {
+      toolCallId: "host-status-call",
       params: routed.params,
       result: {
         details: {
@@ -8068,7 +8076,8 @@ test("atomically writes and reads a receipt-bound evidence report after one host
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
 
   assert.equal(writes.length, 1);
   assert.equal(writes[0].relativePath, "report.txt");
@@ -8080,7 +8089,7 @@ test("atomically writes and reads a receipt-bound evidence report after one host
   );
   // terminal host receipt no longer aborts the agent run.
   assert.deepEqual(aborts, [], "terminal host receipt does not abort the agent run");
-  const persisted = persistToolResult(guard, "tool_call", "host-status-call");
+  const persisted = persistToolResult(guard, "tool_call", "host-status-call", completedHost.event.result);
   assert.equal(persisted.message.content.length, 1);
   assert.match(persisted.message.content[0].text, /Hostname: `light-worker`/);
   assert.doesNotMatch(persisted.message.content[0].text, /trusted continuation/);

@@ -4744,7 +4744,13 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
         if not _valid_managed_pixel_runtime_contract(contract) or expected != observed:
             logger.warning("Portal model contract proof failed: the contract does not match the saved remote route")
             return False
-        _verify_litellm_route(config, model='ods/current')
+        try:
+            _verify_litellm_route(config, model='ods/current')
+        except RuntimeError:
+            # A provider outage is an unproven route. Callers retain the hold
+            # and can report an eligible explicit recovery without replaying it.
+            logger.warning("Portal model contract proof failed: the saved remote route did not pass its live completion check")
+            return False
         return True
     gguf = str(config.get('GGUF_FILE') or '')
     if not gguf:

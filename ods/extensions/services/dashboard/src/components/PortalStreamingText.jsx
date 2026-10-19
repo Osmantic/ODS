@@ -41,7 +41,35 @@ function revealNewText() {
 
 function StreamSpan({node,...props}) {return <span {...props}/>}
 const EMPTY_COMPONENTS={}
-const PLUGINS=[rehypeHighlight,muteEmbedNotes,revealNewText]
+
+// Inspect Markdown structure before reveal wrappers are added. Download labels
+// inside code or quoted examples are not delivery instructions. This marks only
+// intent; the citation renderer still requires a unique completed file receipt.
+function markDocumentDownloads() {
+  const text=node=>['pre','code','blockquote'].includes(node.tagName) ? '\0'
+    : node.type==='text' ? node.value : (node.children || []).map(text).join('')
+  return tree=>{
+    function visit(node) {
+      if(['pre','code','blockquote'].includes(node.tagName))return
+      let before=''
+      for(const child of node.children || []) {
+        if(child.tagName==='a') {
+          const label=text(child).trim(), href=String(child.properties?.href || '')
+          const named=/^download(?:\s+(?:verified\s+)?([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+))?\s*:?$/i.exec(label)
+          const explicitLabel=named && (!named[1] || href.endsWith('/'+named[1]))
+          const rawLink=label===href || label===href.split('/').at(-1)
+          if(explicitLabel || (rawLink && /(?:^|\n)\s*download\s*:\s*$/i.test(before))) {
+            child.properties={...child.properties,'data-ods-download-intent':true}
+          }
+        }
+        visit(child)
+        before+=text(child)
+      }
+    }
+    visit(tree)
+  }
+}
+const PLUGINS=[rehypeHighlight,muteEmbedNotes,markDocumentDownloads,revealNewText]
 export default function PortalStreamingText({children, active=false, animate=active, instant=false, onReveal, components=EMPTY_COMPONENTS, artifacts=null}) {
   const fullSource=String(children ?? '')
   const source=useResponseReveal(fullSource,{animate,instant})

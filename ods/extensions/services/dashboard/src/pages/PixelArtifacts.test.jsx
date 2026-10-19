@@ -39,6 +39,74 @@ async function send() {
   fireEvent.click(screen.getByTitle('Send'))
 }
 
+it.each([
+  '**Download**: https://portal.openclaw.io/s/report.md',
+  'Download: <https://untrusted.example/s/report.md>',
+  '[Download](https://untrusted.example/s/report.md)',
+  '[Download report.md](https://untrusted.example/s/report.md)',
+])('binds explicit download prose to verified bytes without visiting the authored URL: %s',async content=>{
+  reply=stream([{choices:[{delta:{content}}]},marker,'[DONE]'])
+  const view=render(<Pixel/>);await send()
+  const inline=await screen.findByRole('button',{name:'Download verified report.md'},{timeout:5000})
+  expect(inline).toHaveTextContent('Download report.md')
+  expect(screen.queryAllByRole('link').filter(link=>/untrusted\.example|portal\.openclaw\.io/.test(link.href))).toHaveLength(0)
+  fireEvent.click(inline)
+  await screen.findByText('Verified download started')
+  expect(fetch).toHaveBeenCalledWith(`/pixel-preview/${artifact.siteId}/report.md`,expect.objectContaining({cache:'no-store'}))
+  expect(fetch.mock.calls.some(([url])=>String(url).startsWith('https://'))).toBe(false)
+  expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe(content)
+  view.unmount();render(<Pixel/>)
+  expect(await screen.findByRole('button',{name:'Download verified report.md'})).toBeEnabled()
+})
+
+it.each([
+  '[Source](https://untrusted.example/s/report.md)',
+  '> [Download](https://untrusted.example/s/report.md)',
+  '`[Download](https://untrusted.example/s/report.md)`',
+  '[`Download`](https://untrusted.example/s/report.md)',
+  '`Download:` https://untrusted.example/s/report.md',
+  '```text\nDownload: https://untrusted.example/s/report.md\n```',
+  'Download the source from [upstream](https://untrusted.example/s/report.md)',
+  'Download: [Source](https://untrusted.example/s/report.md)',
+  '[Download other.md](https://untrusted.example/s/report.md)',
+])('does not reinterpret sources or quoted/code examples as downloads: %s',async content=>{
+  reply=stream([{choices:[{delta:{content}}]},marker,'[DONE]'])
+  render(<Pixel/>);await send()
+  await screen.findByRole('button',{name:'Download report.md'})
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/'))).toHaveLength(0)
+})
+
+it.each(['missing','nonterminal'])('does not bind a download with %s metadata',async kind=>{
+  const href='https://untrusted.example/s/report.md'
+  const frames=[{choices:[{delta:{content:`[Download](${href})`}}]}]
+  if(kind==='nonterminal')frames.push({...marker,choices:[{finish_reason:null}]})
+  reply=stream([...frames,'[DONE]'])
+  render(<Pixel/>);await send()
+  expect(await screen.findByRole('link',{name:/^Download/})).toHaveAttribute('href',href)
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+})
+
+it('refuses an authored download whose filename matches multiple completed receipts',async()=>{
+  const other={...artifact,relativePath:'Other/report.md',siteId:`site-${'c'.repeat(24)}`,sha256:'c'.repeat(64)}
+  reply=stream([{choices:[{delta:{content:'[Download](https://untrusted.example/s/report.md)'}}]},
+    {...marker,pixel_artifacts:{schemaVersion:1,artifacts:[artifact,other]}},'[DONE]'])
+  render(<Pixel/>);await send()
+  await screen.findByRole('region',{name:'Delivered files'})
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/'))).toHaveLength(0)
+})
+
+it('keeps byte verification on a download-labelled filename match',async()=>{
+  artifactResponse=async()=>({ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer})
+  reply=stream([{choices:[{delta:{content:'Download: https://untrusted.example/s/report.md'}}]},marker,'[DONE]'])
+  render(<Pixel/>);await send()
+  fireEvent.click(await screen.findByRole('button',{name:'Download verified report.md'},{timeout:5000}))
+  await screen.findByText('Download could not be verified. Try again.')
+  expect(URL.createObjectURL).not.toHaveBeenCalled()
+  expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled()
+})
+
 it('routes a receipt-bound authored link through verified bytes and keeps the original history',async()=>{
   const href=`https://portal.openclaw.ai/${artifact.siteId.slice(5)}/report.md`
   const content=`Your file is ready: [Download report.md](${href}).`

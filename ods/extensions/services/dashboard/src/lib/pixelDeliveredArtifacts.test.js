@@ -1,8 +1,28 @@
-import { deliveredArtifactDisplayText, deliveredArtifactForHref, deliveredArtifactMetadata, parseDeliveredArtifacts, parseDeliveredArtifactsFrame } from './pixelDeliveredArtifacts'
+import { deliveredArtifactDisplayText, deliveredArtifactForDownloadHref, deliveredArtifactForHref, deliveredArtifactMetadata, parseDeliveredArtifacts, parseDeliveredArtifactsFrame } from './pixelDeliveredArtifacts'
 
 const receipt = () => ({schemaVersion:1, kind:'ods-pixel-workspace-artifact', relativePath:'Playground/project/report.md',
   siteId:`site-${'a'.repeat(24)}`, sha256:'a'.repeat(64), file:{path:'report.md', bytes:12, sha256:'b'.repeat(64)}})
 const frame = artifacts => ({choices:[{finish_reason:'stop'}],pixel_artifacts:{schemaVersion:1,artifacts}})
+
+it('resolves a download-labelled filename only to one completed receipt',()=>{
+  const source=receipt(),href='https://untrusted.example/s/report.md'
+  expect(deliveredArtifactForDownloadHref(href,[source])).toEqual(source)
+  expect(deliveredArtifactForHref(href,[source])).toBeNull('ordinary source links keep their stricter snapshot binding')
+  const other={...source,relativePath:'Other/report.md',siteId:`site-${'c'.repeat(24)}`,sha256:'c'.repeat(64)}
+  for(const artifacts of [null,[],[source,other],[{...source,file:{...source.file,sha256:'bad'}}]]) {
+    expect(deliveredArtifactForDownloadHref(href,artifacts)).toBeNull()
+  }
+})
+
+it.each([
+  'https://untrusted.example/s/other.md','https://untrusted.example/s/report.md?x=1',
+  'https://untrusted.example/s/report.md#copy','https://user:pass@untrusted.example/s/report.md',
+  'https://untrusted.example/a/../s/report.md','https://untrusted.example/a/%2e%2e/s/report.md',
+  'https://untrusted.example/s/%72eport.md','https://untrusted.example/s\\report.md',
+  'file:///s/report.md','javascript:report.md',
+])('never binds a download to malformed or unmatched URL %s',href=>{
+  expect(deliveredArtifactForDownloadHref(href,[receipt()])).toBeNull()
+})
 
 it('resolves the observed invented host only through its exact delivered snapshot and file', () => {
   const source = {schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'fleet-current-main-20261017/welcome.md',
