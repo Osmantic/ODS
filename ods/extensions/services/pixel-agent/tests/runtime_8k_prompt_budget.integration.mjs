@@ -64,12 +64,12 @@ for (const scenario of [
     '| .settings | folder |','| scripts | folder |'].join('\n');
   const listingJourney=['listing','listing-realistic-summary','listing-oversized-summary'].includes(scenario.id);
   let reply=listingJourney?listing:'A ripe banana is yellow.';
-  const isSummary=request=>request.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.startsWith('You are a context summarization assistant.'));
+  const isSummary=request=>request.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&(m.content.startsWith('You are a context summarization assistant.')||m.content.startsWith('Summarize completed history in one factual paragraph')));
   const upstream=http.createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     const request=JSON.parse(Buffer.concat(chunks));requests.push(request);
-    const summaryLimit=request.max_tokens??request.max_completion_tokens;
-    const longSummary=scenario.id==='listing-oversized-summary'||scenario.id==='listing-realistic-summary'&&summaryLimit>=1024;
+    const hasRetainedBudget=JSON.stringify(request.messages).includes('weighted characters');
+    const longSummary=scenario.id==='listing-oversized-summary'||scenario.id==='listing-realistic-summary'&&!hasRetainedBudget;
     const content=isSummary(request)?longSummary?liveSummary:'The owner requested a read-only listing. The completed answer listed 46 entries. No files were changed. A new request requires fresh evidence.':reply;
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content},finish_reason:null}]})+'\n\n');
@@ -127,7 +127,11 @@ for (const scenario of [
       return;
     }
     assert.equal(followup.meta?.error,undefined,JSON.stringify(followup));
-    if(scenario.id==='listing-realistic-summary') assert.ok((requests.find(isSummary).max_tokens??requests.find(isSummary).max_completion_tokens)<1024,'real prompt overhead constrains the summary output');
+    if(scenario.id==='listing-realistic-summary') {
+      const summaryRequest=requests.find(isSummary);
+      assert.equal(summaryRequest.max_tokens??summaryRequest.max_completion_tokens,2048,'generation keeps its reserve-derived cap');
+      assert.match(JSON.stringify(summaryRequest.messages),/at most \d+ weighted characters/,'the incoming request constrains retained summary text');
+    }
     assert.equal(followup.payloads?.map(p=>p.text??'').join(''),reply);
     assert.equal(requests.length,3,'one first turn, one compaction, one follow-up');
     assert.equal(requests.filter(isSummary).length,1);

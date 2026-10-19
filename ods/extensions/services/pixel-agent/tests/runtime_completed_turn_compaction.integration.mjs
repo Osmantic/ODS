@@ -48,7 +48,7 @@ const messages=()=>[{role:'user',content:'List the workspace read-only. Do not c
 const rows=messages=>messages.map((message,i)=>({type:'message',id:`entry${i}`,parentId:i?`entry${i-1}`:null,message}));
 const read=file=>fs.readFileSync(file,'utf8').trim().split('\n').map(JSON.parse);
 
-async function fixture(t,history,{context=8192,trigger='overflow',mode='success',controller,summaryBudget,summaryText,summaryStop='stop'}={}) {
+async function fixture(t,history,{context=8192,trigger='overflow',mode='success',controller,summaryBudget,summaryText,summaryStop='stop',summaryTokens=40}={}) {
   let responseMode=mode;
   const requests=[];
   const server=http.createServer(async(req,res)=>{
@@ -59,7 +59,7 @@ async function fixture(t,history,{context=8192,trigger='overflow',mode='success'
     const summary=summaryText??'The owner requested a read-only workspace listing. The completed answer listed 46 files. No files were changed. Any new request still requires fresh evidence.';
     res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:summary},finish_reason:null}]})+'\n\n');
-    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:summaryStop}],usage:{prompt_tokens:1000,completion_tokens:40,total_tokens:1040}})+'\n\ndata: [DONE]\n\n');
+    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:(requests.at(-1).max_tokens??requests.at(-1).max_completion_tokens)<summaryTokens?'length':summaryStop}],usage:{prompt_tokens:1000,completion_tokens:summaryTokens,total_tokens:1000+summaryTokens}})+'\n\ndata: [DONE]\n\n');
   });
   server.listen(0,'127.0.0.1');await once(server,'listening');
   t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
@@ -162,10 +162,12 @@ for(const scenario of [
   assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
 });
 
-test('completed-turn budget bounds summary generation without changing chat reserves',async t=>{
-  const f=await fixture(t,messages(),{summaryBudget:200}),result=await f.invoke();
+test('completed-turn retained-text budget does not cap summary generation tokens',async t=>{
+  const f=await fixture(t,messages(),{summaryBudget:200,summaryTokens:75}),result=await f.invoke();
   assert.equal(result.ok,true);assert.equal(result.compacted,true);
-  assert.equal(f.requests[0].max_tokens??f.requests[0].max_completion_tokens,50);
+  assert.equal(f.requests[0].max_tokens??f.requests[0].max_completion_tokens,2048);
+  assert.ok(f.requests[0].messages.some(m=>m.role==='system'&&m.content.includes('one factual paragraph')&&m.content.includes('at most 200 weighted characters')));
+  assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
   assert.ok(f.entries().find(e=>e.type==='compaction').summary.includes('No files were changed'));
 });
 
