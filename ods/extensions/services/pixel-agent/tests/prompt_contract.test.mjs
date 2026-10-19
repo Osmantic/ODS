@@ -1080,7 +1080,12 @@ test('small-context read-only listings omit authoring guides without changing mi
   const listing = 'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.';
   const contract = (prompt, window=8192, event={prompt}) => promptContractForAgent(
     {agentId:'pixel'},'pixel',event,{configuredContextWindow:window,executionHost:'gateway'}).appendSystemContext;
-  for (const prompt of [listing, 'Show workspace files with a read only tool. Never write files.']) {
+  for (const prompt of [listing, 'Show workspace files with a read only tool. Never write files.',
+    'Use a read-only tool to list each file in the workspace.',
+    'Show each folder in the workspace with a read-only tool.',
+    'Use a read-only tool to list every directory in the workspace.',
+    'The command used head -20, so that was incomplete. Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.',
+  ]) {
     assert.ok(contract(prompt).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE));
     assert.ok(!contract(prompt).includes(AGENT_SKILLS.workspace));
     assert.ok(!contract(prompt).includes('For a new project, choose one short descriptive folder'));
@@ -1093,6 +1098,9 @@ test('small-context read-only listings omit authoring guides without changing mi
     'Create a workspace project and list its files with read-only tools.',
     'Build a React website in the workspace and publish its preview.',
     'Read the workspace code and fix its bug.',
+    'List each workspace entry read-only and run python checks.py.',
+    'Show each workspace folder with a read-only tool, then create a report.',
+    'List every directory read-only in the workspace and publish a preview.',
   ]) {
     assert.ok(!contract(prompt).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE),prompt);
     assert.ok(contract(prompt).includes(AGENT_SKILLS.workspace),prompt);

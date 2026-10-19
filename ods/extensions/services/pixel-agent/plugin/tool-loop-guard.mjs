@@ -5957,7 +5957,7 @@ export function userMessageRequestsWorkspaceTools(messages, prompt = undefined) 
 export function userMessageRequestsReadOnlyWorkspaceListing(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!/\bworkspace\b/i.test(text) || !/\bread[ -]only\b/i.test(text) ||
-      !/\b(?:list|show)\b[^.!?;\n]{0,120}\b(?:files|folders|directories|entries)\b/i.test(text)) return false;
+      !/\b(?:list|show)\b[^.!?;\n]{0,120}\b(?:files?|folders?|director(?:y|ies)|entr(?:y|ies))\b/i.test(text)) return false;
   const action = /\b(?:create|write|edit|update|build|implement|save|generate|modify|overwrite|patch|delete|remove|move|copy|install|publish|download|run|execute|test)\b/i;
   const forbidden = /\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|skip|without)\b/i;
   return !text.split(/[.!?;\n]+|\b(?:but|then|however|instead)\b/i)

@@ -45,7 +45,7 @@ const FILESYSTEM_DISCOVERY_CONTRACT =
   "Tool Search finds tools, not files. Discover deferred filesystem tools by names such as read, write, edit, apply_patch, exec and process, then call their exact id. Use exec with ls, find or rg --files to list directories; read needs a file path. Sandbox paths are already relative to the workspace root; do not add a workspace/ prefix. exec starts at /workspace. Do not use host-side workspace paths in the sandbox. Empty tool/memory searches or failed reads do not prove a project is absent; check the filesystem.";
 
 export const ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE =
-  "Read-only listing: tool_call id openclaw:core:exec, args command. Report observed entries; never mutate or publish. Failure means unknown, not empty.";
+  "Read-only listing: tool_call id openclaw:core:exec, args command. Report observed entries; never mutate or publish. Failure means unknown, not empty. Complete listings include hidden names; do not silently limit them with head or tail or call partial output complete.";
 
 export const ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE =
   'The owner requested a downloadable file or project. ' + WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE;

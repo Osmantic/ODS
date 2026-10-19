@@ -52,6 +52,7 @@ test.after(async()=>{
 for (const scenario of [
   {id:'chat', prompt:'Without tools, answer in one short sentence: what color is a ripe banana?'},
   {id:'listing', prompt:'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.'},
+  {id:'listing-correction', prompt:'The command used head -20, so that was incomplete. Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.'},
 ]) test('8K '+scenario.id+' full plugin hook reaches the provider with unchanged reserves', {timeout:60000}, async t=>{
   const requests=[];
   const upstream=http.createServer(async(req,res)=>{
@@ -86,7 +87,7 @@ for (const scenario of [
     models:{mode:'replace',providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,apiKey:'fixture-only',
       models:[{id:'model',name:'Fixture',contextWindow:8192,maxTokens:2048,reasoning:false,input:['text']}]}}}};
   fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
-  const sessionId=scenario.id==='chat'?'2aaaaaaa-2222-4333-8444-555555555555':'3aaaaaaa-2222-4333-8444-555555555555',sessionFile=path.join(root,sessionId+'.jsonl');
+  const sessionId=({chat:'2aaaaaaa',listing:'3aaaaaaa','listing-correction':'4aaaaaaa'})[scenario.id]+'-2222-4333-8444-555555555555',sessionFile=path.join(root,sessionId+'.jsonl');
   const result=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:8k-fixture-'+scenario.id,workspaceDir:workspace,agentDir,
     config,provider:'fixture',model:'model',prompt,runId:'8k-'+scenario.id,trigger:'user',timeoutMs:30000});
   const trace=JSON.stringify({requests:requests.length,result});
