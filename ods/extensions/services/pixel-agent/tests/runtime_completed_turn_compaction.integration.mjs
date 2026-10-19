@@ -69,7 +69,7 @@ async function fixture(t,history,{context=8192,trigger='overflow',mode='success'
   const config={agents:{defaults:{workspace,model:'fixture/model',...typeof context==='number'?{contextTokens:context}:{},compaction:{reserveTokens:3277,reserveTokensFloor:0,keepRecentTokens:512}},list:[{id:'pixel',workspace,agentDir}]},plugins:{enabled:false},
     models:{providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${server.address().port}/v1`,apiKey:'fixture-only',models:[{id:'model',name:'Fixture',...typeof context==='number'?{contextWindow:context}:{},maxTokens:2048,reasoning:false,input:['text','image']}]}}}};
   fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
-  const invoke=(abortSignal=controller?.signal)=>compact({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:fixture-'+sessionId,workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',trigger,abortSignal});
+  const invoke=(abortSignal=controller?.signal,invokeTrigger=trigger)=>compact({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:fixture-'+sessionId,workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',trigger:invokeTrigger,abortSignal});
   return {invoke,sessionFile,input,requests,setMode:value=>{responseMode=value;},entries:()=>read(sessionFile),context:()=>SessionManager.open(sessionFile).buildSessionContext().messages};
 }
 
@@ -87,6 +87,37 @@ for(const kind of ['plain','thinking','resolved tools']) test(`8K overflow summa
   assert.equal(checkpoint.summary.includes('Current unfinished user request'),false,'do not relabel the old completed request');
   assert.deepEqual(entries.filter(e=>e.type==='message'),f.input,'raw tool calls and original messages are unchanged');
   assert.equal(f.context().some(m=>m.role==='assistant'&&JSON.stringify(m.content).includes('project-45-configuration-and-notes.txt')),false);
+});
+
+test('pressure summarizes the completed answer retained by an earlier native compaction',async t=>{
+  const history=messages();
+  history.splice(1,0,
+    {role:'assistant',content:[{type:'toolCall',id:'read-one',name:'exec',arguments:{command:'ls -la /workspace'}}],stopReason:'toolUse'},
+    {role:'toolResult',toolCallId:'read-one',toolName:'exec',content:[{type:'text',text:answer}],isError:false});
+  const f=await fixture(t,history),first=await f.invoke(undefined,'manual');
+  assert.equal(first.ok,true);assert.equal(first.compacted,true);
+  const prior=f.entries().findLast(e=>e.type==='compaction');
+  assert.equal(prior.firstKeptEntryId,f.input.at(-1).id,'reproduce the live retained-answer boundary');
+  assert.equal(f.entries().some(e=>e.customType===marker),false,'manual compaction stays unchanged');
+  const result=await f.invoke();assert.equal(result.ok,true);assert.equal(result.compacted,true);
+  const boundary=f.entries().find(e=>e.customType===marker);
+  assert.ok(boundary,'pressure must validate the completed raw turn before the retained boundary');
+  assert.equal(f.entries().findLast(e=>e.type==='compaction').firstKeptEntryId,boundary.id);
+  assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
+  assert.equal(f.context().some(m=>m.role==='assistant'&&JSON.stringify(m.content).includes('project-45-configuration-and-notes.txt')),false);
+});
+
+for(const [name,change] of [
+  ['unresolved earlier tool',h=>h.splice(1,0,{role:'assistant',content:[{type:'toolCall',id:'unresolved',name:'exec',arguments:{command:'ls'}}],stopReason:'toolUse'})],
+  ['earlier attachment',h=>{h[0].content=[{type:'text',text:'Inspect this image.'},{type:'image',data:'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aDP8AAAAASUVORK5CYII=',mimeType:'image/png'}];}],
+]) test(`prior native compaction does not hide ${name} from pressure validation`,async t=>{
+  const history=messages();change(history);
+  const f=await fixture(t,history),first=await f.invoke(undefined,'manual');
+  assert.equal(first.ok,true);assert.equal(first.compacted,true);
+  assert.equal(f.entries().findLast(e=>e.type==='compaction').firstKeptEntryId,f.input.at(-1).id);
+  await f.invoke();
+  assert.equal(f.entries().some(e=>e.customType===marker),false);
+  assert.deepEqual(f.entries().filter(e=>e.type==='message'),f.input);
 });
 
 for(const [name,options,change] of [
