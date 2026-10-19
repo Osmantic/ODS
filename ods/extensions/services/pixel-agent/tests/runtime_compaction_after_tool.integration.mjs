@@ -71,6 +71,11 @@ for (const variant of ['plain','compaction','8k-direct','8k-deferred','8k-deferr
   let rounds=0,summaries=0,log='',child,ingress;
   const requests=[];
   const upstream=createServer(async(req,res)=>{
+    // Runtime discovery/health probes are not model requests. A bodyless GET
+    // must receive an HTTP response instead of rejecting this async handler.
+    if(req.method!=='POST'||req.url!=='/v1/chat/completions'){
+      res.writeHead(404,{'Content-Type':'application/json'});res.end('{}');return;
+    }
     const chunks=[];for await(const chunk of req) chunks.push(chunk);
     const request=JSON.parse(Buffer.concat(chunks).toString());
     // A compaction summarization request carries no tools. Answer it
