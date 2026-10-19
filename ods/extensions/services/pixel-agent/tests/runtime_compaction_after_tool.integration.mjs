@@ -188,7 +188,7 @@ for (const variant of ['plain','compaction','8k-direct','8k-deferred','8k-deferr
     let ready=false;
     for(let n=0;n<250;n++){
       try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}
-      if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);
+      if(ready)break;assert.equal(child.exitCode,null,log);assert.equal(child.signalCode,null,log);await delay(100);
     }
     assert.ok(ready,log);
     // Wrap deps.fetch so we can observe only the /v1/chat/completions response
@@ -270,8 +270,15 @@ for (const variant of ['plain','compaction','8k-direct','8k-deferred','8k-deferr
     }
   } finally {
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
-    if(child&&child.exitCode===null){const closed=once(child,'close');process.kill(-child.pid,'SIGTERM');
-      await Promise.race([closed,delay(3000)]);if(child.exitCode===null){process.kill(-child.pid,'SIGKILL');await closed;}}
-    upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));rmSync(root,{recursive:true,force:true});
+    try {
+      if(child&&child.exitCode===null&&child.signalCode===null){
+        const closed=once(child,'close');
+        const signal=kind=>{try{process.kill(-child.pid,kind);}catch(error){if(error.code!=='ESRCH')throw error;}};
+        signal('SIGTERM');await Promise.race([closed,delay(3000)]);
+        if(child.exitCode===null&&child.signalCode===null){signal('SIGKILL');await Promise.race([closed,delay(3000)]);}
+      }
+    } finally {
+      upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));rmSync(root,{recursive:true,force:true});
+    }
   }
 });
