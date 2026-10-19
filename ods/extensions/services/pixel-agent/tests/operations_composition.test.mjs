@@ -48,6 +48,31 @@ test('terminal host receipt allows sandbox continuation and natural final', () =
   assert.match(final.payload.text, /Hostname: `test-host`/);
   assert.match(final.payload.text, /does not establish completion/);
 });
+
+test('requested report publication composes with host evidence through direct and deferred tools', () => {
+  for (const wrapped of [false,true]) {
+    for (const phase of ['pending','succeeded','wrong-target','failed']) {
+      const {guard,aborts}=make('Check the ODS host hostname and give me a downloadable report.txt.');
+      if(phase!=='pending')receipt(guard,phase==='wrong-target'?{target:'other-host'}:phase==='failed'?{status:'failed'}:{});
+      const args={relativePath:'report.txt'};
+      const result=wrapped?call(guard,'tool_call',{id:'pixel_ods_workspace_artifact',args}):call(guard,'pixel_ods_workspace_artifact',args);
+      assert.notEqual(result?.block,true,`${wrapped}:${phase}: ${result?.blockReason}`);
+      assert.equal(guard.verificationForRun(ctx.runId).status,phase==='succeeded'?'passed':'failed',
+        'independent workspace publication cannot satisfy or replace host evidence');
+      assert.deepEqual(aborts,[]);
+    }
+  }
+});
+
+test('workspace publication cannot bypass an explicit extension lifecycle boundary', () => {
+  for(const wrapped of [false,true]){
+    const {guard}=make('Install the Flowise extension on the ODS host.');
+    const args={relativePath:'report.txt'};
+    const result=wrapped?call(guard,'tool_call',{id:'pixel_ods_workspace_artifact',args}):call(guard,'pixel_ods_workspace_artifact',args);
+    assert.equal(result?.block,true);
+    assert.equal(guard.verificationForRun(ctx.runId).status,'failed');
+  }
+});
 test('filesystem names never supply host intent', () => {
   for (const p of ['/workspace/laptop-package-probe-1608/.venv', 'C:\\workspace\\laptop-check\\.venv', '`/workspace/my laptop/.venv`']) {
     assert.equal(api.userMessageOperationsRequirements([], `Inspect ${p} and remove that partial directory.`).required, false, p);

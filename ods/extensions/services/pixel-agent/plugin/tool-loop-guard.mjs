@@ -508,7 +508,7 @@ const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
 const WORKSPACE_CONTINUATION_TOOLS = new Set([
   "read", "write", "edit", "apply_patch", "exec", "process",
   "pixel_ods_evidence_report", "pixel_ods_evidence_readback", WORKSPACE_BUNDLE_TOOL,
-  "pixel_ods_download_promote",
+  "pixel_ods_download_promote", "pixel_ods_workspace_artifact",
 ]);
 const FAILED_TEST_READ_REPAIR_REASON =
   "The verification command failed. Preserve the owner's explicit behavior contract: correct a test only when its expectation contradicts the owner; otherwise repair the implementation, and never weaken an assertion merely to match broken output. A blank label such as `Invalid integer:` is not a helpful empty-input message. When the failure already contains actual and expected evidence, apply one focused edit to the file implicated by the failure (test or implementation), then rerun the same verification command. If the failure is a missing-file error for a file you previously wrote, recreate it before rerunning. If evidence is insufficient, read the relevant file or run a focused diagnostic, then repair and rerun verification. Report an unresolved blocker honestly when the available tools cannot resolve it.";
