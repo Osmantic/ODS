@@ -10,12 +10,15 @@ After changing an input, regenerate its adjacent lock from the repository root:
 ```sh
 python -m pip install uv==0.12.19
 uv pip compile ods/extensions/services/dashboard-api/requirements.txt \
-  --universal --python-version 3.10 --generate-hashes --no-header \
+  --universal --python-version 3.11 --generate-hashes --no-header \
   --no-annotate --index-url https://pypi.org/simple \
   -o ods/extensions/services/dashboard-api/requirements.lock
 ```
 
-Replace `dashboard-api` with the service being updated. Existing versions are
+The dashboard API requires Python 3.11 or newer, matching its production
+container and Pillow 13. Use `--python-version 3.10` when replacing
+`dashboard-api` with another service; their existing lock targets are unchanged.
+This does not change the installer host-Python requirement. Existing versions are
 retained where they still satisfy the inputs; use `--upgrade-package NAME` for
 a reviewed transitive update. Commit the input and lock together. Do not edit
 hashes or ignore advisories to make a build pass.
