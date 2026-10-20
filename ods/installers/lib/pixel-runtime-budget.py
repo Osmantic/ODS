@@ -146,7 +146,8 @@ if updated_sandbox_ulimits is not None:
 # AppArmor 5 labels `docker exec` processes as a stack with unconfined, which
 # docker-default does not let signal each other, so the sandbox could not
 # cancel its own commands. The installer loads ODS's profile (the same rules
-# plus that stacked peer) where Docker uses AppArmor; use it when it is loaded.
+# plus that stacked peer) where Docker uses AppArmor; use it when it is loaded
+# and the owner has not chosen a profile of their own.
 apparmor_enabled = pathlib.Path(os.environ.get(
     "ODS_PIXEL_APPARMOR_ENABLED_FILE", "/sys/module/apparmor/parameters/enabled"))
 apparmor_profile = pathlib.Path(os.environ.get(
@@ -157,7 +158,7 @@ try:
 except OSError:
     use_apparmor_profile = False
 if use_apparmor_profile:
-    updated_sandbox_docker["apparmorProfile"] = "ods-pixel-sandbox"
+    updated_sandbox_docker.setdefault("apparmorProfile", "ods-pixel-sandbox")
 elif updated_sandbox_docker.get("apparmorProfile") == "ods-pixel-sandbox":
     updated_sandbox_docker.pop("apparmorProfile")
 # Model budgets must preserve native web-search provider choices.

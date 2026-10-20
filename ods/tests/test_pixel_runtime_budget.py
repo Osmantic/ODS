@@ -351,9 +351,14 @@ def test_sandbox_uses_the_ods_apparmor_profile_only_where_it_is_loaded(tmp_path,
     assert docker.get('apparmorProfile') == expected
 
 
-@pytest.mark.parametrize('prior,expected', [('ods-pixel-sandbox', None), ('owner-profile', 'owner-profile')])
-def test_sandbox_drops_only_its_own_apparmor_profile(tmp_path, prior, expected):
-    assert run_with_apparmor(tmp_path, 'N', False, prior).get('apparmorProfile') == expected
+@pytest.mark.parametrize('enabled,profile_present,prior,expected', [
+    ('N', False, 'ods-pixel-sandbox', None),          # ODS's own value goes where it cannot load
+    ('N', False, 'owner-profile', 'owner-profile'),
+    ('Y', True, 'owner-profile', 'owner-profile'),    # an owner's choice wins where ODS's loads
+    ('Y', True, 'ods-pixel-sandbox', 'ods-pixel-sandbox'),
+])
+def test_sandbox_keeps_an_owner_apparmor_profile(tmp_path, enabled, profile_present, prior, expected):
+    assert run_with_apparmor(tmp_path, enabled, profile_present, prior).get('apparmorProfile') == expected
 
 
 def test_profile_lets_exec_sessions_signal_within_the_sandbox():
@@ -376,7 +381,7 @@ def test_installer_loads_the_profile_before_its_first_runtime_overlay_and_uninst
     overlay = host.index('runtime_budget_status="$(_ods_pixel_apply_runtime_budget', load - 2000)
     assert load < overlay
     # The managed-update check accepts exactly what the writer sets.
-    assert host.count('normalized_sandbox_docker["apparmorProfile"] = "ods-pixel-sandbox"') == 1
+    assert host.count('normalized_sandbox_docker.setdefault("apparmorProfile", "ods-pixel-sandbox")') == 1
     assert 'install -o root -g root -m 0644 "$source" "$target"' in host
     uninstall = (root / 'lib/pixel-uninstall.sh').read_text()
     assert '/ods-pixel-sandbox"' in uninstall and '-R "$apparmor_profile"' in uninstall

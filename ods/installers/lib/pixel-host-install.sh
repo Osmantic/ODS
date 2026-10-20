@@ -1749,7 +1749,7 @@ try:
 except OSError:
     use_apparmor_profile = False
 if use_apparmor_profile:
-    normalized_sandbox_docker["apparmorProfile"] = "ods-pixel-sandbox"
+    normalized_sandbox_docker.setdefault("apparmorProfile", "ods-pixel-sandbox")
 elif normalized_sandbox_docker.get("apparmorProfile") == "ods-pixel-sandbox":
     normalized_sandbox_docker.pop("apparmorProfile")
 # OpenClaw's OpenAI-compatible transport adds a 1.25 character-based input
