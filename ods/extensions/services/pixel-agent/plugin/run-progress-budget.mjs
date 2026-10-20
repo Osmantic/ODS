@@ -123,8 +123,9 @@ const LOOKUP_ERROR = new RegExp([
 // Splits a command into steps at `;` and `&&`, each step into stages at `|`, and
 // each stage into words with the quotes removed. Null for `||`, a lone `&`,
 // redirection, grouping, substitution, comments, escapes outside quotes, `$` or
-// backticks inside double quotes, and newlines.
-function lookupSteps(command) {
+// backticks inside double quotes, and newlines. With mergeStderr, a whole
+// unquoted `2>&1` word is dropped: OpenClaw already merges stderr into stdout.
+function lookupSteps(command, {mergeStderr = false} = {}) {
   const steps = [[[]]];
   let word = null;
   const endWord = () => {
@@ -133,7 +134,9 @@ function lookupSteps(command) {
   };
   for (let i = 0; i < command.length; i++) {
     const c = command[i];
-    if (c === "'") {
+    if (mergeStderr && word === null && command.startsWith('2>&1', i) && /^(?:[ \t;]|&&|$)/.test(command.slice(i + 4, i + 6))) {
+      i += 3;
+    } else if (c === "'") {
       const end = command.indexOf("'", i + 1);
       if (end < 0 || /[\r\n]/.test(command.slice(i, end))) return null;
       word = (word ?? '') + command.slice(i + 1, end);
@@ -208,6 +211,81 @@ export function lookupFoundNothing(command, result) {
       .map(block => block?.type === 'text' && typeof block.text === 'string' ? block.text : '').join('');
   // OpenClaw appends this exit note to every non-zero completion.
   return !LOOKUP_ERROR.test(output.replace(/\(Command exited with code 1\)/, '').replace(LOOKUP_NOTICE, ''));
+}
+
+// A node check, test or harness that ran and reported a failure is a test
+// result, not a failed tool call. The sandbox has node without npm so the agent
+// can check JavaScript offline (the verification guide in agent-skills.mjs):
+// node --check exits 1 on a syntax error, node --test exits 1 when a test
+// fails, and a harness script exits 1 when its own check fails or it throws.
+// Charged as failures, the test-fix loop that guide asks for (edit, red run,
+// edit) reached the 12-failure total, and one red node --check per file the
+// 4-failure streak, before the fix. A command qualifies when every step is a
+// node run: `node` with long options (--name or --name=value) and either
+// --check (or -c) and one script, --test and its files, or a script file and
+// its arguments, optionally behind `timeout DURATION` and followed by 2>&1,
+// joined by `;` or `&&`, after one optional literal `cd DIR &&`. Inline code
+// (-e, -p, --eval, --print), stdin, the REPL, --run (a package.json shell
+// script), other short options, pipes, `||`, redirections, substitutions and
+// environment assignments disqualify it. Only exit 1 with output qualifies.
+// node not found (127), a timeout (124, or OpenClaw's own), a signal or abort
+// (128 and above), a bad option (9), no output at all, a shell error, and a
+// script, module or file that does not exist (a wrong path) stay failures.
+// A script path, quoted or not (the tokenizer refuses line breaks); never an option.
+const NODE_SCRIPT = /^(?!-).*\.[cm]?[jt]s$/;
+const NODE_REFUSED_OPTION = /^--(?:eval|print|interactive|run)(?:=|$)/;
+const NODE_SETUP_ERROR = new RegExp([
+  // The shell, timeout or env could not start node, or a step failed to start.
+  '^(?:sh|bash|dash|timeout|env)(?:: \\d+)?: ',
+  // A wrong path: the script, an imported module or a file it opened is missing.
+  '\\b(?:MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|ENOENT)\\b',
+  // node --test names a test file that does not exist.
+  "^Could not find '",
+  '^(?:FATAL ERROR|Segmentation fault|Aborted|Killed)\\b',
+].join('|'), 'm');
+
+function nodeRun(words) {
+  let rest = words;
+  if (rest[0] === 'timeout') {
+    rest = rest.slice(1);
+    for (;;) {
+      if (/^-[ks]$/.test(rest[0] ?? '') && rest.length > 2) rest = rest.slice(2);
+      else if (/^--(?:kill-after|signal)=[A-Za-z0-9.]+$|^--(?:foreground|preserve-status)$/.test(rest[0] ?? '')) rest = rest.slice(1);
+      else break;
+    }
+    if (!/^\d+(?:\.\d+)?[smhd]?$/.test(rest[0] ?? '')) return false;
+    rest = rest.slice(1);
+  }
+  if (rest[0] !== 'node') return false;
+  const args = rest.slice(1);
+  let check = false;
+  let test = false;
+  let i = 0;
+  for (; i < args.length && args[i].startsWith('-') && args[i] !== '-'; i++) {
+    const arg = args[i];
+    if (arg === '--') { i++; break; }
+    if (arg === '--check' || arg === '-c') check = true;
+    else if (arg === '--test') test = true;
+    else if (!/^--[a-z][a-z0-9-]*(?:=.*)?$/.test(arg) || NODE_REFUSED_OPTION.test(arg)) return false;
+  }
+  const operands = args.slice(i);
+  if (check) return !test && operands.length === 1 && NODE_SCRIPT.test(operands[0]);
+  if (test) return !operands.includes('-');
+  return operands.length > 0 && NODE_SCRIPT.test(operands[0]);
+}
+
+export function nodeReportedFailure(command, result) {
+  if (typeof command !== 'string' || command.length > 4096) return false;
+  const steps = lookupSteps(command.trim().replace(LOOKUP_CD, ''), {mergeStderr: true});
+  if (!steps || !steps.every(stages => stages.length === 1 && nodeRun(stages[0]))) return false;
+  const details = result?.details;
+  if (!details || typeof details !== 'object' || details.status !== 'completed' || details.exitCode !== 1 ||
+      Object.hasOwn(details, 'sessionId')) return false;
+  const output = (typeof details.aggregated === 'string' ? details.aggregated
+    : (Array.isArray(result.content) ? result.content : [])
+      .map(block => block?.type === 'text' && typeof block.text === 'string' ? block.text : '').join(''))
+    .replace(/\(Command exited with code 1\)/, '');
+  return /\S/.test(output) && !NODE_SETUP_ERROR.test(output);
 }
 
 // This deliberately does not classify general shell commands as read-only.

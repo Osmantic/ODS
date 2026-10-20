@@ -24,6 +24,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from env_values import parse_env_value
 import hf_gguf_header
 import model_preflight
+from bootstrap_download_control import valid_generation
 from config import (
     DATA_DIR,
     GPU_BACKEND,
@@ -1312,7 +1313,10 @@ async def _model_storage_status() -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict):
         return None
-    return {key: value.get(key) for key in ("freeBytes", "totalBytes", "marginBytes")}
+    status = {key: value.get(key) for key in ("freeBytes", "totalBytes", "marginBytes")}
+    # WSL only: whether the Windows drive under the virtual disk was counted.
+    status.update({key: value[key] for key in ("windowsDrive", "windowsDriveChecked") if key in value})
+    return status
 
 
 def _hf_default_context(declared: int | None) -> int:
@@ -1875,6 +1879,10 @@ def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
     return float(metrics.get("tokens_per_second") or 0)
 
 
+_RUNTIME_ERROR_LIMIT = 1024
+_START_REFUSALS = ("memory_refused", "gpu_busy")
+
+
 def _model_management_proof() -> dict:
     """The host agent's management proof, with whether its launcher loads a vision projector."""
     if not _windows_hosted_runtime():
@@ -1892,6 +1900,13 @@ def _model_management_proof() -> dict:
         result["vision"] = value["managed"] and value.get("vision") is True
         if isinstance(value.get('reason'), str):
             result['reason'] = value['reason'][:500]
+        # Why a managed Windows model is not running (the launcher's own
+        # error), and a memory refusal its Resume overrides ("Start anyway").
+        error = value.get("runtimeError")
+        if value["managed"] and not value["running"] and isinstance(error, str) and error.strip():
+            result["runtimeError"] = error[:_RUNTIME_ERROR_LIMIT]
+            if value.get("startRefusal") in _START_REFUSALS:
+                result["startRefusal"] = value["startRefusal"]
         return result
     except (AgentClientError, ValueError):
         # A failed proof is unknown, not evidence of an independently managed service.
@@ -1929,6 +1944,17 @@ def _projector_unavailable_reason() -> str | None:
     return "ODS could not confirm that the Windows model runtime loads vision files, so the model imports without one"
 
 
+async def _discover_loaded_model() -> str | None:
+    """Try both identity sources within the catalog's one discovery budget."""
+    loaded_model = await get_loaded_model()
+    if loaded_model:
+        return loaded_model
+    service = SERVICES.get("llama-server", {})
+    return await _fetch_llama_loaded_model(
+        service.get("host", "llama-server"), int(service.get("port", 8080)),
+    )
+
+
 @router.get("/api/models", response_model=ModelLibraryResponse)
 async def list_models(api_key: str = Depends(verify_api_key)):
     """List model catalog entries with source-labelled performance metadata."""
@@ -1936,23 +1962,13 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
-            get_loaded_model(),
+            _discover_loaded_model(),
             None,
-            "loaded model",
+            "loaded model discovery",
             timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
         ),
         asyncio.to_thread(_get_agent_model_status),
     )
-    if not loaded_model:
-        service = SERVICES.get("llama-server", {})
-        host = service.get("host", "llama-server")
-        port = int(service.get("port", 8080))
-        loaded_model = await _await_or_default(
-            _fetch_llama_loaded_model(host, port),
-            None,
-            "loaded model fallback",
-            timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
-        )
     metrics, context_size = await asyncio.gather(
         _await_or_default(
             get_llama_metrics(model_hint=loaded_model),
@@ -2049,6 +2065,9 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
     status_path = Path(DATA_DIR) / "model-download-status.json"
     if not status_path.exists():
         bootstrap_status = _read_bootstrap_status_file()
+        if _is_cancelled_download_status(bootstrap_status):
+            terminal = {**bootstrap_status, "error": "Download cancelled by user; partial file preserved."}
+            return _idle_download_status(last_terminal_status=terminal)
         if _is_stale_active_bootstrap_status(bootstrap_status):
             return _stale_bootstrap_download_status(bootstrap_status)
         bootstrap_info = get_bootstrap_status()
@@ -2762,6 +2781,46 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
 @router.post("/api/models/download/cancel")
 def cancel_download(api_key: str = Depends(verify_api_key)):
     """Cancel an in-progress model download."""
+    bootstrap = _read_bootstrap_status_file()
+    if bootstrap and bootstrap.get("status") in _ACTIVE_BOOTSTRAP_STATUSES:
+        if bootstrap.get("status") not in {"starting", "downloading"}:
+            raise HTTPException(status_code=409, detail="The full model has finished downloading and is being activated. It cannot be cancelled now.")
+        generation = bootstrap.get("downloadGeneration")
+        if not valid_generation(generation):
+            raise HTTPException(status_code=409, detail="This full-model download worker does not support cancellation acknowledgements. It is still running.")
+        # This is a nonce, not a secret. The native owner must be able to read
+        # a request written by the API container; only the API writes requests.
+        directory = Path(DATA_DIR)
+        request_path = directory / "bootstrap-download.cancel.json"
+        temporary = None
+        try:
+            fd, temporary = tempfile.mkstemp(prefix=".bootstrap-cancel-", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"generation": generation}, handle)
+                handle.flush()
+                os.fchmod(handle.fileno(), 0o644)
+                os.fsync(handle.fileno())
+            os.replace(temporary, request_path)
+        except OSError:
+            raise HTTPException(status_code=503, detail="The download cancellation request could not be delivered. The download may still be running.") from None
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            current = _read_bootstrap_status_file()
+            if not current or current.get("downloadGeneration") != generation:
+                raise HTTPException(status_code=409, detail="The download changed before cancellation was acknowledged. Check its current progress.")
+            state = current.get("status")
+            if state == "cancelled":
+                return {"status": "cancelled", "cancelled": True, "downloadGeneration": generation}
+            if state not in {"starting", "downloading"}:
+                raise HTTPException(status_code=409, detail="The download finished or changed before it could be cancelled. Check its current progress.")
+            time.sleep(0.2)
+        raise HTTPException(status_code=409, detail="The download has not acknowledged cancellation yet. Check progress before retrying.")
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
 

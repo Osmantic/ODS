@@ -25,12 +25,23 @@ const PROBE_TIMEOUT_MS = 1805000
 const LIFECYCLE_TIMEOUT_MS = 1805000
 const PEER_MODELS_TIMEOUT_MS = 30000
 const PEER_MODEL_LOAD_TIMEOUT_MS = 2705000
+// The default output limit: a quarter of the context window, at most 32768,
+// as in ods-cli and the lifecycle API. Portal writes each file in one reply.
+const MAX_DEFAULT_OUTPUT_TOKENS = 32768
+
+function defaultMaxTokens(contextLength) {
+  const context = Number(contextLength)
+  return Number.isInteger(context) && context > 0
+    ? String(Math.min(MAX_DEFAULT_OUTPUT_TOKENS, Math.floor(context / 4)))
+    : ''
+}
+
 const INITIAL_FORM = {
   baseUrl: '',
   model: '',
   apiKey: '',
   contextLength: '32768',
-  maxTokens: '4096',
+  maxTokens: defaultMaxTokens(32768),
   reasoning: false,
 }
 
@@ -47,6 +58,10 @@ const STATUS_META = {
 const SETTLE_POLL_MS = 3000
 const SETTLE_POLLS = 5
 
+// The API listed its models but failed a test chat on the active route.
+const NOT_SERVING_TEXT = 'The API is not answering chats right now. ODS kept its settings, so chat and Portal fail until it is back. ' +
+  'Check again later, or turn the remote model off to use the model on this computer.'
+
 // The raw reason stays visible under "Details"; this says what to do.
 function friendlyProviderError(message) {
   const text = String(message || '')
@@ -62,7 +77,14 @@ function friendlyProviderError(message) {
   if (/already in progress|host_agent_http_409/i.test(text)) {
     return 'ODS is busy with another model change. Try again in a minute.'
   }
+  if (/provider_not_serving/.test(text)) return NOT_SERVING_TEXT
   return ''
+}
+
+function notServingSummary(routeProof) {
+  const status = Number.isInteger(routeProof.providerStatus) ? `HTTP ${routeProof.providerStatus}` : ''
+  const answer = [status, routeProof.providerMessage].filter(Boolean).join(': ')
+  return answer ? `${NOT_SERVING_TEXT} The API answered: ${answer}` : NOT_SERVING_TEXT
 }
 
 function ErrorBanner({ message, note = '' }) {
@@ -384,7 +406,9 @@ export default function RemoteProvider({ compact = false }) {
   const [testResult, setTestResult] = useState(null)
   const [testError, setTestError] = useState(null)
   const [form, setForm] = useState(INITIAL_FORM)
-  const formEdit = useRef({ dirty: false, revision: 0 })
+  // outputLimitSet: the owner typed the output limit, or a saved route set
+  // it. Until then it follows the context window.
+  const formEdit = useRef({ dirty: false, revision: 0, outputLimitSet: false })
   const [planning, setPlanning] = useState(false)
   const [applyingAction, setApplyingAction] = useState(null)
   const [planResult, setPlanResult] = useState(null)
@@ -408,12 +432,13 @@ export default function RemoteProvider({ compact = false }) {
       setStatusData(payload)
       const provider = payload?.routeState?.provider
       if (!formEdit.current.dirty && provider) {
+        formEdit.current.outputLimitSet = Boolean(provider.maxTokens)
         setForm(current => ({
           ...current,
           baseUrl: provider.baseUrl || '',
           model: provider.model || '',
           contextLength: String(provider.contextLength || 32768),
-          maxTokens: String(provider.maxTokens || 4096),
+          maxTokens: String(provider.maxTokens || defaultMaxTokens(provider.contextLength || 32768)),
           reasoning: provider.reasoning === true,
         }))
       }
@@ -465,7 +490,13 @@ export default function RemoteProvider({ compact = false }) {
   const updateForm = (key, value) => {
     formEdit.current.dirty = true
     formEdit.current.revision += 1
-    setForm(current => ({ ...current, [key]: value }))
+    if (key === 'maxTokens') formEdit.current.outputLimitSet = true
+    const follow = key === 'contextLength' && !formEdit.current.outputLimitSet
+    setForm(current => ({
+      ...current,
+      [key]: value,
+      ...(follow ? { maxTokens: defaultMaxTokens(value) } : {}),
+    }))
   }
 
   // After a change, ODS and Portal switch over for a few seconds; re-check
@@ -487,6 +518,8 @@ export default function RemoteProvider({ compact = false }) {
     try {
       const payload = await fetchJson('/api/remote-provider/probe', { method: 'POST' }, PROBE_TIMEOUT_MS)
       setTestResult(payload)
+      // A real failure: say it in the error banner, with its help link.
+      if (payload?.routeProof?.reason === 'provider_not_serving') setTestError(notServingSummary(payload.routeProof))
       await settleAfterAction()
     } catch (err) {
       setTestError(err?.message || 'The connection check failed')
@@ -524,6 +557,9 @@ export default function RemoteProvider({ compact = false }) {
       setTestResult(proof)
       if (proof?.routeProof?.recorded) {
         setConnectNotice(`Connected. ODS and Portal now use ${model} from ${host}.`)
+      } else if (proof?.routeProof?.reason === 'provider_not_serving') {
+        // The route is in use; the API itself fails chats.
+        setLifecycleError(notServingSummary(proof.routeProof))
       } else {
         setLifecycleError(proof?.routeProof?.reason || 'ODS could not switch to the API.')
         setLifecycleNote('The API answered, but ODS still uses its current model. Try Check connection again in a minute.')
@@ -669,6 +705,8 @@ export default function RemoteProvider({ compact = false }) {
   const proofSummary = useMemo(() => {
     if (!testResult?.routeProof || connectNotice) return null
     if (proofRecorded) return 'Connection checked: the API answered, and ODS and Portal use it.'
+    // Shown once, in the error banner with its help link.
+    if (testResult.routeProof.reason === 'provider_not_serving') return null
     const reason = testResult.routeProof.reason
     return `The API answered, but ODS could not switch to it: ${friendlyProviderError(reason) || titleize(reason)}`
   }, [connectNotice, proofRecorded, testResult])
@@ -976,7 +1014,7 @@ export default function RemoteProvider({ compact = false }) {
                 value={form.maxTokens}
                 onChange={value => updateForm('maxTokens', value)}
                 type="number"
-                hint="Longest single answer."
+                hint="Longest single reply. Portal writes each file in one reply, so use your API's limit. By default a quarter of the context window."
               />
               <label className="flex h-10 items-center gap-2 self-start rounded-lg border border-theme-border bg-theme-bg px-3 text-sm text-theme-text md:mt-5">
                 <input

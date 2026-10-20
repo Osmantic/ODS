@@ -46,6 +46,11 @@ _LEGACY_KEYS = {
 }
 _ENDPOINT_PATHS = {"", "/v1"}
 _LEGACY_ENDPOINT_PATHS = {"", "/api", "/api/v1", "/v1"}
+# Status may carry why the model is not running: the launcher's own error, at
+# most 1024 printable characters, and on the CUDA route the memory refusal
+# the owner can override with Start anyway (the next start of that plan).
+_RUNTIME_ERROR_LIMIT = 1024
+START_REFUSALS = frozenset({"memory_refused", "gpu_busy"})
 
 
 def env_value(env: dict, key: str):
@@ -209,6 +214,16 @@ def _path(path: str, direction: str) -> str:
     return value
 
 
+def drive_mount(drive: str) -> Path:
+    """Where this distribution mounts a Windows drive such as ``C:``.
+
+    wslpath honours a custom DrvFS mount root ([automount] root in wsl.conf).
+    """
+    if not isinstance(drive, str) or not re.fullmatch(r"[A-Za-z]:", drive):
+        raise ValueError("A Windows drive letter such as C: is required")
+    return Path(_path(drive + "\\", "-u"))
+
+
 def _windows_tools(env: dict) -> _WindowsTools:
     system = env.get('ODS_WINDOWS_SYSTEM_DIRECTORY', '')
     if not system:
@@ -295,7 +310,33 @@ def _response(value, context: _Context) -> dict:
             or not _text(observed.get("modelId"), 512) or type(observed.get("contextLength")) is not int
             or not 4096 <= observed["contextLength"] <= 262144 or not value["running"]):
         raise BridgeError("Windows controller returned an invalid runtime observation")
+    error = value.get("runtimeError")
+    if error is not None and not _text(error, _RUNTIME_ERROR_LIMIT):
+        raise BridgeError("Windows controller returned an invalid runtime error")
+    source = value.get("runtimeErrorSource")
+    if source is not None and (source not in ("launcher", "observation") or error is None):
+        raise BridgeError("Windows controller returned an invalid runtime error source")
+    refusal = value.get("startRefusal")
+    if refusal is not None and (not isinstance(refusal, str) or refusal not in START_REFUSALS
+                                or value["running"] or source != "launcher"):
+        raise BridgeError("Windows controller returned an invalid start refusal")
     return value
+
+
+def launcher_error(value: dict) -> dict:
+    """The launcher's own startup error and memory refusal from a validated status, if any.
+
+    Observation failures (a stale process record, a model that is still
+    loading) stay internal; only what the launcher wrote is shown to owners.
+    """
+    if value.get("managed") is not True or value.get("running") is not False:
+        return {}
+    if value.get("runtimeErrorSource") != "launcher" or not isinstance(value.get("runtimeError"), str):
+        return {}
+    fields = {"runtimeError": value["runtimeError"]}
+    if value.get("startRefusal") in START_REFUSALS:
+        fields["startRefusal"] = value["startRefusal"]
+    return fields
 
 
 def _environment(socket: str, windows: _WindowsTools) -> dict:

@@ -449,6 +449,35 @@ _phase11_apply_hermes_template() {
     fi
 }
 
+# Copy the finished example projects ODS ships (Elf of Doom) into the owner's
+# Portal workspace whenever Playground/elf-of-doom is absent and this workspace
+# has never received it, so a deleted or renamed example stays that way. The
+# record of received examples lives in Portal's state folder, which the
+# agent's sandbox never mounts. Portal's sidebar then lists it with the other
+# projects; the installer prints nothing about it. Runs after Portal is
+# verified; a failure never fails the install. The outcome, and a workspace
+# layout the helper never writes into (exit status 3, which stays as the owner
+# made it), go only to the install log: log() would also print them in the
+# plain display. Only a failure warns, with its cause, recovery and help link.
+_phase11_add_example_projects() {
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    local owner home status code=0
+    if ! owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || ! home="$(ods_pixel_owner_home "$owner")"; then
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: it could not find the Portal owner's account or home folder. Nothing in your Portal workspace was changed. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)"
+        return 0
+    fi
+    status="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
+        "${INSTALL_DIR:?}/installers/lib/pixel-example-projects.py" \
+        --workspace "$home/.openclaw/workspace-pixel" --state-dir "$home/.openclaw" 2>>"$LOG_FILE")" || code=$?
+    case "$code" in
+        0) printf 'Portal example projects: %s\n' "$status" >>"$LOG_FILE" ;;
+        3) printf 'Portal example projects not added: %s\n' "$status" >>"$LOG_FILE" ;;
+        4) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: $status Nothing in your Portal workspace was replaced. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $LOG_FILE)" ;;
+        *) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: its copy step stopped unexpectedly (exit $code). Nothing in your Portal workspace was replaced. Ask on Discord with the details from $LOG_FILE: ${ODS_HELP_DISCORD_URL}" ;;
+    esac
+    return 0
+}
+
 ods_progress 75 "services" "Starting services"
 show_phase 5 6 "Starting Services" "~2-3 minutes"
 
@@ -1473,6 +1502,7 @@ MODELS_INI_EOF
         _phase11_apply_hermes_template "${_phase11_hermes_template_route[@]}"
     fi
     _phase11_write_compose_launch_record
+    _phase11_add_example_projects
     for _attempt in 1 2 3; do
         $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" up -d --remove-orphans --no-build --pull never >> "$LOG_FILE" 2>&1 &
         compose_pid=$!

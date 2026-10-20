@@ -27,7 +27,7 @@ ai() { :; }
 ai_ok() { :; }
 ai_warn() { :; }
 log() { :; }
-_sed_i() { :; }
+_sed_i() { sed -i "$@"; }
 error() { echo "$1" >&2; exit 1; }
 source "$SCRIPT_DIR/phases/09-offline.sh"
 EOF
@@ -61,6 +61,9 @@ EOF
     chmod +x "$tmp/bin/curl"
 }
 run_phase() { PATH="$tmp/bin:/usr/bin:/bin" "$tmp/run-phase.sh" >/dev/null 2>&1; }
+
+# Phase 06 has already written .env and kept the owner's update-check opt-out.
+printf 'WEBUI_SECRET=current\nDISABLE_UPDATE_CHECK=true\n' > "$tmp/install/.env"
 
 # HTTP/download failure must fail closed and must not advertise offline readiness.
 cat > "$tmp/bin/curl" <<'EOF'
@@ -116,4 +119,9 @@ EOF
 chmod +x "$tmp/bin/curl"
 run_phase
 [[ -e "$tmp/install/.offline-mode" ]]
+
+# Every run leaves one DISABLE_UPDATE_CHECK; validate-env rejects duplicates.
+[[ "$(grep -c '^DISABLE_UPDATE_CHECK=' "$tmp/install/.env")" == 1 ]] \
+    || { echo "FAIL: offline mode duplicated DISABLE_UPDATE_CHECK in .env" >&2; exit 1; }
+grep -qx 'DISABLE_UPDATE_CHECK=true' "$tmp/install/.env"
 echo "PASS: offline embedding gate"

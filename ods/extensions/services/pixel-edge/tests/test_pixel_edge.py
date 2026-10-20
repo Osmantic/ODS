@@ -39,14 +39,43 @@ FRAGMENTED_CSV = b"id,amount\n" + b"123,45.67\n" * 64000
 # Mock upstream on a Unix socket
 # ---------------------------------------------------------------------------
 
+def _live_task_packet():
+    task = {"schemaVersion":1,"runId":"chatcmpl_11111111-2222-4333-8444-555555555555","startedAt":"2026-09-10T20:00:00.000Z","finishedAt":None,"state":"running","calls":1,"failures":0,"blocked":0,"truncated":False,"activities":[{"kind":"read","calls":1,"failures":0,"blocked":0}]}
+    return {"object":"ods.task.activity","id":task['runId'],"pixel_task":task}
+
+
+def _sse_frame(event):
+    return b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n"
+
+
+async def _chosen_reply_frames(request, data):
+    """Stream data["reply_chunks"] in the host ingress shape."""
+    yield _sse_frame({"id": "1", "model": "openclaw/default", "choices": [
+        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]})
+    for number, piece in enumerate(data["reply_chunks"]):
+        yield _sse_frame({"id": "1", "model": "openclaw/default", "choices": [
+            {"index": 0, "delta": {"content": piece}, "finish_reason": None}]})
+        if number == 0 and data.get("reply_activity"):
+            yield _sse_frame(_live_task_packet())
+    if data.get("reply_hold"):
+        request.app["stream_started"].set()
+        await request.app["release_stream"].wait()
+    if data.get("reply_error"):
+        yield b'data: {"error":{"message":"upstream failed"}}\n\n'
+    else:
+        yield _sse_frame({"id": "1", "model": "openclaw/default", "choices": [
+            {"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "pixel_outcome": {"schemaVersion": 1, "status": "none"}})
+    yield b"data: [DONE]\n\n"
+
+
 async def _upstream_chat(request):
     data = await request.json()
     request.app["chat_requests"].append(data)
     stream = data.get("stream", False)
 
     if data.get('trigger_live'):
-        task = {"schemaVersion":1,"runId":"chatcmpl_11111111-2222-4333-8444-555555555555","startedAt":"2026-09-10T20:00:00.000Z","finishedAt":None,"state":"running","calls":1,"failures":0,"blocked":0,"truncated":False,"activities":[{"kind":"read","calls":1,"failures":0,"blocked":0}]}
-        packet = {"object":"ods.task.activity","id":task['runId'],"pixel_task":task}
+        packet = _live_task_packet()
         resp = web.StreamResponse(headers={'Content-Type':'text/event-stream'})
         await resp.prepare(request)
         await resp.write(('data: ' + json.dumps({**packet,'prompt':'must-not-leak'}) + '\n\n').encode())
@@ -88,6 +117,10 @@ async def _upstream_chat(request):
                 if data.get("prelude_tail"):
                     yield line
                     return
+            if "reply_chunks" in data:
+                async for frame in _chosen_reply_frames(request, data):
+                    yield frame
+                return
             if data.get("trigger_cancel_wait"):
                 yield b'data: {"id":"1","model":"openclaw/default","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'
                 request.app["stream_started"].set()
@@ -130,7 +163,9 @@ async def _upstream_chat(request):
         "id": "chat-1",
         "model": "openclaw/default",
         "choices": [{"message": {"content": (
-            "No response from OpenClaw."
+            "".join(data["reply_chunks"])
+            if "reply_chunks" in data
+            else "No response from OpenClaw."
             if data.get("trigger_reserved")
             else "openclaw/default is assistant text"
         )}}],
@@ -1744,6 +1779,225 @@ class TestSSE(BaseEdgeTest):
             self.assertIn("upstream failed", body)
             self.assertNotIn(self.pe._SHORT_TEST_REPLY, body)
             self.assertTrue(body.endswith("data: [DONE]\n\n"))
+
+
+# ---------------------------------------------------------------------------
+# A final reply that only copies the owner's message
+# ---------------------------------------------------------------------------
+
+# Fleet test 2026-10-18: the whole visible answer was the owner's request.
+REMINDER = "Remind me in 2 minutes to stretch."
+CONTINUED = " I cannot message you later, so set a two minute timer on your phone."
+
+
+def _sse_events(body):
+    """Decode SSE data fields in any framing variant (CRLF, no space)."""
+    events = []
+    for frame in body.replace("\r\n", "\n").split("\n\n"):
+        fields = [line[5:].removeprefix(" ") for line in frame.split("\n")
+                  if line.startswith("data:")]
+        if fields:
+            events.append("\n".join(fields))
+    return events
+
+
+class TestOwnerEchoReply(BaseEdgeTest):
+    async def json_answer(self, owner, reply):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "messages": [{"role": "user", "content": owner}],
+                  "reply_chunks": [reply]},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+            data = await resp.json()
+        self.assertEqual(data["model"], "pixel/default")
+        return data["choices"][0]["message"]["content"]
+
+    async def stream_answer(self, owner, chunks, **options):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "stream": True,
+                  "messages": [{"role": "user", "content": owner}],
+                  "reply_chunks": chunks, **options},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+            body = await resp.text()
+        events = _sse_events(body)
+        self.assertEqual(events[-1], "[DONE]")
+        packets = [json.loads(event) for event in events[:-1]]
+        answers = [packet for packet in packets if "choices" in packet]
+        self.assertTrue(all(packet.get("model") == "pixel/default" for packet in answers))
+        text = "".join(packet["choices"][0].get("delta", {}).get("content", "")
+                       for packet in answers)
+        return text, packets
+
+    async def test_json_copy_of_the_owner_message_gets_the_fallback(self):
+        for owner, reply, expected in [
+            (REMINDER, REMINDER, self.pe._EMPTY_REPLY),
+            (REMINDER, REMINDER + "\n\n", self.pe._EMPTY_REPLY),
+            (REMINDER, "  Remind me in 2\nminutes  to stretch.\t", self.pe._EMPTY_REPLY),
+            ("hi", "hi", self.pe._SHORT_TEST_REPLY),
+            ("hi", "hi \n", self.pe._SHORT_TEST_REPLY),
+        ]:
+            with self.subTest(owner=owner, reply=reply):
+                self.assertEqual(await self.json_answer(owner, reply), expected)
+
+    async def test_json_answers_that_are_not_a_copy_pass_through(self):
+        for owner, reply in [
+            (REMINDER, REMINDER + CONTINUED),
+            ("Reply with exactly: READY", "READY"),
+            (REMINDER, "Remind me in 2 minutes"),
+            # Letter case is kept: a case change can be the requested answer.
+            (REMINDER, "remind me in 2 minutes to stretch."),
+            ("hi", "Hi"),
+        ]:
+            with self.subTest(owner=owner, reply=reply):
+                self.assertEqual(await self.json_answer(owner, reply), reply)
+
+    async def test_json_reserved_and_empty_replies_keep_their_fallback(self):
+        for owner, reply, expected in [
+            ("Refactor the parser and test it.", "", self.pe._EMPTY_REPLY),
+            ("Refactor the parser and test it.", "  \n", self.pe._EMPTY_REPLY),
+            ("Refactor the parser and test it.", "NO_REPLY", self.pe._EMPTY_REPLY),
+            ("testing 123", "No response from OpenClaw.", self.pe._SHORT_TEST_REPLY),
+        ]:
+            with self.subTest(owner=owner, reply=reply):
+                self.assertEqual(await self.json_answer(owner, reply), expected)
+
+    async def test_copy_is_compared_with_the_owner_words_not_the_forwarded_contract(self):
+        self.assertEqual(await self.json_answer(REMINDER, REMINDER), self.pe._EMPTY_REPLY)
+        forwarded = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
+        self.assertEqual(forwarded, REMINDER + self.pe._INTERACTIVE_DELIVERY_CONTRACT)
+
+    async def test_long_owner_message_is_not_compared(self):
+        owner = " ".join(["word"] * 2000)
+        self.assertGreater(len(owner), self.pe._MAX_ECHO_CHARS)
+        self.assertEqual(await self.json_answer(owner, owner), owner)
+
+    async def test_stream_copy_of_the_owner_message_gets_the_fallback(self):
+        for owner, chunks, expected in [
+            # The host ingress sends the whole final text in one frame.
+            (REMINDER, [REMINDER], self.pe._EMPTY_REPLY),
+            (REMINDER, ["Remind", " me in 2", " minutes to", " stretch."], self.pe._EMPTY_REPLY),
+            (REMINDER, [REMINDER, "\n\n"], self.pe._EMPTY_REPLY),
+            ("hi", ["hi"], self.pe._SHORT_TEST_REPLY),
+        ]:
+            with self.subTest(owner=owner, chunks=chunks):
+                text, packets = await self.stream_answer(owner, chunks)
+                self.assertEqual(text, expected)
+                finish = [packet for packet in packets
+                          if packet["choices"][0].get("finish_reason") == "stop"]
+                self.assertEqual(len(finish), 1)
+                # The terminal frame keeps its run metadata.
+                self.assertEqual(finish[0]["pixel_outcome"], {"schemaVersion": 1, "status": "none"})
+
+    async def test_stream_copy_fallback_frames_survive_sse_framing_variants(self):
+        for no_space in (False, True):
+            for crlf in (False, True):
+                for without_finish in (False, True):
+                    with self.subTest(no_space=no_space, crlf=crlf, without_finish=without_finish):
+                        text, packets = await self.stream_answer(
+                            REMINDER, ["Remind me", " in 2 minutes to stretch."],
+                            sse_no_space=no_space, sse_crlf=crlf,
+                            sse_without_finish=without_finish)
+                        self.assertEqual(text, self.pe._EMPTY_REPLY)
+                        self.assertEqual(sum(packet["choices"][0].get("finish_reason") == "stop"
+                                             for packet in packets), 1)
+
+    async def test_stream_answer_that_continues_past_the_owner_text_is_sent_at_divergence(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "stream": True,
+                  "messages": [{"role": "user", "content": REMINDER}],
+                  "reply_chunks": [REMINDER, CONTINUED], "reply_hold": True},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+            received = b""
+            try:
+                # The upstream withholds its terminal frame until released, so
+                # the continuation arrives here only if Edge did not hold it.
+                async with async_timeout(2):
+                    while CONTINUED.encode() not in received:
+                        line = await resp.content.readline()
+                        self.assertTrue(line, "stream ended before the continuation")
+                        received += line
+                self.assertFalse(self.up_runner.app["release_stream"].is_set())
+            finally:
+                self.up_runner.app["release_stream"].set()
+            body = received.decode() + await resp.text()
+        events = _sse_events(body)
+        self.assertEqual(events[-1], "[DONE]")
+        packets = [json.loads(event) for event in events[:-1]]
+        text = "".join(packet["choices"][0].get("delta", {}).get("content", "")
+                       for packet in packets)
+        self.assertEqual(text, REMINDER + CONTINUED)
+        self.assertNotIn(self.pe._EMPTY_REPLY, body)
+
+    async def test_stream_partial_and_exact_text_answers_pass_through(self):
+        for owner, chunks in [
+            ("Reply with exactly: READY", ["READY"]),
+            ("Reply with exactly: READY", ["R", "EADY"]),
+            (REMINDER, ["Remind me in 2 minutes"]),
+            (REMINDER, ["remind me in 2 minutes to stretch."]),
+        ]:
+            with self.subTest(owner=owner, chunks=chunks):
+                text, _packets = await self.stream_answer(owner, chunks)
+                self.assertEqual(text, "".join(chunks))
+
+    async def test_activity_frames_and_errors_are_unchanged_while_a_copy_is_held(self):
+        text, packets = await self.stream_answer(
+            REMINDER, ["Remind me", " in 2 minutes to stretch."], reply_activity=True)
+        self.assertEqual(text, self.pe._EMPTY_REPLY)
+        self.assertTrue(any(packet.get("object") == "ods.task.activity" for packet in packets))
+
+        # An upstream error is never masked by the fallback: the held text and
+        # the error reach Portal as they did before the copy check existed.
+        text, packets = await self.stream_answer(REMINDER, [REMINDER], reply_error=True)
+        self.assertIn({"error": {"message": "upstream failed"}}, packets)
+        self.assertEqual(text, REMINDER)
+
+    async def test_copy_hold_never_fails_the_stream_at_the_pending_bound(self):
+        owner = "one two three four five six seven eight"
+        chunks = ["one", " two", " three", " four", " five", " six", " seven", " eight"]
+        with patch.object(self.pe, "_MAX_SSE_PENDING_LINES", 4):
+            text, packets = await self.stream_answer(owner, chunks)
+        # At the existing bound the held text is released unchanged instead of
+        # failing the answer; detecting a copy is best effort.
+        self.assertEqual(text, owner)
+        self.assertFalse(any("error" in packet for packet in packets))
+
+
+class OwnerEchoRuleTest(unittest.TestCase):
+    def setUp(self):
+        self.environment = patch.dict(os.environ, {'PIXEL_OPENWEBUI_KEY': TOKEN, 'PIXEL_PREVIEW_PROXY_KEY': TOKEN})
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
+        import pixel_edge
+        self.pe = pixel_edge
+
+    def test_copy_rule_collapses_whitespace_keeps_case_and_is_bounded(self):
+        pe = self.pe
+        owner = pe._echo_form(REMINDER)
+        self.assertEqual(pe._echo_form("  Remind me\n\nin 2\tminutes to stretch.  "), owner)
+        self.assertTrue(pe._replaceable_reply(REMINDER + "\n", owner))
+        self.assertFalse(pe._replaceable_reply("remind me in 2 minutes to stretch.", owner))
+        self.assertFalse(pe._replaceable_reply("READY", pe._echo_form("Reply with exactly: READY")))
+        self.assertFalse(pe._replaceable_reply(REMINDER, ""))
+        self.assertFalse(pe._replaceable_reply(None, owner))
+        self.assertEqual(pe._echo_form("x" * pe._MAX_ECHO_CHARS), "x" * pe._MAX_ECHO_CHARS)
+        self.assertIsNone(pe._echo_form("x" * (pe._MAX_ECHO_CHARS + 1)))
+
+    def test_stream_hold_lasts_only_while_the_text_can_still_be_replaced(self):
+        pe = self.pe
+        owner = pe._echo_form(REMINDER)
+        self.assertTrue(pe._replaceable_prefix("Remind me in", owner))
+        self.assertTrue(pe._replaceable_prefix(REMINDER + "\n", owner))
+        self.assertFalse(pe._replaceable_prefix(REMINDER + " Done", owner))
+        self.assertFalse(pe._replaceable_prefix("Sure", owner))
+        self.assertFalse(pe._replaceable_prefix("Remind me in", ""))
+        # Reserved and empty prefixes are held exactly as before.
+        self.assertTrue(pe._replaceable_prefix("No resp", owner))
+        self.assertTrue(pe._replaceable_prefix("  ", ""))
 
 
 # ---------------------------------------------------------------------------

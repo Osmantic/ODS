@@ -26,7 +26,7 @@ class GeneratedConfigBackupTests(unittest.TestCase):
         contract = json.loads((ROOT / "config/generated-config-contracts.json").read_text())
         paths = {
             "scripts/validate-generated-configs.py", "config/generated-config-contracts.json",
-            "ods-backup.sh", "lib/rsync.sh", "lib/backup-paths.sh",
+            "ods-backup.sh", "lib/rsync.sh", "lib/backup-paths.sh", "lib/dashboard-private-state.sh",
         }
         for surface in contract["surfaces"]:
             paths.update(writer["path"] for writer in surface["writers"])

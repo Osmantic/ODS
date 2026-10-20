@@ -29,7 +29,12 @@ an unsupported installation topology.
    agent's exact saved configuration.
 
 The fixed contract contains only model name, context length, output limit,
-reasoning support and an optional credential-free route fingerprint. Requests
+reasoning support, image input (`supported`, `unsupported` or `unknown`) and an
+optional credential-free route fingerprint. A local switch declares image
+input `supported` only when the final readiness proof's `/props` answer
+reports `modalities.vision` true, that is, the activated model's llama-server
+loaded a vision projector. Otherwise it keeps that model's catalog value or
+`unknown`; remote routes are `unknown`. Requests
 cannot select a filesystem path, endpoint, executable, user or service unit.
 Sampling and template customizations are retained; context and output limits
 are recalculated for the selected model.

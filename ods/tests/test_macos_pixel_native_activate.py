@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os as os
 from pathlib import Path
@@ -111,6 +112,11 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         'pixel-native-compose.py': SimpleNamespace(start_infrastructure=lambda run, **kw: event('infrastructure'),
             wait_ready=lambda run: event('health'),
             validate_stack=module.helper('pixel-native-compose.py').validate_stack),
+        'pixel-native-ingress-config.py': SimpleNamespace(prepare=lambda run, **kw: event('ingress-config')),
+        'pixel-native-ingress-refresh.py': SimpleNamespace(refresh_locked=lambda *args, **kw:
+            (event('ingress-refresh') or {'operationResult': kw['operation'](
+                {'environmentAfterSha256': hashlib.sha256(b'fixture').hexdigest()}, {}, lambda record: None)})),
+        'pixel-native-env.py': SimpleNamespace(snapshot=lambda path: (b'fixture', None)),
     }
     if fault in ('resume', 'resume-host', 'resume-model', 'resume-optional'):
         def finish(**kwargs):
@@ -118,6 +124,7 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
             assert kwargs['receipt'] == receipt
             assert kwargs['preparation'] == preparation
             assert kwargs['verify']() == {'status': 'active', 'runtimeDigest': 'a' * 64, 'serviceDigest': 'b' * 64}
+            kwargs['refresh_ingress'](lambda: None)
             if fault == 'resume-host':
                 kwargs['restore_host_agent']()
             else:
@@ -147,10 +154,10 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
             def selected(path, services, *, opencode_choice):
                 assert path == install_dir and opencode_choice == 'disabled'
                 events.append('optional-selection')
-                return {'opencode': {'selected': False}}, None
+                return {'opencode': {'selected': False}}, (b'fixture', None)
             def restore_optional(path, services, environment, *, opencode_choice, verify_selection, expected_snapshot):
                 assert path == install_dir and environment['DOCKER_HOST'] == 'unix:///socket'
-                assert expected_snapshot is None
+                assert expected_snapshot == (b'fixture', None)
                 assert opencode_choice == 'disabled'
                 verify_selection()
                 events.append('optional-tools')
@@ -242,7 +249,7 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
             expected_result = {'selection': str(expected_result), 'optionalTools': {'status': 'not-selected'}}
         assert activate() == expected_result
         assert events == ['plan', 'bind', 'config', 'services'] + (
-            ['optional-selection'] if fault == 'resume-optional' else []) + ['recover', 'verify-initial'] + (
+            ['optional-selection'] if fault == 'resume-optional' else []) + ['recover', 'verify-initial', 'ingress-refresh', 'services'] + (
             ['host-agent'] if fault == 'resume-host' else
             ['unchanged', 'services', 'optional-tools'] if fault == 'resume-optional' else
             ['unchanged', 'services', 'model-upgrade'] if fault == 'resume-model' else [])
@@ -253,7 +260,7 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
     else:
         assert activate() == journal
         assert events == ['plan', 'bind'] + (['persist'] if fault == 'configure' else []) + [
-            'config', 'services', 'prerequisites', 'infrastructure', 'protected', 'health'] + (
+            'config', 'services', 'prerequisites', 'ingress-config', 'infrastructure', 'protected', 'health'] + (
             [] if fault == 'no-webui' else ['webui-routing'])
         if fault == 'configure':
             assert (preparation / 'environment-before-native.env').read_text() == before

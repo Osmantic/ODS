@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
+import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, lookupFoundNothing, nodeReportedFailure, RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 
 test('a single lookup found nothing only when it completed with exit 1 and printed no error', () => {
   const receipt = (exitCode, text = '', details = {}) => ({content:[{type:'text', text:`${text}\n\n(Command exited with code ${exitCode})`}],
@@ -84,6 +84,47 @@ test('a chain of read-only searches whose last search came up empty found nothin
     // rg 13 prints some errors without a prefix, so rg may only be the last step.
     'rg -n -t jsx showScreen src; grep -n zzz ui.js', 'rg -t jsx x src | head -5 && grep zzz f', 'rg -n "a" f && grep b f',
   ]) assert.equal(lookupFoundNothing(chain, receipt('')), false, chain);
+});
+
+test('a node check, test or harness reported a failure only when it completed with exit 1 and printed it', () => {
+  const receipt = (exitCode, text, details = {}) => ({content:[{type:'text', text:`${text}\n\n(Command exited with code ${exitCode})`}],
+    details:{status:'completed', exitCode, durationMs:3, ...details}});
+  const red = receipt(1, 'ui.js:3\n  ctx.save(\n          ^\n\nSyntaxError: missing ) after argument list');
+  for (const command of [
+    'node --check ui.js', 'node -c ui.js', "node --check 'elf of doom/ui.js'", 'node --check src/a.mjs', 'node --check types.ts',
+    'node --test', 'node --test logic.test.mjs', 'node --test --test-reporter=spec tests/a.test.mjs tests/b.test.cjs',
+    'node harness.cjs ui.js', 'node --experimental-vm-modules harness.mjs', 'node -- harness.js',
+    'timeout 60 node harness.cjs ui.js', 'timeout -k 5 60s node bench.mjs', 'timeout --signal=KILL 1m node --test t.mjs',
+    'node --test t.mjs 2>&1', 'cd Playground/elf-of-doom && node --check ui.js && node --check chars.js 2>&1',
+    'node --check ui.js; timeout 60 node harness.cjs ui.js', '  node --check ui.js  ',
+  ]) assert.equal(nodeReportedFailure(command, red), true, command);
+  for (const command of [
+    'node', 'node -', 'node -e "x()"', 'node -p 1', 'node -pe 1', 'node --eval=x', 'node --print x', 'node -i', 'node --interactive',
+    'node --run test', 'node --eval ./run.js', 'node --print=1 x.js', 'node --run t.js', 'node --interactive x.js', 'node -r ./setup.js t.js', 'node --check', 'node --check a.js b.js', 'node --check --test a.js', 'node --check -',
+    'node --test -', 'node notes.txt', 'node t.js > out.txt', 'node t.js 2>/dev/null', 'node t.js 2>&1x', 'node t.js &',
+    'node --test t.mjs | tail -20', 'node --test t.mjs || true', 'node "$f"', 'node `ls`', 'node $(ls)', 'NODE_OPTIONS=x node t.js',
+    'for f in *.js; do node --check "$f" || exit 1; done', 'echo ok; node --test t.mjs', 'node --test t.mjs; echo done',
+    'nodejs t.js', 'timeout node t.js', 'timeout --bogus 60 node t.js', 'env node t.js', 'npm test', 'npx node t.js',
+    'cd a && cd b && node t.js', 'node t.js\nrm -rf x', '', 42, undefined, 'node '.padEnd(4100, 'x') + '.js',
+  ]) assert.equal(nodeReportedFailure(command, red), false, String(command));
+  for (const result of [
+    receipt(0, 'ok'), receipt(2, 'boom'), receipt(9, 'node: bad option: --bogus'), receipt(124, ''), receipt(127, 'sh: 1: node: not found'),
+    receipt(130, 'interrupted'), receipt(134, 'FATAL ERROR: Reached heap limit'), receipt(137, ''), receipt(1, ''), receipt(1, ' \n '),
+    receipt(1, "Error: Cannot find module '/workspace/x/ui.js'\n  code: 'MODULE_NOT_FOUND',"),
+    receipt(1, "Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/workspace/x/nope.mjs'"),
+    receipt(1, "Could not find '/workspace/x/missing.test.mjs'"),
+    receipt(1, "Error: ENOENT: no such file or directory, open 'ui.js'"),
+    receipt(1, "timeout: failed to run command 'node': No such file or directory"),
+    receipt(1, 'sh: 1: cd: can\'t cd to Playground'), receipt(1, 'Segmentation fault'),
+    receipt(1, 'x', {status:'running'}), receipt(1, 'x', {status:'failed'}), receipt(1, 'x', {sessionId:'s-1'}),
+    {content:[{type:'text', text:'x'}], details:{status:'completed', exitCode:1.5}}, {content:[{type:'text', text:'x'}], details:{status:'completed'}},
+    {details:{status:'completed', exitCode:1, aggregated:''}}, undefined, null, {},
+  ]) assert.equal(nodeReportedFailure('node --check ui.js', result), false, JSON.stringify(result));
+  assert.equal(nodeReportedFailure('node --test t.mjs', {details:{status:'completed', exitCode:1, aggregated:'not ok 1 - steps\n# fail 1'}}), true);
+  assert.equal(nodeReportedFailure('node harness.cjs ui.js', receipt(1, '{"frames":60,"saveDepth":60}')), true);
+  assert.equal(nodeReportedFailure('node throw.cjs', receipt(1, "TypeError: Cannot read properties of undefined (reading 'hp')")), true);
+  // The merged-stderr spelling is accepted for node only; lookups keep their rules.
+  assert.equal(lookupFoundNothing('grep -n x ui.js 2>&1', receipt(1, '')), false);
 });
 
 test('outer and nested failure receipts do not masquerade as successful progress', () => {

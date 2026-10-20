@@ -10,6 +10,7 @@ from test_host_agent import _mod, TestRemoteProviderLifecycle as _LifecycleFixtu
 
 # The real check, kept before the fixture replaces it.
 ACTIVE_RUNTIME=_mod._active_remote_provider_pixel_runtime
+REAL_PROOF=_mod._prove_pixel_model_contract
 
 
 @pytest.fixture
@@ -317,6 +318,21 @@ def test_failed_previous_route_proof_does_not_release_maintenance(runtime,monkey
     with pytest.raises(_mod._PixelModelTransactionUncertain,match='Previous provider route could not be proved'):
         configure(runtime)
     assert runtime.held
+    assert 'restore-container' in runtime.events and 'finish-rollback' not in runtime.events
+
+
+def test_remote_outage_keeps_restored_route_held_with_explicit_uncertainty(runtime, monkeypatch):
+    configure(runtime)
+    before = files(runtime.root)
+    previous = deepcopy(runtime.native)
+    runtime.events.clear()
+    runtime.failure = 'route'
+    monkeypatch.setattr(_mod, '_prove_pixel_model_contract', REAL_PROOF)
+    with pytest.raises(_mod._PixelModelTransactionUncertain,
+                       match='Previous provider route could not be proved'):
+        configure(runtime, endpoint='https://second.example.test/v1')
+    assert files(runtime.root) == before
+    assert runtime.native == previous and runtime.held
     assert 'restore-container' in runtime.events and 'finish-rollback' not in runtime.events
 
 

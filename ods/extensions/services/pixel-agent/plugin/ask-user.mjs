@@ -1,5 +1,5 @@
 import {parseQuestions} from './questions-schema.mjs';
-import {RESPONSE_LANGUAGE_CONTRACT} from './response-language.mjs';
+import {responseLanguageContract} from './response-language.mjs';
 export {parseQuestions};
 export function requestsChoiceQuestion(text) {
   const value=String(text??'').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase();
@@ -36,10 +36,10 @@ function normalizeRequest(value) {
 export function questionsText(questions) {
   return questions.map((q,i)=>`${i+1}. ${q.question}\n${q.options.map(option=>`- ${option}`).join('\n')}`).join('\n\n');
 }
-export function createAskUserTool() {
+export function createAskUserTool({responseLanguage} = {}) {
   return {
     name:'pixel_ods_ask_user',
-    description:'Ask the owner 1–3 important clarification questions using an interactive choice card. Use when a missing preference or requirement materially changes the work; do not ask permission for routine steps or use this tool as Operations approval. ' + RESPONSE_LANGUAGE_CONTRACT + ' Supply 2–4 concise options per question; custom answers are always available. After calling, stop and wait for the owner answer in the next turn. Never answer for the owner.',
+    description:'Ask the owner 1–3 important clarification questions using an interactive choice card. Use when a missing preference or requirement materially changes the work; do not ask permission for routine steps or use this tool as Operations approval. ' + responseLanguageContract(responseLanguage) + ' Supply 2–4 concise options per question; custom answers are always available. After calling, stop and wait for the owner answer in the next turn. Never answer for the owner.',
     parameters: {
       type:'object', additionalProperties:false, required:['questions'],
       properties:{questions:{type:'array',minItems:1,maxItems:3,items:{
