@@ -183,6 +183,20 @@ jobs:
           ./tests/contracts/test-wsl-lifecycle.ps1
           ./tests/contracts/test-wsl-lifecycle-output.ps1
 
+      - name: WSL scheduled task account regression (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-wsl-task-account.ps1
+          ./tests/contracts/test-wsl-task-account.ps1 -Live
+
+      - name: WSL scheduled task account regression (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-wsl-task-account.ps1
+          ./tests/contracts/test-wsl-task-account.ps1 -Live
+
       - name: Windows AMD Recovery, Model Control and Migration Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
