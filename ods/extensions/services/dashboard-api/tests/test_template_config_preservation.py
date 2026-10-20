@@ -74,6 +74,7 @@ def test_chat_playground_preserves_owner_config(tmp_path, monkeypatch, layout):
         return True
 
     monkeypatch.setattr(extensions, "_call_agent", call_agent)
+    monkeypatch.setattr(extensions, "_call_agent_result", lambda action, sid: (call_agent(action, sid), ""))
     monkeypatch.setattr(extensions, "_call_agent_hook", lambda sid, hook: True)
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", lambda: None)
     monkeypatch.setattr(extensions, "_select_extensions_on_host", lambda *_a, **_kw: None)
