@@ -679,6 +679,10 @@ INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"
 INSTALLER_RECOMMENDED_GGUF="${GGUF_FILE:-}"
 INSTALLER_RECOMMENDED_CONTEXT="${MAX_CONTEXT:-}"
 MODEL_SELECTION_SOURCE="installer"
+# Model activation owns the active model's vision projector and fixed chat
+# template. Only the preserved contract of that same model sets them below;
+# never the recommendation or a value exported by the caller.
+unset LLAMA_ARG_MMPROJ MODEL_CHAT_TEMPLATE_OVERRIDE LLAMA_ARG_CHAT_TEMPLATE_FILE
 if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
     # The model of a host-native llama-server belongs to Windows setup, which
     # passes it on every run. A rerun without it must not quietly switch the
@@ -754,6 +758,7 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 --vram-mb "${GPU_VRAM:-0}" \
                 --ram-gb "${RAM_GB:-0}" \
                 --host-arch "${HOST_ARCH:-unknown}" \
+                --chat-templates "$SCRIPT_DIR/config/chat-templates" \
                 --local-model \
                 2>>"$LOG_FILE")" || _preserve_status=$?
             if [[ -n "$_preserved_model_env" ]] && command -v load_model_selector_env_from_output >/dev/null 2>&1; then
@@ -770,7 +775,7 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
                 load_model_selector_env_from_output <<< "$_preserved_model_env"
-                log "Preserved active model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})"
+                log "Preserved active model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})${LLAMA_ARG_MMPROJ:+; kept its vision projector}${MODEL_CHAT_TEMPLATE_OVERRIDE:+; kept its fixed chat template}"
             fi
             unset _preserve_status
         fi

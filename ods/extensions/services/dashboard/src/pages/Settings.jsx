@@ -32,6 +32,7 @@ import { WALLPAPERS } from '../lib/wallpapers'
 import CustomWallpaperPicker from '../components/CustomWallpaperPicker'
 import '../wallpaper-themes.css'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
+import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import {
   clearSettingsFollowUp,
   loadSettingsFollowUp,
@@ -887,7 +888,7 @@ function RouteRow({ service }) {
   )
   const className = "settings-route-row flex items-center justify-between gap-4 border-b border-theme-border py-3 last:border-b-0 hover:bg-theme-surface-hover"
   return href
-    ? <a href={href} target="_blank" rel="noopener noreferrer" className={className}>{content}</a>
+    ? <a href={href} target="_blank" rel="noopener noreferrer" onClick={opensWithOdsSession(service.id) ? openWithFreshSession : undefined} className={className}>{content}</a>
     : <div className={className}>{content}</div>
 }
 

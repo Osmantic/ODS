@@ -155,6 +155,24 @@ describe('Settings', () => {
     globalThis.localStorage.removeItem('ods-theme')
   })
 
+  it('re-checks the ODS session before a route row opens Hermes', async () => {
+    const tab = { opener: window, closed: false, location: { replace: vi.fn() } }
+    vi.spyOn(window, 'open').mockReturnValue(tab)
+    const { fetchMock } = renderSettings(url => {
+      if (url === '/api/settings/summary') {
+        return response({ ...summary, services: [{ id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, external_port: 9120 }] })
+      }
+      if (url === '/api/auth/verify-session') return response({ detail: 'Invalid or expired session' }, 401)
+      if (url === '/api/auth/admin-session') return response({ ok: true })
+      return null
+    })
+    const row = await screen.findByRole('link', { name: /Hermes Auth Proxy/ })
+    expect(fireEvent.click(row)).toBe(false)
+    expect(window.open).toHaveBeenCalledWith('', '_blank')
+    await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/'))
+    expect(fetchMock).toHaveBeenCalledWith('/api/auth/admin-session', expect.objectContaining({ method: 'POST' }))
+  })
+
   test('renders storage capacity and an ODS data breakdown from the API contract', async () => {
     renderSettings()
 

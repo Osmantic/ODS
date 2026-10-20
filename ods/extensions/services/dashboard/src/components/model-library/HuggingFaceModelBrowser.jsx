@@ -793,10 +793,13 @@ function formatDiskBytes(bytes, roundUp = false) {
 }
 
 function StorageSummary({ storage, blocked }) {
+  // WSL: the Windows drive that stores the virtual disk, when its free space is the figure shown.
+  const windowsDrive = /^[A-Z]:$/.test(storage?.windowsDrive ?? '') ? storage.windowsDrive : null
   return (
     <section aria-label="Model storage" className="mb-4 space-y-1 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-secondary">
       {knownStorage(storage) ? <>
-        <p>Disk space: {formatDiskBytes(storage.freeBytes)} available. ODS must keep {formatDiskBytes(storage.marginBytes)} free after the download.</p>
+        <p>Disk space: {formatDiskBytes(storage.freeBytes)} available{windowsDrive && ` on the Windows drive ${windowsDrive}`}. ODS must keep {formatDiskBytes(storage.marginBytes)} free after the download.</p>
+        {storage.windowsDriveChecked === false && <p>ODS could not check the Windows drive that stores WSL, so this is the space inside WSL only. Make sure that drive has room for the download.</p>}
         {blocked && <p>Free up space on the model drive, then reopen this repository to check again.</p>}
       </> : <p>Disk space details are unavailable. ODS will check space before downloading.</p>}
     </section>
@@ -916,6 +919,7 @@ async function responseJson(response) {
 function errorMessage(body, fallback) {
   if (typeof body?.detail === 'string') return body.detail
   if (typeof body?.detail?.message === 'string') return body.detail.message
+  if (typeof body?.detail?.error === 'string') return body.detail.error
   if (typeof body?.error === 'string') return body.error
   return fallback
 }

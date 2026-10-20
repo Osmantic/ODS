@@ -24,6 +24,7 @@ import {PREVIEW_INSPECTION_TOOL, boundVisibilityInspection, requestedVisibilityT
 import {INSPECTION_KIND, INSPECTION_SCOPE, TRANSITION_UNTESTED, createWorkspacePreviewInspectTool, inspectionPlanHash,
   normalizeWorkspacePreviewInspectionParams, transitionCorrection} from '../plugin/workspace-preview-inspect.mjs';
 import {STATE_CLASS_WORDS, chooseTransitionTarget, stateFreeSelector} from '../plugin/inspection-target.mjs';
+import {previewScreenshotCapability} from '../plugin/preview-screenshot.mjs';
 
 const load = name => JSON.parse(fs.readFileSync(new URL(`./${name}`, import.meta.url), 'utf8'));
 const LAPTOP = load('inspection-transition-laptop-round100.json');
@@ -563,17 +564,21 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   const asked = [];
   const run = capsule(TOWER2, TOWER2_PAGE);
   vm.runInNewContext(source.slice(start, end + close.length), {
-    api: {pluginConfig: {workspacePreviewInspectionTransport: 'unix'}},
-    registerTool: (_api, tool, options) => { registered = {tool, names: [...options.names]}; },
+    api: {pluginConfig: {workspacePreviewInspectionTransport: 'unix'},
+      registerTool: (factory, options) => { registered = {tool: factory({agentId: 'pixel'}), names: [...options.names]}; }},
+    onlyPixel: factory => factory,
+    previewScreenshotCapability,
     createWorkspacePreviewInspectTool: options => createWorkspacePreviewInspectTool({...options, request: async request => run(request)}),
     toolLoopGuard: {previewInspectionTransition: (id, params) => {
       asked.push([id, params]);
       return {target: OWNER_PHRASE, outline: outlineOf(TOWER2, TOWER2_PUBLISH).outline, initiallyHidden: true};
-    }},
+    }, reservePreviewScreenshot: () => assert.fail('a configuration without image input reserves no screenshot')},
   });
   assert.deepEqual(registered.names, [PREVIEW_INSPECTION_TOOL]);
   const result = await registered.tool.execute('call-1', TOWER2_INSPECT.arguments);
   assert.deepEqual(asked, [['call-1', TOWER2_INSPECT.arguments]]);
   assert.ok(result.content[0].text.startsWith(INCOMPLETE), result.content[0].text);
+  assert.match(result.content[0].text, /No screenshot attached: this installation does not declare whether the selected model accepts images\./);
+  assert.equal(result.content.length, 1);
   assert.deepEqual(nextArgs(result.content[0].text).steps, transition(TOWER2_TARGET));
 });

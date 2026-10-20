@@ -96,6 +96,15 @@ _remote_provider_fail() {
     echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
     exit 1
 }
+# Why curl got no answer from the Dashboard API, from its exit status.
+_remote_provider_transport_reason() {
+    case "$1" in
+        6|7) printf 'could not connect to the Dashboard API; check that ODS is running with: ods status' ;;
+        28) printf 'the Dashboard API did not answer in time; check: ods status' ;;
+        52|56) printf 'the connection closed before the Dashboard API answered; check: ods status' ;;
+        *) printf 'curl exit %s' "$1" ;;
+    esac
+}
 
 # Map cmd_list status string to a colour. Returns an empty string for unknown
 # statuses so future state names don't break formatting.
@@ -1854,6 +1863,7 @@ cmd_restart() {
         read -ra flags <<< "$flags_str"
     fi
 
+    local restarted_mode="${ODS_MODE:-}"
     if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Restarting all services" \
             "${flags[@]}" up -d --force-recreate --no-build --pull never
@@ -1878,6 +1888,13 @@ cmd_restart() {
     # default agent path can still return a startup error.
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
         _ods_cli_wait_for_hermes_ready_with_retry "${flags[@]}"
+    fi
+
+    # `ods mode` changes .env, while the native agent deliberately pins its
+    # startup mode. Refresh that process only after the complete stack has
+    # applied the new environment, never on an unrelated service restart.
+    if [[ -z "$resolved_service" && -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
+        cmd_agent refresh-mode "$restarted_mode" || return 1
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
@@ -2910,9 +2927,9 @@ dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')
 dgx_message = dgx_check.get('message', '')
 if dgx_status == 'pass':
-    print(f"  {GREEN}✓{NC} DGX Spark llama-server CUDA arch")
+    print(f"  {GREEN}✓{NC} DGX Spark / RTX Spark llama-server CUDA arch")
 elif dgx_status == 'warn':
-    print(f"  {YELLOW}⚠{NC} DGX Spark llama-server CUDA arch: {dgx_message}")
+    print(f"  {YELLOW}⚠{NC} DGX Spark / RTX Spark llama-server CUDA arch: {dgx_message}")
 
 amd_runtime = runtime.get('amd_runtime', {})
 if amd_runtime.get('available'):
@@ -4321,7 +4338,8 @@ Provider options for configure/test/plan configure/plan test:
   --base-url URL          OpenAI-compatible base URL, for example https://gpu.example/v1
   --model MODEL           Provider model id
   --context-length TOKENS Exact provider context window (default 32768)
-  --max-tokens TOKENS     Exact provider output limit (default 4096)
+  --max-tokens TOKENS     Exact provider output limit; Portal writes each file in one reply
+                          (default a quarter of the context window, at most 32768)
   --reasoning true|false  Whether the provider route supports reasoning (default false)
   --ssh-host HOST         SSH server host for ssh transport
   --ssh-user USER         SSH server user for ssh transport
@@ -4451,7 +4469,7 @@ _remote_provider_write_payload() {
     local action="$1" payload_file="$2"
     shift 2
     local transport="direct" base_url="" model="" json_mode="false"
-    local context_length="32768" max_tokens="4096" reasoning="false"
+    local context_length="32768" max_tokens="" max_tokens_explicit="false" reasoning="false"
     local api_key_env="REMOTE_LLM_API_KEY" api_key_env_explicit="false" api_key_file="" api_key_stdin="false"
     local ssh_host="" ssh_user="" ssh_port="22" ssh_inference_host="" ssh_inference_port=""
     local ssh_control_host="" ssh_control_port="" ssh_option_seen="false"
@@ -4480,7 +4498,7 @@ _remote_provider_write_payload() {
             --max-tokens)
                 [[ $# -ge 2 ]] || error "--max-tokens requires a value"
                 provider_option_seen="true"
-                max_tokens="${2:-}"; shift 2 ;;
+                max_tokens="${2:-}"; max_tokens_explicit="true"; shift 2 ;;
             --reasoning)
                 [[ $# -ge 2 ]] || error "--reasoning requires true or false"
                 provider_option_seen="true"
@@ -4575,6 +4593,11 @@ _remote_provider_write_payload() {
         error "--context-length must be an integer from 16384 to 10000000"
     (( context_length >= 16384 && context_length <= 10000000 )) || \
         error "--context-length must be an integer from 16384 to 10000000"
+    # Portal writes each file in one reply; a 4096 default cut off ordinary
+    # game files. Match bin/remote_provider/lifecycle.py.
+    if [[ "$max_tokens_explicit" == "false" ]]; then
+        max_tokens=$(( context_length / 4 < 32768 ? context_length / 4 : 32768 ))
+    fi
     [[ "$max_tokens" =~ ^[1-9][0-9]{0,7}$ ]] || \
         error "--max-tokens must be a positive integer within the context window"
     (( max_tokens <= context_length )) || \
@@ -4691,6 +4714,11 @@ _remote_provider_print_status() {
     local response_file="$1"
     jq -r '
         "Remote provider: \(.status // "unknown")",
+        (if .status == "ready" then
+            "Ready means set up and proven" +
+            (if (.routeState.status.lastProbe.verifiedAt // "") != "" then " at \(.routeState.status.lastProbe.verifiedAt)" else "" end) +
+            "; check that the API answers now with: ods remote-provider test"
+         else empty end),
         (if .status == "paused" then
             "An update or a mode change paused it; ODS uses the model on this computer. Use it again with: ods remote-provider enable"
          else empty end),
@@ -4808,7 +4836,7 @@ _remote_provider_peer_call() {
     fi
     if [[ $curl_status -ne 0 ]]; then
         rm -f "$response_file"; trap - INT TERM HUP
-        _remote_provider_fail "Remote-provider peer model request failed before Dashboard API completed"
+        _remote_provider_fail "Remote-provider peer model request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
     fi
     if [[ "$http_code" != "200" ]]; then
         detail="$(_remote_provider_response_error "$response_file")"
@@ -4884,7 +4912,7 @@ _remote_provider_probe_configured() {
     fi
     if [[ $curl_status -ne 0 ]]; then
         rm -f "$response_file"; trap - INT TERM HUP
-        _remote_provider_fail "Remote-provider test request failed before Dashboard API completed"
+        _remote_provider_fail "Remote-provider test request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
     fi
     if [[ "$http_code" != "200" ]]; then
         local detail
@@ -4897,7 +4925,23 @@ _remote_provider_probe_configured() {
     else
         _remote_provider_print_probe_result "$response_file"
     fi
+    local not_serving
+    not_serving="$(_remote_provider_not_serving_reason "$response_file")"
     rm -f "$response_file"; trap - INT TERM HUP
+    if [[ -n "$not_serving" ]]; then
+        _remote_provider_fail "The remote provider is not answering chats ($not_serving). ODS kept its settings. Check the provider, then run 'ods remote-provider test' again; meanwhile 'ods remote-provider disable' switches ODS to the model on this computer."
+    fi
+}
+
+# The provider listed its models, but the active route served no chat: the
+# provider's own answer (fleet 2026-10-18: an outage read "probe: ok").
+_remote_provider_not_serving_reason() {
+    # The provider wrote the message; _remote_provider_fail prints with echo -e,
+    # so no backslash may reach it.
+    jq -r 'if .routeProof.reason == "provider_not_serving" then
+            "HTTP \(.routeProof.providerStatus // "error")" +
+            (if (.routeProof.providerMessage // "") != "" then ": \(.routeProof.providerMessage | gsub("\\\\"; ""))" else "" end)
+        else empty end' "$1"
 }
 
 cmd_remote_provider_peer_models() {
@@ -5058,7 +5102,7 @@ cmd_remote_provider() {
             fi
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                _remote_provider_fail "Remote-provider status request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider status request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
@@ -5097,7 +5141,7 @@ cmd_remote_provider() {
             rm -f "$payload_file"
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                _remote_provider_fail "Remote-provider plan request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider plan request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
@@ -5128,7 +5172,7 @@ cmd_remote_provider() {
             fi
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                _remote_provider_fail "Remote-provider enable request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider enable request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
@@ -5192,7 +5236,7 @@ cmd_remote_provider() {
             rm -f "$payload_file"
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                _remote_provider_fail "Remote-provider $subcmd request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider $subcmd request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
@@ -5354,6 +5398,77 @@ cmd_rollback() {
     bash "$INSTALL_DIR/ods-update.sh" rollback ${target:+"$target"}
 }
 
+_agent_mode_snapshot() {
+    local key port host payload
+    key="$(_env_get_raw ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(_env_get_raw DASHBOARD_API_KEY)"
+    case "$key" in
+        \"*\") key="${key:1:${#key}-2}" ;;
+        \'*\') key="${key:1:${#key}-2}" ;;
+    esac
+    [[ -n "$key" && "$key" != *$'\n'* && "$key" != *$'\r'* ]] || return 1
+    port="$(_env_get_raw ODS_AGENT_PORT)"
+    port="${port#\"}"; port="${port%\"}"
+    port="${port#\'}"; port="${port%\'}"
+    [[ "$port" =~ ^[0-9]+$ ]] || port=7710
+    host="$(_agent_probe_host)"
+    # Keep credentials off argv and out of diagnostics, including on failure.
+    payload=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 3 --header @- \
+            "http://${host}:${port}/v1/model/config" 2>/dev/null) || return 1
+    printf '%s' "$payload" | jq -ers 'select(length == 1) | .[0] |
+        select(.configuredMode == "local" or .configuredMode == "cloud" or .configuredMode == "hybrid") |
+        select(.effectiveMode == "local" or .effectiveMode == "cloud" or .effectiveMode == "hybrid" or .effectiveMode == "unknown") |
+        [.effectiveMode, .configuredMode] | join(" ")' 2>/dev/null
+}
+
+_agent_refresh_mode() {
+    local snapshot effective configured expected attempt
+    expected="${1:-}"
+    expected="${expected#\"}"; expected="${expected%\"}"
+    expected="${expected#\'}"; expected="${expected%\'}"
+    expected="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
+    [[ "$expected" != lemonade ]] || expected=local
+    case "$expected" in
+        local|cloud|hybrid) ;;
+        *) log_error "The restarted stack's ODS mode is unknown. Check .env and run 'ods restart' before changing models."; return 1 ;;
+    esac
+    if ! snapshot="$(_agent_mode_snapshot)"; then
+        log_error "Services restarted, but the host-agent runtime mode could not be verified. Run 'ods agent restart', then 'ods restart' before changing models."
+        return 1
+    fi
+    read -r effective configured <<< "$snapshot"
+    if [[ "$configured" != "$expected" ]]; then
+        log_error "ODS mode changed during the stack restart. Run 'ods restart' to apply the current configuration."
+        return 1
+    fi
+    [[ "$effective" != "$configured" ]] || return 0
+    # Unknown startup mode means this process started without a valid mode.
+    # A fresh authenticated configured mode plus the completed stack restart
+    # authorizes restarting it; it does not authorize bypassing the swap gate.
+    log "Refreshing host agent for $configured mode (startup mode: $effective)..."
+    if ! cmd_agent restart; then
+        log_error "Services restarted, but the host agent did not restart. Run 'ods agent restart', then 'ods restart' before changing models."
+        return 1
+    fi
+    for attempt in {1..10}; do
+        if snapshot="$(_agent_mode_snapshot)"; then
+            read -r effective configured <<< "$snapshot"
+            if [[ "$configured" != "$expected" ]]; then
+                log_error "ODS mode changed again during restart. Run 'ods restart' to apply the current configuration."
+                return 1
+            fi
+            if [[ "$effective" == "$configured" ]]; then
+                success "Host agent is running in $configured mode"
+                return 0
+            fi
+        fi
+        sleep 0.5
+    done
+    log_error "The restarted host agent has not confirmed $expected mode. Check 'ods agent logs', then run 'ods restart' before changing models."
+    return 1
+}
+
 cmd_agent() {
     check_install
     load_env 2>/dev/null || true
@@ -5400,6 +5515,9 @@ cmd_agent() {
     fi
 
     case "$action" in
+        refresh-mode)
+            _agent_refresh_mode "${2:-}"
+            ;;
         status)
             if _agent_health_ready; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"

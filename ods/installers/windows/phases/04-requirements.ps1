@@ -44,6 +44,7 @@ function Test-WindowsPortInUse {
                 InUse       = $true
                 ProcessName = $(if ($proc) { $proc.ProcessName } else { "unknown" })
                 ProcessId   = $conn[0].OwningProcess
+                Listeners   = @($conn | Select-Object LocalAddress, OwningProcess)
             }
         }
     } catch {
@@ -158,6 +159,75 @@ function Test-WindowsODSNativeLlmOwnsPort {
     return $false
 }
 
+function Get-WindowsDockerPublishedPorts {
+    # Only the local Desktop engine can explain a Windows Desktop listener.
+    # Inspect every running container, including foreign projects, so a second
+    # binding on another address cannot be hidden by an ODS label filter.
+    try {
+        if ($env:DOCKER_HOST) { return @() }
+        $context = (& docker context show 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $context) { return @() }
+        $endpoint = & docker context inspect $context --format '{{json .Endpoints.docker.Host}}' 2>$null
+        if ($LASTEXITCODE -ne 0) { return @() }
+        $endpoint = $endpoint | ConvertFrom-Json -ErrorAction Stop
+        if ($endpoint -notin @('npipe:////./pipe/dockerDesktopLinuxEngine', 'npipe:////./pipe/docker_engine')) { return @() }
+        $ids = @(& docker --context $context ps -q --no-trunc 2>$null)
+        if ($LASTEXITCODE -ne 0 -or -not $ids.Count -or @($ids | Where-Object { $_ -notmatch '^[a-f0-9]{64}$' }).Count) { return @() }
+        $raw = & docker --context $context container inspect @ids 2>$null
+        if ($LASTEXITCODE -ne 0) { return @() }
+        # PS5.1 does not enumerate JSON arrays on the pipeline. Assign first,
+        # then count the contents, so a retained multi-service stack is valid.
+        $containers = ConvertFrom-Json -InputObject ($raw -join "`n") -ErrorAction Stop
+        if (@($containers).Count -ne $ids.Count -or @($containers.Id | Select-Object -Unique).Count -ne $ids.Count) { return @() }
+        $result = @()
+        foreach ($container in $containers) {
+            if ($container.Id -notin $ids -or -not $container.State.Running) { return @() }
+            $labels = $container.Config.Labels
+            foreach ($port in $container.NetworkSettings.Ports.PSObject.Properties) {
+                if ($port.Name -notmatch '/tcp$') { continue }
+                foreach ($binding in @($port.Value)) {
+                    if (-not $binding) { continue }
+                    $result += [pscustomobject]@{
+                        Id = [string]$container.Id
+                        Project = [string]$labels.'com.docker.compose.project'
+                        Service = [string]$labels.'com.docker.compose.service'
+                        WorkingDir = [string]$labels.'com.docker.compose.project.working_dir'
+                        HostPort = [string]$binding.HostPort
+                        HostIp = [string]$binding.HostIp
+                    }
+                }
+            }
+        }
+        return $result
+    } catch { return @() }
+}
+
+function Test-WindowsODSComposeOwnsPort {
+    param([hashtable]$PortResult, [string]$InstallDir, [int]$Port,
+          [string]$ComposeService, [object[]]$PublishedPorts)
+    try {
+        if (-not $InstallDir -or -not $ComposeService -or -not $PortResult.InUse -or -not $PortResult.Listeners) { return $false }
+        $expected = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
+        $bindings = @($PublishedPorts | Where-Object { $_.HostPort -ceq [string]$Port })
+        if (-not $bindings.Count -or @($bindings.Id | Select-Object -Unique).Count -ne 1) { return $false }
+        foreach ($binding in $bindings) {
+            if ($binding.Project -cne 'ods' -or $binding.Service -cne $ComposeService -or
+                -not [IO.Path]::IsPathRooted($binding.WorkingDir) -or
+                ([IO.Path]::GetPathRoot($binding.WorkingDir)).Length -lt 3) { return $false }
+            $actual = [IO.Path]::GetFullPath($binding.WorkingDir).TrimEnd('\', '/')
+            if (-not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+        $backend = Join-Path $env:ProgramFiles 'Docker\Docker\resources\com.docker.backend.exe'
+        foreach ($listener in $PortResult.Listeners) {
+            if ([int]$listener.OwningProcess -le 0 -or $listener.LocalAddress -notin $bindings.HostIp) { return $false }
+            $process = @(Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction Stop |
+                Where-Object { $_.ProcessId -eq $listener.OwningProcess })
+            if ($process.Count -ne 1 -or -not [string]::Equals([string]$process[0].ExecutablePath, $backend, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
 function Get-WindowsODSSelectedPortConflicts {
     param(
         [System.Collections.IDictionary]$PortsToCheck,
@@ -166,6 +236,15 @@ function Get-WindowsODSSelectedPortConflicts {
     )
 
     $conflicts = @()
+    $composeServices = @{
+        'Open WebUI (chat)' = 'open-webui'; 'Dashboard' = 'dashboard'; 'Dashboard (remote)' = 'dashboard'
+        'Dashboard API' = 'dashboard-api'; 'llama-server (LLM)' = 'llama-server'; 'LiteLLM (API gateway)' = 'litellm'
+        'SearXNG (search)' = 'searxng'; 'Token Spy (usage monitor)' = 'token-spy'; 'Whisper (STT)' = 'whisper'
+        'Kokoro (TTS)' = 'tts'; 'n8n (workflows)' = 'n8n'; 'Qdrant (gRPC)' = 'qdrant'; 'Qdrant (vector DB)' = 'qdrant'
+        'TEI (embeddings)' = 'embeddings'; 'Hermes auth proxy' = 'hermes-proxy'; 'APE (agent policy engine)' = 'ape'
+        'ComfyUI (image generation)' = 'comfyui'; 'Perplexica (deep research)' = 'perplexica'; 'Privacy Shield' = 'privacy-shield'
+    }
+    $publishedPorts = $null
     foreach ($service in $PortsToCheck.Keys) {
         $port = [int]$PortsToCheck[$service]
         $result = Test-WindowsPortInUse -Port $port
@@ -174,6 +253,14 @@ function Get-WindowsODSSelectedPortConflicts {
             (Test-WindowsODSNativeLlmOwnsPort -PortResult $result -InstallDir $InstallDir -Port $port)) {
             Write-AI "  Port $port is held by this installation's model runtime; setup replaces it."
             continue
+        }
+        if ($InstallDir -and $composeServices.ContainsKey([string]$service)) {
+            if ($null -eq $publishedPorts) { $publishedPorts = @(Get-WindowsDockerPublishedPorts) }
+            if (Test-WindowsODSComposeOwnsPort -PortResult $result -InstallDir $InstallDir -Port $port `
+                    -ComposeService $composeServices[[string]$service] -PublishedPorts $publishedPorts) {
+                Write-AI "  Port $port is held by this installation's Compose service; setup updates it."
+                continue
+            }
         }
         $conflicts += "  Port $port ($service) in use by: $($result.ProcessName) (PID $($result.ProcessId))"
     }
@@ -276,13 +363,17 @@ $_usesNativeLlm = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
 
 # ── Port conflict detection ───────────────────────────────────────────────────
 # Build list of ports to check based on enabled features.
-# Default service ports match .env.example. Open WebUI uses the same persisted
-# or process-level override that phase 06 will write to .env.
+# Resolve the same process override / retained .env / default as phase 06.
+# The remote Dashboard listener is required even on loopback-only installs.
 $_portsToCheck = [ordered]@{
     "Open WebUI (chat)"   = Resolve-WindowsODSPort `
         -Name "WEBUI_PORT" -DefaultPort 3000 -InstallDir $installDir
-    "Dashboard"           = 3001
-    "Dashboard API"       = 3002
+    "Dashboard"           = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_PORT" -RequireValidProcessOverride -DefaultPort 3001 -InstallDir $installDir
+    "Dashboard (remote)"  = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_REMOTE_PORT" -RequireValidProcessOverride -DefaultPort 3011 -InstallDir $installDir
+    "Dashboard API"       = Resolve-WindowsODSPort `
+        -Name "DASHBOARD_API_PORT" -RequireValidProcessOverride -DefaultPort 3002 -InstallDir $installDir
 }
 $_llmPortToCheck = Resolve-WindowsLlmPreflightPort `
     -GpuBackend ([string]$gpuInfo.Backend) `
@@ -294,9 +385,12 @@ if ($_llmPortToCheck -gt 0) {
     $_portsToCheck[$_llmServiceLabel] = $_llmPortToCheck
 }
 if ($enableRecommended) {
-    $_portsToCheck["LiteLLM (API gateway)"] = 4000
-    $_portsToCheck["SearXNG (search)"] = 8888
-    $_portsToCheck["Token Spy (usage monitor)"] = 3005
+    $_portsToCheck["LiteLLM (API gateway)"] = Resolve-WindowsODSPort `
+        -Name "LITELLM_PORT" -RequireValidProcessOverride -DefaultPort 4000 -InstallDir $installDir
+    $_portsToCheck["SearXNG (search)"] = Resolve-WindowsODSPort `
+        -Name "SEARXNG_PORT" -RequireValidProcessOverride -DefaultPort 8888 -InstallDir $installDir
+    $_portsToCheck["Token Spy (usage monitor)"] = Resolve-WindowsODSPort `
+        -Name "TOKEN_SPY_PORT" -RequireValidProcessOverride -DefaultPort 3005 -InstallDir $installDir
 }
 if ($enableVoice) {
     # Preflight the exact host port phase 06 / New-ODSEnv will write: honor the
@@ -307,29 +401,40 @@ if ($enableVoice) {
     $_whisperPortToCheck = [int](Resolve-WindowsWhisperHostPort `
         -ConfiguredPort ([string]$_whisperConfiguredPort))
     $_portsToCheck["Whisper (STT)"] = $_whisperPortToCheck
-    $_portsToCheck["Kokoro (TTS)"]  = 8880
+    $_portsToCheck["Kokoro (TTS)"]  = Resolve-WindowsODSPort `
+        -Name "TTS_PORT" -RequireValidProcessOverride -DefaultPort 8880 -InstallDir $installDir
 }
 if ($enableWorkflows) {
-    $_portsToCheck["n8n (workflows)"] = 5678
+    $_portsToCheck["n8n (workflows)"] = Resolve-WindowsODSPort `
+        -Name "N8N_PORT" -RequireValidProcessOverride -DefaultPort 5678 -InstallDir $installDir
 }
 if ($enableRag) {
-    $_portsToCheck["Qdrant (vector DB)"] = 6333
-    $_portsToCheck["TEI (embeddings)"] = 8090
+    $_portsToCheck["Qdrant (gRPC)"] = Resolve-WindowsODSPort `
+        -Name "QDRANT_GRPC_PORT" -RequireValidProcessOverride -DefaultPort 6334 -InstallDir $installDir
+    $_portsToCheck["Qdrant (vector DB)"] = Resolve-WindowsODSPort `
+        -Name "QDRANT_PORT" -RequireValidProcessOverride -DefaultPort 6333 -InstallDir $installDir
+    $_portsToCheck["TEI (embeddings)"] = Resolve-WindowsODSPort `
+        -Name "EMBEDDINGS_PORT" -RequireValidProcessOverride -DefaultPort 8090 -InstallDir $installDir
 }
 if ($enableHermes) {
-    $_portsToCheck["Hermes auth proxy"] = 9120
+    $_portsToCheck["Hermes auth proxy"] = Resolve-WindowsODSPort `
+        -Name "HERMES_PROXY_PORT" -RequireValidProcessOverride -DefaultPort 9120 -InstallDir $installDir
 }
 if ($enableHermes) {
-    $_portsToCheck["APE (agent policy engine)"] = 7890
+    $_portsToCheck["APE (agent policy engine)"] = Resolve-WindowsODSPort `
+        -Name "APE_PORT" -RequireValidProcessOverride -DefaultPort 7890 -InstallDir $installDir
 }
 if ($enableComfyui) {
-    $_portsToCheck["ComfyUI (image generation)"] = 8188
+    $_portsToCheck["ComfyUI (image generation)"] = Resolve-WindowsODSPort `
+        -Name "COMFYUI_PORT" -RequireValidProcessOverride -DefaultPort 8188 -InstallDir $installDir
 }
 if ($enableDeepResearch) {
-    $_portsToCheck["Perplexica (deep research)"] = 3004
+    $_portsToCheck["Perplexica (deep research)"] = Resolve-WindowsODSPort `
+        -Name "PERPLEXICA_PORT" -RequireValidProcessOverride -DefaultPort 3004 -InstallDir $installDir
 }
 if ($enablePrivacyShield) {
-    $_portsToCheck["Privacy Shield"] = 8085
+    $_portsToCheck["Privacy Shield"] = Resolve-WindowsODSPort `
+        -Name "SHIELD_PORT" -RequireValidProcessOverride -DefaultPort 8085 -InstallDir $installDir
 }
 
 $_portConflicts = @(Get-WindowsODSSelectedPortConflicts `

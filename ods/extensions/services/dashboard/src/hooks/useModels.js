@@ -189,14 +189,22 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
+const START_REFUSALS = new Set(['memory_refused', 'gpu_busy'])
+
 function normalizeModelManagement(value) {
   const managed = typeof value?.managed === 'boolean' ? value.managed : null
+  const running = managed === true && value.running === true
+  // Why a managed Windows model is not running, in the launcher's words; a
+  // memory refusal makes Resume start the model anyway.
+  const runtimeError = managed === true && !running && typeof value.runtimeError === 'string' ? value.runtimeError : ''
   return {
     managed,
     canActivate: managed === true && value.canActivate === true,
     canUnload: managed === true && value.canUnload === true,
-    running: managed === true && value.running === true,
+    running,
     reason: typeof value?.reason === 'string' ? value.reason : '',
+    runtimeError,
+    startRefusal: runtimeError && START_REFUSALS.has(value.startRefusal) ? value.startRefusal : '',
   }
 }
 

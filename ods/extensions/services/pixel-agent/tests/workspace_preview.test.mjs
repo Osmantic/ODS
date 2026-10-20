@@ -165,8 +165,10 @@ test("exposes a publish-only schema with no creative generator input", () => {
   const tool = createWorkspacePreviewTool({ request: async () => succeededResponse() });
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["relativeDirectory", "sourceDirectory"]);
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.match(tool.description, /already created by the active model/);
+  assert.match(tool.description, /already exists in Pixel's writable workspace, normally one created by the active model/);
   assert.match(tool.description, /never supplies creative starter bytes/i);
+  assert.doesNotMatch(tool.description, /elf.of.doom/i, "the shipped example stays out of every turn's tools");
+  assert.doesNotMatch(tool.parameters.properties.relativeDirectory.description, /model-authored/);
   assert.match(tool.description, /localStorage\/sessionStorage property getters, reads and writes may throw/);
   assert.match(tool.description, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
   assert.match(tool.description, /Saving failure must not block startup, controls or continued work/);

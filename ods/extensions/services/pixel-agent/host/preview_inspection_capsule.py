@@ -31,10 +31,17 @@ from preview_inspection_protocol import (
     canonical,
     failure,
     inspection_scope,
+    jpeg_size,
     plan_hash,
     strict_json,
     validate_bundle,
 )
+
+try:
+    from playwright.sync_api import Error as BrowserError
+except ImportError:  # Only the capsule image ships Playwright; unit tests import this module without it.
+    class BrowserError(Exception):
+        """Stands in for playwright.sync_api.Error where Playwright is not installed."""
 
 # document.activeElement stops at a shadow host, such as a web component whose
 # inner field takes focus through delegatesFocus. Open shadow roots name the
@@ -908,6 +915,61 @@ def paint_until_varied(sample, wait):
     return painted
 
 
+# Viewport screenshot: one JPEG of the step context's whole viewport after the
+# steps that ran, only when the request carries a directive (the plugin found a
+# model that accepts images). The step page shows nothing but the fixed
+# wrapper and its sandboxed preview frame of this snapshot, served by this
+# capsule's loopback server with no network, so the capture cannot show
+# anything else. It never changes a step, the status or the plan hash.
+SCREENSHOT_QUALITIES = (80, 50)
+# Started only while the capture cannot push a slow run past the broker's
+# 45-second deadline; the palette capture after it has its own 30-second gate.
+SCREENSHOT_START_BUDGET_S = 32
+
+
+def screenshot_scale(width, height, max_side, max_pixels):
+    """The largest capture scale that keeps both sides and the pixel count in
+    bounds even when Chromium rounds each scaled side up."""
+    if max(width, height) <= max_side and width * height <= max_pixels:
+        return 1
+    side = (max_side - 1) / max(width, height)
+    # (width * s + 1) * (height * s + 1) <= max_pixels, solved for s.
+    area, perimeter = width * height, width + height
+    pixels = (-perimeter + math.sqrt(perimeter * perimeter - 4 * area * (1 - max_pixels))) / (2 * area)
+    return min(1, side, pixels)
+
+
+def omitted_screenshot(reason):
+    return {"status": "omitted", "reason": reason}
+
+
+def capture_screenshot(cdp, page, request, started):
+    """The capsule's screenshot member: one bounded JPEG, or why there is none."""
+    directive, viewport = request["screenshot"], request["viewport"]
+    if time.monotonic() - started >= SCREENSHOT_START_BUDGET_S:
+        return omitted_screenshot("time_budget")
+    if page.is_closed():
+        return omitted_screenshot("page_unavailable")
+    clip = {"x": 0, "y": 0, "width": viewport["width"], "height": viewport["height"],
+            "scale": screenshot_scale(viewport["width"], viewport["height"], directive["maxSide"], directive["maxPixels"])}
+    for quality in SCREENSHOT_QUALITIES:
+        try:
+            capture = cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": quality, "clip": clip,
+                                                          "captureBeyondViewport": False})
+            image = base64.b64decode(capture["data"], validate=True)
+            width, height = jpeg_size(image)
+        except (BrowserError, KeyError, TypeError, ValueError):
+            # ValueError covers Invalid (not a JPEG) and bad base64.
+            return omitted_screenshot("capture_failed")
+        if width > directive["maxSide"] or height > directive["maxSide"] or width * height > directive["maxPixels"]:
+            return omitted_screenshot("capture_failed")
+        if len(image) <= directive["maxBytes"]:
+            return {"status": "captured", "mimeType": "image/jpeg", "width": width, "height": height,
+                    "bytes": len(image), "sha256": hashlib.sha256(image).hexdigest(),
+                    "data": base64.b64encode(image).decode()}
+    return omitted_screenshot("too_large")
+
+
 def wrapper_document(prefix):
     # Fixed and script-free: page script exceptions therefore come only from
     # the sandboxed preview frame or a frame the preview itself created.
@@ -1665,6 +1727,8 @@ def run_browser(bundle, playwright_factory=None):
                 results.append(item)
                 if item["status"] == "failed":
                     break
+            # The state the steps left, failed step included, in this context.
+            screenshot = capture_screenshot(cdp, page, request, started) if "screenshot" in request else None
             # Context is never reused. A click-only receipt proves dispatch,
             # not the post-click condition; callers must assert that condition.
             # Page exceptions are separate evidence: they never change a step
@@ -1708,6 +1772,9 @@ def run_browser(bundle, playwright_factory=None):
                 result["controls"] = controls
                 if len(canonical(result)) >= MAX_RESULT:
                     del result["controls"]
+            # Bounded by its own byte limit, outside the receipt's MAX_RESULT.
+            if screenshot is not None:
+                result["screenshot"] = screenshot
             browser.close()
             return result
     finally:
@@ -1732,9 +1799,13 @@ def main():
         result = failure("request_blocked", request)
     except Exception:
         result = failure("unavailable", request)
+    # The receipt keeps its own limit; the screenshot is bounded separately.
+    screenshot = result.pop("screenshot", None)
     encoded = canonical(result)
     if len(encoded) > MAX_RESULT:
         encoded = canonical(failure("output_limit", request))
+    elif screenshot is not None:
+        encoded = canonical({**result, "screenshot": screenshot})
     sys.stdout.buffer.write(encoded + b"\n")
 
 

@@ -25,8 +25,10 @@ pull_count_file="$tmp_dir/pull-count"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data" "$bin_dir"
+install_dir="$(cd "$install_dir" && pwd -P)"
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
+python3 "$root_dir/tests/fixtures/macos-private-store-cli.py" "$install_dir"
 
 cat > "$install_dir/.env" <<'ENV'
 ODS_VERSION=2.6.0

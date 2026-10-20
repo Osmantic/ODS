@@ -28,7 +28,9 @@ function header(file,expected) {
   } finally {fs.closeSync(fd);}
 }
 
-export function createConversationImageLifecycle({readConfig,getSessionEntry,patchSessionEntry,resolveStorePath,callGateway,compactor}) {
+// forgetConversation(sessionKey): plugin-private copies of the chat's owner
+// text outside its transcripts (a pending clarification card) go with them.
+export function createConversationImageLifecycle({readConfig,getSessionEntry,patchSessionEntry,resolveStorePath,callGateway,compactor,forgetConversation}) {
   function locations() {
     const store=resolveStorePath(readConfig()?.session?.store,{agentId:'pixel'});
     const sessions=path.dirname(store);
@@ -116,6 +118,9 @@ export function createConversationImageLifecycle({readConfig,getSessionEntry,pat
   async function purge(user) {
     return compactor.withMaintenance(user,async()=>{
       const location=scoped(user), value=read(user,location);
+      // Every deletion and its retries, before the native transcripts: a
+      // failure here fails the deletion closed like any other custody step.
+      forgetConversation?.(PREFIX+user);
       if(value.status==='deleted')return {schemaVersion:1,deleted:true};
       const entry=getSessionEntry({agentId:'pixel',sessionKey:PREFIX+user,storePath:resolveStorePath(readConfig()?.session?.store,{agentId:'pixel'})});
       if(value.status==='deleting' && entry && !value.sessions.includes(entry.sessionId))fail();

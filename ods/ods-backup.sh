@@ -31,6 +31,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
 . "$ODS_DIR/lib/backup-paths.sh"
+. "$SCRIPT_DIR/lib/dashboard-private-state.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -62,6 +63,12 @@ estimate_backup_bytes() {
     if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
         local p
         while IFS= read -r p; do
+            if [[ "$p" == data/pixel-images ]] && ods_private_images_selected; then
+                # Conservative bound includes SQLite pages/indexes. Do not
+                # estimate from a stale host shadow of the active volume.
+                total=$(( total + 512 * 1024 * 1024 ))
+                continue
+            fi
             if [[ -e "$ODS_DIR/$p" ]]; then
                 local b
                 b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
@@ -345,6 +352,11 @@ backup_user_data() {
     # so a 0600 secret such as dashboard-password.json stays 0600.
     local path
     while IFS= read -r path; do
+        if [[ "$path" == data/pixel-images ]] && ods_private_images_selected; then
+            ods_private_images export --path "$backup_dir/$path" || return 1
+            log_success "Backed up: $path (private Docker volume)"
+            continue
+        fi
         local full_path="$ODS_DIR/$path"
         if [[ -e "$full_path" && ! -L "$full_path" ]]; then
             local dest_dir="$backup_dir/$(dirname "$path")"

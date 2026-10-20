@@ -48,7 +48,7 @@ export default function PortalAgentActivity({task:raw,active=false,status}) {
   const stopped=status==='stopped'
   const [open,setOpen]=useState(active||failed), [now,setNow]=useState(Date.now()), [fade,setFade]=useState({top:false,bottom:false})
   const events=task?.events || task?.activities.map((row,i)=>({sequence:i+1,kind:row.kind,state:row.blocked?'blocked':row.failures?'failed':active?'running':'completed',startedAt:task.startedAt,finishedAt:null})) || []
-  const progressRows=activityProgressRows(events,typeof navigator==='undefined'?'en':navigator.language)
+  const progressRows=activityProgressRows(events)
   const start=task?.startedAt?Date.parse(task.startedAt):mountedAt.current
   // A saved running receipt has no confirmed end, even when its response is
   // no longer active. Reload time cannot establish a completed duration.

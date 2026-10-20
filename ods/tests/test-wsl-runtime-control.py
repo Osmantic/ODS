@@ -345,6 +345,41 @@ class ControlTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(bridge.BridgeError):
                 bridge._response(value, CONTEXT)
 
+    def test_launcher_error_and_start_refusal_are_bounded_and_typed(self):
+        refused = {**response(running=False), "runtimeError": "The model was not started: Windows can lend it only 1.0 GiB.",
+                   "runtimeErrorSource": "launcher", "startRefusal": "memory_refused"}
+        self.assertIs(bridge._response(copy.deepcopy(refused), CONTEXT)["startRefusal"], "memory_refused")
+        self.assertEqual(bridge._response({**response(running=False), "runtimeError": "x" * 1024,
+                                           "runtimeErrorSource": "observation"}, CONTEXT)["runtimeError"], "x" * 1024)
+        for changes in ({"runtimeError": "x" * 1025}, {"runtimeError": "line\nbreak"}, {"runtimeError": ""},
+                        {"runtimeError": 7}, {"runtimeErrorSource": "engine"},
+                        {"startRefusal": "out_of_memory"}, {"startRefusal": ["memory_refused"]},
+                        {"runtimeErrorSource": "observation"}, {"running": True}):
+            value = {**copy.deepcopy(refused), **changes}
+            if changes == {"running": True}:
+                value["observation"] = response()["observation"]
+            with self.subTest(changes=changes), self.assertRaises(bridge.BridgeError):
+                bridge._response(value, CONTEXT)
+        orphan = {**response(running=False), "runtimeErrorSource": "launcher"}
+        with self.assertRaisesRegex(bridge.BridgeError, "runtime error source"):
+            bridge._response(orphan, CONTEXT)
+
+    def test_only_the_launchers_own_error_is_shown(self):
+        refused = {**response(running=False), "runtimeError": "The model was not started: fixture.",
+                   "runtimeErrorSource": "launcher", "startRefusal": "gpu_busy"}
+        self.assertEqual(bridge.launcher_error(refused),
+                         {"runtimeError": "The model was not started: fixture.", "startRefusal": "gpu_busy"})
+        amd = {**response(running=False), "runtimeError": "llama-server startup failed: Port 18080 is already occupied.",
+               "runtimeErrorSource": "launcher"}
+        self.assertEqual(bridge.launcher_error(amd), {"runtimeError": amd["runtimeError"]})
+        for value in ({**response(running=False), "runtimeError": "The saved Windows process identity is stale.",
+                       "runtimeErrorSource": "observation"},
+                      {**response(running=False), "runtimeError": "older controller"},
+                      response(), {"ok": True, "managed": False, "running": False, "runtimeError": "x",
+                                   "runtimeErrorSource": "launcher"}):
+            with self.subTest(value=value):
+                self.assertEqual(bridge.launcher_error(value), {})
+
     def test_model_store_requires_roundtrip_and_canonical_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             drive = Path(directory).resolve()
@@ -487,6 +522,17 @@ class WindowsLocationTests(unittest.TestCase):
             with self.subTest(raw=raw), patch.object(bridge, '_path') as translate:
                 with self.assertRaises(ValueError):
                     bridge._windows_tools({'ODS_WINDOWS_SYSTEM_DIRECTORY': raw})
+                translate.assert_not_called()
+
+    def test_drive_mount_translates_only_a_drive_letter(self):
+        # wslpath answers with the drive's mount under a custom DrvFS root too.
+        with patch.object(bridge, '_path', return_value='/drives/d/') as translate:
+            self.assertEqual(bridge.drive_mount('D:'), Path('/drives/d'))
+        translate.assert_called_once_with('D:\\', '-u')
+        for raw in ('D', 'D:\\', 'D:\n', 'DE:', '1:', r'\\peer\share', None):
+            with self.subTest(raw=raw), patch.object(bridge, '_path') as translate:
+                with self.assertRaises(ValueError):
+                    bridge.drive_mount(raw)
                 translate.assert_not_called()
 
     def test_missing_legacy_windows_path_has_actionable_error_without_guessing_drive(self):

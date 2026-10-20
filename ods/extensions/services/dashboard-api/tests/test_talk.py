@@ -2110,3 +2110,67 @@ def test_talk_status_survives_an_unreachable_host_agent(talk_client, monkeypatch
 
     assert "hermesTalkAdvisory" not in data["modelCompatibility"]
     assert data["capabilities"]["text_chat"] is True
+
+
+_WHISPER_MANIFEST = (
+    "schema_version: ods.services.v1\n"
+    "service:\n"
+    "  id: whisper\n"
+    "  name: Whisper (STT)\n"
+    "  port: 8000\n"
+    "  health: /health\n"
+)
+
+
+def _later_added_whisper(monkeypatch, tmp_path, compose_name):
+    """A Whisper extension that was off when dashboard-api started."""
+    from types import SimpleNamespace
+
+    import routers.talk as talk
+
+    whisper = tmp_path / "whisper"
+    whisper.mkdir()
+    (whisper / "manifest.yaml").write_text(_WHISPER_MANIFEST)
+    (whisper / compose_name).write_text("services: {}\n")
+    monkeypatch.setattr(talk, "EXTENSIONS_DIR", tmp_path)
+    monkeypatch.setattr(talk, "SERVICES", {})
+    checked = []
+
+    async def healthy(service_id, cfg):
+        checked.append((service_id, cfg["port"], cfg["health"]))
+        return SimpleNamespace(status="healthy")
+
+    monkeypatch.setattr(talk, "check_service_health", healthy)
+    return talk, checked
+
+
+@pytest.mark.asyncio
+async def test_talk_checks_a_voice_service_added_after_startup(monkeypatch, tmp_path):
+    # Extensions → Add renames compose.yaml.disabled without restarting dashboard-api.
+    talk, checked = _later_added_whisper(monkeypatch, tmp_path, "compose.yaml")
+
+    assert await talk._service_state("whisper") == {"configured": True, "status": "healthy"}
+    assert checked == [("whisper", 8000, "/health")]
+
+
+@pytest.mark.asyncio
+async def test_talk_does_not_check_a_voice_service_that_is_still_off(monkeypatch, tmp_path):
+    talk, checked = _later_added_whisper(monkeypatch, tmp_path, "compose.yaml.disabled")
+
+    assert await talk._service_state("whisper") == {"configured": False, "status": "not_configured"}
+    assert checked == []
+
+
+@pytest.mark.asyncio
+async def test_talk_reads_no_manifest_for_a_service_outside_the_library(monkeypatch, tmp_path):
+    import routers.talk as talk
+
+    monkeypatch.setattr(talk, "SERVICES", {})
+    monkeypatch.setattr(talk, "EXTENSIONS_DIR", tmp_path / "missing")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("only Library built-ins are re-read")
+
+    monkeypatch.setattr(talk, "load_extension_manifests", unexpected)
+
+    assert await talk._service_state("livekit") == {"configured": False, "status": "not_configured"}

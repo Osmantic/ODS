@@ -39,6 +39,8 @@ foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
     "Test-WindowsODSNativeLlmOwnsPort",
+    "Get-WindowsDockerPublishedPorts",
+    "Test-WindowsODSComposeOwnsPort",
     "Get-WindowsODSSelectedPortConflicts",
     "Assert-WindowsODSSelectedPortAvailability"
 )) {
@@ -383,6 +385,129 @@ $script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4101; ProcessName = 
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort).Count `
     1 "Without the native AMD runtime no listener is exempt"
 $script:mockListeners.Remove(8080)
+
+# A retained Compose binding is allowed only with the exact install directory,
+# service, publication address and local Desktop listener. No container is stopped.
+if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+$savedDockerFunction = (Get-Item Function:docker).ScriptBlock
+$savedCimFunction = (Get-Item Function:Get-CimInstance).ScriptBlock
+$savedDockerHost = $env:DOCKER_HOST
+$savedMockListeners = $script:mockListeners
+$script:composeChecks = 0
+function Assert-ComposePort {
+    param($Actual, $Expected, [string]$Label)
+    Assert-Equal $Actual $Expected $Label
+    $script:composeChecks++
+}
+function New-ComposePortFixture {
+    param([string]$Id = ('a' * 64), [string]$Directory = $ownedInstall,
+          [string]$Project = 'ods', [string]$Service = 'dashboard', [string]$Address = '127.0.0.1')
+    return [pscustomobject]@{
+        Id = $Id; State = [pscustomobject]@{ Running = $true }
+        Config = [pscustomobject]@{ Labels = [pscustomobject]@{
+            'com.docker.compose.project' = $Project
+            'com.docker.compose.service' = $Service
+            'com.docker.compose.project.working_dir' = $Directory
+        } }
+        NetworkSettings = [pscustomobject]@{ Ports = [pscustomobject]@{
+            '3001/tcp' = @([pscustomobject]@{ HostIp = $Address; HostPort = '23001' })
+            '3001/udp' = @([pscustomobject]@{ HostIp = $Address; HostPort = '23002' })
+            '9099/tcp' = $null
+        } }
+    }
+}
+try {
+    Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue
+    $script:dockerEndpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+    $script:dockerFailure = ''
+    $script:dockerFixture = @(New-ComposePortFixture)
+    function docker {
+        $global:LASTEXITCODE = 0
+        $command = $args -join ' '
+        if ($command -eq 'context show') { return 'desktop-linux' }
+        if ($command -eq 'context inspect desktop-linux --format {{json .Endpoints.docker.Host}}') {
+            return ConvertTo-Json -InputObject $script:dockerEndpoint -Compress
+        }
+        if ($command -eq '--context desktop-linux ps -q --no-trunc') { return $script:dockerFixture.Id }
+        if ($command -like '--context desktop-linux container inspect *') {
+            if ($script:dockerFailure -eq 'exit') { $global:LASTEXITCODE = 1; return '' }
+            if ($script:dockerFailure -eq 'json') { return '{invalid' }
+            if ($script:dockerFailure -eq 'partial') { return '[]' }
+            return ConvertTo-Json -InputObject @($script:dockerFixture) -Depth 12 -Compress
+        }
+        throw "Unexpected Docker command: $command"
+    }
+    $script:desktopProcess = [pscustomobject]@{ ProcessId = 5001; ExecutablePath = (Join-Path $env:ProgramFiles 'Docker\Docker\resources\com.docker.backend.exe') }
+    function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) return $script:desktopProcess }
+    $listener = @{ InUse = $true; ProcessId = 5001; ProcessName = 'com.docker.backend'; Listeners = @([pscustomobject]@{ OwningProcess = 5001; LocalAddress = '127.0.0.1' }) }
+    $bindings = @(Get-WindowsDockerPublishedPorts)
+    Assert-ComposePort $bindings.Count 1 'Only live TCP publications enter ownership proof'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $true 'Exact retained Compose binding is accepted'
+    $secondService = New-ComposePortFixture -Id ('b' * 64) -Service 'dashboard-api'
+    $secondService.NetworkSettings.Ports.'3001/tcp'[0].HostPort = '23002'
+    $script:dockerFixture = @((New-ComposePortFixture), $secondService)
+    $multiBindings = @(Get-WindowsDockerPublishedPorts)
+    Assert-ComposePort $multiBindings.Count 2 'Multiple retained containers are parsed in PS5.1 and PS7'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $multiBindings) $true 'Retained dashboard among multiple containers'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23002 'dashboard-api' $multiBindings) $true 'Retained API among multiple containers'
+    foreach ($case in @(
+        @{ Directory = ''; Project = 'ods'; Service = 'dashboard'; Label = 'Missing working directory' },
+        @{ Directory = 'relative'; Project = 'ods'; Service = 'dashboard'; Label = 'Relative working directory' },
+        @{ Directory = 'C:relative'; Project = 'ods'; Service = 'dashboard'; Label = 'Drive-relative working directory' },
+        @{ Directory = '\relative'; Project = 'ods'; Service = 'dashboard'; Label = 'Root-relative working directory' },
+        @{ Directory = ($ownedInstall + '-other'); Project = 'ods'; Service = 'dashboard'; Label = 'Another ODS installation' },
+        @{ Directory = $ownedInstall; Project = 'foreign'; Service = 'dashboard'; Label = 'Another Compose project' },
+        @{ Directory = $ownedInstall; Project = 'ods'; Service = 'other'; Label = 'Another service on the desired port' }
+    )) {
+        $script:dockerFixture = @(New-ComposePortFixture -Directory $case.Directory -Project $case.Project -Service $case.Service)
+        Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' @(Get-WindowsDockerPublishedPorts)) $false $case.Label
+    }
+    $script:dockerFixture = @(New-ComposePortFixture)
+    foreach ($failure in @('exit', 'json', 'partial')) {
+        $script:dockerFailure = $failure
+        Assert-ComposePort @(Get-WindowsDockerPublishedPorts).Count 0 "Docker $failure fails closed"
+    }
+    $script:dockerFailure = ''
+    $script:dockerEndpoint = 'ssh://other-host'
+    Assert-ComposePort @(Get-WindowsDockerPublishedPorts).Count 0 'Remote context cannot prove a local listener'
+    $script:dockerEndpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+    $env:DOCKER_HOST = 'tcp://other-host:2375'
+    Assert-ComposePort @(Get-WindowsDockerPublishedPorts).Count 0 'DOCKER_HOST override fails closed'
+    Remove-Item Env:DOCKER_HOST
+    $script:dockerFixture = @((New-ComposePortFixture), (New-ComposePortFixture -Id ('b' * 64) -Project 'foreign' -Address '127.0.0.2'))
+    $mixedBindings = @(Get-WindowsDockerPublishedPorts)
+    Assert-ComposePort $mixedBindings.Count 2 'Both foreign and owned publishers are inspected'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $mixedBindings) $false 'Mixed foreign publisher on another address is a conflict'
+    $script:dockerFixture = @((New-ComposePortFixture), (New-ComposePortFixture -Id ('b' * 64) -Address '127.0.0.2'))
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' @(Get-WindowsDockerPublishedPorts)) $false 'Multiple publisher identities are ambiguous'
+    $script:dockerFixture = @(New-ComposePortFixture)
+    $bindings = @(Get-WindowsDockerPublishedPorts)
+    $script:desktopProcess.ExecutablePath = 'C:\Tools\com.docker.backend.exe'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $false 'Process name alone is not ownership'
+    $script:desktopProcess.ExecutablePath = Join-Path $env:ProgramFiles 'Docker\Docker\resources\com.docker.backend.exe'
+    $listener.Listeners += [pscustomobject]@{ OwningProcess = 6002; LocalAddress = '127.0.0.1' }
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $false 'An additional Windows listener fails closed'
+    $listener.Listeners = @([pscustomobject]@{ OwningProcess = 5001; LocalAddress = '127.0.0.2' })
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $false 'Mismatched publication address fails closed'
+    $listener.Listeners = @([pscustomobject]@{ OwningProcess = 5001; LocalAddress = '127.0.0.1' })
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23002 'dashboard' $bindings) $false 'An exposed or UDP port is not a TCP publication'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort @{ InUse = $true; ProcessId = 5001 } $ownedInstall 23001 'dashboard' $bindings) $false 'Incomplete listener evidence fails closed'
+    $script:mockListeners = @{ 23001 = $listener }
+    Assert-ComposePort @(Get-WindowsODSSelectedPortConflicts -PortsToCheck @{ Dashboard = 23001 } -InstallDir $ownedInstall).Count 0 'Retained preflight admits its own service'
+    Assert-ComposePort @(Get-WindowsODSSelectedPortConflicts -PortsToCheck @{ 'Dashboard API' = 23001 } -InstallDir $ownedInstall).Count 1 'Retained preflight rejects another selected service'
+    $script:dockerFixture = @(New-ComposePortFixture -Directory ($ownedInstall + '-other'))
+    $foreignConflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck @{ Dashboard = 23001 } -InstallDir $ownedInstall)
+    $aborted = $false
+    try { $null = Assert-WindowsODSSelectedPortAvailability -Conflicts $foreignConflicts -NonInteractive } catch { $aborted = $_.Exception.Message -eq 'ODS_INSTALL_ABORTED' }
+    Assert-ComposePort $aborted $true 'Non-interactive install still aborts on foreign ownership'
+} finally {
+    Set-Item Function:docker $savedDockerFunction
+    Set-Item Function:Get-CimInstance $savedCimFunction
+    $script:mockListeners = $savedMockListeners
+    if ($null -eq $savedDockerHost) { Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue } else { $env:DOCKER_HOST = $savedDockerHost }
+}
+Write-Host "Retained Compose port ownership: $script:composeChecks checks passed."
+}
 
 function Remove-VoiceSeedDir {
     param([string]$Path)

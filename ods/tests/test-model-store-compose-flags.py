@@ -1,6 +1,7 @@
 """Saved stacks gain only the registered model mounts; no Docker is called."""
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -65,15 +66,24 @@ def test_unregistered_install_keeps_arguments_exactly(tmp_path):
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='macOS shell path runs under POSIX')
 def test_macos_reads_saved_flags_created_before_registration(install):
+    install = install.resolve()
     original = '-f base.yml -f custom.yml'
+    for name in ('base.yml', 'custom.yml'):
+        (install/name).write_text('services: {}\n')
+    library = install/'installers/macos/lib'
+    library.mkdir(parents=True)
+    for name in ('dashboard-private-state.py', 'dashboard-private-state-worker.py'):
+        shutil.copy2(ROOT/'installers/macos/lib'/name, library/name)
+    recipe = 'installers/macos/dashboard-private-state.compose.yaml'
+    shutil.copy2(ROOT/recipe, install/recipe)
     (install/'.compose-flags').write_text(original)
     (install/'scripts').mkdir()
     # Forward only the helper's path; imports remain in the unchanged checkout.
     (install/'scripts/model-store-compose-flags.py').symlink_to(ROOT/'scripts/model-store-compose-flags.py')
     cli = (ROOT/'installers/macos/ods-macos.sh').read_text()
     function = 'get_compose_flags() {'+cli.split('get_compose_flags() {', 1)[1].split('\ncompose_pull_with_retry()', 1)[0]
-    script = 'set -e\nsource "$1"\nINSTALL_DIR="$2"\nensure_hermes_dashboard_session_token() { :; }\n'+function+'\nget_compose_flags\n'
+    script = 'set -e\nNATIVE_LIFECYCLE_CHILD=false\nsource "$1"\nINSTALL_DIR="$2"\nensure_hermes_dashboard_session_token() { :; }\n'+function+'\nget_compose_flags\n'
     result = subprocess.run(['bash', '-s', '--', str(ROOT/'installers/macos/lib/native-model.sh'), str(install)],
         input=script, text=True, capture_output=True, check=True)
-    assert result.stdout.strip() == original+' -f .model-stores.compose.json -f data/.active-model-store.compose.json'
+    assert result.stdout.strip() == '-f base.yml -f '+recipe+' -f custom.yml -f .model-stores.compose.json -f data/.active-model-store.compose.json'
     assert (install/'.compose-flags').read_text() == original

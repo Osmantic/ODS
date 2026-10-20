@@ -12,7 +12,7 @@
 #           ENABLE_VOICE, ENABLE_WORKFLOWS, ENABLE_RAG, ENABLE_HERMES,
 #           GPU_ASSIGNMENT_JSON, COMFYUI_GPU_UUID, WHISPER_GPU_UUID,
 #           EMBEDDINGS_GPU_UUID, LLAMA_SERVER_GPU_UUIDS, LLAMA_ARG_SPLIT_MODE,
-#           LLAMA_ARG_TENSOR_SPLIT,
+#           LLAMA_ARG_TENSOR_SPLIT, GPU_COMPUTE_CAP (optional),
 #           chapter(), ai(), ai_ok(), ai_warn(), log(), warn(), error()
 # Provides: WEBUI_SECRET, N8N_PASS, LITELLM_KEY, LIVEKIT_SECRET,
 #           DASHBOARD_API_KEY, SHIELD_API_KEY, TOKEN_SPY_API_KEY,
@@ -31,6 +31,8 @@ declare -F ods_native_llm_normalize_origin >/dev/null 2>&1 \
     || source "$SCRIPT_DIR/installers/lib/native-llm.sh"
 declare -F ods_amd_target_is_cdna >/dev/null 2>&1 \
     || source "$SCRIPT_DIR/installers/lib/amd-runtime.sh"
+declare -F ods_llama_image_for_compute_cap >/dev/null 2>&1 \
+    || source "$SCRIPT_DIR/installers/lib/tier-map.sh"
 
 ods_progress 38 "directories" "Preparing installation directory"
 chapter "SETTING UP INSTALLATION"
@@ -418,9 +420,9 @@ else
                 _phase06_pixel_source_transition=0
                 # The pending plan is bound to the tree it recorded. Keep the
                 # retired service files: `stage` below either resumes this
-                # release's own plan, which pruned them before staging, or
-                # refuses an older plan so the release that staged it can
-                # still finish or roll it back.
+                # release's own plan, or archives an older untouched unheld
+                # plan after verifying its exact baseline. Held plans retain
+                # their source so that release can finish or roll them back.
                 _phase06_prune_ready=false
             fi
             unset _phase06_source_status
@@ -952,6 +954,7 @@ SERVICE_PORT_DEFAULTS
     LITELLM_KEY=$(_phase06_env_hex_secret LITELLM_KEY 16 "sk-ods-")
     ODS_WINDOWS_SYSTEM_DIRECTORY="$(_env_get_explicit_first ODS_WINDOWS_SYSTEM_DIRECTORY '')"
     ODS_WSL_STATE_ROOT="$(_env_get_explicit_first ODS_WSL_STATE_ROOT '')"
+    ODS_WSL_DISK_DRIVE="$(_env_get_explicit_first ODS_WSL_DISK_DRIVE '')"
     # Host-native llama-server (Windows Portal): the in-stack llama-server is
     # off, and LiteLLM and model-router reach the native server with
     # LLAMA_SERVER_API_KEY. install-core.sh validated the flags.
@@ -1071,6 +1074,12 @@ SERVICE_PORT_DEFAULTS
             *) ai_bad "PIXEL_WEB_SEARCH_PROVIDER must be parallel-free or searxng."; return 1 ;;
         esac
         export PIXEL_WEB_SEARCH_PROVIDER="$PIXEL_WEB_SEARCH_PROVIDER_VALUE"
+        PIXEL_RESPONSE_LANGUAGE_VALUE="$(_env_get_explicit_first PIXEL_RESPONSE_LANGUAGE "")"
+        case "$PIXEL_RESPONSE_LANGUAGE_VALUE" in
+            ""|en) ;;
+            *) ai_bad "PIXEL_RESPONSE_LANGUAGE=$PIXEL_RESPONSE_LANGUAGE_VALUE in .env is not supported. Set it to en, or remove the line to match the owner's language, then rerun the installer."; return 1 ;;
+        esac
+        export PIXEL_RESPONSE_LANGUAGE="$PIXEL_RESPONSE_LANGUAGE_VALUE"
         PIXEL_SOURCE_DIR_VALUE="$_phase06_requested_pixel_dir"
         # Phase 11 installs Pixel in this same installer shell. Preserve the
         # resolved immutable source contract in that shell as well as in .env;
@@ -1192,6 +1201,31 @@ SERVICE_PORT_DEFAULTS
             esac
         done
         unset _amd_image_key _amd_llama_repo
+    fi
+    # A GPU of compute capability 12.1 (DGX Spark GB10, RTX Spark N1X) gets
+    # unusable "????" answers from llama.cpp's CUDA 12 images, the Compose
+    # default included; it runs the CUDA 13 image config/backends/nvidia.json
+    # pins for it. Every step that sets the image (tier default, catalog
+    # selector, preserved model) ran before this, so .env and the phase 08
+    # pull name the same image. A host-native route runs no container.
+    if [[ "$GPU_BACKEND" == "nvidia" && "$NATIVE_LLM_ACTIVE" != "true" && -n "${GPU_COMPUTE_CAP:-}" ]]; then
+        if ! _compute_llama_image="$(ods_nvidia_llama_image_for_compute "$GPU_COMPUTE_CAP" "$SCRIPT_DIR/config/backends/nvidia.json")"; then
+            error "Could not read the llama.cpp image for compute capability $GPU_COMPUTE_CAP from $SCRIPT_DIR/config/backends/nvidia.json, so ODS stopped before writing its settings. The ODS files may be incomplete: download ODS again and rerun the installer. Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+            return 1
+        fi
+        if [[ -n "$_compute_llama_image" ]]; then
+            _mapped_llama_image="$(ods_llama_image_for_compute_cap "${LLAMA_SERVER_IMAGE:-}" "$_compute_llama_image")"
+            if [[ "$_mapped_llama_image" != "${LLAMA_SERVER_IMAGE:-}" ]]; then
+                log "Compute capability $GPU_COMPUTE_CAP: llama-server runs $_mapped_llama_image instead of ${LLAMA_SERVER_IMAGE:-the Compose default}, a CUDA 12 build without kernels for this GPU"
+                LLAMA_SERVER_IMAGE="$_mapped_llama_image"
+            fi
+            if [[ -n "${LLAMA_SERVER_IMAGE_FALLBACK:-}" \
+                && "$(ods_llama_image_for_compute_cap "$LLAMA_SERVER_IMAGE_FALLBACK" "$_compute_llama_image")" != "$LLAMA_SERVER_IMAGE_FALLBACK" ]]; then
+                log "Not writing LLAMA_SERVER_IMAGE_FALLBACK: $LLAMA_SERVER_IMAGE_FALLBACK is a CUDA 12 build without kernels for compute capability $GPU_COMPUTE_CAP"
+                unset LLAMA_SERVER_IMAGE_FALLBACK
+            fi
+        fi
+        unset _compute_llama_image _mapped_llama_image
     fi
     LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
     if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
@@ -1561,6 +1595,7 @@ NATIVE_LLM_CONTAINER_BASE_URL=$(dotenv_value "${NATIVE_LLM_CONTAINER_BASE_URL_VA
 $(if [[ -n "$LLAMA_SERVER_API_KEY_VALUE" ]]; then printf 'LLAMA_SERVER_API_KEY=%s' "$(dotenv_value "$LLAMA_SERVER_API_KEY_VALUE")"; fi)
 $(if [[ -n "${ODS_WINDOWS_SYSTEM_DIRECTORY}" ]]; then printf 'ODS_WINDOWS_SYSTEM_DIRECTORY=%s' "$(dotenv_value "$ODS_WINDOWS_SYSTEM_DIRECTORY")"; fi)
 $(if [[ -n "${ODS_WSL_STATE_ROOT}" ]]; then printf 'ODS_WSL_STATE_ROOT=%s' "$(dotenv_value "$ODS_WSL_STATE_ROOT")"; fi)
+$(if [[ -n "${ODS_WSL_DISK_DRIVE}" ]]; then printf 'ODS_WSL_DISK_DRIVE=%s' "$(dotenv_value "$ODS_WSL_DISK_DRIVE")"; fi)
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=$(dotenv_value "${ANTHROPIC_API_KEY:-}")
@@ -1597,6 +1632,7 @@ MODEL_RUNTIME_PROFILE=$(dotenv_quote "${MODEL_RUNTIME_PROFILE:-}")
 MODEL_RUNTIME_PROFILE_LABEL=$(dotenv_quote "${MODEL_RUNTIME_PROFILE_LABEL:-}")
 MODEL_RUNTIME_PROFILE_SOURCE=$(dotenv_quote "${MODEL_RUNTIME_PROFILE_SOURCE:-}")
 GPU_BACKEND=${GPU_BACKEND}
+$(if [[ -n "${GPU_COMPUTE_CAP:-}" ]]; then echo "GPU_COMPUTE_CAP=${GPU_COMPUTE_CAP}"; fi)
 SYSTEM_RAM_GB=${RAM_GB:-0}
 N_GPU_LAYERS=$(dotenv_value "${N_GPU_LAYERS_VALUE}")
 $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_SERVER_IMAGE}"; fi)
@@ -1624,6 +1660,12 @@ $(if [[ -n "${LLAMA_ARG_SPEC_TYPE:-}" ]]; then echo "LLAMA_ARG_SPEC_TYPE=${LLAMA
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_N_MAX:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_N_MAX=${LLAMA_ARG_SPEC_DRAFT_N_MAX}"; fi)
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_TYPE_K:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_TYPE_K=${LLAMA_ARG_SPEC_DRAFT_TYPE_K}"; fi)
 $(if [[ -n "${LLAMA_ARG_SPEC_DRAFT_TYPE_V:-}" ]]; then echo "LLAMA_ARG_SPEC_DRAFT_TYPE_V=${LLAMA_ARG_SPEC_DRAFT_TYPE_V}"; fi)
+# Model activation sets these for the active model only: an imported model's
+# vision projector and a fixed chat template. A rerun keeps them only for the
+# same model (scripts/preserve-active-model.py).
+$(if [[ -n "${LLAMA_ARG_MMPROJ:-}" ]]; then echo "LLAMA_ARG_MMPROJ=$(dotenv_value "$LLAMA_ARG_MMPROJ")"; fi)
+$(if [[ -n "${MODEL_CHAT_TEMPLATE_OVERRIDE:-}" ]]; then echo "MODEL_CHAT_TEMPLATE_OVERRIDE=$(dotenv_value "$MODEL_CHAT_TEMPLATE_OVERRIDE")"; fi)
+$(if [[ -n "${LLAMA_ARG_CHAT_TEMPLATE_FILE:-}" ]]; then echo "LLAMA_ARG_CHAT_TEMPLATE_FILE=$(dotenv_value "$LLAMA_ARG_CHAT_TEMPLATE_FILE")"; fi)
 LLAMA_CPU_LIMIT=${LLAMA_CPU_LIMIT}
 LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 
@@ -1717,6 +1759,7 @@ PIXEL_SOURCE_URL=$(dotenv_quote "$PIXEL_SOURCE_URL_VALUE")
 PIXEL_SOURCE_REF=$(dotenv_value "${PIXEL_SOURCE_REF_VALUE}")
 PIXEL_SOURCE_DIR=$(dotenv_quote "$PIXEL_SOURCE_DIR_VALUE")
 $(if [[ -n "$PIXEL_WEB_SEARCH_PROVIDER_VALUE" ]]; then printf 'PIXEL_WEB_SEARCH_PROVIDER=%s\n' "$PIXEL_WEB_SEARCH_PROVIDER_VALUE"; fi)
+$(if [[ -n "${PIXEL_RESPONSE_LANGUAGE_VALUE:-}" ]]; then printf 'PIXEL_RESPONSE_LANGUAGE=%s\n' "$PIXEL_RESPONSE_LANGUAGE_VALUE"; fi)
 PIXEL_OPENWEBUI_KEY=$(dotenv_value "${PIXEL_OPENWEBUI_KEY_VALUE}")
 PIXEL_MODEL_RELAY_KEY=$(dotenv_value "${PIXEL_MODEL_RELAY_KEY_VALUE}")
 PIXEL_MODEL_RELAY_PORT=$(dotenv_value "${PIXEL_MODEL_RELAY_PORT_VALUE}")

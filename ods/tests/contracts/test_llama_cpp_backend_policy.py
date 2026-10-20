@@ -25,7 +25,7 @@ class BackendPolicyTests(unittest.TestCase):
             'docker-compose.amd-rocm.yml', 'docker-compose.intel.yml', 'docker-compose.apple.yml',
             'docker-compose.arc.yml', 'images/llama-sycl/Dockerfile',
             'installers/windows/lib/constants.ps1', 'installers/windows/lib/native-llama-runtime.ps1',
-            'installers/phases/06-directories.sh',
+            'installers/phases/06-directories.sh', 'config/backends/nvidia.json',
         })
         for name in paths:
             target = self.root / name
@@ -66,6 +66,25 @@ class BackendPolicyTests(unittest.TestCase):
                 self.replace(name, CONTRACT.BACKEND_BUILDS[backend], 'b99999')
                 self.assertTrue(any(f'{backend} release policy' in error for error in self.errors()))
                 (self.root / name).write_bytes(original)
+
+    def test_compute_121_image_is_the_cuda13_build_of_the_nvidia_release(self):
+        contract = 'config/backends/nvidia.json'
+        image = json.loads((self.root / contract).read_text())['runtime']['llama_server'][
+            'container_images_by_compute']['12.1']
+        for label, replacement, expected in (
+            ('another release', image.replace(CONTRACT.BACKEND_BUILDS['nvidia'], 'b9014'), 'must be the NVIDIA release'),
+            ('a CUDA 12 tag', image.replace('server-cuda13-', 'server-cuda-'), 'official server-cuda13-* tag@digest'),
+            ('no digest', image.split('@')[0], 'official server-cuda13-* tag@digest'),
+        ):
+            with self.subTest(label):
+                original = (self.root / contract).read_bytes()
+                self.replace(contract, image, replacement)
+                self.assertTrue(any(expected in error for error in self.errors()), self.errors())
+                (self.root / contract).write_bytes(original)
+        original = (self.root / contract).read_bytes()
+        self.replace(contract, '"12.1": "', '"12.0": "')
+        self.assertTrue(any('must map 12.1' in error for error in self.errors()))
+        (self.root / contract).write_bytes(original)
 
     def test_digest_cannot_be_removed(self):
         ref = CONTRACT.compose_default('docker-compose.nvidia.yml')
