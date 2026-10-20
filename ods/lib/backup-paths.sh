@@ -75,6 +75,7 @@ ODS_BACKUP_EXCLUDED_DATA_PATHS=(
     "data/config-backups"                # .env snapshots; .env itself is backed up
     "data/remote-provider"               # routing state and secrets rendered by the installer
     "data/pixel-chat-results"            # SSE delivery receipts, pruned after 7 days
+    "data/.dashboard-private-stores"     # migration custody; live images exported separately
 )
 
 # Every user-data path to capture from (or restore into) the install rooted

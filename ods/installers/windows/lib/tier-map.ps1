@@ -728,6 +728,79 @@ function Get-CatalogModelSelectorRequiredGB {
     return $estimate.DeviceGiB
 }
 
+function Get-CatalogModelMemoryNeed {
+    <#
+    .SYNOPSIS
+        GPU memory and Windows commit a model needs at a context, in GiB.
+    .DESCRIPTION
+        DeviceNeedGiB is the device estimate; a runtime profile's measured
+        estimated_required_gb wins at the profile's own context. CommitNeedGiB
+        adds host state: the estimate's host checkpoints, or the profile's
+        measured estimated_host_gb. On Windows every GPU allocation counts
+        against the commit limit, so commit is device plus host memory.
+    #>
+    param([object]$Model, [object]$RuntimeProfile = $null, [int]$ContextLength = 0)
+    $estimate = Get-CatalogRuntimeEstimate -Model $Model -RuntimeProfile $RuntimeProfile -ContextLength $ContextLength
+    $device = [double]$estimate.DeviceGiB
+    $hostGiB = [double]$estimate.TotalGiB - [double]$estimate.DeviceGiB
+    $method = $estimate.Method
+    $atProfileContext = $RuntimeProfile -and $RuntimeProfile.context_length -and [int]$RuntimeProfile.context_length -eq [int]$estimate.ContextLength
+    if ($atProfileContext -and $null -ne $RuntimeProfile.estimated_required_gb -and (Get-CatalogPositiveNumber $RuntimeProfile.estimated_required_gb) -gt 0) {
+        $device = Get-CatalogPositiveNumber $RuntimeProfile.estimated_required_gb
+        $method = "authored"
+    }
+    if ($atProfileContext -and $null -ne (Get-CatalogProperty $RuntimeProfile "estimated_host_gb")) {
+        $hostGiB = Get-CatalogPositiveNumber (Get-CatalogProperty $RuntimeProfile "estimated_host_gb")
+    }
+    return [pscustomobject]@{
+        ContextLength = [int]$estimate.ContextLength
+        DeviceNeedGiB = [Math]::Round($device, 2)
+        CommitNeedGiB = [Math]::Round($device + $hostGiB, 2)
+        Method = $method
+    }
+}
+
+function Test-ODSCatalogModelArtifacts {
+    <#
+    .SYNOPSIS
+        The files a catalog model downloads, each { File; Url; Sha256;
+        SizeBytes }, or $null when the entry cannot be installed and verified.
+    .DESCRIPTION
+        One file needs gguf_url and gguf_sha256; a split model needs every
+        gguf_parts entry with file, url, sha256 and size_bytes. A vision
+        projector comes from the flat mmproj_file, mmproj_url, mmproj_sha256
+        and mmproj_size_bytes fields, the ones the host agent reads. The
+        generic rankers keep their own rule (a gguf_url).
+    #>
+    param([object]$Model)
+    $artifacts = @()
+    # Get-CatalogProperty returns the list whole; enumerate it here.
+    $rawParts = Get-CatalogProperty $Model "gguf_parts"
+    $parts = @(@($rawParts) | Where-Object { $null -ne $_ })
+    if ($parts.Count) {
+        foreach ($part in $parts) {
+            $size = Get-CatalogPositiveNumber (Get-CatalogProperty $part "size_bytes")
+            if (-not "$($part.file)" -or -not "$($part.url)" -or "$($part.sha256)" -notmatch '^[0-9A-Fa-f]{64}$' -or $size -le 0) { return $null }
+            $artifacts += [pscustomobject]@{ File = "$($part.file)"; Url = "$($part.url)"; Sha256 = "$($part.sha256)".ToLowerInvariant(); SizeBytes = [long]$size }
+        }
+    } else {
+        $sha = "$(Get-CatalogProperty $Model "gguf_sha256")"
+        if (-not "$($Model.gguf_file)" -or -not "$($Model.gguf_url)" -or $sha -notmatch '^[0-9A-Fa-f]{64}$') { return $null }
+        $size = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "size_bytes")
+        if ($size -le 0) { $size = (Get-CatalogPositiveNumber (Get-CatalogProperty $Model "size_mb")) * 1MB }
+        $artifacts += [pscustomobject]@{ File = "$($Model.gguf_file)"; Url = "$($Model.gguf_url)"; Sha256 = $sha.ToLowerInvariant(); SizeBytes = [long]$size }
+    }
+    $projector = "$(Get-CatalogProperty $Model "mmproj_file")"
+    if ($projector) {
+        $url = "$(Get-CatalogProperty $Model "mmproj_url")"
+        $sha = "$(Get-CatalogProperty $Model "mmproj_sha256")"
+        $size = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "mmproj_size_bytes")
+        if (-not $url -or $sha -notmatch '^[0-9A-Fa-f]{64}$' -or $size -le 0) { return $null }
+        $artifacts += [pscustomobject]@{ File = $projector; Url = $url; Sha256 = $sha.ToLowerInvariant(); SizeBytes = [long]$size }
+    }
+    return ,$artifacts
+}
+
 function Get-CatalogFitMarginGB {
     param([double]$CapacityGB, [string]$MemoryClass)
     if ($MemoryClass -ne "discrete") { return 0.0 }
@@ -800,12 +873,24 @@ function Test-CatalogModelContextFit {
     return [bool](Test-CatalogMemoryFits -RequiredGB $required -CapacityGB $memory.CapacityGB -MemoryClass $memory.MemoryClass -ArchitectureEstimate $architecture)
 }
 
+function Resolve-CatalogHostArchitecture {
+    param([string]$HostArchitecture = "")
+    if ($HostArchitecture) { return (Normalize-HostArchitecture -HostArchitecture $HostArchitecture) }
+    $hostArch = Normalize-HostArchitecture -HostArchitecture $env:HOST_ARCH
+    if ($hostArch -eq "unknown") { $hostArch = Get-HostArchitecture }
+    return $hostArch
+}
+
 function Get-CatalogRuntimeProfile {
     param(
         [object]$Model,
         [hashtable]$GpuInfo,
         [int]$SystemRamGB,
-        [switch]$IgnoreRamMinimum
+        [switch]$IgnoreRamMinimum,
+        # Empty: $env:HOST_ARCH, else this PowerShell's process architecture.
+        # Windows on Arm callers pass arm64: an x64 PowerShell runs emulated
+        # there and reports AMD64.
+        [string]$HostArchitecture = ""
     )
 
     if (-not $Model.PSObject.Properties["runtime_profiles"]) { return $null }
@@ -815,8 +900,7 @@ function Get-CatalogRuntimeProfile {
     $backend = ConvertTo-CatalogBackend $GpuInfo.Backend
     $memoryType = "$($GpuInfo.MemoryType)".ToLowerInvariant()
     if (-not $memoryType) { $memoryType = "discrete" }
-    $hostArch = Normalize-HostArchitecture -HostArchitecture $env:HOST_ARCH
-    if ($hostArch -eq "unknown") { $hostArch = Get-HostArchitecture }
+    $hostArch = Resolve-CatalogHostArchitecture -HostArchitecture $HostArchitecture
     $vramGB = [double]$GpuInfo.VramMB / 1024.0
 
     foreach ($runtimeProfile in $profiles) {
@@ -917,11 +1001,12 @@ function Get-CatalogModelCandidate {
         [double]$CapacityGB,
         [string]$MemoryClass,
         [int]$MinContext = 0,
-        [int]$Priority = -1
+        [int]$Priority = -1,
+        [string]$HostArchitecture = ""
     )
 
-    $runtimeProfile = Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
-    if (-not $runtimeProfile -and (Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -IgnoreRamMinimum)) { return $null }
+    $runtimeProfile = Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -HostArchitecture $HostArchitecture
+    if (-not $runtimeProfile -and (Get-CatalogRuntimeProfile -Model $Model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -IgnoreRamMinimum -HostArchitecture $HostArchitecture)) { return $null }
     if ($Priority -lt 0) { $Priority = Get-CatalogSelectionPriority -Model $Model -MemoryClass $MemoryClass }
     $evidence = Get-CatalogEvidenceAdjustment -Model $Model
     $includeHost = ($MemoryClass -eq "cpu")
@@ -975,7 +1060,8 @@ function Get-CatalogRankedCandidates {
         [string]$MemoryClass,
         [string]$ModelProfileName,
         [int]$MinContext = 0,
-        [switch]$RequireMinContext
+        [switch]$RequireMinContext,
+        [string]$HostArchitecture = ""
     )
 
     $candidates = @()
@@ -987,7 +1073,7 @@ function Get-CatalogRankedCandidates {
         $priority = Get-CatalogSelectionPriority -Model $model -MemoryClass $MemoryClass
         if ($priority -le 0) { continue }
         if ($CapacityGB -lt (Get-CatalogMinimumCapacity -Model $model -MemoryClass $MemoryClass)) { continue }
-        $candidate = Get-CatalogModelCandidate -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $CapacityGB -MemoryClass $MemoryClass -MinContext $MinContext -Priority $priority
+        $candidate = Get-CatalogModelCandidate -Model $model -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $CapacityGB -MemoryClass $MemoryClass -MinContext $MinContext -Priority $priority -HostArchitecture $HostArchitecture
         if (-not $candidate) { continue }
         if ($RequireMinContext -and -not $candidate.MeetsMinContext) { continue }
         $familyMatch = if ($ModelProfileName -eq "gemma4" -and "$($model.family)".ToLowerInvariant() -eq "gemma4") { 1 } else { 0 }
@@ -1056,7 +1142,8 @@ function Resolve-CatalogModelRecommendation {
         [int]$SystemRamGB,
         [string]$SourceRoot,
         [int]$MinContext = 0,
-        [switch]$RequireMinContext
+        [switch]$RequireMinContext,
+        [string]$HostArchitecture = ""
     )
 
     if ($env:ODS_DISABLE_CATALOG_MODEL_SELECTOR -eq "true" -or $Tier -eq "CLOUD") {
@@ -1081,10 +1168,7 @@ function Resolve-CatalogModelRecommendation {
     $memory = Get-CatalogModelSelectorMemory -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB
     $capacityGb = [double]$memory.CapacityGB
     $memoryClass = $memory.MemoryClass
-    $hostArchName = Normalize-HostArchitecture -HostArchitecture $env:HOST_ARCH
-    if ($hostArchName -eq "unknown") {
-        $hostArchName = Get-HostArchitecture
-    }
+    $hostArchName = Resolve-CatalogHostArchitecture -HostArchitecture $HostArchitecture
 
     $backendName = "$($GpuInfo.Backend)".ToLowerInvariant()
     $memoryTypeName = "$($GpuInfo.MemoryType)".ToLowerInvariant()
@@ -1106,7 +1190,7 @@ function Resolve-CatalogModelRecommendation {
         }
         $archCandidate = $null
         if ($archModel -and $archModel.gguf_url -and (Test-CatalogModelInstallRecommendationAllowed -Model $archModel)) {
-            $archCandidate = Get-CatalogModelCandidate -Model $archModel -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -MinContext $MinContext
+            $archCandidate = Get-CatalogModelCandidate -Model $archModel -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -MinContext $MinContext -HostArchitecture $HostArchitecture
             if ($archCandidate -and $RequireMinContext -and -not $archCandidate.MeetsMinContext) { $archCandidate = $null }
         }
         if ($archCandidate) {
@@ -1128,7 +1212,7 @@ function Resolve-CatalogModelRecommendation {
         }
     }
 
-    $ranked = @(Get-CatalogRankedCandidates -Catalog $catalog -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -ModelProfileName $modelProfileName -MinContext $MinContext -RequireMinContext:$RequireMinContext)
+    $ranked = @(Get-CatalogRankedCandidates -Catalog $catalog -GpuInfo $GpuInfo -SystemRamGB $SystemRamGB -CapacityGB $capacityGb -MemoryClass $memoryClass -ModelProfileName $modelProfileName -MinContext $MinContext -RequireMinContext:$RequireMinContext -HostArchitecture $HostArchitecture)
     if ($ranked.Count -eq 0) {
         if ($RequireMinContext -and $MinContext -gt 0) {
             throw "No catalog model fits the detected memory at $MinContext context. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."

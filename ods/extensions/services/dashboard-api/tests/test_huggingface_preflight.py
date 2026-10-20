@@ -552,6 +552,24 @@ def test_storage_check_allows_for_a_windows_managed_model_store(monkeypatch):
     assert models_router._MODEL_STORAGE_TIMEOUT_SECONDS >= 15
 
 
+@pytest.mark.parametrize("wsl", [
+    {"windowsDrive": "C:", "windowsDriveChecked": True},
+    {"windowsDrive": None, "windowsDriveChecked": False},
+])
+def test_storage_check_keeps_the_wsl_windows_drive_fields(monkeypatch, wsl):
+    import asyncio
+
+    import routers.models as models_router
+
+    storage = {"freeBytes": 73873989632, "totalBytes": 1022580748288, "marginBytes": 51129037414}
+    monkeypatch.setattr(models_router, "request_agent_json",
+                        lambda *_args, **_kwargs: {**storage, **wsl, "extra": "dropped"})
+
+    status = asyncio.run(models_router._model_storage_status())
+
+    assert status == {**storage, **wsl}
+
+
 def _busy(operation):
     from fastapi import HTTPException
 

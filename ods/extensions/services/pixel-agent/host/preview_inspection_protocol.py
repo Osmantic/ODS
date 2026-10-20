@@ -51,6 +51,22 @@ PAINT_SCOPE = " Pixel paint was checked only for explicit assert-painted steps, 
 # only of fill. workspace-preview-inspect.mjs mirrors both exactly.
 STEP_SCOPE = "Only the listed steps were tested, each only as stated here. CSS layout visibility, normalized visible-text assertions and click dispatches do not test pixel paint; no step tests occlusion, clipping, a full accessibility audit, or overall functionality."
 PRESS_FILL_SCOPE = " Native non-sensitive text and number fields were filled only with explicit synthetic values; number constraint flags are observations, not a claim of form validity. Fill sends no key events and does not submit forms."
+# One viewport screenshot after the steps, only when the plugin asks for it
+# (a model that accepts images). The directive sits beside the plan, never in
+# it: plan_hash, scope and every receipt field stay those of the plan alone.
+# workspace-preview-inspect.mjs and preview-screenshot.mjs mirror these bounds.
+SCREENSHOT_CAPABILITY = "viewport-screenshot-v1"
+MAX_SCREENSHOT_SIDE = 1200  # OpenClaw re-encodes larger tool images (DEFAULT_IMAGE_MAX_DIMENSION_PX)
+MIN_SCREENSHOT_SIDE = 64
+MAX_SCREENSHOT_PIXELS = 1024 * 1024
+MIN_SCREENSHOT_PIXELS = 4096
+# The plugin's Tool Search envelope must stay within its run guard's 256 KiB bound.
+MAX_SCREENSHOT_BYTES = 128 * 1024
+MIN_SCREENSHOT_BYTES = 16 * 1024
+SCREENSHOT_OMISSIONS = ("capability_missing", "time_budget", "page_unavailable", "capture_failed", "too_large")
+# The request line may carry the directive beside a plan of MAX_REQUEST bytes.
+MAX_REQUEST_FRAME = MAX_REQUEST + 128
+MAX_SCREENSHOT_RESULT = MAX_RESULT + 4 * ((MAX_SCREENSHOT_BYTES + 2) // 3) + 1024
 
 
 def inspection_scope(request):
@@ -166,8 +182,90 @@ def canonical(value):
     ).encode()
 
 
+def plan_request(request):
+    """The request without its screenshot directive: what plan_hash binds."""
+    return {key: value for key, value in request.items() if key != "screenshot"}
+
+
 def plan_hash(request):
-    return hashlib.sha256(canonical(request)).hexdigest()
+    return hashlib.sha256(canonical(plan_request(request))).hexdigest()
+
+
+def validate_screenshot_directive(value):
+    exact(value, ("maxSide", "maxPixels", "maxBytes"))
+    for key, low, high in (("maxSide", MIN_SCREENSHOT_SIDE, MAX_SCREENSHOT_SIDE),
+                           ("maxPixels", MIN_SCREENSHOT_PIXELS, MAX_SCREENSHOT_PIXELS),
+                           ("maxBytes", MIN_SCREENSHOT_BYTES, MAX_SCREENSHOT_BYTES)):
+        if type(value[key]) is not int or not low <= value[key] <= high:
+            raise Invalid("invalid screenshot directive")
+    return value
+
+
+def jpeg_size(data):
+    """Width and height from a baseline or progressive JPEG frame header."""
+    if not isinstance(data, (bytes, bytearray)) or data[:3] != b"\xff\xd8\xff" or data[-2:] != b"\xff\xd9":
+        raise Invalid("invalid jpeg")
+    position = 2
+    while position + 4 <= len(data):
+        if data[position] != 0xFF:
+            raise Invalid("invalid jpeg")
+        marker = data[position + 1]
+        if marker == 0xFF:  # fill byte before a marker
+            position += 1
+            continue
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:  # markers without a length
+            position += 2
+            continue
+        if marker in (0xD9, 0xDA):  # end of image or scan data before any frame header
+            break
+        length = int.from_bytes(data[position + 2:position + 4], "big")
+        if length < 2:
+            raise Invalid("invalid jpeg")
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+            if length < 7 or position + 9 > len(data):
+                raise Invalid("invalid jpeg")
+            height = int.from_bytes(data[position + 5:position + 7], "big")
+            width = int.from_bytes(data[position + 7:position + 9], "big")
+            if not width or not height:
+                raise Invalid("invalid jpeg")
+            return width, height
+        position += 2 + length
+    raise Invalid("invalid jpeg")
+
+
+def validate_screenshot(value, directive):
+    """The capsule's screenshot member: one bounded JPEG, or why it is omitted."""
+    if isinstance(value, dict) and set(value) == {"status", "reason"}:
+        if value["status"] != "omitted" or value["reason"] not in SCREENSHOT_OMISSIONS:
+            raise Invalid("invalid screenshot")
+        return value
+    exact(value, ("status", "mimeType", "width", "height", "bytes", "sha256", "data"))
+    if (
+        value["status"] != "captured"
+        or value["mimeType"] != "image/jpeg"
+        or any(type(value[key]) is not int for key in ("width", "height", "bytes"))
+        or not 1 <= value["width"] <= directive["maxSide"]
+        or not 1 <= value["height"] <= directive["maxSide"]
+        or value["width"] * value["height"] > directive["maxPixels"]
+        or not 1 <= value["bytes"] <= directive["maxBytes"]
+        or not isinstance(value["sha256"], str)
+        or not re.fullmatch("[a-f0-9]{64}", value["sha256"])
+        or not isinstance(value["data"], str)
+        or len(value["data"]) != 4 * ((value["bytes"] + 2) // 3)
+    ):
+        raise Invalid("invalid screenshot")
+    try:
+        data = base64.b64decode(value["data"], validate=True)
+    except ValueError:
+        raise Invalid("invalid screenshot") from None
+    if (
+        len(data) != value["bytes"]
+        or base64.b64encode(data).decode() != value["data"]
+        or hashlib.sha256(data).hexdigest() != value["sha256"]
+        or jpeg_size(data) != (value["width"], value["height"])
+    ):
+        raise Invalid("invalid screenshot")
+    return value
 
 
 def printable(value, chars, size):
@@ -184,7 +282,10 @@ def printable(value, chars, size):
 
 
 def validate_request(value):
-    exact(value, ("schemaVersion", "action", "siteId", "sha256", "viewport", "steps"))
+    keys = ("schemaVersion", "action", "siteId", "sha256", "viewport", "steps")
+    exact(value, (*keys, "screenshot") if isinstance(value, dict) and "screenshot" in value else keys)
+    if "screenshot" in value:
+        validate_screenshot_directive(value["screenshot"])
     if (
         type(value["schemaVersion"]) is not int
         or value["schemaVersion"] != 1
@@ -264,7 +365,7 @@ def validate_request(value):
                 or not printable(locator["name"], 120, 480)
             ):
                 raise Invalid("invalid semantic locator")
-    if len(canonical(value)) > MAX_REQUEST:
+    if len(canonical(plan_request(value))) > MAX_REQUEST:
         raise Invalid("request too large")
     return value
 

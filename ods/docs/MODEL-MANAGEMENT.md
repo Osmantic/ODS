@@ -129,6 +129,18 @@ dialog and imports the weights alone until Windows setup is run again. Docker
 Desktop installations whose llama.cpp runs on Windows itself import the weights
 alone.
 
+When the switch to a model finishes, ODS reads llama.cpp's own report of
+whether a projector is loaded (`/props` `modalities.vision`). If it is, Portal
+treats the model as able to read images: images you attach are sent without
+the image-test confirmation, and Portal's preview check shows the model a
+screenshot of the page it built. A model that runs without a projector keeps
+the earlier setting, so Portal asks before sending it an image. An
+installation already running a vision model picks this up on its next switch.
+Updating ODS (rerunning the installer) keeps the model and its projector, as
+long as the projector file is still beside the weights, but it clears this
+setting: Portal asks before sending images again until your next switch on
+the Models page reads the projector back.
+
 These checks never block on missing information: when Hugging Face does not
 answer (for example a rate limit), the dialog says which checks could not run
 and the import stays available. Each header read counts as one download in
@@ -349,6 +361,12 @@ credential. Enter the provider model ID, context window, maximum output tokens,
 and whether that route supports reasoning. Those limits become Pixel's managed
 runtime contract, so model-family and context changes are explicit instead of
 being guessed from a provider response.
+
+Maximum output tokens defaults to a quarter of the context window, at most
+32768 (`ods remote-provider configure --max-tokens` sets it). Portal writes each
+file in one reply, so use the provider's real output limit. When a reply still
+reaches it, the cut-off tool call does not run: Portal names the limit and the
+file, and the chat's next turn writes that file in smaller parts.
 
 For a direct HTTPS provider, **Configure** first performs a bounded provider
 probe. ODS then writes the private egress credential, renders the cloud

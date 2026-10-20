@@ -21,12 +21,12 @@ const mount = async (fetchMock, strict = false) => {
 const change = () => edit('Reasoning visibility', 'stream')
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
-it('renders 20 accessible controls with automatic values and no write on a new install', async () => {
+it('offers an explicit first save with automatic values and no write on a new install', async () => {
   const fetchMock = vi.fn(async () => response(doc()))
   await mount(fetchMock)
   expect(screen.getAllByRole('spinbutton').length + screen.getAllByRole('combobox').length).toBe(20)
   expect(screen.getByLabelText('Reasoning visibility')).toHaveValue('')
-  expect(save()).toBeDisabled()
+  expect(save()).toBeEnabled()
   expect(screen.getByText('Saving preferences does not apply them to Portal.')).toBeVisible()
   expect(fetchMock.mock.calls.every(([, options]) => options.method !== 'POST')).toBe(true)
 })

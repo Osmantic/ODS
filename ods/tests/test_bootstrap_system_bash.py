@@ -80,6 +80,26 @@ class SystemBashBootstrapTests(unittest.TestCase):
                 self.assertEqual(json.loads(self.result.read_text()),
                     ['--non-interactive', '--tier', '1', '--summary-json', 'a b.json'])
 
+    def test_rerun_replaces_the_source_a_stopped_attempt_left(self):
+        # An install that stopped in its checks (fleet 2026-10-18: a port in
+        # use) leaves only source files and says to run the same command again.
+        install = self.home / 'ods'
+        for label, shell in interpreters().items():
+            for args in [(), ('--non-interactive',)]:
+                with self.subTest(label, args=args):
+                    if self.result.exists():
+                        self.result.unlink()
+                    subprocess.run(['rm', '-rf', str(install)], check=True)
+                    install.mkdir()
+                    for name in ['ods-cli', 'ods-uninstall.sh', 'stopped-attempt']:
+                        (install / name).write_text('from the stopped attempt\n')
+                    result = self.bootstrap(shell, *args)
+                    output = result.stdout + result.stderr
+                    self.assertEqual(result.returncode, 0, output)
+                    self.assertIn('An earlier install attempt stopped before ODS was configured', output)
+                    self.assertFalse((install / 'stopped-attempt').exists(), output)
+                    self.assertEqual(json.loads(self.result.read_text()), list(args))
+
 
 class BootstrapGpuNoticeTests(unittest.TestCase):
     """Run the production preliminary check without invoking the installer."""

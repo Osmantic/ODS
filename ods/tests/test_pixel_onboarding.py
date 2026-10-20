@@ -68,7 +68,7 @@ def test_update_preserves_budget_only_for_same_route(contract):
     assert "modelRouteFingerprint" not in json.loads(answers.read_text())
 
 
-@pytest.mark.parametrize("policy", ["supported", "unsupported", "unknown"])
+@pytest.mark.parametrize("policy", ["unsupported", "unknown"])
 def test_image_policy_is_preserved_only_for_same_unambiguous_route(contract, policy):
     answers, args = contract
     assert render(args).returncode == 0
@@ -81,6 +81,64 @@ def test_image_policy_is_preserved_only_for_same_unambiguous_route(contract, pol
     args[3] = "another-model"
     assert render(args).returncode == 0
     assert json.loads(answers.read_text())["modelImageInput"] == "unknown"
+
+
+def test_a_vision_claim_is_never_carried_through_a_render(contract):
+    # "supported" needs a loaded projector, which the renderer cannot see.
+    # The rest of the same route's contract is still preserved.
+    answers, args = contract
+    assert render(args).returncode == 0
+    value = json.loads(answers.read_text())
+    answers.write_text(json.dumps(dict(value, modelImageInput="supported", modelMaxTokens=2300,
+                                       modelThinkingControl="always")))
+    assert render(args).returncode == 0
+    rendered = json.loads(answers.read_text())
+    assert rendered["modelMaxTokens"] == 2300
+    assert rendered["modelThinkingControl"] == "always"
+    assert rendered["modelImageInput"] == "unknown"
+
+
+def test_installer_rerun_after_a_vision_switch_waits_for_the_next_readback(contract):
+    # A Models-page switch declared "supported" from llama-server's /props
+    # readback. Rerunning the installer (how ODS updates) keeps the model, and
+    # keeps LLAMA_ARG_MMPROJ only while its projector file still checks out,
+    # so the model may now run without its projector. The rerun must not keep
+    # the claim; the next switch reads the projector back.
+    answers, args = contract
+    assert render(args).returncode == 0
+    switch = '''
+source "$1/pixel-host-install.sh"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_update_onboarding_model fixture "$2" "$3" Qwen3.5-9B 16384 2300 false "" supported always
+'''
+    installer = '''
+source "$1/pixel-host-install.sh"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_gateway_model_alias() { printf 'ods/current'; }
+_ods_pixel_runtime_model_identity() { printf 'Qwen3.5-9B'; }
+ai_bad() { printf '%s\\n' "$*" >&2; }
+_ods_pixel_write_onboarding fixture "$2" "$3" /opt/pixel/bin/openclaw /opt/pixel/plugin "$4"
+'''
+    environment = {**os.environ, "MAX_CONTEXT": "16384", "LLAMA_REASONING": "off",
+                   "PIXEL_MODEL_RELAY_KEY": "test-only-relay-key",
+                   "PIXEL_MODEL_RELAY_PORT": "4006", "PIXEL_GATEWAY_PORT": "18789",
+                   "SEARXNG_PORT": "8888"}
+
+    def run(script):
+        result = subprocess.run(["bash", "-eu", "-c", script, "onboarding-test",
+                                 str(LIB), args[2], str(answers), "a" * 64],
+                                cwd="/", env=environment, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(answers.read_text())
+
+    assert run(switch)["modelImageInput"] == "supported"
+    rerun = run(installer)
+    # The same route: the rerun keeps the switch's budget and control.
+    assert rerun["modelName"] == "ODS Current (Qwen3.5-9B)"
+    assert rerun["modelMaxTokens"] == 2300
+    assert rerun["modelThinkingControl"] == "always"
+    assert rerun["modelImageInput"] == "unknown"
+    assert run(switch)["modelImageInput"] == "supported"
 
 
 def test_remote_route_without_fresh_fingerprint_cannot_preserve_vision_claim(contract):

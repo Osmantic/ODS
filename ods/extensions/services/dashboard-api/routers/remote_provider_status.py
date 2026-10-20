@@ -828,6 +828,29 @@ def _proof_record_failure(
     return result
 
 
+def _provider_not_serving(response_text: str) -> dict[str, Any] | None:
+    """The host agent's report that the active route's provider fails chats.
+
+    Only its code, the provider's HTTP status and the agent's bounded,
+    key-redacted error line pass; any other host detail stays dropped.
+    """
+    try:
+        payload = json.loads(response_text)
+    except ValueError:
+        return None
+    if not isinstance(payload, Mapping) or payload.get("code") != "provider_not_serving":
+        return None
+    status = _safe_int(payload.get("providerStatus"))
+    if status is None or not 100 <= status <= 599:
+        return None
+    result = _proof_record_failure("provider_not_serving", reachable=True, status_code=502)
+    result["providerStatus"] = status
+    message = _safe_text(payload.get("providerMessage"), max_length=300)
+    if message:
+        result["providerMessage"] = message
+    return result
+
+
 def _safe_proof_record(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
         return _proof_record_failure("invalid_host_agent_response", reachable=True)
@@ -866,6 +889,9 @@ async def _record_egress_probe_proof(probe_response: Mapping[str, Any]) -> dict[
             "remote-provider proof recording returned HTTP %s",
             exc.status_code,
         )
+        not_serving = _provider_not_serving(exc.response_text) if exc.status_code == 502 else None
+        if not_serving is not None:
+            return not_serving
         return _proof_record_failure(
             f"host_agent_http_{exc.status_code}",
             reachable=True,

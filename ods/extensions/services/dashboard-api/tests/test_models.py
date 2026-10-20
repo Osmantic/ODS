@@ -1081,6 +1081,55 @@ def test_default_model_discovery_timeout_covers_slow_local_runtime():
     assert models_router._MODEL_DISCOVERY_TIMEOUT_SECONDS >= 10.0
 
 
+@pytest.mark.parametrize("lifecycle_active", [False, True])
+def test_api_models_discovery_shares_a_deadline_without_losing_host_state(
+    test_client, monkeypatch, tmp_path, lifecycle_active,
+):
+    models_router, install_dir, _ = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4", "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf", "size_mb": 5760,
+        "vram_required_gb": 8, "context_length": 32768,
+        "quantization": "Q4_K_M", "specialty": "General",
+        "description": "Balanced default.", "llm_model_name": "qwen3.5-9b",
+    }])
+    cancelled = []
+
+    async def primary():
+        await asyncio.sleep(0.6)
+        return None
+
+    async def fallback(*_args):
+        try:
+            await asyncio.sleep(0.6)
+            return "Qwen3.5-9B-Q4_K_M.gguf"
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(models_router, "_MODEL_DISCOVERY_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(models_router, "get_loaded_model", primary)
+    monkeypatch.setattr(models_router, "_fetch_llama_loaded_model", fallback)
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda: {
+        "status": "idle", "lifecycleActive": lifecycle_active,
+        "activeOperation": "remote_provider_apply" if lifecycle_active else None,
+        "modelTransactionPending": True,
+    })
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert cancelled == [True]
+    assert data["currentModel"] is None
+    assert data["modelRecoveryPending"] is True
+    assert data["modelLifecycle"] == ({
+        "active": True, "operation": "remote_provider_apply",
+        "target": None, "modelId": None,
+    } if lifecycle_active else None)
+
+
 def test_agent_model_status_collapses_concurrent_poll_bursts(monkeypatch):
     import routers.models as models_router
 

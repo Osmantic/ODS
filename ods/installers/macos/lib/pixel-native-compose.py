@@ -350,7 +350,7 @@ def _managed_ingress(run, *, project, image, user, volume):
 
 
 def migrate_infrastructure(run, docker_run, *, ingress, image, user, project,
-                           transaction, storage, workspace, dashboard_key, checkpoint):
+                           transaction, storage, workspace, dashboard_key, checkpoint, prepare_ingress=None):
     """Swap Docker writers under a persisted admission hold, leaving it held.
 
     Callers supply the qualified Compose selection and a durable private journal
@@ -389,6 +389,12 @@ def migrate_infrastructure(run, docker_run, *, ingress, image, user, project,
             project=project, transaction=transaction, checkpoint=retain_checkpoint)
         record['phase'] = 'starting-native-infrastructure'
         checkpoint(dict(record))
+        if prepare_ingress is not None:
+            def config_checkpoint(value):
+                record['ingressConfig'] = value
+                checkpoint(dict(record))
+            record['ingressConfig'] = prepare_ingress(config_checkpoint)
+            checkpoint(dict(record))
         start_infrastructure(run, dashboard_key=dashboard_key, admission=binding)
         candidate = _managed_ingress(docker_run, **ingress_selection)
         if candidate is None or candidate.get('State', {}).get('Running') is not True:

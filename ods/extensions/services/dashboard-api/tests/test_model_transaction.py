@@ -530,6 +530,82 @@ def test_owner_can_release_a_switch_that_changed_nothing_without_the_live_proof(
     assert state['status']=='completed' and state['contract']==OLD and not host._pixel_model_recovery_status()['pending']
 
 
+def remote_proof(monkeypatch, failure=None):
+    """Exercise the real proof, with only the saved route and transport replaced."""
+    monkeypatch.setattr(host, '_prove_pixel_model_contract', _real_prove_pixel_model_contract)
+    monkeypatch.setattr(host, '_read_remote_provider_route_state_for_update', lambda: {})
+    monkeypatch.setattr(host, '_remote_provider_runtime_contract', lambda _: copy.deepcopy(OLD))
+    probes = []
+    def verify(config, *, model):
+        probes.append(model)
+        if failure is not None:
+            raise failure
+    monkeypatch.setattr(host, '_verify_litellm_route', verify)
+    return probes
+
+
+def test_remote_outage_is_an_unproven_contract_without_exception_detail(monkeypatch, caplog):
+    probes = remote_proof(monkeypatch, RuntimeError('private-provider-detail'))
+    with caplog.at_level('WARNING'):
+        assert _real_prove_pixel_model_contract({}, OLD) is False
+    assert probes == ['ods/current']
+    assert 'the saved remote route did not pass its live completion check' in caplog.text
+    assert 'private-provider-detail' not in caplog.text
+
+
+def test_remote_proof_still_requires_matching_identity_and_live_completion(monkeypatch):
+    probes = remote_proof(monkeypatch)
+    assert _real_prove_pixel_model_contract({}, NEW) is False
+    assert probes == []
+    assert _real_prove_pixel_model_contract({}, OLD) is True
+    assert probes == ['ods/current']
+
+
+def test_remote_proof_does_not_swallow_unexpected_exception_types(monkeypatch):
+    remote_proof(monkeypatch, ValueError('unexpected failure'))
+    with pytest.raises(ValueError, match='unexpected failure'):
+        _real_prove_pixel_model_contract({}, OLD)
+
+
+def test_remote_outage_exposes_eligible_owner_release_without_releasing(controller, monkeypatch):
+    _, state, calls, _ = controller
+    env = {'PIXEL_OPENWEBUI_KEY': 'configured'}
+    tx = host._begin_pixel_model_transaction(env)
+    probes = remote_proof(monkeypatch, RuntimeError('route unavailable'))
+    result = host._recover_pixel_model_transaction(env)
+    assert result == {'pending': True, 'phase': 'held', 'transactionId': tx.id,
+                      'reason': 'model-recovery-proof-required', 'releasable': True}
+    assert probes == ['ods/current'] and 'model-finish' not in calls
+    assert state['pending'] is True
+    # Explicit release already precedes live proof; this fix changes discovery,
+    # not that authority or its unchanged-state checks.
+    result = host._recover_pixel_model_transaction(env, release_unverified=True)
+    assert result == {'pending': False, 'phase': 'completed', 'transactionId': tx.id,
+                      'outcome': 'rollback'}
+    assert probes == ['ods/current']
+    assert calls.count('model-finish') == 1 and state['contract'] == OLD
+
+
+@pytest.mark.parametrize('drift', ['files', 'contract', 'transaction', 'applied'])
+def test_remote_outage_does_not_waive_owner_release_checks(controller, monkeypatch, drift):
+    config, state, calls, _ = controller
+    env = {'PIXEL_OPENWEBUI_KEY': 'configured'}
+    tx = host._begin_pixel_model_transaction(env)
+    if drift == 'files':
+        config.write_text('changed')
+    elif drift == 'contract':
+        state['contract'] = copy.deepcopy(NEW)
+    elif drift == 'transaction':
+        state['transactionId'] = 'd' * 64
+    else:
+        tx.apply(NEW)
+    remote_proof(monkeypatch, RuntimeError('route unavailable'))
+    result = host._recover_pixel_model_transaction(env)
+    assert result['pending'] is True and result['releasable'] is False
+    assert host._recover_pixel_model_transaction(env, release_unverified=True)['pending'] is True
+    assert 'model-finish' not in calls
+
+
 def test_release_without_proof_refuses_a_controller_on_another_contract(controller,monkeypatch):
     _,state,calls,_=controller
     env,_=held_unproven_switch(controller,monkeypatch)

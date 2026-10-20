@@ -27,6 +27,8 @@ docker_log="$tmp_dir/docker.log"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data/models" "$install_dir/scripts" "$install_dir/bin" "$bin_dir"
+install_dir="$(cd "$install_dir" && pwd -P)"
+python3 "$script_dir/fixtures/macos-private-store-cli.py" "$install_dir"
 # This fixture checks resume dispatch, not launchd or native inference. The CLI
 # now delegates both start and stop through its installed service helper.
 mkdir -p "$install_dir/installers/macos/lib"

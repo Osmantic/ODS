@@ -5,9 +5,10 @@
 # Part of: installers/lib/
 # Purpose: Map hardware tier to model name, GGUF file, URL, and context size
 #
-# Expects: TIER (set by detection phase), error()
+# Expects: TIER (set by detection phase), error(), jq (compute image map)
 # Provides: resolve_tier_config() → sets TIER_NAME, LLM_MODEL, GGUF_FILE,
-#           GGUF_URL, MAX_CONTEXT
+#           GGUF_URL, MAX_CONTEXT;
+#           ods_nvidia_llama_image_for_compute(), ods_llama_image_for_compute_cap()
 #
 # Modder notes:
 #   Add new tiers or change model assignments here.
@@ -51,6 +52,43 @@ configure_llama_runtime_defaults() {
             LLAMA_CPP_RELEASE_TAG_OVERRIDE="b9014"
             ;;
     esac
+}
+
+# llama.cpp's NVIDIA images server-cuda-* and server-cuda12-* are CUDA 12
+# builds. They have no kernels for compute capability 12.1 (DGX Spark GB10,
+# RTX Spark N1X): llama-server loads there and answers with "????". The CUDA
+# 13 build (server-cuda13-*) has them. config/backends/nvidia.json
+# runtime.llama_server.container_images_by_compute pins the image such a GPU
+# runs; the host agent applies the same map on Models-page switches.
+
+# ods_nvidia_llama_image_for_compute <compute_cap> <nvidia.json>
+# Prints the image pinned for that compute capability, or nothing.
+ods_nvidia_llama_image_for_compute() {
+    local compute_cap="$1" contract="$2"
+    [[ -n "$compute_cap" ]] || return 0
+    jq -r --arg cc "$compute_cap" \
+        '.runtime.llama_server.container_images_by_compute[$cc] // empty' "$contract"
+}
+
+# ods_llama_image_for_compute_cap <image> <compute image>
+# Prints the image llama-server runs. A non-empty <compute image> replaces a
+# CUDA 12 llama.cpp build and the empty value (the Compose default is a CUDA
+# 12 build). A CUDA 13 build, another backend's image and an owner's own
+# image are kept.
+ods_llama_image_for_compute_cap() {
+    local image="$1" compute_image="$2"
+    # The repository stays a variable so the pin contract does not read
+    # these patterns as unpinned image references.
+    local repo="ghcr.io/ggml-org/llama.cpp"
+    if [[ -n "$compute_image" ]]; then
+        case "$image" in
+            ""|"$repo":server-cuda-*|"$repo":server-cuda12-*)
+                printf '%s\n' "$compute_image"
+                return 0
+                ;;
+        esac
+    fi
+    printf '%s\n' "$image"
 }
 
 set_qwen_tier_config() {

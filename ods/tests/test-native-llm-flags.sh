@@ -122,6 +122,21 @@ got="$(parse --native-llm-gpu-vram-mb 08)"
 [[ "$got" == *"|8|local|"* ]] || fail "an octal-looking VRAM must normalize to decimal: $got"
 ok "VRAM normalizes leading zeros as decimal"
 
+# Windows setup names the drive that stores WSL's virtual disk.
+drive_out="$(
+    ODS_MODE=local ODS_MODE_EXPLICIT=false
+    eval "$defaults"
+    set -- --wsl-disk-drive D:
+    eval "$parser"
+    printf '%s' "$ODS_WSL_DISK_DRIVE"
+)"
+[[ "$drive_out" == "D:" ]] || fail "the Windows drive under WSL must be parsed: $drive_out"
+ok "the Windows drive under WSL's virtual disk is parsed"
+for bad in 'D' 'D:\' 'DE:' '1:' '--pixel'; do
+    rejects "WSL disk drive '$bad'" 'requires a Windows drive such as C:' --wsl-disk-drive "$bad"
+done
+rejects 'a missing WSL disk drive' 'requires a Windows drive such as C:' --wsl-disk-drive
+
 # ── Retired Lemonade flags (one release) ─────────────────────────────────────
 got="$(parse --lemonade-url http://localhost:13305/api/v1 --lemonade-host-transport model-router \
     --lemonade-model extra.Qwen3.6-35B-A3B-UD-Q4_K_M.gguf --lemonade-context-size 32768 \
@@ -204,7 +219,7 @@ ok "the native route replaces only the CPU-only warning"
 
 # ── Phase 06 writes the route to .env ────────────────────────────────────────
 route_block="$(extract '/^    ODS_WINDOWS_SYSTEM_DIRECTORY="\$(_env_get_explicit_first/,/^    ODS_HOST_LLM_TRANSPORT="\$ODS_HOST_LLM_TRANSPORT_VALUE"$/p' "$PHASE")"
-template="$(extract '/^ODS_HOST_LLM_TRANSPORT=\$(dotenv_value/,/^\$(if \[\[ -n "\${ODS_WSL_STATE_ROOT}" \]\]/p' "$PHASE")"
+template="$(extract '/^ODS_HOST_LLM_TRANSPORT=\$(dotenv_value/,/^\$(if \[\[ -n "\${ODS_WSL_DISK_DRIVE}" \]\]/p' "$PHASE")"
 for reader in _env_get _env_get_explicit_first; do
     definition="$(awk -v name="$reader" '
         $0 == "    " name "() {" { emit = 1 }
@@ -219,13 +234,14 @@ error() { printf 'ERROR: %s\n' "$*" >&2; return 1; }
 # route CASE EXPECTED_TRANSPORT: INHERITED/PERSISTED_* describe the run.
 route() (
     local label="$1" expected="$2"
-    unset ODS_HOST_LLM_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT LLAMA_SERVER_API_KEY
+    unset ODS_HOST_LLM_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT ODS_WSL_DISK_DRIVE LLAMA_SERVER_API_KEY
     NATIVE_LLM_BASE_URL=http://localhost:13305
     [[ -z "${INHERITED_TRANSPORT:-}" ]] || ODS_HOST_LLM_TRANSPORT="$INHERITED_TRANSPORT"
     [[ -z "${INHERITED_SYSTEM_DIRECTORY:-}" ]] || ODS_WINDOWS_SYSTEM_DIRECTORY="$INHERITED_SYSTEM_DIRECTORY"
     [[ -z "${INHERITED_STATE_ROOT:-}" ]] || ODS_WSL_STATE_ROOT="$INHERITED_STATE_ROOT"
+    [[ -z "${INHERITED_DISK_DRIVE:-}" ]] || ODS_WSL_DISK_DRIVE="$INHERITED_DISK_DRIVE"
     _env_existing=""
-    if [[ -n "${PERSISTED_TRANSPORT:-}${PERSISTED_SYSTEM_DIRECTORY:-}${PERSISTED_STATE_ROOT:-}" ]]; then
+    if [[ -n "${PERSISTED_TRANSPORT:-}${PERSISTED_SYSTEM_DIRECTORY:-}${PERSISTED_STATE_ROOT:-}${PERSISTED_DISK_DRIVE:-}" ]]; then
         _env_existing="$tmp/existing.env"
         : > "$_env_existing"
         [[ -z "${PERSISTED_TRANSPORT:-}" ]] || printf 'ODS_HOST_LLM_TRANSPORT=%s\n' "$PERSISTED_TRANSPORT" >> "$_env_existing"
@@ -233,13 +249,14 @@ route() (
             || printf 'ODS_WINDOWS_SYSTEM_DIRECTORY=%s\n' "$(dotenv_value "$PERSISTED_SYSTEM_DIRECTORY")" >> "$_env_existing"
         [[ -z "${PERSISTED_STATE_ROOT:-}" ]] \
             || printf 'ODS_WSL_STATE_ROOT=%s\n' "$(dotenv_value "$PERSISTED_STATE_ROOT")" >> "$_env_existing"
+        [[ -z "${PERSISTED_DISK_DRIVE:-}" ]] || printf 'ODS_WSL_DISK_DRIVE=%s\n' "$PERSISTED_DISK_DRIVE" >> "$_env_existing"
     fi
     eval "$route_block"
     eval 'cat > "$tmp/route.env" << ENV_EOF
 '"$template"'
 ENV_EOF'
     unset ODS_HOST_LLM_TRANSPORT NATIVE_LLM_BASE_URL NATIVE_LLM_CONTAINER_BASE_URL
-    unset ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT
+    unset ODS_WINDOWS_SYSTEM_DIRECTORY ODS_WSL_STATE_ROOT ODS_WSL_DISK_DRIVE
     load_env_file "$tmp/route.env"
     [[ "$ODS_HOST_LLM_TRANSPORT" == "$expected" ]] || fail "$label: transport $ODS_HOST_LLM_TRANSPORT, expected $expected"
     [[ "$NATIVE_LLM_BASE_URL" == http://localhost:13305 \
@@ -248,8 +265,12 @@ ENV_EOF'
     [[ "${ODS_WINDOWS_SYSTEM_DIRECTORY:-}" == "${EXPECTED_SYSTEM_DIRECTORY:-}" ]] \
         || fail "$label: system directory '${ODS_WINDOWS_SYSTEM_DIRECTORY:-}'"
     [[ "${ODS_WSL_STATE_ROOT:-}" == "${EXPECTED_STATE_ROOT:-}" ]] || fail "$label: state root '${ODS_WSL_STATE_ROOT:-}'"
+    [[ "${ODS_WSL_DISK_DRIVE:-}" == "${EXPECTED_DISK_DRIVE:-}" ]] || fail "$label: WSL disk drive '${ODS_WSL_DISK_DRIVE:-}'"
     if [[ -z "${EXPECTED_SYSTEM_DIRECTORY:-}" ]]; then
         ! grep -q '^ODS_WINDOWS_SYSTEM_DIRECTORY=' "$tmp/route.env" || fail "$label wrote an empty system directory"
+    fi
+    if [[ -z "${EXPECTED_DISK_DRIVE:-}" ]]; then
+        ! grep -q '^ODS_WSL_DISK_DRIVE=' "$tmp/route.env" || fail "$label wrote an empty WSL disk drive"
     fi
     printf 'PASS: %s\n' "$label"
 )
@@ -265,6 +286,10 @@ INHERITED_STATE_ROOT="D:\ODS state\it's [private] \$(literal)" EXPECTED_STATE_RO
     route 'The Windows state location survives dotenv quoting' direct
 INHERITED_STATE_ROOT='D:\ODS state\selected' PERSISTED_STATE_ROOT='E:\ODS state\saved' EXPECTED_STATE_ROOT='D:\ODS state\selected' \
     route 'The Windows selection wins over the saved state location' direct
+INHERITED_DISK_DRIVE='D:' EXPECTED_DISK_DRIVE='D:' route 'The Windows drive under WSL is recorded' direct
+PERSISTED_DISK_DRIVE='E:' EXPECTED_DISK_DRIVE='E:' route 'A rerun keeps the saved Windows drive under WSL' direct
+INHERITED_DISK_DRIVE='D:' PERSISTED_DISK_DRIVE='C:' EXPECTED_DISK_DRIVE='D:' \
+    route 'The drive Windows setup found wins over the saved one' direct
 rc=0
 ( INHERITED_TRANSPORT=proxy route 'An invalid transport' direct ) >"$tmp/out" 2>&1 || rc=$?
 [[ "$rc" -ne 0 ]] && grep -q 'ODS_HOST_LLM_TRANSPORT must be direct or model-router' "$tmp/out" \

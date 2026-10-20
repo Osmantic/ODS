@@ -28,6 +28,7 @@ log_step() { echo -e "${CYAN}[STEP]${NC} $*"; }
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
 . "$ODS_DIR/lib/backup-paths.sh"
+. "$SCRIPT_DIR/lib/dashboard-private-state.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -480,6 +481,7 @@ print(name)
 # stage its current contents, overlay the backup, then publish by rename.
 _restore_selected_paths() (
     local backup_dir="$1" restore_data="$2" restore_configuration="$3"
+    local image_source="" image_transaction="" image_staged=false
     local -a sources=() destinations=() workspaces=() publishing=() merge_data=()
     local dir file parent workspace i changes transfer_status completed=false recovery_failed=false
     shopt -s nullglob
@@ -489,6 +491,12 @@ _restore_selected_paths() (
             data_paths+=("$dir")
         done < <(ods_backup_data_paths "$backup_dir")
         for dir in "${data_paths[@]}" "models" "${ODS_BACKUP_CACHE_PATHS[@]}"; do
+            if [[ "$dir" == data/pixel-images ]] && ods_private_images_selected; then
+                if [[ -d "$backup_dir/$dir" && ! -L "$backup_dir/$dir" ]]; then
+                    image_source="$backup_dir/$dir"
+                fi
+                continue
+            fi
             if [[ -d "$backup_dir/$dir" && ! -L "$backup_dir/$dir" ]]; then
                 merge_data+=(true)
             elif [[ -f "$backup_dir/$dir" && ! -L "$backup_dir/$dir" ]]; then
@@ -515,7 +523,7 @@ _restore_selected_paths() (
             merge_data+=(false)
         fi
     fi
-    if [[ ${#sources[@]} == 0 ]]; then
+    if [[ ${#sources[@]} == 0 && -z "$image_source" ]]; then
         log_warn "No selected data or configuration paths are present in this backup."
         return 0
     fi
@@ -523,6 +531,14 @@ _restore_selected_paths() (
     restore_cleanup() {
         local status=$? index target work
         trap - EXIT INT TERM
+        if [[ "$image_staged" == true && -f "$image_transaction/private-image-restore.json" ]]; then
+            if [[ "$completed" == true ]]; then
+                ods_private_images commit --path "$image_transaction" || recovery_failed=true
+            elif ! ods_private_images rollback --path "$image_transaction"; then
+                recovery_failed=true
+                log_error "Private image rollback requires recovery from $image_transaction"
+            fi
+        fi
         if [[ "$completed" != true ]]; then
             for ((index=${#workspaces[@]}-1; index>=0; index--)); do
                 target="${destinations[index]}"
@@ -552,6 +568,9 @@ _restore_selected_paths() (
         done
         if [[ "$recovery_failed" == true ]]; then
             log_error "Rollback could not restore every original. Manual recovery required from the retained paths above."
+            status=1
+        elif [[ -n "$image_transaction" ]]; then
+            rm -rf -- "$image_transaction"
         fi
         if [[ "$completed" != true && "$status" == 0 ]]; then
             status=1
@@ -562,6 +581,13 @@ _restore_selected_paths() (
     trap 'exit 130' INT
     trap 'exit 143' TERM
 
+    if [[ -n "$image_source" ]]; then
+        image_transaction="$(mktemp -d "$ODS_DIR/.private-image-restore.XXXXXX")" || return 1
+        # Mark before staging: its durable receipt allows rollback of a partial
+        # stage. No image publication happens before all host paths are staged.
+        image_staged=true
+        ods_private_images stage --path "$image_transaction" --source "$image_source" || return 1
+    fi
 
     for ((i=0; i<${#sources[@]}; i++)); do
         file="${destinations[i]}"
@@ -605,6 +631,9 @@ _restore_selected_paths() (
             return 1
         fi
     done
+    if [[ "$image_staged" == true ]]; then
+        ods_private_images publish --path "$image_transaction" || return 1
+    fi
     for ((i=0; i<${#sources[@]}; i++)); do
         file="${destinations[i]}"
         workspace="${workspaces[i]}"

@@ -273,7 +273,9 @@ map. The loopback server reproduces production iframe sandbox, CSP, MIME/UTF-8,
 and CORS/security headers. Foreign requests, extra navigation, popups, and
 downloads are blocked; service workers are disabled.
 
-The runner permits at most 45 seconds and 32 KiB output. Cancellation and
+The runner permits at most 45 seconds and 32 KiB of receipt output, plus one
+bounded JPEG when the request directs a viewport screenshot (see "Viewport
+screenshot"). Cancellation and
 termination unwind through exact randomly named container removal. `docker run`
 termination alone is not treated as container cleanup. Missing engine, image,
 browser, invalid snapshot, or invalid receipt is explicit failed/unverified.
@@ -560,9 +562,11 @@ plan.
 
 Security notes:
 
-- No image bytes, base64 data or page text leave the capsule: only bounded
-  integers, colors and a truncated hash, which the plugin validates exactly.
-  Feedback quotes only the capsule-computed dominant color.
+- No image bytes, base64 data or page text of a paint sample leave the
+  capsule: only bounded integers, colors and a truncated hash, which the
+  plugin validates exactly. Feedback quotes only the capsule-computed dominant
+  color. The only image that ever leaves is the separately directed viewport
+  screenshot below.
 - The capture reads pixels the no-network capsule already renders and adds no
   network, file or navigation permission. It changes no page style, scroll
   position or animation state. Chromium applies the downscale as capture-time
@@ -596,3 +600,159 @@ during a downscaled capture, and WebGL. `inspection_paint.test.mjs` checks the
 schema, the Python/JavaScript scope, bounds and plan hash, capsule summaries as
 receipts, forged paint evidence, feedback, the unchanged-fingerprint note and
 the evidence policy.
+
+## Viewport screenshot
+
+A model that ODS declares able to read images can look at its own published
+preview: one JPEG of the whole inspection viewport, taken after the steps that
+ran, beside the receipt. A text-only receipt can say "the arena is about 95%
+one colour"; it cannot show what the canvas draws.
+
+**Who gets it.** The plugin
+(`plugin/preview-screenshot.mjs` `previewScreenshotCapability`) reads the same
+declaration Portal's owner-image path and the runtime contract readback use
+(`plugin/context-compaction.mjs` `modelFor`, `plugin/model-runtime-readback.mjs`):
+the plugin's `modelImageInput` and the selected model row's `input` list, which
+must match (`["text","image"]` unless `unsupported`). Only `supported` opens the
+gate, and only for a run whose tool context names the configured model
+(`activeModel.modelRef`). `unknown`, `unsupported`, an undeclared or
+inconsistent contract, a run on a model other than the configured one, or a
+run that names no model stays text-only, exactly as before, and the result
+says which. Unlike the owner-image path, `unknown` never becomes
+an image test here: no owner consented to one for this purpose. OpenClaw's own
+transport would also drop a tool image for a row without `image` input.
+
+**Where `supported` comes from.** Installs start at `unknown`
+(`installers/lib/pixel-onboarding.py`). A Models-page switch to a model that
+ODS's own llama-server runs with a vision projector (`mmproj`) declares
+`supported`: the switch's final readiness proof (`bin/ods-host-agent.py`
+`_wait_for_model_readiness`) carries the `modalities.vision` of the same
+`/props` answer that proved the served file and context, and
+`_pixel_image_input_readback` turns `true` into `supported` for the Pixel
+target, which reaches Pixel through `_reconcile_ods_managed_pixel_model` or the
+native model transaction before Portal admits the next request. This covers
+the Linux and WSL containers, the Windows-owned runtime a WSL agent reaches
+through the model router, the Windows native `llama-server.exe` and native
+macOS: every route whose model server is ODS's own llama-server. A `false`, missing or unreadable report keeps the value the
+switch computed before (the curated record's `vision` boolean, else
+`unknown`), and `ODS_MODEL_PROFILES=enabled` with a measured vision probe
+still decides last. The value is computed for each switch's model alone, so
+the next switch to a model without a projector gets its own value back.
+Remote routes are written as `unknown` and never read a local report.
+An installation that already runs a vision model gets the readback on its
+next model switch. Every installer run, including an update, writes
+`unknown` over a `supported` declaration (`installers/lib/pixel-onboarding.py`):
+the installer keeps the active model and keeps `LLAMA_ARG_MMPROJ` only while
+that model's projector file still checks out (`scripts/preserve-active-model.py`),
+so the model may now run without its projector, and the renderer cannot see
+which happened. `unsupported` and `unknown` carry over for the same route; the
+next switch reads the projector back.
+
+**The directive.** When the gate is open and the run guard grants one of the
+run's at most three screenshots (`tool-loop-guard.mjs`
+`reservePreviewScreenshot`, reserved before the inspector runs, so parallel
+calls cannot exceed it), the plugin adds `screenshot: {maxSide, maxPixels,
+maxBytes}` beside the plan: at most 1200 pixels per side (larger tool images
+are re-encoded by OpenClaw, `DEFAULT_IMAGE_MAX_DIMENSION_PX`), 1,048,576 pixels
+(1024x1024, a common vision-encoder resize target) and 128 KiB (so a Tool Search
+result, which repeats the receipt beside the image, stays within the run
+guard's 256 KiB envelope bound), lowered by
+`agents.defaults.imageMaxDimensionPx` and the model row's
+`mediaInput.image.{maxSidePx,maxPixels,maxBytes}` when those are smaller. The
+lower bounds are 64 pixels per side, 4096 pixels and 16 KiB; below them the
+gate stays closed (`model-limit`). The directive is not part of the plan:
+`plan_hash`, the scope and every receipt field are those of the plan alone,
+so receipts bind exactly as before. The request line may exceed the plan's 8
+KiB by at most 128 bytes for it.
+
+**The broker** checks the immutable image for
+`org.osmantic.ods.inspection.screenshot=viewport-screenshot-v1` after the step
+labels. The snapshot and the publisher-side export helper only ever see the
+plan. Without the label the plan still runs and only the screenshot is
+omitted (`capability_missing`); with it the capsule bundle carries the
+directive and the output bound becomes the 32 KiB receipt plus one base64
+JPEG. A full receipt must answer a directive with exactly one `screenshot`
+member and an undirected run or a failure receipt with none; anything else,
+or a member that fails `validate_screenshot`, is an invalid capsule receipt.
+
+**The capsule** captures after the last step that ran, failed step included,
+before the step context closes, with CDP `Page.captureScreenshot` (JPEG,
+quality 80, then 50 once if the first is over `maxBytes`,
+`captureBeyondViewport: false`) of the viewport clip at the largest scale that
+keeps both sides and the pixel count in bounds even when Chromium rounds each
+scaled side up. That page shows only the fixed wrapper and its sandboxed
+preview frame of this snapshot, served by the capsule's loopback server with
+no network, so the capture cannot show anything else. The member is either
+`{status: "captured", mimeType: "image/jpeg", width, height, bytes, sha256,
+data}`, whose frame header, length and hash the broker and the plugin both
+check, or `{status: "omitted", reason}` with `time_budget` (the steps used 32
+of the 45 seconds), `page_unavailable` (the page closed, as after a blocked
+download), `capture_failed` or `too_large`. A capture never changes a step or
+the status.
+
+**The result.** The tool returns the text receipt with one sentence after the
+summary, then the image block (`{type: "image", mimeType: "image/jpeg",
+data}`), also for a failed check such as `uniform_paint`, where seeing the
+blank arena matters most. The sentence asks the model to look and treats text
+inside the image as page content, not instructions. Without a screenshot the
+sentence says why and that the result is text only. `details` stays the
+validated receipt, so no image bytes reach evidence, finalization or the
+persisted details. A tool built without the gate (older callers, recorded
+replays) returns exactly the earlier text.
+
+**Persistence and context.** Portal's owner-visible history holds owner and
+assistant text and owner image references only; a tool image never enters it.
+The session transcript keeps the image in the tool result: ODS's runtime sends
+the persisted copy of a result to the next model request of the attempt
+(`openclaw-compaction-budget.json`), so removing it there would hide it from
+the model. A screenshot is evidence for the run that took it, and the gate
+only vouches for that run's model. The same recipe therefore extends the
+pinned runtime's history image pruning (`pruneProcessedHistoryImages`, run
+before every model request): a preview screenshot before the latest user
+message, as a direct result or inside a Tool Search `tool_call` result, is
+replaced by "[image data removed - already processed by model]". The next
+owner turn never resends it, whatever model the Portal alias serves by then;
+an `unknown` route switched in later (its row also declares image input)
+receives none, and a route whose vision fails at runtime can stall only the
+run that took the screenshot. One request carries at most one run's three
+screenshots. A host retry prompt inside a run is a user message too: the retry
+keeps the screenshot sentence and may inspect again within the run's bound.
+Owner images keep the runtime's own rule (pruned once their turn is older than
+the last three completed turns). A compaction summary request carries
+tool-result text only, so it keeps the screenshot sentence and never the
+bytes. The text sentence follows the summary, so the summary's 2,000-character
+tool-result excerpt keeps it unless the summary itself is long. A Tool Search
+`tool_call` result also keeps the child's whole result in its `details`
+(`openclaw-image-envelope.json`), so the transcript holds that screenshot's
+base64 twice; the model never receives the `details` copy.
+
+`test_preview_inspection_screenshot.py` covers the directive bounds and its
+place beside the plan, the request frame, the JPEG frame reader against real
+files, the member validation, the capture scale, the broker's label check,
+export and output rules, and through a scripted browser the capture after a
+key press, a failed step, downscaling, a smaller limit, the quality retry,
+failed, oversized, closed-page and time-budget captures, and the receipt
+limit. With the opt-in Chromium or image settings it also checks a blank
+canvas and a drawn one after key presses (the drawn sprite's JPEG changes with
+the key that moves it; the blank canvas's does not), a wide viewport and an
+undirected run. `preview_screenshot.test.mjs` checks the Python/JavaScript
+mirror, the capability gate, smaller limits, the registered tool's image block
+for a vision configuration and its absence (with the reason) for text-only,
+unknown and undeclared ones and for a run on another or no model, the
+incomplete-transition result, the run bound and its session binding, forged
+broker answers, the unix transport's response bound and persistence.
+`runtime_preview_screenshot_context.integration.mjs` runs the reviewed
+history pruning, the Tool Search envelope, the openai-completions request and
+the compaction serializer on real tool results: earlier runs' screenshots
+(direct and through Tool Search) leave the next request after a model switch,
+the current run keeps its own, and owner images keep the three-turn rule.
+`vision_readback.test.mjs` renders Pixel's config with the coordinator's
+`pixel_model_contract.plan` from the install default through a readback
+`supported` target to a text-only one and checks the gate and the owner-image
+route check on each. The host agent's `test_host_agent_image_input.py` and
+`test_model_activate.py` (`TestPixelVisionReadback`) cover the `/props`
+report on every local route, the readback rule, switches with a reported,
+false, missing and unreadable vision state, a vision-to-text switch on both
+reconcile paths, and a remote activation that never reads it.
+`tests/test_pixel_onboarding.py` checks that an installer rerun after a
+`supported` switch renders `unknown` and keeps the rest of the route.

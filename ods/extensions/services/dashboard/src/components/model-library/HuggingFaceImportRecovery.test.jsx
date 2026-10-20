@@ -84,10 +84,14 @@ test('an older completion for the same artifact cannot resolve a new uncertain i
   expect(posts()).toHaveLength(1)
 })
 
-test('a definitive refusal releases import controls and displays the server reason', async () => {
-  post = async () => response({ detail: 'Private repository requires HF_TOKEN' }, 403)
+test.each([
+  [403, {detail:'Private repository requires HF_TOKEN'}, 'Private repository requires HF_TOKEN'],
+  [409, {detail:{code:'model_lifecycle_busy', error:'The first full model download needs to finish or resume before importing another model.'}},
+    'The first full model download needs to finish or resume before importing another model.'],
+])('a definitive %s refusal releases import controls and displays the server reason', async (status, body, message) => {
+  post = async () => response(body, status)
   await begin()
-  expect(screen.getByText('Private repository requires HF_TOKEN')).toBeVisible()
+  expect(screen.getByText(message)).toBeVisible()
   expect(screen.getByRole('button', { name: 'Import', exact: true })).toBeEnabled()
   expect(screen.queryByRole('button', { name: 'Check download status' })).toBeNull()
 })

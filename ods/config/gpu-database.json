@@ -9,7 +9,7 @@
       "id": "rtx_pro_6000_blackwell",
       "match": {
         "device_ids": [],
-        "name_patterns": ["RTX PRO 6000", "Blackwell"]
+        "name_patterns": ["RTX PRO 6000"]
       },
       "specs": {
         "label": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
@@ -262,6 +262,26 @@
         "memory_mb": 122880,
         "memory_source": "ram",
         "bandwidth_gbps": 273
+      },
+      "recommended": {
+        "backend": "nvidia",
+        "tier": "NV_ULTRA"
+      }
+    },
+    {
+      "id": "nvidia_rtx_spark_n1x",
+      "match": {
+        "device_ids": ["0x2e03"],
+        "name_patterns": ["RTX Spark", "N1X"]
+      },
+      "specs": {
+        "label": "NVIDIA RTX Spark N1X",
+        "vendor": "nvidia",
+        "architecture": "blackwell",
+        "memory_type": "discrete",
+        "memory_mb": 98240,
+        "memory_source": "vram",
+        "bandwidth_gbps": 281
       },
       "recommended": {
         "backend": "nvidia",
