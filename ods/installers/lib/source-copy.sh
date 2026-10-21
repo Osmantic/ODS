@@ -1,9 +1,22 @@
 #!/bin/bash
 # Keep the owner's provider configuration across source upgrades. Docker may
 # still bind its old inode, so replacing it can hide a broken next startup.
+ods_prepare_retained_cloud_provider() {
+    local install_dir="$1" cloud helper
+    cloud="$install_dir/config/litellm/cloud.yaml"
+    [[ -e "$cloud" || -L "$cloud" ]] || return 0
+    command -v rsync >/dev/null 2>&1 || {
+        error "Install rsync before upgrading an existing cloud provider configuration."
+        return 1
+    }
+    # Use this installer source, never a helper from the retained installation.
+    helper="${BASH_SOURCE[0]%/*}/cloud-config-permissions.py"
+    "${ODS_PYTHON_CMD:-python3}" "$helper" "$install_dir" || return 1
+}
+
 ods_copy_install_source() {
     local source_dir="$1" install_dir="$2" log_file="$3"
-    local cloud="$install_dir/config/litellm/cloud.yaml" dotfile helper
+    local cloud="$install_dir/config/litellm/cloud.yaml" dotfile
     local -a cloud_excludes=() held_source_excludes=()
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         # The protected source transaction has already installed and verified
@@ -15,14 +28,8 @@ ods_copy_install_source() {
     fi
 
     if [[ -e "$cloud" || -L "$cloud" ]]; then
-        command -v rsync >/dev/null 2>&1 || {
-            error "Install rsync before upgrading an existing cloud provider configuration."
-            return 1
-        }
-        # Validate every path before changing modes. Keep the helper tied to
-        # this installer source, not the retained installation being checked.
-        helper="${BASH_SOURCE[0]%/*}/cloud-config-permissions.py"
-        "${ODS_PYTHON_CMD:-python3}" "$helper" "$install_dir" || return 1
+        # Revalidate at the copy boundary, including direct library callers.
+        ods_prepare_retained_cloud_provider "$install_dir" || return 1
         cloud_excludes=(--exclude='/config/litellm/cloud.yaml')
     fi
 

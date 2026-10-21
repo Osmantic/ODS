@@ -6,6 +6,7 @@ from pathlib import Path
 import stat
 import struct
 import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -242,6 +243,72 @@ class IdentityTests(unittest.TestCase):
                 with self.assertRaises(helper.Refusal):
                     self.check()
                 self.records[database].pop()
+
+
+@unittest.skipUnless(os.name == "posix" and hasattr(os, "O_PATH"), "Linux phase entrypoint required")
+class PhaseOrderingTests(unittest.TestCase):
+    def test_phase_repairs_before_protected_source_transition(self):
+        with tempfile.TemporaryDirectory(prefix="ods-cloud-phase-") as tmp:
+            base = Path(tmp)
+            installed = base / "installed"
+            cloud = installed / "config/litellm/cloud.yaml"
+            cloud.parent.mkdir(parents=True)
+            cloud.write_bytes(b"retained-provider\n")
+            paths = [installed, installed / "config", cloud.parent, cloud]
+            for path in paths:
+                path.chmod(0o664 if path == cloud else 0o775)
+            before = cloud.stat()
+            home = base / "home"
+            marker = home / ".config/ods/pixel-managed.json"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("{}")
+            # CI runners need not have a private primary group. Isolate that
+            # identity policy only; execute the actual helper and phase source.
+            wrapper = base / "fixture-python"
+            wrapper.write_text(
+                "#!" + sys.executable + "\nimport importlib.util, sys\n"
+                "spec=importlib.util.spec_from_file_location('fixture_permissions',sys.argv[1])\n"
+                "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+                "module._require_private_group=lambda uid,gid: None\n"
+                "sys.exit(module.main(sys.argv[2:]))\n")
+            wrapper.chmod(0o700)
+            probe = base / "source-guard.py"
+            probe.write_text(
+                "import importlib.util, os, pathlib, sys\n"
+                "spec=importlib.util.spec_from_file_location('source_guard',sys.argv[1])\n"
+                "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n"
+                "module.directory(pathlib.Path(sys.argv[2]),os.geteuid())\n"
+                "pathlib.Path(sys.argv[3]).touch()\n")
+            observed = base / "guard-passed"
+            script = r'''
+set -euo pipefail
+SCRIPT_DIR="$1"; INSTALL_DIR="$2"; HOME="$3"; ODS_PYTHON_CMD="$4"
+PROBE="$5"; OBSERVED="$6"; LOG_FILE="$7"
+DRY_RUN=false; ENABLE_PIXEL_RUNTIME=true; ODS_SUDO_AVAILABLE=true
+ods_progress(){ :; }; chapter(){ :; }; log(){ :; }; ai(){ :; }
+error(){ printf '%s\n' "$*" >&2; return 1; }
+source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
+ods_pixel_install_owner(){ id -un; }
+ods_pixel_owner_home(){ printf '%s\n' "$HOME"; }
+_ods_pixel_source_transition_required(){
+    python3 "$PROBE" "$SCRIPT_DIR/bin/pixel_source_upgrade.py" "$INSTALL_DIR" "$OBSERVED" || exit 1
+    exit 77
+}
+source "$SCRIPT_DIR/installers/phases/06-directories.sh"
+'''
+            result = subprocess.run(["bash", "-c", script, "phase-fixture", str(ROOT), str(installed), str(home), str(wrapper), str(probe), str(observed), str(base / "log")], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 77, result.stdout + result.stderr)
+            self.assertTrue(observed.exists())
+            self.assertEqual([stat.S_IMODE(path.stat().st_mode) for path in paths], [0o755, 0o755, 0o755, 0o644])
+            self.assertEqual(cloud.read_bytes(), b"retained-provider\n")
+            self.assertEqual(cloud.stat().st_ino, before.st_ino)
+            observed.unlink()
+            installed.chmod(0o777)
+            unsafe = subprocess.run(["bash", "-c", script, "phase-fixture", str(ROOT), str(installed), str(home), str(wrapper), str(probe), str(observed), str(base / "log")], capture_output=True, text=True, timeout=30)
+            self.assertNotEqual(unsafe.returncode, 77)
+            self.assertFalse(observed.exists())
+            self.assertIn("world-write", unsafe.stderr)
+            self.assertEqual(stat.S_IMODE(installed.stat().st_mode), 0o777)
 
 
 if __name__ == "__main__":
