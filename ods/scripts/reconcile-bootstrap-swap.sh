@@ -17,8 +17,13 @@
 #          file and task record are still settled.
 #
 # Expects: $1 = install dir. docker, python3.
-# Provides: exit 0 when nothing to do, another operation owns the state, or
-#           the state was reconciled.
+# Provides: exit 0 when nothing to do, a live upgrade owns the state, or the
+#           state was reconciled; exit 75 (deferred) when the status is still
+#           fresh or the lifecycle lock is busy, so the caller rechecks later.
+#           "complete" is written only when the promotion is proven: .env and
+#           models.ini both select the full GGUF, llama-server is running with
+#           --model /models/<gguf> and /health answers. Anything less is
+#           recorded "failed" (interrupted), which `ods start` resumes.
 #
 # Modder notes:
 #   Called by the host agent at boot and by `ods start`. It never acts while:
@@ -37,12 +42,18 @@ set -euo pipefail
 INSTALL_DIR="${1:?usage: reconcile-bootstrap-swap.sh <install_dir>}"
 STATUS_FILE="$INSTALL_DIR/data/bootstrap-status.json"
 ENV_FILE="$INSTALL_DIR/.env"
+MODELS_INI="$INSTALL_DIR/config/llama-server/models.ini"
+EXIT_DEFERRED=75
 LLAMA_CONTAINER="${ODS_LLAMA_CONTAINER:-ods-llama-server}"
 BG_TASK_REGISTRY="$INSTALL_DIR/logs/background-tasks.json"
 BG_TASK_ID="full-model-download"
 # Same knob/default as _ods_cli_bootstrap_upgrade_status_is_stale (ods-cli).
 STALE_SECONDS="${ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS:-900}"
 [[ "$STALE_SECONDS" =~ ^[0-9]+$ ]] || STALE_SECONDS=900
+HEALTH_ATTEMPTS="${ODS_BOOTSTRAP_RECONCILE_HEALTH_ATTEMPTS:-60}"
+[[ "$HEALTH_ATTEMPTS" =~ ^[0-9]+$ ]] || HEALTH_ATTEMPTS=60
+HEALTH_INTERVAL="${ODS_BOOTSTRAP_RECONCILE_HEALTH_INTERVAL:-5}"
+[[ "$HEALTH_INTERVAL" =~ ^[0-9]+$ ]] || HEALTH_INTERVAL=5
 
 log() { printf '[bootstrap-reconcile] %s\n' "$*"; }
 
@@ -109,9 +120,33 @@ sys.exit(0)
 PY
 }
 
-env_gguf_file() {
+env_value() {
     [[ -f "$ENV_FILE" ]] || return 0
-    sed -n 's/^GGUF_FILE=//p' "$ENV_FILE" | tail -n 1 | tr -d "\"'"
+    sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | tr -d "\"'
+"
+}
+
+models_ini_selects() {
+    [[ -f "$MODELS_INI" ]] && grep -Eq "^[[:space:]]*filename[[:space:]]*=[[:space:]]*$1[[:space:]]*$" "$MODELS_INI"
+}
+
+llama_state() {
+    docker ps -a --filter "name=^${LLAMA_CONTAINER}\$" --format '{{.State}}'
+}
+
+# The upgrader's own runtime proof: the running container was created with the
+# full GGUF as --model, and llama.cpp answers /health only once it is loaded.
+runtime_serves() {
+    local model="$1" cmd i port
+    [[ "$(llama_state)" == "running" ]] || return 1
+    cmd="$(docker inspect "$LLAMA_CONTAINER" --format '{{join .Config.Cmd " "}}')"
+    [[ "$cmd" == *"/models/${model}"* ]] || return 1
+    port="$(env_value OLLAMA_PORT)"
+    for (( i = 1; i <= HEALTH_ATTEMPTS; i++ )); do
+        curl -sf --max-time 5 "http://127.0.0.1:${port:-8080}/health" >/dev/null && return 0
+        (( i < HEALTH_ATTEMPTS )) && sleep "$HEALTH_INTERVAL"
+    done
+    return 1
 }
 
 write_terminal_status() {
@@ -151,28 +186,31 @@ if [[ -n "$model" ]] && upgrade_process_running "$model"; then
 fi
 
 if ! status_is_stale; then
-    log "Status '$status' updated within ${STALE_SECONDS}s; the upgrade may still be starting. Leaving it alone."
-    exit 0
+    log "Status '$status' updated within ${STALE_SECONDS}s; the upgrade may still be starting. Deferring."
+    exit "$EXIT_DEFERRED"
 fi
 
 if ! try_model_lifecycle_lock; then
-    log "Another model lifecycle operation holds the lock; leaving status '$status' alone."
-    exit 0
+    log "Another model lifecycle operation holds the lock; deferring status '$status'."
+    exit "$EXIT_DEFERRED"
 fi
 
 # Container state, scoped to the exact name; empty when it does not exist.
-llama_state="$(docker ps -a --filter "name=^${LLAMA_CONTAINER}\$" --format '{{.State}}')"
-if [[ "$llama_state" == "created" ]]; then
+state="$(llama_state)"
+if [[ "$state" == "created" ]]; then
     log "Starting $LLAMA_CONTAINER left 'created' by an interrupted model upgrade..."
     docker start "$LLAMA_CONTAINER" >/dev/null
-elif [[ -n "$llama_state" && "$llama_state" != "running" ]]; then
-    log "$LLAMA_CONTAINER is '$llama_state'; leaving it for 'ods start'."
+elif [[ -n "$state" && "$state" != "running" ]]; then
+    log "$LLAMA_CONTAINER is '$state'; leaving it for 'ods start'."
 fi
 
 total="$(status_field bytesTotal)"
-if [[ -n "$model" && "$(env_gguf_file)" == "$model" ]]; then
+# .env is written before models.ini and the runtime swap, so it alone is not
+# completion evidence: prove the configuration and the selected runtime.
+if [[ -n "$model" && "$(env_value GGUF_FILE)" == "$model" ]] \
+        && models_ini_selects "$model" && runtime_serves "$model"; then
     write_terminal_status complete "" "$model" "$total"
-    log "Marked interrupted model upgrade complete: .env already serves $model."
+    log "Marked interrupted model upgrade complete: llama-server serves $model."
 else
     write_terminal_status failed "interrupted: upgrade process stopped during '$status'" "$model" "$total"
     log "Marked interrupted model upgrade failed (was '$status'); 'ods start' retries it."

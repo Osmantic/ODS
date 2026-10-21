@@ -35,7 +35,9 @@ INSTALL_DIR="$TMP/install"
 BIN_DIR="$TMP/bin"
 OUT="$TMP/out"
 DOCKER_LOG="$TMP/docker.log"
-export DOCKER_LOG
+STARTED_FLAG="$TMP/started"
+export DOCKER_LOG STARTED_FLAG
+export ODS_BOOTSTRAP_RECONCILE_HEALTH_ATTEMPTS=2 ODS_BOOTSTRAP_RECONCILE_HEALTH_INTERVAL=0
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/scripts" \
     "$INSTALL_DIR/installers/lib" "$INSTALL_DIR/lib" "$BIN_DIR"
 cp "$ROOT_DIR/scripts/reconcile-bootstrap-swap.sh" "$INSTALL_DIR/scripts/" \
@@ -50,10 +52,14 @@ cp "$ROOT_DIR"/lib/*.sh "$INSTALL_DIR/lib/"
 cat > "$BIN_DIR/docker" <<'SH'
 #!/usr/bin/env bash
 echo "DOCKER_ARGS: $*" >> "${DOCKER_LOG:?}"
+state="${FAKE_LLAMA_STATE:-}"
+[[ -f "$STARTED_FLAG" ]] && state=running
 case "${1:-}" in
     ps)
-        [[ " $* " == *" -a "* ]] && printf '%s\n' "${FAKE_LLAMA_STATE:-}"
+        [[ " $* " == *" -a "* ]] && printf '%s\n' "$state"
         ;;
+    start) : > "$STARTED_FLAG" ;;
+    inspect) printf '%s\n' "${FAKE_LLAMA_CMD:-}" ;;
     compose)
         [[ " $* " == *" ps -a "* && " $* " == *" llama-server"* ]] \
             && printf '%s\n' "${FAKE_LLAMA_STATE:-}"
@@ -70,14 +76,23 @@ if [[ "${1:-}" == "-eo" && "${2:-}" == "args=" ]]; then
 fi
 exec /bin/ps "$@"
 SH
-chmod +x "$BIN_DIR/docker" "$BIN_DIR/ps"
+cat > "$BIN_DIR/curl" <<'SH'
+#!/usr/bin/env bash
+echo "CURL_ARGS: $*" >> "${DOCKER_LOG:?}"
+[[ "${FAKE_HEALTH:-ok}" == ok ]]
+SH
+chmod +x "$BIN_DIR/docker" "$BIN_DIR/ps" "$BIN_DIR/curl"
 
 bash -c 'exit 0' &
 DEAD_PID=$!
 wait "$DEAD_PID"
 
 write_fixture() {
-    local env_model="$1" updated_at="${2:-2026-10-01T00:00:00Z}"
+    local env_model="$1" updated_at="${2:-2026-10-01T00:00:00Z}" ini_model="${3:-$1}"
+    mkdir -p "$INSTALL_DIR/config/llama-server"
+    printf '[m]\nfilename = %s\nload-on-startup = true\n' "$ini_model" \
+        > "$INSTALL_DIR/config/llama-server/models.ini"
+    rm -f "$STARTED_FLAG"
     cat > "$INSTALL_DIR/.env" <<EOF
 ODS_VERSION=2.0.0
 GPU_BACKEND=nvidia
@@ -99,8 +114,10 @@ json_get() {
 }
 
 run_reconcile() {
+    local expected_rc="${EXPECT_RC:-0}" rc=0
     PATH="$BIN_DIR:$PATH" bash "$INSTALL_DIR/scripts/reconcile-bootstrap-swap.sh" "$INSTALL_DIR" > "$OUT" 2>&1 \
-        || fail "reconcile script exited non-zero"
+        || rc=$?
+    [[ "$rc" == "$expected_rc" ]] || fail "reconcile script exited $rc, expected $expected_rc"
 }
 
 echo "=== bootstrap swap reconciliation (#7645) ==="
@@ -120,13 +137,35 @@ pass "same-file full model skips the bootstrap swap"
 
 # 2. Stale swapping + dead pid + Created container, .env already promoted.
 write_fixture "$FULL_MODEL"
-FAKE_LLAMA_STATE=created run_reconcile
+FAKE_LLAMA_STATE=created FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
 grep -q 'DOCKER_ARGS: start ods-llama-server' "$DOCKER_LOG" || fail "Created llama-server was not started"
 [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == complete ]] \
     || fail "promoted swap was not marked complete"
 [[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == interrupted ]] \
     || fail "dead background task still recorded as running"
 pass "interrupted swap: container started, status complete, task interrupted"
+
+# 2b. Mid-promotion interruption (.env written, models.ini and the runtime not
+#     yet swapped): .env alone is not completion evidence -> failed, resumable.
+write_fixture "$FULL_MODEL" "" "$BOOT_MODEL"
+FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$BOOT_MODEL" run_reconcile
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
+    || fail "mid-promotion interruption was recorded complete from .env alone"
+pass "mid-promotion (.env only): status failed, resumable"
+
+# 2c. Config promoted but the running container still serves the bootstrap GGUF.
+write_fixture "$FULL_MODEL"
+FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$BOOT_MODEL" run_reconcile
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
+    || fail "stale runtime --model was recorded complete"
+pass "config promoted, runtime stale: status failed"
+
+# 2d. Runtime selected but never healthy -> failed.
+write_fixture "$FULL_MODEL"
+FAKE_HEALTH=down FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
+    || fail "unhealthy runtime was recorded complete"
+pass "runtime not healthy: status failed"
 
 # 3. Not yet promoted, container exited (maybe `ods stop`) -> left alone,
 #    status settled failed/interrupted.
@@ -140,11 +179,11 @@ pass "exited container: not started, status failed (interrupted), task settled"
 
 # 3b. Fresh active status, no visible process (installer child not in ps yet).
 write_fixture "$BOOT_MODEL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-FAKE_LLAMA_STATE=created run_reconcile
+FAKE_LLAMA_STATE=created EXPECT_RC=75 run_reconcile
 grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "reconcile started llama-server for a fresh status"
 [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]]     || fail "reconcile settled a fresh active status"
 [[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == running ]]     || fail "reconcile rewrote the task record for a fresh status"
-pass "fresh active status without a process: untouched"
+pass "fresh active status without a process: untouched, deferred (75)"
 
 # 3c. Stale active status, no process, no container -> settled.
 write_fixture "$BOOT_MODEL"
@@ -160,11 +199,11 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v flock >/dev/null 2>&1; then
     mkdir -p "$(dirname "$lock_file")"
     exec {held_fd}>"$lock_file"
     flock -x "$held_fd"
-    FAKE_LLAMA_STATE=created run_reconcile
+    FAKE_LLAMA_STATE=created EXPECT_RC=75 run_reconcile
     exec {held_fd}>&-
     grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "reconcile started llama-server while the lifecycle lock was held"
     [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]]         || fail "reconcile rewrote status while the lifecycle lock was held"
-    pass "lifecycle lock busy: no action"
+    pass "lifecycle lock busy: no action, deferred (75)"
 fi
 
 # 4. Live upgrade process: nothing is touched.
