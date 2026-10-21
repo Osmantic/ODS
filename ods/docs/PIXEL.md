@@ -147,6 +147,66 @@ also waits for `pixel-native-ingress`, `pixel-workspace-preview`, and
 startup errors report a fixed stage and reason without paths or configuration
 values. These diagnostics are also written to the install log.
 
+#### Guided recovery and model progress
+
+Run the current bootstrap with `--recover` as the original signed-in Mac user:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | bash -s -- --recover
+```
+
+This stages the requested ODS source in a temporary directory and runs its
+recovery helper against the retained installation. It does not uninstall ODS,
+copy a new product tree over the old one or clear Docker data. `--recover`
+cannot be combined with `--force`, `--keep-models` or new installation choices.
+Use `ODS_INSTALL_DIR` for a nondefault installation and `ODS_REF` for a reviewed
+branch or exact commit, as with the normal bootstrap.
+
+The guided command combines the existing protected-activation verification,
+native client routing, selected optional setup and host-agent setup described
+below. It resumes the original model recommendation and displays progress until
+the worker exits, then inspects live services and model/Portal routes. It reuses
+`ODS_PYTHON_CMD` from the private saved configuration, including an installer
+venv containing PyYAML; no manual Python exports are needed. A missing or unsafe
+interpreter produces an actionable error before setup.
+
+If an old installation did not save its OpenCode choice, the command asks for
+the original choice through the terminal. It never assumes that a missing
+binary meant you opted out. For unattended use, pass `--non-interactive` and,
+when needed, `--opencode-choice enabled` or `--opencode-choice disabled`.
+Unattended recovery leaves a launched worker running and prints the Portal
+address; it does not claim that the download finished. `--no-open` prevents
+opening a browser; `--no-watch` returns after the background handoff.
+
+Keep Docker running and the Mac awake while the download finishes. **Ctrl+C
+while watching only closes the progress display.** Rerunning the same recovery
+command follows an already running worker for the matching recorded recovery,
+without starting another download or replaying setup. An interrupted worker or
+failed service check is reported explicitly. A previous attempt's `complete`
+or `failed` status is not treated as final while a matching worker still runs.
+
+Installations containing the new CLI also support:
+
+```bash
+bash "$HOME/ods/ods-macos.sh" recover
+bash "$HOME/ods/ods-macos.sh" progress --watch
+bash "$HOME/ods/ods-macos.sh" progress --json
+```
+
+The progress command is read-only. It prints allowlisted progress metrics, not
+credentials, download URLs or arbitrary error text from private logs. Use the
+fresh bootstrap recovery command above for installations whose old CLI lacks
+these commands. The printed Portal URL honors the saved Dashboard port.
+
+Passing recovery checks does not prove a successful chat or every optional
+feature. Finish browser setup using the existing installation, check Models and
+Extensions, and send a message in Portal. Recovery preserves the original
+receipts and does not write a whole-installer completion marker or certify a
+different runtime release. The separate functional acceptance command below
+can exercise chat and preview when explicitly requested.
+
+#### Maintainer interfaces and verification boundaries
+
 For an initial attempt with `activation.json` reporting `status: error`,
 `requiresRecovery: true`, and `phase: final-health` (or `webui-routing`), the
 maintainer recovery helper can finish the **Pixel stage** once the underlying
@@ -174,8 +234,8 @@ activation, perform a native migration, or extend the health timeout.
 **This is not a whole-installer resume.** Success prints `native-pixel-ready`.
 The original installer may also have stopped before the host-agent setup,
 optional OpenCode setup, background full-model download, and final readiness
-summary. Those remaining steps need a separate maintainer-reviewed continuation
-before declaring ODS fully installed. In particular, model and extension
+summary. The guided command combines the selected continuation steps below;
+the low-level helper alone does not. In particular, model and extension
 management need a working host agent; do not infer that they work from Pixel
 health alone. Older failed installs may retain only the starter model because
 the selected full-model download arguments had not yet been persisted.

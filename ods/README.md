@@ -120,6 +120,20 @@ To skip bootstrap and wait for the full model: `./install.sh --no-bootstrap`
 
 llama-server runs natively with Metal GPU acceleration; all other services run in Docker. See [`docs/MACOS-QUICKSTART.md`](docs/MACOS-QUICKSTART.md) for details.
 
+If an initial native Pixel installation stopped at its final service checks,
+keep Docker running and resume the retained installation as the same Mac user:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Osmantic/ODS/main/ods/get-ods.sh | bash -s -- --recover
+```
+
+Recovery verifies the retained activation, reuses the installer Python and saved
+choices, completes selected setup, opens Portal and follows the full-model
+download. An older installation may ask whether you originally chose OpenCode.
+It preserves the installation and stops if the retained activation cannot be
+verified. See [native Pixel recovery](docs/PIXEL.md#guided-recovery-and-model-progress)
+for progress, noninteractive use and the limits of these checks.
+
 ### Windows (NVIDIA + AMD)
 
 > **Prerequisite:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend and make sure it is running before you start.
