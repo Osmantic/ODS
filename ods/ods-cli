@@ -3491,6 +3491,82 @@ cmd_list() {
 #=============================================================================
 PRESETS_DIR="${INSTALL_DIR}/presets"
 
+# Unlike mv, rename never nests a directory inside a competing destination.
+_ods_cli_rename_preset_dir() {
+    "$1" - "$2" "$3" <<'PY'
+import os
+import sys
+
+try:
+    if os.path.lexists(sys.argv[2]):
+        raise FileExistsError("preset destination already exists")
+    os.rename(sys.argv[1], sys.argv[2])
+except OSError as error:
+    print("Could not rename preset directory:", error, file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+# Keep a usable preset until its replacement is completely extracted and
+# validated. Staging beside the destination keeps publication on one filesystem.
+_ods_cli_publish_imported_preset() (
+    local archive="$1" name="$2"
+    local preset_python="${PYTHON_CMD:-python3}"
+    if ! "$preset_python" -c 'import os, sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then
+        warn "Safe preset import requires a working Python 3 runtime. Repair ODS's Python installation and retry; existing presets were retained."
+        return 1
+    fi
+    local stage previous="" published=false
+    stage=$(mktemp -d "$PRESETS_DIR/.import-XXXXXX") || return 1
+    _preset_import_cleanup() {
+        local status=$?
+        trap - EXIT
+        # Finish custody/cleanup decisions even if interrupted while unwinding.
+        trap 'status=130' INT
+        trap 'status=143' TERM
+        if [[ -n "$previous" && ( -e "$previous" || -L "$previous" ) && "$published" != true ]]; then
+            # A signal can land after rename but before published=true, or a
+            # different writer can create the destination. Never merge the
+            # recovery copy into that directory or discard it on ambiguity.
+            if [[ -e "$PRESETS_DIR/$name" || -L "$PRESETS_DIR/$name" ]]; then
+                warn "Preset destination exists. Recovery copy retained at: $previous"
+                exit 1
+            fi
+            if ! _ods_cli_rename_preset_dir "$preset_python" "$previous" "$PRESETS_DIR/$name"; then
+                warn "Could not restore the previous preset. Recovery copy retained at: $previous"
+                exit 1
+            fi
+        fi
+        # Cleanup failure cannot undo an already committed replacement. Keep
+        # its original status and identify any temporary recovery files left.
+        if ! rm -rf -- "$stage"; then
+            warn "Could not remove temporary preset import files. Retained at: $stage"
+        fi
+        exit "$status"
+    }
+    trap _preset_import_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    mkdir "$stage/payload" || return 1
+    tar xzf "$archive" -C "$stage/payload" 2>/dev/null || {
+        warn "Failed to extract archive; existing presets were retained."
+        return 1
+    }
+    [[ -f "$stage/payload/$name/meta.txt" ]] || { warn "Invalid preset: missing meta.txt"; return 1; }
+    [[ -f "$stage/payload/$name/extensions.list" ]] || { warn "Invalid preset: missing extensions.list"; return 1; }
+
+    if [[ -e "$PRESETS_DIR/$name" ]]; then
+        previous="$stage/previous"
+        _ods_cli_rename_preset_dir "$preset_python" "$PRESETS_DIR/$name" "$previous" || return 1
+    fi
+    _ods_cli_rename_preset_dir "$preset_python" "$stage/payload/$name" "$PRESETS_DIR/$name" || {
+        warn "Failed to publish imported preset; restoring the previous preset."
+        return 1
+    }
+    published=true
+)
+
 # Validate preset compatibility with current system
 validate_preset_compatibility() {
     local preset_dir="$1"
@@ -3760,29 +3836,17 @@ META
                 read -p "Overwrite? [y/N] " -n 1 -r || REPLY=""
                 echo ""
                 [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
-                rm -rf "${PRESETS_DIR}/${archive_name}"
             fi
 
-            # Extract archive
+            # Resolve before staging changes tar's extraction directory.
+            [[ "$archive" == /* ]] || archive="$(pwd)/$archive"
             mkdir -p "$PRESETS_DIR"
-            cd "$PRESETS_DIR"
-            if tar xzf "$archive" 2>/dev/null; then
-                # Validate extracted preset
-                if [[ ! -f "${archive_name}/meta.txt" ]]; then
-                    rm -rf "${archive_name}"
-                    error "Invalid preset: missing meta.txt"
-                fi
-                if [[ ! -f "${archive_name}/extensions.list" ]]; then
-                    rm -rf "${archive_name}"
-                    error "Invalid preset: missing extensions.list"
-                fi
-
+            if _ods_cli_publish_imported_preset "$archive" "$archive_name"; then
                 success "Preset '${archive_name}' imported successfully"
                 log "Use 'ods preset load ${archive_name}' to apply it"
             else
-                error "Failed to extract archive"
+                error "Preset import failed"
             fi
-            cd "$INSTALL_DIR"
             ;;
 
         diff|d)
