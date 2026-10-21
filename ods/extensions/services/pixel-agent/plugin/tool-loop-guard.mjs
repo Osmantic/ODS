@@ -13317,6 +13317,22 @@ export function createToolLoopGuard({
       trustedOperationsContinuation(state, runId) ??
       (workspaceStopped ? undefined : trustedWorkspacePreviewContinuation(state));
     if (!continuation) {
+      // A repeat download can finish with a model-written link and no tools.
+      // Give that owner turn one chance to obtain a fresh broker receipt. The
+      // pinned harness still refuses revisions after side effects; never run
+      // the broker here or treat the answer's URL as publication evidence.
+      if (state?.workspaceDocumentDeliveryRequested && !state.ownerNoTools &&
+          !workspaceStopped && !state.extensionCompletionGate?.active &&
+          !state.workspaceArtifacts?.length && !(state.artifactAttempts ?? 0) &&
+          !state.workspaceDocumentDeliveryRetried && (!event?.runId || event.runId === runId) &&
+          !workspaceArtifactUnavailableReason({...context, runId})) {
+        state.workspaceDocumentDeliveryRetried = true;
+        return {action:'revise', reason:'The requested download has no verified publication receipt for this response.', retry:{
+          instruction:'The owner requested a download, including delivery of an existing file again. ' +
+            WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE + ' Do not repeat already completed creation or checks. ' +
+            'Do not substitute a raw path, Markdown link or image for publication.',
+          idempotencyKey:'pixel-ods-workspace-document-delivery', maxAttempts:1}};
+      }
       const decision = state?.extensionCompletionGate?.active && !extensionStopped
         ? state.extensionCompletionGate.finalize()
         // Generic promise recovery cannot distinguish the suspended portion
