@@ -5,7 +5,7 @@ This guide covers how to iterate on `extensions/services/dashboard-api/` (the Fa
 ## TL;DR
 
 - Editing `.py` files under `extensions/services/dashboard-api/` on the host **does not** reload the running `ods-dashboard-api` container. The image bakes a copy into `/app/` at build time.
-- Recommended dev workflow: stop **both** the `dashboard` and `dashboard-api` Docker containers to free host ports 3001 and 3002, then run **Vite dev server** for the dashboard frontend (`npm run dev` on port 3001) plus **native uvicorn** with `--reload` for the API (port 3002). Vite's built-in `/api` proxy already points at `localhost:3002`, so the two host processes wire up automatically. The rest of the compose stack (llama-server, host-agent, etc.) stays running.
+- Recommended dev workflow: stop **both** the `dashboard` and `dashboard-api` Docker containers to free host ports 3001 and 3002, then run **Vite dev server** for the dashboard frontend plus **native uvicorn** with `--reload` for the API. Give both processes the same `DASHBOARD_API_KEY`. Vite's loopback `/api` proxy supplies that key on the server; it never sends the key to browser JavaScript. The rest of the compose stack stays running.
 - Only rebuild the image (or `docker cp` as a stop-gap) when you actually need to ship the change.
 
 ## The Trap
@@ -40,20 +40,22 @@ If you only test by editing host files and reloading the dashboard, your changes
 
 ## Recommended Workflow: Vite + Native uvicorn
 
-The clean dev story is to swap the **dashboard** and **dashboard-api** Docker containers out for host-side processes that share the same ports, leaving the rest of the compose stack (llama-server, host-agent, etc.) running. Vite's built-in proxy at `extensions/services/dashboard/vite.config.js` already routes `/api` to `http://localhost:3002`:
+The dev workflow swaps the **dashboard** and **dashboard-api** Docker containers out for host-side processes that share the same ports, leaving the rest of the compose stack running. Vite's built-in proxy at `extensions/services/dashboard/vite.config.js` routes `/api` to `http://127.0.0.1:3002` and preserves the browser's Host and Origin for the API's same-origin checks. `dev-api-access.js` adds the server-held credential only after checking the local request boundary:
 
 ```js
-// vite.config.js (already in repo, no change needed)
+// Relevant options; the actual config also installs the credential helper.
 server: {
   port: 3001,
-  proxy: { '/api': { target: 'http://localhost:3002', changeOrigin: true } }
+  strictPort: true,
+  host: '127.0.0.1',
+  proxy: { '/api': { target: 'http://127.0.0.1:3002', changeOrigin: false } }
 }
 ```
 
 So the dev proxy chain becomes:
 
 ```
-browser → http://localhost:3001 (Vite dev)  → /api/* → http://localhost:3002 (host uvicorn)
+browser → http://127.0.0.1:3001 (Vite dev) → /api/* → http://127.0.0.1:3002 (host uvicorn)
 ```
 
 ### Why both containers must be stopped
@@ -91,8 +93,13 @@ Terminal 1 — Vite dev server (claims host port 3001):
 
 ```bash
 cd ods/extensions/services/dashboard
-npm run dev
+DASHBOARD_API_KEY="$(grep '^DASHBOARD_API_KEY=' /path/to/ods/.env | cut -d= -f2-)" \
+  npm run dev
 ```
+
+Use the installed key, just as for uvicorn below. Keep it in the server process environment: do not name it `VITE_DASHBOARD_API_KEY`, put it in client code, or paste it into the browser. With no key, Vite prints a startup warning and forwards requests without adding credentials; protected routes return their normal authentication error. Production builds do not require the key.
+
+Credentialed development trusts local processes on the developer computer, like the production dashboard's local listener. A broad `--host` bind, remote upstream, middleware mode, HTTPS listener, websocket proxy, or redirect-following proxy is rejected. Requests must have a loopback peer and Host matching the actual listener port; forwarded headers and cross-site Origins are rejected before they reach the API. Talk and dashboard login/logout retain their cookie/session authentication and receive no admin key. Use the production dashboard's sign-in flow for access from another device. Vite fails if the requested port is occupied; select another port explicitly for frontend-only work.
 
 Terminal 2 — native uvicorn (claims host port 3002). Set `ODS_INSTALL_DIR` to the path of your installed ODS repo (the same path the container sees as `/ods`):
 
@@ -112,7 +119,9 @@ ODS_AGENT_KEY="$(grep ^ODS_AGENT_KEY /path/to/ods/.env | cut -d= -f2-)" \
 
 uvicorn's `--reload` uses `watchfiles` and picks up edits to any `.py` file under the working directory. Vite hot-reloads JSX/CSS as you edit.
 
-Browse to **http://localhost:3001** (Vite). Backend traffic flows through Vite's proxy to your host uvicorn; the rest of the stack (host-agent on 7710, llama-server on 8080, etc.) is reached the same way it was via the Docker dashboard.
+Browse to **http://127.0.0.1:3001** (Vite). Backend traffic flows through Vite's proxy to your host uvicorn; the rest of the stack is reached through the API's configured service endpoints.
+
+For **frontend-only work**, keep both production containers running and start Vite on another loopback port with the same server-side key, for example `npm run dev -- --port 3003`. The proxy uses the installed API on port 3002. This exercises frontend edits without replacing the backend; Python edits still require native uvicorn or an image rebuild.
 
 When you're done, restart the production containers:
 
