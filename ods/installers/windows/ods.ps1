@@ -1165,6 +1165,12 @@ function Test-ODSComposeServicesStarted {
         try {
             $ids = @(& docker compose @ComposeFlags ps --all -q $service 2>$null |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            # Partial stdout is not a complete inventory when Docker failed.
+            # Keep the bounded retry path rather than certifying startup from
+            # whichever container IDs happened to arrive before the failure.
+            if ($LASTEXITCODE -ne 0) {
+                return $false
+            }
         } catch {
             return $false
         }
