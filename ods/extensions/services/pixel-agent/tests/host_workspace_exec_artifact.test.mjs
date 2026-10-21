@@ -15,6 +15,49 @@ const textResult = text => ({content:[{type:'text',text}]});
 const matchedFooter = /read back .* and verified that the published download contains the same bytes/;
 const noWorkspacePythonPrompt = 'Use Python to create fleet-even.csv with columns n,double and rows 1 through 6. Read it back and check the final row is 6,12. Publish the file for download. In the final answer, format the download as bold Download: followed by a link labelled only fleet-even.csv.';
 
+for (const wrapped of [false, true]) for (const tool of ['write', 'edit'])
+test(`Python creation corrects a hidden alternate filename: ${tool}, wrapped=${wrapped}`, () => {
+  for (const requested of ['fleet-receipt.csv', 'reports/fleet-receipt.csv']) {
+    const hidden = requested.replace(/([^/]+)$/, '.$1');
+    const ownerPath = requested.includes('/') ? `/workspace/${requested}` : requested;
+    const f = fixture(`Use Python to create ${ownerPath}. Read the saved CSV back and give me the CSV itself as a direct download.`);
+    const args = {path: `/workspace/${hidden}`, content: csv, oldText: 'x', newText: 'y'};
+    const toolName = wrapped ? 'tool_call' : tool;
+    const event = {toolName, params: wrapped ? {id: tool, args} : args, runId: ctx.runId, toolCallId: 'hidden-output'};
+    const action = f.guard.beforeToolCall(event, {...ctx, toolName, toolCallId: event.toolCallId}, 'pixel');
+    assert.equal(action?.block, true, requested);
+    assert.match(action.blockReason, /executing Python/);
+    assert.ok(action.blockReason.includes(`"${requested}"`), 'name the requested output');
+    assert.ok(action.blockReason.includes(`"${hidden}"`), 'explain the alternate filename');
+    assert.equal(action.params, undefined, 'never silently rewrite the file path');
+  }
+});
+
+test('Python hidden-name correction leaves scripts, other directories and owner intent boundaries intact', () => {
+  const owners = [
+    'Use Python to create fleet-receipt.csv.',
+    'Do not use Python to create fleet-receipt.csv.',
+    'Explain how to use Python to create fleet-receipt.csv.',
+    'Write a note containing "Use Python to create fleet-receipt.csv".',
+    'Use Python to create fleet-receipt.csv and other.csv.',
+    'Create fleet-receipt.csv.'
+  ];
+  for (const wrapped of [false, true]) for (const tool of ['write', 'edit']) {
+    for (const owner of owners) for (const target of [
+      'make_receipt.py', '.make_receipt.py', 'notes.csv', 'other/fleet-receipt.csv',
+      'other/.fleet-receipt.csv', '..fleet-receipt.csv', 'fleet-receipt.csv.bak',
+      ...(owner === owners[0] ? [] : ['.fleet-receipt.csv'])
+    ]) {
+      const f = fixture(owner);
+      const args = {path: target, content: csv, oldText: 'x', newText: 'y'};
+      const toolName = wrapped ? 'tool_call' : tool;
+      const event = {toolName, params: wrapped ? {id: tool, args} : args, runId: ctx.runId, toolCallId: 'other-output'};
+      const action = f.guard.beforeToolCall(event, {...ctx, toolName, toolCallId: event.toolCallId}, 'pixel');
+      assert.doesNotMatch(action?.blockReason ?? '', /executing Python/, `${owner}: ${target}`);
+    }
+  }
+});
+
 function fixture(ownerPrompt=prompt) {
   const guard=api.createToolLoopGuard({abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})});
   guard.observeRun(ctx,'pixel',{prompt:ownerPrompt});

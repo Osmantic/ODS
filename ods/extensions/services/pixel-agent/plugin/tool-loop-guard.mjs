@@ -9178,9 +9178,17 @@ export function createToolLoopGuard({
       const args = toolName === 'tool_call' ? wrappedToolParams?.args : normalizedParams ?? event?.params;
       const target = effectiveToolName === EVIDENCE_REPORT_TOOL
         ? state.operationsWorkspaceExpectedPath : normalizeWorkspaceFilePath(args?.path);
-      if (target === state.workspacePythonCreationPath) return {
+      const requested = state.workspacePythonCreationPath;
+      const leafStart = requested.lastIndexOf('/') + 1;
+      const leaf = requested.slice(leafStart);
+      // Correct the observed hidden-output shortcut without treating paths in
+      // different directories as equivalent or changing workspace normalization.
+      const hiddenAlternate = leaf && !leaf.startsWith('.') &&
+        target === `${requested.slice(0, leafStart)}.${leaf}`;
+      if (target === requested || hiddenAlternate) return {
         block: true,
-        blockReason: `The owner explicitly requested creating "${target}" by executing Python in the workspace. ` +
+        blockReason: `The owner explicitly requested creating "${requested}" by executing Python in the workspace. ` +
+          (hiddenAlternate ? `Use the requested filename "${requested}", not the hidden alternate "${target}". ` : '') +
           'Use sandbox exec to run Python that creates this output; do not substitute directly written output bytes. ' +
           'You may write a Python generator script at a different path, then execute it. ' +
           'Read the generated file back and publish that exact file. Host observations remain independent; ' +
