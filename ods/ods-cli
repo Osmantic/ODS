@@ -646,7 +646,7 @@ except Exception as e:
 }
 
 # Version compatibility check for ods update.
-# Returns 0 (ok) or 1 (user aborted / hard-blocked).
+# Returns 0 (ok), 1 (hard-blocked) or 2 (operator declined at a prompt).
 # Sets _COMPAT_INSTALLED_VER and _COMPAT_TARGET_VER as side-effects.
 #
 # Version source precedence (single source of truth policy):
@@ -720,7 +720,7 @@ _check_version_compat() {
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
-                return 1
+                return 2
             fi
         fi
         echo ""
@@ -773,7 +773,7 @@ _check_version_compat() {
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
-                return 1
+                return 2
             fi
             warn "Proceeding — back up your data first: ods backup"
         fi
@@ -2365,9 +2365,15 @@ cmd_update() {
     fi
 
     # Version compatibility check — warn on major version jumps before touching anything
-    if ! _check_version_compat "$force_flag"; then
-        exit 0
-    fi
+    # A declined prompt is the operator's choice; a hard block is a refusal
+    # that callers must not read as a successful update.
+    local compat_rc=0
+    _check_version_compat "$force_flag" || compat_rc=$?
+    case "$compat_rc" in
+        0) ;;
+        2) exit 0 ;;
+        *) exit 1 ;;
+    esac
 
     # Show what we're updating from/to (if versions were resolved)
     if [[ -n "${_COMPAT_INSTALLED_VER:-}" && -n "${_COMPAT_TARGET_VER:-}" \
