@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
+from typing import Callable, Protocol
 from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
@@ -7009,6 +7010,92 @@ def _whisper_model_ready_after_start(
     return False, "Whisper started, but its model is not cached; run ods repair voice"
 
 
+class RuntimeBackend(Protocol):
+    """The runtime that starts, stops and reports on ODS service containers.
+
+    Service lifecycle commands go through this seam; callers keep their own
+    locking, validation and error handling. ``ComposeBackend`` is the only
+    implementation.
+    """
+
+    def start(self, flags: list[str], service_id: str, *,
+              env: dict[str, str] | None, timeout: float) -> subprocess.CompletedProcess: ...
+
+    def stop(self, flags: list[str], targets: list[str], *,
+             env: dict[str, str] | None, timeout: float) -> subprocess.CompletedProcess: ...
+
+    def restart(self, container_name: str) -> subprocess.CompletedProcess: ...
+
+    def status(self, container_name: str) -> subprocess.CompletedProcess: ...
+
+    def logs(self, container_name: str, tail: int) -> subprocess.CompletedProcess: ...
+
+    def health(self, select: Callable[[list[str]], list[str]]) -> list: ...
+
+
+class ComposeBackend:
+    """Docker Compose and Docker CLI service lifecycle."""
+
+    def start(self, flags: list[str], service_id: str, *,
+              env: dict[str, str] | None, timeout: float) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", "compose", *flags, "up", "-d", service_id],
+            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=timeout, env=env,
+        )
+
+    def stop(self, flags: list[str], targets: list[str], *,
+             env: dict[str, str] | None, timeout: float) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", "compose", *flags, "stop", *targets],
+            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=timeout, env=env,
+        )
+
+    def restart(self, container_name: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", "restart", container_name],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def status(self, container_name: str) -> subprocess.CompletedProcess:
+        """``<state>|<error>`` for one container."""
+        return subprocess.run(
+            ["docker", "inspect", "--format",
+             "{{.State.Status}}|{{.State.Error}}", container_name],
+            capture_output=True, text=True, timeout=5,
+        )
+
+    def logs(self, container_name: str, tail: int) -> subprocess.CompletedProcess:
+        """Both container streams share one pipe, preserving their emitted order."""
+        return subprocess.run(
+            ["docker", "logs", "--tail", str(tail), container_name],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
+        )
+
+    def health(self, select: Callable[[list[str]], list[str]]) -> list:
+        """``docker inspect`` records for the listed containers ``select`` keeps."""
+        names_result = subprocess.run(
+            ["docker", "ps", "-a", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if names_result.returncode != 0:
+            raise RuntimeError((names_result.stderr or names_result.stdout).strip())
+        names = select(names_result.stdout.splitlines())
+        if not names:
+            return []
+        inspect_result = subprocess.run(
+            ["docker", "inspect", *names], capture_output=True, text=True, timeout=12,
+        )
+        if inspect_result.returncode != 0:
+            raise RuntimeError((inspect_result.stderr or inspect_result.stdout).strip())
+        inspected = json.loads(inspect_result.stdout)
+        if not isinstance(inspected, list):
+            raise ValueError("docker inspect returned non-list JSON")
+        return inspected
+
+
+_runtime_backend: RuntimeBackend = ComposeBackend()
+
+
 def _run_selected_extension_up(
     service_id: str, flags: list[str], *, env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
@@ -7033,10 +7120,8 @@ def _run_selected_extension_up(
                 ) from exc
             if not stat_mod.S_ISREG(selected_stat.st_mode):
                 raise RuntimeError(f"Invalid selected Compose file: {service_id}")
-            return subprocess.run(
-                ["docker", "compose", *flags, "up", "-d", service_id],
-                cwd=str(INSTALL_DIR), capture_output=True, text=True,
-                timeout=SUBPROCESS_TIMEOUT_START, env=env,
+            return _runtime_backend.start(
+                flags, service_id, env=env, timeout=SUBPROCESS_TIMEOUT_START,
             )
     except selector.SelectionError as exc:
         raise RuntimeError(str(exc)) from exc
@@ -7088,24 +7173,21 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             _repair_rootless_data_ownership(service_id)
         except RuntimeError as exc:
             return False, str(exc)
-        cmd = ["docker", "compose"] + flags + ["up", "-d", service_id]
     elif action == "stop":
         try:
             targets = _extension_stop_targets(service_id)
         except RuntimeError as exc:
             return False, str(exc)
-        cmd = ["docker", "compose"] + flags + ["stop", *targets]
     else:
         return False, f"Unknown action: {action}"
     timeout = SUBPROCESS_TIMEOUT_START if action == "start" else SUBPROCESS_TIMEOUT_STOP
     try:
         if action == "start" and service_id not in ALWAYS_ON_SERVICES:
             result = _run_selected_extension_up(service_id, flags, env=compose_env)
+        elif action == "start":
+            result = _runtime_backend.start(flags, service_id, env=compose_env, timeout=timeout)
         else:
-            result = subprocess.run(
-                cmd, cwd=str(INSTALL_DIR),
-                capture_output=True, text=True, timeout=timeout, env=compose_env,
-            )
+            result = _runtime_backend.stop(flags, targets, env=compose_env, timeout=timeout)
         if result.returncode == 0 and action == 'start':
             ext_dir = _find_ext_dir(service_id)
             manifest = _read_manifest(ext_dir) if ext_dir else {}
@@ -7993,44 +8075,33 @@ def _docker_service_health_snapshot() -> dict:
         if cached is not None and time.monotonic() - cached_at < 3.0:
             return cached
 
-        names_result = subprocess.run(
-            ["docker", "ps", "-a", "--format", "{{.Names}}"],
-            capture_output=True, text=True, timeout=8,
-        )
-        if names_result.returncode != 0:
-            raise RuntimeError((names_result.stderr or names_result.stdout).strip())
-        declared_containers = _declared_docker_containers()
-        names = [
-            name.strip() for name in names_result.stdout.splitlines()
-            if name.strip().startswith("ods-") or name.strip() in declared_containers
-        ]
+        declared_containers: dict[str, str] = {}
+
+        def ods_containers(listed: list[str]) -> list[str]:
+            declared_containers.update(_declared_docker_containers())
+            return [
+                name.strip() for name in listed
+                if name.strip().startswith("ods-") or name.strip() in declared_containers
+            ]
+
         containers: list[dict] = []
-        if names:
-            inspect_result = subprocess.run(
-                ["docker", "inspect", *names], capture_output=True, text=True, timeout=12,
-            )
-            if inspect_result.returncode != 0:
-                raise RuntimeError((inspect_result.stderr or inspect_result.stdout).strip())
-            inspected = json.loads(inspect_result.stdout)
-            if not isinstance(inspected, list):
-                raise ValueError("docker inspect returned non-list JSON")
-            for item in inspected:
-                if not isinstance(item, dict):
-                    continue
-                state = item.get("State") if isinstance(item.get("State"), dict) else {}
-                health = state.get("Health") if isinstance(state.get("Health"), dict) else {}
-                labels = (item.get("Config") or {}).get("Labels") or {}
-                service_id = labels.get("com.docker.compose.service")
-                container_name = str(item.get("Name") or "").lstrip("/")
-                service_id = declared_containers.get(container_name, service_id)
-                if not service_id and container_name.startswith("ods-"):
-                    service_id = container_name.removeprefix("ods-")
-                containers.append({
-                    "service_id": str(service_id or ""),
-                    "container_name": container_name,
-                    "state": str(state.get("Status") or "unknown"),
-                    "health": str(health.get("Status") or "none"),
-                })
+        for item in _runtime_backend.health(ods_containers):
+            if not isinstance(item, dict):
+                continue
+            state = item.get("State") if isinstance(item.get("State"), dict) else {}
+            health = state.get("Health") if isinstance(state.get("Health"), dict) else {}
+            labels = (item.get("Config") or {}).get("Labels") or {}
+            service_id = labels.get("com.docker.compose.service")
+            container_name = str(item.get("Name") or "").lstrip("/")
+            service_id = declared_containers.get(container_name, service_id)
+            if not service_id and container_name.startswith("ods-"):
+                service_id = container_name.removeprefix("ods-")
+            containers.append({
+                "service_id": str(service_id or ""),
+                "container_name": container_name,
+                "state": str(state.get("Status") or "unknown"),
+                "health": str(health.get("Status") or "none"),
+            })
         payload = {
             "schema_version": "ods.host-service-health.v1",
             "containers": containers,
@@ -8488,11 +8559,7 @@ def _enable_retry_work(service_id: str) -> None:
             state_error = ""
             while time.monotonic() < deadline:
                 try:
-                    inspect_result = subprocess.run(
-                        ["docker", "inspect", "--format",
-                         "{{.State.Status}}|{{.State.Error}}", container_name],
-                        capture_output=True, text=True, timeout=5,
-                    )
+                    inspect_result = _runtime_backend.status(container_name)
                 except subprocess.TimeoutExpired:
                     inspect_result = None
                 if inspect_result is not None and inspect_result.returncode == 0:
@@ -12688,10 +12755,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         try:
             # Use docker logs directly (faster than docker compose logs, no flag resolution needed)
             container_name = f"ods-{service_id}"
-            cmd = ["docker", "logs", "--tail", str(tail), container_name]
-            result = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
-            )
+            result = _runtime_backend.logs(container_name, tail)
             output = result.stdout or ""
             # Handle container not yet created (e.g. during image pull)
             if result.returncode != 0 and "no such container" in output.lower():
@@ -12738,10 +12802,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         container_name = _resolve_container_name(sid)
 
         try:
-            result = subprocess.run(
-                ["docker", "logs", "--tail", str(tail), container_name],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
-            )
+            result = _runtime_backend.logs(container_name, tail)
             output = result.stdout or ""
             if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
@@ -12801,10 +12862,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         def restart_container():
             if delay_seconds > 0:
                 time.sleep(delay_seconds)
-            result = subprocess.run(
-                ["docker", "restart", container_name],
-                capture_output=True, text=True, timeout=60,
-            )
+            result = _runtime_backend.restart(container_name)
             if result.returncode != 0:
                 stderr = (result.stderr or result.stdout or "").strip()
                 status = 404 if "no such container" in stderr.lower() else 500
@@ -12825,10 +12883,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             try:
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
-                result = subprocess.run(
-                    ["docker", "restart", container_name],
-                    capture_output=True, text=True, timeout=60,
-                )
+                result = _runtime_backend.restart(container_name)
                 if result.returncode != 0:
                     stderr = (result.stderr or result.stdout or "").strip()
                     logger.warning("Delayed restart failed for %s (%s): %s", sid, container_name, stderr[:500])
@@ -13212,11 +13267,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     state_error = ""
                     while time.monotonic() < deadline:
                         try:
-                            inspect_result = subprocess.run(
-                                ["docker", "inspect", "--format",
-                                 "{{.State.Status}}|{{.State.Error}}", container_name],
-                                capture_output=True, text=True, timeout=5,
-                            )
+                            inspect_result = _runtime_backend.status(container_name)
                         except subprocess.TimeoutExpired:
                             inspect_result = None
                         if inspect_result is not None and inspect_result.returncode == 0:
