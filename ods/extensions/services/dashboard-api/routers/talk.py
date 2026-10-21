@@ -17,7 +17,7 @@ import os
 from typing import Any, AsyncIterator
 
 import httpx
-from fastapi import APIRouter, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.datastructures import UploadFile as StarletteUploadFile
 from starlette.requests import ClientDisconnect
