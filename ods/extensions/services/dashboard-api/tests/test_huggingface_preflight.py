@@ -209,8 +209,12 @@ def test_import_refuses_a_nextn_file_this_build_cannot_load_unless_acknowledged(
     state["details"] = _details(ggufArchitecture="qwen3")
     state["header"] = _dense_header("qwen3", {"qwen3.nextn_predict_layers": 1})
     dispatched = []
-    monkeypatch.setattr(models_router, "_call_agent_model",
-                        lambda _path, payload, **_kwargs: dispatched.append(payload) or {"status": "started"})
+
+    def dispatch(_path, payload, **_kwargs):
+        dispatched.append(payload)
+        return {"status": "started"}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", dispatch)
 
     refused = _import(test_client)
 
