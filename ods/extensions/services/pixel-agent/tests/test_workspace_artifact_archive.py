@@ -1,10 +1,8 @@
-import hashlib
 import importlib.util
 import io
 import json
 import os
 import socket
-import stat
 import tempfile
 import threading
 import unittest
