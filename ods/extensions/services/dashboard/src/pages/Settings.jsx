@@ -417,7 +417,7 @@ export default function Settings({ activeSection = 'all' }) {
         onOpenEnvironment={handleOpenEnvironmentEditor}
       /></div>
 
-      {error ? <Banner tone="danger">{error} - <button className="underline" disabled={loading || envSaving || envApplying || envReloading} onClick={fetchSettings}>Retry</button></Banner> : null}
+      {error ? <Banner tone="danger">{error} - <button className="underline" disabled={loading || envSaving || envApplying || envReloading} onClick={() => fetchSettings({ preserveEnvChanges: envDirty })}>Retry</button></Banner> : null}
       {notice ? <Banner tone={notice.type} onClose={() => setNotice(null)}>{notice.text}</Banner> : null}
 
       <div className="w-full space-y-5">
