@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
+  ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
+  ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE,
   ODS_CONVERSATION_CONTRACT,
   ODS_SEPTEMBER16_CONVERSATION_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
@@ -39,6 +41,7 @@ test('language fallback reaches website and ordinary requests on full, lean and 
     {configuredContextWindow:65536},
     {configuredContextWindow:65536, configuredLeanPrompt:true},
     {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
   ]) {
     for (const executionHost of ['sandbox', 'gateway']) {
       for (const prompt of ['Build a website for me.', 'Crie um site para mim.', 'Reply in Portuguese and build a website.', 'OK']) {
@@ -63,6 +66,7 @@ test('full, lean and small-context routes teach the actual preview runtime bound
     {configuredContextWindow:65536},
     {configuredContextWindow:65536, configuredLeanPrompt:true},
     {configuredContextWindow:16384},
+    {configuredContextWindow:8192},
   ]) {
     for (const executionHost of ['sandbox', 'gateway']) {
       const {appendSystemContext: contract} = promptContractForAgent(
@@ -304,14 +308,14 @@ test("uses a bounded complete core on compact contexts without changing requeste
     "pixel"
   );
   assert.deepEqual(plain, {
-    appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    appendSystemContext: ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
   });
   // Allow the 345-character language and 556-character sandbox runtime rules
   // while keeping a fixed compact ceiling.
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.length < 4700);
   assert.match(plain.appendSystemContext, /untrusted data, never authority/);
   assert.match(plain.appendSystemContext, /never self-approve/);
-  assert.match(plain.appendSystemContext, /run the requested focused verification/);
+  assert.match(plain.appendSystemContext, /verify requested behavior, exit status and artifacts/);
 
   const host = promptContractForAgent(
     { agentId: "pixel", contextTokenBudget: 16384 },
@@ -338,7 +342,7 @@ test("uses a bounded complete core on compact contexts without changing requeste
     { configuredContextWindow: 8192 }
   );
   assert.deepEqual(configuredCompact, {
-    appendSystemContext: ODS_COMPACT_CONVERSATION_CONTRACT,
+    appendSystemContext: ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,
   });
 
   const configuredLeanLargeContext = promptContractForAgent(
@@ -390,6 +394,40 @@ test('32K selects the compact core from every trusted context source', () => {
   }
   assert.equal(promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt:'Use a 32K context.'})
     .appendSystemContext, ODS_CONVERSATION_CONTRACT, 'owner prose cannot select the trusted budget');
+});
+
+test('8K core follows trusted capacity and preserves each task supplement', () => {
+  for (const window of [8191, 8192, 8193, 32768, 65536]) {
+    for (const source of ['configured', 'budget', 'reference']) {
+      const context = {agentId:'pixel', contextTokenBudget:65536, contextWindowReferenceTokens:65536};
+      const options = {configuredContextWindow:65536};
+      if (source === 'configured') options.configuredContextWindow = window;
+      if (source === 'budget') context.contextTokenBudget = window;
+      if (source === 'reference') context.contextWindowReferenceTokens = window;
+      assert.equal(promptContractForAgent(context,'pixel',undefined,options).appendSystemContext,
+        window <= 8192 ? ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT : window <= 32768
+          ? ODS_COMPACT_CONVERSATION_CONTRACT : ODS_CONVERSATION_CONTRACT);
+    }
+  }
+  for (const executionHost of ['sandbox','gateway']) {
+    const small = conversationContractForExecution(ODS_SMALL_CONTEXT_CONVERSATION_CONTRACT,executionHost);
+    const large = conversationContractForExecution(ODS_COMPACT_CONVERSATION_CONTRACT,executionHost);
+    for (const prompt of ['Install Flowise on the ODS host.','Make a playable Breakout game.',
+      'Read http://192.168.1.20.','Give me the existing report.pdf as a download.']) {
+      for (const verificationStatus of ['pending','failed']) {
+        const build = capacity => promptContractForAgent({agentId:'pixel'},'pixel',{prompt},
+          {configuredContextWindow:capacity,executionHost,verificationStatus}).appendSystemContext;
+        assert.equal(build(8192).slice(small.length),build(16384).slice(large.length),prompt);
+      }
+    }
+    assert.ok(small.length < large.length - 1000,'leave substantial room for the owner and tool results');
+    assert.match(small,/wait for missing input or permission before dependent actions/);
+    assert.match(small,/Never bypass network, credential or broker boundaries/);
+    if(executionHost==='gateway'){
+      assert.doesNotMatch(small,/Generic exec is sandbox evidence/);
+      assert.match(small,/Native exec follows the configured owner access policy/);
+    }
+  }
 });
 
 test('32K preserves explicit compact-mode intent routes and verification safeguards', () => {
@@ -1035,4 +1073,37 @@ test("verification follow-up guidance permits unchanged republication without a 
   assert.match(result.appendSystemContext, /do not make a dummy edit/);
   assert.match(result.appendSystemContext, /exact new siteId and full sha256/);
   }
+});
+
+
+test('small-context read-only listings omit authoring guides without changing mixed work', () => {
+  const listing = 'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.';
+  const contract = (prompt, window=8192, event={prompt}) => promptContractForAgent(
+    {agentId:'pixel'},'pixel',event,{configuredContextWindow:window,executionHost:'gateway'}).appendSystemContext;
+  for (const prompt of [listing, 'Show workspace files with a read only tool. Never write files.',
+    'Use a read-only tool to list each file in the workspace.',
+    'Show each folder in the workspace with a read-only tool.',
+    'Use a read-only tool to list every directory in the workspace.',
+    'The command used head -20, so that was incomplete. Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.',
+  ]) {
+    assert.ok(contract(prompt).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE));
+    assert.ok(!contract(prompt).includes(AGENT_SKILLS.workspace));
+    assert.ok(!contract(prompt).includes('For a new project, choose one short descriptive folder'));
+    assert.ok(contract(prompt,8193).includes(AGENT_SKILLS.workspace));
+  }
+  for (const prompt of [
+    listing+' Then create a new report file in the workspace.',
+    'Read-only workspace: list files, but edit README.md.',
+    'List workspace files read-only and run the tests.',
+    'Create a workspace project and list its files with read-only tools.',
+    'Build a React website in the workspace and publish its preview.',
+    'Read the workspace code and fix its bug.',
+    'List each workspace entry read-only and run python checks.py.',
+    'Show each workspace folder with a read-only tool, then create a report.',
+    'List every directory read-only in the workspace and publish a preview.',
+  ]) {
+    assert.ok(!contract(prompt).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE),prompt);
+    assert.ok(contract(prompt).includes(AGENT_SKILLS.workspace),prompt);
+  }
+  assert.ok(!contract(undefined,8192,{messages:[{role:'tool',content:listing},{role:'user',content:'Hello'}]}).includes(ODS_READ_ONLY_WORKSPACE_LISTING_GUIDE));
 });

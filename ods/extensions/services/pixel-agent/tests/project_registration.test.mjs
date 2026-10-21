@@ -60,6 +60,32 @@ test('a missing sandbox npm still leaves the managed npm build to the combined P
   }
 });
 
+test('installed project guidance follows live small-context settings without changing the tool contract', () => {
+  let hook, factory, window = 65536;
+  const config = () => ({plugins: {entries: {'pixel-ods': {config: {modelContextWindow: window}}}}});
+  registerProjectBuild({pluginConfig: {projectBuildSocket: '/not-contacted/project.sock', modelContextWindow: 65536},
+    runtime: {config: {current: config}},
+    registerTool(create) {factory = create;}, on(_name, callback) {hook = callback;}});
+  const context = {agentId:'pixel',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+  const full = hook({}, context).appendSystemContext;
+  const tool = factory(context);
+  for (const budget of [8192, 65536, 4096, 8193, undefined, 0, -1, '8192', 8192.5, NaN, Infinity]) {
+    window = budget;
+    const text = hook({}, context).appendSystemContext;
+    if ([8192, 4096].includes(budget)) {
+      assert.ok(text.length < 300);
+      assert.match(text, /discover and describe pixel_ods_project_build/);
+      assert.match(text, /controller policy; no host fallback or resubmission of uncertain jobs/);
+    } else assert.equal(text, full);
+    const after = factory(context);
+    assert.equal(after.description, tool.description);
+    assert.deepEqual(after.parameters, tool.parameters);
+    assert.match(after.description, /actual installed ABI\/tags/);
+    assert.match(after.description, /exact\/hash-pinned requirements.lock/);
+    assert.match(after.description, /never resubmit unknown outcomes/);
+  }
+});
+
 test('real malformed model submits are actionable without a job or an admission bypass', async () => {
   const control=createProjectRunControl();
   const scope={agentId:'pixel',sessionId:'session-a',runId:'run-a',

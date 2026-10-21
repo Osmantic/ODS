@@ -105,7 +105,8 @@ function setForTest(t, values) {
 // builds one owner turn, with the session's earlier messages, and returns the
 // joined prompt context.
 let loads = 0;
-export async function realPromptBuild(t, {stateFiles = {}} = {}) {
+export async function realPromptBuild(t, {stateFiles = {}, pluginConfig = {}, agentConfig,
+  context = {}, currentConfig} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-prompt-build-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const state = path.join(root, '.openclaw');
@@ -132,8 +133,9 @@ export async function realPromptBuild(t, {stateFiles = {}} = {}) {
   const {default: plugin} = await import(`data:text/javascript;base64,${Buffer.from(
     `${stubbed}\n//# sourceURL=${entry.href}?prompt-build-${load}`).toString('base64')}`);
   const hooks = new Map();
-  plugin.register({registrationMode: 'full', pluginConfig: {perplexicaPort: 1}, logger: {warn() {}, info() {}},
-    config: {agents: {list: [{id: 'pixel', sandbox: {mode: 'off'}, tools: {exec: {host: 'gateway'}}}]}},
+  plugin.register({registrationMode: 'full', pluginConfig: {perplexicaPort: 1, ...pluginConfig}, logger: {warn() {}, info() {}},
+    config: {agents: {list: [agentConfig ?? {id: 'pixel', sandbox: {mode: 'off'}, tools: {exec: {host: 'gateway'}}}]}},
+    runtime: currentConfig ? {config: {current: currentConfig}} : undefined,
     on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler]),
     registerHttpRoute() {}, registerTool() {}});
   const fire = async (name, event, ctx) => {
@@ -145,7 +147,7 @@ export async function realPromptBuild(t, {stateFiles = {}} = {}) {
   return async (prompt, messages = []) => {
     const n = String(++runs).padStart(12, '0');
     const ctx = {agentId: 'pixel', runId: `chatcmpl_00000000-0000-4000-8${String(load).padStart(3, '0')}-${n}`,
-      sessionId: `session-${load}-${n}`, sessionKey: `agent:pixel:openai-user:ods-${'e'.repeat(64)}`, trigger: 'user'};
+      sessionId: `session-${load}-${n}`, sessionKey: `agent:pixel:openai-user:ods-${'e'.repeat(64)}`, trigger: 'user', ...context};
     const event = {prompt, messages};
     // OpenClaw resolvePromptBuildHookResult: context fields of every handler, joined.
     const results = await fire('before_prompt_build', event, ctx);
@@ -171,7 +173,8 @@ export async function promptHookAlone({language, goal = false, clarificationNote
   let callback;
   vm.runInNewContext(source.slice(begin, finish), {
     ...responseLanguage,
-    api: {config: {}, on: (_name, fn) => { callback = fn; }}, AGENT_ID: 'pixel',
+    api: {config: {}, pluginConfig: {modelContextWindow: 131072, leanPrompt: false},
+      on: (_name, fn) => { callback = fn; }}, AGENT_ID: 'pixel',
     accessRuntime: {isProbe: () => false},
     delegationDelivery: {admission: () => undefined, observe() {}, promptContext: () => undefined, ownerRunFor: () => undefined},
     privateBrowserAccessForAgent: () => false, executionHostForAgent: () => 'sandbox',
@@ -180,7 +183,7 @@ export async function promptHookAlone({language, goal = false, clarificationNote
       observeExampleRun() {}, exampleContextForRun: () => undefined,
       clarificationContextForRun: id => (id === 'run' ? clarificationNote : undefined)},
     goalProgress: {begin() {}, active: () => goal}, taskActivity: {begin() {}},
-    promptContractForAgent, configuredContextWindow: 131072, configuredLeanPrompt: false, configuredResponseLanguage: language,
+    promptContractForAgent, configuredResponseLanguage: language,
     extensionRepositoryContext: async () => '', managedTeamRole, ACTIVITY_CONTRACT, GOAL_CONTRACT,
     executionLocationContext: () => '', executionContext,
   });

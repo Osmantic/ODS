@@ -1,0 +1,162 @@
+// Actual pinned admission/runner and complete registered plugin prompt hook,
+// with a loopback provider. No synthetic padding or replacement system prompt.
+// This checks prompt assembly and unchanged reserves, not model quality.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import http from 'node:http';
+import {once} from 'node:events';
+import {createHash} from 'node:crypto';
+import {registerHooks} from 'node:module';
+import {pathToFileURL} from 'node:url';
+import {realPromptBuild} from './prompt-build-harness.mjs';
+
+const pkg=process.env.OPENCLAW_PACKAGE_DIR;
+assert.ok(pkg,'provide the pinned reviewed OpenClaw package');
+const root=fs.mkdtempSync(path.join(os.tmpdir(),'ods-8k-budget-'));
+process.env.OPENCLAW_STATE_DIR=path.join(root,'state');
+process.env.OPENCLAW_CONFIG_PATH=path.join(root,'openclaw.json');
+const sha=value=>createHash('sha256').update(value).digest('hex');
+const sources=new Map();
+for(const [name,module] of [
+  ['compaction-empty','proxy-Bsfwfsp-.js'],
+  ['compaction-no-work','compact-DuWIsaq_.js'],
+  ['compaction-resume','sessions-CZbwb3_c.js'],
+  ['compaction-budget','selection-BEwSQKM-.js'],
+  ['yield-usage','embedded-agent-CJx-nG3W.js'],
+]) {
+  const manifest=JSON.parse(fs.readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
+  const filename=path.join(pkg,'dist',module);
+  let source=fs.readFileSync(filename,'utf8');
+  const digest=sha(source);
+  const applied=digest===manifest.patchedSha256?manifest.replacements:manifest.previousReplacements?.[digest];
+  if(applied)for(const [before,after] of [...applied].reverse()){
+    assert.equal(source.split(after).length,2);source=source.replace(after,before);
+  }
+  assert.equal(sha(source),manifest.sourceSha256,'reject unreviewed native bytes');
+  for(const [before,after] of manifest.replacements){assert.equal(source.split(before).length,2);source=source.replace(before,after);}
+  assert.equal(sha(source),manifest.patchedSha256);
+  sources.set(pathToFileURL(filename).href,source);
+}
+const loader=registerHooks({load(url,context,next){return sources.has(url)
+  ? {format:'module',source:sources.get(url),shortCircuit:true}:next(url,context);}});
+const liveSummary=fs.readFileSync(new URL('./fixtures/completed-workspace-summary.txt',import.meta.url),'utf8').trim();
+const native=await import(pathToFileURL(path.join(pkg,'dist/proxy-Bsfwfsp-.js')));
+const {t:runEmbeddedAgent}=await import(pathToFileURL(path.join(pkg,'dist/embedded-agent-CJx-nG3W.js')));
+test.after(async()=>{
+  const {n:closeStateDatabases}=await import(pathToFileURL(path.join(pkg,'dist/openclaw-state-db-BtpXMqJX.js')));
+  closeStateDatabases();loader.deregister();await fs.promises.rm(root,{recursive:true,force:true});
+});
+
+
+for (const scenario of [
+  {id:'chat', prompt:'Without tools, answer in one short sentence: what color is a ripe banana?'},
+  {id:'listing', prompt:'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.'},
+  {id:'listing-realistic-summary', prompt:'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.'},
+  {id:'listing-oversized-summary', prompt:'Use a read-only workspace tool to list the files and folders at the top of the current workspace. Report only what the tool returns. Do not create or change files.'},
+  {id:'listing-correction', prompt:'The command used head -20, so that was incomplete. Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.'},
+]) test('8K '+scenario.id+' full plugin hook reaches the provider with unchanged reserves', {timeout:60000}, async t=>{
+  const requests=[];
+  const listing=['| Exact name | Type |','| --- | --- |',
+    ...Array.from({length:44},(_,i)=>`| acceptance-project-${String(i+1).padStart(2,'0')}-configuration-and-notes.txt | file |`),
+    '| .settings | folder |','| scripts | folder |'].join('\n');
+  const listingJourney=['listing','listing-realistic-summary','listing-oversized-summary'].includes(scenario.id);
+  let reply=listingJourney?listing:'A ripe banana is yellow.';
+  const isSummary=request=>request.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&(m.content.startsWith('You are a context summarization assistant.')||m.content.startsWith('Summarize completed history in one factual paragraph')));
+  const upstream=http.createServer(async(req,res)=>{
+    const chunks=[];for await(const chunk of req)chunks.push(chunk);
+    const request=JSON.parse(Buffer.concat(chunks));requests.push(request);
+    const hasRetainedBudget=JSON.stringify(request.messages).includes('weighted characters');
+    const longSummary=scenario.id==='listing-oversized-summary'||scenario.id==='listing-realistic-summary'&&!hasRetainedBudget;
+    const content=isSummary(request)?longSummary?liveSummary:'The owner requested a read-only listing. The completed answer listed 46 entries. No files were changed. A new request requires fresh evidence.':reply;
+    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content},finish_reason:null}]})+'\n\n');
+    res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:'stop'}],usage:{prompt_tokens:4000,completion_tokens:Math.ceil(content.length/4),total_tokens:4000+Math.ceil(content.length/4)}})+'\n\ndata: [DONE]\n\n');
+  });
+  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
+  t.after(async()=>{upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));});
+  const workspace=path.join(root,'workspace-'+scenario.id),agentDir=path.join(root,'agent-'+scenario.id);
+  fs.mkdirSync(workspace);fs.mkdirSync(agentDir);
+  const prompt=scenario.prompt;
+  let contract;
+  await t.test('assemble all real before_prompt_build instructions', async child => {
+    const build = await realPromptBuild(child, {
+      pluginConfig: {modelContextWindow: 65536, leanPrompt: false, projectBuildSocket: '/not-contacted/project.sock'},
+      currentConfig: () => ({plugins: {entries: {'pixel-ods': {config: {modelContextWindow: 8192, leanPrompt: true}}}}}),
+    });
+    contract = await build(prompt);
+  });
+  const reserveTokens=3277;
+  const plugin=path.join(root,'plugin-'+scenario.id);fs.mkdirSync(plugin);
+  fs.writeFileSync(path.join(plugin,'package.json'),JSON.stringify({name:'ods-8k-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
+  fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'ods-8k-fixture',activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
+  fs.writeFileSync(path.join(plugin,'index.mjs'),`export default {id:'ods-8k-fixture',register(api){api.on('before_prompt_build',()=>(${JSON.stringify(contract)}));}};`);
+  const config={agents:{defaults:{workspace,skipBootstrap:true,model:'fixture/model',contextTokens:8192,
+    compaction:{reserveTokens,reserveTokensFloor:0,keepRecentTokens:512},heartbeat:{every:'0m'}},
+    list:[{id:'pixel',default:true,workspace,agentDir,skills:[],contextTokens:8192}]},tools:{deny:['*']},
+    plugins:{allow:['ods-8k-fixture'],load:{paths:[plugin]},entries:{'ods-8k-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}},
+    models:{mode:'replace',providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,apiKey:'fixture-only',
+      models:[{id:'model',name:'Fixture',contextWindow:8192,maxTokens:2048,reasoning:false,input:['text']}]}}}};
+  fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
+  const sessionId=({chat:'2aaaaaaa',listing:'3aaaaaaa','listing-correction':'4aaaaaaa','listing-realistic-summary':'5aaaaaaa','listing-oversized-summary':'6aaaaaaa'})[scenario.id]+'-2222-4333-8444-555555555555',sessionFile=path.join(root,sessionId+'.jsonl');
+  const result=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:8k-fixture-'+scenario.id,workspaceDir:workspace,agentDir,
+    config,provider:'fixture',model:'model',prompt,runId:'8k-'+scenario.id,trigger:'user',timeoutMs:30000});
+  const trace=JSON.stringify({requests:requests.length,result});
+  assert.equal(result.meta?.error,undefined,trace);
+  assert.equal(requests.length,1,'one real provider request, no repeated compaction\n'+trace);
+  assert.equal(requests[0].max_tokens??requests[0].max_completion_tokens,2048);
+  assert.equal(result.payloads?.map(p=>p.text??'').join(''),reply,trace);
+  const normalize = text => text.replace(/\s+/g, ' ').trim();
+  assert.ok(requests[0].messages.some(m=>m.role==='system'&&typeof m.content==='string'&&normalize(m.content).includes(normalize(contract.appendSystemContext))),
+    'the provider receives the complete registered production hook output');
+  assert.equal(JSON.stringify(requests[0].messages).split(prompt).length-1,1);
+  if(listingJourney) {
+    reply=listing.replaceAll('acceptance-project','second-project');
+    const secondAnswer=reply;
+    const correction='Use a read-only tool to run ls -la /workspace without head, tail, or any truncation. List every returned entry except . and .. with its exact name and file/folder type. Do not change files.';
+    const followup=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:8k-fixture-'+scenario.id,workspaceDir:workspace,agentDir,
+      config,provider:'fixture',model:'model',prompt:correction,runId:'8k-followup',trigger:'user',timeoutMs:30000});
+    if(scenario.id==='listing-oversized-summary') {
+      assert.ok(followup.meta?.error,'oversized summary must fail instead of erasing history');
+      const rejectedEntries=fs.readFileSync(sessionFile,'utf8').trim().split('\n').map(JSON.parse);
+      assert.ok(!rejectedEntries.some(e=>e.type==='compaction'),'reject before appending a checkpoint');
+      assert.ok(rejectedEntries.some(e=>e.type==='message'&&e.message?.role==='assistant'&&e.message.content.some(b=>b.text===listing)),'original completed answer survives');
+      assert.equal(requests.filter(r=>!isSummary(r)).length,1,'no follow-up submitted after oversized summary');
+      return;
+    }
+    assert.equal(followup.meta?.error,undefined,JSON.stringify(followup));
+    if(scenario.id==='listing-realistic-summary') {
+      const summaryRequest=requests.find(isSummary);
+      assert.equal(summaryRequest.max_tokens??summaryRequest.max_completion_tokens,2048,'generation keeps its reserve-derived cap');
+      assert.match(JSON.stringify(summaryRequest.messages),/at most \d+ weighted characters/,'the incoming request constrains retained summary text');
+    }
+    assert.equal(followup.payloads?.map(p=>p.text??'').join(''),reply);
+    assert.equal(requests.length,3,'one first turn, one compaction, one follow-up');
+    assert.equal(requests.filter(isSummary).length,1);
+    assert.ok(JSON.stringify(requests.find(isSummary)).includes('acceptance-project-44-configuration-and-notes.txt'),'summarize the bulky completed answer');
+    const resumed=requests.at(-1);
+    assert.equal(resumed.max_tokens??resumed.max_completion_tokens,2048);
+    assert.equal(JSON.stringify(resumed.messages).split(correction).length-1,1,'current request is submitted once');
+    assert.ok(resumed.messages.some(m=>m.role==='system'&&typeof m.content==='string'&&normalize(m.content).includes(normalize(contract.appendSystemContext))),
+      'complete hook instructions remain after compaction');
+    const entries=fs.readFileSync(sessionFile,'utf8').trim().split('\n').map(JSON.parse);
+    const original=entries.find(e=>e.type==='message'&&e.message?.role==='assistant');
+    assert.equal(original.message.content.filter(b=>b.type==='text').map(b=>b.text).join(''),listing,'raw original answer remains intact');
+    assert.equal(entries.filter(e=>e.customType==='ods.completed-turn-pressure-boundary').length,1);
+    reply='The third turn also reached the provider.';
+    const thirdPrompt='Without tools, reply exactly: The third turn also reached the provider.';
+    const third=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:8k-fixture-'+scenario.id,workspaceDir:workspace,agentDir,
+      config,provider:'fixture',model:'model',prompt:thirdPrompt,runId:'8k-third-turn',trigger:'user',timeoutMs:30000});
+    assert.equal(third.meta?.error,undefined,JSON.stringify(third));
+    assert.equal(third.payloads?.map(p=>p.text??'').join(''),reply);
+    assert.equal(requests.length,5,'each follow-up needs only one summary and one continuation');
+    assert.equal(requests.filter(isSummary).length,2);
+    assert.equal(JSON.stringify(requests.at(-1).messages).split(thirdPrompt).length-1,1);
+    const afterThird=fs.readFileSync(sessionFile,'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(afterThird.filter(e=>e.customType==='ods.completed-turn-pressure-boundary').length,2);
+    assert.ok(afterThird.some(e=>e.type==='message'&&e.message?.role==='assistant'&&e.message.content.filter(b=>b.type==='text').map(b=>b.text).join('')===secondAnswer),
+      'a later boundary does not rewrite the previous completed answer');
+  }
+});

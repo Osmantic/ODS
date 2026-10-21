@@ -311,8 +311,10 @@ test('failed test facts follow the deadline copy', () => {
 test('the prompt hook passes the live configured run timeout', () => {
   const entry = readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
   const declaration = entry.match(/const runTimeoutSeconds = ([^;]*);/);
+  const runtimeConfig = entry.match(/const runtimeConfig = ([^;]*);/);
   assert.ok(declaration);
-  const resolve = new Function('api', `return (${declaration[1]});`);
+  assert.ok(runtimeConfig);
+  const resolve = new Function('api', `${runtimeConfig[0]} return (${declaration[1]});`);
   const config = timeoutSeconds => ({agents: {defaults: {timeoutSeconds}}});
   assert.equal(resolve({runtime: {config: {current: () => config(1800)}}, config: config(60)}), 1800);
   assert.equal(resolve({config: config(1800)}), 1800);
