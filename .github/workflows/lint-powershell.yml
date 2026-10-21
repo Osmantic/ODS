@@ -309,6 +309,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows report during Docker outage (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-report-outage.ps1
+
+      - name: Windows report during Docker outage (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-report-outage.ps1
+
       - name: Windows Host Agent Stale PID Recovery (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh

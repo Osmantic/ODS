@@ -96,6 +96,8 @@ function Test-DockerRunning {
 }
 
 function Test-Install {
+    param([switch]$SkipDockerCheck)
+
     if (-not (Test-Path $InstallDir)) {
         Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
         exit 1
@@ -106,7 +108,7 @@ function Test-Install {
         Write-AIError "docker-compose.base.yml not found in $InstallDir"
         exit 1
     }
-    if (-not (Test-DockerRunning)) { exit 1 }
+    if (-not $SkipDockerCheck -and -not (Test-DockerRunning)) { exit 1 }
 }
 
 function Write-ODSUtf8NoBomFile {
@@ -2576,7 +2578,9 @@ function Invoke-Update {
 }
 
 function Invoke-Report {
-    Test-Install
+    # Support diagnostics include failed Docker probes; an unavailable daemon
+    # must not prevent collecting the bundle needed to diagnose it.
+    Test-Install -SkipDockerCheck
     Push-Location $InstallDir
     try {
         $flags = Get-ComposeFlags
