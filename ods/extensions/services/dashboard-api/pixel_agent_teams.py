@@ -206,7 +206,8 @@ class TeamStore:
         Completed/failed/cancelled/stopped teams go before older interrupted
         ones, and a chat's newest interrupted team is never evicted.
         """
-        finished, gates = [], {}
+        finished: list[tuple[float, Path]] = []
+        gates: dict[tuple[str, str], list[tuple[float, Path]]] = {}
         for path in self.directory.glob("*.json"):
             row = self.get(path.stem[:64], path.stem[65:])
             if not self._evictable(row):
