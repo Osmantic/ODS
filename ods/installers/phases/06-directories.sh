@@ -149,6 +149,15 @@ else
     # shellcheck source=../../lib/safe-env.sh
     source "$SCRIPT_DIR/lib/safe-env.sh"
 
+    # Pixel validates the install root before inspecting its source journal.
+    # Normalize only verified owner-private provider paths before that check;
+    # waiting until source copy makes legacy 0775 roots fail too early.
+    if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
+        # shellcheck source=../lib/source-copy.sh
+        source "$SCRIPT_DIR/installers/lib/source-copy.sh"
+        ods_prepare_retained_cloud_provider "$INSTALL_DIR" || return 1
+    fi
+
     # Older Pixel source updates (bin/pixel_source_upgrade.py, run as root) set
     # only the owner of the files and folders they wrote, so those kept root's
     # group. The host agent keeps a file's group when it rewrites one, which
