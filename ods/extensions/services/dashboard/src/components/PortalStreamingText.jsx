@@ -6,6 +6,7 @@ import PortalInlineCitation from './PortalInlineCitation'
 import {useMemo,useLayoutEffect} from 'react'
 import {useResponseReveal} from '../lib/useResponseReveal'
 import {EMBED_NOTES} from '../lib/embedDisplay'
+import {parseDeliveredArtifacts} from '../lib/pixelDeliveredArtifacts'
 
 // Portal's own note, in its own paragraph where an embed it can't display
 // was, reads as a muted aside rather than as the model's words.
@@ -98,7 +99,12 @@ function markDocumentDownloads() {
 const PLUGINS=[rehypeHighlight,muteEmbedNotes,markDocumentDownloads,revealNewText]
 export default function PortalStreamingText({children, active=false, animate=active, instant=false, onReveal, components=EMPTY_COMPONENTS, artifacts=null}) {
   const fullSource=String(children ?? '')
-  const source=useResponseReveal(fullSource,{animate,instant})
+  // Once a completed answer has verified files, show its complete Markdown.
+  // Revealing half of an image-wrapped link can otherwise turn the unfinished
+  // outer destination into a separate clickable GFM autolink beside the real
+  // download button. Ordinary prose and in-flight responses still animate.
+  const delivered=!active && Boolean(parseDeliveredArtifacts(artifacts)?.length)
+  const source=useResponseReveal(fullSource,{animate,instant:instant || delivered})
   const revealing=source!==fullSource
   useLayoutEffect(()=>{onReveal?.()},[source,onReveal])
   const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,span:StreamSpan}),[components,artifacts])

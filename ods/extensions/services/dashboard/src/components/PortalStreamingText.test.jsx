@@ -9,6 +9,38 @@ beforeEach(()=>{
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const advance=ms=>act(()=>vi.advanceTimersByTime(ms))
 
+it('keeps a verified download free of authored navigation throughout reveal',()=>{
+  const href='https://untrusted.example/api/download?siteId=invented'
+  const source=`[![Download report.md](${href})](${href})`
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.md',
+    siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),file:{path:'report.md',bytes:20,sha256:'b'.repeat(64)}}
+  const {container}=render(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
+  for(let elapsed=0;elapsed<2000;elapsed+=16){
+    advance(16)
+    expect([...container.querySelectorAll('a')].filter(a=>a.href.startsWith('https://untrusted.example')),
+      `${elapsed}: ${container.innerHTML}`).toHaveLength(0)
+  }
+  expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
+})
+
+it('finishes partially revealed Markdown atomically when its completed receipt arrives',()=>{
+  const href='https://untrusted.example/download'
+  const source=`[![Download report.md](${href})](${href})\n\n[Python docs](https://docs.python.org/3/)`
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.md',
+    siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),file:{path:'report.md',bytes:20,sha256:'b'.repeat(64)}}
+  const {container,rerender}=render(<PortalStreamingText active>{source}</PortalStreamingText>)
+  advance(400)
+  expect(container.firstChild).toHaveAttribute('aria-busy','true')
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+  rerender(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
+  expect(container.firstChild).toHaveAttribute('aria-busy','false')
+  expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+  expect(screen.getByRole('link',{name:/Python docs/})).toHaveAttribute('href','https://docs.python.org/3/')
+  advance(2000)
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+})
+
 it('reveals a final response received in one batch rather than displaying it instantly',()=>{
   const text='Uma resposta completa recebida de uma vez, com conteúdo real e sem perder nenhuma palavra.'
   const {container}=render(<PortalStreamingText animate>{text}</PortalStreamingText>)
