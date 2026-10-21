@@ -4734,9 +4734,35 @@ function ownerRequestsFileHandoff(lane) {
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text || ownerForbidsTools(text)) return false;
-  const lane = ownerLaneText(text);
-  if (/\b(?:https?:\/\/|www\.)/i.test(lane)) return false;
+  let lane = ownerLaneText(text);
   if (/^\s*(?:please\s+)?(?:how\b|what\b|why\b|where\b|when\b|explain\b|describe\b|tell\s+me\s+(?:how|about)\b|is\b|are\b|does\b)/i.test(lane)) return false;
+  if (/\b(?:https?:\/\/|www\.)/i.test(lane)) {
+    // Source citations do not cancel an independent local file handoff.
+    // Exclude external acquisition clauses: a filename inside a URL is not
+    // an owner request to publish a file from the Pixel workspace.
+    const hasUrl = value => /\b(?:https?:\/\/|www\.)/i.test(value);
+    const url = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+    lane = lane.split(/[!?;\n]+|\.(?=\s|$)/).map(raw => {
+      const clause = raw.trim();
+      if (!hasUrl(clause)) return clause;
+      if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\b/i.test(clause)) return '';
+      // An explicitly labelled citation is auxiliary to the local request.
+      const cited = clause.replace(/\s+with\s+(?:a\s+)?(?:citation|source\s+link|reference)\s+(?:to\s+)?(?:https?:\/\/|www\.)[^\s<>"'`]+\s*$/i, '');
+      if (!hasUrl(cited)) return cited;
+      if (!/^(?:please\s+)?(?:use|read|open|inspect|fetch|download|create|build|make|write|generate|prepare|give|provide|send|return)\b/i.test(clause)) return '';
+      const parts = clause.split(/(?:,\s*)?\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:create|build|make|write|generate|prepare|give|provide|send|return|attach|deliver)\b)/i);
+      const namedOutput = /\b(?:create|write|generate|prepare)\b[\s\S]*\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|docx|xlsx|pptx)\b/i;
+      const localCreation = parts.some(part => (!hasUrl(part) || /^(?:please\s+)?(?:use|read)\b/i.test(part)) && namedOutput.test(part.replace(url, 'the source')));
+      return parts.map((part,index) => {
+        if (!hasUrl(part)) return index === 0 || localCreation || /\.[a-z0-9]{1,8}\b|\b(?:project|source\s+code)\b/i.test(part) ? part : '';
+        const local = part.replace(url, 'the source');
+        // Retain a named local output requested using a source, so a later
+        // "attach it" still has its creation context. No URL becomes a path.
+        return /^(?:please\s+)?(?:use|read)\b/i.test(part) && namedOutput.test(local)
+          ? local.slice(local.search(/\b(?:create|write|generate|prepare)\b/i)) : '';
+      }).filter(Boolean).join(' and ');
+    }).filter(Boolean).join('. ');
+  }
   const positive = lane.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause =>
     !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:download|deliver|attach|publish)\b/i.test(clause)
   ).join(' ');

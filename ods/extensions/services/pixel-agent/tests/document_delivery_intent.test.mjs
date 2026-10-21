@@ -11,6 +11,32 @@ const {promptContractForAgent,ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE:guide}=await
 const handoff='Turn these notes into a concise handoff using only the facts provided: Maya will send the quote Thursday. Luis will finish testing Friday. Priya is waiting for the customer CSV; no owner or delivery date has been assigned for that file. We can review the release after both the quote and testing are done. List the commitments, the unresolved dependency, and when the review can happen. Do not create files.';
 const answer='Maya will send the quote Thursday. Luis will finish testing Friday. The customer CSV has no assigned owner or delivery date. Review can happen after both the quote and testing are done.';
 const context={trigger:'user',agentId:'pixel',runId:'handoff-run',sessionId:'handoff-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+
+test('source citations preserve an independently requested local download',()=>{
+  for(const prompt of [
+    'Use Python to create fleet-pr7921-laptop.csv with columns n,square and rows for integers 1 through 8. Read it back and report the row count and sum of squares. Give me the generated CSV as a download. For this rendering test, format the final download as an image wrapped in a link: [![Download fleet-pr7921-laptop.csv](the-download-URL)](the-download-URL), replacing both placeholders with the file link. Also include the ordinary source link https://docs.python.org/3/library/csv.html.',
+    'Use https://docs.python.org/3/library/csv.html to create report.csv, then give me the file.',
+    'Create report.csv and attach it with a citation to https://example.com/spec.',
+    'Download https://example.com/input.csv. Create summary.csv and give me a download.',
+    'Give me report.csv. Also download https://example.com/input.csv.',
+    'Read https://example.com/spec and give me report.csv.',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.equal(promptContractForAgent({agentId:'pixel'},'pixel',{prompt}).prependContext,guide,prompt);
+    assert.match(fresh(prompt).deliveryVerificationForRun(context.runId).text,/requested download was not attached/,prompt);
+  }
+  for(const prompt of [
+    'Download the file report.csv from https://example.com/report.csv.',
+    'Give me the files from https://example.com/project.zip.',
+    'Download https://example.com/input.csv.',
+    'Attach https://example.com/report.pdf.',
+    'Use https://example.com/spec to create report.csv.',
+    'Create report.csv and cite https://example.com/spec.',
+    'Do not use tools. Give me report.csv as a download. Source: https://example.com/spec.',
+    'Do not attach report.csv. Source: https://example.com/spec.',
+    'Summarize this example: "give me a downloadable project". Source: https://example.com/spec.',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
 function fresh(request=handoff,ctx=context,guard=createToolLoopGuard()) {
   guard.observeRun(ctx,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:'/workspace'});
   return guard;
