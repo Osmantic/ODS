@@ -3,9 +3,11 @@ import {socketRequest} from './workspace-preview.mjs';
 import {dockerWorkspacePreviewRequest} from './workspace-preview-docker.mjs';
 
 export const ARTIFACT_TOOL = 'pixel_ods_workspace_artifact';
+const WORKSPACE_ARCHIVE_GUIDANCE = 'For source files or a project directory, use {"relativePath":"project.zip","sourcePath":"project"} with the actual requested source path. The broker creates and verifies a ZIP directly from source bytes; no shell packaging, staging file or cleanup is needed. It preserves the requested directory basename and nested filenames. Never rename source to .txt. Generated Python/tool caches, Git metadata and node_modules are omitted and counted. Other source and build outputs are retained. Unsafe links, private or unrecognized hidden files, changing sources and oversized projects are refused rather than silently omitted. The output name labels an immutable download and never replaces a workspace file.';
 export const WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE =
-  'Complete any requested file creation or edits first, then the requested checks. For unsupported source-code files (such as .py) or code projects, create a ZIP preserving filenames and bytes; never rename source to .txt. If zip is unavailable, use Python zipfile. Verify archive contents, integrity and the 4 MiB limit. Use supported files directly. Creating a file is not delivery: call tool_call with id pixel_ods_workspace_artifact and args {"relativePath":"<exact workspace-relative path>"}. Obtain its verified receipt BEFORE the final reply; never invent a link or leave an empty Download heading.';
+  'Complete any requested file creation or edits first, then run requested checks. For source-code files or code projects, call tool_call id pixel_ods_workspace_artifact with args {"relativePath":"project.zip","sourcePath":"<actual source path>"}. The broker creates a ZIP preserving filenames and bytes without shell packaging or cleanup; generated caches and dependencies are omitted and counted. Output limit: 4 MiB. For existing supported documents or archives, omit sourcePath and use the exact relativePath; never rename source to .txt. Obtain a verified receipt BEFORE the final reply. Creating a file is not delivery.';
 export const ARTIFACT_BOUNDARY = 'Create-only single-file snapshot from the configured Pixel workspace; byte integrity only, no execution or document-quality claim.';
+export const ARCHIVE_BOUNDARY = 'Create-only deterministic ZIP snapshot from the configured Pixel workspace; byte integrity only, no execution or document-quality claim.';
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value) &&
   Object.keys(value).sort().join(',') === keys.split(',').sort().join(',');
 const sha = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
@@ -13,9 +15,19 @@ const component = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9.
 const safePath = value => typeof value === 'string' && value.length >= 1 && value.length <= 512 &&
   value.split('/').length <= 12 && value.split('/').every(component);
 const allowed = value => /\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(value);
+const ARCHIVE_FAILURES = Object.freeze({
+  archive_limit:'The project exceeds archive limits: 128 files, 4 MiB per source file, 16 MiB total source bytes, 4 MiB compressed ZIP, 12 directory levels, 512 characters per path and 4096 visited entries. Ask the owner to select a smaller source scope; do not silently omit requested files.',
+  archive_changed:'Project files changed during capture. Wait for writes to finish, then retry the exact source path.',
+  archive_empty:'The selected source contains no deliverable files after excluding generated caches and dependency metadata. Check the requested source path.',
+  archive_private_source:'The selected project contains a private filename or secret-like content. Preserve the files and explain the refusal; do not remove or rewrite source to bypass the check.',
+  archive_unsafe_source:'The selected project contains an unsupported path, link, ownership or permission state, or ambiguous filenames. Preserve the files and explain the refusal; do not relax permissions or silently remove source.',
+});
 export function normalizeWorkspaceArtifact(value) {
-  if (!exact(value,'relativePath') || !safePath(value.relativePath) || !allowed(value.relativePath)) throw new Error('invalid-artifact-path');
-  return {schemaVersion:1,action:'publish-artifact',relativePath:value.relativePath};
+  const archive=exact(value,'relativePath,sourcePath');
+  if ((!archive && !exact(value,'relativePath')) || !safePath(value.relativePath) || !allowed(value.relativePath) ||
+      (archive && (!safePath(value.sourcePath) || !/\.zip$/i.test(value.relativePath)))) throw new Error('invalid-artifact-path');
+  return {schemaVersion:1,action:'publish-artifact',relativePath:value.relativePath,
+    ...(archive ? {sourcePath:value.sourcePath} : {})};
 }
 export function validDeliveredArtifact(value) {
   return Boolean(exact(value,'schemaVersion,kind,relativePath,siteId,sha256,file') && value.schemaVersion === 1 &&
@@ -30,9 +42,17 @@ export function validDeliveredArtifacts(value) {
     new Set(value.map(item=>`${item.siteId}/${item.file.path}`)).size === value.length;
 }
 export function artifactReceipt(value, request) {
-  if (!exact(value,'schemaVersion,kind,status,relativePath,siteId,sha256,file,httpStatus,readbackVerified,executable,overwritten,boundary') ||
+  const archive=Object.hasOwn(request,'sourcePath');
+  const fields='schemaVersion,kind,status,relativePath,siteId,sha256,file,httpStatus,readbackVerified,executable,overwritten,boundary';
+  if (!exact(value,fields+(archive?',archive':'')) ||
     value.status !== 'succeeded' || value.relativePath !== request.relativePath || value.httpStatus !== 200 ||
-    value.readbackVerified !== true || value.executable !== false || value.overwritten !== false || value.boundary !== ARTIFACT_BOUNDARY) throw new Error('unverified-artifact');
+    value.readbackVerified !== true || value.executable !== false || value.overwritten !== false ||
+    value.boundary !== (archive?ARCHIVE_BOUNDARY:ARTIFACT_BOUNDARY)) throw new Error('unverified-artifact');
+  if (archive && (!exact(value.archive,'sourcePath,fileCount,sourceBytes,omittedCacheEntries') ||
+      value.archive.sourcePath !== request.sourcePath ||
+      !Number.isSafeInteger(value.archive.fileCount) || value.archive.fileCount < 1 || value.archive.fileCount > 128 ||
+      !Number.isSafeInteger(value.archive.sourceBytes) || value.archive.sourceBytes < 0 || value.archive.sourceBytes > 16*1024*1024 ||
+      !Number.isSafeInteger(value.archive.omittedCacheEntries) || value.archive.omittedCacheEntries < 0 || value.archive.omittedCacheEntries > 4096)) throw new Error('unverified-artifact');
   const {schemaVersion,kind,relativePath,siteId,sha256,file} = value;
   const result = {schemaVersion,kind,relativePath,siteId,sha256,file};
   if (!validDeliveredArtifact(result)) throw new Error('unverified-artifact');
@@ -81,15 +101,15 @@ export function createWorkspaceArtifactTool(context, {admission,reserve,accept,u
   request ??= transport === 'docker-desktop' ? dockerWorkspacePreviewRequest : socketRequest;
   return {
     name:ARTIFACT_TOOL,
-    description:'For an ordinary owner-interactive Portal chat turn only (not teams, subagents or background goals), deliver one owner-requested document or archive already created in the Pixel workspace, without creating a website or opening its preview. Required argument: relativePath, for example {"relativePath":"Playground/report.pdf"}. For a supported existing document or archive, use its exact relativePath directly; no staging copy is needed. Package unsupported source-code files (such as .py) or code projects into a ZIP preserving original filenames and bytes; verify archive contents and integrity before publishing. Never rename source to .txt or another accepted extension for delivery. The argument name path is not supported. Discover the exact schema with tool_describe if needed. Accepted formats are Markdown, TXT, CSV, TSV, JSON, PDF, ZIP, RAR, DOCX, XLSX and PPTX, at most 4 MiB each and four publication attempts per response. Returns a verified immutable download receipt; the Portal supplies the download control. Do not emit MEDIA paths or invent URLs. Publishing verifies bytes, not document rendering, archive integrity or correctness; perform those checks separately. No arbitrary host files, directories, dependencies, execution or network destinations.',
-    parameters:{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}},
+    description:'For an ordinary owner-interactive Portal chat turn only (not teams, subagents or background goals), deliver an owner-requested document, source file or project from the Pixel workspace without creating a website or opening its preview. Required argument: relativePath, for example {"relativePath":"Playground/report.pdf"}. Use an existing supported document directly. ' + WORKSPACE_ARCHIVE_GUIDANCE + ' Never rename source to .txt. The argument name path is not supported. Accepted direct formats: Markdown, TXT, CSV, TSV, JSON, PDF, ZIP, RAR, DOCX, XLSX and PPTX. ZIP creation accepts at most 128 files, 4 MiB per source file and 16 MiB total source bytes; every delivered file is at most 4 MiB and four publication attempts are allowed per response. Returns a verified immutable download receipt; Portal supplies the download control. Do not invent URLs. Byte integrity does not establish program correctness or document rendering; complete requested checks first. No arbitrary host files, source mutation, execution or network destinations.',
+    parameters:{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512},sourcePath:{type:'string',minLength:1,maxLength:512}}},
     async execute(id,params,signal) {
       const fail=(code,text,status='failed')=>({isError:true,details:{status,kind:'ods-pixel-workspace-artifact',code},content:[{type:'text',text}]});
       let payload;
       try {
         payload=normalizeWorkspaceArtifact(params);
       } catch {
-        return fail('invalid-arguments','No document publication was attempted: invalid arguments. Use exactly {"relativePath":"Playground/report.pdf"}, replacing only the example value with the actual workspace-relative file. The argument is relativePath, not path; no other fields are accepted. Call tool_describe with id "pixel_ods_workspace_artifact" for its exact schema, then retry with the corrected arguments. Paths must use 1 to 12 slash-separated ASCII components (letters, digits, dot, underscore or hyphen), start each component with a letter or digit, and stay within 512 characters and 128 per component. Use a supported document extension. For source-code files or projects, create and verify a ZIP preserving filenames and bytes, at most 4 MiB; never rename source to .txt for delivery. This argument rejection says nothing about file permissions or broker availability.');
+        return fail('invalid-arguments','No document publication was attempted: invalid arguments. Use {"relativePath":"Playground/report.pdf"} for an existing supported file, or {"relativePath":"project.zip","sourcePath":"project"} to package a requested source file or directory. The argument is relativePath, not path; only optional sourcePath is also accepted. Call tool_describe with id "pixel_ods_workspace_artifact" for its exact schema. Paths must use 1 to 12 slash-separated ASCII components (letters, digits, dot, underscore or hyphen), start each component with a letter or digit, and stay within 512 characters and 128 per component. ' + WORKSPACE_ARCHIVE_GUIDANCE + ' This argument rejection says nothing about file permissions or broker availability.');
       }
       let scope;
       try {
@@ -121,6 +141,12 @@ export function createWorkspaceArtifactTool(context, {admission,reserve,accept,u
       } catch {
         return fail(signal?.aborted?'publication-cancelled':'publication-unavailable','No verified document receipt was returned by the publication transport. Publication may have completed on the host, but no download is attached. Preserve the file; this does not establish a file-permission problem. Do not relax permissions or invent a download URL.');
       }
+      if (payload.sourcePath && exact(response,'schemaVersion,kind,status,error,errorCode,boundary') &&
+          response.schemaVersion===1 && response.kind==='ods-pixel-workspace-preview' && response.status==='failed' &&
+          response.error==='ODS workspace preview publication failed' && typeof response.boundary==='string' &&
+          Object.hasOwn(ARCHIVE_FAILURES,response.errorCode)) {
+        return fail(response.errorCode,'No verified download was attached. '+ARCHIVE_FAILURES[response.errorCode]);
+      }
       let result;
       try {
         result=artifactReceipt(response,payload);
@@ -128,7 +154,8 @@ export function createWorkspaceArtifactTool(context, {admission,reserve,accept,u
         return fail('receipt-unverified','The publication service did not return a valid matching byte-verified receipt, so no download is attached. The failure does not prove file corruption or incorrect permissions. Preserve the file; verify its actual workspace path, supported format, size and link/ownership status before retrying. Do not relax permissions blindly or invent a URL.');
       }
       if (signal?.aborted || !accept(scope,result)) return fail('delivery-no-longer-active','A verified snapshot was prepared, but the originating run is no longer eligible to deliver it. No download is attached to this response. Preserve the workspace file; do not claim delivery or attach the receipt to another conversation.');
-      return {details:result,content:[{type:'text',text:'Verified document snapshot prepared for this response. On completed delivery, Portal renders the filename, size and download card automatically. Give a brief final answer; do not repeat full workspace paths or hashes unless the owner asks. '+ARTIFACT_BOUNDARY+'\n'+JSON.stringify(result)}]};
+      const archiveSummary=payload.sourcePath ? ` ZIP contains ${response.archive.fileCount} source files (${response.archive.sourceBytes} bytes); ${response.archive.omittedCacheEntries} generated cache or dependency entries were omitted. Source files were not changed.` : '';
+      return {details:result,content:[{type:'text',text:'Verified document snapshot prepared for this response. On completed delivery, Portal renders the filename, size and download card automatically. Give a brief final answer; do not repeat full workspace paths or hashes unless the owner asks. '+(payload.sourcePath?ARCHIVE_BOUNDARY:ARTIFACT_BOUNDARY)+archiveSummary+'\n'+JSON.stringify(result)}]};
     },
   };
 }

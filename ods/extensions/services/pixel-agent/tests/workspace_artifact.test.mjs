@@ -16,16 +16,17 @@ function fixture(request=async()=>host) {
 }
 test('actual registration includes exact bounded schema and no model-supplied receipt',async()=>{
  const tool=(await registeredPixelTools()).find(t=>t.name===ARTIFACT_TOOL);assert.ok(tool);
- assert.deepEqual(tool.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
+ assert.deepEqual(tool.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512},sourcePath:{type:'string',minLength:1,maxLength:512}}});
  assert.equal((await tool.execute('unbound',args)).isError,true);
 });
 
-test('registered artifact tool guides unsupported code to ZIP without renaming sources',async()=>{
+test('registered artifact tool guides code to broker packaging without renaming sources',async()=>{
  const tool=(await registeredPixelTools()).find(t=>t.name===ARTIFACT_TOOL);
- assert.match(tool.description,/unsupported source-code files.*code projects.*ZIP/i);
- assert.match(tool.description,/preserv(?:e|ing) (?:original )?filenames and bytes/i);
+ assert.match(tool.description,/source files or a project directory.*sourcePath/);
+ assert.match(tool.description,/verifies a ZIP directly from source bytes/);
+ assert.match(tool.description,/preserves the requested directory basename and nested filenames/);
  assert.match(tool.description,/never rename source.*\.txt/i);
- assert.match(tool.description,/verify archive contents and integrity/i);
+ assert.match(tool.description,/no shell packaging, staging file or cleanup is needed/);
  assert.match(tool.description,/at most 4 MiB/);
 });
 
@@ -40,7 +41,7 @@ test('unsupported code rejection explains ZIP recovery without spending the boun
   f.admission.before({toolName:ARTIFACT_TOOL,params:value},context);
   const rejected=await f.tool.execute(context.toolCallId,value);
   assert.equal(rejected.details.code,'invalid-arguments');
-  assert.match(rejected.content[0].text,/ZIP.*preserving filenames and bytes/);
+  assert.match(rejected.content[0].text,/sourcePath.*verifies a ZIP directly from source bytes/);
   assert.match(rejected.content[0].text,/never rename source.*\.txt/i);
   assert.equal(calls,0);
  }

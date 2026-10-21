@@ -16,6 +16,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  python-additional-runtime-pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: web-courier
+            python: '3.11'
+            requirements: ods/vendor/pixel/deploy/web-courier/requirements.lock
+            hashed: true
+          - runtime: datasette
+            python: '3.13'
+            requirements: ods/extensions/library/services/datasette/requirements.txt
+            hashed: false
+          - runtime: radicale
+            python: '3.13'
+            requirements: ods/extensions/library/services/radicale/requirements.txt
+            hashed: false
+    env:
+      REQUIREMENTS: ${{ matrix.requirements }}
+      HASHED: ${{ matrix.hashed }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install the shipped dependency set
+        run: |
+          python -m venv "$RUNNER_TEMP/runtime"
+          hash_args=()
+          if [ "$HASHED" = true ]; then hash_args=(--require-hashes); fi
+          "$RUNNER_TEMP/runtime/bin/python" -m pip install --only-binary=:all: "${hash_args[@]}" -r "$REQUIREMENTS"
+          "$RUNNER_TEMP/runtime/bin/python" -m pip check
+      - name: Audit every pinned distribution
+        run: |
+          python -m pip install 'pip-audit==2.10.1'
+          python -m pip_audit --disable-pip --no-deps -r "$REQUIREMENTS"
+
   python-locks:
     runs-on: ubuntu-latest
     timeout-minutes: 15

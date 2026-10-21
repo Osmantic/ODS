@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`4bf2203c56cce323490e41e36736062d4f74cf39`, and its SHA-256 is
-`0f45a292d978bd766d19606404554a0ebdca6e1f8e0fb95d870e2f7d3ceded5b`.
+`3d2acd8f22a53d28b36b7e6ee017bb3143dc428b`, and its SHA-256 is
+`f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -232,3 +232,21 @@ since the packs the alternates name have changed. This replaces the unpublished
 earlier candidate. Only one public root is advertised; versions, image digests,
 policies and trust anchors are unchanged, and no private source history or
 signing credentials were used.
+
+## ODS-maintained 4.3.33 Courier dependency candidate
+
+This candidate updates Web Courier's hash-locked certifi and urllib3. The
+version advance preserves the strictly increasing source-upgrade gate;
+`pixel/ODS-QUALIFICATION-4.3.33.md` records the isolated runtime validation
+and installed upgrade qualification still required. Existing compatibility
+records and all source custody checks remain intact.
+
+The public vendor tree is `15b6fb0cecb6978624aa96014f5ebccdb591a2fa` at ODS source
+commit `f76c335d9b9e9ce87980ce909ede4e3ec368dcbb`. Two independent empty bare repositories
+using the alternates procedure above produced byte-identical bundles with
+the retained public synthetic author, timestamp and root message. The
+bundle advertises one root commit and no private history. Current pins
+above identify this candidate. The prior 4.3.32 bundle commit
+`4bf2203c56cce323490e41e36736062d4f74cf39` and digest
+`0f45a292d978bd766d19606404554a0ebdca6e1f8e0fb95d870e2f7d3ceded5b` remain historical identities in Git
+and in existing clients' retained receipts. No release signature was generated.

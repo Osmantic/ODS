@@ -57,6 +57,7 @@ tests/test-compose-failure-evidence.sh
 tests/test-compose-image-discovery.sh
 tests/test-custom-menu-agent-flags.sh
 tests/test-dashboard-approval-terminal-proxy.py
+tests/test-dashboard-extensions-lock.sh
 tests/test-dashboard-image-upload.py
 tests/test-disk-check-install-dir.sh
 tests/test-disk-space-preflight.sh
@@ -182,6 +183,7 @@ tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
 tests/test-preset-import-export.sh
+tests/test-preset-import-transaction.sh
 tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh

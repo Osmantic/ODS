@@ -47,7 +47,9 @@ const EMPTY_COMPONENTS={}
 // intent; the citation renderer still requires a unique completed file receipt.
 function markDocumentDownloads() {
   const text=node=>['pre','code','blockquote'].includes(node.tagName) ? '\0'
-    : node.type==='text' ? node.value : (node.children || []).map(text).join('')
+    : node.type==='text' ? node.value
+    : node.tagName==='img' ? String(node.properties?.alt || '')
+    : (node.children || []).map(text).join('')
   return tree=>{
     function visit(node) {
       if(['pre','code','blockquote'].includes(node.tagName))return
@@ -56,10 +58,19 @@ function markDocumentDownloads() {
         if(child.tagName==='a') {
           const label=text(child).trim(), href=String(child.properties?.href || '')
           const named=/^download(?:\s+(?:verified\s+)?([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+))?\s*:?$/i.exec(label)
-          const explicitLabel=named && (!named[1] || href.endsWith('/'+named[1]))
+          const explicitLabel=Boolean(named)
+          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before)
+          const filename=named?.[1] || (prefixed && /^([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9]+)$/.exec(label)?.[1])
           const rawLink=label===href || label===href.split('/').at(-1)
-          if(explicitLabel || (rawLink && /(?:^|\n)\s*download\s*:\s*$/i.test(before))) {
+          if(explicitLabel || filename || (rawLink && prefixed)) {
             child.properties={...child.properties,'data-ods-download-intent':true}
+            if(filename)child.properties['data-ods-download-filename']=filename
+            // A document download label is text, even when the model wraps it
+            // in image syntax. Never load that label's invented remote image,
+            // including while the completed artifact receipt is still pending.
+            if(child.children?.length===1 && child.children[0].tagName==='img') {
+              child.children=[{type:'text',value:label}]
+            }
           }
         }
         visit(child)

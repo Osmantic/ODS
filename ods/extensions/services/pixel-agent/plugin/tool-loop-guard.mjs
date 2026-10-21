@@ -4701,6 +4701,35 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
+// Ordinary owner file handoff is independent of the words download/attach.
+// Match a direct request and its object together; filenames mentioned in an
+// explanation, a list-of-files request or another person's instruction do not
+// select delivery. This is guidance only, never publication authority.
+function ownerRequestsFileHandoff(lane) {
+  const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
+  // An unqualified later refusal overrides an earlier ordinary handoff. A
+  // refusal naming old.zip still leaves a separate current.zip request intact.
+  if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those|all(?:\s+the)?)\s+(?:(?:existing|requested|generated|completed|updated)\s+)?(?:(?:project|source)\s+)?(?:files?|documents?|archives?|attachments?)|them)(?:\s+at\s+all)?(?:\s*,?\s*please)?\s*$/i.test(clause))) return false;
+  const filename = String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx|py|[cm]?[jt]sx?|css|sh|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|pl|dart)["'\x60]?`;
+  const namedFiles = `${filename}(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)${filename})*`;
+  const object = new RegExp(`^(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
+    `(?:(?:existing|requested|generated|completed|updated)\\s+)?(?:(?:project|source)\\s+)?(?:files?|documents?|archives?)|` +
+    `(?:project(?:\\s+source(?:\\s+code)?)?|source\\s+code)|${namedFiles}|(?:file|document|archive)\\s+(?:named|called)\\s+${filename})` +
+    `(?:\\s+with\\s+(?:(?:their|the)\\s+)?original\\s+filenames)?(?:\\s+to\\s+(?:me|us))?(?:\\s+please)?$`, 'i');
+  return clauses.some(raw => {
+    const clause = raw.trim();
+    if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\b/i.test(clause)) return false;
+    const parts = clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:give|provide|send|return)\b)/i);
+    // A coordinated request must itself begin as an owner work directive,
+    // rather than "Ask Alice to ... and give me ..." or a quoted example.
+    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|give|provide|send|return)\b/i.test(parts[0])) return false;
+    return parts.some(part => {
+      const request = part.trim().match(/^(?:(?:please|also|then)\s+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:I|we)\s+(?:want|need)\s+you\s+to\s+)?(?:give|provide|send|return)\s+(?:(?:me|us)\s+(?:with\s+)?)?(.+)$/i);
+      return Boolean(request && object.test(request[1]));
+    });
+  });
+}
+
 // This selects prompt guidance only; it grants no tool or publication authority.
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
@@ -4714,20 +4743,22 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
   // The noun delivery (for example, a file's delivery date) is not itself
   // a publication request. Preserve the existing download/attachment phrases
   // and deliver verb without combining a schedule with a file mention.
+  if (ownerRequestsFileHandoff(lane)) return true;
   return /\b(?:download(?:able)?|attach(?:ment)?|deliver)\b/i.test(positive) &&
     (/\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)\b/i.test(positive) ||
       (/\b(?:documents?|files?|archives?|projects?|source\s+(?:code|filenames?))\b/i.test(positive) &&
         !/\b(?:images?|photos?|audio|video|websites?|webpages?|html)\b|\.(?:png|jpe?g|gif|svg|mp3|mp4|wav|webm|html?)\b/i.test(positive)));
 }
 
-function ownerLaneText(text) {
+function ownerLaneText(text, {preserveCommands = false} = {}) {
   // Classify only current owner prose. Embedded examples cannot opt a workspace
   // turn into extension work; identifiers quoted as operands remain usable.
   return String(text ?? '')
     .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, ' ')
     .replace(/^\s*>[^\n]*/gm, ' ')
     .replace(/"[^"\n]*"|`[^`\n]*`|(?<!\w)'[^'\n]*'(?!\w)|“[^”\n]*”/g,
-      value => /\s/.test(value.slice(1, -1)) ? ' ' : value);
+      value => preserveCommands && value.startsWith('`') ? value :
+        /\s/.test(value.slice(1, -1)) ? ' ' : value);
 }
 
 function ownerForbidsTools(text) {
@@ -5465,7 +5496,7 @@ function localInspectionTextBesidePeer(text) {
   // Remote identity and background route lookups cannot become compulsory
   // observations of this computer. Keep independent positive local requests,
   // including a later "Report CPU and RAM" refinement of a local inspection.
-  const localHost = /\b(?:this|my|our|local|current|ODS)\s+(?:host|machine|computer|system|laptop|notebook|desktop|pc)\b/i;
+  const localHost = new RegExp(`\\b(?:this|my|our|local|current|ODS)\\s+${LOCAL_HOST_DEVICE}\\b`, 'i');
   const request = /\b(?:what|which|tell|show|report|check|verify|identify|inspect|give|get|read|return|measure|explore|inventory|survey|examine|describe)\b/i;
   const clauses = text.split(/[!?;\n]+|\.(?=\s|$)|\b(?:and|then|separately)\s+(?=(?:check|inspect|report|verify|probe|resolve|ping|show|read|measure)\b)/i);
   const positive = clauses.filter((clause) => request.test(clause) &&
@@ -5473,6 +5504,16 @@ function localInspectionTextBesidePeer(text) {
     !/\b(?:remote|peer|target|SSH|reachability|connectivity|ping|probe|resolve)\b/i.test(clause));
   return positive.some((clause) => localHost.test(clause)) ? positive.join(". ") : "";
 }
+
+// Apple device names need an explicit local-device reference: a MAC address
+// or a project/UI mention of Mac is not authority to inspect this computer.
+const APPLE_HOST_DEVICE = "(?:mac(?:book(?:\\s+(?:air|pro))?|\\s+(?:mini|studio|pro))?|imac)(?![\\s_-]+address(?:es)?\\b)";
+const LOCAL_HOST_DEVICE = `(?:host|machine|computer|system|laptop|notebook|desktop|pc|${APPLE_HOST_DEVICE})`;
+const HOST_CONTEXT_PATTERN = new RegExp(
+  `(?:\\b(?:ODS\\s+)?(?:host|machine|computer|system|laptop|notebook|desktop|pc)\\b|` +
+  `\\b(?:this|my|our|the|local|current|actual|physical)\\s+${APPLE_HOST_DEVICE}\\b)`, 'i');
+const HOST_OBSERVATION_GUIDANCE_ONLY =
+  /^\s*(?:please\s+)?(?:(?:explain|describe)\b|(?:tell|show)\s+(?:me\s+)?how\b|how\s+(?:do|should|would|can|could)\s+(?:I|we|you)\b)/i;
 
 export function userMessageOperationsRequirements(messages, prompt = undefined) {
   // Pixel Edge appends trusted delivery/routing guidance beside the owner
@@ -5483,7 +5524,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   if (!text) return { required: false, actions: [] };
   const hostCommand = userMessageRequestsHostCommand(messages, prompt);
   const networkPeer = hostCommand ? undefined : userMessageNetworkPeerRequest(messages, prompt);
-  const hostText = networkPeer ? localInspectionTextBesidePeer(text) : text;
+  const hostText = ownerLaneText(networkPeer ? localInspectionTextBesidePeer(text) : text);
   const explicitOperations =
     /\b(?:use|using|via|through|with)\b.{0,48}\b(?:Pixel\s+)?Operations(?:\s+(?:Broker|capabilit(?:y|ies)|tools?))?\b/i.test(
       positiveOperationsIntentText(text)
@@ -5508,12 +5549,13 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   const hostEvidenceLocalHost = /\b(?:ODS|host|machine)\b/i;
   const hostEvidence = hostEvidenceClauses.some((clause) =>
     !hostEvidenceClauseNegation.test(clause) &&
+    !HOST_OBSERVATION_GUIDANCE_ONLY.test(clause) &&
     hostEvidenceRequest.test(clause) &&
     hostEvidenceFacet.test(clause) &&
     (hostEvidenceLocalHost.test(clause) ||
-      /\b(?:ODS\s+)?(?:host|machine|computer|system|laptop|notebook|desktop|pc)\b/i.test(hostText))
+      HOST_CONTEXT_PATTERN.test(hostText))
   );
-  const hostContextPattern = /\b(?:ODS\s+)?(?:host|machine|computer|system|laptop|notebook|desktop|pc)\b/i;
+  const hostContextPattern = HOST_CONTEXT_PATTERN;
   const hostContext = hostContextPattern.test(hostText);
   const hostScopeFacetPatterns = [
     /\b(?:hostname|host identity|kernel|machine architecture|architecture|cpu architecture|host platform|operating[- ]system(?: signature)?|(?:host\s+)?os(?:\s+(?:signature|release))?|linux distribution|distro|uptime|load averages?|system load)\b/i,
@@ -5732,10 +5774,10 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
 }
 
 export function userMessageExactHostCommand(messages, prompt = undefined) {
-  const text = currentOwnerIntentText(messages, prompt);
+  const text = ownerLaneText(currentOwnerIntentText(messages, prompt), {preserveCommands:true});
   if (!text) return undefined;
   const exact = text.match(
-    /(?:^|[.!?]\s+)(?:please\s+)?(?:run|execute|invoke)\s+(?:exactly\s+)?`([^`\r\n\0]{1,16384})`\s+(?:on|in|from|against|for)\s+(?:this|my|the|local)\s+(?:ODS\s+)?(?:host|machine|computer|laptop)\b/i
+    /(?:^|[.!?]\s+)(?:please\s+)?(?:run|execute|invoke)\s+(?:exactly\s+)?`([^`\r\n\0]{1,16384})`\s+(?:on|in|from|against|for)\s+(?:this|my|the|local)\s+(?:ODS\s+)?(?:host|machine|computer|laptop|mac(?:book(?:\s+(?:air|pro))?|\s+(?:mini|studio|pro))?|imac)(?![\s_-]+address(?:es)?\b)\b/i
   );
   return exact?.[1];
 }
@@ -5767,7 +5809,7 @@ const NOT_A_REQUEST_BEFORE_HOST_ACTION = new RegExp(String.raw`(?:${[
   String.raw`\b(?:takes?|took)\s+(?:[\w-]+\s+){0,3}to`,
   String.raw`\bno\s+(?:way|option)\s+to`,
   String.raw`\blet\s+me`,
-  String.raw`\b(?:makes|made|making|forces|forced|forcing|causes|caused|causing)\s+(?:me|us|you|it|(?:my|this|the)\s+(?:ODS\s+)?(?:host|machine|computer|laptop))(?:\s+to)?`,
+  String.raw`\b(?:makes|made|making|forces|forced|forcing|causes|caused|causing)\s+(?:me|us|you|it|(?:my|this|the)\s+(?:ODS\s+)?${LOCAL_HOST_DEVICE})(?:\s+to)?`,
   String.raw`(?<!\b(?:you|we|Pixel)\s+)\b(?:will|would|should|could|might|may|must|can|shall)(?:\s+(?:not|never|barely|hardly|still|also|only|always|sometimes|eventually|automatically|really|even|just))*`,
   // What the owner did: "I restart", "when we restart", "whenever you
   // restart", "I've tried to start". "Can we stop Ollama" stays a request.
@@ -5788,7 +5830,7 @@ const IMPERATIVE_BEFORE_HOST_ACTION =
   /(?:^|[,:]|\b(?:please|kindly|then|now|just|also|first|and|you|to))\s*$/i;
 // A finite verb after the word makes it a subject: "Restart doesn't work",
 // "Cold start takes 10 seconds", "First launch on my laptop shows a blank page".
-const SUBJECT_USE_AFTER_HOST_ACTION = new RegExp(String.raw`^(?:\s+(?:and|or|&)\s+${HOST_ACTION_WORD.source})?\s+(?:(?:on|in)\s+(?:this|my|the)\s+(?:ODS\s+)?(?:host|machine|computer|laptop)\s+)?(?:(?:still|also|just|never|always|now|even|sometimes)\s+)?(?:is|isn['’]?t|was|wasn['’]?t|are|aren['’]?t|were|does|doesn['’]?t|did|didn['’]?t|won['’]?t|can['’]?t|has|hasn['’]?t|had|keeps?|takes?|took|shows?|showed|crashe[sd]|freezes|froze|hangs|hung|fails|failed|breaks|broke|overlaps?|resets|seems|looks|gets|got|works|worked|stalls|stalled|when|whenever|while|by\s+itself|itself)\b`, 'i');
+const SUBJECT_USE_AFTER_HOST_ACTION = new RegExp(String.raw`^(?:\s+(?:and|or|&)\s+${HOST_ACTION_WORD.source})?\s+(?:(?:on|in)\s+(?:this|my|the)\s+(?:ODS\s+)?${LOCAL_HOST_DEVICE}\s+)?(?:(?:still|also|just|never|always|now|even|sometimes)\s+)?(?:is|isn['’]?t|was|wasn['’]?t|are|aren['’]?t|were|does|doesn['’]?t|did|didn['’]?t|won['’]?t|can['’]?t|has|hasn['’]?t|had|keeps?|takes?|took|shows?|showed|crashe[sd]|freezes|froze|hangs|hung|fails|failed|breaks|broke|overlaps?|resets|seems|looks|gets|got|works|worked|stalls|stalled|when|whenever|while|by\s+itself|itself)\b`, 'i');
 // A UI noun right after the word ("start screen", "start/restart buttons",
 // "upgrade shop", a quoted "Start" button, "change log") makes it part of a
 // name. A host setting after "screen" ("change screen resolution") and "logs",
@@ -5845,8 +5887,20 @@ function hostActionVerb(clause, hostIndex, context) {
   return undefined;
 }
 
+// Only this complete natural-language observation clause can bypass the
+// raw-command classifier. An extra command or unrecognized suffix fails this
+// positive grammar; other clauses are still checked for host commands.
+const BOUNDED_HOST_OBSERVATION_CLAUSE = new RegExp(
+  '^\\s*(?:please\\s+)?(?:(?:can|could|would|will)\\s+you\\s+(?:please\\s+)?)?' +
+  '(?:run|execute|invoke|perform)\\s+(?:a|the)\\s+(?:read[- ]only\\s+)?' +
+  '(?:hostname|host\\s+identity|host\\s+platform|kernel|machine\\s+architecture|' +
+  'operating[- ]system(?:\\s+(?:signature|release|version))?|uptime|cpu|gpu|memory|storage)' +
+  '\\s+(?:check|inspection|observation|query)\\s+(?:on|of|for)\\s+' +
+  `(?:this|my|our|the|local|current|actual|physical)\\s+(?:ODS\\s+)?${LOCAL_HOST_DEVICE}\\s*$`, 'i');
+
 export function userMessageRequestsHostCommand(messages, prompt = undefined) {
-  const text = currentOwnerIntentText(messages, prompt);
+  const ownerText = currentOwnerIntentText(messages, prompt);
+  const text = ownerLaneText(ownerText, {preserveCommands:true});
   if (!text) return false;
   if (
     userMessageRequestsOperationsCapabilityInventory(messages, prompt) ||
@@ -5857,7 +5911,8 @@ export function userMessageRequestsHostCommand(messages, prompt = undefined) {
     return false;
   }
   if (userMessageExactHostCommand(messages, prompt)) return true;
-  const localHost = /\b(?:ODS[- ]host|local\s+(?:ODS\s+)?host|this\s+(?:ODS\s+)?(?:host|machine|computer|laptop)|my\s+(?:ODS\s+)?(?:host|machine|computer|laptop))\b/i;
+  const localHost = new RegExp(
+    `\\b(?:ODS[- ]host|local\\s+(?:ODS\\s+)?host|(?:this|my)\\s+(?:ODS\\s+)?${LOCAL_HOST_DEVICE})\\b`, 'i');
   const remoteHost = /\b(?:SSH\s+(?:(?:connection|connectivity)\s+)?(?:to|into)|remote\s+(?:host|machine|computer|server|device)|(?:host|machine|computer|server|device)\s+(?:named|called)\s+[A-Za-z0-9][A-Za-z0-9._-]{0,127})\b/i;
   const remoteAction = /\b(?:connect|verify|check|inspect|query|report|troubleshoot|debug|run|execute|invoke)\b/i;
   const guidanceOnly =
@@ -5883,6 +5938,9 @@ export function userMessageRequestsHostCommand(messages, prompt = undefined) {
       }
       const hostMatch = clause.match(localHost);
       if (!hostMatch) return false;
+      if (BOUNDED_HOST_OBSERVATION_CLAUSE.test(clause) &&
+          ownerText.split(/[.!?;\n]+|,\s*(?=(?:and\s+then|but|however|instead|then)\b)/i)
+            .some(original => original.trim() === clause.trim())) return false;
       // A request for help may follow in the next sentence: "The last update
       // broke Ollama on my machine. Can you roll it back?"
       const next = clauses[index + 1] || '';
@@ -5900,12 +5958,12 @@ export function userMessageRequestsHostCommand(messages, prompt = undefined) {
       }
       if (
         /\bstart\s+by\b|\bupdate\s+(?:me|us)\b/i.test(clause) ||
-        /\b(?:can|could|would|should|does|did|will)\s+(?:this|my|the|local|ODS)\s+(?:ODS\s+)?(?:host|machine|computer|laptop)\b/i.test(clause)
+        new RegExp(`\\b(?:can|could|would|should|does|did|will)\\s+(?:this|my|the|local|ODS)\\s+(?:ODS\\s+)?${LOCAL_HOST_DEVICE}\\b`, 'i').test(clause)
       ) {
         return false;
       }
       if (actionUnrelatedToHost(clause, actionMatch, hostMatch.index)) return false;
-      return !/\brun\s+(?:a|any|some|the)?\s*(?:command|shell)\s*(?:on|against|for)?\s*(?:this|my|the|ODS)?\s*(?:host|machine|computer|laptop)?\s*$/i.test(
+      return !new RegExp(`\\brun\\s+(?:a|any|some|the)?\\s*(?:command|shell)\\s*(?:on|against|for)?\\s*(?:this|my|the|ODS)?\\s*${LOCAL_HOST_DEVICE}?\\s*$`, 'i').test(
         clause.trim()
       );
     });
@@ -5976,7 +6034,7 @@ export function userMessageRequestsWorkspaceContinuation(messages, prompt = unde
   const rejectsAction =
     /\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,96}\b(?:continue|work|inspect|create|write|edit|fix|repair|update|build|implement|run|test|verify|read|save|generate)\b/i;
   return text
-    .split(/[.!?;\n]+|,\s*(?=(?:and\s+then|but|however|instead|then)\b)/i)
+    .split(/[!?;\n]+|\.(?=\s|$)|,\s*(?=(?:and\s+then|but|however|instead|then)\b)/i)
     .some(
       (clause) =>
         namesWorkspace.test(clause) &&
@@ -6919,7 +6977,7 @@ export function userMessageWorkspaceContinuationPath(messages, prompt = undefine
 }
 
 // A single owner-named bare filename (no directory) is an unambiguous path
-// binding only when the owner names/calls exactly one such file, it is not
+// binding only when the owner names/calls or directly requests exactly one file, it is not
 // quoted as source/instruction text, and no other path-like token competes.
 // This never grants a directory and never overrides an explicit /workspace
 // path (handled by the caller before this runs).
@@ -6935,7 +6993,74 @@ function userMessageBareWorkspaceFilename(messages, prompt = undefined) {
   const [name] = files;
   if (!WORKSPACE_PATH_COMPONENT.test(name)) return undefined;
   const named = [...text.matchAll(/\b(?:named|called)\s+([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z][A-Za-z0-9]{0,11})\b/gi)];
-  return named.some(match => match[1] === name) ? name : undefined;
+  if (named.some(match => match[1] === name)) return name;
+  // A direct object, not an incidental mention elsewhere in the sentence.
+  // Also allow "use Python in the workspace to create report.csv" without
+  // interpreting quoted examples, prohibitions or explanations as commands.
+  for (const match of text.matchAll(/\b(?:create|generate|write|save)\s+(?:(?:a|the)\s+)?(?:workspace\s+)?(?:file\s+)?([A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z][A-Za-z0-9]{0,11})\b/gi)) {
+    if (match[1] !== name) continue;
+    const prefix = text.slice(0, match.index).split(/[!?;\n]|\.(?=\s|$)/).at(-1).trimStart();
+    if (/\b(?:not|never|avoid|skip|without|don't|mustn't|shouldn't)\b/i.test(prefix)) continue;
+    if (/^(?:(?:and(?:\s+then)?|then|now|instead)\s+)?(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|I\s+(?:want|need)\s+you\s+to\s+)?(?:(?:in|inside)\s+(?:the\s+)?workspace[,]?\s+|use\s+[A-Za-z0-9 _-]{1,80}\s+to\s+)?$/i.test(prefix)) return name;
+  }
+  return undefined;
+}
+
+// Hash only the actual full read result, before persistence adds guidance.
+// A command's exit code or a model-written hash is not file evidence.
+function workspaceReadFingerprint(event) {
+  const params = event?.params;
+  const result = event?.result;
+  if (toolCallFailed(event) || params?.offset !== undefined || params?.limit !== undefined ||
+      !Array.isArray(result?.content) || result.content.length !== 1) return undefined;
+  const block = result.content[0];
+  const details = result.details;
+  if (block?.type !== 'text' || typeof block.text !== 'string' ||
+      result.truncated === true || details?.truncated === true ||
+      details?.truncation?.truncated === true || details?.outputTruncated === true ||
+      details?.outputTruncated?.stdout === true || details?.outputTruncated?.stderr === true) return undefined;
+  const bytes = Buffer.byteLength(block.text, 'utf8');
+  if (bytes > 4 * 1024 * 1024) return undefined;
+  return {bytes, sha256: createHash('sha256').update(block.text, 'utf8').digest('hex')};
+}
+
+// Preserve an explicit execution method when choosing how to create a named
+// output. This is routing guidance, not evidence that a program created bytes.
+export function userMessagePythonCreationPath(messages, prompt = undefined) {
+  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
+    {preserveFileTargets: true});
+  // A named output plus an explicit Python method is sufficient even when the
+  // owner does not spell out "workspace". This binds only one bare filename;
+  // it does not grant directory access or establish execution provenance.
+  const expected = userMessageWorkspaceContinuationPath(messages, prompt) ??
+    userMessageBareWorkspaceFilename(messages, prompt) ??
+    // Research sentences may contain dotted API names or documentation URLs.
+    // For method routing only, apply the same conservative filename selector
+    // to all creation clauses together. Keeping every creation clause means
+    // competing outputs, directory paths and traversal still fail closed.
+    userMessageBareWorkspaceFilename([], text.split(/[!?;\n]+|\.(?=\s|$)/)
+      .filter(clause => /\b(?:create|generate|write|save|produce|emit)\s+/i.test(clause))
+      .join('. '));
+  if (!expected) return undefined;
+  const path = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const output = `(?:/workspace/|workspace/|\\./)?${path}(?=$|[\\s,;!?]|\\.(?:\\s|$))`;
+  // Keep the explicit method bound to the already validated single output,
+  // including ordinary descriptions such as "a downloadable CSV named ...".
+  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?' +
+    '(?:downloadable\\s+)?(?:(?:csv|(?:plain\\s+)?text)\\s+)?' +
+    '(?:file\\s+)?(?:(?:named|called)\\s+)?';
+  const methodFirst = new RegExp('\\b(?:use|run|execute|invoke)\\s+python3?\\b' +
+    '(?:\\s+(?:in|inside)\\s+(?:the\\s+)?workspace)?\\s+to\\s+' + create + output, 'i');
+  const outputFirst = new RegExp(create + output +
+    '\\s+(?:(?:by\\s+)?(?:using|running|executing)|with)\\s+python3?\\b', 'i');
+  for (const clause of text.split(/[!?;\n]+|\.(?=\s|$)/)) {
+    if (/\b(?:not|never|avoid|skip|without|don't|mustn't|shouldn't|instead\s+of|rather\s+than)\b/i.test(clause) ||
+        /\b(?:explain|describe|example|hypothetical|suppose|imagine|how\s+to|if\s+needed)\b/i.test(clause)) continue;
+    if (/\b(?:write|create|save|edit|update)\s+(?:(?:a|the)\s+)?python\s+(?:source|script|file|module)\b/i.test(clause)) continue;
+    const instruction = clause.replace(/["'`“”]/g, '');
+    if (methodFirst.test(instruction) || outputFirst.test(instruction)) return expected;
+  }
+  return undefined;
 }
 
 export function userMessageWorkspaceDirectoryPath(messages, prompt = undefined) {
@@ -7916,6 +8041,8 @@ export function createToolLoopGuard({
         operationsWorkspaceExpectedPath: undefined,
         operationsWorkspaceWriteVerified: false,
         operationsWorkspaceReadVerified: false,
+        operationsWorkspaceReadSnapshot: undefined,
+        operationsWorkspaceExecutionObserved: false,
         ownerIntentObserved: false,
         workspaceTaskRequested: false,
         workspaceMutationRequested: false,
@@ -7925,6 +8052,7 @@ export function createToolLoopGuard({
         workspaceTaskDirectory: undefined,
         workspaceRequestedFiles: [],
         workspacePythonUnittestRequested: false,
+        workspacePythonCreationPath: undefined,
         workspaceParsedJsonVerificationRequested: false,
         workspaceVerificationRequested: false,
         workspacePreviewRequired: false,
@@ -7983,6 +8111,20 @@ export function createToolLoopGuard({
       runs.set(runId, state);
     }
     return state;
+  }
+
+  function requestedWorkspaceArtifact(state) {
+    return state?.workspaceArtifacts?.findLast(item =>
+      item.relativePath === state.operationsWorkspaceExpectedPath);
+  }
+
+  function publishedWorkspaceReadback(state, runId) {
+    if (!state || state.clientCancelled ||
+        sessionRuns.get(state.currentSessionId) !== runId) return false;
+    const snapshot = state.operationsWorkspaceReadSnapshot;
+    const artifact = requestedWorkspaceArtifact(state);
+    return Boolean(snapshot && artifact && snapshot.bytes === artifact.file.bytes &&
+      snapshot.sha256 === artifact.file.sha256);
   }
 
   function completeVerifiedEvidenceArtifact(state) {
@@ -9053,8 +9195,39 @@ export function createToolLoopGuard({
         : effectiveToolName === EVIDENCE_READBACK_TOOL
           ? "read"
           : effectiveToolName;
+    if (state?.ownerIntentObserved && state.workspaceMutationRequested &&
+        ['write', 'edit', 'apply_patch', 'exec'].includes(workspaceOperation) &&
+        !state.privateNetworkRequestDenied && !state.privateNetworkExhausted &&
+        !state.workspacePreviewRestrictions?.web &&
+        (typeof hostCitationVerifier?.allowed !== 'function' || hostCitationVerifier.allowed())) {
+      const reminder = state.completionAssurance.beforeWorkspaceMutation();
+      if (reminder) return reminder;
+    }
+    if (state?.workspacePythonCreationPath &&
+        (workspaceOperation === 'write' || workspaceOperation === 'edit')) {
+      const args = toolName === 'tool_call' ? wrappedToolParams?.args : normalizedParams ?? event?.params;
+      const target = effectiveToolName === EVIDENCE_REPORT_TOOL
+        ? state.operationsWorkspaceExpectedPath : normalizeWorkspaceFilePath(args?.path);
+      const requested = state.workspacePythonCreationPath;
+      const leafStart = requested.lastIndexOf('/') + 1;
+      const leaf = requested.slice(leafStart);
+      // Correct the observed hidden-output shortcut without treating paths in
+      // different directories as equivalent or changing workspace normalization.
+      const hiddenAlternate = leaf && !leaf.startsWith('.') &&
+        target === `${requested.slice(0, leafStart)}.${leaf}`;
+      if (target === requested || hiddenAlternate) return {
+        block: true,
+        blockReason: `The owner explicitly requested creating "${requested}" by executing Python in the workspace. ` +
+          (hiddenAlternate ? `Use the requested filename "${requested}", not the hidden alternate "${target}". ` : '') +
+          'Use sandbox exec to run Python that creates this output; do not substitute directly written output bytes. ' +
+          'You may write a Python generator script at a different path, then execute it. ' +
+          'Read the generated file back and publish that exact file. Host observations remain independent; ' +
+          'an execution result alone is not proof of the delivered bytes.',
+      };
+    }
     if (
       state?.operationsWorkspaceContinuationRequested &&
+      state.operationsWorkspaceEvidenceArtifactRequested &&
       state.operationsWorkspaceExpectedPath &&
       (workspaceOperation === "write" || workspaceOperation === "read")
     ) {
@@ -9073,6 +9246,10 @@ export function createToolLoopGuard({
         normalizedParams = toolName === "tool_call"
           ? { id: "read", args: { path: state.operationsWorkspaceExpectedPath } }
           : { path: state.operationsWorkspaceExpectedPath };
+        // The narrow evidence adapter becomes a core read. Bind its receipt
+        // to the admitted tool and path, not the pre-rewrite adapter name.
+        rememberToolRun(context?.toolCallId ?? event?.toolCallId, runId,
+          'read', {path: state.operationsWorkspaceExpectedPath}, undefined, toolName, 'core');
       } else {
         const suppliedContent = sourceArgs && typeof sourceArgs === "object" && !Array.isArray(sourceArgs)
           ? typeof sourceArgs.content === "string"
@@ -10355,6 +10532,7 @@ export function createToolLoopGuard({
           event?.messages,
           event?.prompt
         );
+        state.workspacePythonCreationPath = userMessagePythonCreationPath(event?.messages, event?.prompt);
         state.workspaceTaskDirectory = userMessageWorkspaceDirectoryPath(
           event?.messages,
           event?.prompt
@@ -10454,6 +10632,7 @@ export function createToolLoopGuard({
           userMessageRequestsWorkspaceContinuation(event?.messages, event?.prompt);
         state.operationsWorkspaceEvidenceArtifactRequested =
           state.operationsWorkspaceContinuationRequested &&
+          !state.workspacePythonCreationPath &&
           userMessageRequestsOperationsEvidenceArtifact(event?.messages, event?.prompt);
         state.operationsWorkspaceExpectedPath =
           state.operationsWorkspaceContinuationRequested
@@ -11056,6 +11235,8 @@ export function createToolLoopGuard({
     }
     const associateExecProject = directory => {
       state.workspaceMutationObserved = true;
+      // This selects readback coaching only; it is never write/file proof.
+      state.operationsWorkspaceExecutionObserved = true;
       if(typeof directory!=='string') return;
       try {onWorkspaceMutation({sessionKey:state.currentSessionKey,workspaceRoot:state.configuredWorkspaceRoot,directory,kind:'exec'});}
       catch {warn('Workspace project metadata could not be recorded.');}
@@ -11522,21 +11703,35 @@ export function createToolLoopGuard({
       if (
         state.operationsWorkspaceContinuationRequested &&
         state.operationsWorkspaceExpectedPath &&
-        workspaceToolEvent &&
-        !toolCallFailed(workspaceToolEvent) &&
-        Array.isArray(workspaceToolEvent?.result?.content) &&
-        workspaceToolEvent.result.content.some(
-          (item) => item && item.type === "text" && typeof item.text === "string"
-        )
+        workspaceToolName
       ) {
         const observedPath = normalizeWorkspaceFilePath(
-          workspaceToolEvent?.params?.path
+          workspaceToolEvent?.params?.path ??
+          (toolName === 'tool_call' ? event?.params?.args?.path : event?.params?.path)
         );
         if (observedPath === state.operationsWorkspaceExpectedPath) {
+          // A failed or partial later read cannot leave earlier read proof.
+          // A write may replace bytes even when its result reports failure.
+          state.operationsWorkspaceReadSnapshot = undefined;
+          state.operationsWorkspaceReadVerified = false;
           if (workspaceToolName === "write") {
-            state.operationsWorkspaceWriteVerified = true;
+            state.operationsWorkspaceWriteVerified = Boolean(workspaceToolEvent &&
+              !toolCallFailed(workspaceToolEvent) &&
+              workspaceToolEvent.result?.content?.some(item => item?.type === 'text' && typeof item.text === 'string'));
           } else if (workspaceToolName === "read") {
-            state.operationsWorkspaceReadVerified = true;
+            const fingerprint = workspaceReadFingerprint(workspaceToolEvent);
+            const boundRead = pendingToolRun?.runId === runId &&
+              pendingToolRun.selectedToolName === 'read' && pendingToolRun.transport === toolName &&
+              pendingToolRun.inspectionSessionId === state.currentSessionId &&
+              pendingToolRun.inspectionSessionKey === state.currentSessionKey &&
+              (!context?.sessionId || context.sessionId === state.currentSessionId) &&
+              (!context?.sessionKey || context.sessionKey === state.currentSessionKey) &&
+              (!event?.runId || event.runId === runId) &&
+              (!event?.toolCallId || event.toolCallId === toolCallId) &&
+              (!event?.toolName || event.toolName === toolName) &&
+              isDeepStrictEqual(workspaceToolEvent?.params, pendingToolRun.selectedParams);
+            state.operationsWorkspaceReadVerified = Boolean(boundRead && fingerprint);
+            if (boundRead) state.operationsWorkspaceReadSnapshot = fingerprint;
           }
         }
       }
@@ -11979,7 +12174,10 @@ export function createToolLoopGuard({
     }
     const relativePath = state.operationsWorkspaceExpectedPath;
     if (!relativePath) return undefined;
-    if (!state.operationsWorkspaceWriteVerified) {
+    if (publishedWorkspaceReadback(state, runId)) return undefined;
+    const artifact = requestedWorkspaceArtifact(state);
+    if (!state.operationsWorkspaceWriteVerified && !artifact &&
+        (!state.operationsWorkspaceExecutionObserved || state.operationsWorkspaceEvidenceArtifactRequested)) {
       if (state.operationsWorkspaceEvidenceArtifactRequested) {
         return {
           stage: "workspace-write",
@@ -11992,11 +12190,13 @@ export function createToolLoopGuard({
       return {
         stage: "workspace-write",
         instruction:
-          `Do not reply yet. Call tool_call now with id write and args containing path ` +
-          `\"${relativePath}\" plus content built only from the verified evidence requested by the owner.`,
+          `Continue the owner's requested workspace work to create \"${relativePath}\" using the requested method, ` +
+          "including Python or other workspace execution when requested. Do not replace independent content with host facts. " +
+          "Then read the actual file back; do not rewrite a file solely to obtain a write-tool receipt.",
       };
     }
-    if (!state.operationsWorkspaceReadVerified) {
+    if (!state.operationsWorkspaceReadVerified || (!state.operationsWorkspaceWriteVerified &&
+        !state.operationsWorkspaceReadSnapshot)) {
       if (state.operationsWorkspaceEvidenceArtifactRequested) {
         return {
           stage: "workspace-read",
@@ -12013,15 +12213,15 @@ export function createToolLoopGuard({
           "Reply only after the real readback succeeds.",
       };
     }
-    // Both the exact bound write and read succeeded. If the owner asked for a
-    // download and no verified artifact has been accepted yet, coach the real
-    // publication. The write/read receipt is not semantic completion; only a
+    // A full read can verify output created by exec without inventing write
+    // provenance. Publish that exact requested file; a mismatching earlier
+    // snapshot does not satisfy delivery. Readback is not semantic completion; only a
     // byte-verified publication receipt satisfies delivery. Respect the same
     // artifact scope (owner/session/run, cancellation, budget, attempt limit)
     // that gates reserveWorkspaceArtifact.
     if (
       state.workspaceDocumentDeliveryRequested &&
-      !state.workspaceArtifacts?.length &&
+      (!artifact || (state.operationsWorkspaceReadSnapshot && !publishedWorkspaceReadback(state, runId))) &&
       workspaceArtifactUnavailableReason({
         agentId: "pixel",
         runId,
@@ -12034,7 +12234,7 @@ export function createToolLoopGuard({
         instruction:
           `Do not reply yet. Call tool_call now with id pixel_ods_workspace_artifact ` +
           `and args ${JSON.stringify({ relativePath })}. ` +
-          "Publish only the exact file you just wrote and read back; accept only a byte-verified receipt.",
+          "Publish only the exact requested file you just read back; accept only a byte-verified receipt.",
       };
     }
     return undefined;
@@ -13469,7 +13669,9 @@ export function createToolLoopGuard({
             state.operationsWorkspaceWriteVerified &&
             state.operationsWorkspaceReadVerified
               ? `- Workspace artifact: Pixel wrote and read back \`/workspace/${state.operationsWorkspaceExpectedPath}\` in this response.`
-              : "- Workspace continuation: the requested workspace artifact was not both written and read back successfully in this response."
+              : publishedWorkspaceReadback(state, runId)
+                ? `- Workspace artifact: Pixel read back \`/workspace/${state.operationsWorkspaceExpectedPath}\` and verified that the published download contains the same bytes.`
+                : "- Workspace continuation: a complete write/readback sequence or matching readback of the published download was not verified for this response."
           }`
           : evidenceText;
         // A requested approval plan is complete only when the requested

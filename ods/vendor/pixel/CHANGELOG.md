@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.3.33 - ODS-maintained candidate
+
+- Patch Web Courier's hash-locked certifi to 2026.10.19 and urllib3 to 2.8.0.
+- Advance the public source version so existing installations can accept the
+  changed dependency lock through the existing source-upgrade checks.
+- See `ODS-QUALIFICATION-4.3.33.md` for scoped validation and pending installed
+  upgrade qualification. Prior compatibility records remain historical.
+
 ## 4.3.32 - ODS-maintained candidate
 
 - Install the official Node.js 24.21.0 `node` binary in the agent sandbox image,

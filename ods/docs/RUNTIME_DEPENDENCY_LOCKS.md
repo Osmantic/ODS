@@ -29,6 +29,11 @@ runs `pip-audit --require-hashes` on the production lock. The weekly run catches
 new advisories even when no dependency file has changed. Dashboard production
 dependencies are audited separately from development tools.
 
+The same workflow also installs and audits Web Courier's shipped hashed lock
+and the exact dependency lists used by the optional Datasette and Radicale
+images. These paths are outside the nine API/relay lock sets. Their audits
+include every pinned distribution; they do not suppress transitive advisories.
+
 Hashes verify downloaded package bytes; they do not establish that an upstream
 package is benign. Security review, vulnerability audits and integration tests
 remain necessary. Docker OS packages and release provenance are separate checks.
