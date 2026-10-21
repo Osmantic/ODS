@@ -10,7 +10,21 @@ function loopbackPeer(address) {
   return isIP(ipv4 || '') === 4 && ipv4.startsWith('127.')
 }
 
-function localRequest(req) {
+/**
+ * Server-only local request boundary shared by the API and preview gates.
+ *
+ * With `sameOrigin: true` (default) the request must be a loopback peer whose
+ * Host matches the actual listener, must not carry duplicate Host/Origin/
+ * Sec-Fetch-Site fields, must not carry forwarding headers, and must present
+ * either no Origin or an Origin matching the listener. Sec-Fetch-Site, when
+ * present, must be `same-origin` or `none`.
+ *
+ * With `sameOrigin: false` only the Origin/Sec-Fetch-Site *value* checks are
+ * skipped (opaque `Origin: null` and cross-site Fetch-Site are permitted).
+ * Every other boundary check (loopback peer, Host/listener match, duplicate
+ * fields, forwarding headers) is retained.
+ */
+export function localRequest(req, { sameOrigin = true } = {}) {
   if (!loopbackPeer(req.socket.remoteAddress)) return false
   // Use the actual listener, including a CLI port override.
   const host = req.headers.host
@@ -24,6 +38,7 @@ function localRequest(req) {
   if (['host', 'origin', 'sec-fetch-site'].some(name => counts.get(name) > 1)) return false
   if (Object.keys(req.headers).some(name => name === 'forwarded' || name === 'via'
     || name === 'x-real-ip' || name.startsWith('x-forwarded-'))) return false
+  if (!sameOrigin) return true
   const site = req.headers['sec-fetch-site']
   if (site !== undefined && site !== 'same-origin' && site !== 'none') return false
   const origin = req.headers.origin
@@ -65,31 +80,36 @@ export function createDevApiAccess(apiKey) {
     }
   }
   const admitted = new WeakSet()
+  function configureAccess(server) {
+    if (!configured) {
+      server.config.logger.warn('ODS development API requests need DASHBOARD_API_KEY in the Vite server environment. The browser never receives this key.')
+      return
+    }
+    // A direct hook runs before Vite's proxy middleware. Match the same
+    // prefix as Vite, including /api itself, for GET as well as mutations.
+    server.middlewares.use((req, res, next) => {
+      if (!req.url?.startsWith(API_PREFIX)) return next()
+      if (!localRequest(req)) {
+        res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+        res.end(JSON.stringify({ detail: 'Local same-origin development API request required.' }))
+        return
+      }
+      admitted.add(req)
+      next()
+    })
+  }
   return {
     plugin: {
       name: 'ods-development-api-access',
       apply: 'serve',
       configResolved(config) {
-        if (configured) assertLocalConfig(config)
-      },
-      configureServer(server) {
-        if (!configured) {
-          server.config.logger.warn('ODS development API requests need DASHBOARD_API_KEY in the Vite server environment. The browser never receives this key.')
-          return
+        if (configured) {
+          assertLocalConfig(config)
+          assertLocalConfig({server: config.preview})
         }
-        // A direct hook runs before Vite's proxy middleware. Match the same
-        // prefix as Vite, including /api itself, for GET as well as mutations.
-        server.middlewares.use((req, res, next) => {
-          if (!req.url?.startsWith(API_PREFIX)) return next()
-          if (!localRequest(req)) {
-            res.writeHead(403, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-            res.end(JSON.stringify({ detail: 'Local same-origin development API request required.' }))
-            return
-          }
-          admitted.add(req)
-          next()
-        })
       },
+      configureServer: configureAccess,
+      configurePreviewServer: configureAccess,
     },
     configureProxy(proxy) {
       proxy.on('proxyReq', (proxyReq, req) => {
