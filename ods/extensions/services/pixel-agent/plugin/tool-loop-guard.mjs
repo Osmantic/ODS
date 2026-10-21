@@ -4722,7 +4722,7 @@ function ownerRequestsFileHandoff(lane) {
     const parts = clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:give|provide|send|return)\b)/i);
     // A coordinated request must itself begin as an owner work directive,
     // rather than "Ask Alice to ... and give me ..." or a quoted example.
-    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|give|provide|send|return)\b/i.test(parts[0])) return false;
+    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|give|provide|send|return)\b/i.test(parts[0])) return false;
     return parts.some(part => {
       const request = part.trim().match(/^(?:(?:please|also|then)\s+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:I|we)\s+(?:want|need)\s+you\s+to\s+)?(?:give|provide|send|return)\s+(?:(?:me|us)\s+(?:with\s+)?)?(.+)$/i);
       return Boolean(request && object.test(request[1]));
