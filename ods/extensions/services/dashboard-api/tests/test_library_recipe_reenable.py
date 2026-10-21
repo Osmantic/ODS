@@ -57,8 +57,9 @@ def _gateway_recipe(library):
     for name in ("manifest.yaml", "compose.yaml"):
         path = recipe / name
         text = path.read_text(encoding="utf-8")
-        path.write_text(text.replace("mapshaper", GATEWAY).replace("MAPSHAPER", "GATEWAY_APP"),
-                        encoding="utf-8")
+        # A distinct host port: both recipes are installed side by side.
+        text = text.replace("mapshaper", GATEWAY).replace("MAPSHAPER", "GATEWAY_APP").replace("11080", "11081")
+        path.write_text(text, encoding="utf-8")
     manifest = yaml.safe_load((recipe / "manifest.yaml").read_text(encoding="utf-8"))
     manifest["service"]["name"] = "Gateway app"
     # GAIA's manifest declared its install hook here.
