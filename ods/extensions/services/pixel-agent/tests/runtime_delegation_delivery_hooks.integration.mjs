@@ -7,7 +7,7 @@ import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {cpSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {cpSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,renameSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -277,7 +277,10 @@ test(`real gateway deferred delegation waits for two children and a verified rev
             if(yielded)break;await delay(20);
           }
           assert.ok(yielded,'cross the reset boundary only after the owner has yielded');
-          writeFileSync(clockFile,JSON.stringify({now:Date.parse('2026-10-09T04:00:01Z'),started:Date.now()}));
+          // The gateway reads this file on every Date.now(); publish the new
+          // clock atomically so it cannot observe a truncated JSON document.
+          writeFileSync(clockFile+'.next',JSON.stringify({now:Date.parse('2026-10-09T04:00:01Z'),started:Date.now()}));
+          renameSync(clockFile+'.next',clockFile);
         }
       }
       delta={role:'assistant',content:childTexts[userMessages.includes('CHILD_FIXTURE_TASK 1')?1:0]};

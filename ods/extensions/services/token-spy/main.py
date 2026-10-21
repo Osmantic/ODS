@@ -30,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from filters import apply_filters
 from providers import ProviderRegistry
 from providers.anthropic import cumulative_usage_update
+from providers.openai import openai_token_usage
 from routed_telemetry import (
     TelemetryValidationError,
     routed_event_to_usage,
@@ -1005,9 +1006,7 @@ async def _handle_openai_streaming(client, raw_body, headers, model, sys_analysi
                     # OpenAI streaming: usage comes in the final chunk
                     chunk_usage = data.get("usage")
                     if chunk_usage:
-                        usage["input_tokens"] = chunk_usage.get("prompt_tokens", 0)
-                        usage["output_tokens"] = chunk_usage.get("completion_tokens", 0)
-                        usage["cache_read_tokens"] = chunk_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+                        usage.update(openai_token_usage(chunk_usage))
 
                     choices = data.get("choices", [])
                     if choices:
@@ -1062,10 +1061,7 @@ async def _handle_openai_non_streaming(client, raw_body, headers, model, sys_ana
 
     resp_usage = data.get("usage", {})
     usage = {
-        "input_tokens": resp_usage.get("prompt_tokens", 0),
-        "output_tokens": resp_usage.get("completion_tokens", 0),
-        "cache_read_tokens": resp_usage.get("prompt_tokens_details", {}).get("cached_tokens", 0),
-        "cache_write_tokens": 0,
+        **openai_token_usage(resp_usage),
         "stop_reason": (data.get("choices", [{}])[0].get("finish_reason") if data.get("choices") else None),
     }
 
