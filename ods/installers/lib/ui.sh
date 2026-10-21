@@ -140,7 +140,7 @@ ui_status_line() {
     *)     color="$GRN";  marker='>'; label='INFO' ;;
   esac
   if ods_ui_cinematic; then
-    printf '\r  %b%s%b %-60s\n' "$color" "$marker" "$NC" "$message"
+    printf '\r\033[K  %b%s%b %-60s\n' "$color" "$marker" "$NC" "$message"
   else
     printf '  [%s] %s\n' "$label" "$message"
   fi
@@ -316,6 +316,7 @@ spin_task() {
   local i=0
   local elapsed=0
   local lore_idx=0
+  local has_lore=0
 
   ods_select_lore_messages
   if ! ods_ui_cinematic; then
@@ -350,16 +351,20 @@ spin_task() {
     if [[ -n "$progress_part" ]]; then
       label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
     fi
-    printf "\r  ${GRN}%s${NC} [%02d:%02d] %s " "${spin:$i:1}" "$mm" "$ss" "$label"
+    printf "\r\033[K  ${GRN}%s${NC} [%02d:%02d] %s " "${spin:$i:1}" "$mm" "$ss" "$label"
     i=$(( (i + 1) % ${#spin} ))
     elapsed=$((elapsed + 1))
-    # Show lore every 8 seconds
+    # Show lore every 8 seconds on second line without pushing newlines to scrollback
     if (( elapsed > 0 && elapsed % 8 == 0 )); then
-      printf "\n  ${DGRN}  « %s »${NC}\n" "${LORE_MESSAGES[$lore_idx]}"
+      printf "\n\033[K  ${DGRN}  « %s »${NC}\033[A\r" "${LORE_MESSAGES[$lore_idx]}"
       lore_idx=$(( (lore_idx + 1) % ${#LORE_MESSAGES[@]} ))
+      has_lore=1
     fi
     sleep 1
   done
+  if (( has_lore )); then
+    printf "\n\033[K\033[A\r"
+  fi
   local rc=0
   wait "$pid" || rc=$?
   return $rc
