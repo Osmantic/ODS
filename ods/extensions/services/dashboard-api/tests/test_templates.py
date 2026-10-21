@@ -125,14 +125,15 @@ async def test_template_preview_diff():
         patch("routers.templates.SERVICES", mock_services_config),
         patch("routers.templates.GPU_BACKEND", "apple"),
         patch("helpers.get_cached_services", return_value=mock_svc_list),
+        patch("routers.extensions._webui_selection", return_value={"enabled": True, "supported": True}),
     ):
         from routers.templates import preview_template
         result = await preview_template("test-tmpl", api_key="test")
 
     assert result["template"]["id"] == "test-tmpl"
-    # Both are base compose services → always already_enabled
+    # Only always-on services can bypass health. Selected WebUI needs inspection.
     assert "llama-server" in result["changes"]["already_enabled"]
-    assert "open-webui" in result["changes"]["already_enabled"]
+    assert "open-webui" in result["changes"]["has_errors"]
     # Apple backend — all Docker services compatible, so comfyui should be in to_enable
     assert "comfyui" in result["changes"]["to_enable"]
 

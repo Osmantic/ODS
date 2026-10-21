@@ -122,6 +122,10 @@
         "type": "string",
         "enum": ["supported", "unsupported", "unknown"]
       },
+      "modelThinkingControl": {
+        "type": "string",
+        "enum": ["enable_thinking", "always", "none"]
+      },
       "modelRouteFingerprint": {
         "type": "string",
         "minLength": 64,

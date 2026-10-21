@@ -164,6 +164,38 @@ class StartupTests(unittest.TestCase):
         self.call()
         self.run.assert_called_once()
 
+    def test_boot_order_unavailability_retries_until_ready(self):
+        # After a WSL restart the host agent can run this before Docker or the
+        # Pixel edge container is up; both answers come from the read-only status.
+        for reason in ('edge-container-unavailable', 'host-command-failed'):
+            with self.subTest(reason=reason):
+                self.run.reset_mock()
+                self.sleep.reset_mock()
+                self.end.reset_mock()
+                failure = {'stage': 'unsafe-state', 'projection': {'available': False,
+                    'pending': False, 'busy': False, 'reason': reason}}
+                self.run.side_effect = [
+                    types.SimpleNamespace(returncode=1, stderr=json.dumps(failure).encode()),
+                    types.SimpleNamespace(returncode=1, stderr=json.dumps(failure).encode()),
+                    types.SimpleNamespace(returncode=0, stderr=b''),
+                ]
+                self.assertIs(self.call(), True)
+                self.assertEqual(self.run.call_count, 3)
+                self.assertEqual(self.end.call_count, 3)
+                self.assertEqual(self.sleep.call_args_list, [unittest.mock.call(5)] * 2)
+        self.run.side_effect = None
+
+    def test_attention_warning_names_stage_and_reason(self):
+        failure = {'stage': 'unsafe-state', 'projection': {'available': True,
+            'pending': True, 'busy': False, 'reason': 'transition-recovery-required'}}
+        self.run.return_value = types.SimpleNamespace(returncode=1, stderr=json.dumps(failure).encode())
+        with self.assertLogs('test', level='WARNING') as logs:
+            self.assertIsNone(self.call())
+        self.run.assert_called_once()
+        self.assertEqual(logs.output, [
+            'WARNING:test:Pixel startup reproof requires attention '
+            '(stage=unsafe-state reason=transition-recovery-required)'])
+
     def test_timeout_releases_lock_without_retry(self):
         self.run.side_effect = subprocess.TimeoutExpired('helper', 360)
         self.call()

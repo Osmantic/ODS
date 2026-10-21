@@ -10,7 +10,9 @@ without pretending the Linux host owns that Windows model artifact. Two more
 modes record that projection: one for a fresh install (from the model the
 Windows host serves), one to repair the mismatched fields earlier fresh
 installs wrote. Every mode emits a small allowlisted dotenv fragment without
-``eval``.
+``eval``. The default mode also keeps the settings model activation owns for
+the same model on this host's llama-server container: an import's vision
+projector and a fixed chat template, each only while it still checks out.
 
 Round F serves every model as ``--alias <GGUF_FILE>``, so a served model id is
 the GGUF filename. For one release the retired Lemonade forms of the same id
@@ -68,6 +70,10 @@ PORTABLE_STATE_RECOVERY_KEYS = {
     "LLAMA_ARG_CTX_CHECKPOINTS",
     "LLAMA_ARG_CACHE_RAM",
 }
+
+# Model activation (bin/ods-host-agent.py) sets LLAMA_ARG_MMPROJ to an import's
+# own projector as /models/<file> and removes it for every other model.
+_CONTAINER_PROJECTOR = re.compile(r"/models/([A-Za-z0-9][A-Za-z0-9._-]{0,250}\.gguf)")
 
 
 def parse_dotenv(path: Path) -> dict[str, str]:
@@ -547,6 +553,85 @@ def is_local_runtime(env: dict[str, str]) -> bool:
     )
 
 
+def carried_projector(
+    env: dict[str, str], model: dict[str, Any], manifest: list[dict[str, Any]], models_dir: Path,
+) -> str | None:
+    """The saved LLAMA_ARG_MMPROJ while it is still this model's vision projector.
+
+    Activation writes ``/models/<file>`` from the record's ``mmproj_file`` when
+    that file is beside the weights (ods-host-agent.py ``_model_projector_file``).
+    Keep exactly that value while the file is a regular file (not a link) in
+    the model directory, at the size the import recorded. Otherwise drop it,
+    as every rerun did before: the model runs without image input until its
+    next switch.
+    """
+    value = env.get("LLAMA_ARG_MMPROJ", "")
+    if not value:
+        return None
+    match = _CONTAINER_PROJECTOR.fullmatch(value)
+    filename = match.group(1) if match else ""
+    expected_size = positive_int(model.get("mmproj_size_bytes"))
+    info: os.stat_result | None = None
+    if filename and filename == model.get("mmproj_file") and filename not in {item["file"] for item in manifest}:
+        try:
+            info = (models_dir / filename).lstat()
+        except OSError:
+            info = None
+    if (
+        info is None
+        or not stat.S_ISREG(info.st_mode)
+        or info.st_size <= 0
+        or (expected_size is not None and info.st_size != expected_size)
+    ):
+        print(f"Not keeping LLAMA_ARG_MMPROJ={value!r}: it does not name this model's complete vision "
+              "projector file in its model folder. The model runs without image input until it is "
+              "switched to again on the Models page.", file=sys.stderr)
+        return None
+    return value
+
+
+def chat_template_ships(root: Path, override: str, container_file: str) -> bool:
+    """True when ``root``'s index has entry ``override`` at ``container_file`` and its file verifies."""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
+    try:
+        from model_profile import templates
+    except ImportError:
+        return False
+    if not re.fullmatch(templates.ID_PATTERN, override):
+        return False
+    try:
+        entry = templates.entry_by_id(templates.load_index(root), override)
+        if entry is None or container_file != f"/chat-templates/{entry['file']}":
+            return False
+        templates.template_path(root, entry)
+    except (OSError, UnicodeError, templates.TemplateIndexError):
+        return False
+    return True
+
+
+def carried_chat_template(env: dict[str, str], chat_templates: Path | None) -> dict[str, str]:
+    """The saved fixed chat template, both of its keys, while this release still ships it.
+
+    For the llama-server container, activation sets MODEL_CHAT_TEMPLATE_OVERRIDE
+    to an index entry's id and LLAMA_ARG_CHAT_TEMPLATE_FILE to
+    ``/chat-templates/<entry file>`` together, and removes both for every
+    other model (ods-host-agent.py ``_chat_template_env_changes``). Keep the
+    pair only when ``chat_templates`` (this release's config/chat-templates,
+    which the container mounts at /chat-templates) still has that entry at
+    that file with its recorded SHA-256. Otherwise drop both, as before.
+    """
+    override = env.get("MODEL_CHAT_TEMPLATE_OVERRIDE", "")
+    container_file = env.get("LLAMA_ARG_CHAT_TEMPLATE_FILE", "")
+    if not override and not container_file:
+        return {}
+    if chat_templates is not None and chat_template_ships(chat_templates, override, container_file):
+        return {"MODEL_CHAT_TEMPLATE_OVERRIDE": override, "LLAMA_ARG_CHAT_TEMPLATE_FILE": container_file}
+    print(f"Not keeping the fixed chat template {override!r} ({container_file!r}): this release does not "
+          "ship it in that form. The model runs with its own template until it is switched to again "
+          "on the Models page.", file=sys.stderr)
+    return {}
+
+
 def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     env = parse_dotenv(args.env)
     # The pre-round-F name of the host-native mode stays an alias for one release.
@@ -805,6 +890,19 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         "LLAMA_SERVER_IMAGE": image,
         **runtime_values,
     }
+    # Activation also owns this model's vision projector and fixed chat
+    # template. They belong to exactly this GGUF on this host's llama-server
+    # container: never a Windows-hosted or native macOS runtime, which take
+    # them as arguments, and never another model.
+    if (
+        not host_native
+        and "apple" not in {normalize_key(env.get("GPU_BACKEND")), normalize_key(args.backend)}
+        and env.get("GGUF_FILE", "").strip() == contract["GGUF_FILE"]
+    ):
+        projector = carried_projector(env, model, manifest, models_dir)
+        if projector is not None:
+            contract["LLAMA_ARG_MMPROJ"] = projector
+        contract.update(carried_chat_template(env, getattr(args, "chat_templates", None)))
     if active_store_id != "default":
         contract["ODS_ACTIVE_MODEL_STORE"] = active_store_id
     return contract
@@ -830,6 +928,9 @@ def main() -> int:
     parser.add_argument("--ram-gb", type=float, default=0)
     parser.add_argument("--host-arch", default=platform.machine())
     parser.add_argument("--local-model", action="store_true")
+    parser.add_argument("--chat-templates", type=Path, metavar="DIR",
+                        help="this release's config/chat-templates; a saved fixed chat template is kept "
+                             "only while it is there")
     parser.add_argument("--native-llm", action="store_true",
                         help="preserve the model the ODS-owned llama-server on the Windows host serves")
     parser.add_argument("--project-native-llm", metavar="MODEL_ID",

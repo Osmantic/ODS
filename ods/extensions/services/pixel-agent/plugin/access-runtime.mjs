@@ -158,6 +158,40 @@ function provenManagedIngressBySystemd(previous, current) {
     /^\{ path=\/usr\/bin\/env ; argv\[\]=\/usr\/bin\/env node \/usr\/local\/libexec\/ods-pixel-ingress\.mjs ; ignore_errors=no ;/.test(ingress.ExecStart ?? '');
 }
 
+function systemdUnitOfPid(pid) {
+  const result = spawnSync('/usr/bin/systemctl', ['whoami', String(pid)], {encoding: 'utf8', timeout: 5000, maxBuffer: 4096});
+  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return null;
+  const unit = result.stdout.trim();
+  return /^[A-Za-z0-9:_.@-]+\.service$/.test(unit) ? unit : null;
+}
+
+function provenSiblingUnitBySystemd(previous, current) {
+  if (previous.version !== 3 || current?.version !== 3) return false;
+  // After a distro restart the boot order is repeatable, so the old gateway PID
+  // can come back as any other same-owner ODS service, hidden from this gateway
+  // by ProtectProc=invisible. Ask the manager which unit owns that PID. Its main
+  // process was started for that unit's own invocation, so a different stable
+  // InvocationID proves the recorded owner is gone. The gateway unit itself, a
+  // non-main process, or an unattributed PID keeps admission held.
+  const snapshot = () => {
+    const unit = systemdUnitOfPid(previous.pid);
+    return {unit, gateway: systemdUnitIdentity('openclaw-gateway.service'), sibling: unit && systemdUnitIdentity(unit)};
+  };
+  const first = snapshot(), second = snapshot();
+  if (!first.unit || first.unit === 'openclaw-gateway.service' || !first.gateway || !first.sibling ||
+      JSON.stringify(first) !== JSON.stringify(second)) return false;
+  const {gateway, sibling} = first, owner = os.userInfo().username;
+  return gateway.ActiveState === 'active' && gateway.MainPID === String(process.pid) &&
+    gateway.InvocationID === current.invocationId && gateway.User === owner &&
+    sibling.ActiveState === 'active' && sibling.MainPID === String(previous.pid) &&
+    /^[a-f0-9]{32}$/.test(sibling.InvocationID ?? '') &&
+    sibling.InvocationID !== previous.invocationId && sibling.InvocationID !== current.invocationId;
+}
+
+function provenReusedBySystemd(previous, current) {
+  return provenManagedIngressBySystemd(previous, current) || provenSiblingUnitBySystemd(previous, current);
+}
+
 function previousProcessAlive(previous, currentIdentity) {
   if (!previous || Array.isArray(previous) || !Number.isSafeInteger(previous.pid) || previous.pid < 1) {
     throw new Error('invalid process lock');
@@ -181,7 +215,7 @@ function previousProcessAlive(previous, currentIdentity) {
   try { startTicks = processStartTicks(previous.pid); }
   catch (error) {
     if (['ENOENT', 'EACCES', 'EPERM'].includes(error.code) &&
-        provenManagedIngressBySystemd(previous, currentIdentity)) return false;
+        provenReusedBySystemd(previous, currentIdentity)) return false;
     throw error;
   }
   if (startTicks !== previous.startTicks) return false;
@@ -190,7 +224,7 @@ function previousProcessAlive(previous, currentIdentity) {
   catch (error) {
     if (!boot && ['EACCES', 'EPERM'].includes(error.code) &&
         (provenManagedIngressReuse(previous.pid, previous.startTicks) ||
-         provenManagedIngressBySystemd(previous, currentIdentity))) return false;
+         provenReusedBySystemd(previous, currentIdentity))) return false;
     throw error;
   }
   return current !== null && current.startTicks === previous.startTicks &&

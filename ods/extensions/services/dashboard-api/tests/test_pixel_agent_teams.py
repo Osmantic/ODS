@@ -2,13 +2,14 @@ import asyncio
 import copy
 import json as json
 import os
+import re
 
 import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from pixel_agent_teams import TeamManager, TeamStore, TeamConflict, questions_valid, project_receipts_valid
+from pixel_agent_teams import TeamManager, TeamStore, TeamConflict, questions_valid, project_receipts_valid, worker
 from routers import pixel_teams
 from security import verify_api_key
 import security
@@ -588,3 +589,15 @@ def test_extension_commands_cannot_create_unbound_worker_requests(tmp_path, mode
     with pytest.raises(TeamConflict, match='chat installation coordinator'):
         manager.start(OWNER, 'chat', 'attempt', command, 1, '', mode)
     assert manager.list(OWNER, 'chat') == []
+
+
+@pytest.mark.parametrize('role', ['coordinator', 'explorer', 'builder', 'reviewer'])
+def test_team_prompt_leaves_the_reply_language_to_pixel(tmp_path, role):
+    # Pixel's response-language rule decides, from the owner's own words. A
+    # fixed language line here would be a second rule that can disagree with it.
+    manager = TeamManager(TeamStore(tmp_path / 'teams'), yes, yes)
+    row = {'goal': 'Crie um site simples sobre café e publique.', 'context': 'Conversa anterior sobre o site.'}
+    prompt = manager._prompt(row, worker('team', 0, role))
+    assert row['goal'] in prompt
+    fixed = prompt.replace(row['goal'], '').replace(row['context'], '')
+    assert not re.search(r"language|English|Portuguese", fixed, re.I), fixed

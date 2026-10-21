@@ -101,3 +101,38 @@ def test_installed_contract_uses_shared_onboarding_without_model_reset(tmp_path,
             assert json.loads(destination.read_text())['modelMaxTokens'] == 2048
     assert path.read_text() == body
     assert not list(tmp_path.glob('.pixel-gateway-key.*'))
+
+
+@pytest.mark.parametrize('reasoning_line, expected', [('', False), ('LLAMA_REASONING=on\n', True)])
+def test_bootstrap_model_keeps_no_think_default_without_a_reconcile(tmp_path, monkeypatch, reasoning_line, expected):
+    # Linux reconciles Pixel when the bootstrap 2B gives way to the full model;
+    # native macOS does not, so the 2B's reasoning-on default would stay (#7606).
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
+    bootstrap, env_helper = module.helper('bootstrap'), module.helper('env')
+    monkeypatch.setattr(bootstrap, 'selected_release', lambda *a: {})
+    original_command = bootstrap.command
+    monkeypatch.setattr(bootstrap, 'command',
+        lambda args, **kw: original_command(args, **kw) if args[0] == '/bin/bash' else 'a' * 64)
+    monkeypatch.setattr(module, 'helper', lambda name: bootstrap if name == 'bootstrap' else env_helper)
+    search = module.search_helper(ROOT)
+    monkeypatch.setattr(module, 'search_helper', lambda root: search)
+    env = tmp_path / '.env'
+    env.write_text('GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf\nLLM_MODEL=qwen3.5-2b\nCTX_SIZE=65536\n'
+        'PIXEL_MODEL_RELAY_KEY=' + 'd' * 64 + '\nPIXEL_MODEL_RELAY_PORT=4106\n'
+        'PIXEL_WEB_SEARCH_PROVIDER=searxng\n' + reasoning_line)
+    env.chmod(0o600)
+    observer = tmp_path / 'extensions/services/pixel-agent/host/system_observe.py'
+    observer.parent.mkdir(parents=True)
+    observer.write_bytes((ROOT / 'extensions/services/pixel-agent/host/system_observe.py').read_bytes())
+    observer.chmod(0o600)
+    node = tmp_path / 'node'
+    node.touch()
+    destination = tmp_path / 'onboarding.json'
+
+    module.write(source=tmp_path, ref='b' * 40, ods_source=ROOT, install_dir=tmp_path,
+        home=tmp_path / 'Owner Home', runtime=tmp_path / 'runtime', node=node, destination=destination)
+
+    value = json.loads(destination.read_text())
+    assert value['modelName'] == 'ODS Current (Qwen3.5-2B-Q4_K_M.gguf)'
+    assert value['modelReasoning'] is expected

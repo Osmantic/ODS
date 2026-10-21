@@ -1,0 +1,7 @@
+{
+  "Name": "NVIDIA RTX Spark N1X (6144-core GPU, 20-core CPU)",
+  "NumberOfCores": 20,
+  "NumberOfLogicalProcessors": 20,
+  "Architecture": 12,
+  "VirtualizationFirmwareEnabled": true
+}

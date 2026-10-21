@@ -50,7 +50,7 @@ test('two revisions then honest terminal outcome; discovery is not research', ()
   guard.observe('tool_search', {result:{content:[{text:'web_search'}]}});
   for (let n=0;n<2;n++) assert.equal(guard.finalize('Vou consultar agora as notícias sobre o STF.')?.action, 'revise');
   assert.equal(guard.finalize('Vou consultar agora.')?.action, 'finalize');
-  assert.match(guard.terminal, /incompleta/);
+  assert.match(guard.terminal, /The task is incomplete/);
 });
 test('successful web receipt allows answer; failed/wrapped receipt cannot count', () => {
   const guard = createCompletionAssurance();
@@ -93,7 +93,7 @@ test('actual guard wires bounded recovery and truthful delivery', () => {
   assert.equal(guard.beforeAgentFinalize(event,context)?.action,'revise');
   assert.equal(guard.beforeAgentFinalize(event,context)?.action,'finalize');
   assert.equal(guard.deliveryVerificationForRun(context.runId).status,'failed');
-  assert.match(guard.deliveryVerificationForRun(context.runId).text,/incompleta/);
+  assert.match(guard.deliveryVerificationForRun(context.runId).text,/The task is incomplete/);
   assert.equal(guard.beforeAgentFinalize(event,{...context,agentId:'other'}),undefined);
 });
 
@@ -107,7 +107,7 @@ test('installation promises trigger bounded recovery rather than a successful em
     assert.equal(guard.finalize(text)?.action, 'revise', text);
     assert.equal(guard.finalize(text)?.action, 'finalize', text);
     assert.equal(guard.terminalStatus, 'failed');
-    assert.match(guard.terminal, /incompleta/);
+    assert.match(guard.terminal, /The task is incomplete/);
   }
 });
 
@@ -175,7 +175,7 @@ test('empty search is an attempt, not evidence for news from memory', () => {
   const guard=createCompletionAssurance();guard.begin('Notícias de hoje');
   guard.observe('web_search',{result:{details:{count:0,results:[]}}});
   assert.equal(guard.finalize('Estas são as notícias de hoje.')?.action,'revise');
-  assert.match(guard.terminal,/incompleta/);
+  assert.match(guard.terminal,/The task is incomplete/);
   assert.equal(guard.finalize('Não consegui encontrar fontes para essa data.'),undefined);
 });
 test('short continuation keeps research requirements from the preceding owner request', () => {

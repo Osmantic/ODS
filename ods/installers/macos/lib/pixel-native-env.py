@@ -124,7 +124,11 @@ def ensure_credentials(path, *, backup, previous_config=None, return_bytes=False
         before_replace=verify_previous, return_bytes=return_bytes)
 
 
-def _persist(path, bindings, *, backup, expected=None, before_replace=None, return_bytes=False, before_write=None):
+def _persist(path, bindings, *, backup, expected=None, before_replace=None, return_bytes=False, before_write=None,
+             replace_ingress_digest=False):
+    if replace_ingress_digest and (set(bindings) != {'PIXEL_NATIVE_CONFIG_SHA256'}
+            or not re.fullmatch('[a-f0-9]{64}', bindings['PIXEL_NATIVE_CONFIG_SHA256'])):
+        raise ValueError('native-ingress-digest-binding-required')
     path, backup = Path(path), Path(backup)
     before, identity = snapshot(path)
     if expected is not None and expected != (before, identity):
@@ -138,9 +142,9 @@ def _persist(path, bindings, *, backup, expected=None, before_replace=None, retu
                 raise ValueError('duplicate-native-environment-binding')
             seen.add(key)
             current = values.parse_env_value(raw)
-            if current and current != bindings[key]:
+            if current and current != bindings[key] and not replace_ingress_digest:
                 raise ValueError('existing-native-environment-conflict')
-            if not current:
+            if not current or replace_ingress_digest:
                 line = key + '=' + values.quote_env_value(bindings[key]) + '\n'
         output.append(line)
     body = ''.join(output)

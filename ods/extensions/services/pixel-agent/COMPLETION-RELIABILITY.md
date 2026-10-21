@@ -65,10 +65,11 @@ URLs and asks the model to replace each with a page it actually read in this
 response or remove it and mark the claim unverified; where each item needs its
 own source, it prefers the item's own page to a shared listing. If the answer still cites
 unread URLs afterwards, or the harness refuses the revision, the owner receives
-that answer with only those links replaced by `[source not verified]`
-(`[fonte não verificada]` in Portuguese), Markdown link syntax around them
-flattened to text, and one fixed source-check note. Nothing else in the answer
-changes and no link is added. The outcome stays `failed`, so the harness and
+that answer with only those links replaced by `[source not verified]`,
+Markdown link syntax around them flattened to text, and one fixed source-check
+note. Nothing else in the answer changes and no link is added. Fixed notices
+such as this marker and note are English for every owner; the model's own
+answer is never translated. The outcome stays `failed`, so the harness and
 owner still see that verification was incomplete. The whole answer is replaced
 with the incomplete-research text only when none of its cited URLs was read,
 too little prose remains outside links, or it exceeds 20,000 characters. If a
@@ -410,6 +411,66 @@ Each prompt also receives the current host UTC time. The model must preserve
 the owner's requested date/timezone, check source publication dates and avoid
 confusing its training cutoff with the actual date.
 
+## Empty lookups are answers
+
+The run-progress budget charges every non-zero exit as a failure. Searches that
+came up empty are exempt (`lookupFoundNothing`): a `grep`, `egrep`, `fgrep`, `rg`,
+`git grep` or `which` that completed with exit 1, optionally after one literal
+`cd DIR &&`. The search tools exit 1 only when nothing matched, and `which` only
+when a name did not resolve. Models also chain searches
+(`grep a f | head; echo ===; grep b g`), so a list joined by `;` or `&&` qualifies
+when every step is a lookup, an `echo` or `sed -n 'N,Mp'`, optionally piped into
+`head`, `tail`, `cat`, `wc`, `sort` or `uniq`, and the last step is a bare
+lookup. None of those other steps can exit 1, so exit 1 still means a search
+found nothing. OpenClaw merges stdout and stderr, and an error line in the output
+(grep's warnings and binary-match notices aside) disqualifies the command. rg 13
+prints some errors with no recognisable prefix, so `rg` may only be the last
+step, where its own exit status separates an error from an empty search. Options
+that run programs or write files (`rg --pre`, `git grep -O`, `sort -o`, `sed -i`)
+disqualify the command too. The reasoning assumes the sandbox's GNU tools and
+rg 13 under dash.
+
+The receipt must be bound to the exact pending call (run, transport, session and
+the executed, wrapped parameters), and the model's own command is read from that
+call's record. Such a lookup is recorded as discovery: it is not charged and it
+resets nothing, up to `FREE_EMPTY_LOOKUPS_PER_RUN` per run, after which it is an
+ordinary failure again. Discovery never resets the round fuse, so a run that only
+searches still stops after `roundsWithoutProgress` rounds. Any other program in
+the command, `||`, background jobs, redirections, substitutions, escapes outside
+quotes, an error in the output and every other exit code stay failures. On the
+RTX Spark (Elf of Doom), empty greps counted as failures filled the 12-failure
+total and stopped a run with 21 good edits behind it; in the next run four of the
+five empty searches were chains like the one above.
+`tests/empty_lookup_progress.test.mjs` replays the hook sequence for both the
+direct and the Tool Search transport.
+
+## Red node runs are test results
+
+The agent sandbox has `node` without npm, and the verification guide asks the
+agent to run `node --check` on each script, `node --test` with explicit test
+files, and small harness scripts. A red result is the answer that loop exists
+to get: charged as failures, an edit and red-test loop reached the 12-failure
+total, and one red `node --check` per file the 4-failure streak, before the fix.
+`nodeReportedFailure` exempts a command whose every step is a node run: `node`
+with long options and either `--check` (or `-c`) and one script, `--test` and
+its files, or a script file and its arguments, optionally behind
+`timeout DURATION` and followed by `2>&1`, joined by `;` or `&&` after one
+optional literal `cd DIR &&`. It must have completed with exit 1 and printed
+something. Inline code (`-e`, `-p`, `--eval`, `--print`), stdin, the REPL,
+`--run`, other short options, pipes, `||`, redirections, substitutions and
+environment assignments disqualify the command. node not found (127), a timeout
+(124, or OpenClaw's own), a signal or abort, a bad option (9), a run with no
+output, a shell error, and a missing script, module or file (`MODULE_NOT_FOUND`,
+`ERR_MODULE_NOT_FOUND`, `ENOENT`, node --test's `Could not find`) stay failures.
+
+The receipt binding is the one empty lookups use. A red run is recorded as
+discovery up to `FREE_NODE_RESULTS_PER_RUN` per run, never resets the round
+fuse, and never erases earlier failures. The same failing command three times
+without an edit is still refused by the direct exec retry limit, and the
+verification guide asks for one measurement before and one after an edit,
+because a third identical successful exec is refused too.
+`tests/sandbox_node_guard.test.mjs` replays both transports.
+
 ## Tool-limit finalization
 
 When the run-progress budget (`run-progress-budget.mjs`) or the research
@@ -480,6 +541,11 @@ request and up to eight page excerpts, in read order:
 - **Instruction:** answer only from the excerpts, cite only their URLs, use
   `null` or "not found" for anything they do not establish, never substitute a
   related figure, and no process narration.
+- **Owner's request:** the owner's message, which also sets the answer's
+  language. In a team or goal run it is only the owner's own words from the
+  message Portal built around them (`managedTurnOwnerWords` in
+  `response-language.mjs`): the request after "Owner's requested outcome:",
+  the goal after "/goal" or "Original objective:", and the owner's answers.
 - **Excerpts:** at most 1,800 characters per page and 12,000 in total, taken
   from the read ledger and selected around the request's terms and quantities.
   A page's `web_fetch` and targeted extraction are merged, the extraction
@@ -547,6 +613,88 @@ cancelled request. A later message sees none of this.
 before, during and after a revision is armed; the real-harness fixture
 `tests/runtime_cancel_recovery.integration.mjs` cancels through the ingress.
 
+## Run deadline
+
+OpenClaw stops each attempt at `agents.defaults.timeoutSeconds`, wherever the
+attempt is. The ODS installers pin it to 1800 seconds. This section does not
+change that policy, which is coupled to `diagnostics.stuckSessionAbortMs`, the
+session write-lock hold and the ingress and dashboard-api budgets.
+
+On the RTX Spark (2026-10-16, a 131K local model, after #7728 let long runs
+keep their context), one owner message asked for several game fixes. The run
+worked for exactly 30 minutes (288 model calls, 6 edits) and was still reading
+and editing when it stopped. `ui.js` already called `wolfHitShapes()`,
+`bossHitShapes()` and `WOLF_ZOOM`, but the `chars.js` edit that defines them
+had failed, so 4 of 6 levels threw `ReferenceError`. The owner saw "LLM request
+failed." and OpenClaw's advice to increase `agents.defaults.timeoutSeconds`,
+which ODS resets. The model had no warning that the deadline was near.
+
+`plugin/run-deadline.mjs` now handles both sides:
+
+- **The model is warned.** `before_prompt_build` runs once per attempt, just
+  after the runtime arms that attempt's timer. For the owner's own Portal turns
+  the guard records the configured timeout, when the response began (its first
+  attempt) and when this attempt began. When 5 minutes of the response remain
+  (at most a sixth of the timeout), and again at 2 minutes (at most a
+  fifteenth), the next persisted tool result ends with one fixed
+  `[ODS Pixel time limit]` block. It tells the model to finish or undo a partly
+  made change across files so the saved project still works, stop calling
+  tools, and tell the owner what is done, what is left, and that "continue"
+  resumes the rest.
+  - The schedule counts from the response, not the attempt. A retry, a
+    compaction retry or a revision gets a fresh runtime timer, but the ingress
+    stops the whole response at 1920 seconds, whatever attempt it is on. A
+    fresh schedule would place a later attempt's notices after that cut.
+  - Persisted results reach the live model through the ODS projection
+    (`host/openclaw-compaction-budget.json`). The block is short and separate,
+    so the per-result size cap keeps it whole.
+  - The text holds only durations from config, so its bytes are stable.
+  - Each stage is sent once per response. After a compaction, whose summary
+    can drop it (`keepRecentTokens` is 8192 on a 131K model), the stage now due
+    is sent again with the same bytes. A tool-limit stop, its tool-free answer
+    turn, an owner cancel and any other ODS abort get no notice.
+- **The owner is told what happened.** No hook reports the runtime's timeout
+  kind, so `agent_end` classifies it. All of these must hold:
+  - the attempt failed (`success: false`);
+  - the attempt, counted from its own start, ran at least the timeout minus
+    15 seconds;
+  - ODS did not stop it: no owner cancel, tool limit or recursive-delete
+    refusal, and no guard abort. The guard marks every run it aborts.
+  - its last assistant message is not a completed answer, which OpenClaw
+    delivers itself.
+
+  Delivery verification then returns `failed` with the text below, followed by
+  the last verified preview and any failure already recorded, such as a failed
+  test. When that failure already links a preview, for example because files
+  changed after it was published, the preview is linked once, by the failure.
+
+  > **Portal stopped this response after 30 minutes, the most one response can
+  > run.** This request needed more time. Files saved before the stop are kept,
+  > but the last change may be unfinished, so the project may not work yet.
+  > Send "continue" to pick up where it left off. If it keeps happening,
+  > [get help on Discord](https://discord.gg/4ntNp9MAwC).
+
+  The sentence about saved files appears only when the response changed
+  workspace files (a successful write, edit or exec). A research or chat
+  response gets only the limit and the "continue" step.
+
+  The ingress replaces the runtime text with it and reports `pixel_outcome`
+  `failed`. Channel delivery (`reply_payload_sending`) uses the same
+  verification. This also covers a deadline during a tool call, where OpenClaw
+  emits no timeout text at all.
+
+A deadline during compaction does not get this copy. The runtime extends that
+attempt by the compaction grace (`agents.defaults.compaction.timeoutSeconds`,
+which ODS also pins to 1800 seconds). That always outlasts the ingress's
+2-minute margin, so the response still ends with the dashboard's "Portal could
+not complete the response".
+
+Subagent, cron and team-worker runs get no notice or copy: subagent and cron
+lanes can use another timeout or none, and a team worker reports to its
+coordinator rather than the owner.
+`tests/run_deadline.test.mjs` and `tests/run_deadline_delivery.test.mjs`
+(including the real ingress over loopback) cover these paths.
+
 ## Search availability
 
 Existing SearXNG installations can report HTTP 200 with zero results while their
@@ -594,7 +742,64 @@ The model cannot choose for the owner or turn this card into Operations approval
 The ingress releases the bounded `pixel_questions` envelope only on the verified
 terminal SSE frame. Malformed receipts fail closed. Questions and draft answers
 are retained with the conversation; Continue sends ordinary owner text in that
-same chat, without UI metadata in the model request.
+same chat, without UI metadata in the model request: each question, then its
+answer.
+
+That text reads correctly only beside the model's own question. OpenClaw can
+start it in a new native session that lacks the request and the question (RTX
+Spark, 2026-10-16: the model answered its own "Where should I apply…?" with a
+location and edited nothing). When a run sets a card (the ask tool's result, or
+the requested-choice repair at finalize), the plugin therefore keeps one private
+record per chat (`.ods-pending-clarifications` in the OpenClaw state directory,
+owner-only, keyed by a hash of the session key): its questions and the owner
+request they clarify, capped at 4,000 characters. Portal's delivery contract is
+cut at its last marker that starts a line, so a request that quotes the marker
+keeps its own words. A request of attached images alone is stored as a fixed
+placeholder, because image parts never reach the hook's prompt text. The next
+owner-authored turn in that chat claims the record; a subagent announce
+continuation, cron, a team worker or another session never does. Only when that
+turn is the card's exact answer (the first question's text, then every question
+in order) does its run get fixed model-only context (`before_prompt_build`
+`appendContext`) with the request: follow an answer that declines or changes it,
+otherwise finish the request with the answers. That answer keeps the record until
+its run ends with success, so an answer blocked at admission, failed or lost to
+a gateway restart is understood when resent; any other owner turn consumes the
+record unused. Unanswered records expire after 24 hours, and deleting the
+conversation deletes its record with the transcripts. A follow-up card keeps the
+original request and up to two earlier answers.
+
+The context is added whether or not OpenClaw kept the native session: a
+compaction can summarize the model's own question away as surely as a
+replacement session lacks it, and in an unchanged session the note only restates
+the transcript. The owner text is unchanged, so recursive-delete authorization,
+choice-question intent, Playground project reservation and every route see what
+they saw before; an earlier in-text frame quoting the request turned a declined
+delete into authorization. Further cases:
+
+- The note stays out of the transcript, which keeps only the owner text. OpenClaw
+  trajectory files (`<session>.trajectory.jsonl`) record every model prompt, so
+  they hold the note, as they already hold the owner's own messages. Conversation
+  deletion does not yet remove trajectory files; that is a separate follow-up.
+- If the answering run delegates, each announce continuation of that run (the
+  child's report back in the owner session) carries the same note while Portal
+  still holds that delegation's custody (no stop, gateway restart or expiry).
+  That run's success has already settled the card, and in a replacement session
+  only the note names the request.
+- Stopping the answer withdraws its note with the rest of that run, and the card
+  stays. When the owner resends the same answer, it gets the clarification note
+  without the withdrawn-request note, which would call that same text withdrawn.
+  A different message after the stop still gets the withdrawn-request note.
+- A card asked inside a goal task is answered with a goal continuation
+  (`/goal Continue the goal ...`, dashboard `continueGoal`) that carries its own
+  original objective. It never has the card's answer shape, so it consumes the
+  record without a note.
+- The dashboard's clean-context recovery retry runs under a new chat ID, so an
+  answer retried that way has no record.
+
+`tests/pending_clarification.test.mjs` replays the field turn after a gateway
+restart, drives the real plugin entry and compares each owner-intent outcome
+with and without the record; `tests/runtime_clarification_answer.integration.mjs`
+sends the answer through the pinned runtime into a replaced native session.
 
 The plugin loader isolates imports to its package. Keep its `questions-schema.mjs`
 and the independently installed ingress `questions_schema.mjs` aligned; the
@@ -607,6 +812,60 @@ fallback also recognizes a complete final preference question followed by two to
 four bullet options. It creates the same bounded card without another model call.
 It rejects surrounding prose, code, translations, numbered steps and plans.
 A model can still miss a suitable clarification or produce unsupported wording.
+
+## Failed preview checks keep the explanation
+
+On the RTX Spark (Elf of Doom), an interaction check failed and the agent then
+wrote the owner a correct root-cause explanation. Portal replaced the whole
+reply with its host delivery ("The attempted preview interaction checks have
+not passed browser inspection ... Your preview is ready."), so the owner never
+saw it. `preview-explanation.mjs` changes only that substitution: when a
+workspace preview outcome is `failed` or `pending` (a browser, interaction or
+requested-text check that did not pass, a stale snapshot, no publication, a
+verification command still running, or any of these with extension, lane-stop
+or missing-download facts added), the agent's final reply comes first. A fixed
+note follows under **Portal check:**, then the unchanged host result:
+
+- The note always says "The reply above is the agent's own account, not a
+  verified result." and then "This request did not pass Portal's checks." (or,
+  when pending, "Portal's checks for this request have not finished."). No
+  wording heuristic decides this, so a claim of success in any wording, quoted,
+  in code or in a checklist, is still followed by that plain statement. The
+  reply itself is never rewritten.
+- When the reply promises more work ("I'll fix line 748 now") or ends by
+  narrating its next action, the note adds that Portal has stopped for this
+  message and the step has not started.
+- When the current snapshot's latest inspection failed, one host line names
+  the failed step from the validated receipt, for example "step 2
+  (assert-painted) on `#arena` captured one color only (#8fce3a)". Only the
+  step number, action, error code, the capsule's color and the plan's locator
+  (quoted as code) are used. This line is not added to a host-only delivery.
+- The outcome keeps its status, and every host failure line and the preview
+  receipt still follow, so the dashboard still shows the preview card and the
+  failure. An open code block in the reply is closed with its own fence, read
+  as the dashboard's `publicationDisplayText` reads it.
+- The host-only delivery stays as before when the reply is empty, silent, too
+  short, tool-call text, over 20,000 characters, links any local URL other than
+  this outcome's own preview, or carries Portal's wording: its label or receipt
+  lines ("Your preview is ready.", "[Open preview]", "Published from your
+  workspace."), however markdown or HTML draws them (character references,
+  no-break or zero-width spaces, fullwidth letters, emphasis split across the
+  words).
+- The reply is the `lastAssistantMessage` seen at `before_agent_finalize`, and
+  only when the transcript's last assistant message, a turn without tool calls,
+  holds exactly that visible text. When that turn has none, OpenClaw 2026.6.33
+  fills `lastAssistantMessage` with the joined narration of earlier tool-call
+  turns, which is no reply. Any later model call, and an owner cancel, clear it.
+- Passing (`append`) outcomes are unchanged, and so is the ingress verification
+  schema. A run-deadline, tool-limit, recursive-delete or clarification
+  delivery keeps its own text.
+- The reply is filtered like a tool-limit answer, not scrubbed: a path or other
+  text the agent quotes is delivered as in any passing reply.
+
+`tests/preview_explanation_delivery.test.mjs` replays the Elf of Doom case
+through the real guard, inspection receipt and ingress, plus the regression
+cases (success claims in many forms, empty, silent and narration-only replies,
+imitated notes, passing and pending checks, local links, code fences).
 
 ## Focused verification
 

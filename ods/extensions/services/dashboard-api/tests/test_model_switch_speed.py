@@ -364,7 +364,7 @@ class TestReadinessFastWindow:
 
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
         monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
-        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (4096, ""))
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (4096, "", None))
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod.time, "sleep", sleeps.append)
         return probes, sleeps

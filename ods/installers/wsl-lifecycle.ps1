@@ -1182,6 +1182,9 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
+    # WSL interop can retain a PS7 parent's module path despite a child env override.
+    # Restrict this PS5 controller process before autoloading ACL/Scheduler modules.
+    if ($PSVersionTable.PSEdition -eq 'Desktop') { $env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules') }
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
     if ($Action -eq 'hold') { Invoke-ODSWslHolder $InstanceDirectory }
     elseif ($Action -eq 'relay-hold') { Invoke-ODSWslRelayHolder $InstanceDirectory }

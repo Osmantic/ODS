@@ -34,6 +34,23 @@ test('Python owner projection and current-process JavaScript projection agree',(
   c=config();c.agents.defaults.params={maxTokens:2048};c.agents.defaults.models={'ods-gateway/ods/current':{params:{max_completion_tokens:3072}}};delete c.agents.list[0].params;cases.push(c);
   c=config();c.agents.defaults.params={maxTokens:2048};c.agents.defaults.models={'ods-gateway/ods/current':{params:{max_tokens:3072}}};cases.push(c);
   c=config();c.agents.list[0].model='ods-local/local-model';c.models.providers['ods-local']={models:[{id:'local-model',name:'ODS Local local-model',contextWindow:32768,maxTokens:4096,reasoning:true}]};delete c.plugins.entries['pixel-ods'].config.modelRouteFingerprint;cases.push(c);
+  for(const control of ['enable_thinking','always','none']) {
+    const value=config();value.plugins.entries['pixel-ods'].config.modelThinkingControl=control;
+    if(control==='enable_thinking')value.agents.list[0].params.chat_template_kwargs={enable_thinking:false};
+    cases.push(value);
+    const stale=structuredClone(value);
+    stale.agents.list[0].params.chat_template_kwargs={enable_thinking:true};cases.push(stale);
+    const inherited=structuredClone(value);
+    delete inherited.agents.list[0].params.chat_template_kwargs;
+    inherited.agents.defaults.params={chat_template_kwargs:{enable_thinking:true}};cases.push(inherited);
+  }
+  for(const field of ['compat','params','chat_template_kwargs']) {
+    const value=config();value.plugins.entries['pixel-ods'].config.modelThinkingControl='none';
+    if(field==='compat')value.models.providers['ods-gateway'].models[0].compat=null;
+    else if(field==='params')value.agents.list[0].params=null;
+    else value.agents.list[0].params.chat_template_kwargs=null;
+    cases.push(value);
+  }
   const script=`import json,sys\nsys.path.insert(0,sys.argv[1])\nfrom pixel_model_contract import projection\nfor config in json.load(sys.stdin):\n try: print(json.dumps(projection(config)))\n except Exception: print('null')\n`;
   const result=spawnSync(process.platform==='win32'?'python':'python3',['-c',script,fileURLToPath(new URL('../../../../bin',import.meta.url))],{input:JSON.stringify(cases),encoding:'utf8',windowsHide:true});
   assert.equal(result.status,0,result.stderr);
@@ -42,5 +59,33 @@ test('Python owner projection and current-process JavaScript projection agree',(
     if(expected[index]===null)return assert.throws(()=>readRuntimeModel(value,{}));
     const {contract,limits}=readRuntimeModel(value,{});
     assert.deepEqual({contract,limits},expected[index]);
+  });
+});
+
+
+test('planned thinking changes match Python and live JS readback, including renamed models',()=>{
+  const cases=[];
+  for(const [model,control,reasoning] of [['Renamed','enable_thinking',true],['Renamed','enable_thinking',false],
+    ['Qwen-always','always',true],['Llama','none',false],['Llama',null,false],['Qwen',null,false]]) {
+    const before=config();
+    before.models.providers['ods-gateway'].models[0].compat={thinkingFormat:'qwen-chat-template'};
+    before.agents.list[0].thinkingDefault='low';
+    before.agents.list[0].params.chat_template_kwargs={enable_thinking:true};
+    const target={model,contextLength:16384,maxTokens:4096,reasoning};
+    if(control!==null)target.thinkingControl=control;
+    cases.push({before,target});
+  }
+  const script=`import json,sys\nsys.path.insert(0,sys.argv[1])\nfrom pixel_model_contract import plan,projection\nfor item in json.load(sys.stdin):\n changed=plan(item['before'],item['target']);print(json.dumps({'config':changed,**projection(changed)}))\n`;
+  const result=spawnSync(process.platform==='win32'?'python':'python3',['-c',script,fileURLToPath(new URL('../../../../bin',import.meta.url))],{input:JSON.stringify(cases),encoding:'utf8',windowsHide:true});
+  assert.equal(result.status,0,result.stderr);
+  const rows=result.stdout.trim().split('\n').map(JSON.parse);
+  rows.forEach((row,index)=>{
+    const actual=readRuntimeModel(row.config,{});
+    assert.deepEqual(actual.contract,cases[index].target);
+    assert.deepEqual(actual.limits,row.limits);
+    if(Object.hasOwn(cases[index].target,'thinkingControl')) {
+      row.config.agents.list[0].params.chat_template_kwargs={enable_thinking:!cases[index].target.reasoning};
+      assert.throws(()=>readRuntimeModel(row.config,{}));
+    }
   });
 });

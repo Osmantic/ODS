@@ -29,6 +29,39 @@ sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
 
 
+@pytest.mark.parametrize("kind", ["apply", "proof"])
+@pytest.mark.parametrize("fails", [False, True])
+def test_remote_provider_publishes_busy_state_until_request_settles(monkeypatch, kind, fails):
+    """Navigating to Models must not offer recovery during a provider switch."""
+    monkeypatch.setattr(_mod, "check_auth", lambda _handler: True)
+    monkeypatch.setattr(_mod, "_plan_remote_provider_lifecycle_operation", lambda _body: {"action": "disable"})
+    observed = []
+
+    def work(*_args):
+        observed.append(_mod._model_lifecycle_status())
+        recovery = _FakeHandler(b"{}")
+        _mod.AgentHandler._handle_model_recover(recovery)
+        assert recovery.response_code == 409
+        if fails:
+            raise RuntimeError("provider unavailable")
+        return {"applied": True}
+
+    monkeypatch.setattr(_mod, "_apply_remote_provider_lifecycle_operation", work)
+    monkeypatch.setattr(_mod, "_record_remote_provider_egress_probe", work)
+    handler = _FakeHandler(b'{"action":"disable"}')
+    getattr(_mod.AgentHandler, f"_handle_remote_provider_{kind}")(handler)
+
+    assert len(observed) == 1
+    assert observed[0]["lifecycleActive"] is True
+    assert observed[0]["activeOperation"] == f"remote_provider_{kind}"
+    assert not _mod._model_lifecycle_status().get("lifecycleActive")
+    acquired, _ = _mod._begin_model_lifecycle("model_recovery")
+    assert acquired, "both successful and failed provider operations release ownership"
+    _mod._end_model_lifecycle("model_recovery")
+    expected_status = (500 if kind == "apply" else 409) if fails else 200
+    assert handler.response_code == expected_status
+
+
 def test_host_selection_serializes_dependency_decisions_with_cli_helper(tmp_path, monkeypatch):
     """The agent uses the installed host selector, including ordered stops."""
     scripts = tmp_path / "scripts"
@@ -402,6 +435,43 @@ def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_depen
     assert result == [value for value in flags[:6]] + sum(
         (['-f', name] for name in fragments if '/unrelated/' not in name), [])
     assert '${UNRELATED_SECRET:?Required}' in (tmp_path / next(iter(fragments))).read_text()
+
+
+def test_pixel_model_relay_recreation_selects_its_fragment_but_not_the_dashboard_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')
+    monkeypatch.setattr(_mod, 'USER_EXTENSIONS_DIR', tmp_path / 'user-extensions')
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', {'litellm'})
+    fragments = {
+        'extensions/pixel-model-relay/compose.yaml':
+            'services:\n  pixel-model-relay:\n    environment:\n      KEY: ${PIXEL_MODEL_RELAY_KEY:?Required}\n',
+        'extensions/unrelated/compose.yaml':
+            'services:\n  unrelated:\n    environment:\n      SECRET: ${UNRELATED_SECRET:?Required}\n',
+    }
+    flags = ['-f', 'base.yaml']
+    for name, body in fragments.items():
+        file = tmp_path / name
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_text(body)
+        flags += ['-f', name]
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: list(flags))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+
+    monkeypatch.setattr(_mod.subprocess, 'run', fake_run)
+
+    assert _mod.docker_compose_recreate(['pixel-model-relay']) == (True, '')
+    assert calls == [[
+        'docker', 'compose', '-f', 'base.yaml', '-f', 'extensions/pixel-model-relay/compose.yaml',
+        'up', '-d', '--no-deps', '--force-recreate', 'pixel-model-relay',
+    ]]
+    # Only the agent's own route change recreates it; a dashboard request cannot.
+    ok, error = _mod.validate_core_recreate_ids(['pixel-model-relay'])
+    assert ok is False
+    assert 'not a core ODS service' in error
 
 
 def test_core_recreation_does_not_hide_invalid_extension_yaml(tmp_path, monkeypatch):
@@ -3632,6 +3702,77 @@ class TestPixelOperationsStatus:
         assert handler.response_code == 400
 
 
+def _route_failure_answers(answer, ready="200"):
+    """A fake curl: one completion answer, and LiteLLM's readiness."""
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[-1].endswith("/health/readiness"):
+            return subprocess.CompletedProcess(command, 0, ready, "")
+        code, stdout = answer
+        return subprocess.CompletedProcess(command, code, stdout, "")
+
+    return calls, fake_run
+
+
+def _litellm_error(message, status):
+    return json.dumps({"error": {"message": message, "code": str(status)}}) + f"\n{status}"
+
+
+@pytest.mark.parametrize(("answer", "ready", "expected"), [
+    # The fleet outage: the provider's own 500, passed on by LiteLLM.
+    ((0, _litellm_error("litellm.InternalServerError: InternalServerError: OpenAIException - Connection error.\n"
+                        "Received Model Group=ods/current", 500)), "200",
+     (500, "Connection error.", True)),
+    ((0, _litellm_error("litellm.RateLimitError: RateLimitError: OpenAIException - slow down", 429)), "200",
+     (429, "slow down", True)),
+    ((0, _litellm_error("litellm.ServiceUnavailableError: OpenAIException - overloaded", 503)), "200",
+     (503, "overloaded", True)),
+    # LiteLLM got no HTTP answer from its own egress hop: not the API's fault.
+    ((0, _litellm_error("litellm.APIConnectionError: APIConnectionError: OpenAIException - Connection error.", 500)), "200",
+     (500, "Connection error.", False)),
+    ((0, _litellm_error("litellm.BadRequestError: Invalid model name passed in model=ods/current", 400)), "200",
+     (400, "Invalid model name passed in model=ods/current", False)),
+    ((0, json.dumps({"choices": [{"message": {"content": ""}}]}) + "\n200"), "200",
+     (200, "The API answered with an empty completion", True)),
+    ((28, ""), "200", (504, "The API did not answer within 30 seconds", True)),
+    ((28, ""), "000", (None, "LiteLLM did not answer in time", False)),
+    ((7, "\n000"), "200", (None, "LiteLLM did not answer", False)),
+    ((0, json.dumps({"choices": [{"message": {"content": "READY"}}]}) + "\n200"), "200", None),
+])
+def test_litellm_route_failure_tells_the_providers_answer_from_litellms_own(monkeypatch, answer, ready, expected):
+    calls, fake_run = _route_failure_answers(answer, ready)
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+    env = {"LITELLM_KEY": "unit-test-litellm-key", "LITELLM_PORT": "4000"}
+
+    assert _mod._litellm_route_failure(env) == expected
+
+    command, kwargs = calls[0]
+    assert "unit-test-litellm-key" not in " ".join(command)
+    assert kwargs["input"] == "Authorization: Bearer unit-test-litellm-key\n"
+    assert kwargs["encoding"] == "utf-8" and kwargs["errors"] == "replace"
+    assert command[command.index("-X") + 2] == "http://127.0.0.1:4000/v1/chat/completions"
+
+
+def test_litellm_route_failure_never_passes_on_a_key_echo_or_a_backslash(monkeypatch):
+    # Key- and hash-shaped values are built at runtime so secret scanners stay quiet.
+    key_hash = hashlib.sha256(b"unit-test").hexdigest()
+    fake_key = "sk-" + "unittest" + "fake01"
+    message = ("litellm.InternalServerError: OpenAIException - Connection error. "
+               f"Received API Key = sk-...wxyz, Key Hash (Token) ={key_hash}, "
+               f"Rate limit exceeded for api_key: {key_hash[:40]} {fake_key} \\e[31mred\\c")
+    _calls, fake_run = _route_failure_answers((0, _litellm_error(message, 500)))
+    monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+
+    status, text, provider = _mod._litellm_route_failure({"LITELLM_KEY": "k"})
+
+    assert (status, provider) == (500, True)
+    assert key_hash not in text and key_hash[:32] not in text and fake_key not in text
+    assert "\\" not in text
+    assert text.startswith("Connection error. Received API Key = [redacted], Key Hash (Token) =[redacted]")
+
+
 class TestRemoteProviderLifecycle:
     """Direct host-agent tests for remote-provider lifecycle planning/apply."""
 
@@ -4081,6 +4222,110 @@ class TestRemoteProviderLifecycle:
         assert "unit-test-provider-token" not in dumped
         assert "unit-test-ssh-key" not in dumped
         assert '"raw"' not in dumped
+
+    def _active_route_with_matching_consumers(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        root = tmp_path / "remote-provider"
+        root.mkdir(parents=True)
+        plan = _mod._plan_remote_provider_lifecycle_operation(self._ssh_configure_payload())
+        state = _mod._remote_provider_route_state_from_plan(plan)
+        (root / "routing-state.json").write_text(json.dumps(state), encoding="utf-8")
+        runtime = _mod._remote_provider_runtime_contract(state)
+        monkeypatch.setattr(_mod, "_read_remote_provider_activation_state", lambda: {
+            "phase": "active", "remote": runtime,
+            "routeFingerprint": _mod._remote_provider_route_fingerprint(state),
+        })
+        (tmp_path / ".env").write_text("ODS_MODE=cloud\nLLM_API_URL=http://litellm:4000\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
+        return root / "routing-state.json"
+
+    def test_provider_outage_on_an_active_route_is_reported_without_reactivation(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """Fleet 2026-10-18: during an outage a test recreated LiteLLM twice,
+        could hold Portal's model lane, and reported nothing useful."""
+        state_path = self._active_route_with_matching_consumers(monkeypatch, tmp_path)
+        asked = []
+
+        def outage(env, *, model="ods/current"):
+            asked.append(model)
+            return 500, "Connection error.", True
+
+        monkeypatch.setattr(_mod, "_litellm_route_failure", outage)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+
+        def no_activation(route):
+            raise AssertionError("a provider outage must not re-activate the route")
+
+        monkeypatch.setattr(_mod, "_activate_remote_provider_route", no_activation)
+        before = state_path.read_bytes()
+        handler = _FakeHandler(json.dumps(self._egress_probe_response()).encode("utf-8"))
+
+        _mod.AgentHandler._handle_remote_provider_proof(handler)
+
+        assert handler.response_code == 502
+        assert handler.parse_response() == {
+            "error": "The remote provider did not serve a completion through the active route",
+            "code": "provider_not_serving",
+            "providerStatus": 500,
+            "providerMessage": "Connection error.",
+        }
+        assert state_path.read_bytes() == before
+        assert len(asked) == 2, "a single failure is asked once more"
+
+    def test_a_single_provider_hiccup_is_not_reported_as_an_outage(self, monkeypatch, tmp_path):
+        self._active_route_with_matching_consumers(monkeypatch, tmp_path)
+        answers = [(429, "slow down", True), None]
+        monkeypatch.setattr(_mod, "_litellm_route_failure", lambda env, *, model="ods/current": answers.pop(0))
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_activate_remote_provider_route",
+                            lambda route: pytest.fail("a working route must not be re-activated"))
+        handler = _FakeHandler(json.dumps(self._egress_probe_response()).encode("utf-8"))
+
+        _mod.AgentHandler._handle_remote_provider_proof(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["activation"]["proven"] is True
+
+    @pytest.mark.parametrize("failure", [
+        (None, "LiteLLM did not answer", False),
+        (400, "Invalid model name", False),
+        (500, "Connection error.", False),
+    ])
+    @pytest.mark.parametrize("answers_later", [False, True])
+    def test_litellm_faults_on_an_active_route_keep_the_earlier_paths(
+        self,
+        monkeypatch,
+        tmp_path,
+        failure,
+        answers_later,
+    ):
+        """LiteLLM's own fault, or a LiteLLM still starting, gets the earlier
+        wait for a completion and then the repair path (a fresh activation)."""
+        self._active_route_with_matching_consumers(monkeypatch, tmp_path)
+        monkeypatch.setattr(_mod, "_litellm_route_failure", lambda env, *, model="ods/current": failure)
+
+        def earlier_wait(env, *, model="default"):
+            if not answers_later:
+                raise RuntimeError("LiteLLM did not serve a completion through the active ods/current route")
+
+        monkeypatch.setattr(_mod, "_verify_litellm_route", earlier_wait)
+        activated = []
+
+        def activate(route):
+            activated.append(route)
+            return {"active": True, "proven": True}
+
+        monkeypatch.setattr(_mod, "_activate_remote_provider_route", activate)
+        handler = _FakeHandler(json.dumps(self._egress_probe_response()).encode("utf-8"))
+
+        _mod.AgentHandler._handle_remote_provider_proof(handler)
+
+        assert handler.response_code == 200
+        assert len(activated) == (0 if answers_later else 1)
 
     def test_rejects_failed_egress_probe_without_overwriting_route_proof(
         self,
@@ -4716,9 +4961,38 @@ class TestRemoteProviderLifecycle:
         assert 'target_route_fingerprint="$8"' in calls[-1][2]
         assert _mod._reconcile_managed_pixel_contract(runtime) == "reconciled"
         assert calls[-1][-3:] == ["", "unknown", ""]
+        for control in ("enable_thinking", "always", "none"):
+            assert _mod._reconcile_managed_pixel_contract(runtime, thinking_control=control) == "reconciled"
+            assert calls[-1][-3:] == ["", "unknown", control]
         with pytest.raises(RuntimeError, match="route identity"):
             _mod._reconcile_managed_pixel_contract({**runtime, "routeFingerprint": "a" * 64 + "\n"})
-        assert len(calls) == 2
+        assert len(calls) == 5
+
+    @pytest.mark.parametrize("control", ["", "other", True, 1, [], {}])
+    def test_deactivation_rejects_invalid_saved_thinking_control_before_mutation(
+        self, monkeypatch, tmp_path, control,
+    ):
+        monkeypatch.setattr(_mod, "DATA_DIR", tmp_path)
+        route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
+        path = tmp_path / "remote-provider" / "activation-state.json"
+        path.parent.mkdir()
+        path.write_text(json.dumps({
+            "schema": _mod._REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
+            "phase": "active",
+            "previous": {
+                "odsMode": "local", "llmApiUrl": "http://llama-server:8080",
+                "cloudConfig": _mod._serializable_text_snapshot({"exists": False}),
+                "pixel": None, "pixelThinkingControl": control,
+            },
+            "remote": _mod._remote_provider_runtime_contract(route),
+            "routeFingerprint": _mod._remote_provider_route_fingerprint(route),
+        }), encoding="utf-8")
+        path.chmod(0o600)
+        before = path.read_bytes()
+        monkeypatch.setattr(_mod, "_snapshot_text_file", lambda _: pytest.fail("mutation preparation reached"))
+        with pytest.raises(RuntimeError, match="contract is invalid"):
+            _mod._deactivate_remote_provider_route()
+        assert path.read_bytes() == before
 
     def test_active_remote_pixel_runtime_requires_current_proven_custody_join(
         self,
@@ -4812,10 +5086,14 @@ class TestRemoteProviderLifecycle:
         route["status"]["proven"] = False
         assert _mod._active_remote_provider_pixel_runtime() is None
 
+    @pytest.mark.parametrize("thinking_control", [None, "enable_thinking", "always", "none"])
+    @pytest.mark.parametrize("legacy_receipt", [False, True])
     def test_consumer_activation_and_deactivation_restore_exact_prior_route(
         self,
         monkeypatch,
         tmp_path,
+        thinking_control,
+        legacy_receipt,
     ):
         install_dir = tmp_path / "ods"
         data_dir = install_dir / "data"
@@ -4844,13 +5122,21 @@ class TestRemoteProviderLifecycle:
         remote_pixel = {
             "model": "qwen/remote:latest",
             "contextLength": 32768,
-            "maxTokens": 4096,
+            # The default output limit: a quarter of the context window.
+            "maxTokens": 8192,
             "reasoning": False,
             "imageInput": "unknown",
         }
         current_pixel = {"value": local_pixel}
         reconciled = []
+        reconciled_controls = []
         verified = []
+        answers_path = data_dir / "pixel" / "onboarding.json"
+        answers_path.parent.mkdir()
+        answers = {"modelThinkingControl": thinking_control} if thinking_control else {}
+        answers_path.write_text(json.dumps(answers), encoding="utf-8")
+        answers_path.chmod(0o600)
+        monkeypatch.setattr(_mod, "_ods_managed_pixel_identity", lambda: ("fixture", tmp_path))
         monkeypatch.setattr(
             _mod, "_managed_pixel_runtime_contract", lambda: current_pixel["value"]
         )
@@ -4873,9 +5159,15 @@ class TestRemoteProviderLifecycle:
             assert env["ODS_MODE"] == "cloud"
             cloud_path.write_text("model_list:\n  - model_name: ods/current\n", encoding="utf-8")
 
-        def fake_reconcile(contract):
+        def fake_reconcile(contract, *, thinking_control=None):
             reconciled.append(contract)
+            reconciled_controls.append(thinking_control)
             current_pixel["value"] = contract
+            # A remote promotion clears a previous model's control, just as
+            # the shipped onboarding writer does. Readback uses the real
+            # private-answers reader rather than a cached test constant.
+            answers = {"modelThinkingControl": thinking_control} if thinking_control else {}
+            answers_path.write_text(json.dumps(answers), encoding="utf-8")
             return "reconciled"
 
         monkeypatch.setattr(_mod, "_render_remote_provider_cloud_config", fake_render)
@@ -4908,6 +5200,8 @@ class TestRemoteProviderLifecycle:
             "model_list:\n  - model_name: ods/current\n"
         )
         assert reconciled[-1] == remote_pixel
+        assert _mod._managed_pixel_thinking_control() is None
+        assert _mod._read_remote_provider_activation_state()["previous"].get("pixelThinkingControl") == thinking_control
         assert verified[-1] == ("cloud", "ods/current")
         public = json.loads(
             (data_dir / "remote-provider" / "activation-public.json").read_text(
@@ -4923,6 +5217,7 @@ class TestRemoteProviderLifecycle:
             ("public", True),
         ]
 
+        monkeypatch.setattr(_mod, "_litellm_route_failure", lambda env, *, model="ods/current": None)
         current = _mod._verify_current_remote_provider_consumers(plan["route"], remote_pixel)
         assert current["unchanged"] is True
         assert current["pixel"] == "reconciled"
@@ -4937,8 +5232,8 @@ class TestRemoteProviderLifecycle:
         assert _mod._verify_current_remote_provider_consumers(second_route, second_runtime) is None
         private_before = (data_dir / "remote-provider" / "activation-state.json").read_bytes()
 
-        def fail_new_route(contract):
-            fake_reconcile(contract)
+        def fail_new_route(contract, **kwargs):
+            fake_reconcile(contract, **kwargs)
             if contract.get("routeFingerprint") == second_runtime["routeFingerprint"]:
                 raise RuntimeError("simulated native reconciliation failure")
 
@@ -4949,12 +5244,40 @@ class TestRemoteProviderLifecycle:
         assert (data_dir / "remote-provider" / "activation-state.json").read_bytes() == private_before
         monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fake_reconcile)
 
+        # Replacing a remote route must retain the first local model's control,
+        # even though the remote onboarding answers no longer contain it.
+        _mod._activate_remote_provider_route(second_route)
+        assert _mod._read_remote_provider_activation_state()["previous"].get("pixelThinkingControl") == thinking_control
+        if legacy_receipt:
+            state = _mod._read_remote_provider_activation_state()
+            state["previous"].pop("pixelThinkingControl", None)
+            _mod._write_remote_provider_activation_state(state)
+        expected_control = None if legacy_receipt else thinking_control
+        active_env = env_path.read_bytes()
+        active_state = (data_dir / "remote-provider" / "activation-state.json").read_bytes()
+
+        def fail_restore(contract, **kwargs):
+            fake_reconcile(contract, **kwargs)
+            if contract == local_pixel:
+                raise RuntimeError("simulated local restoration failure")
+
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fail_restore)
+        with pytest.raises(RuntimeError, match="simulated local restoration failure"):
+            _mod._deactivate_remote_provider_route()
+        assert env_path.read_bytes() == active_env
+        assert (data_dir / "remote-provider" / "activation-state.json").read_bytes() == active_state
+        assert current_pixel["value"] == second_runtime
+        assert _mod._managed_pixel_thinking_control() is None
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fake_reconcile)
+
         deactivation = _mod._deactivate_remote_provider_route()
 
         assert deactivation["restored"] is True
         assert env_path.read_text(encoding="utf-8") == original_env
         assert cloud_path.read_text(encoding="utf-8") == original_cloud
         assert reconciled[-1] == local_pixel
+        assert reconciled_controls[-1] == expected_control
+        assert _mod._managed_pixel_thinking_control() == expected_control
         assert verified[-1] == ("local", "ods/current")
         assert not (data_dir / "remote-provider" / "activation-state.json").exists()
         assert not (data_dir / "remote-provider" / "activation-public.json").exists()
@@ -5007,6 +5330,144 @@ class TestRemoteProviderLifecycle:
         assert cloud_path.read_text(encoding="utf-8") == original_cloud
         assert not (data_dir / "remote-provider" / "activation-state.json").exists()
         assert not (data_dir / "remote-provider" / "activation-public.json").exists()
+
+    def test_route_changes_recreate_pixel_model_relay_for_the_new_mode(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """relay.py picks model-router or LiteLLM from ODS_MODE once, at start.
+
+        Fleet 2026-10-18 (F17): after `ods remote-provider configure` the kept
+        relay still sent Portal to the local model until it was recreated.
+        """
+        install_dir = tmp_path / "ods"
+        data_dir = install_dir / "data"
+        cloud_path = install_dir / "config" / "litellm" / "cloud.yaml"
+        cloud_path.parent.mkdir(parents=True)
+        data_dir.mkdir(parents=True)
+        env_path = install_dir / ".env"
+        env_path.write_text("ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n", encoding="utf-8")
+        cloud_path.write_text("previous-cloud\n", encoding="utf-8")
+        env_path.chmod(0o600)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "DATA_DIR", data_dir)
+        local_pixel = {"model": "qwen-local", "contextLength": 65536, "maxTokens": 4096, "reasoning": False}
+        current_pixel = {"value": local_pixel}
+        events = []
+
+        def mode():
+            return _mod.load_env(env_path)["ODS_MODE"]
+
+        def restart(container, state, *, recreate=False):
+            assert state == {"exists": True, "running": True}
+            events.append(("recreate" if recreate else "restart", container, mode()))
+            return True
+
+        def restore(container, previous, *, recreate=False):
+            assert previous == {"exists": True, "running": True} and recreate is True
+            events.append(("restore", container, mode()))
+            return True
+
+        def reconcile(contract, **_kwargs):
+            events.append(("pixel", contract["model"], mode()))
+            current_pixel["value"] = contract
+            return "reconciled"
+
+        monkeypatch.setattr(
+            _mod, "_capture_container_state", lambda _name: {"exists": True, "running": True},
+        )
+        monkeypatch.setattr(_mod, "_restart_existing_container", restart)
+        monkeypatch.setattr(_mod, "_restore_container_state", restore)
+        monkeypatch.setattr(_mod, "_wait_for_container_health", lambda _name: None)
+        monkeypatch.setattr(_mod, "_verify_litellm_route", lambda env, *, model="default": None)
+        monkeypatch.setattr(
+            _mod,
+            "_render_remote_provider_cloud_config",
+            lambda route, env: cloud_path.write_text("remote-cloud\n", encoding="utf-8"),
+        )
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: current_pixel["value"])
+        monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", reconcile)
+        route = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())["route"]
+
+        _mod._activate_remote_provider_route(route)
+
+        assert events == [
+            ("recreate", "ods-litellm", "cloud"),
+            ("recreate", "ods-pixel-model-relay", "cloud"),
+            ("pixel", "qwen/remote:latest", "cloud"),
+        ]
+        events.clear()
+
+        _mod._deactivate_remote_provider_route()
+
+        assert events == [
+            ("recreate", "ods-litellm", "local"),
+            ("recreate", "ods-pixel-model-relay", "local"),
+            ("pixel", "qwen-local", "local"),
+        ]
+        events.clear()
+
+        # A failed activation puts the relay back on the restored local route.
+        def fail_remote(contract, **kwargs):
+            reconcile(contract, **kwargs)
+            if contract["model"] != "qwen-local":
+                raise RuntimeError("simulated Pixel binding failure")
+            return "reconciled"
+
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", fail_remote)
+        with pytest.raises(RuntimeError, match="simulated Pixel binding failure"):
+            _mod._activate_remote_provider_route(route)
+
+        assert mode() == "local"
+        assert events == [
+            ("recreate", "ods-litellm", "cloud"),
+            ("recreate", "ods-pixel-model-relay", "cloud"),
+            ("pixel", "qwen/remote:latest", "cloud"),
+            ("recreate", "ods-pixel-model-relay", "local"),
+            ("restore", "ods-litellm", "local"),
+            ("pixel", "qwen-local", "local"),
+        ]
+
+        # Disable is the fail-safe path: a relay that cannot follow does not
+        # keep the owner on the remote route.
+        monkeypatch.setattr(_mod, "_reconcile_managed_pixel_contract", reconcile)
+        _mod._activate_remote_provider_route(route)
+
+        def relay_fault(container, state, *, recreate=False):
+            if container == "ods-pixel-model-relay":
+                raise RuntimeError("simulated relay fault")
+            return restart(container, state, recreate=recreate)
+
+        monkeypatch.setattr(_mod, "_restart_existing_container", relay_fault)
+        assert _mod._deactivate_remote_provider_route()["restored"] is True
+        assert mode() == "local"
+
+
+def test_compose_recreation_reads_the_route_from_env_not_the_agents_environment(tmp_path, monkeypatch):
+    """An agent started from a shell carries .env as it was at start."""
+    monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')
+    monkeypatch.setattr(_mod, 'USER_EXTENSIONS_DIR', tmp_path / 'user-extensions')
+    monkeypatch.setattr(_mod, 'CORE_SERVICE_IDS', {'litellm'})
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-f', 'base.yaml'])
+    for key, value in (("ODS_MODE", "local"), ("LLM_API_URL", "http://llama-server:8080"),
+                       ("EXTERNAL_LLM_URL", "http://host.docker.internal:8080")):
+        monkeypatch.setenv(key, value)
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(kwargs['env'])
+        return subprocess.CompletedProcess(cmd, 0, '', '')
+
+    monkeypatch.setattr(_mod.subprocess, 'run', fake_run)
+
+    assert _mod.docker_compose_recreate(['litellm']) == (True, '')
+    assert _mod.docker_compose_converge(['pixel-model-relay']) == (True, '')
+
+    for env in seen:
+        assert {'ODS_MODE', 'LLM_API_URL', 'EXTERNAL_LLM_URL'}.isdisjoint(env)
 
 
 class TestTailscaleStatus:
@@ -8577,7 +9038,8 @@ class TestModelDownloadDiskSpace:
 
         assert _mod._download_bytes_needed(artifacts, paths) == 11
 
-    def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path):
+    def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
         status = _mod._model_storage_status(tmp_path / "not" / "created" / "yet")
 
         assert status["totalBytes"] > 0
@@ -8585,6 +9047,7 @@ class TestModelDownloadDiskSpace:
         assert status["marginBytes"] == _mod._download_disk_margin(status["totalBytes"])
 
     def test_storage_endpoint_reports_the_download_volume(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
         monkeypatch.setattr(_mod, "_model_download_directory", lambda: tmp_path)
         handler = _FakeHandler(b"")
@@ -8606,6 +9069,159 @@ class TestModelDownloadDiskSpace:
         _mod.AgentHandler._handle_model_storage(handler)
 
         assert handler.response_code == 409
+
+
+class TestWslModelStorage:
+    """On WSL the virtual disk's free space is bounded by the Windows drive under it."""
+
+    # Fleet laptop, 2026-10-18: the dashboard offered 836.21 GiB and a
+    # 50.34 GiB reserve from the virtual disk while its 1 TB drive C: had
+    # 68.8 GB free.
+    DISK = types.SimpleNamespace(total=int(1006.81 * 1024 ** 3), free=int(836.21 * 1024 ** 3))
+    HOST = types.SimpleNamespace(total=1_022_580_748_288, free=68_800_000_000)
+
+    def _wsl(self, monkeypatch, tmp_path, *, env="ODS_WSL_DISK_DRIVE=C:\n", host=None,
+             mount_error=None, mounted=True):
+        install = tmp_path / "install"
+        store = install / "data" / "models"
+        store.mkdir(parents=True)
+        (install / ".env").write_text(env, encoding="utf-8")
+        mount = tmp_path / "mnt" / "c"
+        mount.mkdir(parents=True)
+        drives = []
+
+        def drive_mount(drive):
+            drives.append(drive)
+            if mount_error is not None:
+                raise mount_error
+            return mount
+
+        usage = {store: self.DISK, mount: host or self.HOST}
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: True)
+        # The store is on the virtual disk; C: is its own DrvFS mount unless
+        # the drive is not mounted, which leaves a plain directory there.
+        monkeypatch.setattr(_mod, "_on_wsl_virtual_disk", lambda path: Path(path) != mount or not mounted)
+        monkeypatch.setattr(_mod._wsl_runtime, "drive_mount", drive_mount)
+        monkeypatch.setattr(_mod.shutil, "disk_usage", lambda path: usage[Path(path)])
+        return store, drives
+
+    def _store_volume(self):
+        return {
+            "freeBytes": self.DISK.free,
+            "totalBytes": self.DISK.total,
+            "marginBytes": _mod._download_disk_margin(self.DISK.total),
+        }
+
+    def _unchecked(self):
+        return {**self._store_volume(), "windowsDrive": None, "windowsDriveChecked": False}
+
+    def test_the_windows_drive_bounds_free_space_and_sets_the_margin(self, tmp_path, monkeypatch):
+        store, drives = self._wsl(monkeypatch, tmp_path)
+
+        assert _mod._model_storage_status(store) == {
+            "freeBytes": 68_800_000_000,
+            "totalBytes": 1_022_580_748_288,
+            "marginBytes": 51_129_037_414,
+            "windowsDrive": "C:",
+            "windowsDriveChecked": True,
+        }
+        assert drives == ["C:"]
+
+    def test_a_model_that_fits_the_virtual_disk_but_not_the_drive_is_refused(self, tmp_path, monkeypatch):
+        store, _drives = self._wsl(monkeypatch, tmp_path)
+        install = store.parents[1]
+        (install / "config").mkdir()
+        (install / "config" / "model-library.json").write_text(json.dumps({"models": [{
+            "id": "large-model",
+            "gguf_file": "large-model.gguf",
+            "gguf_url": "https://example.com/large-model.gguf",
+            "size_bytes": 30_000_000_000,
+        }]}), encoding="utf-8")
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "_model_download_directory", lambda: store)
+
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("a refused download must not take the model lifecycle")
+
+        monkeypatch.setattr(_mod, "_begin_model_lifecycle", refuse)
+        handler = _FakeHandler(json.dumps({
+            "gguf_file": "large-model.gguf",
+            "gguf_url": "https://example.com/large-model.gguf",
+        }).encode("utf-8"))
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 507
+        body = handler.parse_response()
+        assert body["code"] == "insufficient_disk_space"
+        assert body["freeBytes"] == 68_800_000_000
+        assert body["marginBytes"] == 51_129_037_414
+
+    def test_the_virtual_disk_limits_when_it_has_less_room(self, tmp_path, monkeypatch):
+        roomy = types.SimpleNamespace(total=4 * 10 ** 12, free=3 * 10 ** 12)
+        store, _drives = self._wsl(monkeypatch, tmp_path, host=roomy)
+
+        assert _mod._model_storage_status(store) == {
+            "freeBytes": self.DISK.free,
+            "totalBytes": roomy.total,
+            "marginBytes": _mod._download_disk_margin(roomy.total),
+            "windowsDrive": None,
+            "windowsDriveChecked": True,
+        }
+
+    @pytest.mark.parametrize("env", [
+        "",
+        "ODS_WSL_DISK_DRIVE=\n",
+        "ODS_WSL_DISK_DRIVE=C\n",
+        "ODS_WSL_DISK_DRIVE=C:\\\n",
+        "ODS_WSL_DISK_DRIVE=CD:\n",
+        "ODS_WSL_DISK_DRIVE=1:\n",
+    ])
+    def test_a_missing_or_invalid_drive_record_is_reported_unchecked(self, tmp_path, monkeypatch, caplog, env):
+        store, drives = self._wsl(monkeypatch, tmp_path, env=env)
+
+        with caplog.at_level(logging.WARNING, logger="ods-host-agent"):
+            assert _mod._model_storage_status(store) == self._unchecked()
+        assert drives == []
+        assert "ODS_WSL_DISK_DRIVE is missing or invalid" in caplog.text
+
+    @pytest.mark.parametrize("mount_error", [
+        _mod._wsl_runtime.BridgeError("WSL path translation failed"),
+        FileNotFoundError("/usr/bin/wslpath"),
+        subprocess.TimeoutExpired("wslpath", 5),
+    ])
+    def test_an_unreadable_drive_is_reported_unchecked(self, tmp_path, monkeypatch, caplog, mount_error):
+        store, drives = self._wsl(monkeypatch, tmp_path, mount_error=mount_error)
+
+        with caplog.at_level(logging.WARNING, logger="ods-host-agent"):
+            assert _mod._model_storage_status(store) == self._unchecked()
+        assert drives == ["C:"]
+        assert "Free space on Windows drive C: could not be checked" in caplog.text
+
+    def test_an_unmounted_drive_is_not_read_as_the_virtual_disk_again(self, tmp_path, monkeypatch, caplog):
+        store, drives = self._wsl(monkeypatch, tmp_path, mounted=False)
+
+        with caplog.at_level(logging.WARNING, logger="ods-host-agent"):
+            assert _mod._model_storage_status(store) == self._unchecked()
+        assert drives == ["C:"]
+        assert "Windows drive C: is not mounted in WSL" in caplog.text
+
+    def test_a_store_on_a_windows_drive_mount_keeps_its_own_figures(self, tmp_path, monkeypatch):
+        store, drives = self._wsl(monkeypatch, tmp_path)
+        monkeypatch.setattr(_mod, "_on_wsl_virtual_disk", lambda _path: False)
+
+        assert _mod._model_storage_status(store) == self._store_volume()
+        assert drives == []
+
+    def test_other_hosts_report_the_store_volume_only(self, tmp_path, monkeypatch):
+        store, drives = self._wsl(monkeypatch, tmp_path)
+        monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
+        monkeypatch.setattr(_mod, "_on_wsl_virtual_disk",
+                            lambda _path: pytest.fail("only WSL looks for a virtual disk"))
+
+        assert _mod._model_storage_status(store) == self._store_volume()
+        assert drives == []
 
 
 class TestModelDeleteSafety:
@@ -8692,6 +9308,288 @@ class TestModelDeleteSafety:
         assert status["status"] == "idle"
         assert status["model"] == ""
         assert not any(part in json.dumps(status) for part in parts)
+
+    def _split_fixture(self, tmp_path, monkeypatch):
+        install, models = self._setup(tmp_path, monkeypatch)
+        parts = [models / f"split-{i:05d}-of-00002.gguf" for i in (1, 2)]
+        for i, part in enumerate(parts):
+            part.write_bytes(f"part-{i}".encode())
+        (install / "config/model-library.json").write_text(json.dumps({"models": [{
+            "gguf_file": parts[0].name, "gguf_parts": [{"file": p.name} for p in parts],
+        }]}))
+        status = install / "data/model-download-status.json"
+        status.write_text(json.dumps({"status": "complete", "model": parts[0].name}))
+        monkeypatch.setattr(_mod, "_live_runtime_has_model", lambda *_args: False)
+        return models, parts, status
+
+    def test_split_failure_restores_all_shards_and_allows_retry(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_status = status.read_bytes()
+        original = Path.rename
+        original_unlink = Path.unlink
+
+        def fail_second(path, destination):
+            if path == parts[1]:
+                raise OSError("second shard is busy")
+            return original(path, destination)
+
+        # Old code unlinks: fail at the equivalent public operation boundary.
+        def fail_second_unlink(path, *args, **kwargs):
+            if path == parts[1]:
+                raise OSError("second shard is busy")
+            return original_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "rename", fail_second)
+            patch.setattr(Path, "unlink", fail_second_unlink)
+            handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+            _mod.AgentHandler._handle_model_delete(handler)
+            assert handler.response_code == 500
+            assert [p.read_bytes() for p in parts] == [b"part-0", b"part-1"]
+            assert status.read_bytes() == original_status
+            assert not list(models.glob(".ods-model-delete-*"))
+        retry = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(retry)
+        assert retry.response_code == 200
+        assert not any(p.exists() for p in parts)
+        assert not list(models.glob(".ods-model-delete-*"))
+
+    def test_split_failed_restore_retains_recovery_shard(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_status = status.read_bytes()
+        original = Path.rename
+
+        def fail_move_and_restore(path, destination):
+            if path == parts[1]:
+                raise OSError("filesystem unavailable")
+            return original(path, destination)
+
+        def fail_restore(*_args, **_kwargs):
+            raise OSError("filesystem unavailable during restore")
+
+        monkeypatch.setattr(Path, "rename", fail_move_and_restore)
+        monkeypatch.setattr(os, "link", fail_restore)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        recovery = models / response["recoveryDirectory"]
+        assert (recovery / parts[0].name).read_bytes() == b"part-0"
+        assert parts[1].read_bytes() == b"part-1"
+        assert status.read_bytes() == original_status
+
+    def test_split_cleanup_failure_is_reported_and_retains_staged_file(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original = Path.unlink
+
+        def fail_cleanup(path, *args, **kwargs):
+            if path.parent.name.startswith(".ods-model-delete-") and path.name == parts[1].name:
+                raise OSError("cleanup unavailable")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_cleanup)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_cleanup_pending"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "free disk space" in response["error"]
+        assert response["deletionCommitted"] is True
+        recovery = models / response["recoveryDirectory"]
+        assert (recovery / parts[1].name).read_bytes() == b"part-1"
+        assert not any(p.exists() for p in parts)
+        assert json.loads(status.read_text())["status"] == "idle"
+
+    @pytest.mark.parametrize("refusal", ["lifecycle", "active", "unavailable"])
+    def test_split_refusal_preserves_every_shard(self, tmp_path, monkeypatch, refusal):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        before = status.read_bytes()
+        if refusal == "lifecycle":
+            monkeypatch.setattr(_mod, "_begin_model_lifecycle", lambda *_args: (False, {"operation": "model_download"}))
+        else:
+            monkeypatch.setattr(_mod, "_live_runtime_has_model", lambda *_args: True if refusal == "active" else None)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == (503 if refusal == "unavailable" else 409)
+        assert [p.read_bytes() for p in parts] == [b"part-0", b"part-1"]
+        assert status.read_bytes() == before
+        assert not list(models.glob(".ods-model-delete-*"))
+
+    @pytest.mark.parametrize("cleanup_fails", [False, True])
+    @pytest.mark.parametrize("status_failure", ["write", "replace", "invalid_status_unlink", "status_list", "status_null"])
+    def test_split_status_failure_reports_committed_deletion(
+        self, tmp_path, monkeypatch, cleanup_fails, status_failure,
+    ):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_status = status.read_bytes()
+        original_unlink = Path.unlink
+        if status_failure == "invalid_status_unlink":
+            status.write_text("{invalid status", encoding="utf-8")
+        elif status_failure in {"status_list", "status_null"}:
+            status.write_text("[]" if status_failure == "status_list" else "null", encoding="utf-8")
+        elif status_failure == "write":
+            original_write = Path.write_text
+
+            def fail_status_write(path, *args, **kwargs):
+                if path.parent == status.parent and path.name.startswith(status.name + "."):
+                    raise PermissionError("status temporary file cannot be written")
+                return original_write(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "write_text", fail_status_write)
+        else:
+            original_replace = os.replace
+
+            def fail_status_replace(source, destination, *args, **kwargs):
+                if Path(destination) == status:
+                    raise PermissionError("status destination is busy")
+                return original_replace(source, destination, *args, **kwargs)
+
+            monkeypatch.setattr(os, "replace", fail_status_replace)
+
+        def fail_cleanup_or_status(path, *args, **kwargs):
+            if status_failure == "invalid_status_unlink" and path == status:
+                raise PermissionError("status file cannot be removed")
+            if cleanup_fails and path.parent.name.startswith(".ods-model-delete-") and path.name == parts[1].name:
+                raise PermissionError("staged cleanup unavailable")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", fail_cleanup_or_status)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        response = handler.parse_response()
+        assert handler.response_code == 500
+        assert response["code"] == "model_delete_status_update_failed"
+        assert response["deletionCommitted"] is True
+        assert not any(part.exists() for part in parts)
+        if status_failure in {"write", "replace"}:
+            assert status.read_bytes() == original_status
+            assert not list(status.parent.glob(status.name + ".*.tmp"))
+        if cleanup_fails:
+            assert response["cleanupPending"] is True
+            assert response["recoveryDirectory"] in response["error"]
+            assert "free disk space" in response["error"]
+            assert (models / response["recoveryDirectory"] / parts[1].name).read_bytes() == b"part-1"
+        else:
+            assert "recoveryDirectory" not in response
+            assert not list(models.glob(".ods-model-delete-*"))
+
+    @pytest.mark.skipif(os.name == "nt" or getattr(os, "geteuid", lambda: 0)() == 0,
+                        reason="requires POSIX directory permissions enforced for a nonroot user")
+    def test_split_status_failure_uses_real_filesystem_permissions(self, tmp_path, monkeypatch):
+        models, parts, status = self._split_fixture(tmp_path, monkeypatch)
+        original_status = status.read_bytes()
+        original_mode = stat.S_IMODE(status.parent.stat().st_mode)
+        # The model store remains writable; only status publication is denied.
+        status.parent.chmod(0o555)
+        try:
+            handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+            _mod.AgentHandler._handle_model_delete(handler)
+        finally:
+            status.parent.chmod(original_mode)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_status_update_failed"
+        assert response["deletionCommitted"] is True
+        assert not any(part.exists() for part in parts)
+        assert status.read_bytes() == original_status
+        assert not list(models.glob(".ods-model-delete-*"))
+
+    def test_status_writer_remains_best_effort_for_other_callers(self, tmp_path, monkeypatch):
+        status = tmp_path / "model-download-status.json"
+        status.write_text('{"status":"complete"}', encoding="utf-8")
+        original_status = status.read_bytes()
+
+        def fail_replace(*_args, **_kwargs):
+            raise PermissionError("status destination is busy")
+
+        monkeypatch.setattr(os, "replace", fail_replace)
+        _mod._write_model_status(status, "idle", "", 0, 0)
+        assert status.read_bytes() == original_status
+        assert not list(tmp_path.glob(status.name + ".*.tmp"))
+
+    def test_split_restore_does_not_overwrite_recreated_name(self, tmp_path, monkeypatch):
+        models, parts, _status = self._split_fixture(tmp_path, monkeypatch)
+        original = Path.rename
+
+        def recreate_then_fail(path, destination):
+            if path == parts[1]:
+                parts[0].write_bytes(b"foreign replacement")
+                raise OSError("second shard busy")
+            return original(path, destination)
+
+        monkeypatch.setattr(Path, "rename", recreate_then_fail)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        assert parts[0].read_bytes() == b"foreign replacement"
+        assert (models / response["recoveryDirectory"] / parts[0].name).read_bytes() == b"part-0"
+        assert parts[1].read_bytes() == b"part-1"
+
+    def test_split_restore_atomically_preserves_racing_replacement(self, tmp_path, monkeypatch):
+        models, parts, _status = self._split_fixture(tmp_path, monkeypatch)
+        original_rename = Path.rename
+        original_link = os.link
+
+        def fail_stage_or_race_restore(path, destination):
+            if path == parts[1]:
+                raise OSError("second shard busy")
+            if path.parent.name.startswith(".ods-model-delete-"):
+                Path(destination).write_bytes(b"racing foreign model")
+            return original_rename(path, destination)
+
+        def race_link(source, destination, *args, **kwargs):
+            Path(destination).write_bytes(b"racing foreign model")
+            return original_link(source, destination, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "rename", fail_stage_or_race_restore)
+        monkeypatch.setattr(os, "link", race_link)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        assert parts[0].read_bytes() == b"racing foreign model"
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        assert (models / response["recoveryDirectory"] / parts[0].name).read_bytes() == b"part-0"
+        assert parts[1].read_bytes() == b"part-1"
+
+    def test_split_restore_link_cleanup_failure_retains_both_names(self, tmp_path, monkeypatch):
+        models, parts, _status = self._split_fixture(tmp_path, monkeypatch)
+        original_rename = Path.rename
+        original_unlink = Path.unlink
+
+        def fail_stage(path, destination):
+            if path == parts[1]:
+                raise OSError("second shard busy")
+            return original_rename(path, destination)
+
+        def fail_retirement(path, *args, **kwargs):
+            if path.parent.name.startswith(".ods-model-delete-"):
+                raise OSError("staged-name cleanup unavailable")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "rename", fail_stage)
+        monkeypatch.setattr(Path, "unlink", fail_retirement)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0].name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 500
+        response = handler.parse_response()
+        assert response["code"] == "model_delete_recovery_required"
+        assert response["recoveryDirectory"] in response["error"]
+        assert "Restore" in response["error"]
+        assert [p.read_bytes() for p in parts] == [b"part-0", b"part-1"]
+        retained = models / response["recoveryDirectory"] / parts[0].name
+        assert retained.read_bytes() == b"part-0"
+        assert retained.samefile(parts[0])
 
     def test_delete_refuses_persisted_active_model_without_touching_status(
         self, tmp_path, monkeypatch,
@@ -9843,6 +10741,20 @@ class TestDockerServiceHealthSnapshot:
 
 class TestModelConfig:
 
+    @pytest.mark.parametrize(("startup", "expected"), [
+        ("local", "local"), ("cloud", "cloud"), ("hybrid", "hybrid"),
+        ("lemonade", "local"), (None, "unknown"), ("private-fixture", "unknown"),
+    ])
+    def test_effective_mode_is_bounded_startup_identity(self, tmp_path, monkeypatch, startup, expected):
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "STARTUP_ODS_MODE", startup)
+        monkeypatch.setenv("ODS_MODE", "cloud")
+        (tmp_path / ".env").write_text("ODS_MODE=local\nHF_TOKEN=private-fixture\n", encoding="utf-8")
+        handler = _FakeHandler(b"")
+        _mod.AgentHandler._handle_model_config(handler)
+        assert handler.parse_response() == {"configuredMode": "local", "effectiveMode": expected}
+
     @pytest.mark.parametrize(("contents", "expected"), [
         (None, "unknown"), ("", "unknown"), ("ODS_MODE=\n", "unknown"),
         ("ODS_MODE=invalid\n", "unknown"),
@@ -9860,7 +10772,7 @@ class TestModelConfig:
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
         assert handler.response_code == 200
-        assert handler.parse_response() == {"configuredMode": expected}
+        assert handler.parse_response() == {"configuredMode": expected, "effectiveMode": "hybrid"}
         assert ("Cache-Control", "no-store") in handler.response_headers
 
     @pytest.mark.parametrize("failure", [PermissionError, UnicodeError])
@@ -9877,7 +10789,7 @@ class TestModelConfig:
         monkeypatch.setattr(_mod, "load_env", denied)
         handler = _FakeHandler(b"")
         _mod.AgentHandler._handle_model_config(handler)
-        assert handler.parse_response() == {"configuredMode": "unknown"}
+        assert handler.parse_response() == {"configuredMode": "unknown", "effectiveMode": "local"}
 
     def test_authenticated_fixed_route_reads_atomic_replacement(self, tmp_path, monkeypatch):
         import urllib.error
@@ -9910,7 +10822,7 @@ class TestModelConfig:
             headers = {"Authorization": "Bearer model-config-secret"}
             for mode in ("local", "cloud"):
                 with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=2) as response:
-                    assert json.load(response) == {"configuredMode": mode}
+                    assert json.load(response) == {"configuredMode": mode, "effectiveMode": "hybrid"}
                     assert response.headers["Cache-Control"] == "no-store"
                 if mode == "local":
                     replacement = tmp_path / ".env-new"
@@ -10054,8 +10966,9 @@ def test_install_result_is_not_terminal_until_worker_exits(tmp_path, monkeypatch
     assert _mod._read_install_operation(*identity)['state'] == terminal_state
 
 
-def test_orphaned_install_is_uncertain_and_blocks_new_attempt(install_operation_host):
+def test_orphaned_install_is_uncertain_and_blocks_new_attempt(install_operation_host, monkeypatch):
     invoke, responses, launches = install_operation_host
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: None, raising=False)
     _mod._save_install_operation({'service_id': 'operation-test', 'operation_id': 'c' * 32,
         'run_setup_hook': False, 'state': 'running'})
     invoke('c' * 32)
@@ -10078,6 +10991,7 @@ def test_install_disconnect_does_not_replay_or_release_worker_twice(install_oper
 
 def test_install_timeout_does_not_authorize_replay(install_operation_host, monkeypatch):
     invoke, responses, launches = install_operation_host
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: None, raising=False)
     def timeout(): raise subprocess.TimeoutExpired(['docker'], 1)
     monkeypatch.setattr(_mod, 'resolve_compose_flags', timeout)
     invoke('f' * 32)
@@ -10085,6 +10999,65 @@ def test_install_timeout_does_not_authorize_replay(install_operation_host, monke
     invoke('a' * 32)
     assert responses[-1][0] == 409
     assert len(launches) == 1
+
+
+def test_timed_out_install_reconciles_when_container_runs(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    def timeout(): raise subprocess.TimeoutExpired(['docker'], 1)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', timeout)
+    invoke('f' * 32)
+    assert _mod._read_install_operation('operation-test', 'f' * 32)['state'] == 'uncertain'
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: 'running', raising=False)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: [])
+    invoke('a' * 32)
+    assert responses[-1][0] == 202
+    assert len(launches) == 2
+    reconciled = _mod._read_install_operation('operation-test', 'f' * 32)
+    assert reconciled['state'] == 'succeeded'
+    assert 'reconciled after interruption' in reconciled['reconciliation']
+
+
+def test_stale_install_reconciles_to_failed_when_container_absent(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    _mod._save_install_operation({'service_id': 'operation-test', 'operation_id': 'c' * 32,
+        'run_setup_hook': False, 'state': 'running'})
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: 'stopped', raising=False)
+    invoke('d' * 32)
+    assert responses[-1][0] == 202
+    assert len(launches) == 1
+    reconciled = _mod._read_install_operation('operation-test', 'c' * 32)
+    assert reconciled['state'] == 'failed'
+    assert 'interrupted' in reconciled['reconciliation']
+
+
+def test_live_install_worker_still_blocks_new_attempt(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    identity = ('operation-test', 'c' * 32)
+    monkeypatch.setattr(_mod, '_install_operation_live', {identity})
+    _mod._save_install_operation({'service_id': identity[0], 'operation_id': identity[1],
+        'run_setup_hook': False, 'state': 'running'})
+    monkeypatch.setattr(_mod, '_observe_install_container', lambda service: 'running', raising=False)
+    invoke('d' * 32)
+    assert responses[-1][0] == 409
+    assert not launches
+    assert _mod._read_install_operation(*identity)['state'] == 'running'
+
+
+def test_unexpected_install_exception_leaves_terminal_receipt(install_operation_host, monkeypatch):
+    invoke, responses, launches = install_operation_host
+    def boom(): raise KeyError('unexpected')
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', boom)
+    raised = []
+    class ThreadLikeWorker:  # A real thread reports, not propagates, target errors.
+        def __init__(self, target, **kwargs): self.target = target
+        def start(self):
+            with pytest.raises(KeyError) as error:
+                self.target()
+            raised.append(error.value)
+    monkeypatch.setattr(_mod.threading, 'Thread', ThreadLikeWorker)
+    invoke('e' * 32)
+    assert raised and responses[-1][0] == 202
+    assert _mod._read_install_operation('operation-test', 'e' * 32)['state'] == 'failed'
 
 
 def test_install_operation_http_observation_is_authenticated_and_bound(tmp_path, monkeypatch):
@@ -10192,6 +11165,9 @@ class TestWslNativeSystemMetrics:
         monkeypatch.setenv("WSL_INTEROP", "/run/WSL/42_interop")
         monkeypatch.setattr(_mod.os, "scandir", lambda p: nullcontext(iter([])))
         monkeypatch.setattr(_mod.Path, "is_file", lambda p: True)
+        monkeypatch.setattr(_mod, "_wsl_nvidia_cached", (0, None))
+        # The model server runs on Windows unless a test says otherwise.
+        monkeypatch.setattr(_mod, "_wsl_windows_model_route", lambda: True)
         return json.loads((Path(__file__).parent / "fixtures/wsl-windows-native-telemetry.json").read_text())
 
     def test_real_bound_adapter_and_one_shared_snapshot(self, monkeypatch, native):
@@ -10238,6 +11214,150 @@ class TestWslNativeSystemMetrics:
         monkeypatch.setattr(_mod.Path, "is_file", lambda p: False)
         monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("must not launch"))
         assert _mod._wsl_system_metrics() is None
+
+    SPARK = "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+
+    def test_nvidia_adapter_carries_the_windows_driver_temperature_and_power(self, monkeypatch, native):
+        # A model server that runs on Windows: DXGI gives memory and load, and
+        # WSL's nvidia-smi, which reads the Windows driver, adds temperature and
+        # power. "[N/A]" stays unknown; an AMD adapter beside it gets nothing.
+        nvidia = {**native["gpus"][0], "name": self.SPARK, "vendor": 0x10DE, "luid": "luid_0x00000000_0x00017000"}
+        sample = {**native, "gpus": [nvidia, native["gpus"][0]]}
+        calls = []
+
+        def run(args, **kwargs):
+            calls.append(args[0])
+            if args[0] == "/usr/lib/wsl/lib/nvidia-smi":
+                assert args[1:] == ["--query-gpu=name,temperature.gpu,power.draw", "--format=csv,noheader,nounits"]
+                assert 0.5 <= kwargs["timeout"] <= 2
+                # A reading under the AMD adapter's name is never given to it.
+                return types.SimpleNamespace(returncode=0, stdout=(
+                    f"{self.SPARK}, 69, 58.72\nNVIDIA NPU, 70, [N/A]\n{native['gpus'][0]['name']}, 50, 20\n"))
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(sample))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        rows = _mod._wsl_system_metrics()["gpus"]
+        assert rows[0]["backend"] == "nvidia" and rows[0]["temperature_c"] == 69 and rows[0]["power_w"] == 58.72
+        assert rows[1]["backend"] == "amd" and rows[1]["temperature_c"] is None and rows[1]["power_w"] is None
+        assert calls.count("/usr/lib/wsl/lib/nvidia-smi") == 1
+        assert _mod._wsl_nvidia_sensors(2)["NVIDIA NPU"] == {"temperature_c": 70, "power_w": None}
+
+    def test_nvidia_readings_are_reused_for_fifteen_seconds(self, monkeypatch, native):
+        # nvidia-smi can wake a sleeping GPU: the 3 s CPU/RAM/GPU sample
+        # refreshes, the NVIDIA readings only every 15 s.
+        nvidia = {**native["gpus"][0], "name": self.SPARK, "vendor": 0x10DE}
+        clock = [1000.0]
+        monkeypatch.setattr(_mod.time, "monotonic", lambda: clock[0])
+        calls = []
+        readings = iter(["69, 58.72", "71, 60"])
+
+        def run(args, **kwargs):
+            calls.append(args[0])
+            if args[0] == "/usr/lib/wsl/lib/nvidia-smi":
+                return types.SimpleNamespace(returncode=0, stdout=f"{self.SPARK}, {next(readings)}\n")
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps({**native, "gpus": [nvidia]}))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        assert _mod._wsl_system_metrics()["gpus"][0]["temperature_c"] == 69
+        clock[0] += 10
+        assert _mod._wsl_system_metrics()["gpus"][0]["temperature_c"] == 69
+        assert calls.count("/usr/lib/wsl/lib/nvidia-smi") == 1 and len(calls) == 3
+        clock[0] += 6
+        assert _mod._wsl_system_metrics()["gpus"][0]["temperature_c"] == 71
+        assert calls.count("/usr/lib/wsl/lib/nvidia-smi") == 2
+
+    def test_docker_nvidia_cpu_and_cloud_routes_never_run_nvidia_smi(self, monkeypatch, native):
+        # Only a Windows model server makes the GPU tile read this sample; the
+        # Docker NVIDIA route reads nvidia-smi in the dashboard container.
+        monkeypatch.setattr(_mod, "_wsl_windows_model_route", lambda: False)
+        nvidia = {**native["gpus"][0], "name": self.SPARK, "vendor": 0x10DE}
+
+        def run(args, **kwargs):
+            assert args[0] != "/usr/lib/wsl/lib/nvidia-smi", "only a Windows model server needs host NVIDIA sensors"
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps({**native, "gpus": [nvidia]}))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        row = _mod._wsl_system_metrics()["gpus"][0]
+        assert row["memory_total_mb"] == 32768 and row["temperature_c"] is None and row["power_w"] is None
+
+    @pytest.mark.parametrize("env_text,expected", [
+        ("ODS_HOST_LLM_TRANSPORT=model-router\n", True),
+        ("LEMONADE_HOST_TRANSPORT=model-router\n", True),
+        ("GPU_BACKEND=nvidia\n", False),
+        (None, False),
+        (b"\xff\xfe not utf-8", False),
+    ])
+    def test_windows_model_route_is_read_from_the_installation(self, monkeypatch, tmp_path, env_text, expected):
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod.platform, "release", lambda: "6.6.114-microsoft-standard-WSL2")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        if isinstance(env_text, bytes):
+            (tmp_path / ".env").write_bytes(env_text)
+        elif env_text is not None:
+            (tmp_path / ".env").write_text(env_text)
+        assert _mod._wsl_windows_model_route() is expected
+
+    def test_out_of_range_readings_and_comma_names(self, monkeypatch, native):
+        # nvidia-smi does not quote names: the last two fields are the readings.
+        # Values outside 0-150 C and 0-2000 W are not sensor readings.
+        comma = {**native["gpus"][0], "name": "NVIDIA RTX 5090, Founders Edition", "vendor": 0x10DE,
+                 "luid": "luid_0x00000000_0x00017001"}
+        hot = {**native["gpus"][0], "name": self.SPARK, "vendor": 0x10DE, "luid": "luid_0x00000000_0x00017002"}
+
+        def run(args, **kwargs):
+            if args[0] == "/usr/lib/wsl/lib/nvidia-smi":
+                return types.SimpleNamespace(returncode=0, stdout=(
+                    f"NVIDIA RTX 5090, Founders Edition, 61, 300.5\n{self.SPARK}, 200, 5000\n"))
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps({**native, "gpus": [comma, hot]}))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        rows = _mod._wsl_system_metrics()["gpus"]
+        assert rows[0]["temperature_c"] == 61 and rows[0]["power_w"] == 300.5
+        assert rows[1]["temperature_c"] is None and rows[1]["power_w"] is None
+
+    def test_amd_adapter_never_runs_nvidia_smi(self, monkeypatch, native):
+        def run(args, **kwargs):
+            assert args[0] != "/usr/lib/wsl/lib/nvidia-smi", "an AMD host must not query NVIDIA sensors"
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps(native))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        row = _mod._wsl_system_metrics()["gpus"][0]
+        assert row["temperature_c"] is None and row["power_w"] is None
+
+    def test_two_gpus_with_one_name_get_no_guessed_reading(self, monkeypatch, native):
+        # nvidia-smi rows are matched to DXGI adapters by name; a repeated name
+        # cannot say which reading belongs to which adapter.
+        twins = [{**native["gpus"][0], "name": "NVIDIA GeForce RTX 4090", "vendor": 0x10DE, "luid": f"luid_0x00000000_0x0001700{index}"}
+                 for index in range(2)]
+
+        def run(args, **kwargs):
+            if args[0] == "/usr/lib/wsl/lib/nvidia-smi":
+                return types.SimpleNamespace(returncode=0, stdout="NVIDIA GeForce RTX 4090, 60, 100\nNVIDIA GeForce RTX 4090, 80, 300\n")
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps({**native, "gpus": twins}))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        rows = _mod._wsl_system_metrics()["gpus"]
+        assert len(rows) == 2 and all(row["temperature_c"] is None and row["power_w"] is None for row in rows)
+
+    @pytest.mark.parametrize("smi", ["missing", "fails", "oversized", "times-out", "slow-sample"])
+    def test_unavailable_nvidia_sensors_keep_the_rest_of_the_sample(self, monkeypatch, native, smi):
+        nvidia = {**native["gpus"][0], "name": self.SPARK, "vendor": 0x10DE}
+        clock = [1000.0]
+        monkeypatch.setattr(_mod.time, "monotonic", lambda: clock[0])
+        if smi == "missing":
+            monkeypatch.setattr(_mod.Path, "is_file", lambda p: p.as_posix() != "/usr/lib/wsl/lib/nvidia-smi")
+
+        def run(args, **kwargs):
+            if args[0] == "/usr/lib/wsl/lib/nvidia-smi":
+                assert smi in ("fails", "oversized", "times-out"), "nvidia-smi must not run without the time or the binary"
+                if smi == "times-out":
+                    raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+                # A failed or oversized answer is not trusted, even with a valid row.
+                row = f"{self.SPARK}, 69, 58.72\n"
+                if smi == "oversized":
+                    return types.SimpleNamespace(returncode=0, stdout=row + "x" * 65536)
+                return types.SimpleNamespace(returncode=9, stdout=row)
+            if smi == "slow-sample":
+                clock[0] += 8.2  # the Windows sensor read used most of the dashboard's wait
+            return types.SimpleNamespace(returncode=0, stdout=json.dumps({**native, "gpus": [nvidia]}))
+        monkeypatch.setattr(_mod.subprocess, "run", run)
+        result = _mod._wsl_system_metrics()
+        assert result["cpu"]["percent"] == 86 and result["gpus"][0]["memory_total_mb"] == 32768
+        assert result["gpus"][0]["temperature_c"] is None and result["gpus"][0]["power_w"] is None
 
 
 class TestWslServiceInterop:
@@ -10631,3 +11751,36 @@ class TestVisionProjectorFiles:
         assert second.response_code == 200, second.parse_response()
         assert not (models / "hf-vision-mmproj-F16.gguf").exists()
         assert sorted(path.name for path in models.iterdir()) == []
+
+def test_successful_import_deletion_keeps_repository_identity_without_installed_files(tmp_path, monkeypatch, test_client):
+    """The actual deletion producer leaves metadata that the Import action must not mistake for a retry."""
+    import routers.models as router
+    install, models = TestModelDeleteSafety()._setup(tmp_path, monkeypatch)
+    (install / 'config/model-library.json').write_text(json.dumps({'models': []}), encoding='utf-8')
+    hub = {'id': 'org/model', 'sha': 'c' * 40, 'siblings': [
+        {'rfilename': 'model.gguf', 'size': 10, 'lfs': {'size': 10, 'sha256': 'e' * 64}}]}
+    artifact_id = router._hf_gguf_artifacts(hub)[0]['id']
+    record = {'id': 'hf-retained', 'source': 'huggingface', 'source_repo': hub['id'],
+              'source_revision': hub['sha'], 'source_artifact_id': artifact_id, 'gguf_file': 'hf-model.gguf'}
+    registry = install / 'data/model-imports.json'
+    registry.write_text(json.dumps({'models': [record]}), encoding='utf-8')
+    original_registry = registry.read_bytes()
+    (models / record['gguf_file']).write_bytes(b'model data')
+    monkeypatch.setattr(_mod, '_live_runtime_has_model', lambda *_args: False)
+    monkeypatch.setattr(router, 'INSTALL_DIR', str(install))
+    monkeypatch.setattr(router, 'DATA_DIR', str(install / 'data'))
+    monkeypatch.setattr(router, '_MODELS_DIR', models)
+    monkeypatch.setattr(router, '_ENV_PATH', install / '.env')
+    async def read_hub(*_args, **_kwargs):
+        return hub, {}
+    monkeypatch.setattr(router, '_hf_get_json', read_hub)
+    url = '/api/models/huggingface/repositories/org/model'
+    before = test_client.get(url, headers=test_client.auth_headers).json()['artifacts'][0]
+    assert before['importedModelId'] == record['id'] and before['installed'] is True
+    handler = _FakeHandler(json.dumps({'gguf_file': record['gguf_file']}).encode())
+    _mod.AgentHandler._handle_model_delete(handler)
+    assert handler.response_code == 200
+    assert not (models / record['gguf_file']).exists()
+    assert registry.read_bytes() == original_registry
+    after = test_client.get(url, headers=test_client.auth_headers).json()['artifacts'][0]
+    assert after['importedModelId'] == record['id'] and after['installed'] is False

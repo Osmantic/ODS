@@ -1,57 +1,56 @@
 # Tailscale (remote access)
 
-ODS includes an optional Tailscale extension that puts the device on your Tailscale net (the mesh VPN at `tailscale.com`). Once joined, the device gets a private tailnet IP/DNS name; with `ods-proxy` enabled and `BIND_ADDRESS=0.0.0.0`, the dashboard and chat are reachable from any other tailnet member — your laptop, your phone, a friend's machine — anywhere with internet.
+ODS includes an optional Tailscale extension that joins the device to your private tailnet. Joining provides a tailnet IP/DNS name; it does not publish services that listen only on loopback. Portal's default listeners are loopback-only.
 
-This is how you reach `ods.local` from the coffee shop without exposing anything to the public internet.
+For private Portal access from another computer, use the SSH forward below. It keeps the default service bindings and Portal sign-in, without requiring `ods-proxy` or a public endpoint.
 
 ## Why Tailscale (vs. exposing ports / port-forwarding / Cloudflare Tunnel)
 
 - **Zero NAT / port-forwarding config.** You don't touch your router. Tailscale's mesh handles NAT traversal.
-- **Identity-based access.** Only devices signed into your tailnet can reach ODS. No "the URL leaked" failure mode.
+- **Identity-based access.** Tailnet access rules control which devices can reach the ODS host. SSH and Portal still enforce their own authentication.
 - **End-to-end encrypted.** WireGuard under the hood.
-- **No public endpoint.** The device is invisible to the open internet — there's no `odsXYZ.com` listing to attack.
+- **No public endpoint required.** The SSH route below needs no public HTTP listener. Tailscale does not restrict services separately published on other interfaces.
 
 Tradeoff: every device that needs to reach ODS has to install the Tailscale client. For "me and my family" that's fine. For "publish this to anyone on the internet," you'd want Cloudflare Tunnel + auth instead — out of scope for this extension.
 
 ## Architecture
 
-```
-        ┌────────── Your phone (away from home) ──────────┐
-        │  Tailscale client running                       │
-        │  browser opens http://ods.tail-xxxxx.ts.net   │
-        └──────────────────────┬──────────────────────────┘
-                               │
-                               │  encrypted WireGuard
-                               ▼
-        ┌────────────────────────────────────────────────┐
-        │  Tailscale relay or direct path (depends on NAT)│
-        └──────────────────────┬─────────────────────────┘
-                               │
-                               ▼
-        ┌────────────────────────────────────────────────┐
-        │  ODS host (Linux, with                │
-        │     ods-tailscale container in host-net mode)│
-        │                                                │
-        │  Container's tailscaled exposes the HOST'S     │
-        │  network namespace to the tailnet. The         │
-        │  reachable surface is whatever the host        │
-        │  itself is listening on. With ods-proxy on   │
-        │  port 80 and BIND_ADDRESS=0.0.0.0, that's the  │
-        │  same /chat, /api/*, /auth/* paths users see   │
-        │  on the LAN.                                   │
-        └────────────────────────────────────────────────┘
+```text
+Client browser: http://127.0.0.1:13011/
+  -> client loopback SSH listener
+  -> SSH to the actual ODS host over Tailscale
+  -> ODS host 127.0.0.1:3011
+  -> Portal (dashboard sign-in required)
 ```
 
-The container uses `network_mode: host` so the Tailscale daemon and the dashboard share the same network namespace. **What that buys you depends entirely on what the host is binding to** (see Prerequisites below).
+The Linux Tailscale container uses `network_mode: host`. Incoming tailnet traffic still needs a service listening on the destination address; it cannot directly reach the host's loopback-only ports.
 
-## Prerequisites for tailnet reachability
+## Portal listeners and private access
 
-Joining the tailnet only gets the device a `100.x.y.z` IP and a `ods.tail-xxxxx.ts.net` DNS name. For an HTTP request from another tailnet member to actually load chat, the host has to be listening on the right port and address:
+The default published ports have different roles:
 
-1. **`ods-proxy` is enabled.** It listens on port 80 and routes `/chat`, `/api/*`, `/auth/*` to the right backend. With it, tailnet clients browse to `http://ods.tail-xxxxx.ts.net` (no port). Without it, only the per-service ports work (`:3000`, `:3001`, `:3002`) and only if those are LAN-bound.
-2. **`BIND_ADDRESS=0.0.0.0` in `.env`.** The default `127.0.0.1` means the proxy / dashboard / chat only accept loopback connections — even though tailscaled is in the same namespace, an incoming tailnet packet looks like any other LAN packet, not loopback. Set `BIND_ADDRESS=0.0.0.0` so the host's listen sockets accept those connections.
+| Host port | Purpose | Binding and authentication |
+|---|---|---|
+| `3001` (`DASHBOARD_PORT`) | Local-owner Portal | Always published on `127.0.0.1`, even when `BIND_ADDRESS` changes. Local requests can use owner access without sign-in. Do not forward this listener for remote use. |
+| `3011` (`DASHBOARD_REMOTE_PORT`) | Portal with sign-in | Uses `BIND_ADDRESS`, default `127.0.0.1`. Requires dashboard sign-in even through a loopback SSH forward. |
+| `3000` (`WEBUI_PORT`) | Optional Open WebUI | Separate application; uses `BIND_ADDRESS`, default `127.0.0.1`. It is not Portal. |
+| `3002` (`DASHBOARD_API_PORT`) | Dashboard API | Published on loopback; keep it private. Portal proxies its API requests. |
 
-If you ship a fresh install with Tailscale enabled but neither of the above, `tailscale status` will show the device authed but `http://ods.tail-xxxxx.ts.net` will hang or refuse. Until the dashboard gets a dedicated Remote Access UI, verify those prerequisites with `.env`, `ods list`, and the status endpoint below.
+On a client with Tailscale and working SSH access to the **actual ODS host**, run:
+
+```bash
+ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:13011:127.0.0.1:3011 user@ods.tail-abcde.ts.net
+```
+
+Replace the SSH account and hostname with yours. If this installation overrides `DASHBOARD_REMOTE_PORT`, replace the destination `3011` with that port. SSH must allow local forwarding. This command assumes the default loopback service binding; it does not enable SSH or change tailnet access rules. Leave the terminal open, then browse to **`http://127.0.0.1:13011/`** on that client. Stop the forward with Ctrl+C when finished. Portal is served at `/`; changing the path to `/pixel` cannot fix a refused TCP connection.
+
+Sign in with your dashboard password. To initialize or recover it, run `ods dashboard-login` as the installation owner **on the same ODS host**. Append the printed `#ods-login=...` fragment to `http://127.0.0.1:13011/`, then open that URL privately to choose a password. The link works once and expires in ten minutes; do not share it in logs, screenshots, or support messages. The forward must terminate on that ODS host, not a different laptop running a tunnel.
+
+### If you already use `ods-proxy`
+
+The proxy is optional for this route. Its published listener uses **`ODS_PROXY_BIND`** (default `0.0.0.0`) and **`ODS_PROXY_PORT`** (default `80`), independently of `BIND_ADDRESS`. Enabling it can expose HTTP on other host interfaces; joining Tailscale does not make that listener tailnet-only. Keep the default service bindings for the SSH route above.
+
+The bundled proxy routes by **hostname**, for example `dashboard.<ODS_DEVICE_NAME>.local` to Portal's sign-in listener and `chat.<ODS_DEVICE_NAME>.local` to Open WebUI. Clients need those names to resolve to the intended host. The bare Tailscale MagicDNS name does not automatically acquire these routes, and the proxy does not route `/chat`, `/api/*`, and `/auth/*` by path on that name. See [ODS proxy](ODS-PROXY.md) for its hostname layout.
 
 ## Setup
 
@@ -107,18 +106,15 @@ curl -H "Authorization: Bearer ${DASHBOARD_API_KEY}" \
 # }
 ```
 
-From any other device on your tailnet:
+From the client, with the SSH forward above still running:
 
 ```bash
-# After installing the Tailscale client and signing into the same tailnet,
-# AND with ods-proxy enabled + BIND_ADDRESS=0.0.0.0 on the device:
-curl http://ods.tail-abcde.ts.net/api/status
-# Or from a browser: http://ods.tail-abcde.ts.net (lands at /chat via the proxy)
-
-# To bypass the proxy and hit a specific service directly, use its port
-# (only works when BIND_ADDRESS=0.0.0.0):
-curl http://ods.tail-abcde.ts.net:3011  # dashboard direct; sign-in required
+curl -i http://127.0.0.1:13011/api/status
+# Without a dashboard session, expect HTTP 401 and X-ODS-Sign-In: required.
+# Then open http://127.0.0.1:13011/ in the browser and sign in.
 ```
+
+Loading the page alone does not prove authenticated API or Pixel readiness. After signing in, verify status and send a Portal message. A direct request to the tailnet IP on `3001` should remain unreachable with the default configuration; that is not a Tailscale failure.
 
 ## After the auth key has done its job
 
@@ -160,7 +156,7 @@ Errors (5xx) are reserved for "the docker daemon itself broke" — never for "th
 ## Caveats
 
 - **Linux only in v1.** Host networking on macOS / Windows Docker Desktop doesn't share the host's network namespace the same way. Both work in some configurations with `TS_USERSPACE=true` and `tailscale serve`, but that's substantially more complex than this PR ships. Documented as a follow-up.
-- **No HTTPS yet.** Tailscale's HTTPS feature (auto-issued certs from `<hostname>.<tailnet>.ts.net`) requires `tailscale cert` + a proxy. Future PR.
+- **The bundled proxy is HTTP-only.** The SSH route above encrypts the connection between computers. [Tailscale Serve](https://tailscale.com/kb/1312/serve) is a separate option for HTTPS within a tailnet; this extension does not configure it. Any remote Portal proxy must use the sign-in listener (`3011` by default).
 - **No Funnel (public internet exposure).** Tailscale Funnel can expose a tailnet service to the public internet via `*.ts.net`. We don't enable this by default — it would defeat the "identity-based access" property. Operator opt-in if they want it.
 - **The container needs `NET_ADMIN`, `NET_RAW`, and `/dev/net/tun`.** These are unusual for Docker containers. They're necessary for any WireGuard-based VPN. The container runs as root; this is the Tailscale-published image's standard pattern.
 
@@ -174,6 +170,9 @@ Either:
 
 ### Device joined but unreachable from other tailnet members
 
+- Confirm the hostname belongs to the host running this ODS installation, and check `ods status` there. Healthy Pixel edge or model-relay containers alone do not prove that Portal is listening.
+- A refused direct connection to `3001` is expected: it is the local-owner listener. Use the SSH forward to the sign-in listener and check the installation's `DASHBOARD_REMOTE_PORT` if it differs from `3011`.
+- If SSH works but the forwarded request is refused, confirm the destination listener is available on the ODS host. Keep `BIND_ADDRESS` unchanged while diagnosing; a broad bind change is not required for the default SSH route.
 - Check your tailnet ACLs (`https://login.tailscale.com/admin/acls`). The default ACL allows all-to-all; if you've restricted it and use `--advertise-tags=tag:ods`, make sure `tag:ods` is defined and allowed inbound.
 - Check the receiving side actually has the Tailscale client running: `tailscale status` on the other device should show your ods node.
 

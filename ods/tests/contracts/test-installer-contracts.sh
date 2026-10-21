@@ -857,6 +857,58 @@ _classify_bw()   { _classify "$@" | jq -r '.bandwidth_gbps'; }
 [[ "$(_classify_id "" "RX 9070 XT" amd 16384)" == "rx_9070_xt" ]] \
   || { echo "[FAIL] RX 9070 XT name-only match"; exit 1; }
 
+# --- NVIDIA RTX Spark N1X (Windows on Arm) ---
+# Its name also says "Blackwell", which once matched the RTX PRO 6000 entry.
+# Name, PCI id and the 98240 MiB split are the owner's probe
+# (tests/fixtures/rtx-spark); 63936 MiB is the factory split's figure.
+_spark_name="NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+for _split_mb in 98240 63936; do
+  [[ "$(_classify_id 0x2E03 "$_spark_name" nvidia "$_split_mb")" == "nvidia_rtx_spark_n1x" ]] \
+    || { echo "[FAIL] RTX Spark ($_split_mb MiB) with its device id is not the N1X"; exit 1; }
+  [[ "$(_classify_id "" "$_spark_name" nvidia "$_split_mb")" == "nvidia_rtx_spark_n1x" ]] \
+    || { echo "[FAIL] RTX Spark ($_split_mb MiB) by name alone is not the N1X"; exit 1; }
+  [[ "$(_classify_tier 0x2E03 "$_spark_name" nvidia "$_split_mb")" == "NV_ULTRA" ]] \
+    || { echo "[FAIL] RTX Spark ($_split_mb MiB) tier"; exit 1; }
+  [[ "$(_classify_backend 0x2E03 "$_spark_name" nvidia "$_split_mb")" == "nvidia" ]] \
+    || { echo "[FAIL] RTX Spark ($_split_mb MiB) backend"; exit 1; }
+  [[ "$(_classify_bw 0x2E03 "$_spark_name" nvidia "$_split_mb")" == "281" ]] \
+    || { echo "[FAIL] RTX Spark ($_split_mb MiB) bandwidth must be the N1X's, not the RTX PRO 6000's"; exit 1; }
+  [[ "$(_classify "" "$_spark_name" nvidia "$_split_mb" | jq -r '.memory_source')" == "vram" ]] \
+    || { echo "[FAIL] RTX Spark ($_split_mb MiB) is sized from its GPU memory, not WSL RAM"; exit 1; }
+done
+[[ "$(_classify_id 0x2e03 "" nvidia 98240)" == "nvidia_rtx_spark_n1x" ]] \
+  || { echo "[FAIL] RTX Spark by device id alone"; exit 1; }
+# The NVIDIA NPU row (no memory, no device id) is never a GPU class.
+[[ "$(_classify_id "" "NVIDIA NPU" nvidia 0)" == "nvidia_low_vram_cpu_fallback" ]] \
+  || { echo "[FAIL] the NVIDIA NPU row classified as a GPU"; exit 1; }
+
+# --- RTX PRO 6000 names keep their entry (Workstation is the fleet's card) ---
+for _pro_name in \
+  "NVIDIA RTX PRO 6000 Blackwell Workstation Edition" \
+  "NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition" \
+  "NVIDIA RTX PRO 6000 Blackwell Server Edition" \
+  "NVIDIA RTX PRO 6000"; do
+  [[ "$(_classify_id "" "$_pro_name" nvidia 97887)" == "rtx_pro_6000_blackwell" ]] \
+    || { echo "[FAIL] $_pro_name is no longer the RTX PRO 6000"; exit 1; }
+  [[ "$(_classify_tier "" "$_pro_name" nvidia 97887)" == "NV_ULTRA" ]] \
+    || { echo "[FAIL] $_pro_name tier"; exit 1; }
+done
+# Other Blackwell cards are sized by their own memory, not as a 96 GB card.
+[[ "$(_classify_id "" "NVIDIA RTX PRO 5000 Blackwell" nvidia 49152)" == "nvidia_enterprise" ]] \
+  || { echo "[FAIL] RTX PRO 5000 Blackwell must use the VRAM classes"; exit 1; }
+[[ "$(_classify_id "" "NVIDIA RTX PRO 4500 Blackwell" nvidia 32768)" == "nvidia_pro" ]] \
+  || { echo "[FAIL] RTX PRO 4500 Blackwell must use the VRAM classes"; exit 1; }
+[[ "$(_classify_id "" "NVIDIA RTX PRO 4000 Blackwell" nvidia 24576)" == "nvidia_pro" ]] \
+  || { echo "[FAIL] RTX PRO 4000 Blackwell must use the VRAM classes"; exit 1; }
+
+# --- DGX Spark (GB10) is unchanged ---
+[[ "$(_classify_id "" "NVIDIA GB10" nvidia 122880 unified)" == "nvidia_grace_blackwell_gb10" ]] \
+  || { echo "[FAIL] GB10 name-only match"; exit 1; }
+[[ "$(_classify_tier "" "NVIDIA GB10" nvidia 122880 unified)" == "NV_ULTRA" ]] \
+  || { echo "[FAIL] GB10 tier"; exit 1; }
+[[ "$(_classify "" "NVIDIA GB10" nvidia 122880 unified | jq -r '.memory_source')" == "ram" ]] \
+  || { echo "[FAIL] GB10 must stay sized from system RAM"; exit 1; }
+
 # --- No match → heuristic fallback (should not crash) ---
 
 result=$(_classify_id "0xFFFF" "Unknown GPU" amd 8192)

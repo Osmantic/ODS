@@ -4,12 +4,29 @@ import {execFile} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {chooseTransitionTarget} from './inspection-target.mjs';
+import {MAX_SCREENSHOT_RESULT, previewScreenshotText, validatePreviewScreenshot} from './preview-screenshot.mjs';
 
 export const INSPECTION_KIND = 'ods-pixel-preview-inspection';
 export const INSPECTION_SCOPE = 'Only the listed CSS layout visibility, normalized visible-text assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
-export const SELECT_INSPECTION_SCOPE = INSPECTION_SCOPE + ' Native single-select values were observed only for explicit select-option steps.';
+export const SELECT_OPTION_INSPECTION_SCOPE = ' Native single-select values were observed only for explicit select-option steps.';
+export const SELECT_INSPECTION_SCOPE = INSPECTION_SCOPE + SELECT_OPTION_INSPECTION_SCOPE;
 export const DOWNLOAD_INSPECTION_SCOPE = " Download verification is limited to one final step whose own click must produce matching snapshot bytes inside the capsule. A failed or unavailable receipt does not verify a download; no delivery to the user's computer, PDF quality, or ZIP content validation is established.";
 export const FILL_INSPECTION_SCOPE = ' Native non-sensitive text and number fields were filled only with explicit synthetic values; number constraint flags are observations, not a claim of form validity. This does not test keyboard behavior or submit forms.';
+export const PRESS_INSPECTION_SCOPE = ' Trusted key presses were sent to the focused preview frame only for explicit press steps; behavior beyond the listed assertions, such as gameplay, is not verified.';
+// One unmodified key per press, exactly preview_inspection_protocol.py
+// PRESS_KEYS: no modifiers, chords, function keys or text. The schema states
+// it as an enum, not a pattern, so local-model grammar conversion stays simple.
+export const PRESS_KEYS = Object.freeze(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Enter','Escape','Tab',...'abcdefghijklmnopqrstuvwxyz',...'0123456789']);
+export const MAX_PRESS_HOLD_MS = 1000;
+export const PAINT_INSPECTION_SCOPE = " Pixel paint was checked only for explicit assert-painted steps, as aggregate color statistics of each element's on-screen box; this detects a blank or single-color render, not image recognition or whether the intended content was drawn.";
+// assert-painted evidence bounds, exactly preview_inspection_capsule.py.
+export const MAX_PAINT_SIDE = 256, MAX_PAINT_COLORS = 4, MAX_PAINT_DISTINCT_COLORS = 4096;
+// Press and paint plans run only on a capsule labelled for them, so their scope
+// need not match older capsules: its base does not deny the key presses and
+// paint checks described after it, and beside presses the fill sentence speaks
+// only of fill. Exactly preview_inspection_protocol.py STEP_SCOPE and PRESS_FILL_SCOPE.
+export const STEP_INSPECTION_SCOPE = 'Only the listed steps were tested, each only as stated here. CSS layout visibility, normalized visible-text assertions and click dispatches do not test pixel paint; no step tests occlusion, clipping, a full accessibility audit, or overall functionality.';
+export const PRESS_FILL_INSPECTION_SCOPE = ' Native non-sensitive text and number fields were filled only with explicit synthetic values; number constraint flags are observations, not a claim of form validity. Fill sends no key events and does not submit forms.';
 const LEGACY_INSPECTION_SCOPE = 'Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
 const SOCKET = '/run/ods-pixel-inspection/control.sock';
 const HELPER = '/usr/local/libexec/ods-pixel-services/helpers/preview_inspection.py';
@@ -24,8 +41,17 @@ const optionValue = v => v === '' || printable(v,256);
 const selectionPlan = request => request.steps.some(s=>s.action==='select-option');
 const fillPlan = request => request.steps.some(s=>s.action==='fill');
 const downloadPlan = request => request.steps.at(-1)?.action==='download';
-const requestScope = request => (selectionPlan(request)?SELECT_INSPECTION_SCOPE:INSPECTION_SCOPE) + (fillPlan(request)?FILL_INSPECTION_SCOPE:'') + (downloadPlan(request)?DOWNLOAD_INSPECTION_SCOPE:'');
+const pressPlan = request => request.steps.some(s=>s.action==='press');
+const paintPlan = request => request.steps.some(s=>s.action==='assert-painted');
+const requestScope = request => (pressPlan(request)||paintPlan(request)?STEP_INSPECTION_SCOPE:INSPECTION_SCOPE) + (selectionPlan(request)?SELECT_OPTION_INSPECTION_SCOPE:'') +
+  (fillPlan(request)?(pressPlan(request)?PRESS_FILL_INSPECTION_SCOPE:FILL_INSPECTION_SCOPE):'') + (pressPlan(request)?PRESS_INSPECTION_SCOPE:'') + (paintPlan(request)?PAINT_INSPECTION_SCOPE:'') + (downloadPlan(request)?DOWNLOAD_INSPECTION_SCOPE:'');
 const downloadKeys = ['path','expectedBytes','expectedSha256'];
+// holdMs is optional; the capsule holds the key 100 ms when it is absent.
+const pressKeys = s => ['key',...(Object.hasOwn(s,'holdMs')?['holdMs']:[])];
+const pressValid = s => PRESS_KEYS.includes(s.key) &&
+  (!Object.hasOwn(s,'holdMs') || (Number.isSafeInteger(s.holdMs) && s.holdMs>=0 && s.holdMs<=MAX_PRESS_HOLD_MS));
+const PRESS_ERRORS = ['press_failed','focus_failed','text_field_press_unsupported'];
+const PAINT_ERRORS = ['uniform_paint','not_in_viewport'];
 const downloadValid = s => typeof s.path==='string' && s.path.length<=512 && s.path.split('/').length<=12 &&
   s.path.split('/').every(p=>/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(p) && p!=='.' && p!=='..') && /\.(pdf|zip)$/i.test(s.path) &&
   Number.isSafeInteger(s.expectedBytes) && s.expectedBytes>=1 && s.expectedBytes<=4194304 && typeof s.expectedSha256==='string' && /^[a-f0-9]{64}$/.test(s.expectedSha256);
@@ -83,7 +109,9 @@ function presentName(step, controls, clickedBefore) {
 // A locator that matched no element, or several, produced no measurement. Say
 // which, without treating a missing post-click assertion as proof of a bad
 // locator or a broken handler. Concrete name diagnostics take precedence.
-function locatorFeedback(step, controls, clickedBefore = false) {
+// clickedBefore is the action ('click' or 'press') of the latest earlier
+// passed interaction, if any.
+function locatorFeedback(step, controls, clickedBefore) {
   const at = `Step ${step.index + 1} (${step.action})`, count = step.before.count;
   const retry = 'retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified.';
   if (count !== 0) return `${at} matched ${count} elements; a locator must match exactly one, so nothing was measured and later steps did not run. Use a more specific CSS selector such as an id, or a unique exact name, and ${retry}`;
@@ -96,18 +124,44 @@ function locatorFeedback(step, controls, clickedBefore = false) {
     ? ` For ${step.action}, role/name locators match only rendered elements, so a hidden element is not matched.`
     : step.errorCode === 'no_match' ? ' Hidden elements were searched too, so no element has exactly that role and accessible name.'
       : ' This inspector cannot match a hidden element by role/name; use a CSS selector such as an id for it.';
-  if (clickedBefore && ['assert-visible', 'assert-hidden', 'assert-text'].includes(step.action)) {
-    return `${at} matched no element, so this assertion was not measured and later steps did not run.${scope} An earlier click passed, but the requested result remains unverified. A missing assertion target can mean either a locator mismatch or that the interaction did not create or render the expected state. The inspector runs page JavaScript in Chromium. Test its visible UI effects with fill, click and behavior assertions; a dispatched click alone does not verify its handler or rendering. Read both the actual selector and the handler, state and rendering path. If the selector matches the source, repair the behavior, republish, and rerun the same requested assertions. Check that optional storage failures do not prevent rendering the in-memory state. If the selector differs from the source, correct it and retry the same published snapshot. Do not weaken or remove the behavior checks or claim success.`;
+  if (clickedBefore && ['assert-visible', 'assert-hidden', 'assert-text', 'assert-painted'].includes(step.action)) {
+    return `${at} matched no element, so this assertion was not measured and later steps did not run.${scope} An earlier ${clickedBefore === 'press' ? 'key press' : 'click'} passed, but the requested result remains unverified. A missing assertion target can mean either a locator mismatch or that the interaction did not create or render the expected state. The inspector runs page JavaScript in Chromium. Test its visible UI effects with fill, click and behavior assertions; a dispatched click alone does not verify its handler or rendering. Read both the actual selector and the handler, state and rendering path. If the selector matches the source, repair the behavior, republish, and rerun the same requested assertions. Check that optional storage failures do not prevent rendering the in-memory state. If the selector differs from the source, correct it and retry the same published snapshot. Do not weaken or remove the behavior checks or claim success.`;
   }
   return `${at} matched no element, so nothing was measured and later steps did not run.${scope} Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and ${retry}`;
 }
+const PAINT_PASS = 'Each assert-painted element showed at least two colors in its on-screen box at one sample, which rules out only a blank or single-color render there. This is not image recognition: it does not show that the intended scene, sprites or text were drawn, so also assert visible state such as a score with assert-text where the page shows it.';
+// Two passed paint samples of one locator, an interaction between them and the
+// same fingerprint: that interaction changed nothing visible there at those
+// samples. Informational only, never a failure: an effect may lie elsewhere or
+// come later, and animation makes a changed fingerprint weak evidence anyway.
+function unchangedPaintNote(result) {
+  const painted = (result.steps ?? []).filter(step => step.action === 'assert-painted' && step.status === 'passed');
+  for (const after of painted) {
+    const before = painted.findLast(step => step.index < after.index && isDeepStrictEqual(step.locator, after.locator));
+    const between = before ? result.steps.filter(step => step.index > before.index && step.index < after.index && ['press','click'].includes(step.action)) : [];
+    if (between.length && before.paint.fingerprint === after.paint.fingerprint) return ` Note: steps ${before.index+1} and ${after.index+1} (assert-painted) captured identical paint of the same element before and after the ${between.some(step => step.action === 'press') ? 'key press' : 'click'} between them, so nothing visible changed there at those two samples. This is informational, not a failure; the effect may be elsewhere or later. If that element should change, check the input handling and rendering in the source and assert the visible result, such as score or position text.`;
+  }
+  return '';
+}
+// A passed paint step whose box is almost all one color: a cleared canvas with a
+// few specks (dust, a cursor) shows two colors and passes, yet looks blank to a
+// player. Informational, never a failure: menus and dark scenes can be mostly
+// one color too.
+const NEARLY_ONE_COLOR_PERCENT = 95;
+function nearlyOneColorNote(result) {
+  const step = (result.steps ?? []).find(step => step.action === 'assert-painted' && step.status === 'passed' &&
+    step.paint.dominant.percent >= NEARLY_ONE_COLOR_PERCENT);
+  return step ? ` Note: step ${step.index+1} (assert-painted) passed, but ${step.paint.dominant.percent}% of that element's box is one color (${step.paint.dominant.hex}). If it should show a scene, sprites or a map, it is probably still blank apart from small details: check what the render path draws last over the frame, and assert visible state with assert-text.` : '';
+}
 function transitionCoverageFeedback(request, result) {
   if (result.errorCode === 'request_blocked' || result.blockedRequests?.some(kind => kind === 'network' || kind === 'navigation')) return 'The inspection guard blocked a page operation. Check project requests and navigation; keep assets relative to the published output and navigation within that snapshot; root-absolute asset paths such as /_next/ may leave its site prefix. Inspect the project build configuration, rebuild and republish if needed. Do not broaden network access, rewrite host routes, or change permissions to bypass this boundary. Requested behavior remains unverified; this result does not establish that the inspection runtime is unavailable.';
-  if (result.errorCode === 'unsupported_capability') return fillPlan(request) ? 'This installed inspector does not support native text/number-field filling. Update the ODS inspector and its capsule together. Keep the published interface unchanged; form behavior remains unverified.' : downloadPlan(request) ? 'This installed inspector does not support snapshot download verification. Update the ODS inspector and its capsule together. Keep the published interface unchanged; download behavior remains unverified.' : 'This installed inspector does not support native select-option. Update the ODS inspector and its capsule together. Keep the published select unchanged; selection behavior remains unverified.';
+  if (result.errorCode === 'unsupported_capability') return paintPlan(request) ? (pressPlan(request)
+    ? 'This installed inspector does not support every check in this plan: element paint checks (assert-painted) and trusted key presses need a current inspector. Update the ODS inspector and its capsule together. Keep the published page unchanged; rendering and keyboard behavior remain unverified.'
+    : 'This installed inspector does not support element paint checks (assert-painted). Update the ODS inspector and its capsule together. Keep the published page unchanged; rendering remains unverified.') : pressPlan(request) ? 'This installed inspector does not support trusted key presses. Update the ODS inspector and its capsule together. Keep the published page unchanged; keyboard behavior remains unverified.' : fillPlan(request) ? 'This installed inspector does not support native text/number-field filling. Update the ODS inspector and its capsule together. Keep the published interface unchanged; form behavior remains unverified.' : downloadPlan(request) ? 'This installed inspector does not support snapshot download verification. Update the ODS inspector and its capsule together. Keep the published interface unchanged; download behavior remains unverified.' : 'This installed inspector does not support native select-option. Update the ODS inspector and its capsule together. Keep the published select unchanged; selection behavior remains unverified.';
   if (result.blockedRequests?.includes('download')) return 'The inspector blocked an unexpected download attempt by policy. This is an inspection limitation, not evidence that the website download is broken or that its handler completed. Downloads are supported only by an explicit final download step bound to one immutable snapshot PDF or ZIP. That step performs the click itself: retry the same snapshot with visibility/text assertions followed directly by download, without an ordinary click on that control. Keep the published interface unchanged and report this download as unverified; do not repeat the same blocked click or replace it with a simulated implementation.';
   const unmatched = result.steps?.find(step => step.errorCode === 'no_match' || step.errorCode === 'selector_not_unique');
   if (unmatched) return locatorFeedback(unmatched, inspectionControls(result),
-    result.steps.some(step => step.index < unmatched.index && step.action === 'click' && step.status === 'passed'));
+    result.steps.findLast(step => step.index < unmatched.index && ['click','press'].includes(step.action) && step.status === 'passed')?.action);
   const syntaxFailure = result.steps?.find(step => step.errorCode === 'invalid_selector');
   if (syntaxFailure) return `Step ${syntaxFailure.index + 1} has invalid CSS selector syntax; that step produced no visibility measurement and later steps were not executed. Use a standard CSS selector from the actual source, or a supported role with the exact accessible name and exact:true. Text-matching extensions such as :contains() are not CSS selectors. Correct the locator and retry the inspection on the same published snapshot; do not remove the requested behavior checks. For show/hide behavior, keep assertions of opposite visibility for the same affected element around the control click. Requested behavior remains unverified.`;
   const visibilityFailure = result.steps?.find(step => step.errorCode === 'visibility_mismatch');
@@ -124,10 +178,34 @@ function transitionCoverageFeedback(request, result) {
   const downloadFailure = result.steps?.find(step=>step.action==='download' && step.status==='failed');
   if (downloadFailure) return 'The explicit download was not verified. It must produce exactly one Chromium download of the declared immutable snapshot file within the bounded capture window. Blob/data URLs, other files, navigation without a download and additional downloads are not verified. Do not replace the user interface or simulate the download to satisfy inspection.';
   if (selectFailure) return `Step ${selectFailure.index+1} did not verify native selection (${selectFailure.errorCode}). Use one visible enabled native single-select and an exact unique enabled option value. Custom comboboxes and multi-selects are unsupported. Keep the published interface unchanged when the limitation is in the inspector; do not add buttons only to pass inspection. Selection and dependent behavior remain unverified.`;
+  const pressFailure = result.steps?.find(step=>step.action==='press' && PRESS_ERRORS.includes(step.errorCode));
+  // One code covers both refusals; the target in the source tells them apart.
+  if (pressFailure?.errorCode === 'text_field_press_unsupported') return `Step ${pressFailure.index+1} (press) was refused, so no key was sent: its target, or the element that took focus, accepts text or hides where keys would go. That is a native text field, textarea, select or contenteditable element, a nested iframe, frame, object or embed, or an element whose focus lies inside a closed shadow root. Press sends keys only to the published page's own non-text elements, such as a game canvas, its container, the page body or a button. Use fill for native text and number fields and select-option for a native select. Keys cannot reach content inside a nested frame or a closed shadow root in this inspector: keep the page unchanged for that limitation and report that keyboard behavior as unverified. Keyboard behavior remains unverified.`;
+  if (pressFailure?.errorCode === 'focus_failed') return `Step ${pressFailure.index+1} (press) could not give the preview document keyboard focus, so no key was sent. Address a rendered element of the page itself, such as the game canvas, its container or body, not an element inside a nested frame, and retry the same published snapshot. Keyboard behavior remains unverified.`;
+  if (pressFailure) return `Step ${pressFailure.index+1} (press) did not complete. The target must be one rendered visible element, and the key's handlers must stay within the page without navigation, popups or downloads. Read the target and the key handlers in the source; correct a mistaken plan on the same published snapshot, or repair the page, republish and inspect the new snapshot. Keyboard behavior remains unverified.`;
+  // The color is capsule-computed and validated; no page text is quoted.
+  const paintFailure = result.steps?.find(step=>step.action==='assert-painted' && PAINT_ERRORS.includes(step.errorCode));
+  if (paintFailure?.errorCode === 'uniform_paint') return `Step ${paintFailure.index+1} (assert-painted) captured one color only (${paintFailure.paint.dominant.hex}) in the element's on-screen box after the listed actions, throughout the observation window: a blank, black or single-color render. Read the render path in the source (canvas size, drawing calls, the animation loop, asset paths and script errors) and the actions before this step. Correct a mistaken plan on the same published snapshot, or fix the rendering, republish and inspect the new snapshot. If the element is meant to be one solid color, use assert-visible for it instead. This inspector's Chromium has no GPU and may not render WebGL: when the element draws with WebGL, keep the page unchanged for that limitation and report rendering as unverified. Do not add placeholder paint only to pass this check. Rendering remains unverified.`;
+  // not_in_viewport means no sample captured anything, for any of three reasons.
+  if (paintFailure) return `Step ${paintFailure.index+1} (assert-painted) captured nothing. Either less than 8x8 CSS pixels of the element's content box, inside any rounded corners, lay within the ${request.viewport.width}x${request.viewport.height} viewport; or the element is too thin for its length to keep a captured pixel inside it once its longer side is downscaled to 256 pixels, such as a long narrow bar; or it stopped being one visible match while the paint was sampled, for example a splash canvas that hides or replaces itself. Target the rendered drawing element itself, such as the game canvas, that stays visible after the listed actions, with a viewport large enough to show it as loaded (the inspector does not scroll), and retry the same published snapshot. Rendering remains unverified.`;
   if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
   if (downloadPlan(request)) return 'Chromium captured the declared snapshot file bytes inside the isolated capsule after the listed click. No file was exported to the user computer. This does not validate PDF quality, ZIP members, or future downloads beyond the bounded observation window.';
-  if (request.steps.some(step=>step.action==='assert-text')) return 'The listed normalized visible-text values were observed in the published page. Clicks alone prove no result; text assertions before and after each click establish only those specific changes. Do not substitute simulated DOM or translated code for these browser observations.';
-  if (hasVisibilityTransitionPlan(request)) return 'These steps tested opposite visibility states of the same element around a click. This does not establish every requested behavior.';
+  const paintPass = paintPlan(request) ? ' ' + PAINT_PASS : '';
+  if (pressPlan(request)) {
+    const lastPress = request.steps.findLastIndex(step=>step.action==='press');
+    const checked = request.steps.slice(lastPress+1).some(step=>['assert-text','assert-visible','assert-hidden','assert-painted'].includes(step.action));
+    // The evidence policy (boundPreviewBehavior) needs a postcondition after
+    // each click before the next action; a passed plan without one still
+    // proves no behavior, so say so here.
+    const click = request.steps.findIndex((step,i)=>step.action==='click' && ['fill','click','select-option','press'].includes(request.steps[i+1]?.action));
+    const unasserted = click<0 ? '' : ` Step ${click+1} (click) is followed directly by step ${click+2} (${request.steps[click+1].action}) with no assertion of the click's own result, so this plan does not count as evidence of the requested behavior: each click needs a postcondition before the next action. Insert an assertion of that click's visible result there, such as assert-visible on the started game or assert-painted on its canvas, and retry the same published snapshot.`;
+    return 'The listed keys were sent as trusted keyboard events to the focused preview page. ' + (checked
+      ? 'A key press alone proves no result; only the assertions after it establish those specific changes. Gameplay, timing and canvas paint beyond the listed assertions remain unverified. Do not substitute simulated DOM or translated code for these browser observations.' + paintPass
+      : 'No assertion follows the last press, so no keyboard result was checked. Retry the same published snapshot with assert-text, assert-visible/assert-hidden or assert-painted of the visible result after the last press. Keyboard behavior remains unverified.') + unasserted;
+  }
+  if (request.steps.some(step=>step.action==='assert-text')) return 'The listed normalized visible-text values were observed in the published page. Clicks alone prove no result; text assertions before and after each click establish only those specific changes. Do not substitute simulated DOM or translated code for these browser observations.' + paintPass;
+  if (hasVisibilityTransitionPlan(request)) return 'These steps tested opposite visibility states of the same element around a click. This does not establish every requested behavior.' + paintPass;
+  if (paintPlan(request)) return PAINT_PASS;
   const hasClick = request.steps.some(step => step.action === 'click');
   return 'Only the listed steps passed; no show/hide transition was tested. ' +
     (hasClick ? 'The assertions before and after a click do not check opposite visibility of the same affected element. ' : 'This plan contains no click. ') +
@@ -212,13 +290,24 @@ export const MAX_RENDERED_COLORS = 6;
 export const NEUTRAL_COLOR_NAMES = Object.freeze(['white','light gray','gray','dark gray','black']);
 export const RENDERED_COLOR_NAMES = Object.freeze([...NEUTRAL_COLOR_NAMES,'red','orange','amber','yellow','green','teal','blue','purple','pink','brown']);
 // Each rounded share exceeds its exact share by at most one half.
-const renderedColorsValid = r => exact(r,['viewport','colors']) && exact(r.viewport,['width','height']) &&
-  Object.values(r.viewport).every(v=>Number.isSafeInteger(v)&&v>=240&&v<=1920) &&
-  Array.isArray(r.colors) && r.colors.length>=1 && r.colors.length<=MAX_RENDERED_COLORS &&
-  r.colors.every((c,i)=>exact(c,['name','hex','percent']) && RENDERED_COLOR_NAMES.includes(c.name) &&
+const paletteValid = (colors,max) => Array.isArray(colors) && colors.length>=1 && colors.length<=max &&
+  colors.every((c,i)=>exact(c,['name','hex','percent']) && RENDERED_COLOR_NAMES.includes(c.name) &&
     typeof c.hex==='string' && /^#[0-9a-f]{6}$/.test(c.hex) && Number.isSafeInteger(c.percent) && c.percent>=1 && c.percent<=100 &&
-    (i===0 || c.percent<=r.colors[i-1].percent)) &&
-  r.colors.reduce((sum,c)=>sum+c.percent,0)<=100+Math.floor(r.colors.length/2);
+    (i===0 || c.percent<=colors[i-1].percent)) &&
+  colors.reduce((sum,c)=>sum+c.percent,0)<=100+Math.floor(colors.length/2);
+const renderedColorsValid = r => exact(r,['viewport','colors']) && exact(r.viewport,['width','height']) &&
+  Object.values(r.viewport).every(v=>Number.isSafeInteger(v)&&v>=240&&v<=1920) && paletteValid(r.colors,MAX_RENDERED_COLORS);
+// assert-painted evidence (capsule-computed): aggregates of one capture of at
+// most 256x256 pixels of the element's on-screen box, never its bytes. The
+// most frequent exact color lies in the largest bucket; one color is all of it.
+const paintValid = p => exact(p,['width','height','distinctColors','dominant','colors','fingerprint']) &&
+  [p.width,p.height].every(v=>Number.isSafeInteger(v)&&v>=1&&v<=MAX_PAINT_SIDE) &&
+  Number.isSafeInteger(p.distinctColors) && p.distinctColors>=1 && p.distinctColors<=Math.min(MAX_PAINT_DISTINCT_COLORS,p.width*p.height) &&
+  exact(p.dominant,['hex','percent']) && typeof p.dominant.hex==='string' && /^#[0-9a-f]{6}$/.test(p.dominant.hex) &&
+  Number.isSafeInteger(p.dominant.percent) && p.dominant.percent>=0 && p.dominant.percent<=100 &&
+  paletteValid(p.colors,MAX_PAINT_COLORS) && p.colors[0].percent>=p.dominant.percent &&
+  (p.distinctColors>1 || (p.dominant.percent===100 && p.colors.length===1 && p.colors[0].hex===p.dominant.hex)) &&
+  typeof p.fingerprint==='string' && /^[0-9a-f]{16}$/.test(p.fingerprint);
 // Fixed format; neutral names carry no hex. Only the list varies.
 export function renderedColorsLine(renderedColors) {
   const {viewport:{width,height},colors} = renderedColors;
@@ -233,7 +322,7 @@ const INPUT_HINTS = new Map([
   ['invalid preview inspection viewport','viewport must contain integer width and height from 240 to 1920.'],
   ['invalid preview inspection steps','Provide 1 to 12 supported steps per inspection.'],
   ['unsupported inspection navigation','path is allowed only for a final download assertion. The inspector opens the published snapshot entry page and has no navigation or reload action. Verify supported in-page interactions and report cross-reload persistence as unverified; do not simulate a reload or use sibling test pages as persistence evidence.'],
-  ['invalid inspection step','Each step needs action and locator; assert-text additionally requires expectedText (normalized visible text, 1 to 256 characters); select-option or fill requires value (exact option value or synthetic text, 0 to 256 printable characters); download must be last and requires path, expectedBytes and expectedSha256 for one existing snapshot PDF/ZIP up to 4 MiB.'],
+  ['invalid inspection step','Each step needs action and locator; assert-text additionally requires expectedText (normalized visible text, 1 to 256 characters); select-option or fill requires value (exact option value or synthetic text, 0 to 256 printable characters); download must be last and requires path, expectedBytes and expectedSha256 for one existing snapshot PDF/ZIP up to 4 MiB; press requires key (ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Space, Enter, Escape, Tab, one lowercase letter a-z or one digit 0-9; no modifiers, chords or text) and accepts holdMs (integer 0 to 1000 milliseconds, default 100); assert-painted takes only action and locator.'],
   ['invalid CSS locator','Use one non-empty CSS selector of 1 to 256 printable characters, without Playwright engine prefixes or chaining.'],
   ['invalid semantic locator','Use a supported role, exact accessible name and exact:true, or a CSS selector.'],
   ['invalid semantic locator role','Use a supported role (button, link, checkbox, radio, textbox, combobox, heading, tab or switch), or a CSS selector.'],
@@ -247,8 +336,9 @@ const INPUT_HINTS = new Map([
 function inspectionStepProblem(step,index,count) {
   const problem=(reason,field='')=>({reason,hint:`Step ${index+1} (steps[${index}]${field?'.'+field:''}): ${INPUT_HINTS.get(reason)}`});
   if(step && typeof step==='object' && !Array.isArray(step) && step.action!=='download' && Object.hasOwn(step,'path')) return problem('unsupported inspection navigation','path');
-  if(!exact(step,['action','locator',...(step?.action==='assert-text'?['expectedText']:['select-option','fill'].includes(step?.action)?['value']:step?.action==='download'?downloadKeys:[])]) || !['assert-visible','assert-hidden','assert-text','click','select-option','fill','download'].includes(step.action)) return problem('invalid inspection step');
+  if(!exact(step,['action','locator',...(step?.action==='assert-text'?['expectedText']:['select-option','fill'].includes(step?.action)?['value']:step?.action==='download'?downloadKeys:step?.action==='press'?pressKeys(step):[])]) || !['assert-visible','assert-hidden','assert-text','click','select-option','fill','download','press','assert-painted'].includes(step.action)) return problem('invalid inspection step');
   if(step.action==='download' && (index!==count-1 || !downloadValid(step))) return problem('invalid inspection step');
+  if(step.action==='press' && !pressValid(step)) return problem('invalid inspection step',PRESS_KEYS.includes(step.key)?'holdMs':'key');
   if(step.action==='assert-text' && (!printable(step.expectedText,256) || step.expectedText.replace(/\s+/g,' ').trim()!==step.expectedText)) return problem('invalid inspection step','expectedText');
   if(['select-option','fill'].includes(step.action) && !optionValue(step.value)) return problem('invalid inspection step','value');
   const l=step.locator;
@@ -292,7 +382,7 @@ function stateValid(s, text=false, select=false, fill=false) {
   return exact(s,['count','visible','display','visibility','opacity','hidden','hiddenUntilFound','rectCount',...(text?['text']:[]),...(select?['selection']:[]),...(fill?['input']:[])]) && (!fill || inputValid(s.input)) && (!select || selectionValid(s.selection)) && (!text || (exact(s.text,['actual','truncated']) && typeof s.text.actual==='string' && (s.text.actual==='' || printable(s.text.actual,256)) && typeof s.text.truncated==='boolean')) && s.count===1 && ['visible','hidden','hiddenUntilFound'].every(k=>typeof s[k]==='boolean') && ['display','visibility','opacity'].every(k=>printable(s[k],64)) && Number.isSafeInteger(s.rectCount)&&s.rectCount>=0&&s.rectCount<=100000;
 }
 export function validateWorkspacePreviewInspectionReceipt(value, request) {
-  const validScope=value?.scope===requestScope(request) || (!selectionPlan(request) && !fillPlan(request) && !downloadPlan(request) && value?.scope===LEGACY_INSPECTION_SCOPE && !request.steps.some(step=>step.action==='assert-text'));
+  const validScope=value?.scope===requestScope(request) || (!selectionPlan(request) && !fillPlan(request) && !downloadPlan(request) && !pressPlan(request) && !paintPlan(request) && value?.scope===LEGACY_INSPECTION_SCOPE && !request.steps.some(step=>step.action==='assert-text'));
   if(!value || value.schemaVersion!==1 || value.kind!==INSPECTION_KIND || !['passed','failed'].includes(value.status) || value.siteId!==request.siteId || value.sha256!==request.sha256 || value.planSha256!==inspectionPlanHash(request) || !validScope) throw Error('invalid inspection binding');
   if(value.errorCode!==undefined) {
     if(!exact(value,['schemaVersion','kind','status','errorCode','siteId','sha256','planSha256','scope'])||value.status!=='failed'||!['unavailable','output_limit','timeout','cancelled','unsupported_capability','request_blocked'].includes(value.errorCode)) throw Error('invalid inspection failure');
@@ -303,9 +393,19 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
   // Present, each must be exactly bounded.
   if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),...(value.controls===undefined?[]:['controls']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || (value.controls!==undefined&&!controlsValid(value.controls)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
   value.steps.forEach((step,i)=>{
-    const textStep=step.action==='assert-text', selectStep=step.action==='select-option', fillStep=step.action==='fill', downloadStep=step.action==='download', textKeys=textStep?['expectedText']:(selectStep||fillStep)?['value']:downloadStep?downloadKeys:[];
+    const textStep=step.action==='assert-text', selectStep=step.action==='select-option', fillStep=step.action==='fill', downloadStep=step.action==='download', pressStep=step.action==='press', paintStep=step.action==='assert-painted', textKeys=textStep?['expectedText']:(selectStep||fillStep)?['value']:downloadStep?downloadKeys:pressStep?pressKeys(request.steps[i]):[];
     if(textStep && step.expectedText!==request.steps[i].expectedText) throw Error('invalid text binding');
     if((selectStep||fillStep) && step.value!==request.steps[i].value) throw Error('invalid option binding');
+    if(pressStep && (step.key!==request.steps[i].key || step.holdMs!==request.steps[i].holdMs)) throw Error('invalid press binding');
+    // Press focus evidence: whether the target itself took focus (a canvas
+    // without tabindex does not) and whether the preview document had it.
+    if(step.focus!==undefined && (!pressStep || !exact(step.focus,['element','document']) || typeof step.focus.element!=='boolean' || typeof step.focus.document!=='boolean')) throw Error('invalid focus evidence');
+    if((PRESS_ERRORS.includes(step.errorCode) && !pressStep) || (step.errorCode==='focus_failed' && step.focus?.document!==false)) throw Error('invalid press evidence');
+    // Paint evidence belongs only to a measured assert-painted step: passed,
+    // or failed as uniform_paint with exactly one color. No capture, no paint.
+    if((step.paint!==undefined && (!paintStep || !paintValid(step.paint) || (step.status!=='passed' && step.errorCode!=='uniform_paint'))) ||
+      (PAINT_ERRORS.includes(step.errorCode) && !paintStep) || (step.errorCode==='uniform_paint' && step.paint?.distinctColors!==1) ||
+      (step.errorCode==='not_in_viewport' && step.paint!==undefined) || (paintStep && step.after!==undefined)) throw Error('invalid paint evidence');
     if(downloadStep && (!downloadValid(step) || downloadKeys.some(key=>step[key]!==request.steps[i][key]))) throw Error('invalid download binding');
     if(step.download!==undefined && (!downloadStep || !exact(step.download,['bytes','sha256','completed','eventCount','trustedClick']) ||
       step.download.bytes!==step.expectedBytes || step.download.sha256!==step.expectedSha256 || step.download.completed!==true || step.download.eventCount!==1 || step.download.trustedClick!==true)) throw Error('invalid download evidence');
@@ -313,12 +413,12 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
       if(!exact(step,['index','action','locator','stable','status','errorCode',...textKeys])||step.index!==i||i!==value.steps.length-1||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!exact(step.locator,['selector'])||step.stable!==false||step.status!=='failed'||value.status!=='failed') throw Error('invalid selector failure evidence');
       return;
     }
-    const keys=['index','action','locator','before','stable','status',...textKeys,...(step.after===undefined?[]:['after']),...(step.download===undefined?[]:['download']),...(step.errorCode===undefined?[]:['errorCode'])];
-    if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before,textStep,selectStep,fillStep)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after,false,selectStep,fillStep))||(step.errorCode!==undefined&&!['no_match','selector_not_unique','unstable','click_failed','visibility_mismatch','text_mismatch','native_select_required','option_not_unique','option_disabled','select_failed','selection_mismatch','download_unverified','unexpected_download','text_field_required','numeric_value_required','field_not_editable','fill_failed','fill_mismatch'].includes(step.errorCode))) throw Error('invalid action evidence');
-    if(step.errorCode==='unexpected_download' && (step.action!=='click' || !value.blockedRequests.includes('download') || step.status!=='failed')) throw Error('invalid blocked download evidence');
+    const keys=['index','action','locator','before','stable','status',...textKeys,...(step.after===undefined?[]:['after']),...(step.download===undefined?[]:['download']),...(step.focus===undefined?[]:['focus']),...(step.paint===undefined?[]:['paint']),...(step.errorCode===undefined?[]:['errorCode'])];
+    if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before,textStep,selectStep,fillStep)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after,false,selectStep,fillStep))||(step.errorCode!==undefined&&!['no_match','selector_not_unique','unstable','click_failed','visibility_mismatch','text_mismatch','native_select_required','option_not_unique','option_disabled','select_failed','selection_mismatch','download_unverified','unexpected_download','text_field_required','numeric_value_required','field_not_editable','fill_failed','fill_mismatch',...PRESS_ERRORS,...PAINT_ERRORS].includes(step.errorCode))) throw Error('invalid action evidence');
+    if(step.errorCode==='unexpected_download' && (!['click','press'].includes(step.action) || !value.blockedRequests.includes('download') || step.status!=='failed')) throw Error('invalid blocked download evidence');
     // no_match is exactly zero matches; older capsules also reported zero as selector_not_unique.
     if((step.errorCode==='no_match'&&(!exact(step.before,['count'])||step.before.count!==0))||(step.errorCode==='selector_not_unique'&&(!exact(step.before,['count'])||step.before.count===1))) throw Error('invalid match evidence');
-    if(step.status==='passed' && (!step.stable||step.before.count!==1||step.errorCode!==undefined||(downloadStep ? step.before.visible!==true || step.download===undefined : fillStep ? !inputValid(step.before.input) || !step.before.input.eligible || step.before.input.disabled || step.before.input.readOnly || step.before.visible!==true || !filledState(step.after) : selectStep ? !selectedState(step.before,step.before.selection?.value) || !selectedState(step.after,step.value) : step.action==='click' ? step.after===undefined : textStep ? step.before.visible!==true || step.before.text.truncated || step.before.text.actual!==step.expectedText : step.before.visible!==(step.action==='assert-visible')))) throw Error('unsupported inspection pass');
+    if(step.status==='passed' && (!step.stable||step.before.count!==1||step.errorCode!==undefined||(downloadStep ? step.before.visible!==true || step.download===undefined : fillStep ? !inputValid(step.before.input) || !step.before.input.eligible || step.before.input.disabled || step.before.input.readOnly || step.before.visible!==true || !filledState(step.after) : selectStep ? !selectedState(step.before,step.before.selection?.value) || !selectedState(step.after,step.value) : pressStep ? step.before.visible!==true || step.after===undefined || step.focus?.document!==true : paintStep ? step.before.visible!==true || step.paint===undefined || step.paint.distinctColors<2 : step.action==='click' ? step.after===undefined : textStep ? step.before.visible!==true || step.before.text.truncated || step.before.text.actual!==step.expectedText : step.before.visible!==(step.action==='assert-visible')))) throw Error('unsupported inspection pass');
   });
   const passed=value.steps.length===request.steps.length&&value.steps.every(s=>s.status==='passed')&&value.blockedRequests.length===0;
   if((value.status==='passed')!==passed) throw Error('invalid inspection outcome');
@@ -335,16 +435,19 @@ export function validateIncompleteInspectionReceipt(value, request) {
   if(receipt.status!=='passed'||receipt.siteId!==value.siteId||receipt.sha256!==value.sha256||receipt.planSha256!==value.planSha256) throw Error('invalid incomplete inspection');
   return receipt;
 }
-function unixRequest(payload,{signal}={}) {
+// A screenshot directive raises only the response bound, to the receipt plus one JPEG.
+const resultLimit = payload => payload?.screenshot ? MAX_SCREENSHOT_RESULT : MAX_RESULT;
+// socketPath exists for transport tests; the tool always uses SOCKET.
+export function unixRequest(payload,{signal,socketPath=SOCKET}={}) {
   return new Promise((resolve,reject)=>{
     if(signal?.aborted) return reject(Error('cancelled'));
-    const socket=net.createConnection({path:SOCKET}); const chunks=[]; let size=0,settled=false;
+    const socket=net.createConnection({path:socketPath}); const chunks=[]; let size=0,settled=false; const limit=resultLimit(payload);
     const finish=(err,value)=>{if(settled)return;settled=true;clearTimeout(timer);signal?.removeEventListener('abort',abort);socket.destroy();err?reject(err):resolve(value);};
     const abort=()=>finish(Error('cancelled'));
     const timer=setTimeout(()=>finish(Error('timeout')),55000);
     signal?.addEventListener('abort',abort,{once:true});
     socket.on('connect',()=>socket.write(`${JSON.stringify(payload)}\n`)); // keep write side open: disconnect cancels broker
-    socket.on('data',chunk=>{size+=chunk.length;if(size>MAX_RESULT)return finish(Error('oversized'));chunks.push(chunk);});
+    socket.on('data',chunk=>{size+=chunk.length;if(size>limit)return finish(Error('oversized'));chunks.push(chunk);});
     socket.on('end',()=>{try{const raw=Buffer.concat(chunks).toString('utf8');if(!raw.endsWith('\n')||raw.slice(0,-1).includes('\n'))throw Error();finish(null,JSON.parse(raw));}catch{finish(Error('invalid response'));}});
     socket.on('error',err=>finish(err));
   });
@@ -352,19 +455,37 @@ function unixRequest(payload,{signal}={}) {
 function nativeRequest(payload,{signal}={}) {
   if(process.platform!=='darwin') return Promise.reject(Error('native inspection requires macOS'));
   return new Promise((resolve,reject)=>{
-    const child=execFile('/usr/bin/python3',['-E','-s','-B',HELPER,'request'],{cwd:'/',env:{PATH:'/usr/bin:/bin',HOME:'/var/empty'},signal,timeout:55000,maxBuffer:MAX_RESULT,encoding:'utf8',killSignal:'SIGTERM'},(error,stdout)=>{if(error)return reject(Error('inspection unavailable'));try{if(!stdout.endsWith('\n')||stdout.slice(0,-1).includes('\n'))throw Error();resolve(JSON.parse(stdout));}catch{reject(Error('invalid response'));}});
+    const child=execFile('/usr/bin/python3',['-E','-s','-B',HELPER,'request'],{cwd:'/',env:{PATH:'/usr/bin:/bin',HOME:'/var/empty'},signal,timeout:55000,maxBuffer:resultLimit(payload),encoding:'utf8',killSignal:'SIGTERM'},(error,stdout)=>{if(error)return reject(Error('inspection unavailable'));try{if(!stdout.endsWith('\n')||stdout.slice(0,-1).includes('\n'))throw Error();resolve(JSON.parse(stdout));}catch{reject(Error('invalid response'));}});
     child.stdin.on('error',()=>{}); child.stdin.end(JSON.stringify(payload));
   });
+}
+// screenshots: {capability(), reserve(toolCallId, params)} from the plugin
+// entry. capability() is preview-screenshot.mjs previewScreenshotCapability
+// for this run's model; reserve() is the run guard's per-run bound and returns
+// 'reserved', 'budget' or 'unbound'. Without it (older callers and recorded
+// replays) results stay exactly as before, with no screenshot sentence.
+function screenshotDecision({capability, reserve}, toolCallId, params) {
+  const gate = capability();
+  if (!gate.supported) return {reason: gate.reason};
+  const reservation = reserve(toolCallId, params);
+  return reservation === 'reserved' ? {directive: gate.directive} : {reason: reservation};
+}
+// The broker answers a directive beside the receipt; the receipt itself is
+// validated exactly as before, so `details` never carries image bytes.
+function splitScreenshot(raw, directive) {
+  if (!directive || !raw || typeof raw !== 'object' || Array.isArray(raw) || !Object.hasOwn(raw, 'screenshot')) return {receipt: raw};
+  const {screenshot, ...receipt} = raw;
+  return {receipt, screenshot};
 }
 // transitionRequirement(toolCallId, params) is supplied by the run guard. It
 // returns the owner's show/hide requirement for exactly this call, or
 // undefined; it can only withhold "passed", never grant it.
-export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement}={}) {
+export function createWorkspacePreviewInspectTool({request,transport='unix',transitionRequirement,screenshots}={}) {
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
-    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Each step accepts action and locator. assert-text also requires expectedText: the exact visible innerText after whitespace is collapsed and trimmed, 1 to 256 characters. This reads rendered text, not the value of an input field. For counters or status labels, use assert-text before and after clicking (for example 0, click Somar, 1, click Zerar, 0). For a visible editable native text/search/number input or textarea, use fill with value (0 to 256 printable characters), then click and assert the resulting text. Use synthetic test data only, never passwords, credentials or personal/payment data. Password/file/email and other input types, sensitive autocomplete fields, readonly/disabled fields and contenteditable are unsupported. For number fields use finite decimal or exponent strings with a dot separator, or empty to clear; do not use commas, NaN or Infinity. Min/max/step-invalid values are allowed for negative tests: boolean constraint flags report them without declaring the form valid. Fill emits input/change events but does not simulate keystrokes or submit forms. For a visible enabled native single-select, use select-option with value set to one exact option value (empty is allowed), then assert the dependent text. Do not add buttons merely because a test needs to select an option. Custom comboboxes and multiple selects are not supported. To verify delivery bytes use one final download step with path (a snapshot-relative PDF or ZIP), expectedBytes (1 to 4194304) and expectedSha256 (full SHA-256 of that file). The snapshot must already contain exactly those bytes. The download step performs the click itself. Do not precede it with an ordinary click on the download control; use any visibility/text assertions followed directly by download. This captures exactly one download privately inside the capsule; it does not download to the user computer or validate PDF quality or ZIP contents. Blob/data URLs, external URLs and additional downloads are unsupported. Ordinary click steps still cancel downloads; a blocked download is unverified, not a website failure. This runs the real page script in Chromium; test visible UI effects with fill, click and behavior assertions. Script, style and head metadata elements are normally not rendered; their visibility says nothing about whether page JavaScript executed. Do not replace the real page script with a reimplementation in Python or search for Node. A locator is {selector:"#actual-id"} or {role:"button",name:"Exact source name",exact:true}; exact:false is invalid. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. For downloads, the final download action supplies both the click and byte verification; omit a separate click. Read actual selectors and state changes from the source; do not guess them. Do not wait until finalization. Each locator must match exactly one element. Exact role/name locators match rendered elements; assert-hidden also matches hidden ones, so one role/name can be asserted hidden, clicked into view, then asserted visible. This tests CSS layout visibility, not pixel paint, occlusion or clipping. The result also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
-    parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','assert-text','click','select-option','fill','download']},path:{type:'string',maxLength:512,description:'Required only for a single final download step; exact existing snapshot-relative PDF or ZIP path.'},expectedBytes:{type:'integer',minimum:1,maximum:4194304,description:'Required only for download; byte length of the existing snapshot file.'},expectedSha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Required only for download; SHA-256 of the existing snapshot file, not the full snapshot hash.'},value:{type:'string',maxLength:256,description:'Required only for select-option or fill; exact option value or synthetic printable field text, including empty string.'},expectedText:{type:'string',minLength:1,maxLength:256,description:'Required only for assert-text; exact normalized visible text.'},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',minLength:1,maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',minLength:1,maxLength:120},exact:{const:true}}}]}}}}}},
+    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Each step accepts action and locator. assert-text also requires expectedText: the exact visible innerText after whitespace is collapsed and trimmed, 1 to 256 characters. This reads rendered text, not the value of an input field. For counters or status labels, use assert-text before and after clicking (for example 0, click Somar, 1, click Zerar, 0). For a visible editable native text/search/number input or textarea, use fill with value (0 to 256 printable characters), then click and assert the resulting text. Use synthetic test data only, never passwords, credentials or personal/payment data. Password/file/email and other input types, sensitive autocomplete fields, readonly/disabled fields and contenteditable are unsupported. For number fields use finite decimal or exponent strings with a dot separator, or empty to clear; do not use commas, NaN or Infinity. Min/max/step-invalid values are allowed for negative tests: boolean constraint flags report them without declaring the form valid. Fill emits input/change events without key events and does not submit forms. For keyboard controls such as a canvas game, use press with key: ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Space, Enter, Escape, Tab, one lowercase letter or one digit (no modifiers or text). Its locator is the rendered element that receives the keys, such as the game canvas, its container, the page body or a button; press focuses the preview page and that element, then sends real keydown/keyup events, which also reach window and document listeners. Optional holdMs (0 to 1000, default 100) keeps the key down, since many games read held keys once per animation frame. Press refuses text fields; use fill for those. Several presses may run in a row (for example Space to start, then ArrowRight), but follow the last one with assert-text, assert-visible/assert-hidden or assert-painted on the visible result; a key press alone proves no result. A start click needs its own assertion before the first press (for example click Start, assert-visible on the game screen or assert-painted on its canvas, then press): a click followed directly by a press does not count as behavior evidence. To check that a canvas game, chart or other drawing renders at all, use assert-painted (action and locator only) on the rendered element that draws, after the presses or start click that begin it (it can be that click\'s assertion): it captures that element\'s on-screen content box, inside the viewport and any rounded corners and including anything covering it, and passes when the box shows at least two colors within the observation window. One color fails as uniform_paint, for example a blank or black canvas. It reports only bounded color statistics and a fingerprint, never an image, and it is not image recognition: a background without its sprites still passes, so also assert visible state such as a score with assert-text. Two assert-painted steps of one element around a press show whether its paint changed. For a visible enabled native single-select, use select-option with value set to one exact option value (empty is allowed), then assert the dependent text. Do not add buttons merely because a test needs to select an option. Custom comboboxes and multiple selects are not supported. To verify delivery bytes use one final download step with path (a snapshot-relative PDF or ZIP), expectedBytes (1 to 4194304) and expectedSha256 (full SHA-256 of that file). The snapshot must already contain exactly those bytes. The download step performs the click itself. Do not precede it with an ordinary click on the download control; use any visibility/text assertions followed directly by download. This captures exactly one download privately inside the capsule; it does not download to the user computer or validate PDF quality or ZIP contents. Blob/data URLs, external URLs and additional downloads are unsupported. Ordinary click steps still cancel downloads; a blocked download is unverified, not a website failure. This runs the real page script in Chromium; test visible UI effects with fill, click, press and behavior assertions. Script, style and head metadata elements are normally not rendered; their visibility says nothing about whether page JavaScript executed. Do not replace the real page script with a reimplementation in another language. A locator is {selector:"#actual-id"} or {role:"button",name:"Exact source name",exact:true}; exact:false is invalid. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click or press, then an explicit postcondition assertion matching the requested behavior. For downloads, the final download action supplies both the click and byte verification; omit a separate click. Read actual selectors and state changes from the source; do not guess them. Do not wait until finalization. Each locator must match exactly one element. Exact role/name locators match rendered elements; assert-hidden also matches hidden ones, so one role/name can be asserted hidden, clicked into view, then asserted visible. Visibility assertions test CSS layout visibility, not pixel paint, occlusion or clipping. The result also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. When ODS declares the selected model able to read images, the result also carries one JPEG screenshot (about one megapixel at most, at most 3 per run) of the whole preview viewport, taken after the steps that ran: look at it before saying how the page looks. Otherwise the result says why it has none. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
+    parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','assert-text','click','select-option','fill','download','press','assert-painted']},key:{type:'string',enum:[...PRESS_KEYS],description:'Required only for press; one unmodified key.'},holdMs:{type:'integer',minimum:0,maximum:MAX_PRESS_HOLD_MS,description:'Optional for press; milliseconds the key stays down (default 100).'},path:{type:'string',maxLength:512,description:'Required only for a single final download step; exact existing snapshot-relative PDF or ZIP path.'},expectedBytes:{type:'integer',minimum:1,maximum:4194304,description:'Required only for download; byte length of the existing snapshot file.'},expectedSha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Required only for download; SHA-256 of the existing snapshot file, not the full snapshot hash.'},value:{type:'string',maxLength:256,description:'Required only for select-option or fill; exact option value or synthetic printable field text, including empty string.'},expectedText:{type:'string',minLength:1,maxLength:256,description:'Required only for assert-text; exact normalized visible text.'},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',minLength:1,maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',minLength:1,maxLength:120},exact:{const:true}}}]}}}}}},
     execute:async(toolCallId,params,signal)=>{
       let normalized;
       // Bad model arguments are not evidence that the installed broker is down.
@@ -377,9 +498,19 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
           details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
         }; }
       }
+      // Decided once per call, before the inspector runs.
+      const sight=screenshots && normalized ? screenshotDecision(screenshots,toolCallId,params) : undefined;
       try {
         signal?.throwIfAborted();
-        const result=validateWorkspacePreviewInspectionReceipt(await request(normalized,{signal}),normalized);
+        const {receipt,screenshot}=splitScreenshot(await request(sight?.directive?{...normalized,screenshot:sight.directive}:normalized,{signal}),sight?.directive);
+        const result=validateWorkspacePreviewInspectionReceipt(receipt,normalized);
+        // A full receipt answers a directive with exactly one screenshot
+        // member (captured or omitted); a failure receipt carries none.
+        if(sight?.directive && (screenshot===undefined)!==(result.errorCode!==undefined)) throw Error('invalid preview screenshot');
+        const shot=sight===undefined?undefined:screenshot!==undefined?validatePreviewScreenshot(screenshot,sight.directive)
+          :{status:'omitted',reason:sight.directive?'incomplete':sight.reason};
+        const sightText=shot?` ${previewScreenshotText(shot,normalized,result.steps?.length??0)}`:'';
+        const image=shot?.status==='captured'?[{type:'image',mimeType:shot.mimeType,data:shot.data}]:[];
         signal?.throwIfAborted();
         const pageErrors=inspectionPageErrors(result);
         let requirement;
@@ -390,7 +521,7 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
         const summary=pageErrors
           ? `Preview inspection ${result.status==='passed'?'steps passed, but':'failed, and'} ${pageErrorFeedback(pageErrors)}`
           : requirement ? transitionIncompleteFeedback(normalized, requirement)
-            : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}`;
+            : `Preview inspection ${result.status}. ${transitionCoverageFeedback(normalized, result)}${unchangedPaintNote(result)}${nearlyOneColorNote(result)}`;
         // The palette is stated once, as its fixed line; the evidence copy omits
         // it and the load-time control names (used only for locator feedback).
         const {renderedColors,controls,...rest}=result;
@@ -398,15 +529,18 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
         // An incomplete inspection's evidence copy never reads "passed" overall;
         // details.receipt keeps the capsule receipt unchanged.
         const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:requirement?{...rest,status:'incomplete'}:rest;
-        const text=`${summary} ${result.scope}${palette} Evidence: ${JSON.stringify(evidence)}`;
+        // The screenshot sentence follows the summary, so the text-only
+        // compaction summary of this result still reads whether one was seen.
+        const text=`${summary}${sightText} ${result.scope}${palette} Evidence: ${JSON.stringify(evidence)}`;
         // Incomplete is an error outcome: it is never a pass, and the capsule
         // receipt it carries cannot bind interaction evidence.
-        if (requirement) return {content:[{type:'text',text}],isError:true,details:{schemaVersion:1,kind:INSPECTION_KIND,
+        if (requirement) return {content:[{type:'text',text},...image],isError:true,details:{schemaVersion:1,kind:INSPECTION_KIND,
           status:'incomplete',errorCode:TRANSITION_UNTESTED,siteId:result.siteId,sha256:result.sha256,planSha256:result.planSha256,
           scope:INSPECTION_SCOPE,receipt:result}};
-        return {content:[{type:'text',text}],details:result,...(result.status==='failed'?{isError:true}:{})};
+        return {content:[{type:'text',text},...image],details:result,...(result.status==='failed'?{isError:true}:{})};
       } catch {
-        return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.' + (normalized && selectionPlan(normalized) ? ' Native selection requires a matching updated ODS inspector and capsule; keep the native select unchanged.' : '')}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
+        const unseen=sight?` ${previewScreenshotText({status:'omitted',reason:sight.directive?'incomplete':sight.reason},normalized,0)}`:'';
+        return {content:[{type:'text',text:'Preview inspection unavailable or invalid. Requested behavior remains unverified; retain the published artifact and do not claim these checks passed.' + (normalized && selectionPlan(normalized) ? ' Native selection requires a matching updated ODS inspector and capsule; keep the native select unchanged.' : '') + unseen}],details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:signal?.aborted?'cancelled':'unavailable',scope:INSPECTION_SCOPE},isError:true};
       }
     }};
 }

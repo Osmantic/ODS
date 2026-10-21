@@ -14,6 +14,8 @@ CURL_LOG="$TMP_DIR/curl.log"
 DOCKER_LOG="$TMP_DIR/docker.log"
 RESOLVER_LOG="$TMP_DIR/resolver.log"
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/installers/macos" "$MOCK_BIN"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+python3 "$ROOT_DIR/tests/fixtures/macos-private-store-cli.py" "$INSTALL_DIR"
 touch "$INSTALL_DIR/docker-compose.base.yml"
 touch "$INSTALL_DIR/docker-compose.cloud.yml"
 touch "$INSTALL_DIR/installers/macos/docker-compose.macos.yml"
@@ -179,7 +181,7 @@ pass "fallback compose resolution preserves the persisted ODS mode"
 rm -f "$INSTALL_DIR/scripts/resolve-compose-stack.sh" "$INSTALL_DIR/.compose-flags"
 : > "$DOCKER_LOG"
 run_cli status >/dev/null
-assert_log_contains "$DOCKER_LOG" '-f docker-compose.cloud.yml ps' \
+assert_log_contains "$DOCKER_LOG" '-f docker-compose.base.yml -f installers/macos/dashboard-private-state.compose.yaml -f docker-compose.cloud.yml ps' \
     "resolver-less cloud fallback selected the local macOS overlay"
 pass "resolver-less fallback remains in cloud mode"
 

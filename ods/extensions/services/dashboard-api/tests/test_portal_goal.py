@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import re
 import pytest
 from pixel_agent_teams import TeamManager, TeamStore, TeamConflict
 from portal_goal import public_plan, goal_prompt
@@ -122,3 +123,16 @@ def test_goal_prompt_preserves_maximum_objective_and_answers_within_transport_li
     prompt=goal_prompt(row,{'goal_plan':plan,'goal_answers':'a'*4000})
     assert len(prompt)<=16384 and row['goal'] in prompt and 'a'*4000 in prompt
     assert all(step['id'] in prompt for step in plan['steps'])
+
+
+def test_goal_prompt_leaves_the_reply_language_to_pixel():
+    # Pixel's response-language rule decides, from the owner's words after /goal.
+    row={'goal':'Crie um site simples sobre café e publique.','context':'Conversa anterior sobre o site.'}
+    owner_text=[row['goal'],row['context'],'Use azul.']
+    for agent in [{}, {'goal_plan':PLAN,'goal_answers':'Use azul.'}]:
+        prompt=goal_prompt(row,agent)
+        assert row['goal'] in prompt
+        fixed=prompt
+        for text in owner_text:
+            fixed=fixed.replace(text,'')
+        assert not re.search(r"language|English|Portuguese",fixed,re.I),fixed
