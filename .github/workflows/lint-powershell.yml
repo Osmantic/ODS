@@ -95,6 +95,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows STT trigger native timeout contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-stt-trigger.ps1
+
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
