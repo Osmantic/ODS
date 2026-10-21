@@ -4707,12 +4707,18 @@ function currentOwnerIntentText(messages, prompt = undefined) {
 // select delivery. This is guidance only, never publication authority.
 function ownerRequestsFileHandoff(lane) {
   const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
+  // The newly recognized generic handoff can also be withdrawn. A refusal
+  // naming a different file must not cancel a separate requested download.
+  const downloadRefusal = /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:give|provide|send|return|attach|deliver)\s+(?:(?:me|us)\s+(?:with\s+)?)?(?:(?:a|the)\s+)?download\s+of\s+(?:(?:the|this|that|my|our)\s+)?(?:project|(?:project|source)\s+files?|source\s+code|files?|documents?|archives?)(?:\s*,?\s*please)?\s*$/i;
+  if (clauses.some(clause => downloadRefusal.test(clause))) return false;
   // An unqualified later refusal overrides an earlier ordinary handoff. A
   // refusal naming old.zip still leaves a separate current.zip request intact.
   if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those|all(?:\s+the)?)\s+(?:(?:existing|requested|generated|completed|updated)\s+)?(?:(?:project|source)\s+)?(?:files?|documents?|archives?|attachments?)|them)(?:\s+at\s+all)?(?:\s*,?\s*please)?\s*$/i.test(clause))) return false;
   const filename = String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx|py|[cm]?[jt]sx?|css|sh|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|pl|dart)["'\x60]?`;
   const namedFiles = `${filename}(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)${filename})*`;
-  const object = new RegExp(`^(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
+  // A visual project may also require a downloadable copy. Match that
+  // explicit handoff without treating a page's download button as delivery.
+  const object = new RegExp(`^(?:(?:(?:a|the)\\s+)?download\\s+of\\s+)?(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
     `(?:(?:existing|requested|generated|completed|updated)\\s+)?(?:(?:project|source)\\s+)?(?:files?|documents?|archives?|spreadsheets?|workbooks?|(?:csv|tsv|json|pdf|markdown|txt|docx|xlsx|pptx|zip|rar)(?:\\s+(?:files?|documents?))?)|` +
     `(?:project(?:\\s+source(?:\\s+code)?)?|source\\s+code)|${namedFiles}|(?:file|document|archive)\\s+(?:named|called)\\s+${filename})` +
     `(?:\\s+with\\s+(?:(?:their|the)\\s+)?original\\s+filenames)?(?:\\s+to\\s+(?:me|us))?(?:\\s+(?:again|once\\s+more))?(?:\\s+(?:as\\s+(?:a\\s+download|an?\\s+attachment)|for\\s+download))?(?:\\s+please)?$`, 'i');
@@ -4722,7 +4728,7 @@ function ownerRequestsFileHandoff(lane) {
     const parts = clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:give|provide|send|return)\b)/i);
     // A coordinated request must itself begin as an owner work directive,
     // rather than "Ask Alice to ... and give me ..." or a quoted example.
-    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|give|provide|send|return)\b/i.test(parts[0])) return false;
+    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|show|display|preview|render|give|provide|send|return)\b/i.test(parts[0])) return false;
     return parts.some(part => {
       const request = part.trim().match(/^(?:(?:please|also|then)\s+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:I|we)\s+(?:want|need)\s+you\s+to\s+)?(?:give|provide|send|return)\s+(?:(?:me|us)\s+(?:with\s+)?)?(.+)$/i);
       return Boolean(request && object.test(request[1]));
