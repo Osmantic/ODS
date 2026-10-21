@@ -303,6 +303,56 @@ cancel_active_download() {
   ODS_ACTIVE_DOWNLOAD_PID=""
 }
 
+# Fit visible text without splitting UTF-8 characters or emitting terminal controls.
+# Non-ASCII characters count as two cells, deliberately conservative for combining
+# marks and accented text. The C-locale fallback replaces non-ASCII bytes with '?'.
+# Assign the result directly so each frame does not fork a shell for clipping.
+ods_hud_fit() {
+  local text="$1" limit="$2" char width used=0 fitted='' shortened='' index
+  local LC_COLLATE=C locale_name="${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}" unicode=false
+  ODS_HUD_FIT=''
+  [[ "$limit" =~ ^[0-9]{1,5}$ ]] || return 0
+  limit=$((10#$limit))
+  (( limit > 0 )) || return 0
+  case "$locale_name" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) unicode=true ;; esac
+  if [[ "$unicode" != true ]]; then
+    local LC_ALL=C
+  fi
+  for ((index=0; index<${#text}; index++)); do
+    char="${text:index:1}"
+    case "$char" in
+      [[:cntrl:]]) char='?'; width=1 ;;
+      [\ -~]) width=1 ;;
+      *)
+        if [[ "$unicode" == true ]]; then width=2; else char='?'; width=1; fi
+        ;;
+    esac
+    if (( used + width > limit )); then
+      ODS_HUD_FIT="${shortened}~"
+      return 0
+    fi
+    fitted+="$char"
+    used=$((used + width))
+    if (( used < limit )); then shortened="$fitted"; fi
+  done
+  ODS_HUD_FIT="$fitted"
+}
+
+# Read the output terminal, even if stdin is redirected. A redirected cinematic
+# test can supply COLUMNS; ordinary redirected installs use the plain branch.
+ods_hud_columns() {
+  local dimensions='' columns="${COLUMNS:-80}"
+  if [[ -t 1 ]]; then
+    { dimensions=$(stty size <&3 2>/dev/null) || dimensions=''; } 3<&1
+    [[ -z "$dimensions" ]] || columns="${dimensions#* }"
+  fi
+  if [[ "$columns" =~ ^[0-9]{1,5}$ ]] && (( 10#$columns > 0 )); then
+    ODS_HUD_COLUMNS=$((10#$columns))
+  else
+    ODS_HUD_COLUMNS=80
+  fi
+}
+
 # Spinner with mm:ss timer + lore messages every 8 seconds.
 # Optional args 3/4 turn the label into a live download counter: pass the .part
 # file the task is writing and the expected size in MB (0 when unknown). Without
@@ -317,6 +367,7 @@ spin_task() {
   local elapsed=0
   local lore_idx=0
   local has_lore=0
+  local ODS_HUD_FIT='' ODS_HUD_COLUMNS=80
 
   ods_select_lore_messages
   if ! ods_ui_cinematic; then
@@ -343,22 +394,60 @@ spin_task() {
     return "$plain_rc"
   fi
 
-  printf "  ${GRN}⠋${NC} [00:00] %s " "$msg"
-  while kill -0 "$pid" 2>/dev/null; do
+  local timer prefix available lore='' fit_label locale_name counter title_budget
+  locale_name="${LC_ALL:-${LC_CTYPE:-${LANG:-C}}}"
+  case "$locale_name" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;; *) spin='|/-\' ;; esac
+  while :; do
     local mm=$((elapsed / 60))
     local ss=$((elapsed % 60))
     local label="$msg"
+    counter=''
     if [[ -n "$progress_part" ]]; then
-      label="$msg — $(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
+      counter="$(format_download_progress "$(download_part_bytes "$progress_part")" "$progress_total_mb")"
     fi
-    printf "\r\033[K  ${GRN}%s${NC} [%02d:%02d] %s " "${spin:$i:1}" "$mm" "$ss" "$label"
+    ods_hud_columns
+    printf -v timer '[%02d:%02d]' "$mm" "$ss"
+    prefix="  ${spin:$i:1} $timer "
+    available=$((ODS_HUD_COLUMNS - 1 - ${#prefix}))
+    if (( available >= 0 )); then
+      if [[ -n "$counter" ]]; then
+        # Keep the live byte/percentage counter visible before spending the
+        # remaining cells on a potentially long model filename.
+        title_budget=$((available - ${#counter} - 4))
+        if (( title_budget > 0 )); then
+          ods_hud_fit "$msg" "$title_budget"
+          label="$ODS_HUD_FIT — $counter"
+        else
+          label="$counter"
+          if (( ${#counter} > available )) && [[ "$counter" =~ \(([0-9]+)%\)$ ]]; then
+            label="${BASH_REMATCH[1]}%"
+          fi
+        fi
+      fi
+      ods_hud_fit "$label" "$available"
+      fit_label="$ODS_HUD_FIT"
+      printf "\r\033[K  ${GRN}%s${NC} %s %s" "${spin:$i:1}" "$timer" "$fit_label"
+    else
+      ods_hud_fit "$timer" "$((ODS_HUD_COLUMNS - 1))"
+      printf '\r\033[K%s' "$ODS_HUD_FIT"
+    fi
+    if [[ -n "$lore" ]]; then
+      available=$((ODS_HUD_COLUMNS - 11))
+      if (( available >= 0 )); then
+        ods_hud_fit "$lore" "$available"
+        printf "\n\033[K  ${DGRN}  « %s »${NC}\033[A\r" "$ODS_HUD_FIT"
+        has_lore=1
+      elif (( has_lore )); then
+        printf '\n\033[K\033[A\r'
+      fi
+    fi
+    kill -0 "$pid" 2>/dev/null || break
     i=$(( (i + 1) % ${#spin} ))
     elapsed=$((elapsed + 1))
-    # Show lore every 8 seconds on second line without pushing newlines to scrollback
+    # Keep both physical rows within the terminal width, including on redraw.
     if (( elapsed > 0 && elapsed % 8 == 0 )); then
-      printf "\n\033[K  ${DGRN}  « %s »${NC}\033[A\r" "${LORE_MESSAGES[$lore_idx]}"
+      lore="${LORE_MESSAGES[$lore_idx]}"
       lore_idx=$(( (lore_idx + 1) % ${#LORE_MESSAGES[@]} ))
-      has_lore=1
     fi
     sleep 1
   done
