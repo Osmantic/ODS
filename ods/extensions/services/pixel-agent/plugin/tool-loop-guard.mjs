@@ -7007,7 +7007,11 @@ export function userMessagePythonCreationPath(messages, prompt = undefined) {
     {preserveFileTargets: true});
   const path = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const output = `(?:/workspace/|workspace/|\\./)?${path}(?=$|[\\s,;!?]|\\.(?:\\s|$))`;
-  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?(?:file\\s+)?';
+  // Keep the explicit method bound to the already validated single output,
+  // including ordinary descriptions such as "a downloadable CSV named ...".
+  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?' +
+    '(?:downloadable\\s+)?(?:(?:csv|(?:plain\\s+)?text)\\s+)?' +
+    '(?:file\\s+)?(?:(?:named|called)\\s+)?';
   const methodFirst = new RegExp('\\b(?:use|run|execute|invoke)\\s+python3?\\b' +
     '(?:\\s+(?:in|inside)\\s+(?:the\\s+)?workspace)?\\s+to\\s+' + create + output, 'i');
   const outputFirst = new RegExp(create + output +

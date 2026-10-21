@@ -338,3 +338,40 @@ test('Python host reports keep the requested method instead of the fixed report 
   assert.match(pending.retry.instruction??pending.retry.prompt??JSON.stringify(pending),/requested method/);
   assert.doesNotMatch(JSON.stringify(pending),/narrow adapter writes/);
 });
+
+test('explicit Python creation accepts named output descriptions without losing the method',()=>{
+  const target='fleet-main-f151-squares.csv';
+  for(const p of [
+    `Use Python to create a downloadable CSV named ${target} with columns n,square for the integers 1 through 4. Give me the finished file.`,
+    `Use Python to create a downloadable CSV called ${target}.`,
+    `Use Python to create a CSV file named ${target}.`,
+    `Use Python to create a text file called ${target}.`,
+    `Use Python to create a downloadable file named ${target}.`,
+    `Use Python to create a plain text file named "${target}".`,
+    `Create a CSV file named ${target} using Python.`,
+    `Create a downloadable CSV named ${target} by executing Python.`])
+    assert.equal(api.userMessagePythonCreationPath([],p),target,p);
+  for(const p of [
+    `Do not use Python to create a CSV file named ${target}.`,
+    `Explain how to use Python to create a CSV file named ${target}.`,
+    `Use Python to create a CSV file named ${target} and other.csv.`,
+    `Use Python to create a CSV file named ../${target}.`,
+    `Use Python to create a CSV file named /workspace/../${target}.`,
+    `Write a note containing "Use Python to create a downloadable CSV named ${target}".`,
+    `Inspect the workspace.\n> Use Python to create a downloadable CSV named ${target}.`,
+    'Inspect the workspace.\n```text\nUse Python to create a downloadable CSV named '+target+'.\n```',
+    `Write a Python script named generator.py that creates ${target}.`])
+    assert.equal(api.userMessagePythonCreationPath([],p),undefined,p);
+});
+
+for(const wrapped of [false,true])for(const tool of ['write','edit'])
+test(`named CSV creation rejects a direct-byte shortcut: ${tool}, wrapped=${wrapped}`,()=>{
+  const target='fleet-main-f151-squares.csv';
+  const f=fixture(`Use Python to create a downloadable CSV named ${target} with columns n,square for the integers 1 through 4. Give me the finished file.`);
+  const args={path:`/workspace/${target}`,content:csv,oldText:'x',newText:'y'};
+  const toolName=wrapped?'tool_call':tool;
+  const event={toolName,params:wrapped?{id:tool,args}:args,runId:ctx.runId,toolCallId:'named-csv-shortcut'};
+  const action=f.guard.beforeToolCall(event,{...ctx,toolName,toolCallId:event.toolCallId},'pixel');
+  assert.equal(action?.block,true);
+  assert.match(action.blockReason,/executing Python/);
+});
