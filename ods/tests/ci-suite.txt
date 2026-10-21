@@ -295,3 +295,4 @@ tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
+tests/test-bounded-extension-logs-contract.py
