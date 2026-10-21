@@ -1262,4 +1262,58 @@ describe('useModels', () => {
     expect(confirm).not.toHaveBeenCalled()
     expect(fetch.mock.calls.some(call => call[1]?.method === 'DELETE')).toBe(true)
   })
+  test.each([
+    ['model_delete_cleanup_pending', true, true],
+    ['model_delete_status_update_failed', true, true],
+    ['model_delete_status_update_failed', false, false],
+    ['model_delete_status_update_failed', 'true', false],
+    ['model_delete_recovery_required', false, false],
+    ['model_delete_recovery_required', true, false],
+    ['model_delete_cleanup_pending', false, false],
+    ['model_delete_cleanup_pending', 'true', false],
+    ['unrelated_failure', true, false],
+  ])('deletion %s with committed=%s refreshes only proven retirement', async (code, committed, refresh) => {
+    let retired = false
+    const message = 'Cleanup is incomplete in model store directory .ods-model-delete-receipt'
+    fetch.mockImplementation(async (_url, options = {}) => {
+      if (options.method === 'DELETE') {
+        retired = true
+        return { ok: false, status: 502, json: async () => ({ detail: {
+          error: message, code, deletionCommitted: committed,
+          recoveryDirectory: '.ods-model-delete-receipt',
+        } }) }
+      }
+      return modelsResponse([{ id: 'inactive', status: retired ? 'available' : 'downloaded' }])
+    })
+    const view = renderHook(() => useModels())
+    await waitFor(() => expect(view.result.current.loading).toBe(false))
+    setDocumentHidden(true) // Isolate immediate reconciliation from background polling.
+    expect(view.result.current.models[0].status).toBe('downloaded')
+    await act(async () => { await view.result.current.deleteModel('inactive') })
+    expect(view.result.current.error).toBe(message)
+    expect(view.result.current.models[0].status).toBe(refresh ? 'available' : 'downloaded')
+    expect(fetch.mock.calls.filter(([, options]) => options?.method !== 'DELETE')).toHaveLength(refresh ? 2 : 1)
+    expect(view.result.current.actionLoadingModels).toEqual([])
+    view.unmount()
+  })
+
+  test('successful deletion reconciles exactly once', async () => {
+    let retired = false
+    fetch.mockImplementation(async (_url, options = {}) => {
+      if (options.method === 'DELETE') {
+        retired = true
+        return { ok: true, json: async () => ({ status: 'deleted' }) }
+      }
+      return modelsResponse([{ id: 'inactive', status: retired ? 'available' : 'downloaded' }])
+    })
+    const view = renderHook(() => useModels())
+    await waitFor(() => expect(view.result.current.loading).toBe(false))
+    setDocumentHidden(true)
+    await act(async () => { await view.result.current.deleteModel('inactive') })
+    expect(view.result.current.models[0].status).toBe('available')
+    expect(view.result.current.error).toBeNull()
+    expect(fetch.mock.calls.filter(([, options]) => options?.method !== 'DELETE')).toHaveLength(2)
+    view.unmount()
+  })
+
 })

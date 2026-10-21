@@ -49,6 +49,14 @@ echo "tei-cache" > "$SRC/data/embeddings/embeddings.bin"
 mkdir -p "$SRC/data/whisper/hub/blobs" "$SRC/data/whisper/hub/snapshots/revision"
 echo "linked-model-cache" > "$SRC/data/whisper/hub/blobs/model"
 ln -s ../../blobs/model "$SRC/data/whisper/hub/snapshots/revision/model.bin"
+# State dashboard-api writes straight into its ./data:/data mount, plus the
+# data directory of a Library-installed extension.
+mkdir -p "$SRC/data/user-extensions/foo" "$SRC/data/pixel-images" "$SRC/data/foo"
+echo "id: foo" > "$SRC/data/user-extensions/foo/manifest.yaml"
+echo "foo-state" > "$SRC/data/foo/state.txt"
+echo "png-bytes" > "$SRC/data/pixel-images/x.png"
+echo '{"hash":"x"}' > "$SRC/data/dashboard-password.json"
+chmod 600 "$SRC/data/dashboard-password.json"
 
 # Both scripts source lib/rsync.sh relative to ODS_DIR
 mkdir -p "$SRC/lib"
@@ -141,6 +149,11 @@ info "Validating restored contents"
     || fail "Missing whisper cache after restore"
 [[ -f "$DST/data/embeddings/embeddings.bin" ]] || fail "Missing embeddings cache after restore"
 
+[[ -f "$DST/data/user-extensions/foo/manifest.yaml" ]]     || fail "Missing Library-installed extension after restore"
+[[ -f "$DST/data/foo/state.txt" ]]     || fail "Missing Library-installed extension data after restore"
+[[ -f "$DST/data/pixel-images/x.png" ]] || fail "Missing pixel image after restore"
+[[ -f "$DST/data/dashboard-password.json" ]]     || fail "Missing dashboard-password.json after restore"
+[[ "$(stat -c %a "$DST/data/dashboard-password.json" 2>/dev/null     || stat -f %Lp "$DST/data/dashboard-password.json")" == "600" ]]     || fail "dashboard-password.json lost its 0600 mode across backup and restore"
 pass "All expected files/dirs present after restore"
 
 # Validate content integrity

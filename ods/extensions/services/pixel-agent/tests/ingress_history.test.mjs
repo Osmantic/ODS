@@ -8,6 +8,7 @@ import {createHash} from 'node:crypto';
 import {createIngressServer,computeSessionUser} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {createChatImageStore} from '../host/chat_image_store.mjs';
+import {currentImageNote} from '../host/chat_image_transport.mjs';
 const u=content=>({role:'user',content}),a=content=>({role:'assistant',content});
 const rawUser='history-canary', user=computeSessionUser({user:rawUser});
 const runId='chatcmpl_11111111-2222-4333-8444-555555555555';
@@ -72,6 +73,8 @@ test('image turn reaches gateway as bytes, caches privately and replays without 
   assert.deepEqual(f.calls[binding].body,{user});
   const delivered=f.calls.find(call=>call.path==='/v1/chat/completions').body.messages.at(-1);
   assert.deepEqual(delivered.content[0],body.messages[0].content[0]);
+  // The pixels are in this message: no cue to fetch them with a tool.
+  assert.deepEqual(delivered.content.at(-1),{type:'text',text:currentImageNote([ref])});
   assert.equal('images' in delivered,false);
   assert.deepEqual(f.imageStore.read(user,ref,[ref]).data,data);
   assert.deepEqual(f.ledger.read(user).messages,[archived]);

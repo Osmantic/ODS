@@ -550,10 +550,12 @@ elif [[ "${ENABLE_VOICE:-false}" != "true" ]]; then
     TTS_HTTP="disabled"
 fi
 
-# DGX Spark / GB10 CUDA arch check. Generic llama.cpp CUDA images can run on
-# GB10 while missing sm_121 support, which has been observed to produce
-# syntactically valid but unusable model output. Surface that mismatch in
-# doctor so operators do not have to infer it from llama-server logs.
+# Compute capability 12.1 CUDA arch check: DGX Spark (GB10) and RTX Spark
+# (N1X). llama.cpp's CUDA 12 images (server-cuda-*) load on these GPUs without
+# sm_121 kernels and answer with unusable output ("????"); the installer picks
+# the CUDA 13 image config/backends/nvidia.json pins for them. Surface a
+# mismatch in doctor so operators do not have to infer it from llama-server
+# logs. The DGX_SPARK_* names and report keys are kept for older readers.
 DGX_SPARK_GPU="false"
 DGX_SPARK_GPU_NAME=""
 DGX_SPARK_COMPUTE_CAP=""
@@ -573,17 +575,17 @@ if [[ "$_doctor_gpu_backend" == "nvidia" ]] && command -v nvidia-smi >/dev/null 
                 LLAMA_CUDA_ARCHS="$(echo "$_llama_arch_line" | sed -n 's/.*CUDA : ARCHS = \([^|]*\).*/\1/p' | xargs)"
                 if [[ -z "$LLAMA_CUDA_ARCHS" ]]; then
                     DGX_SPARK_CUDA_ARCH_STATUS="unknown"
-                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark detected, but llama-server CUDA archs were not found in logs."
+                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but llama-server CUDA archs were not found in logs."
                 elif [[ ",${LLAMA_CUDA_ARCHS}," == *",1210,"* || ",${LLAMA_CUDA_ARCHS}," == *",121,"* || ",${LLAMA_CUDA_ARCHS}," == *",121a,"* ]]; then
                     DGX_SPARK_CUDA_ARCH_STATUS="pass"
-                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark llama-server binary includes sm_121 support."
+                    DGX_SPARK_CUDA_ARCH_MESSAGE="llama-server includes sm_121 kernels for this DGX Spark / RTX Spark GPU."
                 else
                     DGX_SPARK_CUDA_ARCH_STATUS="warn"
-                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark detected, but llama-server reports CUDA archs '${LLAMA_CUDA_ARCHS}' without sm_121."
+                    DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but llama-server reports CUDA archs '${LLAMA_CUDA_ARCHS}' without sm_121."
                 fi
             else
                 DGX_SPARK_CUDA_ARCH_STATUS="unknown"
-                DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark detected, but ods-llama-server is not available for CUDA arch inspection."
+                DGX_SPARK_CUDA_ARCH_MESSAGE="DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but ods-llama-server is not available for CUDA arch inspection."
             fi
         fi
     fi
@@ -1815,8 +1817,10 @@ if hermes_slash_worker_count_num > hermes_slash_worker_max_count_num:
 
 if dgx_spark_arch_status == "warn":
     fix_hints.append(
-        "DGX Spark / GB10 detected, but llama-server was not built with sm_121 support. "
-        "Build llama.cpp with -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121 or use a GB10-specific llama-server image."
+        "This GPU (DGX Spark GB10 or RTX Spark N1X, compute capability 12.1) runs a llama-server without "
+        "sm_121 kernels, so its answers can come back as '????'. Rerun the ODS installer: it selects the "
+        "CUDA 13 llama.cpp image (server-cuda13) pinned for this GPU. If you set LLAMA_SERVER_IMAGE yourself, "
+        "use that image or a llama.cpp build made with -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=121."
     )
 
 for warning in amd_runtime.get("warnings", []):
@@ -1889,9 +1893,9 @@ if ext_total > 0:
 
 dgx_check = data.get("runtime", {}).get("dgx_spark_cuda_arch_check", {})
 if dgx_check.get("status") == "warn":
-    print(f"  DGX Spark:     warning - {dgx_check.get('message')}")
+    print(f"  Spark GPU:     warning - {dgx_check.get('message')}")
 elif dgx_check.get("status") == "pass":
-    print("  DGX Spark:     llama-server includes sm_121 support")
+    print("  Spark GPU:     llama-server includes sm_121 kernels")
 
 amd_runtime = data.get("runtime", {}).get("amd_runtime", {})
 if amd_runtime.get("available"):

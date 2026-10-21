@@ -133,7 +133,7 @@ done
 $loaded || exit 1
 launchctl kickstart "$domain/$label"
 for attempt in {1..20}; do
-    pid="$(launchctl print "$domain/$label" | awk '/^\tpid = [0-9]+$/ {print $3; exit}')"
+    pid="$(launchctl print "$domain/$label" 2>/dev/null | awk '/^\tpid = [0-9]+$/ {print $3; exit}' || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
         printf '%s\n' "$pid" > "$pid_file"
         exit 0

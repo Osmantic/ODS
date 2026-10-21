@@ -109,3 +109,54 @@ def test_independent_connections_cannot_reupload_retain_or_reopen_a_tombstoned_s
     assert second.begin_delete(owner, "chat") == {"completed": True}
     first.close()
     second.close()
+
+
+@pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("retained", [False, True])
+def test_deleted_chat_admission_has_typed_refusal_before_reservation_or_native_work(client, monkeypatch, completed, retained):
+    native_context, native_delete = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(pixel, "_chat_context_request", native_context)
+    monkeypatch.setattr(pixel, "_delete_native_conversation_images", native_delete)
+    owner = owner_namespace("owner")
+    pixel_images._storage_call("begin_delete", owner, "deleted-chat")
+    if completed:
+        pixel_images._storage_call("delete_conversation", owner, "deleted-chat")
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Deleted conversation must not reserve or start work")
+
+    monkeypatch.setattr(pixel, "_chat_results", forbidden)
+    monkeypatch.setattr(pixel, "_pixel_config", forbidden)
+    monkeypatch.setattr(pixel, "_prepare_chat_messages", forbidden)
+    body = {"chat_id": "deleted-chat", "messages": [{"role": "user", "content": "Hi"}]}
+    if retained:
+        body["request_id"] = "new-attempt"
+    result = client.post("/api/pixel/chat/stream", json=body)
+    assert result.status_code == 410
+    assert result.json() == {"detail": {
+        "code": "conversation_deleted",
+        "message": "This conversation is being deleted or was deleted. Start a new conversation.",
+    }}
+    assert pixel_images._storage_call("deletion", owner, "deleted-chat") == {"completed": completed}
+    native_context.assert_not_awaited()
+    native_delete.assert_not_awaited()
+
+
+def test_deletion_after_reservation_rejects_before_producer_and_preserves_tombstone(client, monkeypatch):
+    owner = owner_namespace("owner")
+    async def prepare(body, _owner):
+        pixel_images._storage_call("begin_delete", owner, body.chat_id)
+        return [{"role": "user", "content": "Hi"}]
+
+    monkeypatch.setattr(pixel, "_pixel_config", lambda: ("http://unused", "synthetic-key"))
+    monkeypatch.setattr(pixel, "_model_readiness_issue", AsyncMock(return_value=None))
+    monkeypatch.setattr(pixel, "_prepare_chat_messages", prepare)
+    producer = AsyncMock(side_effect=AssertionError("Must not create a producer"))
+    monkeypatch.setattr(pixel, "_produce_retained_result", producer)
+    result = client.post("/api/pixel/chat/stream", json={"chat_id": "race-chat", "request_id": "race-attempt",
+        "messages": [{"role": "user", "content": "Hi"}]})
+    assert result.status_code == 410
+    assert result.json()["detail"]["code"] == "conversation_deleted"
+    assert client.portal.call(lambda: pixel._chat_results().get((owner, "race-chat", "race-attempt"))["state"]) == "rejected"
+    assert pixel_images._storage_call("deletion", owner, "race-chat") == {"completed": False}
+    producer.assert_not_called()

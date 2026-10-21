@@ -85,9 +85,9 @@ require_before "$LINUX_CLI" cmd_update 'if _ods_cli_network_access_enabled; then
     "Linux update must check network access before recreating Open WebUI"
 require_before "$LINUX_CLI" cmd_update '^ +_ods_cli_require_proxy_auth$' 'up -d --force-recreate' \
     "Linux update must enforce sign-in before recreating Open WebUI"
-require_before "$MACOS_CLI" cmd_update 'if network_access_is_enabled; then' 'up -d --force-recreate' \
+require_before "$MACOS_CLI" cmd_update 'if network_access_is_enabled; then' '^ +dashboard_compose_up "\$flags" update \|\| return 1$' \
     "macOS update must check network access before recreating Open WebUI"
-require_before "$MACOS_CLI" cmd_update '^ +require_proxy_auth \|\| return 1$' 'up -d --force-recreate' \
+require_before "$MACOS_CLI" cmd_update '^ +require_proxy_auth \|\| return 1$' '^ +dashboard_compose_up "\$flags" update \|\| return 1$' \
     "macOS update must enforce sign-in before recreating Open WebUI"
 require 'Set-ODSProxyAuthRequired' "$WINDOWS_CLI" \
     "Windows extension management must enforce proxy authentication"

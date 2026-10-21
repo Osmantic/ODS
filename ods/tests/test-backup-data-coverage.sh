@@ -48,6 +48,38 @@ done < <(mounted_data_dirs)
     || fail "service data neither backed up nor explicitly excluded: ${uncovered% }"
 pass "every bundled service data directory is a deliberate backup decision"
 
+# dashboard-api mounts the whole ./data tree (./data:/data) and writes state
+# straight into it, so the bind-mount scan above cannot see those paths.
+# Find every top-level name it joins onto its data root (DATA_DIR / "x",
+# data_dir / "x", "/data")) / "x", "/data/x") in non-test code. Dot-prefixed
+# lock files are runtime coordination, never state.
+DASHBOARD_API_DIR="$ROOT_DIR/extensions/services/dashboard-api"
+[[ -d "$DASHBOARD_API_DIR" ]] || fail "dashboard-api source not found at $DASHBOARD_API_DIR"
+dashboard_api_data_paths() {
+    find "$DASHBOARD_API_DIR" -name '*.py' -not -path '*/tests/*' -print0 \
+        | xargs -0 grep -hoE \
+            -e '(DATA_DIR|data_dir|"/data")\)*[[:space:]]*/[[:space:]]*["'"'"'][A-Za-z0-9._-]+' \
+            -e '"/data/[A-Za-z0-9._-]+' \
+        | sed -E 's|.*["'"'"'/]||' \
+        | grep -v '^\.' \
+        | sed 's|^|data/|' \
+        | sort -u
+}
+
+api_paths="$(dashboard_api_data_paths)"
+[[ "$api_paths" == *"data/dashboard-password.json"* ]] \
+    || fail "dashboard-api data path scan found nothing; the scan pattern is stale"
+uncovered=""
+while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    if [[ "$covered" != *" $path "* ]]; then
+        uncovered+="$path "
+    fi
+done <<< "$api_paths"
+[[ -z "$uncovered" ]] \
+    || fail "dashboard-api data neither backed up nor explicitly excluded: ${uncovered% }"
+pass "every dashboard-api data path is a deliberate backup decision"
+
 # The two lists must stay disjoint, or a directory is both captured and
 # documented as skipped.
 for excluded in "${ODS_BACKUP_EXCLUDED_DATA_PATHS[@]}"; do
@@ -72,8 +104,8 @@ pass "the full-backup cache tier only holds deliberately excluded directories"
 for script in ods-backup.sh ods-restore.sh; do
     grep -q 'lib/backup-paths.sh' "$ROOT_DIR/$script" \
         || fail "$script does not source lib/backup-paths.sh"
-    grep -q 'ODS_USER_DATA_PATHS\[@\]' "$ROOT_DIR/$script" \
-        || fail "$script does not use ODS_USER_DATA_PATHS"
+    grep -q 'ods_backup_data_paths' "$ROOT_DIR/$script" \
+        || fail "$script does not use ods_backup_data_paths"
     grep -q 'ODS_BACKUP_CACHE_PATHS\[@\]' "$ROOT_DIR/$script" \
         || fail "$script does not use ODS_BACKUP_CACHE_PATHS"
     if grep -qE '(local|local -a)[^=]*=\(\s*"data/open-webui"' "$ROOT_DIR/$script"; then

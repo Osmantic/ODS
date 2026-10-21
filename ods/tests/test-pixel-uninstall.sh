@@ -1565,6 +1565,45 @@ else
     fail "legacy owner-primary-group writable Pixel broker source could not be safely removed"
 fi
 
+# A first install refreshes a just-granted docker group with sg, which makes
+# that group primary for the checkout. A later login has its own primary group.
+foreign_gid=""
+for candidate_gid in $(id -G); do
+    if [[ "$candidate_gid" != "$(id -g)" ]]; then
+        foreign_gid="$candidate_gid"
+        break
+    fi
+done
+if [[ -z "$foreign_gid" ]]; then
+    printf '[SKIP] %s\n' "no supplementary group for the non-primary-group broker source cases"
+else
+    broker_source="$INSTALL_DIR/data/pixel/source-d2a2b6be552126f294fb30ee5fb46872acf82c89/deploy/ops-broker/broker.py"
+    write_ops_fixture
+    chgrp "$foreign_gid" "$broker_source"
+    chmod 0644 "$broker_source"
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        [[ ! -e "$OPS_INSTALL" && ! -e "$OPS_STATE" \
+            && ! -e "$HOME_DIR/.config/ods/pixel-managed.json" ]] \
+            && pass "read-only Pixel broker source from an sg-refreshed group is removed after exact root-byte verification" \
+            || fail "read-only non-primary-group Pixel broker cleanup was incomplete"
+    else
+        fail "read-only Pixel broker source owned by a non-primary group blocked uninstall"
+    fi
+
+    write_ops_fixture
+    chgrp "$foreign_gid" "$broker_source"
+    chmod 0664 "$broker_source"
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "group-writable Pixel broker source owned by a shared group was accepted"
+    else
+        [[ -L "$HOME_DIR/.local/share/pixel/current" \
+            && -e "$SYSTEMD_DIR/pixel-ops-broker.service" \
+            && -e "$OPS_STATE" && ! -s "$SYSTEMCTL_LOG" && ! -s "$DOCKER_LOG" ]] \
+            && pass "group-writable Pixel broker source owned by a shared group fails before mutation" \
+            || fail "group-writable shared-group Pixel broker source caused partial cleanup"
+    fi
+fi
+
 for profile_mode in 0600 0640 0644; do
     write_ops_fixture
     for profile in .bash_logout .bashrc .profile; do

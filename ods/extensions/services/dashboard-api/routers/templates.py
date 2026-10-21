@@ -13,7 +13,7 @@ from security import verify_api_key
 logger = logging.getLogger(__name__)
 
 # Services defined in docker-compose.base.yml — always running, no compose toggle
-_BASE_COMPOSE_SERVICES = frozenset({"llama-server", "open-webui", "dashboard", "dashboard-api"})
+_BASE_COMPOSE_SERVICES = frozenset({"llama-server", "dashboard", "dashboard-api"})
 
 router = APIRouter(tags=["templates"])
 
@@ -89,7 +89,7 @@ async def preview_template(template_id: str, api_key: str = Depends(verify_api_k
         raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
     from helpers import get_cached_services, get_all_services
-    from routers.extensions import _compute_extension_status
+    from routers.extensions import _compute_extension_status, _webui_selection
 
     service_list = get_cached_services()
     if service_list is None:
@@ -106,6 +106,20 @@ async def preview_template(template_id: str, api_key: str = Depends(verify_api_k
 
     for svc_id in template.get("services", []):
         svc_status = services_by_id.get(svc_id)
+
+        if svc_id == "open-webui":
+            selection = await asyncio.to_thread(_webui_selection)
+            if not selection["supported"]:
+                incompatible.append(svc_id)
+                warnings.append("Open WebUI cannot be added from templates on this platform")
+            elif not selection["enabled"]:
+                to_enable.append(svc_id)
+            elif svc_status and svc_status.status == "healthy":
+                already_enabled.append(svc_id)
+            else:
+                has_errors.append(svc_id)
+                warnings.append("Open WebUI is selected but not healthy; inspect its service state")
+            continue
 
         # Core services are always running — treat as already enabled
         if svc_id in _BASE_COMPOSE_SERVICES:
@@ -170,7 +184,29 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         service_list = await get_all_services()
     # One worker owns the complete physical transaction. HTTP cancellation
     # cannot close its file locks while a host call is still running.
-    return await asyncio.to_thread(_apply_template_guarded, template, service_list)
+    result = await asyncio.to_thread(_apply_template_guarded, template, service_list)
+    if ("open-webui" in template.get("services", [])
+            and result["results"].get("open-webui") in {"enabled", "already_enabled"}):
+        from helpers import refresh_cached_service_status
+
+        refreshed = False
+        try:
+            await refresh_cached_service_status("open-webui")
+            refreshed = True
+        except Exception:  # noqa: BLE001 - the host action already succeeded
+            logger.warning("Could not refresh Open WebUI health after template apply", exc_info=True)
+        # The existing host no-op proves selection and a running container;
+        # unlike a new add, it does not wait for healthy application state.
+        # Do not report an unhealthy selected WebUI as an available template.
+        if result["results"]["open-webui"] == "already_enabled" and (
+            not refreshed or not any(service.id == "open-webui" and service.status == "healthy"
+                                     for service in get_cached_services() or [])
+        ):
+            message = "Open WebUI is selected but health could not be confirmed; inspect its service state"
+            result["results"]["open-webui"] = f"skipped: {message}"
+            result["skipped_services"].append("open-webui")
+            result["warnings"].append(f"open-webui: {message}")
+    return result
 
 
 def _template_operation_ids(template, read_direct_deps, validate_service_id):
@@ -249,6 +285,7 @@ def _apply_template_services(template, service_list):
         _call_agent_invalidate_compose_cache,
         _has_error_progress, _sync_extension_config, _write_error_progress,
         _compute_extension_status, _select_extensions_on_host,
+        _enable_webui_selection,
     )
 
     # This entire lifecycle runs in the guarded worker. Keep global filesystem
@@ -305,6 +342,21 @@ def _apply_template_services(template, service_list):
     warnings: list[str] = []
 
     for svc_id in template.get("services", []):
+        if svc_id == "open-webui":
+            # WebUI belongs to the base stack, but lean installs deselect it.
+            # Only its dedicated host action owns the .env choice, auth rules,
+            # start and rollback. Never use a fragment toggle or generic start.
+            try:
+                selection = _enable_webui_selection()
+            except HTTPException as exc:
+                results[svc_id] = f"skipped: {exc.detail}"
+                warnings.append(f"{svc_id}: {exc.detail}")
+                continue
+            results[svc_id] = "enabled" if selection["action"] == "enabled" else "already_enabled"
+            if selection["action"] == "enabled":
+                enabled_services.append(svc_id)
+            continue
+
         # Skip services already healthy
         svc_status = services_by_id.get(svc_id)
         if svc_status and svc_status.status == "healthy":
@@ -443,6 +495,8 @@ def _apply_template_services(template, service_list):
     # but stopped until a manual full-stack restart.
     failed_services: list[str] = []
     for svc_id in enabled_services:
+        if svc_id == "open-webui":
+            continue  # The host-owned selection already started and verified it.
         direct_deps = _read_direct_deps(svc_id)
         blocked_deps = [dep for dep in direct_deps if dep in failed_services]
         if blocked_deps:

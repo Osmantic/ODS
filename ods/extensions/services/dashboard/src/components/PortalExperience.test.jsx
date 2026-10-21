@@ -52,4 +52,9 @@ it('a stopped goal remains resumable and keeps the original objective',()=>{
   expect(goalCommand('/goal Build the page').task).toBe('Build the page')
   expect(goalCommand('/goals Build')).toBeNull()
   expect(continueGoal([{role:'user',content:'/goal Build the page'},{role:'assistant',task:{goal}}],1,'Blue')).toContain('Original objective: Build the page')
+  expect(continueGoal([{role:'user',content:'/goal Build the page'},{role:'assistant',task:{goal}}],1,'Blue')).toContain('\nOwner input: Blue\n')
+  // Resume sends no owner input: Portal's own text is labelled as Portal's.
+  const resumed=continueGoal([{role:'user',content:'/goal Build the page'},{role:'assistant',task:{goal}}],1)
+  expect(resumed).toContain('\nPortal note: Continue from the saved work.\n')
+  expect(resumed).not.toContain('Owner input')
 })

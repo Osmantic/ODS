@@ -27,7 +27,8 @@ function Get-WindowsODSEnvMap {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
 
     try {
-        Get-Content -LiteralPath $Path -ErrorAction Stop | ForEach-Object {
+        # Windows PowerShell 5.1 decodes BOM-less files as ANSI without -Encoding.
+        Get-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop | ForEach-Object {
             $line = $_.Trim()
             if ($line -match "^#" -or $line -eq "") { return }
             if ($line -match "^([A-Za-z_][A-Za-z0-9_]*)=(.*)$") {
