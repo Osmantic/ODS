@@ -6997,17 +6997,28 @@ function workspaceReadFingerprint(event) {
 // Preserve an explicit execution method when choosing how to create a named
 // output. This is routing guidance, not evidence that a program created bytes.
 export function userMessagePythonCreationPath(messages, prompt = undefined) {
+  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
+    {preserveFileTargets: true});
   // A named output plus an explicit Python method is sufficient even when the
   // owner does not spell out "workspace". This binds only one bare filename;
   // it does not grant directory access or establish execution provenance.
   const expected = userMessageWorkspaceContinuationPath(messages, prompt) ??
-    userMessageBareWorkspaceFilename(messages, prompt);
+    userMessageBareWorkspaceFilename(messages, prompt) ??
+    // Research sentences may contain dotted API names or documentation URLs.
+    // For method routing only, apply the same conservative filename selector
+    // to all creation clauses together. Keeping every creation clause means
+    // competing outputs, directory paths and traversal still fail closed.
+    userMessageBareWorkspaceFilename([], text.split(/[!?;\n]+|\.(?=\s|$)/)
+      .filter(clause => /\b(?:create|generate|write|save|produce|emit)\s+/i.test(clause))
+      .join('. '));
   if (!expected) return undefined;
-  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
-    {preserveFileTargets: true});
   const path = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const output = `(?:/workspace/|workspace/|\\./)?${path}(?=$|[\\s,;!?]|\\.(?:\\s|$))`;
-  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?(?:file\\s+)?';
+  // Keep the explicit method bound to the already validated single output,
+  // including ordinary descriptions such as "a downloadable CSV named ...".
+  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?' +
+    '(?:downloadable\\s+)?(?:(?:csv|(?:plain\\s+)?text)\\s+)?' +
+    '(?:file\\s+)?(?:(?:named|called)\\s+)?';
   const methodFirst = new RegExp('\\b(?:use|run|execute|invoke)\\s+python3?\\b' +
     '(?:\\s+(?:in|inside)\\s+(?:the\\s+)?workspace)?\\s+to\\s+' + create + output, 'i');
   const outputFirst = new RegExp(create + output +
@@ -9154,14 +9165,30 @@ export function createToolLoopGuard({
         : effectiveToolName === EVIDENCE_READBACK_TOOL
           ? "read"
           : effectiveToolName;
+    if (state?.ownerIntentObserved && state.workspaceMutationRequested &&
+        ['write', 'edit', 'apply_patch', 'exec'].includes(workspaceOperation) &&
+        !state.privateNetworkRequestDenied && !state.privateNetworkExhausted &&
+        !state.workspacePreviewRestrictions?.web &&
+        (typeof hostCitationVerifier?.allowed !== 'function' || hostCitationVerifier.allowed())) {
+      const reminder = state.completionAssurance.beforeWorkspaceMutation();
+      if (reminder) return reminder;
+    }
     if (state?.workspacePythonCreationPath &&
         (workspaceOperation === 'write' || workspaceOperation === 'edit')) {
       const args = toolName === 'tool_call' ? wrappedToolParams?.args : normalizedParams ?? event?.params;
       const target = effectiveToolName === EVIDENCE_REPORT_TOOL
         ? state.operationsWorkspaceExpectedPath : normalizeWorkspaceFilePath(args?.path);
-      if (target === state.workspacePythonCreationPath) return {
+      const requested = state.workspacePythonCreationPath;
+      const leafStart = requested.lastIndexOf('/') + 1;
+      const leaf = requested.slice(leafStart);
+      // Correct the observed hidden-output shortcut without treating paths in
+      // different directories as equivalent or changing workspace normalization.
+      const hiddenAlternate = leaf && !leaf.startsWith('.') &&
+        target === `${requested.slice(0, leafStart)}.${leaf}`;
+      if (target === requested || hiddenAlternate) return {
         block: true,
-        blockReason: `The owner explicitly requested creating "${target}" by executing Python in the workspace. ` +
+        blockReason: `The owner explicitly requested creating "${requested}" by executing Python in the workspace. ` +
+          (hiddenAlternate ? `Use the requested filename "${requested}", not the hidden alternate "${target}". ` : '') +
           'Use sandbox exec to run Python that creates this output; do not substitute directly written output bytes. ' +
           'You may write a Python generator script at a different path, then execute it. ' +
           'Read the generated file back and publish that exact file. Host observations remain independent; ' +
