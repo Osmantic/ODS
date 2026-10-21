@@ -237,11 +237,15 @@ def test_extension_start_and_disable_share_host_graph_lock(tmp_path, monkeypatch
         release.set()
         worker.join(timeout=5)
     assert not worker.is_alive()
-    assert results == [["docker", "compose", "-f", "base.yml", "up", "-d", "my-ext"]]
+    # The dead-container check and Compose up both run under the graph lock.
+    assert results == [
+        ["docker", "compose", "-f", "base.yml", "ps", "-aq", "my-ext"],
+        ["docker", "compose", "-f", "base.yml", "up", "-d", "my-ext"],
+    ]
     assert selector.run("disable", tmp_path, "my-ext") == "disabled"
     with pytest.raises(RuntimeError, match="selection changed before start"):
         _mod._run_selected_extension_up("my-ext", ["-f", "base.yml"])
-    assert len(results) == 1
+    assert len(results) == 2
 
 
 def test_host_selection_endpoint_requires_auth_and_preserves_batch(
@@ -7797,7 +7801,9 @@ class TestProxyAuthStart:
             "up", "-d", "--no-deps", "--force-recreate", "open-webui",
         ]
         assert calls[0][1]["env"]["WEBUI_AUTH"] == "true"
-        assert calls[1][0][-3:] == ["up", "-d", "ods-proxy"]
+        # A selected extension start first checks for a dead container.
+        assert calls[1][0][-3:] == ["ps", "-aq", "ods-proxy"]
+        assert calls[2][0][-3:] == ["up", "-d", "ods-proxy"]
 
     def test_proxy_does_not_start_when_auth_recreate_fails(
         self, tmp_path, monkeypatch,

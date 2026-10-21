@@ -7033,6 +7033,11 @@ def _run_selected_extension_up(
                 ) from exc
             if not stat_mod.S_ISREG(selected_stat.st_mode):
                 raise RuntimeError(f"Invalid selected Compose file: {service_id}")
+            ok, error = _remove_dead_service_container(service_id, flags)
+            if not ok:
+                return subprocess.CompletedProcess(
+                    ["docker", "compose", *flags, "up", "-d", service_id], 1, "", error,
+                )
             return subprocess.run(
                 ["docker", "compose", *flags, "up", "-d", service_id],
                 cwd=str(INSTALL_DIR), capture_output=True, text=True,
@@ -7067,9 +7072,6 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
     action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
-        ok, error = _remove_dead_service_container(service_id, flags)
-        if not ok:
-            return False, error
         if service_id == "ods-proxy":
             ok, error = _prepare_proxy_auth_start(flags)
             if not ok:
