@@ -87,6 +87,15 @@ function namedProjectDirectory(text) {
   return names.length === 1 ? names[0] : undefined;
 }
 
+// A refusal in the naming clause makes an inferred correction inappropriate.
+// Preserve the original call for core policy; this does not allow a write.
+function directoryCreationProhibited(text, directory) {
+  return text.split(/[;!?\n]|\.(?=\s|$)/).some(clause =>
+    namedProjectDirectories(clause).includes(directory) &&
+    (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:please\s+)?(?:add|write|create|put|save|modify|touch|place|include)\b/i.test(clause)
+      || /\b(?:no|without)\s+(?:files?|anything)\b/i.test(clause)));
+}
+
 // Diagnose an invented workspace prefix before the exact owner-named folder.
 // This only supplies a retry hint: no file is moved, reserved or rewritten.
 // Unrelated paths, explicit operands and reads/edits keep their core semantics.
@@ -99,6 +108,15 @@ function misplacedNamedProjectPath(value, directory, root, intent, directoryTarg
   else if (text.startsWith('/') || /^[A-Za-z]:/.test(text)) return undefined;
   const pathCharacter = /[\p{L}\p{N}_./\\-]/u;
   const operands = new Set([value,text,`/workspace/${text}`,`${configured}/${text}`]);
+  // An explicit parent directory also selects its child locations. Keep the
+  // same token-boundary checks so labels and longer sibling names do not match.
+  for (const operand of [...operands]) {
+    const normalized = operand.replaceAll('\\','/');
+    for (let end=normalized.lastIndexOf('/');end>0;end=normalized.lastIndexOf('/',end-1)) {
+      const parent = normalized.slice(0,end);
+      if (parent.includes('/')) { operands.add(parent); operands.add(parent + '/'); }
+    }
+  }
   for (const operand of [...operands]) operands.add(operand.replaceAll('/','\\'));
   for (const operand of operands) for (let at=intent.indexOf(operand);at!==-1;at=intent.indexOf(operand,at+operand.length)) {
     const after = intent.slice(at+operand.length);
@@ -593,7 +611,7 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
     };
     const ownerText = plainIntent(intent).replace(/https?:\/\/\S+/g, ' ');
     const ownerDirectory = !preserveExisting && namedProjectDirectory(ownerText);
-    if (ownerDirectory && ['write','exec'].includes(selected.tool)) {
+    if (ownerDirectory && !directoryCreationProhibited(ownerText,ownerDirectory) && ['write','exec'].includes(selected.tool)) {
       const args = selected.args;
       const key = selected.tool === 'write' ? 'path' : 'workdir';
       let correction = misplacedNamedProjectPath(args[key],ownerDirectory,root,ownerText,selected.tool === 'exec');

@@ -4709,7 +4709,7 @@ function ownerRequestsFileHandoff(lane) {
   const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
   // An unqualified later refusal overrides an earlier ordinary handoff. A
   // refusal naming old.zip still leaves a separate current.zip request intact.
-  if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those)\s+(?:files?|documents?|archives?|attachments?)|them)\s*$/i.test(clause))) return false;
+  if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those|all(?:\s+the)?)\s+(?:(?:existing|requested|generated|completed|updated)\s+)?(?:(?:project|source)\s+)?(?:files?|documents?|archives?|attachments?)|them)(?:\s+at\s+all)?(?:\s*,?\s*please)?\s*$/i.test(clause))) return false;
   const filename = String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx|py|[cm]?[jt]sx?|css|sh|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|pl|dart)["'\x60]?`;
   const namedFiles = `${filename}(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)${filename})*`;
   const object = new RegExp(`^(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
