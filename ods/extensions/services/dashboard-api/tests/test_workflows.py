@@ -1045,3 +1045,101 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+# ---------------------------------------------------------------------------
+# Catalog workflows are matched to n8n workflows by their exact name
+# ---------------------------------------------------------------------------
+
+
+def _digest_catalog(tmp_path, monkeypatch):
+    import routers.workflows as wf_mod
+
+    catalog = {
+        "workflows": [
+            {"id": "daily-digest", "name": "Daily Digest", "description": "test",
+             "file": "daily-digest.json", "dependencies": []}
+        ],
+        "categories": {}
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+
+def _delete_session():
+    del_resp = AsyncMock()
+    del_resp.status = 204
+    del_ctx = AsyncMock()
+    del_ctx.__aenter__ = AsyncMock(return_value=del_resp)
+    del_ctx.__aexit__ = AsyncMock(return_value=False)
+    session_mock = AsyncMock()
+    session_mock.delete = MagicMock(return_value=del_ctx)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+    return session_mock
+
+
+def test_workflow_disable_deletes_the_exact_name_not_an_owner_copy(test_client, tmp_path, monkeypatch):
+    """An owner's "Daily Digest copy" listed first must not be the one deleted."""
+    _digest_catalog(tmp_path, monkeypatch)
+    n8n_workflows = [
+        {"id": "owner-copy", "name": "Daily Digest copy", "active": True},
+        {"id": "imported", "name": "Daily Digest", "active": True},
+    ]
+    session_mock = _delete_session()
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
+         patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.post("/api/workflows/daily-digest/disable", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    session_mock.delete.assert_called_once()
+    assert session_mock.delete.call_args.args[0].endswith("/api/v1/workflows/imported")
+
+
+def test_workflow_disable_never_deletes_a_partial_name_match(test_client, tmp_path, monkeypatch):
+    """With only the owner's own similarly named workflow in n8n, nothing is deleted."""
+    _digest_catalog(tmp_path, monkeypatch)
+    n8n_workflows = [{"id": "owner-copy", "name": "Daily Digest copy", "active": True}]
+    session_mock = _delete_session()
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
+         patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.delete("/api/workflows/daily-digest", headers=test_client.auth_headers)
+
+    assert resp.status_code == 404
+    session_mock.delete.assert_not_called()
+
+
+def test_workflow_disable_refuses_duplicate_exact_names(test_client, tmp_path, monkeypatch):
+    _digest_catalog(tmp_path, monkeypatch)
+    n8n_workflows = [
+        {"id": "first", "name": "Daily Digest", "active": True},
+        {"id": "second", "name": "daily digest", "active": False},
+    ]
+    session_mock = _delete_session()
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows), \
+         patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.post("/api/workflows/daily-digest/disable", headers=test_client.auth_headers)
+
+    assert resp.status_code == 409
+    session_mock.delete.assert_not_called()
+
+
+def test_workflows_list_does_not_report_a_partial_name_match_as_installed(test_client, tmp_path, monkeypatch):
+    """The list and the Remove action select the same n8n workflow."""
+    _digest_catalog(tmp_path, monkeypatch)
+    n8n_workflows = [
+        {"id": "short", "name": "Digest", "active": True},
+        {"id": "owner-copy", "name": "Daily Digest copy", "active": True},
+    ]
+
+    with patch("routers.workflows.get_n8n_workflows", new_callable=AsyncMock, return_value=n8n_workflows):
+        resp = test_client.get("/api/workflows", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    wf = next(w for w in resp.json()["workflows"] if w["id"] == "daily-digest")
+    assert wf["installed"] is False
+    assert wf["n8nId"] is None
