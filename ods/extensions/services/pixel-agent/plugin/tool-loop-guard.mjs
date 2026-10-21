@@ -9165,6 +9165,14 @@ export function createToolLoopGuard({
         : effectiveToolName === EVIDENCE_READBACK_TOOL
           ? "read"
           : effectiveToolName;
+    if (state?.ownerIntentObserved && state.workspaceMutationRequested &&
+        ['write', 'edit', 'apply_patch', 'exec'].includes(workspaceOperation) &&
+        !state.privateNetworkRequestDenied && !state.privateNetworkExhausted &&
+        !state.workspacePreviewRestrictions?.web &&
+        (typeof hostCitationVerifier?.allowed !== 'function' || hostCitationVerifier.allowed())) {
+      const reminder = state.completionAssurance.beforeWorkspaceMutation();
+      if (reminder) return reminder;
+    }
     if (state?.workspacePythonCreationPath &&
         (workspaceOperation === 'write' || workspaceOperation === 'edit')) {
       const args = toolName === 'tool_call' ? wrappedToolParams?.args : normalizedParams ?? event?.params;
