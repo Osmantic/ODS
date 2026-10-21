@@ -1359,8 +1359,16 @@ cmd_chat() {
         return 1
     }
 
+    local content
+    content=$(printf '%s' "$response" | jq -er '.choices[0].message.content | select(type == "string" and length > 0)') || {
+        local backend_error
+        backend_error=$(printf '%s' "$response" | jq -r '.error.message // "No assistant text in the response"' 2>/dev/null || true)
+        ai_err "LLM error: ${backend_error:-Invalid response}"
+        return 1
+    }
+
     echo ""
-    echo "$response" | jq -r '.choices[0].message.content // .error.message // "Error: no response"'
+    printf '%s\n' "$content"
     echo ""
 }
 

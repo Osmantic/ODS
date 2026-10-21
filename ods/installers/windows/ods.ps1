@@ -2535,14 +2535,20 @@ function Invoke-Chat {
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
             -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
 
-        if ($resp.choices -and $resp.choices[0].message) {
-            Write-Host ""
-            Write-Host $resp.choices[0].message.content
-            Write-Host ""
+        if (-not $resp.choices -or -not $resp.choices[0].message -or
+            $resp.choices[0].message.content -isnot [string] -or $resp.choices[0].message.content.Length -eq 0) {
+            $detail = 'No assistant text in the response'
+            if ($resp.error -and $resp.error.message) { $detail = [string]$resp.error.message }
+            throw $detail
         }
+
+        Write-Host ""
+        Write-Host $resp.choices[0].message.content
+        Write-Host ""
     } catch {
         Write-AIError "Chat request failed: $_"
         Write-AI "Is llama-server running? Try: .\ods.ps1 status"
+        exit 1
     }
 }
 
