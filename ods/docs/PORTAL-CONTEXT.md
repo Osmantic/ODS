@@ -39,6 +39,15 @@ lease; that does not erase its history or restart its previous task.
 - A missing native session is rehydrated as inert historical reference under
   a maintenance lease, then compacted before executing the new request. Past
   requests are never executed as part of rehydration.
+- A clarification card's answer is a delta like any other owner turn. OpenClaw
+  can run it in a new native session that lacks the request and the model's
+  question, so the plugin adds model-only context naming the request that card
+  clarifies to the answer's run, whether or not the session was replaced
+  (pixel-agent `COMPLETION-RELIABILITY.md`, Interactive clarification). The
+  owner text sent and archived is unchanged, and the note stays out of the
+  transcript; OpenClaw's trajectory files still record it with every other model
+  prompt. Deleting the conversation deletes its pending card, but not yet those
+  trajectory files.
 - The agent can use `pixel_ods_history` to search or page through its own archived
   conversation. This tool cannot select another chat. Returned excerpts retain
   their status as historical data; they are not fresh approvals or tool receipts.

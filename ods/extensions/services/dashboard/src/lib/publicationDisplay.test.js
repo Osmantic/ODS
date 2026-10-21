@@ -69,3 +69,25 @@ it('keeps host-authored storage scope while removing the preview receipt', () =>
   const model='For actual persistence, open it in your regular browser.'
   expect(publicationDisplayText(`${model}\n\n${storage}\n\n${receipt}`, publication)).toBe(`${model}\n\n${storage}`)
 })
+
+// A failed preview check keeps the agent's own explanation ahead of the host
+// note (pixel-agent preview-explanation.mjs); only the receipt becomes the card.
+it('keeps a kept agent explanation and the failed-check note while removing the receipt', () => {
+  const failedReceipt = `Your preview is ready.\n\n${link}\n\nPublished from your workspace.`
+  const note = "**Portal check:** The reply above is the agent's own account, not a verified result. " +
+    "This request did not pass Portal's checks.\n\n" +
+    'Latest browser inspection of this preview: step 2 (assert-painted) on `#arena` captured one color only (#8fce3a).\n\n' +
+    'The attempted preview interaction checks have not passed browser inspection. ' +
+    'The published preview is available, but those checks remain unverified.'
+  const explanation = 'The cause is `ui.js:748`: a canvas is not a valid `fillStyle`.\n\n- The last full-viewport fill covers the arena.'
+  expect(publicationDisplayText(`${explanation}\n\n${note}\n\n${failedReceipt}`, publication)).toBe(`${explanation}\n\n${note}`)
+  // The plugin closes a code block the agent left open with that block's own
+  // fence (last line of each sample), so this reader sees the receipt outside it.
+  const code = 'g.fillRect(0, 0, W, H);'
+  for (const fenced of [
+    `The last draw call:\n\n${'`'.repeat(3)}js\n${code}\n${'`'.repeat(3)}`,
+    `Nested sample:\n\n${'`'.repeat(4)}markdown\n${'`'.repeat(3)}js\n${code}\n${'`'.repeat(3)}\n${'`'.repeat(4)}`,
+    `Mixed fences:\n\n${'`'.repeat(3)}markdown\n~~~\n${code}\n${'`'.repeat(3)}`,
+    `Tilde block:\n\n~~~~\n${code}\n~~~\n~~~~`,
+  ]) expect(publicationDisplayText(`${fenced}\n\n${note}\n\n${failedReceipt}`, publication)).toBe(`${fenced}\n\n${note}`)
+})

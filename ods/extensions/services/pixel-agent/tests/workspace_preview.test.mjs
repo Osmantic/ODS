@@ -15,6 +15,37 @@ test("writable output refusal explains narrowing permissions without changing th
   assert.match(result.content[0].text, /Do not change parent directories/);
 });
 
+// RTX Spark: the generic unsafe_directory text named no cause, so the agent
+// guessed and tried rm -r on its own hidden .harness/ folder.
+test("folder and file refusals state the host's rules and that hidden entries are skipped", async () => {
+  for (const [errorCode, expected] of [
+    ['unsafe_directory', [/every folder inside it must belong to the workspace owner, be readable, and must not be a symlink or writable by group or others/,
+      /only ASCII letters \(A-Z, a-z\), digits, '\.', '_', '-', '\[' and '\]' \(at most 128 characters\) and must not start with '-', '\]' or the reserved __ods_ prefix/,
+      /folders starting with '\.' are hidden and skipped, never published/,
+      // Each cause gets its own remedy: renaming cannot fix a mode fault, and
+      // moving a needed asset folder out would publish a site full of 404s.
+      /Rename a folder whose name breaks these rules \(for example, one with spaces in its name\) and update the references to it, or move an unrelated folder outside the site directory/,
+      /If the selected directory or a folder inside it is writable by group or others, remove only those write bits from that folder \(chmod go-w\)/,
+      /Move a symlinked or foreign-owned folder outside the site and, if the site needs its files, copy them into a real folder the workspace owner owns/,
+      /Leave folders on the path above the selected directory unchanged and tell the owner/,
+      /Never delete files, broaden permissions, or blindly change ownership/]],
+    ['unsafe_file', [/not a symlink, hard link, or special file/, /at most 4 MiB/, /index\.html must not be empty/,
+      /only ASCII letters \(A-Z, a-z\), digits, '\.', '_', '-', '\[' and '\]' \(at most 128 characters\), must not start with '-', '\]' or the reserved __ods_ prefix, and must not be exactly __pycache__/,
+      /files starting with '\.' are hidden and skipped, never published/]],
+  ]) {
+    const tool = createWorkspacePreviewTool({request: async () => ({
+      schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'failed',
+      boundary: testing.BOUNDARY, error: 'ODS workspace preview publication failed', errorCode,
+    })});
+    const result = await tool.execute('unsafe-entry', {relativeDirectory: 'Playground/elf-of-doom'});
+    assert.equal(result.isError, true);
+    assert.equal(result.details.errorCode, errorCode);
+    for (const pattern of expected) assert.match(result.content[0].text, pattern, errorCode);
+    // File write bits are reported as writable_file, never as unsafe_file.
+    assert.doesNotMatch(result.content[0].text, /mode 0664|blindly relax|unsafe names/, errorCode);
+  }
+});
+
 import {
   createWorkspacePreviewTool,
   EMPTY_PUBLISHED_FILES_PREFIX,
@@ -134,8 +165,10 @@ test("exposes a publish-only schema with no creative generator input", () => {
   const tool = createWorkspacePreviewTool({ request: async () => succeededResponse() });
   assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["relativeDirectory", "sourceDirectory"]);
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.match(tool.description, /already created by the active model/);
+  assert.match(tool.description, /already exists in Pixel's writable workspace, normally one created by the active model/);
   assert.match(tool.description, /never supplies creative starter bytes/i);
+  assert.doesNotMatch(tool.description, /elf.of.doom/i, "the shipped example stays out of every turn's tools");
+  assert.doesNotMatch(tool.parameters.properties.relativeDirectory.description, /model-authored/);
   assert.match(tool.description, /localStorage\/sessionStorage property getters, reads and writes may throw/);
   assert.match(tool.description, /Guard every storage access\/operation with try\/catch and an in-memory fallback/);
   assert.match(tool.description, /Saving failure must not block startup, controls or continued work/);

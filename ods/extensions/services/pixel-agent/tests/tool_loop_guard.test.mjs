@@ -223,6 +223,7 @@ import {
   userMessageRequestsExactByteDownload,
   userMessageExactDownloadRequest,
 } from "../plugin/tool-loop-guard.mjs";
+import { requestsNewPlaygroundProject } from "../plugin/playground-projects.mjs";
 
 function workspacePreviewSnapshot(relativeDirectory, writes) {
   const digest = createHash("sha256");
@@ -5924,8 +5925,10 @@ test("routes one local host command to a canonical immutable approval proposal",
   assert.deepEqual(routed, {
     params: { id: "pixel_ods_host_command_propose", args: { command: "uname -sr" } },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-command-call" },
     event: {
+      toolCallId: "host-command-call",
       params: routed.params,
       result: {
         details: {
@@ -5947,8 +5950,10 @@ test("routes one local host command to a canonical immutable approval proposal",
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const persisted = persistToolResult(guard, "tool_call", "host-command-call", {
+    ...completedHost.event.result,
     content: [{ type: "text", text: "oversized raw command receipt" }],
   });
   assert.equal(persisted.message.content.length, 1);
@@ -7525,10 +7530,11 @@ test("composes an explicitly requested mixed host and workspace task across ever
     event: { params: { path: "report.txt" } },
   }), { params: { path: "report.txt" } });
   assert.deepEqual(call(guard, "tool_call", {
-    event: { params: { id: "read", args: { path: "report.txt" } } },
+    event: { toolCallId: "mixed-read", params: { id: "read", args: { path: "report.txt" } } },
   }), { params: { id: "read", args: { path: "report.txt" } } });
   afterCall(guard, "tool_call", {
     event: {
+      toolCallId: "mixed-read",
       params: { id: "read", args: { path: "report.txt" } },
       result: {
         content: [{ type: "text", text: "tool wrapper result" }],
@@ -7679,6 +7685,7 @@ test("persists a trusted exact next step after each verified mixed-task boundary
   });
   afterCall(guard, "tool_call", {
     event: {
+      toolCallId: "read-call",
       params: evidenceRead.params,
       result: {
         details: {
@@ -7688,7 +7695,9 @@ test("persists a trusted exact next step after each verified mixed-task boundary
       },
     },
   });
-  assert.equal(persistToolResult(guard, "tool_call", "read-call"), undefined);
+  const afterRead = persistToolResult(guard, "tool_call", "read-call");
+  assert.deepEqual(afterRead.message.content, [{type: "text", text: "verified evidence"}]);
+  assert.doesNotMatch(JSON.stringify(afterRead), /ODS Pixel trusted continuation/);
 });
 
 test("allows requested host observations within the live extension setup request", () => {
@@ -7877,16 +7886,18 @@ test("persists compact receipt-bound host evidence before the trusted continuati
     "pixel",
     { prompt: "Inspect the ODS host hostname and active model." }
   );
-  call(guard, "tool_call", {
+  const routed = call(guard, "tool_call", {
     event: {
       toolCallId: "host-call",
       params: { id: "pixel_ods_host_observe", args: { actions: ["host.identity"] } },
     },
     context: { toolCallId: "host-call" },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-call" },
     event: {
-      params: { id: "pixel_ods_host_observe", args: { actions: ["host.identity"] } },
+      toolCallId: "host-call",
+      params: routed.params,
       result: {
         details: {
           tool: {
@@ -7910,8 +7921,10 @@ test("persists compact receipt-bound host evidence before the trusted continuati
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const persisted = persistToolResult(guard, "tool_call", "host-call", {
+    ...completedHost.event.result,
     content: [{ type: "text", text: "oversized raw terminal receipt" }],
   });
   assert.equal(persisted.message.content.length, 2);
@@ -7921,19 +7934,14 @@ test("persists compact receipt-bound host evidence before the trusted continuati
   assert.match(persisted.message.content[0].text, /full terminal evidence remains bound/);
   assert.match(persisted.message.content[1].text, /id pixel_ods_status and args \{\}/);
 
-  const wrapped = persistToolResult(guard, "tool_call", "host-call", {
-    content: [{
-      type: "text",
-      text: JSON.stringify({
-        tool: {
-          id: "openclaw:pixel-ods:pixel_ods_host_observe",
-          source: "openclaw",
-          sourceName: "pixel-ods",
-          name: "pixel_ods_host_observe",
-        },
-        result: { details: { jobId } },
-      }),
-    }],
+  // Older runtimes store the complete envelope only in the text block.
+  // It still needs its own admitted call and validated after-hook receipt.
+  call(guard, "tool_call", {event: {toolCallId: "host-call-json", params: completedHost.event.params},
+    context: {toolCallId: "host-call-json"}});
+  afterCall(guard, "tool_call", {event: {...completedHost.event, toolCallId: "host-call-json"},
+    context: {toolCallId: "host-call-json"}});
+  const wrapped = persistToolResult(guard, "tool_call", "host-call-json", {
+    content: [{type: "text", text: JSON.stringify(completedHost.event.result.details)}],
   });
   assert.doesNotMatch(wrapped.message.content[0].text, /\"tool\"/);
   assert.match(wrapped.message.content[0].text, /Hostname: `light-worker`/);
@@ -7963,8 +7971,10 @@ test("accepts a structurally bound status projection from the synchronous host o
       args: { actions: ["host.identity"], includeOdsStatus: true },
     },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-status-call" },
     event: {
+      toolCallId: "host-status-call",
       params: routed.params,
       result: {
         details: {
@@ -7995,12 +8005,13 @@ test("accepts a structurally bound status projection from the synchronous host o
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
   const verification = guard.verificationForRun("run-1");
   assert.equal(verification.status, "passed");
   assert.match(verification.text, /Hostname: `light-worker`/);
   assert.match(verification.text, /model `Qwen3\.5-2B-Q4_K_M\.gguf`/);
-  const persisted = persistToolResult(guard, "tool_call", "host-status-call");
+  const persisted = persistToolResult(guard, "tool_call", "host-status-call", completedHost.event.result);
   assert.match(persisted.message.content[0].text, /Qwen3\.5-2B-Q4_K_M\.gguf/);
   assert.match(persisted.message.content.at(-1).text, /id pixel_ods_evidence_report/);
   assert.doesNotMatch(persisted.message.content.at(-1).text, /id pixel_ods_status/);
@@ -8035,8 +8046,10 @@ test("atomically writes and reads a receipt-bound evidence report after one host
     },
     context: { toolCallId: "host-status-call" },
   });
-  afterCall(guard, "tool_call", {
+  const completedHost = {
+    context: { toolCallId: "host-status-call" },
     event: {
+      toolCallId: "host-status-call",
       params: routed.params,
       result: {
         details: {
@@ -8067,7 +8080,8 @@ test("atomically writes and reads a receipt-bound evidence report after one host
         },
       },
     },
-  });
+  };
+  afterCall(guard, "tool_call", completedHost);
 
   assert.equal(writes.length, 1);
   assert.equal(writes[0].relativePath, "report.txt");
@@ -8079,7 +8093,7 @@ test("atomically writes and reads a receipt-bound evidence report after one host
   );
   // terminal host receipt no longer aborts the agent run.
   assert.deepEqual(aborts, [], "terminal host receipt does not abort the agent run");
-  const persisted = persistToolResult(guard, "tool_call", "host-status-call");
+  const persisted = persistToolResult(guard, "tool_call", "host-status-call", completedHost.event.result);
   assert.equal(persisted.message.content.length, 1);
   assert.match(persisted.message.content[0].text, /Hostname: `light-worker`/);
   assert.doesNotMatch(persisted.message.content[0].text, /trusted continuation/);
@@ -12817,6 +12831,27 @@ for (const wrapped of [false, true]) {
     assert.equal(guard.verificationForRun("run-1").status, "failed", "no successful host receipt has been received");
   });
 }
+
+test("asking Portal to open the shipped Elf of Doom example opens it as an existing project", () => {
+  // installers/lib/pixel-example-projects.py adds the game to this folder;
+  // Portal's sidebar opens it without a model run, and an owner may also ask.
+  const prompt = "Open the existing Playground/elf-of-doom/index.html preview.";
+  assert.equal(workspacePreviewMode([], prompt), "existing-project");
+  assert.equal(requestsNewPlaygroundProject(prompt), false, "never a new Playground folder");
+  for (const wrapped of [false, true]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { path: "Playground/elf-of-doom/index.html" };
+    call(guard, "read", { event: { params } });
+    afterCall(guard, "read", { event: { params, result: { details: { status: "completed" } } } });
+    const target = { relativeDirectory: "Playground/elf-of-doom" };
+    const published = call(guard, wrapped ? "tool_call" : "pixel_ods_workspace_preview", {
+      event: { params: wrapped ? { id: "pixel_ods_workspace_preview", args: target } : target },
+    });
+    assert.notEqual(published?.block, true, "an owner-requested existing project needs no new authorship");
+    assert.deepEqual(wrapped ? published?.params?.args ?? target : published?.params ?? target, target);
+  }
+});
 
 test("accepts only a readback-verified dedicated preview receipt", () => {
   const guard = createToolLoopGuard();

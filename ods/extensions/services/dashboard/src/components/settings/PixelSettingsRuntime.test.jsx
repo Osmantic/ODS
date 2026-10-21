@@ -46,6 +46,42 @@ it('explains that a fresh owner store needs Save without advertising runtime act
   expect(screen.queryByText('Runtime control is unavailable on this installation. Saving preferences is still available.')).not.toBeInTheDocument()
 })
 
+it('initializes untouched preferences through Save without applying or changing thinking support', async () => {
+  let saved = doc(0)
+  const pending = deferred()
+  const mock = vi.fn(async (url, options) => {
+    if (url === '/api/pixel/settings') return response(saved)
+    if (url === '/api/pixel/settings/save') return pending.promise
+    if (options.method !== 'GET') throw new Error('Unexpected runtime mutation')
+    const runtime = saved.configuration.revision === 0
+      ? { ...runtimeDoc('unavailable'), reason: 'settings-store-not-initialized' }
+      : runtimeDoc('not-applied', 1)
+    if (runtime.capabilities) runtime.capabilities.supportedThinkingLevels = ['off']
+    return response(runtime)
+  })
+  vi.stubGlobal('fetch', mock)
+  render(<PixelRuntimeSettings />)
+  expect(await screen.findByText('Save Portal preferences once to initialize runtime controls. Saving does not apply them.')).toBeVisible()
+  const save = button('Save Portal preferences')
+  await waitFor(() => expect(save).toBeEnabled())
+  expect(screen.getByLabelText('Thinking Level')).toHaveValue('')
+  expect(apply()).toBeDisabled()
+  expect(posts(mock)).toHaveLength(0)
+  fireEvent.click(save); fireEvent.click(save)
+  expect(posts(mock)).toHaveLength(1)
+  expect(posts(mock)[0][0]).toBe('/api/pixel/settings/save')
+  expect(JSON.parse(posts(mock)[0][1].body)).toEqual({ expectedRevision: 0, changes: {} })
+  expect(save).toBeDisabled()
+  saved = doc(1)
+  await act(async () => pending.resolve(response(saved)))
+  await waitFor(() => expect(apply()).toBeEnabled())
+  expect(screen.getByText('Preferences saved. Portal runtime is unchanged.')).toBeVisible()
+  expect(screen.getByLabelText('Thinking Level')).toHaveValue('')
+  expect(screen.getByText('Qualified reasoning levels').nextSibling).toHaveTextContent('off')
+  expect(save).toBeDisabled()
+  expect(posts(mock)).toHaveLength(1)
+})
+
 it('locks parent preferences during one Apply and requires matching fresh GET before success', async () => {
   let state = runtimeDoc()
   const pending = deferred()

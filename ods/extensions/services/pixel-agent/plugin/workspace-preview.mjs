@@ -247,8 +247,8 @@ const FAILURE_MESSAGES = {
   missing_entry: "The selected directory needs a nonempty index.html at its root. Check the directory and entry file before retrying.",
   too_many_files: "The selected site exceeds 128 files. Keep dependencies, build caches, and unrelated files outside the published directory.",
   snapshot_too_large: "The selected site exceeds 16 MiB. Reduce or optimize its static assets before retrying.",
-  unsafe_file: "A project file failed validation. Check for an empty index.html or oversized files (4 MiB maximum each), symlinks, hard links, unsafe names, or ownership/permission problems. Files must belong to the workspace owner and must not be writable by group or others (for example, mode 0664 is rejected). Inspect the exact files; remove excessive write permissions only within the intended publication directory, never broaden access or blindly change ownership.",
-  unsafe_directory: "The selected directory failed validation. Check its path, ownership, permissions, and symlinks; do not blindly relax permissions.",
+  unsafe_file: "A project file failed validation. Each file must be a regular file (not a symlink, hard link, or special file) that belongs to the workspace owner and is at most 4 MiB, and index.html must not be empty. File names may use only ASCII letters (A-Z, a-z), digits, '.', '_', '-', '[' and ']' (at most 128 characters), must not start with '-', ']' or the reserved __ods_ prefix, and must not be exactly __pycache__; files starting with '.' are hidden and skipped, never published. Inspect the exact files; rename, regenerate, or move offending files outside the publication directory, never broaden access or blindly change ownership.",
+  unsafe_directory: "A folder failed validation. The selected directory, the folders on its path, and every folder inside it must belong to the workspace owner, be readable, and must not be a symlink or writable by group or others. Folder names inside the site may use only ASCII letters (A-Z, a-z), digits, '.', '_', '-', '[' and ']' (at most 128 characters) and must not start with '-', ']' or the reserved __ods_ prefix; folders starting with '.' are hidden and skipped, never published. Fix only the cause that applies. Rename a folder whose name breaks these rules (for example, one with spaces in its name) and update the references to it, or move an unrelated folder outside the site directory. If the selected directory or a folder inside it is writable by group or others, remove only those write bits from that folder (chmod go-w). Move a symlinked or foreign-owned folder outside the site and, if the site needs its files, copy them into a real folder the workspace owner owns. Leave folders on the path above the selected directory unchanged and tell the owner if one of them is the cause. Never delete files, broaden permissions, or blindly change ownership.",
 };
 
 function validArtifactError(value) {
@@ -303,7 +303,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
+      "Publish and verify a static visual artifact that already exists in Pixel's writable workspace, normally one created by the active model. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -313,7 +313,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
         relativeDirectory: {
           type: "string",
           description:
-            "Static-site directory relative to the Pixel workspace; it must already contain model-authored index.html. Each path component must start with a letter or digit, followed by letters, digits, dots, underscores or hyphens; hidden directories are not publishable. Maximum 128 characters per component, 12 components and 512 characters total.",
+            "Static-site directory relative to the Pixel workspace; it must already contain index.html. Each path component must start with a letter or digit, followed by letters, digits, dots, underscores or hyphens; hidden directories are not publishable. Maximum 128 characters per component, 12 components and 512 characters total.",
         },
       },
     },
@@ -350,6 +350,29 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   };
 }
 
+// Host failures caused by the selected folder's own files, which the owner can
+// fix there, as opposed to an unavailable preview service.
+export const PREVIEW_FOLDER_FAILURES = Object.freeze(["invalid_json_artifact", "missing_entry", "snapshot_too_large",
+  "too_many_files", "unsafe_directory", "unsafe_file", "unsupported_file_type", "writable_file"]);
+
+// Owner-initiated publication of one existing workspace directory, used when
+// Portal's sidebar opens a shipped example project. It is the same create-only
+// snapshot, host validation and receipt check as the model tool, with no model
+// run; it returns only a verified receipt and throws on any failure. A host
+// refusal keeps its validated failure code on the error.
+export function createWorkspacePreviewPublisher({request, transport = "unix"} = {}) {
+  if (!["unix", "docker-desktop"].includes(transport)) throw new Error("invalid preview transport");
+  request ??= transport === "docker-desktop" ? dockerWorkspacePreviewRequest : socketRequest;
+  return async (relativeDirectory, {signal} = {}) => {
+    const normalized = normalizeWorkspacePreviewParams({relativeDirectory});
+    const raw = await request(normalized, {signal});
+    signal?.throwIfAborted();
+    const failureCode = validatedFailureCode(raw);
+    if (failureCode) throw Object.assign(new Error("Pixel workspace preview publication failed"), {code: failureCode});
+    return validResponse(raw, normalized);
+  };
+}
+
 // Internal trusted finalization probe. This is not a model-callable tool and
 // never publishes files or changes the immutable receipt it verifies.
 export function createWorkspacePreviewVerifier({request, transport = "unix"} = {}) {
@@ -369,6 +392,7 @@ export function createWorkspacePreviewVerifier({request, transport = "unix"} = {
 
 export const testing = Object.freeze({
   BOUNDARY,
+  FAILURE_CODES: Object.freeze(Object.keys(FAILURE_MESSAGES)),
   validRelativeDirectory,
   validResponse,
   socketRequest,

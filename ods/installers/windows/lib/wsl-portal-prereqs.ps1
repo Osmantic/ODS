@@ -3,6 +3,8 @@
 # after a restart. Each step asks first, changes only its own prerequisite and
 # stops with instructions when it cannot finish. ODS itself is still installed
 # only by install-core.sh inside Ubuntu.
+# Requires wsl-portal-spark.ps1 (Test-ODSSparkWindowsArm64) in scope;
+# wsl-portal-setup.ps1 loads both.
 
 $script:ODSPortalMinimumFreeGB = 40
 # Docker Desktop's first engine start can take several minutes.
@@ -75,6 +77,27 @@ function Get-ODSPortalFreeSystemGB {
     return [math]::Floor(([IO.DriveInfo]::new($root)).AvailableFreeSpace / 1GB)
 }
 
+function Get-ODSPortalWslRegistrations {
+    # One subkey per WSL distribution: its name, and in BasePath the folder
+    # that holds its virtual disk (ext4.vhdx). A missing or unreadable key is
+    # no registration, never a setup stop: setup then says it could not find
+    # the drive, and the host agent reports that drive as not checked.
+    $lxss = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
+    return @(Get-ChildItem -LiteralPath $lxss -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue })
+}
+
+function Get-ODSPortalDistroDrive([string]$Distro) {
+    # Inside Ubuntu the virtual disk reports its growth limit (about 1 TB) as
+    # free space; the Windows drive that stores it is what downloads fill.
+    # Returns that drive (C:), or '' when WSL records no drive-letter path.
+    $entries = @(Get-ODSPortalWslRegistrations | Where-Object { [string]$_.DistributionName -ieq $Distro })
+    if ($entries.Count -ne 1) { return '' }
+    # Newer registrations prefix the path with \\?\.
+    if ([string]$entries[0].BasePath -match '^(?:\\\\\?\\)?([A-Za-z]):\\') { return $Matches[1].ToUpperInvariant() + ':' }
+    return ''
+}
+
 function Assert-ODSPortalHostCapacity([bool]$WslReady) {
     $free = Get-ODSPortalFreeSystemGB
     if ($free -lt $script:ODSPortalMinimumFreeGB) {
@@ -85,8 +108,16 @@ function Assert-ODSPortalHostCapacity([bool]$WslReady) {
         Write-Host "Only $free GB is free on the Windows drive. $need; setup continues because WSL is already installed. If a download fails, free space and rerun." -ForegroundColor Yellow
     }
     if (-not $WslReady -and -not (Test-ODSPortalVirtualization)) {
-        throw 'Hardware virtualization is turned off, and WSL2 cannot run without it. Restart into your BIOS/UEFI settings, enable Intel VT-x (Intel Virtualization Technology) or AMD SVM, save, start Windows and rerun this command. Your PC maker''s support site names the exact menu.'
+        throw (Get-ODSPortalVirtualizationOffMessage (Test-ODSSparkWindowsArm64))
     }
+}
+
+function Get-ODSPortalVirtualizationOffMessage([bool]$Arm64) {
+    # Arm PCs have no Intel VT-x or AMD SVM setting to look for.
+    if ($Arm64) {
+        return 'Hardware virtualization is turned off, and WSL2 cannot run without it. Turn on virtualization in your PC''s firmware (UEFI) settings, save, start Windows and rerun this command. Your PC maker''s support site names the exact menu.'
+    }
+    return 'Hardware virtualization is turned off, and WSL2 cannot run without it. Restart into your BIOS/UEFI settings, enable Intel VT-x (Intel Virtualization Technology) or AMD SVM, save, start Windows and rerun this command. Your PC maker''s support site names the exact menu.'
 }
 
 # --------------------------------------------------------------- Docker Desktop

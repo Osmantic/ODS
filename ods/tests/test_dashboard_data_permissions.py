@@ -68,7 +68,7 @@ class DashboardDataPermissions(unittest.TestCase):
                 "Path": Path, "os": os, "re": re, "json": json, "secrets": secrets, "shlex": shlex,
                 "BaseHTTPRequestHandler": BaseHTTPRequestHandler, "urlparse": urlparse,
                 "parse_qs": parse_qs, "logger": logger, "INSTALL_DIR": install,
-                "AGENT_API_KEY": "permission-fixture-key",
+                "AGENT_API_KEY": "permission-fixture-key", "STARTUP_ODS_MODE": "local",
             }
             _load_permission_fixture_source(api_source / "env_values.py", namespace, {
                 "parse_env_value", "strip_matching_quotes", "_DOUBLE_QUOTED_RE", "_SINGLE_QUOTED_RE",
@@ -130,7 +130,7 @@ class DashboardDataPermissions(unittest.TestCase):
                                     raw = response.read()
                                 assert b"private-fixture-secret" not in raw and b"OPENAI_API_KEY" not in raw
                                 snapshot = json.loads(raw)
-                                assert set(snapshot) == {"configuredMode"}
+                                assert set(snapshot) == {"configuredMode", "effectiveMode"}
                                 snapshots.append(snapshot)
                                 return snapshot
 
@@ -148,7 +148,7 @@ class DashboardDataPermissions(unittest.TestCase):
                         client.join(5)
                         self.assertEqual(client.exitcode, 0)
                         self.assertEqual(result, {"mode": mode, "denied": True,
-                                                  "snapshots": [{"configuredMode": mode}]})
+                                                  "snapshots": [{"configuredMode": mode, "effectiveMode": "local"}]})
                     finally:
                         if client.is_alive():
                             client.terminate()

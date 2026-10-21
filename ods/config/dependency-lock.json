@@ -50,6 +50,12 @@
       "value": "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
     },
     {
+      "id": "nvidia.llama-server-compute-12.1",
+      "type": "image",
+      "path": "config/backends/nvidia.json",
+      "value": "ghcr.io/ggml-org/llama.cpp:server-cuda13-b11429@sha256:9d6ca9a08b5e0c0a6d2560bff7d4c76bdf946776bbde6a20d9d6403594d93a9f"
+    },
+    {
       "id": "amd.llama-server",
       "type": "image",
       "path": "docker-compose.amd.yml",
@@ -66,6 +72,18 @@
       "type": "archive",
       "path": "config/backends/amd.json",
       "value": "6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f"
+    },
+    {
+      "id": "nvidia.llama-server-windows-cuda-arm64",
+      "type": "archive",
+      "path": "config/backends/nvidia.json",
+      "value": "930cff325a0eb15e1232d5b5275b818c76c9c32a398788f18bb05273d3110c72"
+    },
+    {
+      "id": "nvidia.cudart-windows-cuda-arm64",
+      "type": "archive",
+      "path": "config/backends/nvidia.json",
+      "value": "642dcde8805b3e3165ca710a5443b3b4044b27d96bd3ee3132473988c9bcb774"
     },
     {
       "id": "ape.python",

@@ -46,7 +46,7 @@ Runtime Environment:
   ✗ Dashboard HTTP
   ✗ WebUI HTTP
   ✓ Inference contract: mode=local, owner=ods, gateway=llama-server
-  ⚠ DGX Spark llama-server CUDA arch: DGX Spark detected, but llama-server reports CUDA archs '500,610,700,750,800,860,890,1200' without sm_121.
+  ⚠ DGX Spark / RTX Spark llama-server CUDA arch: DGX Spark / RTX Spark GPU (compute capability 12.1) detected, but llama-server reports CUDA archs '500,610,700,750,800,860,890,1200' without sm_121.
 
 Preflight Checks:
   ✓ RAM: 16GB available
@@ -103,9 +103,11 @@ ods doctor --json > report.json
   host/container location, selected backend, supported backends, ODS
   management state, and health endpoint reachability. An `.env` that still
   names the retired `lemonade` runtime is reported as retired.
-- **runtime.dgx_spark_cuda_arch_check**: Warns when a DGX Spark / GB10
-  machine is running a llama.cpp CUDA binary that does not report `sm_121`
-  support in `llama-server` logs.
+- **runtime.dgx_spark_cuda_arch_check**: Warns when a GPU of compute
+  capability 12.1 (DGX Spark GB10, RTX Spark N1X) is running a llama.cpp CUDA
+  binary that does not report `sm_121` support in `llama-server` logs. The
+  installer selects the CUDA 13 image `config/backends/nvidia.json` pins for
+  such a GPU, so a rerun of the installer fixes an install made before that.
 - **summary**: Aggregate status (blockers, warnings, runtime_ready)
 - **autofix_hints**: Prioritized remediation actions
 

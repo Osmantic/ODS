@@ -6,6 +6,7 @@ import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import {validSourceReview} from '../lib/pixelSourceReview'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
+import {EXAMPLE_OPEN_EVENT, EXAMPLE_REFRESH_EVENT, openExampleProject} from '../lib/exampleProjects'
 import { Link } from 'react-router-dom'
 import HelpLink from '../components/HelpLink'
 import PixelAdvice from '../components/PixelAdvice.jsx'
@@ -53,6 +54,7 @@ import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
 import PortalDeliveredArtifacts from '../components/PortalDeliveredArtifacts'
 import { deliveredArtifactDisplayText, deliveredArtifactMetadata, parseDeliveredArtifactsFrame } from '../lib/pixelDeliveredArtifacts'
+import { embedDisplayText } from '../lib/embedDisplay'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
 import MetalMetricIcon from '../components/MetalMetricIcon'
@@ -94,7 +96,7 @@ const LEGACY_MODEL_SUPPORT = { tier: 'adaptive', detail: MODEL_CAPABILITY_DETAIL
 const keepModelAdvisory = current => current?.reason ? current : LEGACY_MODEL_SUPPORT
 
 const MARKDOWN_COMPONENTS = {
-  p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
+  p: ({ children, className = '' }) => <p className={`break-words [&:not(:first-child)]:mt-3 ${className}`.trim()}>{children}</p>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="break-words">{children}</li>,
@@ -572,6 +574,7 @@ function loadStoredChat(selected) {
       draftImages: draftImageReceipts(stored.draftImages),
       requestId: SAFE_CHAT_ID.test(stored.requestId || '') ? stored.requestId : null,
       interrupted: stored.inFlight === true || stored.interrupted === true,
+      conversationDeleted: stored.conversationDeleted === true,
     }
   } catch {
     return null
@@ -628,8 +631,10 @@ export default function Pixel({ systemStatus = null }) {
   const [persistenceError, setPersistenceError] = useState('')
   const [sending, setSending] = useState(false)
   const [interrupted, setInterrupted] = useState(() => initialChat?.interrupted || false)
+  const [conversationDeleted, setConversationDeleted] = useState(() => initialChat?.conversationDeleted || false)
   const [stopping, setStopping] = useState(false)
   const [stopError, setStopError] = useState('')
+  const [exampleError, setExampleError] = useState(null)
   const [restoredActivity, setRestoredActivity] = useState(() => initialChat?.interrupted ? 'checking' : 'idle')
   const [activityRefresh, setActivityRefresh] = useState(0)
   const [workingElapsedSeconds, setWorkingElapsedSeconds] = useState(0)
@@ -745,7 +750,7 @@ export default function Pixel({ systemStatus = null }) {
   const contextControl=usePortalContext({chatId:chatIdRef.current,
     runtimeIdentity:{model:contextRuntime?.model || activeModel,source:contextRuntime?.source || '',routeFingerprint:contextRuntime?.routeFingerprint},capacity:contextCapacity,
     initialRequestId:compactionRequestRef.current,
-    blocked:sending || modelSwitching || stopping || teams.busy || (interrupted && restoredActivity!=='terminal') || status!=='available',
+    blocked:conversationDeleted || sending || modelSwitching || stopping || teams.busy || (interrupted && restoredActivity!=='terminal') || status!=='available',
     onPendingChange:(id,chatId)=>{
       if(chatId!==chatIdRef.current)throw new Error('The conversation changed before compaction could be saved.')
       historySnapshot(messages)
@@ -1042,6 +1047,7 @@ export default function Pixel({ systemStatus = null }) {
         requestId: requestIdRef.current,
         inFlight: sending,
         interrupted,
+        ...(conversationDeleted ? {conversationDeleted:true} : {}),
         draft: input,
         draftImages: images.receipts,
         messages: storedMessages,
@@ -1073,9 +1079,11 @@ export default function Pixel({ systemStatus = null }) {
       setPersistenceError(error?.code === 'conversation-changed' ? error.message
         : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
     }
-  }, [messages, preview, workspaceOpen, sending, interrupted, input, imageDraftKey])
+  }, [messages, preview, workspaceOpen, sending, interrupted, input, imageDraftKey, conversationDeleted])
 
   const sendMessage = useCallback(async (answerOverride, continuationId = null) => {
+    if (conversationDeleted) return
+    const exactDraft = typeof answerOverride === 'string' ? answerOverride : input
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
     if(compactCommand(trimmed)){await compactConversation();return}
     if(contextControl.busy || contextControl.historyUnknown)return
@@ -1105,6 +1113,7 @@ export default function Pixel({ systemStatus = null }) {
       const context=teamAttempt.current.context
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
+      setExampleError(null)
       try {
         const team=await teams.start({request_id:requestId,task:teamCommand.task,context,...(requestedGoal?{mode:'goal'}:{})})
         if(team){setInput('');teamAttempt.current=null}
@@ -1132,6 +1141,7 @@ export default function Pixel({ systemStatus = null }) {
     updateRestoredActivity('idle')
     setStopping(false)
     setStopError('')
+    setExampleError(null)
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -1182,6 +1192,17 @@ export default function Pixel({ systemStatus = null }) {
           signal: controller.signal,
         })
         if (!isCurrentTurn()) return { kind: 'obsolete' }
+        if (response.status === 410) {
+          // Only this API admission receipt proves the request never started.
+          // Provider text, SSE errors and unrecognized 410 bodies stay uncertain.
+          let payload
+          try { payload = await response.json() } catch { /* Remain uncertain. */ }
+          if (!isCurrentTurn()) return {kind:'obsolete'}
+          if (payload?.detail?.code === 'conversation_deleted') {
+            requestIdRef.current = null
+            return {kind:'deleted'}
+          }
+        }
         if (response.status === 409) {
           requestIdRef.current = null
           let detail = MODEL_SWITCH_DETAIL
@@ -1344,6 +1365,15 @@ export default function Pixel({ systemStatus = null }) {
     try {
       let attempt = await streamAttempt(chatIdRef.current, conversation, fullHistory)
       if (!isCurrentTurn()) return
+      if (attempt.kind === 'deleted') {
+        setInput(current => current || exactDraft)
+        contextStartRef.current = originalContextStart
+        setMessages(messages)
+        setConversationDeleted(true)
+        setInterrupted(false)
+        updateRestoredActivity('idle')
+        return
+      }
       if (attempt.kind === 'rejected') {
         setInput(current => current || trimmed)
         contextStartRef.current = originalContextStart
@@ -1390,6 +1420,15 @@ export default function Pixel({ systemStatus = null }) {
         // current user message remains the active task in the legacy request.
         attempt = await streamAttempt(retryChatId, [userMessage], fullHistory)
         if (!isCurrentTurn()) return
+        if (attempt.kind === 'deleted') {
+          setInput(current => current || exactDraft)
+          contextStartRef.current = originalContextStart
+          setMessages(messages)
+          setConversationDeleted(true)
+          setInterrupted(false)
+          updateRestoredActivity('idle')
+          return
+        }
         if (attempt.kind === 'rejected') {
           setInput(current => current || trimmed)
           contextStartRef.current = originalContextStart
@@ -1454,7 +1493,7 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory])
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory,conversationDeleted])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1533,7 +1572,7 @@ export default function Pixel({ systemStatus = null }) {
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
-  const startNewChat = useCallback(() => {
+  const startNewChat = useCallback((preserveDraft = false) => {
     if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
     chatIdRef.current = makeChatId()
     images.replace(chatIdRef.current)
@@ -1544,11 +1583,14 @@ export default function Pixel({ systemStatus = null }) {
     setPreview(null)
     setWorkspaceOpen(false)
     setPreviewRefresh(0)
-    setInput('')
+    setInput(preserveDraft === true ? input : '')
+    setConversationDeleted(false)
     setInterrupted(false)
+    // A failed example open belongs to the task the owner just left.
+    setExampleError(null)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
-  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace])
+  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace,input])
 
   useEffect(() => {
     const remove = async event => {
@@ -1591,6 +1633,60 @@ export default function Pixel({ systemStatus = null }) {
     return () => window.removeEventListener('ods:pixel-new-task', startNewChat)
   }, [startNewChat])
 
+  // The sidebar's example list may have been checked before Portal was ready.
+  useEffect(() => {
+    if (status === 'available') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+  }, [status])
+
+  // A shipped example project opens from the sidebar like a saved preview:
+  // the host publishes the owner's existing folder, this page checks the
+  // receipt exactly like one from a model run, and a new task shows it in
+  // the Workspace panel. No model runs and no message is sent.
+  const exampleOpen = useRef(null)
+  const exampleState = useRef(null)
+  exampleState.current = {busy: sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy, startNewChat}
+  useEffect(() => {
+    const busyText = 'Stop the current task before opening another project.'
+    const open = async event => {
+      const name = event.detail?.name
+      if (typeof name !== 'string') return
+      if (exampleState.current.busy) { setStopError(busyText); return }
+      exampleOpen.current?.abort()
+      const controller = exampleOpen.current = new AbortController()
+      const chatId = chatIdRef.current
+      setExampleError(null)
+      try {
+        const receipt = await openExampleProject(name, controller.signal)
+        const published = parseVerifiedPreviewFrame({choices:[{finish_reason:'stop'}], pixel:{schemaVersion:1, preview:receipt}})
+        if (!published || published.relativeDirectory !== `Playground/${name}`) throw Object.assign(new Error('Invalid example receipt'), {code:'unavailable'})
+        // The owner moved on (another click, chat or task) while it published.
+        if (controller.signal.aborted || chatIdRef.current !== chatId) return
+        if (exampleState.current.busy) { setStopError(busyText); return }
+        // Like switching conversations: an unsent draft stays with the
+        // conversation the owner left.
+        exampleState.current.startNewChat()
+        setPreview(published); setPreviewRefresh(0); setWorkspaceOpen(true); setPreviewCollapsed(false); setWorkspaceExpanded(false)
+      } catch (error) {
+        if (controller.signal.aborted) return
+        // The sidebar's list is stale in both cases: check it again.
+        if (error?.code === 'missing' || error?.code === 'not-playable') window.dispatchEvent(new Event(EXAMPLE_REFRESH_EVENT))
+        // A folder that is gone or changed is the owner's own doing: no help
+        // link. A preview that failed is a real failure.
+        setExampleError(error?.code === 'missing'
+          ? {text: `${name} is no longer in your Portal workspace, so it cannot open. If you renamed or moved it, ask Portal to open it by its new folder name.`}
+          : error?.code === 'not-playable'
+            ? {text: `Portal could not open ${name}: the Playground/${name} folder is still there, but its index.html is missing or ODS no longer recognizes it as the example it added. To check it, ask Portal: "Open Playground/${name}".`}
+            : error?.code === 'not-previewable'
+              ? {text: `Portal could not open ${name}: some files in Playground/${name} cannot be previewed. To fix them, ask Portal: "In ${name}, fix the preview".`, help: true}
+              : {text: `Portal could not open ${name}: its preview was not published. Check that Portal is ready, then click the project again.`, help: true})
+      } finally {
+        if (exampleOpen.current === controller) exampleOpen.current = null
+      }
+    }
+    window.addEventListener(EXAMPLE_OPEN_EVENT, open)
+    return () => { window.removeEventListener(EXAMPLE_OPEN_EVENT, open); exampleOpen.current?.abort() }
+  }, [])
+
   useEffect(() => {
     const select = event => {
       if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) {
@@ -1614,7 +1710,9 @@ export default function Pixel({ systemStatus = null }) {
       setPreviewRefresh(0)
       setInput(chat.draft)
       setStopError('')
+      setExampleError(null)
       setInterrupted(chat.interrupted)
+      setConversationDeleted(chat.conversationDeleted)
       updateRestoredActivity(chat.interrupted ? 'checking' : 'idle')
       // Two interrupted chats have identical flags; the ref-only identity
       // change must still dispose the previous poll and check the new chat.
@@ -1626,7 +1724,7 @@ export default function Pixel({ systemStatus = null }) {
 
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim() && !images.items.length
-  const isDisabled = sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
+  const isDisabled = conversationDeleted || sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
   const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
   const typeIntoComposer = useCallback((character, start, end) => setInput(value => {
     const agent = agentCommand(value)
@@ -1789,6 +1887,12 @@ export default function Pixel({ systemStatus = null }) {
         </p>
       )}
       <div role="region" aria-label="Conversation messages" tabIndex={-1} onScroll={chatScroll.onScroll} className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-5 sm:px-6">
+        {conversationDeleted && <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border px-4 py-3 text-sm">
+          This conversation is being deleted or was deleted. No task was started. Your draft and saved history are preserved.
+          <button type="button" className="ml-2 underline" disabled={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy}
+            onClick={() => startNewChat(true)}>New chat with draft</button>
+          {(images.items.length > 0 || hasImageHistory) && <p>Attachments will not be copied. Reattach the original files in the new chat.</p>}
+        </div>}
         {interrupted && !sending && (
           <div role="status" className="mx-auto w-full max-w-5xl rounded-xl border border-theme-border bg-theme-text-secondary/10 px-4 py-3 text-sm text-theme-text-secondary">
             {restoredActivity === 'active'
@@ -1844,6 +1948,9 @@ export default function Pixel({ systemStatus = null }) {
           const publicationContent=message.role==='assistant' ? publicationDisplayText(message.content,message.publication) : message.content
           const displayedContent=message.role==='assistant' && message.status==='done'
             ? deliveredArtifactDisplayText(publicationContent,message.artifacts) : publicationContent
+          // Notes replace embeds Portal can't display; Copy keeps the reply's own text.
+          const shownContent=message.role==='assistant'
+            ? embedDisplayText(displayedContent,{streaming:message.status==='streaming'}) : displayedContent
           return (
           <div key={index} data-pixel-message-index={index} tabIndex={-1} data-pixel-response={message.role === 'assistant' ? '' : undefined} className={`mx-auto flex min-w-0 w-full max-w-5xl ${message.role === 'user' ? 'justify-end gap-2' : 'justify-start'}`}>
             {message.role === 'assistant' && <PixelMascot state={pixelReplyPose(message, sending && index === messages.length - 1)} settled={message.status !== 'streaming'} className="pixel-reply-character" />}
@@ -1895,7 +2002,7 @@ export default function Pixel({ systemStatus = null }) {
               {message.role === 'assistant' && message.content ? (
                 <>
                   {message.publication && <PixelSnapshotChanges preview={message.publication} before={message.beforePublication} variant="summary" onPreview={()=>openPublication(message.publication,'preview')} onReview={path=>openPublication(message.publication,'review',path)}/>}
-                  {!message.questions && (displayedContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={displayedContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS}>{displayedContent}</PortalStreamingText>)}
+                  {!message.questions && (shownContent || message.status==='streaming') && (message.status==='error' ? <PortalResponseError content={shownContent}/> : <PortalStreamingText key={message.revealResponse || chatIdRef.current} active={message.status==='streaming'} animate={Boolean(message.revealResponse) || message.status==='streaming'} instant={['stopped','recovering'].includes(message.status)} onReveal={chatScroll.onContentResize} components={MARKDOWN_COMPONENTS} artifacts={message.role==='assistant' && message.status==='done' ? message.artifacts : null}>{shownContent}</PortalStreamingText>)}
                   <OperationsApprovalCard content={message.content} />
                   {!message.questions && message.status!=='streaming' && <PortalResponseActions content={displayedContent}/>}
                 </>
@@ -1975,6 +2082,7 @@ export default function Pixel({ systemStatus = null }) {
           </div>
           </div>
           {stopError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{stopError}</p>}
+          {exampleError && <p role="alert" className="mt-1.5 px-1 text-xs text-theme-text-secondary">{exampleError.text}{exampleError.help && <> <HelpLink /></>}</p>}
           {contextControl.historyUnknown && <div className="portal-context-status" role="status">
             {contextControl.resolving && <Loader2 size={13} className="animate-spin" aria-hidden="true"/>}
             <span>{contextControl.recoveryNotice || 'The previous turn could not be confirmed. Resolve it before continuing; your conversation is preserved.'}</span>
@@ -2022,7 +2130,7 @@ export default function Pixel({ systemStatus = null }) {
               collapsed={previewCollapsed} onCollapse={()=>setPreviewCollapsed(value=>!value)}
               expanded={workspaceExpanded} onExpand={()=>setWorkspaceExpanded(value=>!value)}
               onClose={()=>{setWorkspaceOpen(false);setWorkspaceExpanded(false)}}
-              onPublish={isDisabled?undefined:()=>{setWorkspaceExpanded(false);insertComposerText('Publique o site que voce criou nesta conversa no preview do ODS. Inspecione os arquivos existentes, preserve o projeto e use pixel_ods_workspace_preview para a pasta que contem index.html.')}}/>
+              onPublish={isDisabled?undefined:()=>{setWorkspaceExpanded(false);insertComposerText('Publish the site you created in this conversation to the ODS preview. Inspect the existing files, preserve the project, and use pixel_ods_workspace_preview for the folder that contains index.html.')}}/>
 
           </aside>
         )}

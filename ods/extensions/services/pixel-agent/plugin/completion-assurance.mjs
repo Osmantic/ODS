@@ -218,13 +218,9 @@ function unreadCitations(text, opened) {
 
 // Fixed owner-visible texts: only the model's own answer varies around them.
 export const UNREAD_SOURCES_REPLACEMENT = 'The cited source reads were not confirmed in this response. The research is incomplete; I cannot present those references as verified pages.';
-export const UNREAD_SOURCES_REPLACEMENT_PT = 'A leitura das fontes citadas não foi confirmada nesta resposta. A pesquisa ficou incompleta; não posso apresentar essas referências como páginas verificadas.';
 export const UNREAD_SOURCE_MARKER = '[source not verified]';
-export const UNREAD_SOURCE_MARKER_PT = '[fonte não verificada]';
 export const UNREAD_SOURCE_NOTE = '**Source check:** Pixel could not confirm a successful read of every page this answer cited. ' +
   `Links without a confirmed read in this response were replaced with ${UNREAD_SOURCE_MARKER}; the claims marked that way lack a verified source.`;
-export const UNREAD_SOURCE_NOTE_PT = '**Verificação de fontes:** o Pixel não confirmou a leitura bem-sucedida de todas as páginas citadas nesta resposta. ' +
-  `Os links sem leitura confirmada foram substituídos por ${UNREAD_SOURCE_MARKER_PT}; as afirmações marcadas assim não têm uma fonte verificada.`;
 export const UNREAD_SOURCES_REVISION_INSTRUCTION = [
   'The owner requested source reads. These cited URLs were not read successfully in this response: ',
   '. Revise your answer: replace each listed URL with a page you actually read successfully in this response that supports the same claim, ' +
@@ -253,8 +249,8 @@ export function unwrapMarker(text, marker) {
 // marker, plus a fixed note. Undefined when no cited page was read, nothing
 // but links would remain, or the result cannot be delivered intact; the caller
 // then keeps the full replacement.
-function partialCitationAnswer(text, opened, portuguese) {
-  const marker = portuguese ? UNREAD_SOURCE_MARKER_PT : UNREAD_SOURCE_MARKER;
+function partialCitationAnswer(text, opened) {
+  const marker = UNREAD_SOURCE_MARKER;
   const answer = String(text ?? '').replace(CONTROL_CHARACTERS, '');
   const read = readKeys(opened);
   const spans = citationSpans(answer, read);
@@ -275,7 +271,7 @@ function partialCitationAnswer(text, opened, portuguese) {
   if ((prose.match(/[\p{L}\p{N}]/gu)?.length ?? 0) < MIN_PROSE_CHARS) return;
   const fences = [...delivered.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)].map(match => match[1]);
   const closing = fences.length % 2 ? `\n${fences.at(-1)}` : '';
-  return `${delivered}${closing}\n\n${portuguese ? UNREAD_SOURCE_NOTE_PT : UNREAD_SOURCE_NOTE}`;
+  return `${delivered}${closing}\n\n${UNREAD_SOURCE_NOTE}`;
 }
 function sourceUrls(result) {
   const documents = [result?.details];
@@ -324,7 +320,7 @@ export function executionContext(now = new Date()) {
   return 'For exact file contents, prefer write and verify the bytes with read. If shell writing is required, use portable printf with a literal format, not echo -n or echo escape handling, which differs between shells. Do not claim a match when readback differs. ' +
     hostDateContext(now) +
     'Honor the owner\'s explicit date and timezone. When searching, anchor dates and months to that current date. For current news, verify publication dates in sources; do not label older results as today\'s news. ' +
-    'An action request requires execution, not a final promise. Short follow-ups such as "ok, consulte" continue the preceding owner task. Tool Search discovers capabilities, not news or files: use tool names in its query, then invoke the returned exact ID and schema. Empty search results do not prove that an event did not occur or that a date is future. Try a relevant public source directly or state what remains unverified. When a material preference is missing, discover pixel_ods_ask_user to present 1–3 questions with choices, then wait. Its exact arguments look like {"questions":[{"id":"style","question":"Which style?","options":["Minimal","Colorful"]}]}; translate the question and options into the owner language. Do not ask about routine steps or use choices as permission for unrelated actions.';
+    'An action request requires execution, not a final promise. Short follow-ups such as "ok, go ahead" continue the preceding owner task. Tool Search discovers capabilities, not news or files: use tool names in its query, then invoke the returned exact ID and schema. Empty search results do not prove that an event did not occur or that a date is future. Try a relevant public source directly or state what remains unverified. When a material preference is missing, discover pixel_ods_ask_user to present 1–3 questions with choices, then wait. Its exact arguments look like {"questions":[{"id":"style","question":"Which style?","options":["Minimal","Colorful"]}]}; write the question and options in the reply language. Do not ask about routine steps or use choices as permission for unrelated actions.';
 }
 
 export function researchRequested(text) {
@@ -357,7 +353,16 @@ function continuedOwnerRequest(ownerText, event) {
   return typeof users.at(-2)?.content === 'string' ? users.at(-2).content : '';
 }
 
-export function createCompletionAssurance() {
+// Only the citation check's reading of an ambiguous numeric date (05/11/2026)
+// in the answer. It selects no text. Words that are also English (internet,
+// configure, VC, qual) are not evidence of Portuguese. "Procure" stays: it is
+// the usual Portuguese verb for "search for", so an English "procure" request
+// also has such dates read day-first.
+export function portugueseDateHint(ownerText) {
+  return /\b(?:voce|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|instale|instalar|baixar|configurar|quais|qual (?:e|o|a|os|as|sao))\b/.test(normalize(ownerText));
+}
+
+export function createCompletionAssurance({englishOnly = false} = {}) {
   let initialized = false, research = false, portuguese = false, conversational = false, attempts = 0;
   let readsRequired = false, attributionAttempts = 0;
   let workObserved = false, webObserved = false, terminal, terminalStatus = 'failed';
@@ -411,7 +416,7 @@ export function createCompletionAssurance() {
       research = readsRequired || researchRequested(ownerText) || researchRequested(precedingRequest);
       terms = requestTerms(ownerText, precedingRequest);
       conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
-      portuguese = /\b(qual|voce|vc|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|internet|instale|instalar|baixar|configure|configurar)\b/.test(normalize(ownerText));
+      portuguese = !englishOnly && portugueseDateHint(ownerText);
     },
     // The owner cancelled this run. Any revision it armed, its replacement
     // text and any pending host read are void; nothing here outlives it.
@@ -493,8 +498,8 @@ export function createCompletionAssurance() {
         // Armed before the revision (the harness may refuse another pass); a
         // later corrected answer clears it.
         terminalStatus = 'failed';
-        const partial = partialCitationAnswer(text, read, portuguese);
-        terminal = partial ?? (portuguese ? UNREAD_SOURCES_REPLACEMENT_PT : UNREAD_SOURCES_REPLACEMENT);
+        const partial = partialCitationAnswer(text, read);
+        terminal = partial ?? UNREAD_SOURCES_REPLACEMENT;
         if (attributionAttempts++ < 1) return {action:'revise', reason:'Cited pages lack current-turn read receipts.', retry:{
           idempotencyKey:'ods-opened-source-attribution', maxAttempts:1,
           instruction:UNREAD_SOURCES_REVISION_INSTRUCTION.join(JSON.stringify(unread)),
@@ -531,11 +536,9 @@ export function createCompletionAssurance() {
       // as support. Never append arbitrary search hits or even read pages:
       // the answer may have deliberately discarded them as irrelevant.
       terminal = attributionOnly
-        ? text.slice(0,16000) + '\n\n' + (portuguese
-          ? '**Verificação de fontes:** houve pesquisa, mas esta resposta não vinculou suas conclusões às fontes consultadas. A atribuição permanece incompleta.'
-          : '**Source check:** research was performed, but this answer did not link its conclusions to the consulted sources. Attribution remains incomplete.')
-        : (portuguese ? 'A execução solicitada não foi confirmada. A tarefa ficou incompleta; não tenho um resultado verificado para apresentar.'
-          : 'The requested execution was not confirmed. The task is incomplete; I do not have a verified result to report.');
+        ? text.slice(0,16000) + '\n\n' +
+          '**Source check:** research was performed, but this answer did not link its conclusions to the consulted sources. Attribution remains incomplete.'
+        : 'The requested execution was not confirmed. The task is incomplete; I do not have a verified result to report.';
       if (attempts++ < 2) {
         return {action:'revise', reason:missingCitations ? 'The research answer is missing source attribution.' : 'The requested action has no delivered result yet.', retry:{
           idempotencyKey:'ods-completion-assurance', maxAttempts:2,
@@ -550,9 +553,7 @@ export function createCompletionAssurance() {
       if (missingCitations && !promiseOnly && !missingResearch) {
         return {action:'finalize', reason:'Citation recovery exhausted.'};
       }
-      terminal = portuguese
-        ? 'Não consegui executar a ação solicitada após duas tentativas de recuperação. A tarefa ficou incompleta; não obtive evidência suficiente para apresentar um resultado verificado.'
-        : 'I could not execute the requested action after two recovery attempts. The task is incomplete; I do not have sufficient tool evidence to report a verified result.';
+      terminal = 'I could not execute the requested action after two recovery attempts. The task is incomplete; I do not have sufficient tool evidence to report a verified result.';
       return {action:'finalize', reason:'Bounded completion recovery exhausted.'};
     },
     // Read-only attribution check for an answer that cannot be revised (the

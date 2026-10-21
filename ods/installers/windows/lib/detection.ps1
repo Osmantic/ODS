@@ -139,6 +139,13 @@ function Get-GpuInfo {
             $raw = & nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv,noheader 2>$null
             if ($LASTEXITCODE -eq 0 -and $raw) {
                 $lines = @($raw -split "`n" | Where-Object { $_.Trim() })
+                # Windows on Arm also lists the NVIDIA NPU, whose memory is
+                # [N/A]. Beside a GPU with a memory size it is not a GPU, so it
+                # is neither counted nor read as the first GPU.
+                $sized = @($lines | Where-Object { [string](($_ -split ',')[1]) -match '\d' })
+                if ($sized.Count -gt 0) {
+                    $lines = @($lines | Where-Object { ([string](($_ -split ',')[1])).Trim() -notin @('[N/A]', 'N/A') })
+                }
                 $first = $lines[0] -split ","
                 $gpuName = $first[0].Trim()
                 $vramStr = $first[1].Trim() -replace "[^\d]", ""

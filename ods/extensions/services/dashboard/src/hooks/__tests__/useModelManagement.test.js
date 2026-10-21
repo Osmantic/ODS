@@ -24,6 +24,23 @@ test.each([
   }
 })
 
+test.each([
+  [{ ...management, running: false, canActivate: false, runtimeError: 'The model was not started: fixture.', startRefusal: 'memory_refused' },
+    'The model was not started: fixture.', 'memory_refused'],
+  [{ ...management, running: false, canActivate: false, runtimeError: 'llama-server startup failed: fixture.' }, 'llama-server startup failed: fixture.', ''],
+  [{ ...management, running: false, canActivate: false, runtimeError: 'The model was not started: fixture.', startRefusal: 'other' },
+    'The model was not started: fixture.', ''],
+  [{ ...management, runtimeError: 'running models show no error', startRefusal: 'memory_refused' }, '', ''],
+  [{ ...management, managed: false, running: false, canActivate: false, runtimeError: 'not ours', startRefusal: 'memory_refused' }, '', ''],
+  [{ ...management, running: false, canActivate: false, startRefusal: 'memory_refused' }, '', ''],
+])('carries the launcher error and a memory start refusal only for a stopped managed runtime (%j)', async (capability, runtimeError, startRefusal) => {
+  vi.stubGlobal('fetch', vi.fn(async () => response(payload({ modelManagement: capability }))))
+  const { result } = renderHook(() => useModels())
+  await waitFor(() => expect(result.current.loading).toBe(false))
+  expect(result.current.modelManagement.runtimeError).toBe(runtimeError)
+  expect(result.current.modelManagement.startRefusal).toBe(startRefusal)
+})
+
 test.each([['stop', 'stopped', false], ['start', 'started', true]])('confirms %s and refreshes actual runtime state', async (operation, status, running) => {
   let current = { ...management, running: !running, canActivate: !running }
   let finish
