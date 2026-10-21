@@ -13,6 +13,14 @@ no model transaction is pending. Only then may the worker remove the bootstrap
 model. A rejected or ambiguous activation keeps existing model files and does
 not fall through to the legacy restart or retry the activation request.
 
+One refusal starts nothing and is not ambiguous: HTTP 409 with code
+`model_lifecycle_busy`, sent while another operation owns the model lifecycle.
+On a Mac with native Pixel the host agent's Pixel access check holds that
+lifecycle while it runs, every 30 seconds. The worker sends the same request
+again every 5 seconds for up to 10 minutes; if the lifecycle stays busy, the
+upgrade stops with nothing activated and the downloaded full model can be
+chosen on the Models page.
+
 ## An installation that already has a pending switch
 
 This change prevents future uncoordinated promotion. It is **not a reset or

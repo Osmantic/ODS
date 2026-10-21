@@ -523,6 +523,43 @@ count, SHA-256 digest, bound HTTPS source, `executable=false`, and
 workspace substitute, or a broker staging receipt can never satisfy this
 contract.
 
+### What the agent sandbox can run
+
+In Sandbox mode, Portal's `exec` commands run in Pixel's Docker sandbox
+(`vendor/pixel/deploy/sandbox/Dockerfile`). It has bash, python3 without pip,
+git, rg, jq, rsync, curl, OCR and PDF tools, and Node.js: the official `node`
+binary, pinned by SHA-256 for amd64 and arm64 in
+`vendor/pixel/RELEASE-MANIFEST.json` (`sandboxNodeRuntime`). npm, npx and
+corepack are not in the image, and the sandbox has no network, so the agent can
+run `node --check`, plain scripts and `node --test` offline but cannot install
+packages. There is no DOM or canvas; browser behaviour is still checked on the
+published preview with `pixel_ods_workspace_preview_inspect`. Workspace npm
+projects with dependencies use the separate `pixel_ods_project_build` service
+where it is installed.
+
+The same image definition serves Linux, WSL (including Arm64) and native macOS
+Pixel, which builds it for `linux/arm64`. Bootstrap (`pixel bootstrap --apply`)
+on Linux and WSL, and native preparation on macOS, run the new image's `node`
+once offline and refuse an image with another version or architecture or with a
+package manager before any live change. Building the image downloads Debian
+packages from deb.debian.org and Node.js from nodejs.org. Full Access runs
+commands natively instead, and its prompt makes no claim about installed
+runtimes. Existing installations pick up the runtime through a normal ODS
+update, which brings a new Pixel version and rebuilds the sandbox image. The
+update also removes the previous agent sandbox container before the new
+gateway starts (Linux and WSL through `openclaw sandbox recreate`, a macOS
+native update through Docker while every Pixel job is stopped). OpenClaw would
+otherwise keep a container used in the last five minutes on the old image. The
+container holds no state, because the workspace is a bind mount.
+
+A node check, test or harness that exits 1 with output is recorded as a test
+result, not as a failed tool call, up to `FREE_NODE_RESULTS_PER_RUN` per
+response, so the edit and test loop the agent is asked to run does not end the
+response at the run's failure limits. A missing node, a missing script, a
+timeout, a crash without output and inline `node -e` code still count as
+failures. `extensions/services/pixel-agent/COMPLETION-RELIABILITY.md` has the
+exact rules.
+
 ### Cancellation and sandbox execution
 
 The Dashboard cancel path is an execution boundary, not only a UI gesture.
@@ -675,12 +712,15 @@ managed agent route supports OpenClaw's 4096-token minimum, including the
 bundled 8K T0 profile. Models below 16K run in a deliberately constrained
 adaptive mode, where task complexity and reliability vary with the available
 prompt budget; they are not excluded. An advanced custom activation below 4K
-is rejected before any model state changes. Below 32K, ODS lowers Pixel's
-output ceiling to one quarter of the context; at 32K and above it allows up to
-4096 output tokens. ODS derives OpenClaw's compaction reserve from that output
-ceiling and enables a half-window reserve floor for 8K-31K adaptive profiles,
-where dense tool transcripts can otherwise outrun OpenClaw's character-based
-estimate. The retained recent tail is capped at one sixteenth of the selected
+is rejected before any model state changes. ODS sets Pixel's output ceiling to
+one quarter of the context, up to 8192 tokens. OpenClaw's compaction reserve is
+one fifth of the context plus four fifths of that output ceiling, with no
+separate reserve floor, because a redundant floor can reject otherwise usable
+compacted history. At 8K this leaves about 4.9K tokens for the prompt and tool
+definitions, which many Portal tasks exceed ("context overflow"). With
+`ODS_MODEL_PROFILES=enabled`, Portal shows a "context too small" advisory for a
+local model served below 16K, with the fix: load it with more context, or switch
+models. The retained recent tail is capped at one sixteenth of the selected
 context (and 20K tokens globally), so compaction always removes real history
 instead of recording a no-op when the runtime's fixed 20K default exceeds the
 whole model window.
@@ -775,12 +815,67 @@ act as a capability gate:
   Every creative artifact follows the same model-authored workspace path.
   Open-ended demos, games, task boards, animated SVGs, voxel scenes, named
   designs, and arbitrary sites must be written by the active model before the
-  preview adapter can publish them. ODS contains no creative templates or
-  generated starter bytes. The adapter accepts only the existing relative
-  directory, so safety enforcement, static validation, snapshot isolation, and
-  HTTP readback cannot be confused with authorship. Pixel may author either a
-  self-contained `index.html` or a richer set of local files; ODS imposes no
-  creative-size ceiling and publishes only the exact completed snapshot.
+  preview adapter can publish them. The adapter never supplies or fabricates
+  creative bytes, and new creative work is always written by the active model.
+  ODS ships one finished example project, Elf of Doom, which Portal wrote in
+  ODS from natural-language prompts. The installers copy it to
+  `Playground/elf-of-doom` whenever Playground/elf-of-doom is absent and the
+  workspace has never received it (a private record in the OpenClaw state
+  folder, `.ods-example-projects/<SHA-256 of the workspace path>.json`, which
+  the agent's sandbox never mounts, lists each example received, so a deleted
+  or renamed copy is never added again, and each one ODS itself added; the
+  run after one that stopped before writing it recognizes ODS's own unchanged
+  copy), and never replace, merge into or delete an existing entry of that
+  name; it is ordinary owner content. Only a folder the record says ODS
+  added is the example: an owner's own earlier `Playground/elf-of-doom` is
+  neither listed as it nor guarded.
+  While the folder exists, Portal's sidebar lists it under
+  Projects > Playground like any other project, and clicking it publishes that
+  existing folder through the same create-only preview service with no model
+  run (the plugin's gateway route `/pixel-ods/example-projects`, relayed by
+  the ingress, the edge and `/api/pixel/example-projects`). Portal changes
+  it only when the owner's own message starts with "In elf-of-doom,", for
+  example "In elf-of-doom, make the arrows give 7"; on such a turn project
+  routing keeps every write, edit and exec working folder in
+  Playground/elf-of-doom and does not treat the request as a new project.
+  When any other run changes it, ODS puts it back, and the reply Portal
+  shows ends with one line saying so: the run's verification carries it as
+  `notice`, which the ingress adds after the delivered reply
+  (`host/pixel_ingress.mjs`). The plugin (`plugin/example-guard.mjs`) keeps
+  a known-good tree of the folder in memory:
+
+  - When a run starts while no other Portal run works in that workspace, the
+    folder as it is then becomes the known-good tree; a run never restores
+    when it starts. So what changed while Portal was idle is the owner's: a
+    hand edit, a folder the owner deleted, or what an earlier run's
+    background process wrote after that run ended.
+  - For a run whose message does not have that form, the folder is compared
+    with the tree after each tool call, at finalize and when the run ends,
+    and restored exactly on any difference. Nothing ODS finds there is
+    deleted: what it takes out (a changed file, or a file or folder moved
+    in) is moved to a new folder beside it,
+    `Playground/elf-of-doom-recovered-<UTC time>`, and the owner's line
+    names that folder. A link found there is removed itself, never what it
+    points to.
+  - From the start of a run with that form until it ends (or its deadline
+    plus two minutes, if the gateway never sees its end), no other run's
+    change is undone, and its end makes the folder as it is then the
+    known-good tree. So with two chats at once, what one changes while the
+    other names the example stays. A run that starts while another works
+    keeps the tree it finds.
+
+  The guard protects a folder of at most 512 files and folders and 16 MiB
+  that holds no link or hard-linked file; otherwise it leaves the folder to
+  the owner and logs that once. After a gateway restart the folder as the
+  gateway first finds it is the known-good tree. To remove the example, the
+  owner deletes the folder; the record keeps the installers from adding it
+  again. This keeps the owner's game safe from mistakes; it is not a
+  sandbox. The adapter accepts only the existing relative
+  directory, so safety enforcement, static validation, snapshot isolation,
+  and HTTP readback cannot be confused with authorship. Pixel may author
+  either a self-contained `index.html` or a richer set of local files; ODS
+  imposes no creative-size ceiling and publishes only the exact completed
+  snapshot.
 
 The status tools read only `/run/ods-pixel/ods-status.json`. The plugin does not
 receive the Docker socket, Dashboard API key, Open WebUI key, host shell, or ODS

@@ -2,7 +2,8 @@
 """Keep owner-private and fleet-specific text out of what every user receives.
 
 Pixel copies its workspace template into each new workspace and reads those
-files as instructions; the agent and stack templates are offered to every user.
+files as instructions; the agent and stack templates are offered to every user,
+and the installers copy ODS's example Portal projects into each workspace.
 None of them may carry a maintainer's name, test machines, private workflow
 terms, personal home paths or LAN addresses.
 
@@ -20,7 +21,8 @@ import re
 import sys
 
 ODS = Path(__file__).resolve().parents[1]
-SEEDED = ('vendor/pixel/workspace-template', 'agents/templates', 'templates')
+SEEDED = ('vendor/pixel/workspace-template', 'agents/templates', 'templates',
+          'extensions/services/pixel-agent/example-projects')
 MIGRATED = {'vendor/pixel/workspace-template/AGENTS.md', 'vendor/pixel/workspace-template/MEMORY.md'}
 
 # Names are decoded at run time, as in the retired-name guard, so this file

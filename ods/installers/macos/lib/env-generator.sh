@@ -88,11 +88,13 @@ upsert_env_value() {
         stage_dir="$(mktemp -d "${env_path}.stage.XXXXXX")" || return 1
         staged="$stage_dir/next"
         backup=""
+        preserve_backup=false
         found=false
-        trap 'rm -f "$staged"; if [[ -n "$backup" ]]; then rm -f "$backup"; fi; rmdir "$stage_dir"' EXIT
+        trap 'rm -f "$staged"; if [[ "$preserve_backup" == false ]]; then if [[ -n "$backup" ]]; then rm -f "$backup"; fi; rmdir "$stage_dir"; fi' EXIT
         if [[ -f "$env_path" ]]; then
             backup="$stage_dir/previous"
             cp "$env_path" "$backup" || return 1
+            cmp -s "$env_path" "$backup" || return 1
             : > "$staged" || return 1
             while IFS= read -r line || [[ -n "$line" ]]; do
                 if [[ "$line" == "$key="* ]]; then
@@ -106,10 +108,11 @@ upsert_env_value() {
                 printf '%s=%s\n' "$key" "$value" >> "$staged" || return 1
             fi
             if ! cat "$staged" > "$env_path" || ! cmp -s "$staged" "$env_path"; then
-                cp "$backup" "$env_path" || {
-                    echo "ERROR: failed to restore $env_path after an incomplete write" >&2
+                if ! cp "$backup" "$env_path" || ! cmp -s "$backup" "$env_path"; then
+                    preserve_backup=true
+                    echo "ERROR: failed to restore $env_path after an incomplete write; original retained at $backup" >&2
                     return 1
-                }
+                fi
                 return 1
             fi
         else

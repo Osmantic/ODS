@@ -2048,3 +2048,129 @@ def test_talk_status_judges_an_import_on_its_live_context_only(talk_client, monk
     )
     data = talk_client.get("/api/talk/status").json()
     assert data["modelCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"
+
+
+def _patch_profile_status(monkeypatch, *, mode, status):
+    calls = []
+
+    async def host_status(method, path, timeout):
+        calls.append((method, path))
+        if isinstance(status, Exception):
+            raise status
+        return status
+
+    monkeypatch.setattr("routers.talk.read_live_env_value",
+                        lambda key: mode if key == "ODS_MODEL_PROFILES" else "")
+    monkeypatch.setattr("routers.talk.request_agent_json", host_status)
+    return calls
+
+
+def test_talk_status_adds_the_tools_advisory_with_profiles_enabled(talk_client, monkeypatch):
+    # Any-model WP4.4: a failed tool check informs; ODS Talk stays usable.
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"},
+                        live_context=65536)
+    profile = {"state": "measured", "tools": False, "thinkingControl": "enable_thinking"}
+    calls = _patch_profile_status(monkeypatch, mode="enabled", status={"activeModelProfile": profile})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert calls == [("GET", "/v1/model/status")]
+    assert data["modelCompatibility"]["hermesTalkAdvisory"] == {"code": "tools-unavailable"}
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+
+
+@pytest.mark.parametrize("mode, status", [
+    ("observe", {"activeModelProfile": {"state": "measured", "tools": False, "thinkingControl": None}}),
+    ("", {"activeModelProfile": {"state": "measured", "tools": False, "thinkingControl": None}}),
+    ("enabled", {"activeModelProfile": {"state": "measured", "tools": True, "thinkingControl": None}}),
+    ("enabled", {"status": "idle"}),
+])
+def test_talk_status_has_no_tools_advisory_otherwise(talk_client, monkeypatch, mode, status):
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"},
+                        live_context=65536)
+    calls = _patch_profile_status(monkeypatch, mode=mode, status=status)
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert "hermesTalkAdvisory" not in data["modelCompatibility"]
+    assert data["capabilities"]["text_chat"] is True
+    # Observe and off never ask the host for a profile.
+    assert calls == ([] if mode != "enabled" else [("GET", "/v1/model/status")])
+
+
+def test_talk_status_survives_an_unreachable_host_agent(talk_client, monkeypatch):
+    from host_agent_client import AgentClientError
+
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"},
+                        live_context=65536)
+    _patch_profile_status(monkeypatch, mode="enabled", status=AgentClientError("unreachable"))
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert "hermesTalkAdvisory" not in data["modelCompatibility"]
+    assert data["capabilities"]["text_chat"] is True
+
+
+_WHISPER_MANIFEST = (
+    "schema_version: ods.services.v1\n"
+    "service:\n"
+    "  id: whisper\n"
+    "  name: Whisper (STT)\n"
+    "  port: 8000\n"
+    "  health: /health\n"
+)
+
+
+def _later_added_whisper(monkeypatch, tmp_path, compose_name):
+    """A Whisper extension that was off when dashboard-api started."""
+    from types import SimpleNamespace
+
+    import routers.talk as talk
+
+    whisper = tmp_path / "whisper"
+    whisper.mkdir()
+    (whisper / "manifest.yaml").write_text(_WHISPER_MANIFEST)
+    (whisper / compose_name).write_text("services: {}\n")
+    monkeypatch.setattr(talk, "EXTENSIONS_DIR", tmp_path)
+    monkeypatch.setattr(talk, "SERVICES", {})
+    checked = []
+
+    async def healthy(service_id, cfg):
+        checked.append((service_id, cfg["port"], cfg["health"]))
+        return SimpleNamespace(status="healthy")
+
+    monkeypatch.setattr(talk, "check_service_health", healthy)
+    return talk, checked
+
+
+@pytest.mark.asyncio
+async def test_talk_checks_a_voice_service_added_after_startup(monkeypatch, tmp_path):
+    # Extensions → Add renames compose.yaml.disabled without restarting dashboard-api.
+    talk, checked = _later_added_whisper(monkeypatch, tmp_path, "compose.yaml")
+
+    assert await talk._service_state("whisper") == {"configured": True, "status": "healthy"}
+    assert checked == [("whisper", 8000, "/health")]
+
+
+@pytest.mark.asyncio
+async def test_talk_does_not_check_a_voice_service_that_is_still_off(monkeypatch, tmp_path):
+    talk, checked = _later_added_whisper(monkeypatch, tmp_path, "compose.yaml.disabled")
+
+    assert await talk._service_state("whisper") == {"configured": False, "status": "not_configured"}
+    assert checked == []
+
+
+@pytest.mark.asyncio
+async def test_talk_reads_no_manifest_for_a_service_outside_the_library(monkeypatch, tmp_path):
+    import routers.talk as talk
+
+    monkeypatch.setattr(talk, "SERVICES", {})
+    monkeypatch.setattr(talk, "EXTENSIONS_DIR", tmp_path / "missing")
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("only Library built-ins are re-read")
+
+    monkeypatch.setattr(talk, "load_extension_manifests", unexpected)
+
+    assert await talk._service_state("livekit") == {"configured": False, "status": "not_configured"}

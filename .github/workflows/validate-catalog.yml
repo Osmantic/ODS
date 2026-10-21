@@ -7,12 +7,24 @@ on:
       - 'ods/extensions/library/services/*/manifest.yaml'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
+      - 'ods/config/chat-templates/**'
+      - 'ods/scripts/validate-chat-templates.py'
+      - 'ods/scripts/vendor-chat-templates.py'
+      - 'ods/bin/model_profile/templates.py'
+      - 'ods/tests/test_chat_templates.py'
+      - '.github/workflows/validate-catalog.yml'
   pull_request:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
+      - 'ods/config/chat-templates/**'
+      - 'ods/scripts/validate-chat-templates.py'
+      - 'ods/scripts/vendor-chat-templates.py'
+      - 'ods/bin/model_profile/templates.py'
+      - 'ods/tests/test_chat_templates.py'
+      - '.github/workflows/validate-catalog.yml'
 
 permissions:
   contents: read
@@ -44,3 +56,25 @@ jobs:
             echo "::error::extensions-catalog.json is out of date. Run: python ods/scripts/generate-extensions-catalog.py"
             exit 1
           fi
+
+  chat-templates:
+    # Fixed chat templates (any-model WP5): the curated override index and the
+    # llama.cpp templates vendored for it, with their license and SHA-256s.
+    name: Check chat template overrides
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.12"
+
+      - name: Install pytest
+        run: python -m pip install 'pytest==8.4.2'
+
+      - name: Validate the index and the vendored templates
+        run: python ods/scripts/validate-chat-templates.py
+
+      - name: Test the validator and the vendoring script
+        run: python -m pytest -q ods/tests/test_chat_templates.py

@@ -81,14 +81,77 @@ NVIDIA and macOS retain their existing model-management paths.
 The **Hugging Face** source searches the live Hub and only offers complete GGUF
 artifacts with exact byte-size and SHA-256 metadata. Before download, ODS
 re-reads the selected repository, pins its immutable revision, rejects
-projectors, adapters, incomplete split files, and repositories intended for a
-different runtime, then asks the host agent to download and verify every file.
+adapters, incomplete split files, and repositories intended for a different
+runtime, then asks the host agent to download and verify every file.
 Community imports are labelled as unvalidated until they have been benchmarked
 on the local machine; they are not added to the ODS recommended catalog.
 
+#### Checks before download
+
+When you open a repository, ODS reads the GGUF metadata header of one of its
+files with HTTP range requests (usually 1–16 MB, never the model weights) and
+reports, before anything is downloaded:
+
+- **Runtime support.** Each llama.cpp build ODS pins can load a fixed set of
+  model architectures (`config/llama-cpp-architectures.json`, generated from
+  llama.cpp's own source). A model whose architecture the build on this machine
+  does not list is refused: loading it would fail after the download. If you
+  know better, **Import anyway** imports it after an explicit warning; the
+  switch then proves whether it loads and returns to your current model if it
+  does not.
+- **Model kind.** Embedding, reranking, speech and image models, and vision
+  projector files on their own, are not chat models. ODS refuses them as the
+  chat model and names the service that runs that kind of model instead.
+- **Memory fit.** The header's attention layout feeds the same estimate the
+  installer uses, per quantization: fits at the context ODS would serve, fits
+  below the 64K that ODS Talk needs, or too large. Layouts ODS cannot size
+  precisely are labelled as a rough estimate.
+- **Template signals.** Whether the file's own chat template describes tool
+  calls and thinking. These are hints from the file; how the model behaves
+  shows only once you use it.
+- **Disk space.** An import is refused before it starts when the model store
+  would keep less than 2 GB or 5% of its drive, whichever is larger.
+
+#### Vision models
+
+A repository that ships a vision projector (an `mmproj` GGUF) beside its
+weights offers **Include vision**. ODS then downloads the projector with the
+chosen weights (F16 first, then BF16, F32 or Q8_0, or the repository's only
+one), verifies it like the weights, and loads it with the model so the model
+can read images; the memory and disk checks include it. Unticking it imports
+the weights alone, and the disk check then counts the weights alone. Deleting the model also removes its projector unless another
+installed model uses it. While a projector is loaded, llama.cpp does not reuse
+cached prompt chunks (`--cache-reuse`).
+
+On Windows the projector is loaded by the llama.cpp launcher that Windows setup
+installs. An installation set up before vision support says so in the import
+dialog and imports the weights alone until Windows setup is run again. Docker
+Desktop installations whose llama.cpp runs on Windows itself import the weights
+alone.
+
+When the switch to a model finishes, ODS reads llama.cpp's own report of
+whether a projector is loaded (`/props` `modalities.vision`). If it is, Portal
+treats the model as able to read images: images you attach are sent without
+the image-test confirmation, and Portal's preview check shows the model a
+screenshot of the page it built. A model that runs without a projector keeps
+the earlier setting, so Portal asks before sending it an image. An
+installation already running a vision model picks this up on its next switch.
+Updating ODS (rerunning the installer) keeps the model and its projector, as
+long as the projector file is still beside the weights, but it clears this
+setting: Portal asks before sending images again until your next switch on
+the Models page reads the projector back.
+
+These checks never block on missing information: when Hugging Face does not
+answer (for example a rate limit), the dialog says which checks could not run
+and the import stays available. Each header read counts as one download in
+the repository's Hugging Face statistics, so ODS reads one file per repository
+you open and nothing for search results.
+
 ODS requests the Hub's parsed GGUF metadata together with the repository and
-uses its declared context window when available. After download, the context
-stored in the local GGUF header takes precedence over Hub and catalog values.
+uses its declared context window when available. The selected file's own
+header, read before download, takes precedence over the Hub summary, and after
+download the context stored in the local GGUF header takes precedence over Hub
+and catalog values.
 Some community repositories do not publish parseable context metadata. ODS
 labels that limit as unknown instead of presenting a guessed maximum, starts
 from a conservative 8K runtime default, and still permits an explicit context
@@ -187,9 +250,72 @@ still depends on the selected model and available context, but the route is not
 blocked. A requested context below 4K is rejected before activation writes
 files or restarts services. ODS gives Pixel an output ceiling of one quarter
 of the committed context, capped at 8192 tokens. Compaction keeps a
-context-scaled recent tail and uses extra headroom
-for 8K-31K profiles so recovery occurs before a dense tool transcript exhausts
-the model window.
+context-scaled recent tail and reserves room for that output ceiling. At 8K
+that leaves about 4.9K tokens for Portal's prompt and tools, which many tasks
+exceed; Portal then reports a context overflow. Load such a model with 16K or
+more where it supports it.
+
+### What a model can do (model profiles)
+
+The first time a model runs on this machine, ODS checks what it can actually
+do before Portal and the other apps switch to it. The Models page shows
+**Checking what this model can do (first time only)** while it runs. The check
+takes up to two minutes and happens once per model file, llama.cpp build and
+machine. ODS:
+
+- asks for a plain answer;
+- asks the model to call a tool, hands back the tool's result, and repeats the
+  call as a stream;
+- turns thinking on and off, where the model's template allows it;
+- shows it a small image, when the model was imported with its vision projector;
+- measures its generation speed.
+
+The result appears under the running model on the Models page, with
+**Check again**. Everything stays on the machine: the check talks only to the
+local model, and results are stored in `data/model-profiles.json`. A failed or
+unfinished check never blocks a switch.
+
+The tool check uses one small tool. Passing it shows that the model's tool
+calls work with this machine's llama.cpp; it does not promise that the model
+finishes every multi-step Portal task. Small models can still end some tasks
+without an answer.
+
+By default profiles are advisory (`ODS_MODEL_PROFILES=observe` in `.env`):
+apps keep working exactly as before. `off` skips the check.
+
+With `ODS_MODEL_PROFILES=enabled`, the apps also use what the check measured,
+from the next switch:
+
+- The model route records whether the model can call tools and read images.
+  A model that failed the tool check is not offered to agents as agent-ready,
+  unless the curated catalog has verified it for agents.
+- Portal shows one advisory above the conversation when the model is served
+  below 16K tokens of context, failed the tool check, has not been checked yet,
+  or always thinks before it answers. Chat always stays available.
+- ODS Talk notes when the model failed the tool check; Talk stays available.
+- Portal's agent is told whether the model reasons and reads images from the
+  check, instead of from the model's name and the catalog. Where Pixel is
+  managed without the Portal coordinator, its rendered config also follows
+  the measured way of turning thinking off.
+
+Turning `enabled` on, or **Check again**, updates the advisories and the
+agent-ready status at once; the route record and Portal's agent settings
+follow on the next switch.
+
+#### Fixed chat templates
+
+A few models carry a chat template that does not work well with llama.cpp,
+for example one that loses tool calls. ODS ships fixed templates from
+llama.cpp for templates it knows to be broken (`config/chat-templates/`,
+reviewed like code and checked by SHA-256). When the check shows that the
+running model's own template is exactly one of them, the Models page offers
+**Try a fixed template**: ODS restarts the model with the fixed template and
+checks it again. A later switch clears it. With `ODS_MODEL_PROFILES=enabled`,
+ODS tries the fixed template by itself when the model does not answer the
+first check: it keeps the fixed template if the model then answers, and
+otherwise returns to the model's own template, all within the same two-minute
+check. Templates are never downloaded while ODS runs. The Windows model
+runtimes cannot use a fixed template yet.
 
 ### Choosing the runtime context
 
@@ -235,6 +361,12 @@ credential. Enter the provider model ID, context window, maximum output tokens,
 and whether that route supports reasoning. Those limits become Pixel's managed
 runtime contract, so model-family and context changes are explicit instead of
 being guessed from a provider response.
+
+Maximum output tokens defaults to a quarter of the context window, at most
+32768 (`ods remote-provider configure --max-tokens` sets it). Portal writes each
+file in one reply, so use the provider's real output limit. When a reply still
+reaches it, the cut-off tool call does not run: Portal names the limit and the
+file, and the chat's next turn writes that file in smaller parts.
 
 For a direct HTTPS provider, **Configure** first performs a bounded provider
 probe. ODS then writes the private egress credential, renders the cloud
@@ -568,6 +700,9 @@ Common causes:
 - The model needs more VRAM or unified memory than the machine has.
 - Context length is too high; lower `CTX_SIZE` / `MAX_CONTEXT`.
 - The GGUF is not compatible with the active backend.
+- The model's architecture is newer than this machine's llama.cpp build. The
+  Hugging Face browser checks this before download; a model imported with
+  **Import anyway** can still fail here.
 
 ### Open WebUI or another app still shows the old model
 

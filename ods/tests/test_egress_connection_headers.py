@@ -1,6 +1,8 @@
 """Exercise egress caller auth and header forwarding through its ASGI HTTP boundary."""
 import importlib.util
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -11,6 +13,180 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bin"))
 # The LiteLLM gateway key, as LiteLLM and dashboard-api present it.
 CALLER = {"Authorization": "Bearer caller-token"}
+
+
+@pytest.mark.parametrize("endpoint", ["chat/completions", "completions", "responses"])
+@pytest.mark.parametrize("status", [200, 429])
+def test_slow_drip_is_bounded_and_closed(egress, monkeypatch, endpoint, status):
+    monkeypatch.setattr(egress, "UPSTREAM_TIMEOUT_SECONDS", 0.12)
+    closed = []
+
+    class Drip(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(18):
+                await asyncio.sleep(0.02)
+                yield b"data: {\"choices\": []}\n\n"
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            closed.append(True)
+
+    def provider(request):
+        return httpx.Response(status, stream=Drip(), headers={"retry-after": "7"})
+
+    with TestClient(egress.app) as client:
+        transport = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+        monkeypatch.setattr(egress, "_http_client", lambda key="": transport)
+        started = time.monotonic()
+        response = client.post("/v1/" + endpoint, json={"stream": True}, headers=CALLER)
+        elapsed = time.monotonic() - started
+        client.portal.call(transport.aclose)
+    assert response.status_code == status
+    assert response.headers["retry-after"] == "7"
+    assert b"data:" in response.content
+    assert b"[DONE]" not in response.content
+    assert elapsed < 0.3
+    assert closed == [True]
+    assert egress.app.state.completion_sample is None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_header_wait_uses_same_total_deadline(egress, monkeypatch, stream):
+    monkeypatch.setattr(egress, "UPSTREAM_TIMEOUT_SECONDS", 0.08)
+    cancelled = []
+
+    async def provider(request):
+        try:
+            await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return httpx.Response(200, json={"ok": True})
+
+    with TestClient(egress.app) as client:
+        transport = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+        monkeypatch.setattr(egress, "_http_client", lambda key="": transport)
+        response = client.post("/v1/chat/completions", json={"stream": stream}, headers=CALLER)
+        client.portal.call(transport.aclose)
+    assert response.status_code == 504
+    assert response.json()["error"]["type"] == "upstream_timeout"
+    assert cancelled == [True]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_headers_and_body_share_one_budget(egress, monkeypatch, stream):
+    monkeypatch.setattr(egress, "UPSTREAM_TIMEOUT_SECONDS", 0.16)
+    closed = []
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"data: first\n\n"
+            await asyncio.sleep(0.1)
+            yield b"data: [DONE]\n\n"
+
+        async def aclose(self):
+            closed.append(True)
+
+    async def provider(request):
+        await asyncio.sleep(0.1)
+        return httpx.Response(200, stream=Body())
+
+    with TestClient(egress.app) as client:
+        transport = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+        monkeypatch.setattr(egress, "_http_client", lambda key="": transport)
+        response = client.post("/v1/chat/completions", json={"stream": stream}, headers=CALLER)
+        client.portal.call(transport.aclose)
+    if stream:
+        assert response.status_code == 200
+        assert response.content == b"data: first\n\n"
+    else:
+        assert response.status_code == 504
+        assert response.json()["error"]["type"] == "upstream_timeout"
+    assert closed == [True]
+
+
+def test_downstream_cancellation_closes_upstream(egress, monkeypatch):
+    entered = asyncio.Event()
+    closed = []
+
+    class Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            entered.set()
+            await asyncio.sleep(30)
+            yield b"unused"
+
+        async def aclose(self):
+            closed.append(True)
+
+    async def exercise():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, stream=Body()))) as upstream:
+            monkeypatch.setattr(egress, "_http_client", lambda key="": upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=egress.app),
+                                        base_url="http://fixture") as caller:
+                task = asyncio.create_task(caller.post("/v1/chat/completions",
+                    json={"stream": True}, headers=CALLER))
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        assert closed == [True]
+
+    asyncio.run(exercise())
+
+
+def test_real_httpx_slow_drip_releases_connection(egress, monkeypatch):
+    """Use real HTTPX/httpcore reads, with only the destination redirected locally."""
+    from dataclasses import replace
+
+    monkeypatch.setattr(egress, "UPSTREAM_TIMEOUT_SECONDS", 0.12)
+    prepare = egress.prepare_upstream_request
+
+    async def exercise():
+        released = asyncio.Event()
+
+        async def provider(reader, writer):
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n")
+            try:
+                while True:
+                    writer.write(b"data: partial\n\n")
+                    await writer.drain()
+                    await asyncio.sleep(0.02)
+            except (ConnectionError, asyncio.CancelledError):
+                pass
+            finally:
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except ConnectionError:
+                    pass
+                released.set()
+
+        server = await asyncio.start_server(provider, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+
+        def private_destination(**kwargs):
+            request = prepare(**kwargs)
+            return replace(request, url=f"http://127.0.0.1:{port}/v1/chat/completions",
+                           tls_server_name="")
+
+        monkeypatch.setattr(egress, "prepare_upstream_request", private_destination)
+        try:
+            async with server, httpx.AsyncClient(trust_env=False) as upstream:
+                monkeypatch.setattr(egress, "_http_client", lambda key="": upstream)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=egress.app),
+                                            base_url="http://fixture") as caller:
+                    response = await asyncio.wait_for(caller.post("/v1/chat/completions",
+                        json={"stream": True}, headers=CALLER), timeout=1)
+                assert response.status_code == 200
+                assert b"data: partial" in response.content
+                await asyncio.wait_for(released.wait(), timeout=1)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    asyncio.run(exercise())
 
 
 @pytest.fixture

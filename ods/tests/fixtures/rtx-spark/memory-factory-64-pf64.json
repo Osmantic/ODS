@@ -1,0 +1,27 @@
+{
+  "_source": "Synthesized, not measured: the factory split with a fixed 64 GB page file on C: and the 16 GB WSL limit ODS writes, 400 GiB free.",
+  "VisibleGiB": 62.5,
+  "CommitLimitGiB": 126.5,
+  "CommittedGiB": 12.0,
+  "CarveOutMiB": 63936,
+  "SystemDrive": "C:",
+  "PageFileActiveGiB": 64,
+  "PageFileConfiguredGiB": 64,
+  "OtherPageFileGiB": 0.0,
+  "PageFileAutomatic": false,
+  "PageFilePending": false,
+  "PagingFiles": [
+    "C:\\pagefile.sys 65536 65536"
+  ],
+  "WslConfig": {
+    "GiB": 16,
+    "Owner": "ods"
+  },
+  "WslNowGiB": null,
+  "RunningModelGiB": 0,
+  "ModelsDrive": "C:",
+  "FreeGiB": {
+    "C:": 400
+  },
+  "StackPresent": true
+}

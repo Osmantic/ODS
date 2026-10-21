@@ -27,6 +27,21 @@ def directory(path):
     return value
 
 
+# Hugging Face imports are described by data/model-imports.json. Without it a
+# retained imported GGUF comes back as an unregistered file, so the registry
+# travels with the models it describes.
+IMPORTS = 'model-imports.json'
+IMPORTS_LIMIT = 8 * 1024 * 1024
+
+
+def import_registry(path):
+    """The lstat of a retainable import registry: one regular file, bounded."""
+    value = path.lstat()
+    if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_size > IMPORTS_LIMIT:
+        raise ValueError('model import registry is not a single regular file under 8 MiB: ' + str(path))
+    return value
+
+
 def preflight(install):
     root, source, backup = paths(install)
     legacy = Path.home() / '.ods-models-backup'
@@ -50,6 +65,9 @@ def preflight(install):
         for parent in (source.parent, root.parent):
             if not os.access(parent, os.W_OK | os.X_OK):
                 raise ValueError('model preservation parent is not writable/searchable: ' + str(parent))
+        registry = source.parent / IMPORTS
+        if os.path.lexists(registry) and import_registry(registry).st_dev != original.st_dev:
+            raise ValueError('the model import registry is on a separate mount from the models')
     return root, source, backup
 
 
@@ -74,6 +92,10 @@ def preserve(install):
     after = directory(backup / 'models')
     if (after.st_dev, after.st_ino) != (original.st_dev, original.st_ino):
         raise ValueError('retained model directory identity changed')
+    registry = source.parent / IMPORTS
+    if os.path.lexists(registry):
+        import_registry(registry)
+        os.rename(registry, backup / IMPORTS)
     print(backup)
 
 
@@ -88,8 +110,14 @@ def restore(install):
     info = directory(backup)
     if info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('model backup owner or permissions changed')
-    if {p.name for p in backup.iterdir()} != {'models', 'custody.json'}:
+    inventory = {p.name for p in backup.iterdir()}
+    if inventory not in ({'models', 'custody.json'}, {'models', 'custody.json', IMPORTS}):
         raise ValueError('model backup inventory changed')
+    registry = backup / IMPORTS
+    if IMPORTS in inventory:
+        import_registry(registry)
+        if os.path.lexists(root / 'data' / IMPORTS):
+            raise ValueError('model import registry restore destination already exists')
     marker = backup / 'custody.json'
     marker_info = marker.lstat()
     if (not stat.S_ISREG(marker_info.st_mode) or marker_info.st_nlink != 1
@@ -114,6 +142,8 @@ def restore(install):
     if parent.st_dev != retained.st_dev:
         raise ValueError('model restore crossed filesystems')
     os.rename(backup / 'models', destination)
+    if IMPORTS in inventory:
+        os.rename(registry, root / 'data' / IMPORTS)
     marker.unlink()
     backup.rmdir()
 

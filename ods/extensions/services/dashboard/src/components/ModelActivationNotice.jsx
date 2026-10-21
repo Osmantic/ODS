@@ -5,6 +5,7 @@ import {modelActivationStatus} from '../lib/modelActivationStatus'
 const phases = {
   preparing: ['Preparing model switch', 'ODS is preparing the selected model.'],
   loading: ['Loading selected model', 'ODS is starting the selected model. Chat is paused while it loads.'],
+  profiling: ['Checking what this model can do (first time only)', 'ODS is trying the new model’s answers, tool calls and thinking on this machine. It takes up to two minutes, once per model.'],
   verifying: ['Checking selected model', 'ODS is checking that the selected model can respond before resuming chat.'],
   rolling_back: ['Model activation failed; restoring previous model', 'ODS is restoring the previous model. Wait for recovery to finish before starting another model operation.'],
   rollback_verifying: ['Checking the previous model', 'The selected model could not be activated. ODS is checking the restored model before resuming chat.'],

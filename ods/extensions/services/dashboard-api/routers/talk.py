@@ -23,8 +23,17 @@ from starlette.requests import ClientDisconnect
 
 import hermes_bridge
 import session_signer
-from config import INSTALL_DIR, SERVICES
+from config import (
+    EXTENSIONS_DIR,
+    GPU_BACKEND,
+    INSTALL_DIR,
+    LIBRARY_MANAGEABLE_BUILTINS,
+    SERVICES,
+    load_extension_manifests,
+    read_live_env_value,
+)
 from helpers import check_service_health, get_llama_context_size, get_llama_vision_support, get_loaded_model
+from host_agent_client import AgentClientError, async_request_json as request_agent_json
 from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
@@ -96,6 +105,23 @@ def _configured_context_length() -> int | None:
     return None
 
 
+async def _active_model_profile_tools() -> bool | None:
+    """The active model's measured tool-call result, with profiles enabled only.
+
+    The host reports it in ``activeModelProfile``; it feeds an advisory, never
+    a block (no probe result locks an owner out of chat).
+    """
+    if read_live_env_value("ODS_MODEL_PROFILES").strip().lower() != "enabled":
+        return None
+    try:
+        status = await request_agent_json("GET", "/v1/model/status", timeout=2.0)
+    except AgentClientError:
+        return None
+    profile = status.get("activeModelProfile") if isinstance(status, dict) else None
+    tools = profile.get("tools") if isinstance(profile, dict) else None
+    return tools if isinstance(tools, bool) else None
+
+
 async def _active_model_app_compatibility() -> dict[str, Any]:
     catalog = load_model_catalog(INSTALL_DIR)
     loaded_model = await get_loaded_model()
@@ -121,6 +147,7 @@ async def _active_model_app_compatibility() -> dict[str, Any]:
         entry or {},
         runtime_context=runtime_context,
         context_length=served_context,
+        profile_tools=await _active_model_profile_tools(),
     )
     compatibility["activeModel"] = {
         "id": entry.get("id") if entry else None,
@@ -395,8 +422,30 @@ def _require_session(request: Request) -> tuple[str, int]:
     return hermes_bridge.talk_session_key(cookie_value), expires_at
 
 
-async def _service_state(service_id: str) -> dict[str, Any]:
+async def _service_config(service_id: str) -> dict[str, Any] | None:
+    """The service's registry entry, including a built-in added after startup.
+
+    SERVICES is read once when dashboard-api starts. Extensions can add Whisper,
+    Kokoro or Hermes later without an API restart, so read a missing built-in's
+    current manifest, as the catalog's health poll does (helpers.get_all_services).
+    Without this, Talk turned voice off after the owner added it.
+    """
     cfg = SERVICES.get(service_id)
+    if cfg or service_id not in LIBRARY_MANAGEABLE_BUILTINS:
+        return cfg
+    try:
+        current, _, _ = await asyncio.to_thread(
+            load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
+            only_service_ids=frozenset({service_id}),
+        )
+    except OSError as exc:
+        logger.warning("ODS Talk could not read the %s manifest: %s", service_id, exc)
+        return None
+    return current.get(service_id)
+
+
+async def _service_state(service_id: str) -> dict[str, Any]:
+    cfg = await _service_config(service_id)
     if not cfg:
         return {"configured": False, "status": "not_configured"}
     try:
@@ -415,16 +464,21 @@ def _tts_url() -> str:
     return (os.environ.get("KOKORO_URL") or os.environ.get("TTS_URL") or "http://tts:8880").rstrip("/")
 
 
+# Compose passes the AUDIO_* speech settings to Open WebUI, not dashboard-api,
+# so read them from the mounted .env: the installer-selected STT model (e.g.
+# large-v3-turbo on CUDA) is the only one Speaches has downloaded.
 def _stt_model() -> str:
-    return os.environ.get("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
+    return read_live_env_value("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
 
 
 def _tts_model() -> str:
-    return os.environ.get("AUDIO_TTS_MODEL") or "kokoro"
+    return read_live_env_value("AUDIO_TTS_MODEL") or "kokoro"
 
 
 def _tts_voice() -> str:
-    return os.environ.get("AUDIO_TTS_VOICE") or os.environ.get("TTS_VOICE") or "af_heart"
+    # Only the Kokoro voice. Installers still write TTS_VOICE=en_US-lessac-medium,
+    # the retired Piper voice, which Kokoro rejects with a 400 for every reply.
+    return read_live_env_value("AUDIO_TTS_VOICE") or "af_heart"
 
 
 async def _transcribe_bytes(data: bytes, filename: str, content_type: str) -> str:

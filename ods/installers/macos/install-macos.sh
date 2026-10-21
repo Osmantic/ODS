@@ -520,6 +520,36 @@ raise SystemExit(0 if actual and hashlib.sha256(actual.encode()).hexdigest() == 
 HERMES_AUTH_VERIFY_PY
 }
 
+# Copy the finished example projects ODS ships (Elf of Doom) into the owner's
+# native Portal workspace whenever Playground/elf-of-doom is absent and this
+# workspace has never received it, so a deleted or renamed example stays that
+# way. The record of received examples lives in Portal's state folder, which
+# the agent's sandbox never mounts. Portal's sidebar then lists it with the
+# other projects; the installer prints nothing about it. Runs after native
+# activation; a failure never fails the install. The outcome, and a workspace
+# layout the helper never writes into (exit status 3, which stays as the owner
+# made it), go only to the install log. Only a failure warns, with its cause,
+# recovery and help link.
+_macos_add_example_projects() {
+    local install_root status code=0
+    # The native workspace path is built from the resolved install directory,
+    # and the helper refuses any symlinked path component.
+    if ! install_root="$(cd "$INSTALL_DIR" && pwd -P)"; then
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: it could not open the ODS install folder $INSTALL_DIR. Nothing in your Portal workspace was changed. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)"
+        return 0
+    fi
+    status="$(/usr/bin/python3 -B "$INSTALL_DIR/installers/lib/pixel-example-projects.py" \
+        --workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel" \
+        --state-dir "$install_root/data/pixel-native/home/.openclaw" 2>>"$ODS_LOG_FILE")" || code=$?
+    case "$code" in
+        0) printf 'Portal example projects: %s\n' "$status" >>"$ODS_LOG_FILE" ;;
+        3) printf 'Portal example projects not added: %s\n' "$status" >>"$ODS_LOG_FILE" ;;
+        4) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: $status Nothing in your Portal workspace was replaced. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)" ;;
+        *) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: its copy step stopped unexpectedly (exit $code). Nothing in your Portal workspace was replaced. Ask on Discord with the details from $ODS_LOG_FILE: ${ODS_HELP_DISCORD_URL}" ;;
+    esac
+    return 0
+}
+
 
 _macos_bootstrap_upgrade_pid_is_owned() {
     local pid="$1"
@@ -2390,6 +2420,11 @@ else
         macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$_reasoning_fmt" || exit 1
         _llama_args+=(${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"})
         fi
+        # The projector the host agent's switch launches with: a qualified profile's
+        # or a vision import's own (WP2), so a restart keeps the model's vision.
+        [[ -n "${MACOS_NATIVE_PROJECTOR_PATH:-}" ]] && _llama_args+=(--mmproj "$MACOS_NATIVE_PROJECTOR_PATH")
+        # A fixed chat template the switch chose for an exact template match (WP5).
+        [[ -n "${MACOS_NATIVE_CHAT_TEMPLATE_PATH:-}" ]] && _llama_args+=(--chat-template-file "$MACOS_NATIVE_CHAT_TEMPLATE_PATH")
 
         _macos_stop_install_owned_native_llama \
             "Stopping prior install-owned native inference before replacement..."
@@ -2545,6 +2580,9 @@ else
         COMPOSE_FLAGS+=("-f" "docker-compose.tier0.yml")
         ai "Applying lightweight memory limits for Tier 0"
     fi
+
+    # Both cloud and native Mac installs keep private API SQLite in the VM.
+    COMPOSE_FLAGS+=("-f" "installers/macos/dashboard-private-state.compose.yaml")
 
     # Docker compose override (user customizations)
     if [[ -f "${INSTALL_DIR}/docker-compose.override.yml" ]]; then
@@ -2861,7 +2899,9 @@ for service in (data.get("services") or {}).values():
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
     ai "Running: docker compose ${COMPOSE_FLAGS[*]} ${_macos_compose_up_args[*]}"
     set +o pipefail  # pipefail would abort on compose exit before PIPESTATUS is read; capture it first
-    docker compose "${COMPOSE_FLAGS[@]}" "${_macos_compose_up_args[@]}" 2>&1 | tee -a "$_compose_up_log" | while IFS= read -r line; do
+    /usr/bin/python3 "$INSTALL_DIR/installers/macos/lib/dashboard-private-state.py" \
+        launch --operation install --install-dir "$INSTALL_DIR" --flags="${COMPOSE_FLAGS[*]}" \
+        2>&1 | tee -a "$_compose_up_log" | while IFS= read -r line; do
         echo "  $line"
     done
     compose_exit="${PIPESTATUS[0]}"
@@ -3009,6 +3049,9 @@ for service in (data.get("services") or {}).values():
 
     # Save compose flags for ods-macos.sh
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
+    if $ENABLE_PIXEL; then
+        _macos_add_example_projects
+    fi
 
     # ── Launch background model upgrade ──────────────────────────────────
     if [[ "$_BOOTSTRAP_ACTIVE" == "true" ]]; then
@@ -3219,7 +3262,7 @@ fi
     if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
         printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
     fi
-} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
+} | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001" "Dashboard"
 
 # get-ods.sh --force exports this when the reinstall removed a saved one.
 if [[ "${ODS_REINSTALL_REMOTE_ROUTE_REMOVED:-false}" == "true" ]]; then

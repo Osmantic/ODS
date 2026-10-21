@@ -19,9 +19,50 @@ fail() { echo "[FAIL] $1" >&2; FAILED=$((FAILED + 1)); }
 [[ -f "$LIB" ]] || { fail "missing installers/lib/extension-env-carry.sh"; exit 1; }
 # shellcheck source=../installers/lib/extension-env-carry.sh
 . "$LIB"
+. "$ROOT_DIR/lib/safe-env.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+
+# The runtime and validate-env both accept surrounding key whitespace. A
+# reinstall must retain those effective owner values, including quoted hashes,
+# inline comments, CRLF, an empty final assignment and a missing final newline.
+mkdir -p "$tmp/formatting/brave-search"
+cp "$BUNDLED/brave-search/manifest.yaml" "$tmp/formatting/brave-search/manifest.yaml"
+printf '  BRAVE_SEARCH_API_KEY \t= "rotated # token" # owner note\r\n HF_TOKEN = retired\nHF_TOKEN =\n DASHBOARD_PUBLIC_URL = "https://example.invalid/owner#home" # address' > "$tmp/formatted-old.env"
+printf 'WEBUI_SECRET=template\n' > "$tmp/formatted-new.env"
+load_env_file "$tmp/formatted-old.env"
+expected_brave="$BRAVE_SEARCH_API_KEY" expected_hf="$HF_TOKEN" expected_url="$DASHBOARD_PUBLIC_URL"
+ods_carry_extension_env_keys "$tmp/formatted-old.env" "$tmp/formatted-new.env" "$tmp/formatting"
+ods_carry_named_env_keys "$tmp/formatted-old.env" "$tmp/formatted-new.env" HF_TOKEN
+ods_carry_public_url_env_keys "$tmp/formatted-old.env" "$tmp/formatted-new.env"
+unset BRAVE_SEARCH_API_KEY HF_TOKEN DASHBOARD_PUBLIC_URL
+load_env_file "$tmp/formatted-new.env"
+[[ "${BRAVE_SEARCH_API_KEY-unset}" == "$expected_brave" ]] \
+    && pass "formatted extension assignment keeps runtime value" || fail "formatted extension assignment was lost"
+[[ "${HF_TOKEN-unset}" == "$expected_hf" ]] \
+    && pass "owner setting preserves an empty final assignment" || fail "owner setting resurrected an earlier value"
+[[ "${DASHBOARD_PUBLIC_URL-unset}" == "$expected_url" ]] \
+    && pass "public URL preserves accepted formatting and final line" || fail "formatted public URL was lost"
+cp "$tmp/formatted-new.env" "$tmp/formatted-once.env"
+ods_carry_extension_env_keys "$tmp/formatted-old.env" "$tmp/formatted-new.env" "$tmp/formatting"
+ods_carry_named_env_keys "$tmp/formatted-old.env" "$tmp/formatted-new.env" HF_TOKEN
+ods_carry_public_url_env_keys "$tmp/formatted-old.env" "$tmp/formatted-new.env"
+cmp -s "$tmp/formatted-once.env" "$tmp/formatted-new.env" \
+    && pass "formatted carry is idempotent" || fail "formatted carry duplicated a value"
+
+printf 'BRAVE_SEARCH_API_KEY=retired\n BRAVE_SEARCH_API_KEY = current\n' > "$tmp/rotated-old.env"
+printf '  BRAVE_SEARCH_API_KEY = template\n' > "$tmp/rotated-new.env"
+ods_carry_extension_env_keys "$tmp/rotated-old.env" "$tmp/rotated-new.env" "$tmp/formatting"
+[[ "$(cat "$tmp/rotated-new.env")" == '  BRAVE_SEARCH_API_KEY = template' ]] \
+    && pass "formatted template assignment still wins" || fail "formatted template assignment was overridden"
+: > "$tmp/rotated-new.env"
+ods_carry_extension_env_keys "$tmp/rotated-old.env" "$tmp/rotated-new.env" "$tmp/formatting"
+unset BRAVE_SEARCH_API_KEY
+load_env_file "$tmp/rotated-new.env"
+[[ "${BRAVE_SEARCH_API_KEY-unset}" == current ]] \
+    && pass "extension carry keeps the effective final assignment" || fail "extension carry restored a retired value"
+
 ext="$tmp/data/user-extensions"
 mkdir -p "$ext/librechat" "$ext/flowise"
 cp "$LIBRARY/librechat/manifest.yaml" "$ext/librechat/manifest.yaml"
@@ -203,12 +244,15 @@ N8N_API_KEY=n8n-api-current
 HF_TOKEN='hf_owner token'
 LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc
 AUDIO_TTS_VOICE=af_bella
+ODS_MODEL_PROFILES=enabled
+DISABLE_UPDATE_CHECK=true
 HF_TOKEN_EXTRA=not-listed
 LLAMA_ARG_N_CPU_MOE=99
 ENV
 printf 'WEBUI_SECRET=current\nAUDIO_TTS_VOICE=from-template\n' > "$tmp/owner-new.env"
 ods_carry_named_env_keys "$tmp/owner-old.env" "$tmp/owner-new.env" "${ODS_OWNER_ENV_KEYS[@]}"
-for line in N8N_API_KEY=n8n-api-current "HF_TOKEN='hf_owner token'" LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc; do
+for line in N8N_API_KEY=n8n-api-current "HF_TOKEN='hf_owner token'" LLAMA_ARC_IMAGE=ghcr.io/example/arc@sha256:abc \
+        ODS_MODEL_PROFILES=enabled DISABLE_UPDATE_CHECK=true; do
     if [[ "$(grep -cxF "$line" "$tmp/owner-new.env")" == 1 ]]; then
         pass "owner setting carried: ${line%%=*}"
     else

@@ -17,6 +17,7 @@ import atexit
 import base64
 import collections
 import hashlib
+import http.client
 import importlib
 import importlib.util
 import json
@@ -50,7 +51,20 @@ _SWITCHBOARD_BIN_DIR = str(Path(__file__).resolve().parent)
 if _SWITCHBOARD_BIN_DIR not in sys.path:
     sys.path.insert(0, _SWITCHBOARD_BIN_DIR)
 from model_switchboard.router_transport import request as _router_transport_request
+from model_switchboard.router_transport import exchange as _router_transport_exchange
 from model_switchboard import wsl_runtime as _wsl_runtime
+# Model profiles (WP3): measured capabilities per GGUF x llama.cpp build x host.
+# Fail-open like the switchboard: without the package a switch runs as before.
+try:
+    import model_profile as _model_profile
+    from model_profile import probes as _model_profile_probes
+    from model_profile import store as _model_profile_store
+    from model_profile import templates as _model_profile_templates
+except ImportError:  # pragma: no cover - import environment dependent
+    _model_profile = None
+    _model_profile_probes = None
+    _model_profile_store = None
+    _model_profile_templates = None
 
 try:
     from model_switchboard import state as _switchboard_state
@@ -273,6 +287,10 @@ _ALLOWED_CORE_RECREATE_IDS = frozenset({
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
     "ape", "privacy-shield", "model-router",
 })
+# Pixel's model relay picks its upstream (model-router, or LiteLLM in cloud
+# mode) from ODS_MODE once, when it starts. A remote-provider route change
+# therefore recreates it with LiteLLM, or Portal keeps the old model.
+_PIXEL_MODEL_RELAY_CONTAINER = "ods-pixel-model-relay"
 
 
 def _to_bash_path(path: Path) -> str:
@@ -537,6 +555,8 @@ _model_lifecycle_revision = 0
 _MODEL_RUNTIME_NEUTRAL_OPERATIONS = frozenset({
     'pixel_startup_reproof', 'pixel_access_mode', 'pixel_open_app',
     'pixel_providers', 'pixel_settings',
+    # Re-measuring the running model reads it; the runtime does not change.
+    'model_profile_recheck',
 })
 # Advances only for lifecycle operations that can change the model runtime.
 _model_runtime_revision = 0
@@ -551,7 +571,7 @@ _model_activation_failure_code: str | None = None
 # restart. Neutral status/reproof work preserves it; a new runtime operation
 # invalidates it. Restored outcomes are recorded only after rollback proof.
 _model_activation_result: dict | None = None
-_MODEL_ACTIVATION_PHASES = frozenset({'preparing', 'loading', 'verifying', 'rolling_back', 'rollback_verifying'})
+_MODEL_ACTIVATION_PHASES = frozenset({'preparing', 'loading', 'profiling', 'verifying', 'rolling_back', 'rollback_verifying'})
 _MODEL_ACTIVATION_FAILURE_CODES = frozenset({'runtime_load_failed', 'runtime_readiness_failed', 'consumer_verification_failed', 'rollback_unconfirmed'})
 _model_status_verify_thread: threading.Thread | None = None
 _switchboard_initial_verify_lock = threading.Lock()
@@ -1018,6 +1038,123 @@ def _artifact_expected_size(metadata: dict) -> int | None:
     return None
 
 
+_DOWNLOAD_DISK_MARGIN_MIN_BYTES = 2 * 1024 ** 3
+_DOWNLOAD_DISK_MARGIN_FRACTION = 0.05
+
+
+def _download_disk_margin(total_bytes: int) -> int:
+    """Free space a download must leave on the model store volume."""
+    return max(_DOWNLOAD_DISK_MARGIN_MIN_BYTES, int(total_bytes * _DOWNLOAD_DISK_MARGIN_FRACTION))
+
+
+def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path]) -> int:
+    """Bytes still to fetch: sized artifacts not already on disk at that size.
+
+    An artifact of unknown size is not counted; the download verifies it.
+    """
+    needed = 0
+    for artifact in artifacts:
+        expected = artifact.get("size_bytes")
+        if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
+            continue
+        target = paths.get(artifact["file"])
+        try:
+            if target is not None and target.stat().st_size == expected:
+                continue
+        except OSError:
+            # Not present, or not readable here: it still has to be fetched.
+            pass
+        needed += expected
+    return needed
+
+
+def _model_storage_status(models_dir: Path) -> dict:
+    """Free and total bytes of the volume that holds models_dir.
+
+    On WSL that volume is normally the distribution's virtual disk, which
+    reports its ~1 TB growth limit instead of the Windows drive that stores
+    it; that drive is then checked too (_wsl_model_storage_status).
+    """
+    probe = Path(models_dir)
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    usage = shutil.disk_usage(probe)
+    if _is_wsl_linux() and _on_wsl_virtual_disk(probe):
+        drive, host = _wsl_disk_drive_usage()
+        return _wsl_model_storage_status(usage, drive, host)
+    return {
+        "freeBytes": int(usage.free),
+        "totalBytes": int(usage.total),
+        "marginBytes": _download_disk_margin(int(usage.total)),
+    }
+
+
+# Windows setup records the drive that stores this distribution's virtual
+# disk (ext4.vhdx, the distribution's BasePath); see wsl-portal-prereqs.ps1.
+_WSL_DISK_DRIVE_KEY = "ODS_WSL_DISK_DRIVE"
+
+
+def _on_wsl_virtual_disk(path: Path) -> bool:
+    """Is path on the distribution's own virtual disk, its root filesystem?
+
+    A Windows drive mount (DrvFS) or another mounted disk is not, and reports
+    its own free space already.
+    """
+    return os.stat(path).st_dev == os.stat("/").st_dev
+
+
+def _wsl_disk_drive_usage() -> tuple[str | None, object | None]:
+    """The recorded Windows drive under WSL's virtual disk, and its usage.
+
+    ``(None, None)`` when Windows setup has not recorded the drive or it
+    cannot be read from this distribution; each case is logged.
+    """
+    drive = str(load_env(INSTALL_DIR / ".env").get(_WSL_DISK_DRIVE_KEY) or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]:", drive):
+        logger.warning("%s is missing or invalid, so free space on the Windows drive under WSL is not "
+                       "checked; rerun install.ps1 to record it", _WSL_DISK_DRIVE_KEY)
+        return None, None
+    try:
+        mount = _wsl_runtime.drive_mount(drive)
+        # Without its DrvFS mount the drive's directory is plain storage on
+        # the virtual disk itself, which would only repeat its figures.
+        usage = None if _on_wsl_virtual_disk(mount) else shutil.disk_usage(mount)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Free space on Windows drive %s could not be checked: %s", drive, exc)
+        return None, None
+    if usage is None:
+        logger.warning("Windows drive %s is not mounted in WSL; its free space was not checked", drive)
+        return None, None
+    return drive, usage
+
+
+def _wsl_model_storage_status(disk, drive: str | None, host) -> dict:
+    """Download space on WSL's virtual disk, bounded by the Windows drive under it.
+
+    ``disk`` and ``host`` are ``shutil.disk_usage`` results. The virtual disk
+    grows into the Windows drive, and a full drive breaks Windows and WSL, so
+    free space is never more than that drive has and the margin follows its
+    size. ``windowsDrive`` names the drive when its free space is the figure
+    reported. Without a readable drive (``host`` is None) only the virtual
+    disk is known, and ``windowsDriveChecked`` says so.
+    """
+    if host is None:
+        return {
+            "freeBytes": int(disk.free),
+            "totalBytes": int(disk.total),
+            "marginBytes": _download_disk_margin(int(disk.total)),
+            "windowsDrive": None,
+            "windowsDriveChecked": False,
+        }
+    return {
+        "freeBytes": min(int(disk.free), int(host.free)),
+        "totalBytes": int(host.total),
+        "marginBytes": _download_disk_margin(int(host.total)),
+        "windowsDrive": drive if int(host.free) <= int(disk.free) else None,
+        "windowsDriveChecked": True,
+    }
+
+
 def _model_download_manifest(model: dict) -> dict | None:
     """Build the complete integrity manifest for one catalog model."""
     gguf_file = str(model.get("gguf_file") or "").strip()
@@ -1051,10 +1188,58 @@ def _model_download_manifest(model: dict) -> dict | None:
             "size_bytes": _artifact_expected_size(model),
         })
 
+    projector = _model_projector_artifact(model)
+    if projector is not None:
+        artifacts.append(projector)
     filenames = [artifact["file"] for artifact in artifacts]
     if gguf_file not in filenames or len(filenames) != len(set(filenames)):
         return None
     return {"gguf_file": gguf_file, "artifacts": artifacts}
+
+
+def _library_record_for_gguf(gguf_file: str) -> dict | None:
+    """The catalog or import record whose weights are ``gguf_file``, if any."""
+    try:
+        library = _load_model_library_records()
+    except RuntimeError:
+        logger.warning("Model library unavailable; launching %s without library extras", gguf_file)
+        return None
+    return next((entry for entry in library if entry.get("gguf_file") == gguf_file), None)
+
+
+def _model_projector_file(model: dict | None, models_dir: Path) -> Path | None:
+    """The downloaded vision projector of a model record, if it has one on disk."""
+    filename = str((model or {}).get("mmproj_file") or "").strip()
+    if not filename:
+        return None
+    projector = _safe_model_artifact_path(models_dir, filename)
+    return projector if projector is not None and projector.is_file() else None
+
+
+def _projector_shared(library: list[dict], owner: dict, projector: Path, models_dir: Path) -> bool:
+    """Does another installed model use this projector? Quantizations of one repo share it."""
+    for entry in library:
+        if entry is owner or str(entry.get("mmproj_file") or "") != projector.name:
+            continue
+        weights = _safe_model_artifact_path(models_dir, entry.get("gguf_file"))
+        if weights is not None and weights.exists():
+            return True
+    return False
+
+
+def _model_projector_artifact(model: dict) -> dict | None:
+    """The vision projector (mmproj) an import downloads and verifies with its weights (WP2)."""
+    filename = str(model.get("mmproj_file") or "").strip()
+    url = str(model.get("mmproj_url") or "").strip()
+    if not filename or not url:
+        return None
+    return {
+        "file": filename,
+        "url": url,
+        "sha256": str(model.get("mmproj_sha256") or "").strip().lower(),
+        "size_bytes": _artifact_expected_size({"size_bytes": model.get("mmproj_size_bytes")}),
+        "role": "projector",
+    }
 
 
 def _load_model_library_records() -> list[dict]:
@@ -2167,8 +2352,14 @@ def _model_management_snapshot() -> tuple[int, dict]:
                 value = _managed_wsl_runtime(env)
                 managed = value.get('managed') is True
                 running = managed and value.get('running') is True
+                # vision: the owned launcher loads a projector with its model.
                 result = (200, {'managed': managed, 'canActivate': running,
-                                'canUnload': managed, 'running': running})
+                                'canUnload': managed, 'running': running,
+                                'vision': _wsl_runtime.supports_projector(value)})
+                # Why the Windows model is not running, as its launcher wrote
+                # it (the bridge bounds the text); a memory refusal makes the
+                # Models page's Resume "Start anyway".
+                result[1].update(_wsl_runtime.launcher_error(value))
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
                 logger.warning('Windows runtime management verification failed: %s', exc)
                 result = unavailable
@@ -2427,6 +2618,61 @@ def _start_pixel_sharing_change(action, body, route):
         raise
 
 
+# (file mtime_ns, size) -> store document; one tuple, replaced whole, so
+# concurrent status handlers never pair one file's key with another's content.
+_ACTIVE_PROFILE_CACHE: list[tuple[tuple[int, int], dict | None]] = []
+
+
+def _model_profile_doc_cached() -> dict | None:
+    """The profile store, re-read only when the file changes (status is polled)."""
+    path = _model_profile_path()
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    key = (info.st_mtime_ns, info.st_size)
+    cached = _ACTIVE_PROFILE_CACHE[0] if _ACTIVE_PROFILE_CACHE else None
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    try:
+        doc = _model_profile_store.load(path)
+    except (_model_profile_store.StoreError, OSError, UnicodeError):
+        logger.warning("Model profile store unreadable for status; reporting not profiled")
+        doc = None
+    _ACTIVE_PROFILE_CACHE[:] = [(key, doc)]
+    return doc
+
+
+def _stored_profile_traits(catalog_id: object) -> dict | None:
+    """Traits of the profile this model's last switch recorded or reused, if any.
+
+    A model switched to before profiling existed has none; "Check again"
+    replaces it without a switch.
+    """
+    if _model_profile_store is None or not isinstance(catalog_id, str) or not catalog_id:
+        return None
+    doc = _model_profile_doc_cached()
+    last = (doc or {}).get("lastActivation") or {}
+    if last.get("modelId") != catalog_id:
+        return None
+    profile = next((entry for entry in reversed(doc["profiles"])
+                    if entry.get("keyHash") == last.get("keyHash")), None)
+    if profile is None:
+        return None
+    return _summary_traits((profile.get("result") or {}).get("summary"))
+
+
+def _active_model_profile(env: dict, catalog_id: object) -> dict | None:
+    """What the active model's profile says, for the Portal and Talk advisories (enabled only)."""
+    if (_model_profiles_mode(env) != "enabled" or _model_profile_store is None
+            or not isinstance(catalog_id, str) or not catalog_id):
+        return None
+    traits = _stored_profile_traits(catalog_id)
+    if traits is None:
+        return {"state": "not-profiled", "tools": None, "thinkingControl": None}
+    return {"state": "measured", "tools": traits["tools"], "thinkingControl": traits["control"]}
+
+
 def _project_switchboard_agent_viability(payload: dict) -> None:
     """Project the verified active route's identity and Pixel viability.
 
@@ -2483,6 +2729,9 @@ def _project_switchboard_agent_viability(payload: dict) -> None:
             "model": local_model,
             "contextLength": local_context,
         }
+    active_profile = _active_model_profile(env, active.get("catalogId"))
+    if active_profile is not None:
+        payload["activeModelProfile"] = active_profile
     capabilities = active.get("capabilities")
     if not isinstance(capabilities, dict):
         return
@@ -2496,6 +2745,7 @@ def _project_switchboard_agent_viability(payload: dict) -> None:
     projected = agent_viable
     catalog_id = active.get("catalogId")
     context_length = active.get("contextLength")
+    catalog_model = None
     if isinstance(catalog_id, str) and isinstance(context_length, int):
         try:
             catalog_model = next(
@@ -2513,6 +2763,12 @@ def _project_switchboard_agent_viability(payload: dict) -> None:
                 catalog_model,
                 context_length,
             )
+    # With profiles enabled a failed tool check narrows it as well, at once
+    # (after an upgrade or "Check again") instead of at the next switch; a
+    # curated "verified" agent verdict keeps a model agent-viable (WP4.1).
+    if (active_profile is not None and active_profile.get("tools") is False
+            and not _catalog_agent_verified(catalog_model)):
+        projected = False
     payload["activeAgentViable"] = projected
 
 
@@ -2739,6 +2995,11 @@ def _publish_verified_initial_switchboard_route(
         "vision": bool(model.get("vision")),
         "agentViable": _model_agent_viable(model, context_length),
     }
+    if _model_profiles_mode(env) == "enabled":
+        # After an install or upgrade, re-publish what the model's last switch
+        # measured instead of the catalog booleans (WP4.1).
+        capabilities = _profiled_capabilities(
+            capabilities, _stored_profile_traits(model_id or llm_model_name or gguf_file), model)
     # A model transition can begin while the slow runtime proof is in flight.
     # Serialize the final write with lifecycle admission and recheck the
     # durable journal: a held transaction's before-state must stay immutable
@@ -3412,6 +3673,44 @@ def _pixel_model_reasoning_capable(model: str, env: dict[str, str]) -> bool:
     return configured not in {"", "off", "none", "false", "0"}
 
 
+def _profiled_pixel_reasoning(configured: bool, traits: dict | None) -> bool:
+    """Pixel's reasoning flag; a measured thinking control decides it (WP4.2, enabled only).
+
+    A model that cannot turn thinking off reasons whatever ODS asks, and one
+    without thinking never does; otherwise the configured runtime rule stands.
+    """
+    control = (traits or {}).get("control")
+    if control == "always":
+        return True
+    if control == "none":
+        return False
+    return configured
+
+
+def _pixel_image_input_readback(configured: str, proof: dict | None) -> str:
+    """Pixel's image input once ODS's own llama-server proved the activated model.
+
+    ``proof`` is ``_wait_for_model_readiness``'s proof for that model, whose
+    ``vision`` is the same ``/props`` answer's ``modalities.vision``. llama.cpp
+    reports true only while a vision projector (mmproj) is loaded, so true
+    declares image input supported. False, absent or unreadable keeps the
+    configured value: a missing report is not evidence either way.
+    """
+    if isinstance(proof, dict) and proof.get("vision") is True:
+        return "supported"
+    return configured
+
+
+def _profiled_pixel_image_input(configured: str, traits: dict | None) -> str:
+    """Pixel's image input from the vision probe when a projector was loaded (WP4.2)."""
+    vision = (traits or {}).get("vision")
+    if vision is True:
+        return "supported"
+    if vision is False:
+        return "unsupported"
+    return configured
+
+
 def _pixel_max_tokens_for_context(context_length: int) -> int:
     """Keep enough prompt room for Pixel's managed agent/tool contract."""
     if context_length < _MIN_MANAGED_PIXEL_CONTEXT:
@@ -3457,8 +3756,13 @@ def _reconcile_ods_managed_pixel_model(
     reasoning: bool = False,
     route_fingerprint: str | None = None,
     image_input: str | None = None,
+    thinking_control: str | None = None,
 ) -> str:
-    """Transactionally bind the managed Pixel gateway to an activated model."""
+    """Transactionally bind the managed Pixel gateway to an activated model.
+
+    ``thinking_control`` is the model's measured control. None keeps the
+    renderer's name rule and clears a control saved for an earlier model.
+    """
     identity = _ods_managed_pixel_identity()
     if identity is None:
         return "not_installed"
@@ -3466,6 +3770,8 @@ def _reconcile_ods_managed_pixel_model(
         raise RuntimeError("The promoted Pixel model identity is invalid")
     if image_input is not None and image_input not in ("supported", "unsupported", "unknown"):
         raise RuntimeError("The promoted Pixel image-input policy is invalid")
+    if thinking_control is not None and thinking_control not in ("enable_thinking", "always", "none"):
+        raise RuntimeError("The promoted Pixel thinking control is invalid")
     if not isinstance(context_length, int) or isinstance(context_length, bool) \
             or not 4096 <= context_length <= 10_000_000:
         raise RuntimeError("Pixel requires a model context between 4096 and 10000000 tokens")
@@ -3481,7 +3787,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "2ef78e7067211a198748c5499ed5a0261f4b48b6"
+    bundled_ref = "3d2acd8f22a53d28b36b7e6ee017bb3143dc428b"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
@@ -3515,6 +3821,7 @@ target_max_tokens="$6"
 target_reasoning="$7"
 target_route_fingerprint="$8"
 target_image_input="$9"
+target_thinking_control="${10}"
 INTERACTIVE=false
 DRY_RUN=false
 log() { printf '%s\n' "$*" >&2; }
@@ -3533,7 +3840,8 @@ export INSTALL_DIR INTERACTIVE DRY_RUN ODS_SUDO_AVAILABLE
 . "$INSTALL_DIR/installers/lib/sudo.sh"
 . "$INSTALL_DIR/installers/lib/pixel-host-install.sh"
 ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
-    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint" "" "$target_image_input"
+    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint" "" "$target_image_input" \
+    "$target_thinking_control"
 '''
     child_env = {
         "HOME": str(home),
@@ -3554,6 +3862,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
                 "true" if reasoning else "false",
                 route_fingerprint or "",
                 image_input or "unknown",
+                thinking_control or "",
             ],
             env=child_env,
             capture_output=True,
@@ -3576,6 +3885,15 @@ class _RemoteProviderApplyError(RuntimeError):
     def __init__(self, message: str, rollback: dict) -> None:
         super().__init__(message)
         self.rollback = rollback
+
+
+class _RemoteProviderNotServing(RuntimeError):
+    """The active route's consumers match, but the provider serves no completion."""
+
+    def __init__(self, provider_status: int, provider_message: str) -> None:
+        super().__init__("The remote provider did not serve a completion through the active route")
+        self.provider_status = provider_status
+        self.provider_message = provider_message
 
 
 def _remote_provider_root() -> Path:
@@ -4143,6 +4461,7 @@ def _valid_managed_pixel_runtime_contract(value: object) -> bool:
         and 1 <= max_tokens <= context_length
         and type(reasoning) is bool
         and ("imageInput" not in value or value["imageInput"] in ("supported", "unsupported", "unknown"))
+        and ("thinkingControl" not in value or value["thinkingControl"] in ("enable_thinking", "always", "none"))
         and ("routeFingerprint" not in value or (
             isinstance(value["routeFingerprint"], str)
             and re.fullmatch(r"[a-f0-9]{64}", value["routeFingerprint"]) is not None
@@ -4425,7 +4744,13 @@ def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
         if not _valid_managed_pixel_runtime_contract(contract) or expected != observed:
             logger.warning("Portal model contract proof failed: the contract does not match the saved remote route")
             return False
-        _verify_litellm_route(config, model='ods/current')
+        try:
+            _verify_litellm_route(config, model='ods/current')
+        except RuntimeError:
+            # A provider outage is an unproven route. Callers retain the hold
+            # and can report an eligible explicit recovery without replaying it.
+            logger.warning("Portal model contract proof failed: the saved remote route did not pass its live completion check")
+            return False
         return True
     gguf = str(config.get('GGUF_FILE') or '')
     if not gguf:
@@ -4741,6 +5066,13 @@ def _read_remote_provider_activation_state() -> dict | None:
         or any(character in previous["llmApiUrl"] for character in "\r\n\x00")
         or not _valid_serializable_text_snapshot(previous.get("cloudConfig"))
         or not _valid_managed_pixel_runtime_contract(previous.get("pixel"))
+        or (
+            previous.get("pixelThinkingControl") is not None
+            and (
+                not isinstance(previous["pixelThinkingControl"], str)
+                or previous["pixelThinkingControl"] not in _THINKING_CONTROLS
+            )
+        )
         or not _valid_remote_provider_runtime_contract(remote)
         or not isinstance(value.get("routeFingerprint"), str)
         or not re.fullmatch(r"[a-f0-9]{64}", value["routeFingerprint"])
@@ -4953,7 +5285,33 @@ def _managed_pixel_runtime_contract() -> dict[str, object] | None:
     return contract
 
 
-def _reconcile_managed_pixel_contract(contract: dict[str, object] | None) -> str:
+def _thinking_control_kwargs(control: str | None) -> dict:
+    """Pass a measured control only when there is one, so calls without one stay as today."""
+    return {"thinking_control": control} if control else {}
+
+
+def _managed_pixel_thinking_control() -> str | None:
+    """The measured thinking control saved in the ODS-managed Pixel answers, if any.
+
+    It lives only in the owner-private answers (a plugin-config key would
+    break rollback to older code), so a rollback that restores a previous
+    model reads it here first. Coordinator-managed installs never carry it.
+    """
+    if load_env(INSTALL_DIR / ".env").get("PIXEL_OPENWEBUI_KEY") or _ods_managed_pixel_identity() is None:
+        return None
+    snapshot = _snapshot_text_file(INSTALL_DIR / "data" / "pixel" / "onboarding.json")
+    if not snapshot.get("exists"):
+        return None
+    try:
+        value = json.loads(str(snapshot.get("text") or ""))
+    except json.JSONDecodeError:
+        return None
+    control = value.get("modelThinkingControl") if isinstance(value, dict) else None
+    return control if control in _THINKING_CONTROLS else None
+
+
+def _reconcile_managed_pixel_contract(contract: dict[str, object] | None,
+                                      *, thinking_control: str | None = None) -> str:
     if contract is None:
         return "not_installed"
     return _reconcile_ods_managed_pixel_model(
@@ -4963,6 +5321,7 @@ def _reconcile_managed_pixel_contract(contract: dict[str, object] | None) -> str
         reasoning=bool(contract["reasoning"]),
         route_fingerprint=contract.get("routeFingerprint"),
         image_input=contract.get("imageInput"),
+        **_thinking_control_kwargs(thinking_control),
     )
 
 
@@ -4980,10 +5339,23 @@ def _verify_current_remote_provider_consumers(
     pixel = _managed_pixel_runtime_contract()
     if pixel is not None and pixel != runtime:
         return None
-    try:
-        _verify_litellm_route(env, model="ods/current")
-    except RuntimeError:
-        return None
+    failure = _litellm_route_failure(env)
+    if failure is not None and failure[2]:
+        # LiteLLM and its egress hop work, but the provider fails chats. A new
+        # activation would recreate LiteLLM and hold Portal's model lane through
+        # an outage it cannot fix (fleet 2026-10-18: a test took ~80 s and said
+        # nothing). A single 429 or 503 is not an outage, so ask once more.
+        time.sleep(2)
+        failure = _litellm_route_failure(env)
+        if failure is not None and failure[2] and failure[0] is not None:
+            raise _RemoteProviderNotServing(failure[0], failure[1])
+    if failure is not None:
+        # LiteLLM's own fault, or a LiteLLM that is still starting: give it the
+        # earlier time to answer, then let the repair path recreate it.
+        try:
+            _verify_litellm_route(env, model="ods/current")
+        except RuntimeError:
+            return None
     activation = {
         "active": True,
         "gateway": "litellm-cloud",
@@ -5022,6 +5394,27 @@ def _render_remote_provider_cloud_config(route: dict, env: dict[str, str]) -> No
         raise RuntimeError("Could not render the remote-provider LiteLLM route")
 
 
+def _refresh_pixel_model_relay(state: dict[str, bool]) -> None:
+    """Recreate a relay that was running so it takes the route .env now names."""
+    if _restart_existing_container(_PIXEL_MODEL_RELAY_CONTAINER, state, recreate=True):
+        _wait_for_container_health(_PIXEL_MODEL_RELAY_CONTAINER)
+
+
+def _restore_pixel_model_relay(state: dict[str, bool]) -> None:
+    """Best effort, for rollbacks and disable, the fail-safe path.
+
+    A relay left on LiteLLM still reaches a restored local route through it;
+    the warning names the repair for one left on the local route.
+    """
+    try:
+        _refresh_pixel_model_relay(state)
+    except RuntimeError as exc:
+        logger.warning(
+            "Pixel model relay did not follow the restored model route (%s); "
+            "repair it with: ods restart pixel-model-relay", exc,
+        )
+
+
 def _activate_remote_provider_route(
     route: dict, *, transaction=None, defer_consumer_rollback: bool = False,
 ) -> dict[str, object]:
@@ -5038,9 +5431,12 @@ def _activate_remote_provider_route(
     activation_snapshot = _snapshot_text_file(activation_path)
     activation_public_snapshot = _snapshot_text_file(activation_public_path)
     pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
+    # Keep the local model's measured control for rollback and later disable.
+    pixel_before_control = None if transaction is not None else _managed_pixel_thinking_control()
     container_state = _capture_container_state("ods-litellm")
     if not container_state.get("running"):
         raise RuntimeError("LiteLLM must be running before a remote provider can become active")
+    relay_state = _capture_container_state(_PIXEL_MODEL_RELAY_CONTAINER)
 
     existing = _read_remote_provider_activation_state()
     previous = existing.get("previous") if isinstance(existing, dict) else None
@@ -5051,6 +5447,7 @@ def _activate_remote_provider_route(
             "llmApiUrl": str(env.get("LLM_API_URL") or "http://llama-server:8080"),
             "cloudConfig": _serializable_text_snapshot(cloud_snapshot),
             "pixel": pixel_before,
+            "pixelThinkingControl": pixel_before_control,
         }
     candidate_state = {
         "schema": _REMOTE_PROVIDER_ACTIVATION_STATE_SCHEMA,
@@ -5070,6 +5467,7 @@ def _activate_remote_provider_route(
     pixel_attempted = False
     litellm_recreated = False
     litellm_attempted = False
+    relay_attempted = False
     try:
         _write_remote_provider_activation_state(candidate_state)
         raw_env = str(env_snapshot.get("text") or "")
@@ -5086,6 +5484,10 @@ def _activate_remote_provider_route(
             raise RuntimeError("LiteLLM route could not be recreated")
         _wait_for_container_health("ods-litellm")
         _verify_litellm_route(env, model="ods/current")
+        # Portal reaches the model through the relay, so it must follow
+        # ODS_MODE to LiteLLM before Pixel is bound to the remote model.
+        relay_attempted = True
+        _refresh_pixel_model_relay(relay_state)
         pixel_attempted = pixel_before is not None
         pixel_status = transaction.apply(runtime) if transaction is not None else _reconcile_managed_pixel_contract(runtime)
         activation_public = {
@@ -5124,6 +5526,10 @@ def _activate_remote_provider_route(
             _restore_text_file(activation_public_path, activation_public_snapshot)
         except Exception as rollback_exc:
             rollback_errors.append(f"configuration: {rollback_exc}")
+        # The relay reads only .env, restored above, so it is restored here
+        # even when the lifecycle owner refreshes LiteLLM itself.
+        if relay_attempted:
+            _restore_pixel_model_relay(relay_state)
         # The lifecycle owner must restore its route and credential snapshots
         # before refreshing a consumer that reads those files at startup.
         if litellm_attempted and not defer_consumer_rollback:
@@ -5134,7 +5540,7 @@ def _activate_remote_provider_route(
                 rollback_errors.append(f"LiteLLM: {rollback_exc}")
         if pixel_attempted and transaction is None:
             try:
-                _reconcile_managed_pixel_contract(pixel_before)
+                _reconcile_managed_pixel_contract(pixel_before, **_thinking_control_kwargs(pixel_before_control))
             except Exception as rollback_exc:
                 rollback_errors.append(f"Pixel: {rollback_exc}")
         if transaction is not None and rollback_errors:
@@ -5165,6 +5571,7 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
     activation_public_snapshot = _snapshot_text_file(activation_public_path)
     pixel_before = transaction.previous if transaction is not None else _managed_pixel_runtime_contract()
     container_state = _capture_container_state("ods-litellm")
+    relay_state = _capture_container_state(_PIXEL_MODEL_RELAY_CONTAINER)
     owns_transaction = transaction is None
     if owns_transaction:
         transaction = _begin_pixel_model_transaction(load_env(env_path))
@@ -5172,6 +5579,7 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
             pixel_before = transaction.previous
     litellm_recreated = False
     litellm_attempted = False
+    relay_attempted = False
     pixel_attempted = False
     try:
         raw_env = str(env_snapshot.get("text") or "")
@@ -5191,6 +5599,10 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
         _wait_for_container_health("ods-litellm")
         restored_env = load_env(env_path)
         _verify_litellm_route(restored_env, model="ods/current")
+        # Send Portal's relay back to the restored mode's route as well. Best
+        # effort: disable is the fail-safe path and must not fail on the relay.
+        relay_attempted = True
+        _restore_pixel_model_relay(relay_state)
         previous_pixel = previous.get("pixel")
         pixel_attempted = previous_pixel is not None
         if transaction is not None:
@@ -5198,7 +5610,10 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
                 raise RuntimeError('Previous local runtime could not be proved before remote deactivation')
             pixel_status = transaction.apply(previous_pixel)
         else:
-            pixel_status = _reconcile_managed_pixel_contract(previous_pixel)
+            pixel_status = _reconcile_managed_pixel_contract(
+                previous_pixel,
+                **_thinking_control_kwargs(previous.get("pixelThinkingControl")),
+            )
         _remove_remote_provider_file(activation_path)
         _remove_remote_provider_file(activation_public_path)
         if transaction is not None and owns_transaction:
@@ -5225,6 +5640,8 @@ def _deactivate_remote_provider_route(*, transaction=None) -> dict[str, object]:
             _restore_text_file(activation_public_path, activation_public_snapshot)
         except Exception as rollback_exc:
             rollback_errors.append(f"configuration: {rollback_exc}")
+        if relay_attempted:
+            _restore_pixel_model_relay(relay_state)
         if litellm_attempted:
             try:
                 _restore_container_state("ods-litellm", container_state, recreate=True)
@@ -6987,19 +7404,20 @@ def validate_core_recreate_ids(service_ids: list[str]) -> tuple[bool, str]:
     return True, ""
 
 
-def _core_recreate_compose_flags(flags: list[str]) -> list[str]:
+def _core_recreate_compose_flags(flags: list[str], services: tuple[str, ...] | list[str] = ()) -> list[str]:
     """Exclude unrelated extension fragments before Compose interpolates them.
 
     Preserve core overlays and whole extension fragment groups that contribute
-    to core services, including their service references. Missing configuration
-    in a selected fragment must still fail; never fill it with dummy secrets.
+    to core services or to the requested ``services``, including their service
+    references. Missing configuration in a selected fragment must still fail;
+    never fill it with dummy secrets.
     """
     import yaml
 
     roots = (EXTENSIONS_DIR.resolve(), USER_EXTENSIONS_DIR.resolve())
     groups = {}
     file_groups = {}
-    needed = set(CORE_SERVICE_IDS)
+    needed = set(CORE_SERVICE_IDS) | set(services)
     for index, flag in enumerate(flags[:-1]):
         if flag != "-f":
             continue
@@ -7071,13 +7489,18 @@ def docker_compose_converge(service_ids: list[str]) -> tuple:
 
 
 def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = True) -> tuple:
-    """Force-recreate a set of allowed core services using the current compose stack."""
-    ok, error = validate_core_recreate_ids(service_ids)
-    if not ok:
-        return False, error
+    """Force-recreate a set of allowed core services using the current compose stack.
+
+    Pixel's model relay is no core service, but this agent recreates it on
+    its own when a remote-provider route change rewrites ODS_MODE.
+    """
+    if service_ids != [_PIXEL_MODEL_RELAY_CONTAINER.removeprefix("ods-")]:
+        ok, error = validate_core_recreate_ids(service_ids)
+        if not ok:
+            return False, error
 
     try:
-        flags = _core_recreate_compose_flags(resolve_compose_flags())
+        flags = _core_recreate_compose_flags(resolve_compose_flags(), service_ids)
     except (OSError, ValueError) as exc:
         return False, f"Could not resolve core Compose fragments: {exc}"
     cmd = (
@@ -7086,7 +7509,10 @@ def docker_compose_recreate(service_ids: list[str], *, force_recreate: bool = Tr
         + service_ids
     )
     compose_env = os.environ.copy()
-    for key in ("GGUF_FILE", "LLM_MODEL", "MAX_CONTEXT", "CTX_SIZE"):
+    # Compose prefers the caller's environment to .env. An agent started from
+    # a shell exported .env at that time, and a route change has since
+    # rewritten the route keys (remote-provider activation).
+    for key in ("GGUF_FILE", "LLM_MODEL", "MAX_CONTEXT", "CTX_SIZE", "ODS_MODE", "LLM_API_URL", "EXTERNAL_LLM_URL"):
         compose_env.pop(key, None)
     if "open-webui" in service_ids and _network_auth_required(load_env(INSTALL_DIR / ".env")):
         compose_env["WEBUI_AUTH"] = "true"
@@ -7689,6 +8115,60 @@ def _save_install_operation(value):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _observe_install_container(service_id):
+    """Return 'running', 'stopped', or None when the outcome is not provable."""
+    ext_dir = _find_ext_dir(service_id)
+    manifest = _read_manifest(ext_dir) if ext_dir is not None else None
+    service_def = manifest.get('service', {}) if isinstance(manifest, dict) else {}
+    if not isinstance(service_def, dict):
+        service_def = {}
+    container = service_def.get('container_name') or f'ods-{service_id}'
+    try:
+        if not _container_exists(container):
+            return 'stopped'
+        result = subprocess.run(
+            ['docker', 'inspect', '--type', 'container', '--format',
+             '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}',
+             container],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (RuntimeError, OSError, subprocess.TimeoutExpired):
+        logger.warning('Could not observe %s while reconciling an install', container)
+        return None
+    if result.returncode != 0:
+        return None
+    status, _, health = result.stdout.strip().partition('|')
+    if status == 'running' and health in {'healthy', 'none'}:
+        return 'running'
+    if status in {'exited', 'created', 'dead'}:
+        return 'stopped'
+    return None
+
+
+def _reconcile_install_operation(service_id, operation_id):
+    """Resolve an orphaned non-terminal receipt from observed container state.
+
+    Returns the terminal state written, or None when the receipt must keep
+    blocking (live worker, or container state cannot be proven).
+    """
+    with _install_operation_guard:
+        if (service_id, operation_id) in _install_operation_live:
+            return None
+    observed = _observe_install_container(service_id)
+    if observed is None:
+        return None
+    path = _install_operation_path(service_id, operation_id)
+    value = json.loads(path.read_text(encoding='utf-8'))
+    state = 'succeeded' if observed == 'running' else 'failed'
+    value = {**value, 'state': state, 'phase': 'reconciled', 'updated_at': _iso_now(),
+             'exit_verified': False,
+             'reconciliation': ('reconciled after interruption: container running'
+                                if state == 'succeeded' else
+                                'interrupted: container absent or not running')}
+    _save_install_operation(value)
+    return state
 
 
 def _record_install_operation_progress(service_id, status, phase_label, exit_verified):
@@ -9446,6 +9926,76 @@ def _wsl_sensor_run(command):
     raise OSError("No usable trusted WSL telemetry interop session")
 
 
+def _wsl_nvidia_sensors(timeout: float) -> dict[str, dict]:
+    """Temperature and power per NVIDIA GPU name, from the Windows driver.
+
+    DXGI gives memory and load but no sensors. WSL's nvidia-smi reads the
+    Windows NVIDIA driver directly, so it needs no interop session and works
+    whether or not this stack's containers use the GPU (a model server that
+    runs on Windows). A name listed twice is ambiguous and gets no reading.
+    """
+    smi = "/usr/lib/wsl/lib/nvidia-smi"
+    if not Path(smi).is_file():
+        return {}
+    try:
+        result = subprocess.run([smi, "--query-gpu=name,temperature.gpu,power.draw",
+                                 "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if result.returncode != 0 or len(result.stdout) > 65536:
+        return {}
+
+    def reading(text: str, maximum: float) -> float | None:
+        try:
+            value = float(text)
+        except ValueError:
+            return None  # "[N/A]" where the driver has no such sensor
+        return value if math.isfinite(value) and 0 <= value <= maximum else None
+
+    sensors: dict[str, dict] = {}
+    duplicates = set()
+    for line in result.stdout.splitlines()[:32]:
+        fields = [field.strip() for field in line.rsplit(",", 2)]
+        if len(fields) != 3 or not fields[0]:
+            continue
+        if fields[0] in sensors:
+            duplicates.add(fields[0])
+        sensors[fields[0]] = {"temperature_c": reading(fields[1], 150), "power_w": reading(fields[2], 2000)}
+    return {name: value for name, value in sensors.items() if name not in duplicates}
+
+
+# nvidia-smi can wake a GPU that was asleep, so its readings are reused this
+# long, well past the three-second CPU/RAM/GPU sample.
+_WSL_NVIDIA_SENSOR_SECONDS = 15
+_wsl_nvidia_cached = (0.0, None)
+
+
+def _wsl_windows_model_route() -> bool:
+    """True when this installation's model server runs natively on Windows.
+
+    Only then does the GPU tile read the Windows host sample; the Docker
+    NVIDIA route reads nvidia-smi in the dashboard container instead, and CPU
+    or cloud mode needs no GPU sensors.
+    """
+    try:
+        return _wsl_runtime.candidate(load_env(INSTALL_DIR / ".env"))
+    except (OSError, ValueError):
+        return False  # An unreadable .env only skips the optional GPU sensors.
+
+
+def _wsl_nvidia_sensor_sample(budget: float) -> dict[str, dict]:
+    """nvidia-smi readings, at most once per fifteen seconds (caller holds the metrics lock)."""
+    global _wsl_nvidia_cached
+    if _wsl_nvidia_cached[1] is not None and time.monotonic() - _wsl_nvidia_cached[0] < _WSL_NVIDIA_SENSOR_SECONDS:
+        return _wsl_nvidia_cached[1]
+    if budget < 0.5:
+        return {}
+    sensors = _wsl_nvidia_sensors(budget)
+    _wsl_nvidia_cached = (time.monotonic(), sensors)
+    return sensors
+
+
 def _wsl_system_metrics():
     """Read native Windows sensors through existing WSL interop, without setup."""
     global _wsl_metrics_cached
@@ -9468,6 +10018,7 @@ def _wsl_system_metrics():
             if not math.isfinite(value) or value < 0 or (maximum is not None and value > maximum):
                 return None
             return value
+        started = time.monotonic()
         try:
             result = _wsl_sensor_run(
                 [executable, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand",
@@ -9487,6 +10038,13 @@ def _wsl_system_metrics():
                 if used is not None:
                     payload["ram"].update(used_gb=round(used / 1024**3, 1), percent=round(used / total * 100, 1))
             rows = data.get("gpus")
+            # The dashboard waits nine seconds for this sample: nvidia-smi gets
+            # what the Windows sensor read left, at most two seconds. It runs
+            # only for an NVIDIA adapter that a Windows model server uses.
+            budget = min(2.0, 8.5 - (time.monotonic() - started))
+            nvidia = _wsl_nvidia_sensor_sample(budget) if isinstance(rows, list) and any(
+                isinstance(row, dict) and row.get("vendor") == 0x10DE for row in rows[:32]
+            ) and _wsl_windows_model_route() else {}
             if isinstance(rows, list):
                 for row in rows[:32]:
                     if not isinstance(row, dict):
@@ -9500,13 +10058,15 @@ def _wsl_system_metrics():
                     # DXGI's dedicated allocation is real capacity. Shared capacity
                     # is a borrowing limit, not additional physical VRAM.
                     usage = number(row.get("dedicatedUsedBytes"), capacity)
+                    sensors = nvidia.get(name.strip(), {}) if row.get("vendor") == 0x10DE else {}
                     payload["gpus"].append({
                         "name": name[:128], "uuid": luid,
                         "memory_total_mb": int(capacity // 1024**2),
                         "memory_used_mb": int(usage // 1024**2) if usage is not None else None,
                         "memory_type": "unified" if _is_windows_amd_integrated_gpu_name(name) else "discrete",
                         "memory_scope": "dedicated", "utilization_percent": number(row.get("utilizationPercent"), 100),
-                        "temperature_c": None, "source": "windows-dxgi-cim",
+                        "temperature_c": sensors.get("temperature_c"), "power_w": sensors.get("power_w"),
+                        "source": "windows-dxgi-cim",
                         "backend": "amd" if row.get("vendor") == 0x1002 else "nvidia" if row.get("vendor") == 0x10DE else "unknown",
                     })
         except (OSError, subprocess.SubprocessError, ValueError):
@@ -9634,6 +10194,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_status()
         elif path == "/v1/model/management":
             self._handle_model_management()
+        elif path == "/v1/model/storage":
+            self._handle_model_storage()
+        elif path == "/v1/model/profile":
+            self._handle_model_profile()
         elif path == "/v1/model/external-observation":
             self._handle_retired_lemonade_endpoint()
         elif path == "/v1/model/recovery":
@@ -10296,6 +10860,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_service_restart()
         elif self.path == "/v1/model/download":
             self._handle_model_download()
+        elif self.path == "/v1/model/profile/recheck":
+            self._handle_model_profile_recheck()
         elif self.path == "/v1/model/download/cancel":
             self._handle_model_download_cancel()
         elif self.path == "/v1/model/activate":
@@ -10924,14 +11490,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         lock_acquired = False
         try:
             plan = _plan_remote_provider_lifecycle_operation(body)
-            if not _model_activate_lock.acquire(blocking=False):
+            lock_acquired, _active = _begin_model_lifecycle("remote_provider_apply")
+            if not lock_acquired:
                 json_response(
                     self,
                     409,
                     {"error": "A model or remote-provider activation is already in progress"},
                 )
                 return
-            lock_acquired = True
             result = _apply_remote_provider_lifecycle_operation(body, plan)
         except (_RemoteProviderLifecycleError, _RemoteProviderPolicyError) as exc:
             json_response(self, 400, {"error": str(exc)})
@@ -10956,7 +11522,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         finally:
             if lock_acquired:
-                _model_activate_lock.release()
+                _end_model_lifecycle("remote_provider_apply")
         json_response(self, 200, result)
 
     def _handle_remote_provider_proof(self):
@@ -10968,17 +11534,26 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         lock_acquired = False
         try:
-            if not _model_activate_lock.acquire(blocking=False):
+            lock_acquired, _active = _begin_model_lifecycle("remote_provider_proof")
+            if not lock_acquired:
                 json_response(
                     self,
                     409,
                     {"error": "A model or remote-provider activation is already in progress"},
                 )
                 return
-            lock_acquired = True
             result = _record_remote_provider_egress_probe(body)
         except ValueError as exc:
             json_response(self, 400, {"error": str(exc)})
+            return
+        except _RemoteProviderNotServing as exc:
+            # Not a busy lifecycle (409): the provider failed; nothing changed.
+            json_response(self, 502, {
+                "error": str(exc),
+                "code": "provider_not_serving",
+                "providerStatus": exc.provider_status,
+                "providerMessage": exc.provider_message,
+            })
             return
         except RuntimeError as exc:
             json_response(self, 409, {"error": str(exc)})
@@ -10989,7 +11564,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         finally:
             if lock_acquired:
-                _model_activate_lock.release()
+                _end_model_lifecycle("remote_provider_proof")
         json_response(self, 200, result)
 
     def _handle_remote_provider_ssh_supervisor_status(self):
@@ -12474,9 +13049,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             for saved in directory.glob('*.json'):
                 older = _read_install_operation(service_id, saved.stem)
                 if older and older['state'] not in {'succeeded', 'failed'}:
+                    # An orphaned receipt (no live worker) is resolved from
+                    # the container's observed state; a live worker or an
+                    # unprovable state keeps blocking.
+                    if _reconcile_install_operation(service_id, saved.stem):
+                        continue
                     lock.release()
                     json_response(self, 409, {'error': 'Previous installation requires reconciliation',
-                                             'operation_id': saved.stem})
+                                             'operation_id': saved.stem,
+                                             'receipt': str(saved),
+                                             'resolution': ('Wait for the running install to finish, or '
+                                                            'confirm the container state and delete this '
+                                                            'receipt file to allow a new install')})
                     return
             operation = {'schema_version': 1, 'service_id': service_id,
                          'operation_id': operation_id, 'run_setup_hook': run_setup_hook,
@@ -12675,6 +13259,11 @@ class AgentHandler(BaseHTTPRequestHandler):
                 logger.exception("Install failed for %s", service_id)
                 _write_progress(service_id, "error", "Installation failed",
                                 error=str(exc)[:500])
+            except Exception as exc:
+                # Never leave the receipt non-terminal; then let it crash.
+                _write_progress(service_id, "error", "Installation failed",
+                                error=f"unexpected error: {exc}"[:500])
+                raise
             finally:
                 _install_operation_context.value = None
                 with _install_operation_guard:
@@ -12686,6 +13275,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         except Exception:
             with _install_operation_guard:
                 _install_operation_live.discard((service_id, operation_id))
+            _save_install_operation({**operation, 'state': 'failed', 'phase': 'error',
+                                     'updated_at': _iso_now()})
             lock.release()
             raise
         # A disconnected observer must not cancel or replay an accepted worker.
@@ -12768,6 +13359,78 @@ class AgentHandler(BaseHTTPRequestHandler):
 
     # ── Model management handlers ──
 
+    def _handle_model_profile(self):
+        """The stored profile for ``?model=<id>`` (default: the last activated model)."""
+        if not check_auth(self):
+            return
+        requested = (parse_qs(urlparse(self.path).query).get("model") or [""])[0].strip()
+        env = load_env(INSTALL_DIR / ".env")
+        mode = _model_profiles_mode(env)
+        if _model_profile_store is None:
+            json_response(self, 200, {"mode": "off", "modelId": requested or None, "profile": None})
+            return
+        doc = _model_profile_doc()
+        last = doc.get("lastActivation") or {}
+        model_id = requested or str(last.get("modelId") or "")
+        profile = None
+        if model_id and model_id == last.get("modelId"):
+            profile = next((entry for entry in doc["profiles"] if entry["keyHash"] == last.get("keyHash")), None)
+        if profile is None and model_id:
+            profile = _model_profile_store.latest_for_model(doc, model_id)
+        payload = {"mode": mode, "modelId": model_id or None, "profile": profile}
+        # A fixed chat template (WP5) is named only when one matches this
+        # model exactly or runs with it; every other answer is unchanged.
+        offer = _chat_template_offer(env, doc, model_id, profile) if mode != "off" and model_id else None
+        if offer is not None:
+            payload["templateOverride"] = offer
+        json_response(self, 200, payload)
+
+    def _handle_model_profile_recheck(self):
+        """Measure the running model again, ignoring its stored profile."""
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        model_id = str(body.get("model") or "").strip()
+        env = load_env(INSTALL_DIR / ".env")
+        if _model_profiles_mode(env) == "off" or _model_profile_store is None:
+            json_response(self, 409, {"error": "Model profiles are turned off on this machine", "code": "profiles_off"})
+            return
+        try:
+            library = _load_model_library_records()
+        except RuntimeError as exc:
+            json_response(self, 500, {"error": str(exc)})
+            return
+        model = next((entry for entry in library if entry.get("id") == model_id), None)
+        if model is None:
+            json_response(self, 404, {"error": "Unknown model"})
+            return
+        if str(model.get("gguf_file") or "") != str(env.get("GGUF_FILE") or ""):
+            json_response(self, 409, {"error": "Only the running model can be checked; run it first", "code": "not_running"})
+            return
+        acquired, active = _begin_model_lifecycle("model_profile_recheck", model_id)
+        if not acquired:
+            json_response(self, 409, _model_lifecycle_conflict("a model check", active))
+            return
+        try:
+            result = _profile_model_advisory(env, model, model_id=model_id,
+                                             gguf_file=str(model.get("gguf_file")), force=True)
+        finally:
+            _end_model_lifecycle("model_profile_recheck")
+        json_response(self, 200, result)
+
+    def _handle_model_storage(self):
+        """Report free space where model downloads land, for download preflight."""
+        if not check_auth(self):
+            return
+        try:
+            storage = _model_storage_status(_model_download_directory())
+        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+            json_response(self, 409, {"error": "The model download directory could not be checked"})
+            return
+        json_response(self, 200, storage)
+
     def _handle_model_list(self):
         """Return model library catalog + on-disk GGUFs + active model."""
         if not check_auth(self):
@@ -12806,14 +13469,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": f"Failed to list models: {exc}"})
 
     def _handle_model_config(self):
-        """Expose only the fresh persisted mode, never private .env values."""
+        """Expose the two bounded mode identities, never private .env values."""
         if not check_auth(self):
             return
         try:
             mode = _normalize_ods_mode(load_env(INSTALL_DIR / ".env").get("ODS_MODE"))
         except (OSError, UnicodeError):
             mode = "unknown"
-        json_response(self, 200, {"configuredMode": mode}, no_store=True)
+        json_response(self, 200, {
+            "configuredMode": mode,
+            "effectiveMode": _normalize_ods_mode(STARTUP_ODS_MODE),
+        }, no_store=True)
 
     def _handle_model_status(self):
         """Return current model download progress."""
@@ -12887,6 +13553,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
         else:
             download_plan = [(gguf_file, gguf_url)]
+        # A vision import brings its projector (WP2) as the plan's last file.
+        mmproj = body.get("mmproj")
+        if isinstance(mmproj, dict) and mmproj.get("file") and mmproj.get("url"):
+            download_plan.append((mmproj["file"], mmproj["url"]))
 
         # Validate the complete request against the library. A split request
         # must include every catalog part; accepting a subset can otherwise
@@ -12905,18 +13575,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             candidate_manifest = _model_download_manifest(m)
             if candidate_manifest is None:
                 break
-            if gguf_parts:
-                catalog_plan = [
-                    (artifact["file"], artifact["url"])
-                    for artifact in candidate_manifest["artifacts"]
-                ]
-                if download_plan == catalog_plan:
-                    allowed = True
-                    manifest = candidate_manifest
-            elif (
-                len(candidate_manifest["artifacts"]) == 1
-                and candidate_manifest["artifacts"][0]["url"] == gguf_url
-            ):
+            catalog_plan = [
+                (artifact["file"], artifact["url"])
+                for artifact in candidate_manifest["artifacts"]
+            ]
+            if download_plan == catalog_plan:
                 allowed = True
                 manifest = candidate_manifest
             break
@@ -12944,6 +13607,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 500, {"error": "Model catalog contains an unsafe filename"})
                 return
             artifact_paths[artifact["file"]] = target
+
+        needed_bytes = _download_bytes_needed(manifest["artifacts"], artifact_paths)
+        if needed_bytes:
+            try:
+                storage = _model_storage_status(models_dir)
+            except OSError:
+                json_response(self, 409, {"error": "Free space on the model store could not be checked"})
+                return
+            if storage["freeBytes"] < needed_bytes + storage["marginBytes"]:
+                json_response(self, 507, {
+                    "error": "Not enough free disk space for this model",
+                    "code": "insufficient_disk_space",
+                    "requiredBytes": needed_bytes,
+                    "freeBytes": storage["freeBytes"],
+                    "marginBytes": storage["marginBytes"],
+                })
+                return
 
         lifecycle_acquired, active = _begin_model_lifecycle("model_download", gguf_file)
         if not lifecycle_acquired:
@@ -13516,6 +14196,22 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 400, {"error": "tier is not supported"})
                 return
 
+        # The owner's "Try a fixed template" (WP5): run the model with the
+        # index entry that fixes exactly its measured template, or refuse.
+        requested_template = body.get("chat_template_override")
+        template_override = None
+        if requested_template is not None:
+            if (not isinstance(requested_template, str)
+                    or (_model_profile_templates is not None
+                        and not re.fullmatch(_model_profile_templates.ID_PATTERN, requested_template))):
+                json_response(self, 400, {"error": "chat_template_override must be the id of a fixed chat template"})
+                return
+            template_override, refusal = _chat_template_request(
+                load_env(INSTALL_DIR / ".env"), model_id, requested_template)
+            if refusal is not None:
+                json_response(self, 409, {**refusal, "requestedModelId": model_id})
+                return
+
         acquired, active_model_id = _begin_model_activation(model_id)
         if not acquired:
             with _model_lifecycle_state_lock:
@@ -13542,6 +14238,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 activation_options["requested_context_length"] = requested_context_length
             if requested_tier is not None:
                 activation_options["requested_tier"] = requested_tier
+            if template_override is not None:
+                activation_options["template_override"] = template_override
             self._do_model_activate(model_id, **activation_options)
         finally:
             _end_model_activation()
@@ -13552,8 +14250,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         *,
         requested_context_length: int | None = None,
         requested_tier: str | None = None,
+        template_override: dict | None = None,
     ):
-        """Inner activate logic — called with _model_activate_lock held."""
+        """Inner activate logic — called with _model_activate_lock held.
+
+        ``template_override`` is a validated chat-template index entry (WP5):
+        the model runs with that fixed template instead of its own.
+        """
         env_path = INSTALL_DIR / ".env"
         if not env_path.exists():
             json_response(
@@ -13682,6 +14385,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         if requested_context_length is not None:
             context_length = requested_context_length
         llama_server_image = model.get("llama_server_image")
+        catalog_images = _catalog_model_images(library)
 
         # Verify GGUF exists on disk (with path traversal protection)
         target = _installed_model_file(gguf_file)
@@ -13765,6 +14469,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             json_response(self, 400, {"error": str(exc)})
             return
+
+        if template_override is not None:
+            # A fixed chat template (WP5) is refused before anything changes
+            # where it cannot be loaded, never silently dropped.
+            refusal = _chat_template_refusal(persisted_env, wsl_managed, template_override)
+            if refusal is not None:
+                json_response(self, 409, {**refusal, "requestedModelId": model_id})
+                return
 
         tier_context_limit: int | None = None
         if requested_tier is not None:
@@ -13864,6 +14576,9 @@ class AgentHandler(BaseHTTPRequestHandler):
         gpu_assignment_plan: dict | None = None
         previous_pixel_context: int | None = None
         previous_pixel_image_input = "unknown"
+        previous_pixel_contract: dict[str, object] | None = None
+        previous_pixel_thinking_control: str | None = None
+        profile_traits: dict | None = None
         router_target_published = False
         previous_router_active = {}
         wsl_changed_digest = None
@@ -14096,12 +14811,19 @@ class AgentHandler(BaseHTTPRequestHandler):
                         previous_model,
                         rollback_env,
                     )
+                    # With profiles enabled the previous model's reasoning
+                    # came from its profile; restore what was in effect.
+                    captured_reasoning = (previous_pixel_contract or {}).get("reasoning")
+                    if (_model_profiles_mode(rollback_env) == "enabled"
+                            and isinstance(captured_reasoning, bool)):
+                        previous_reasoning = captured_reasoning
                     restored_pixel = _reconcile_ods_managed_pixel_model(
                         previous_hermes_model,
                         previous_pixel_context,
                         max_tokens=_pixel_max_tokens_for_context(previous_pixel_context),
                         reasoning=previous_reasoning,
                         image_input=previous_pixel_image_input,
+                        **_thinking_control_kwargs(previous_pixel_thinking_control),
                     )
                     if restored_pixel != "reconciled":
                         raise RuntimeError(
@@ -14112,6 +14834,63 @@ class AgentHandler(BaseHTTPRequestHandler):
                 logger.exception("Failed to prove previous model route during rollback")
                 _record_model_activation_result('rollback_unconfirmed', 'rollback_unconfirmed')
                 return False, str(rollback_exc)
+
+        def restart_with_template(entry: dict | None) -> dict:
+            """Restart the staged model with ``entry`` or its own template (WP5.3).
+
+            The .env snapshot taken before the first write stays the rollback
+            point. Each wait starts from a clean diagnosis: a "final" left by
+            an earlier wait would end the next one before it probes.
+            """
+            nonlocal runtime_stage_started
+            updates, removals = _chat_template_env_changes(entry, container=gpu_backend != "apple")
+            _write_bound_env_text(env_path, _env_text_with_changes(
+                env_path.read_text(encoding="utf-8").splitlines(), updates, removals))
+            readiness_diagnosis.clear()
+            _set_model_activation_phase('loading')
+            runtime_stage_started = time.time()
+            return _switchboard_reconciler.run_runtime_activation(switchboard_adapter, load_env(env_path))
+
+        def retry_with_fixed_template(entry: dict, first: dict, profiled_seconds: float) -> tuple[dict, dict]:
+            """WP5.3 automatic retry (enabled only, D3): run the model once with the fixed
+            template that matches its own exactly, keep it when it answers the chat
+            check, else return to the model's own template. Both probe runs share
+            the one D2 budget. Returns the env and profile status of what stays loaded.
+            """
+            nonlocal switchboard_run, healthy
+            budget = _model_profile_probes.BUDGET_SECONDS - profiled_seconds
+            if budget < _TEMPLATE_RETRY_MIN_BUDGET_SECONDS:
+                logger.info("No time left in the profiling budget to try fixed chat template %s", entry["id"])
+                return load_env(env_path), {**first, "templateRetry": {
+                    "id": entry["id"], "outcome": "skipped", "reason": "budget"}}
+            logger.info("%s did not answer the chat check; trying fixed chat template %s", model_id, entry["id"])
+            outcome = {"id": entry["id"]}
+            retried_run = restart_with_template(entry)
+            if retried_run["ok"]:
+                switchboard_run = retried_run
+                retried_env = load_env(env_path)
+                probing_started = time.monotonic()
+                retried = _profile_model_advisory(retried_env, model, model_id=model_id, gguf_file=gguf_file,
+                                                  budget_seconds=budget)
+                budget -= time.monotonic() - probing_started
+                if (retried.get("summary") or {}).get("chat") is True:
+                    return retried_env, {**retried, "templateRetry": {**outcome, "outcome": "kept"}}
+                outcome["fixedTemplateChat"] = (retried.get("summary") or {}).get("chat")
+            else:
+                outcome["failure"] = str(retried_run.get("detail") or retried_run.get("phase") or "")[:200]
+            own_run = restart_with_template(None)
+            switchboard_run = own_run
+            if not own_run["ok"]:
+                healthy = False
+                raise RuntimeError(
+                    f"{gguf_file} did not restart with its own chat template after a fixed template was tried: "
+                    f"{own_run.get('detail') or own_run.get('phase')}")
+            own_env = load_env(env_path)
+            # Normally a cache hit that puts lastActivation back on the model's
+            # own profile; it never probes beyond the shared budget.
+            own = _profile_model_advisory(own_env, model, model_id=model_id, gguf_file=gguf_file,
+                                          budget_seconds=max(budget, 0.0))
+            return own_env, {**own, "templateRetry": {**outcome, "outcome": "reverted"}}
 
         try:
             # Read current env BEFORE modification — needed for gpu_backend guard
@@ -14365,21 +15144,45 @@ class AgentHandler(BaseHTTPRequestHandler):
                 # images name another backend's (CUDA) build.
                 if llama_server_image and gpu_backend not in {"apple", "amd"}:
                     updates["LLAMA_SERVER_IMAGE"] = llama_server_image
-                new_lines = []
-                seen = set()
-                for line in lines:
-                    key = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
-                    if key and key in updates:
-                        new_lines.append(_env_assignment(key, str(updates[key])))
-                        seen.add(key)
-                    elif key and key in remove_keys:
-                        continue
+                elif (
+                    gpu_backend not in {"apple", "amd"}
+                    and str(env_pre.get("LLAMA_SERVER_IMAGE") or "").strip() in catalog_images
+                ):
+                    # A catalog entry's or runtime profile's image belongs to
+                    # the model that selected it. A model without its own image
+                    # runs the backend default again; a host or owner image that
+                    # no catalog model names is kept.
+                    remove_keys.add("LLAMA_SERVER_IMAGE")
+                if gpu_backend not in {"apple", "amd"}:
+                    # A compute-12.1 GPU names its CUDA 13 build here: the
+                    # backend default (no key) is a CUDA 12 build.
+                    if "LLAMA_SERVER_IMAGE" in updates:
+                        env_image = updates["LLAMA_SERVER_IMAGE"]
+                    elif "LLAMA_SERVER_IMAGE" in remove_keys:
+                        env_image = ""
                     else:
-                        new_lines.append(line)
-                for key, val in updates.items():
-                    if key not in seen:
-                        new_lines.append(_env_assignment(key, str(val)))
-                _write_bound_env_text(env_path, "\n".join(new_lines) + "\n")
+                        env_image = str(env_pre.get("LLAMA_SERVER_IMAGE") or "").strip()
+                    compute_image = _llama_image_for_compute(env_image, env_pre)
+                    if compute_image != env_image:
+                        updates["LLAMA_SERVER_IMAGE"] = compute_image
+                        remove_keys.discard("LLAMA_SERVER_IMAGE")
+                # A vision import loads its projector in the container (WP2);
+                # any other model clears the previous one's. Host-native
+                # runtimes take the projector as an argument instead.
+                projector_file = _model_projector_file(model, target.parent)
+                if projector_file is not None and not host_native_llama and gpu_backend != "apple":
+                    updates["LLAMA_ARG_MMPROJ"] = f"/models/{projector_file.name}"
+                else:
+                    remove_keys.add("LLAMA_ARG_MMPROJ")
+                # A fixed chat template (WP5) for an exact template match; any
+                # other model clears the previous one's. The container reads
+                # it from its read-only /chat-templates mount; native macOS
+                # takes it as an argument (_launch_native_llama_server).
+                template_updates, template_removals = _chat_template_env_changes(
+                    template_override, container=not host_native_llama and gpu_backend != "apple")
+                updates.update(template_updates)
+                remove_keys.update(template_removals)
+                _write_bound_env_text(env_path, _env_text_with_changes(lines, updates, remove_keys))
 
             # Update models.ini
             models_ini.parent.mkdir(parents=True, exist_ok=True)
@@ -14442,13 +15245,22 @@ class AgentHandler(BaseHTTPRequestHandler):
             if wsl_managed.get('managed') is True:
                 runtime_restart_strategy = 'wsl-native-llama'
 
+                # A launcher from before vision support (Windows setup not
+                # rerun since) runs the weights alone.
+                wsl_projector = _model_projector_file(model, target.parent)
+                if wsl_projector is not None and not _wsl_runtime.supports_projector(wsl_managed):
+                    logger.warning('The Windows model runtime predates vision support; %s runs without %s',
+                                   gguf_file, wsl_projector.name)
+                    wsl_projector = None
+
                 def _bridge_activate(_e):
                     # The CAS digest the controller reports, even on failure,
                     # decides whether rollback restores or restarts the plan.
                     nonlocal wsl_changed_digest
                     try:
                         switched = _wsl_runtime.activate(INSTALL_DIR, _e, gguf_file,
-                                                          int(context_length), wsl_managed['planDigest'])
+                                                          int(context_length), wsl_managed['planDigest'],
+                                                          mmproj=wsl_projector.name if wsl_projector else None)
                     except _wsl_runtime.BridgeError as exc:
                         wsl_changed_digest = exc.new_plan_digest
                         raise
@@ -14510,14 +15322,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                     # container; a catalog or .env image names a CUDA build.
                     override_image = ""
                 else:
-                    override_image = (
+                    override_image = _llama_image_for_compute(
                         llama_server_image
                         or env.get("LLAMA_SERVER_IMAGE")
                         or (
                             "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
                             if gpu_backend == "nvidia"
                             else ""
-                        )
+                        ),
+                        env,
                     )
                 runtime_restart_strategy = "container-llama"
                 if _switchboard_adapters is not None:
@@ -14580,6 +15393,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                 healthy = bool(runtime_identity)
 
             if healthy:
+                # WP3: measure what the new model can do before any consumer
+                # is touched (first switch per file x build x host only).
+                profiling_started = time.monotonic()
+                model_profile_status = _profile_model_advisory(
+                    env, model, model_id=model_id, gguf_file=gguf_file)
+                # WP5.3: a model that fails the chat check with its own
+                # template, which ODS fixes exactly, gets one retry with the
+                # fixed template (ODS_MODEL_PROFILES=enabled only).
+                retry_template = (
+                    _template_retry_entry(env, model_profile_status)
+                    if template_override is None and switchboard_adapter is not None
+                    and runtime_restart_strategy in _TEMPLATE_RETRY_STRATEGIES else None)
+                if retry_template is not None:
+                    env, model_profile_status = retry_with_fixed_template(
+                        retry_template, model_profile_status, time.monotonic() - profiling_started)
+                # WP4 (enabled only): the measured traits of what stays loaded
+                # replace the catalog booleans for every reader of the route.
+                profile_traits = _profile_traits(env, model_profile_status)
+                if switchboard_run is not None and profile_traits is not None:
+                    switchboard_run["capabilities"] = _profiled_capabilities(
+                        switchboard_run.get("capabilities"), profile_traits, model)
                 _set_model_activation_phase('verifying')
                 if host_native_llama:
                     _write_host_native_litellm_config(env, gguf_file, llm_model_name)
@@ -14758,6 +15592,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 if pixel_transaction is None:
                     previous_pixel_contract = _managed_pixel_runtime_contract()
                     previous_pixel_image_input = (previous_pixel_contract or {}).get("imageInput", "unknown")
+                    previous_pixel_thinking_control = _managed_pixel_thinking_control()
                 pixel_reconcile_attempted = True
                 if pixel_transaction is not None and (
                     final_runtime_proof.get('contextVerified') is not True
@@ -14768,14 +15603,25 @@ class AgentHandler(BaseHTTPRequestHandler):
                     'model': pixel_runtime_identity,
                     'contextLength': int(context_length),
                     'maxTokens': _pixel_max_tokens_for_context(int(context_length)),
-                    'reasoning': _pixel_model_reasoning_capable(str(llm_model_name), env),
-                    'imageInput': _pixel_model_image_input(model_id),
+                    'reasoning': _profiled_pixel_reasoning(
+                        _pixel_model_reasoning_capable(str(llm_model_name), env), profile_traits),
+                    # Computed for this model alone: a model without a loaded
+                    # projector gets today's value back, never the previous
+                    # model's readback. A measured vision probe
+                    # (ODS_MODEL_PROFILES=enabled) still decides last.
+                    'imageInput': _profiled_pixel_image_input(
+                        _pixel_image_input_readback(_pixel_model_image_input(model_id), final_runtime_proof),
+                        profile_traits),
                 }
+                measured_control = (profile_traits or {}).get('control')
+                if measured_control in ('enable_thinking', 'always', 'none'):
+                    pixel_target['thinkingControl'] = measured_control
                 pixel_status = (pixel_transaction.apply(pixel_target) if pixel_transaction is not None
                     else _reconcile_ods_managed_pixel_model(
                         pixel_runtime_identity, int(context_length),
                         max_tokens=pixel_target['maxTokens'], reasoning=pixel_target['reasoning'],
-                        image_input=pixel_target['imageInput']))
+                        image_input=pixel_target['imageInput'],
+                        **_thinking_control_kwargs((profile_traits or {}).get('control'))))
                 if pixel_status == "not_installed":
                     pixel_reconcile_attempted = False
                 consumers = {
@@ -14906,6 +15752,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "context_length": int(context_length),
                         "gpu_assignment_changed": bool(gpu_assignment_plan),
                         "consumers": consumers,
+                        "profile": model_profile_status,
+                        **({"chatTemplateOverride": template_override["id"]}
+                           if template_override is not None else {}),
                     },
                 )
             else:
@@ -15009,13 +15858,18 @@ class AgentHandler(BaseHTTPRequestHandler):
             except RuntimeError:
                 library = []
             for entry in library:
-                if entry.get("gguf_file") == gguf_file and entry.get("gguf_parts"):
+                if entry.get("gguf_file") != gguf_file:
+                    continue
+                if entry.get("gguf_parts"):
                     parts_to_delete = []
                     for part in entry["gguf_parts"]:
                         part_file = _safe_model_artifact_path(models_dir, part.get("file"))
                         if part_file is not None and part_file.exists():
                             parts_to_delete.append(part_file)
-                    break
+                projector = _model_projector_file(entry, models_dir)
+                if projector is not None and not _projector_shared(library, entry, projector, models_dir):
+                    parts_to_delete.append(projector)
+                break
 
             deleted_names = {path.name for path in parts_to_delete}
             deleted_names.add(gguf_file)
@@ -15033,7 +15887,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                     'code': 'model_store_read_only',
                 })
                 return
-            if managed.get('managed') is True and managed['plan']['GgufFile'] in deleted_names:
+            if managed.get('managed') is True and (managed['plan']['GgufFile'] in deleted_names
+                                                    or managed['plan'].get('MmprojFile') in deleted_names):
                 json_response(self, 409, {'error': 'Cannot delete the model selected in the Windows startup plan'})
                 return
             if str(env.get("GGUF_FILE") or "") in deleted_names:
@@ -15072,19 +15927,89 @@ class AgentHandler(BaseHTTPRequestHandler):
                 json_response(self, 409, {'error': 'Model artifacts are shared or changed; deletion was refused',
                                           'code': 'model_artifact_shared'})
                 return
-            for pf in parts_to_delete:
-                pf.unlink()
+            # Move the complete group out of discovery on this filesystem
+            # before retiring any bytes. A later busy shard must not destroy
+            # the earlier shards of an otherwise usable split model.
+            staging = Path(tempfile.mkdtemp(prefix=".ods-model-delete-", dir=models_dir))
+            staged = []
+            try:
+                for pf in parts_to_delete:
+                    retired = staging / pf.name
+                    pf.rename(retired)
+                    staged.append((pf, retired))
+            except OSError:
+                restore_failed = False
+                for original, retired in reversed(staged):
+                    try:
+                        # Atomic no-replacement restore: an external writer
+                        # can recreate the name at any instant. Hard-link
+                        # creation refuses an existing destination; only then
+                        # retire the staging name. Neither failure loses bytes.
+                        os.link(retired, original, follow_symlinks=False)
+                        retired.unlink()
+                    except OSError:
+                        restore_failed = True
+                if restore_failed:
+                    json_response(self, 500, {
+                        "error": (f"Model deletion stopped. Restore the preserved shards from '{staging.name}' "
+                                  "inside this model's store directory before retrying; do not overwrite existing files."),
+                        "code": "model_delete_recovery_required",
+                        "recoveryDirectory": staging.name,
+                    })
+                    return
+                staging.rmdir()
+                raise
+
+            cleanup_pending = False
+            try:
+                for _original, retired in staged:
+                    retired.unlink()
+                staging.rmdir()
+            except OSError:
+                # The whole model is already retired. Remaining shards are
+                # retained for cleanup; do not report the disk space freed.
+                cleanup_pending = True
 
             status_path = INSTALL_DIR / "data" / "model-download-status.json"
-            if status_path.exists():
-                try:
-                    status_data = json.loads(status_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    status_path.unlink(missing_ok=True)
-                else:
-                    status_model = _download_status_model_token(status_data.get("model"))
-                    if status_model in deleted_names:
-                        _write_model_status(status_path, "idle", "", 0, 0)
+            try:
+                if status_path.exists():
+                    try:
+                        status_data = json.loads(status_path.read_text(encoding="utf-8"))
+                    except (json.JSONDecodeError, OSError):
+                        status_path.unlink(missing_ok=True)
+                    else:
+                        if not isinstance(status_data, dict):
+                            raise ValueError("Model download status must be an object")
+                        status_model = _download_status_model_token(status_data.get("model"))
+                        if status_model in deleted_names:
+                            _write_model_status(status_path, "idle", "", 0, 0, strict=True)
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                # Retirement already committed. A metadata error must not hide
+                # that fact or the location of bytes still awaiting cleanup.
+                payload = {
+                    "error": "Model was removed from the library, but download status could not be updated",
+                    "code": "model_delete_status_update_failed",
+                    "deletionCommitted": True,
+                }
+                if cleanup_pending:
+                    payload.update(
+                        cleanupPending=True,
+                        recoveryDirectory=staging.name,
+                        error=("Model was removed from the library, but download status could not be updated. "
+                               f"Disk cleanup is also incomplete. Remove the remaining files in '{staging.name}' "
+                               "inside this model's store directory to free disk space."),
+                    )
+                json_response(self, 500, payload)
+                return
+            if cleanup_pending:
+                json_response(self, 500, {
+                    "error": (f"Model was removed from the library, but disk cleanup is incomplete. Remove the remaining "
+                              f"files in '{staging.name}' inside this model's store directory to free disk space."),
+                    "code": "model_delete_cleanup_pending",
+                    "deletionCommitted": True,
+                    "recoveryDirectory": staging.name,
+                })
+                return
             json_response(self, 200, {"status": "deleted", "gguf_file": gguf_file})
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             json_response(self, 500, {"error": f"Failed to delete: {exc}"})
@@ -15258,6 +16183,433 @@ def _runtime_http(
     return result.stdout
 
 
+class _RefuseRedirects(urllib_request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib_error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+# Probe answers are small; a streamed tool call with its deltas stays far below this.
+# A streamed probe answer is one JSON event per token: about 400 KB for the
+# 1,000 tokens a thinking model may use (Tower3, 2026-10-09).
+_RUNTIME_EXCHANGE_LIMIT = 2097152
+
+
+def _runtime_exchange(
+    env: dict,
+    path: str,
+    *,
+    payload: dict | None = None,
+    timeout: float = 30,
+) -> tuple[int, str]:
+    """``(http_status, text)`` from the runtime, error statuses included.
+
+    For capability probes (WP3), which classify llama-server's own error text
+    such as a 400 "Unable to generate parser for this template". Same
+    endpoint and key handling as ``_runtime_http``: the key travels in a
+    request header (never argv), no proxy, no redirects, bounded body.
+    Raises OSError when the runtime cannot be reached or does not answer in time.
+    """
+    origin, transport = _runtime_endpoint(env)
+    api_key = _runtime_api_key(env)
+    if transport == "router":
+        return _router_transport_exchange(
+            INSTALL_DIR, origin, path, payload=payload, api_key=api_key, timeout=timeout,
+        )
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib_request.Request(f"{origin}{path}", data=data, headers=headers)
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}), _RefuseRedirects())
+    try:
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                status, body = response.status, response.read(_RUNTIME_EXCHANGE_LIMIT + 1)
+        except urllib_error.HTTPError as exc:
+            if 300 <= exc.code < 400:
+                raise OSError(f"llama-server {path} redirected; refusing") from exc
+            status, body = exc.code, exc.read(_RUNTIME_EXCHANGE_LIMIT + 1)
+    except http.client.HTTPException as exc:
+        raise OSError(f"llama-server {path} answered incompletely: {exc}") from exc
+    if len(body) > _RUNTIME_EXCHANGE_LIMIT:
+        raise OSError(f"llama-server {path} answer exceeds {_RUNTIME_EXCHANGE_LIMIT} bytes")
+    return status, body.decode("utf-8", errors="replace")
+
+
+_MODEL_PROFILE_MODES = frozenset({"off", "observe", "enabled"})
+_MODEL_PROFILE_DEFAULT_MODE = "observe"  # PLAN D5: observe in the first release
+
+
+def _model_profiles_mode(env: dict) -> str:
+    """``ODS_MODEL_PROFILES``: off, observe (default) or enabled."""
+    value = str(env.get("ODS_MODEL_PROFILES") or _MODEL_PROFILE_DEFAULT_MODE).strip().lower()
+    if value not in _MODEL_PROFILE_MODES:
+        logger.warning("ODS_MODEL_PROFILES=%r is not off, observe or enabled; using %s",
+                       value, _MODEL_PROFILE_DEFAULT_MODE)
+        return _MODEL_PROFILE_DEFAULT_MODE
+    return value
+
+
+def _model_profile_path() -> Path:
+    return INSTALL_DIR / "data" / "model-profiles.json"
+
+
+def _model_profile_backend(env: dict) -> str:
+    if _runtime_uses_router_transport(env) or _is_windows_host_llama_server(env):
+        return "windows-native"
+    return str(env.get("GPU_BACKEND") or "cpu").strip().lower() or "cpu"
+
+
+def _model_profile_digests(model: dict, gguf_file: str) -> list[str]:
+    """Every GGUF part's SHA-256 from the model's integrity manifest, else a file marker."""
+    manifest = _model_download_manifest(model) if isinstance(model, dict) else None
+    digests = [str(artifact["sha256"]) for artifact in (manifest or {}).get("artifacts", [])
+               if artifact.get("sha256") and artifact.get("role") != "projector"]
+    return digests or [f"file:{gguf_file}"]
+
+
+# Fixed chat templates (WP5). An activation for an exact template match sets
+# both keys; every other activation removes them (the WP0.1 rule). The
+# override id is the record every runtime reads (the profile key, the native
+# macOS launch); the file path is what the llama-server container loads from
+# its read-only /chat-templates mount.
+_CHAT_TEMPLATE_OVERRIDE_KEY = "MODEL_CHAT_TEMPLATE_OVERRIDE"
+_CHAT_TEMPLATE_FILE_KEY = "LLAMA_ARG_CHAT_TEMPLATE_FILE"
+_CHAT_TEMPLATE_CONTAINER_DIR = "/chat-templates"
+
+
+def _env_text_with_changes(lines: list[str], updates: dict, remove_keys: set) -> str:
+    """``.env`` text from ``lines``: ``updates`` set in place (appended when new), ``remove_keys`` dropped."""
+    new_lines = []
+    seen = set()
+    for line in lines:
+        key = line.split("=", 1)[0] if "=" in line and not line.startswith("#") else None
+        if key and key in updates:
+            new_lines.append(_env_assignment(key, str(updates[key])))
+            seen.add(key)
+        elif key and key in remove_keys:
+            continue
+        else:
+            new_lines.append(line)
+    for key, val in updates.items():
+        if key not in seen:
+            new_lines.append(_env_assignment(key, str(val)))
+    return "\n".join(new_lines) + "\n"
+
+
+def _chat_template_root() -> Path:
+    return INSTALL_DIR / "config" / "chat-templates"
+
+
+def _chat_template_overrides() -> list[dict]:
+    """The curated override index; none when it is missing or malformed (logged)."""
+    if _model_profile_templates is None:
+        return []
+    try:
+        return _model_profile_templates.load_index(_chat_template_root())
+    except (OSError, UnicodeError, _model_profile_templates.TemplateIndexError) as exc:
+        logger.warning("Chat template index unavailable; no fixed template is offered: %s", exc)
+        return []
+
+
+def _active_chat_template_override(env: dict) -> str | None:
+    """The fixed template id the configured model runs with, if any."""
+    return str(env.get(_CHAT_TEMPLATE_OVERRIDE_KEY) or "").strip() or None
+
+
+def _chat_template_env_changes(entry: dict | None, *, container: bool) -> tuple[dict, set]:
+    """The .env updates and removals that run the next model with ``entry``, or with its own template."""
+    if entry is None:
+        return {}, {_CHAT_TEMPLATE_OVERRIDE_KEY, _CHAT_TEMPLATE_FILE_KEY}
+    updates = {_CHAT_TEMPLATE_OVERRIDE_KEY: entry["id"]}
+    if container:
+        updates[_CHAT_TEMPLATE_FILE_KEY] = f"{_CHAT_TEMPLATE_CONTAINER_DIR}/{entry['file']}"
+        return updates, set()
+    return updates, {_CHAT_TEMPLATE_FILE_KEY}
+
+
+def _chat_template_unsupported(env: dict, wsl_managed: dict) -> bool:
+    """Windows runtimes (the WSL Portal's llama-server.exe and the legacy Docker
+    Desktop launch) have no fixed-template input yet; they refuse an override."""
+    return (wsl_managed.get("managed") is True or _runtime_uses_router_transport(env)
+            or _is_windows_host_llama_server(env))
+
+
+def _chat_template_refusal(env: dict, wsl_managed: dict, entry: dict) -> dict | None:
+    """Why the next model cannot run with the fixed template ``entry``, or None.
+
+    Checked before an activation changes anything: the runtime must be able
+    to load a template file, and the vendored file must still have the
+    SHA-256 its index entry records.
+    """
+    if _chat_template_unsupported(env, wsl_managed):
+        return {"error": "The Windows model runtime on this machine cannot use a fixed chat template yet. "
+                         "Nothing was changed.",
+                "code": "chat_template_override_unsupported"}
+    if _model_profile_templates is None:
+        return {"error": "This installation is missing its chat template support files. Nothing was changed; "
+                         "run the installer again to restore them.",
+                "code": "chat_template_override_unavailable"}
+    try:
+        _model_profile_templates.template_path(_chat_template_root(), entry)
+    except (OSError, _model_profile_templates.TemplateIndexError) as exc:
+        return {"error": f"The fixed chat template cannot be used: {exc}. Nothing was changed; "
+                         "run the installer again to restore the template files.",
+                "code": "chat_template_override_unavailable"}
+    return None
+
+
+def _model_profile_doc() -> dict:
+    """The profile store, or an empty one when it cannot be read (logged)."""
+    try:
+        return _model_profile_store.load(_model_profile_path())
+    except _model_profile_store.StoreError as exc:
+        logger.warning("Model profile store unreadable: %s", exc)
+        return _model_profile_store.empty()
+
+
+def _chat_template_match(doc: dict, model_id: str, entries: list[dict]) -> dict | None:
+    """The index entry for exactly the template this model was last measured with, if any.
+
+    The evidence is the model's newest profile made with its own template:
+    its /props template hash and llama.cpp build must match an entry exactly
+    (PLAN D3: exact-hash matches only).
+    """
+    for profile in reversed(doc["profiles"]):
+        if profile["modelId"] == model_id and profile["key"]["templateSource"] == "embedded":
+            return _model_profile_templates.match(
+                entries, profile["key"]["templateSha256"], profile["key"]["buildInfo"])
+    return None
+
+
+def _chat_template_request(env: dict, model_id: str, override_id: str) -> tuple[dict | None, dict | None]:
+    """``(index entry, None)`` when the owner may run ``model_id`` with ``override_id``, else ``(None, refusal)``."""
+    if _model_profiles_mode(env) == "off":
+        return None, {"error": "Model profiles are turned off on this machine, so ODS cannot check which chat "
+                               "template this model needs. Nothing was changed.",
+                      "code": "profiles_off"}
+    if _model_profile_templates is None or _model_profile_store is None:
+        return None, {"error": "This installation is missing its chat template support files. Nothing was "
+                               "changed; run the installer again to restore them.",
+                      "code": "chat_template_override_unavailable"}
+    entries = _chat_template_overrides()
+    entry = _model_profile_templates.entry_by_id(entries, override_id)
+    if entry is None:
+        return None, {"error": f"ODS has no fixed chat template called {override_id}. Nothing was changed.",
+                      "code": "chat_template_override_unknown"}
+    matched = _chat_template_match(_model_profile_doc(), model_id, entries)
+    if matched is None or matched["id"] != entry["id"]:
+        return None, {"error": "This fixed chat template is not for this model: ODS uses one only when the "
+                               "model's own template is exactly the one it fixes. Nothing was changed.",
+                      "code": "chat_template_override_not_matched"}
+    return entry, None
+
+
+def _chat_template_offer(env: dict, doc: dict, model_id: str, profile: dict | None) -> dict | None:
+    """What the Models page may show about a fixed template for ``model_id`` (only when there is one)."""
+    if _model_profile_templates is None:
+        return None
+    entries = _chat_template_overrides()
+    active_id = _active_chat_template_override(env)
+    shown_source = ((profile or {}).get("key") or {}).get("templateSource")
+    last = doc.get("lastActivation") or {}
+    if active_id and shown_source == f"override:{active_id}" and last.get("modelId") == model_id:
+        entry = _model_profile_templates.entry_by_id(entries, active_id) or {}
+        return {"id": active_id, "reason": entry.get("reason", ""), "active": True, "supported": True}
+    entry = _chat_template_match(doc, model_id, entries)
+    if entry is None:
+        return None
+    return {"id": entry["id"], "reason": entry["reason"], "active": False,
+            "supported": not _chat_template_unsupported(env, {})}
+
+
+# The automatic retry (WP5.3) restarts the runtime the activation itself
+# staged; the Windows runtimes have no template input (see above).
+_TEMPLATE_RETRY_STRATEGIES = frozenset({"compose-llama", "container-llama", "macos-native-llama"})
+# A retry starts only with time for at least the chat probe (P1) left in the
+# one profiling budget (PLAN D2) that both variants share.
+_TEMPLATE_RETRY_MIN_BUDGET_SECONDS = 30.0
+
+
+def _template_retry_entry(env: dict, status: dict) -> dict | None:
+    """The fixed template to retry a first switch with, or None (PLAN D3, WP5.3).
+
+    Only with ODS_MODEL_PROFILES=enabled, only when the profile just used
+    shows the model failing the chat check (P1) with its own template, and
+    only when the index fixes exactly that template on this llama.cpp build.
+    """
+    if (_model_profiles_mode(env) != "enabled" or _model_profile_templates is None
+            or status.get("status") not in {"recorded", "cached"}
+            or (status.get("summary") or {}).get("chat") is not False):
+        return None
+    doc = _model_profile_doc()
+    profile = next((entry for entry in doc["profiles"] if entry["keyHash"] == status.get("keyHash")), None)
+    if profile is None or profile["key"]["templateSource"] != "embedded":
+        return None
+    entry = _model_profile_templates.match(
+        _chat_template_overrides(), profile["key"]["templateSha256"], profile["key"]["buildInfo"])
+    if entry is None:
+        return None
+    try:
+        _model_profile_templates.template_path(_chat_template_root(), entry)
+    except (OSError, _model_profile_templates.TemplateIndexError) as exc:
+        logger.warning("Fixed chat template %s cannot be tried: %s", entry["id"], exc)
+        return None
+    return entry
+
+
+def _native_chat_template_file(env: dict) -> Path | None:
+    """The fixed template a native launch passes as --chat-template-file, proven by its SHA-256."""
+    override_id = _active_chat_template_override(env)
+    if override_id is None:
+        return None
+    if _model_profile_templates is None:
+        raise RuntimeError("Fixed chat templates need the model_profile package; re-run the installer")
+    entry = _model_profile_templates.entry_by_id(_chat_template_overrides(), override_id)
+    if entry is None:
+        raise RuntimeError(f"The fixed chat template {override_id} is not in this installation's template index")
+    return _model_profile_templates.template_path(_chat_template_root(), entry)
+
+
+def _profile_model(env: dict, model: dict, *, model_id: str, gguf_file: str, force: bool = False,
+                   budget_seconds: float | None = None) -> dict:
+    """Measure the loaded model once per GGUF x llama.cpp build x host (PLAN WP3).
+
+    A stored profile with the same key is reused unless ``force``. Inside an
+    activation this runs after the runtime proof and before any consumer is
+    touched (D1), under one total budget (D2), shown as the "profiling" phase.
+    ``budget_seconds`` is what is left of that budget for a template retry.
+    """
+    if _model_profiles_mode(env) == "off" or _model_profile_probes is None or _model_profile_store is None:
+        return {"status": "off"}
+    if str(env.get("ODS_MODE") or "local").lower() == "cloud":
+        return {"status": "skipped", "reason": "cloud"}
+    status, text = _runtime_exchange(env, "/props", timeout=15)
+    props = json.loads(text) if status == 200 else None
+    if not isinstance(props, dict):
+        return {"status": "unavailable", "reason": f"props-http-{status}"}
+    facts = _model_profile_probes.static_facts(props)
+    projector_sha = str(model.get("mmproj_sha256") or "").strip().lower() if isinstance(model, dict) else ""
+    # A fixed template (WP5) gets its own profile: /props then reports that
+    # template, and the key records which index entry supplied it.
+    template_override = _active_chat_template_override(env)
+    key = _model_profile_store.profile_key(
+        gguf_sha256=_model_profile_digests(model, gguf_file),
+        projector_sha256=projector_sha if projector_sha and facts["vision"] else None,
+        build_info=facts["buildInfo"],
+        backend=_model_profile_backend(env),
+        template_sha256=facts["templateSha256"],
+        template_source=f"override:{template_override}" if template_override else "embedded",
+        suite=_model_profile.SUITE_VERSION,
+        host=_model_profile_store.host_id(),
+    )
+    path = _model_profile_path()
+    try:
+        doc = _model_profile_store.load(path)
+    except _model_profile_store.StoreError as exc:
+        logger.warning("Model profile store unreadable; starting a new one: %s", exc)
+        doc = _model_profile_store.empty()
+    profile = None if force else _model_profile_store.find(doc, key)
+    cached = profile is not None
+    if profile is None:
+        _set_model_activation_phase("profiling")
+        result = _model_profile_probes.run_battery(
+            lambda probe_path, probe_payload, probe_timeout: _runtime_exchange(
+                env, probe_path, payload=probe_payload, timeout=probe_timeout),
+            props,
+            budget_seconds=_model_profile_probes.BUDGET_SECONDS if budget_seconds is None else budget_seconds,
+        )
+        profile = _model_profile_store.recorded_profile(
+            key, model_id=model_id, gguf_file=gguf_file, result=result, product_version=ODS_VERSION)
+        doc = _model_profile_store.with_profile(doc, profile)
+        logger.info("Model profile for %s took %d ms: %s", model_id, result["elapsedMs"],
+                    json.dumps(result["summary"], sort_keys=True))
+    _model_profile_store.atomic_write(
+        path, _model_profile_store.with_last_activation(doc, model_id, profile["keyHash"]))
+    return {"status": "cached" if cached else "recorded", "keyHash": profile["keyHash"],
+            "summary": profile["result"]["summary"]}
+
+
+def _profile_model_advisory(env: dict, model: dict, *, model_id: str, gguf_file: str, force: bool = False,
+                            budget_seconds: float | None = None) -> dict:
+    """``_profile_model`` that can never fail a switch (PLAN D4, the no-lockout rule).
+
+    These are the I/O and response-shape failures a probe run can meet; each
+    is logged with its trace and reported as the profile's status instead.
+    """
+    try:
+        return _profile_model(env, model, model_id=model_id, gguf_file=gguf_file, force=force,
+                              budget_seconds=budget_seconds)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError) as exc:
+        logger.exception("Model profile for %s did not complete", model_id)
+        return {"status": "error", "reason": type(exc).__name__}
+
+
+_THINKING_CONTROLS = frozenset({"enable_thinking", "always", "none"})
+
+
+def _summary_traits(summary: object) -> dict:
+    """The measured answers consumers read from a profile summary (WP4).
+
+    ``None`` means not known. The static template rule calls any template that
+    mentions ``<think>`` "always"; when the thinking probe found no working
+    reasoning, the model is treated as having none.
+    """
+    summary = summary if isinstance(summary, dict) else {}
+    thinking = summary.get("thinking") if isinstance(summary.get("thinking"), dict) else {}
+    control = thinking.get("control") if thinking.get("control") in _THINKING_CONTROLS else None
+    if control == "always" and thinking.get("works") is False:
+        control = "none"
+    tools, vision = summary.get("tools"), summary.get("vision")
+    return {
+        "tools": tools if isinstance(tools, bool) else None,
+        "vision": vision if isinstance(vision, bool) else None,
+        "control": control,
+    }
+
+
+def _profile_traits(env: dict, profile_status: object) -> dict | None:
+    """This switch's measured traits, or None: consumers then keep today's values.
+
+    Only ``ODS_MODEL_PROFILES=enabled`` lets a profile change what consumers
+    are told (PLAN D5), and only a profile this switch recorded or reused.
+    """
+    if _model_profiles_mode(env) != "enabled" or not isinstance(profile_status, dict):
+        return None
+    if profile_status.get("status") not in {"recorded", "cached"}:
+        return None
+    return _summary_traits(profile_status.get("summary"))
+
+
+def _catalog_agent_verified(model: object) -> bool:
+    """Whether the curated catalog records this model as verified for agents."""
+    compatibility = model.get("app_compatibility") if isinstance(model, dict) else None
+    if not isinstance(compatibility, dict):
+        return False
+    return any(
+        isinstance(compatibility.get(key), dict) and compatibility[key].get("status") == "verified"
+        for key in ("agent_viability", "pixel_agent")
+    )
+
+
+def _profiled_capabilities(capabilities: object, traits: dict | None, model: dict) -> object:
+    """Switchboard capabilities with the measured profile applied (WP4.1).
+
+    An unknown tools result changes nothing. A catalog ``verified`` agent
+    verdict keeps a curated model agent-viable through one failed probe run,
+    so a flaky probe cannot break a curated default (batch C decision 1).
+    """
+    if traits is None or traits["tools"] is None or not isinstance(capabilities, dict):
+        return capabilities
+    return {
+        **capabilities,
+        "tools": traits["tools"],
+        "vision": traits["vision"] is True,
+        "agentViable": capabilities.get("agentViable") is True
+        and (traits["tools"] or _catalog_agent_verified(model)),
+    }
+
+
 def _runtime_health(env: dict) -> str:
     """Return ``ok``, ``loading`` or ``error`` from llama-server ``/health``."""
     body = _runtime_http(env, "/health")
@@ -15393,23 +16745,28 @@ def _model_agent_viable(model: dict, context_length: int) -> bool:
     )
 
 
-def _llama_runtime_props(env: dict) -> tuple[int, str]:
-    """Return llama.cpp's actual ``n_ctx`` and served model file from /props.
+def _llama_runtime_props(env: dict) -> tuple[int, str, bool | None]:
+    """Return llama.cpp's actual ``n_ctx``, served model file and vision from /props.
 
     The file is the basename of ``model_path`` (empty when not reported).
-    Unreachable or malformed answers report ``(0, "")``.
+    Vision is ``modalities.vision`` when /props reports it as a boolean;
+    llama.cpp reports true only while a vision projector (mmproj) is loaded.
+    Any other value is None. Unreachable or malformed answers report
+    ``(0, "", None)``.
     """
     try:
         data = json.loads(_runtime_http(env, "/props") or "{}")
     except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired):
-        return 0, ""
+        return 0, "", None
     if not isinstance(data, dict):
-        return 0, ""
+        return 0, "", None
     settings = data.get("default_generation_settings")
     n_ctx = (_positive_int(settings.get("n_ctx")) or 0) if isinstance(settings, dict) else 0
     model_path = data.get("model_path")
     served = re.split(r"[\\/]", model_path.strip())[-1] if isinstance(model_path, str) else ""
-    return n_ctx, served
+    modalities = data.get("modalities")
+    vision = modalities.get("vision") if isinstance(modalities, dict) else None
+    return n_ctx, served, vision if type(vision) is bool else None
 
 
 def _llama_runtime_context_length(env: dict) -> int:
@@ -15522,7 +16879,18 @@ def _meaningful_completion(data: object, *, include_reasoning: bool = True) -> b
     return bool(non_space) and set(non_space) != {"?"}
 
 
-def _completion_probe_payload(model_name: str, *, disable_thinking: bool) -> dict:
+_COMPLETION_PROBE_TOKENS = 64
+# A model that always thinks (the DeepSeek-R1 distills ignore enable_thinking)
+# spends the short probe inside its reasoning and never reaches visible
+# content, so every switch to one rolled back: R1-Distill-Qwen-1.5B needs 441
+# tokens to answer (Tower3, 2026-10-09). An answer cut off while thinking earns
+# one longer probe; visible content is still required.
+_COMPLETION_PROBE_THINKING_TOKENS = 1024
+_COMPLETION_PROBE_THINKING_SECONDS = 120
+
+
+def _completion_probe_payload(model_name: str, *, disable_thinking: bool,
+                              max_tokens: int = _COMPLETION_PROBE_TOKENS) -> dict:
     payload = {
         "model": model_name,
         "messages": [{
@@ -15531,12 +16899,21 @@ def _completion_probe_payload(model_name: str, *, disable_thinking: bool) -> dic
         }],
         # A few reasoning-capable servers ignore enable_thinking. Leave enough
         # room for them to reach visible output while still bounding the probe.
-        "max_tokens": 64,
+        "max_tokens": max_tokens,
         "temperature": 0,
     }
     if disable_thinking:
         payload["chat_template_kwargs"] = {"enable_thinking": False}
     return payload
+
+
+def _reasoning_cut_short(response: object) -> bool:
+    """The answer hit max_tokens inside its reasoning: thinking, but no visible text yet."""
+    choices = response.get("choices") if isinstance(response, dict) else None
+    first = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    return (first.get("finish_reason") == "length"
+            and _meaningful_completion(response, include_reasoning=True)
+            and not _meaningful_completion(response, include_reasoning=False))
 
 
 def _completion_response_ready(
@@ -15581,10 +16958,12 @@ def _chat_completion_ready(
     prefix = "/" + api_prefix.strip("/")
     origin = base_url.rstrip("/") if base_url else f"http://{host}:{port}"
     url = f"{origin}{prefix}/chat/completions"
-    payload = json.dumps(_completion_probe_payload(model_name, disable_thinking=disable_thinking))
-    try:
+
+    def probe(max_tokens: int, seconds: int):
+        payload = json.dumps(_completion_probe_payload(
+            model_name, disable_thinking=disable_thinking, max_tokens=max_tokens))
         command = [
-            "curl", "-sf", "--max-time", "30", "--max-filesize", "65536",
+            "curl", "-sf", "--max-time", str(seconds), "--max-filesize", "65536",
             "-X", "POST", url,
             "-H", "Content-Type: application/json",
         ]
@@ -15601,11 +16980,16 @@ def _chat_completion_ready(
             capture_output=True,
             text=True,
             input=header_input,
-            timeout=35,
+            timeout=seconds + 5,
         )
-        if result.returncode != 0:
+        return json.loads(result.stdout or "{}") if result.returncode == 0 else None
+
+    try:
+        response = probe(_COMPLETION_PROBE_TOKENS, 30)
+        if response is not None and require_visible_content and _reasoning_cut_short(response):
+            response = probe(_COMPLETION_PROBE_THINKING_TOKENS, _COMPLETION_PROBE_THINKING_SECONDS)
+        if response is None:
             return False
-        response = json.loads(result.stdout or "{}")
     except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
         return False
     return _completion_response_ready(
@@ -15651,6 +17035,15 @@ def _runtime_completion_ready(
             timeout=30,
         )
         response = json.loads(body or "{}")
+        if _reasoning_cut_short(response):
+            body = _runtime_http(
+                env,
+                "/v1/chat/completions",
+                payload=_completion_probe_payload(
+                    model_name, disable_thinking=True, max_tokens=_COMPLETION_PROBE_THINKING_TOKENS),
+                timeout=_COMPLETION_PROBE_THINKING_SECONDS,
+            )
+            response = json.loads(body or "{}")
     except (json.JSONDecodeError, subprocess.TimeoutExpired, OSError):
         return False
     return _completion_response_ready(response, require_visible_content=True, **expected)
@@ -15807,7 +17200,9 @@ def _wait_for_model_readiness(
     visible content from the same model.
 
     Legacy callers receive a boolean. Identity callers receive the concrete
-    runtime identity. Adapters receive identity, actual context, and proof time.
+    runtime identity. Adapters receive identity, actual context, and proof time,
+    plus ``vision`` when that same ``/props`` answer reported
+    ``modalities.vision`` as a boolean.
 
     ``fast_poll_seconds`` opts into dense probing (every
     ``fast_poll_interval``) for that long *before* the regular schedule, for
@@ -15881,6 +17276,7 @@ def _wait_for_model_readiness(
             return not_ready
         runtime_identity = ""
         runtime_context = 0
+        runtime_vision = None
         try:
             health = _runtime_health(env)
             body = _runtime_http(env, "/v1/models").strip() if health == "ok" else ""
@@ -15898,7 +17294,7 @@ def _wait_for_model_readiness(
                 llm_model_name=llm_model_name,
             ) if body else ""
             if runtime_identity:
-                runtime_context, served_file = _llama_runtime_props(env)
+                runtime_context, served_file, runtime_vision = _llama_runtime_props(env)
                 if served_file and not _runtime_model_identity_matches(
                     served_file, gguf_file=gguf_file,
                 ):
@@ -15939,13 +17335,24 @@ def _wait_for_model_readiness(
                     reported_context = runtime_context or expected_context or 0
                     if reported_context <= 0:
                         return {}
-                    return {
+                    proof = {
                         "identity": runtime_identity,
                         "contextLength": reported_context,
                         "contextVerified": runtime_context > 0,
                         "verifiedAt": _iso_now(),
                     }
+                    # The same /props answer's modalities.vision, only when
+                    # it reported one (_pixel_image_input_readback reads it).
+                    if runtime_vision is not None:
+                        proof["vision"] = runtime_vision
+                    return proof
                 return runtime_identity if return_identity else True
+            if runtime_identity:
+                # Loaded and serving, yet no visible answer: never leave the
+                # earlier "still loading" in place (Tower3, 2026-10-09).
+                diagnosis["reason"] = (
+                    f"{runtime_identity} is loaded but did not answer a test message with visible text"
+                )
             if attempt % 6 == 0:
                 logger.info(
                     "Model %s readiness incomplete (attempt %d, identity=%s)%s",
@@ -16156,6 +17563,11 @@ def _runtime_llama_api_base(env: dict) -> str:
     """Container-visible OpenAI base (``.../v1``) of the managed llama-server."""
     if _runtime_uses_router_transport(env) or _is_windows_host_llama_server(env):
         return f"{_native_llm_container_origin(env)}/v1"
+    if str(env.get("GPU_BACKEND") or "").strip().lower() == "apple":
+        # Public mode URLs select consumers, not the native server's origin.
+        host = str(env.get("ODS_MACOS_HOST_GATEWAY") or "").strip() or "host.docker.internal"
+        port = str(env.get("ODS_NATIVE_LLAMA_PORT") or env.get("OLLAMA_PORT") or "8080")
+        return f"http://{host}:{port}/v1"
     configured = str(env.get("LLM_API_URL") or "").strip()
     if configured and "litellm" not in configured.lower():
         return configured
@@ -16214,10 +17626,50 @@ def _container_llama_rollback_image(env: dict) -> str:
 
     The AMD overlay pins its own image; a persisted LLAMA_SERVER_IMAGE can
     name another backend's (CUDA) build, so AMD always keeps the inspected one.
+    A compute-12.1 GPU rolls back to its CUDA 13 build, never to a CUDA 12 one
+    (_llama_image_for_compute).
     """
     if str(env.get("GPU_BACKEND") or "").strip().lower() == "amd":
         return ""
-    return str(env.get("LLAMA_SERVER_IMAGE") or "")
+    return _llama_image_for_compute(str(env.get("LLAMA_SERVER_IMAGE") or ""), env)
+
+
+# The repository stays separate so the pin contract does not read these
+# prefixes as unpinned image references.
+_LLAMA_CPP_REPOSITORY = "ghcr.io/ggml-org/llama.cpp"
+# llama.cpp's CUDA 12 images. They have no kernels for compute capability 12.1
+# (DGX Spark GB10, RTX Spark N1X) and answer "????" there; the CUDA 13 build
+# (server-cuda13-*) has them.
+_CUDA12_LLAMA_IMAGE_PREFIXES = (
+    f"{_LLAMA_CPP_REPOSITORY}:server-cuda-",
+    f"{_LLAMA_CPP_REPOSITORY}:server-cuda12-",
+)
+
+
+def _llama_image_for_compute(image: str, env: dict) -> str:
+    """The llama-server container image for this GPU's compute capability.
+
+    The installer records GPU_COMPUTE_CAP in .env, and
+    config/backends/nvidia.json runtime.llama_server.container_images_by_compute
+    pins the image a compute capability needs (installer phase 06 applies the
+    same map). On such an NVIDIA GPU the pinned image replaces a CUDA 12
+    llama.cpp build and the empty value, which means the backend default, a
+    CUDA 12 build. A CUDA 13 build, another backend's image and an owner's own
+    image are kept, and every other host gets ``image`` back unchanged.
+    """
+    image = str(image or "").strip()
+    if str(env.get("GPU_BACKEND") or "").strip().lower() != "nvidia":
+        return image
+    compute_cap = str(env.get("GPU_COMPUTE_CAP") or "").strip()
+    if not compute_cap:
+        return image
+    contract_path = INSTALL_DIR / "config" / "backends" / "nvidia.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    images = contract["runtime"]["llama_server"].get("container_images_by_compute", {})
+    pinned = str(images.get(compute_cap) or "").strip()
+    if pinned and (not image or image.startswith(_CUDA12_LLAMA_IMAGE_PREFIXES)):
+        return pinned
+    return image
 
 
 def _write_host_native_litellm_config(env: dict, gguf_file: str, model: str) -> None:
@@ -18318,6 +19770,103 @@ def _verify_litellm_route(env: dict, *, model: str = "default") -> None:
     )
 
 
+# A provider error that LiteLLM passes on can name the end of a refused key,
+# the key's hash or a rate-limited key's hash (pixel-model-relay/relay.py);
+# none may leave the agent.
+_PROVIDER_KEY_ECHO = (
+    (re.compile(r"(Received API Key\s*=\s*)[^,\s\"\\]+", re.IGNORECASE), r"\1[redacted]"),
+    (re.compile(r"(Key Hash \(Token\)\s*=\s*)[0-9A-Fa-f]+", re.IGNORECASE), r"\1[redacted]"),
+    (re.compile(r"(api_key\s*[:=]\s*)[^\s,\"']+", re.IGNORECASE), r"\1[redacted]"),
+    (re.compile(r"\bsk-[A-Za-z0-9_-]{6,}"), "[redacted]"),
+    (re.compile(r"\b[0-9A-Fa-f]{32,}\b"), "[redacted]"),
+)
+# LiteLLM's wrapper around a provider error, e.g. "litellm.InternalServerError:
+# InternalServerError: OpenAIException - Connection error."
+_LITELLM_ERROR_PREFIX = re.compile(r"^(?:litellm\.\w+:\s*)?(?:\w+Error:\s*)?(?:\w+Exception\s*-\s*)?")
+# LiteLLM got no HTTP answer from its own next hop (the egress): not the API.
+_LITELLM_OWN_FAULT = re.compile(r"^litellm\.APIConnectionError\b")
+
+
+def _provider_error_line(body: str) -> str:
+    """The first line of an error body's message, as LiteLLM wrote it."""
+    try:
+        value = json.loads(body)
+    except json.JSONDecodeError:
+        value = None
+    error = value.get("error") if isinstance(value, dict) else None
+    text = str((error.get("message") if isinstance(error, dict) else error if isinstance(error, str) else body) or "")
+    return text.strip().splitlines()[0] if text.strip() else ""
+
+
+def _provider_error_text(line: str) -> str:
+    """That line bounded, without key echoes, control characters or backslashes."""
+    for pattern, replacement in _PROVIDER_KEY_ECHO:
+        line = pattern.sub(replacement, line)
+    line = "".join(character for character in line if character.isprintable() and character != "\\")
+    return _LITELLM_ERROR_PREFIX.sub("", line).strip()[:300]
+
+
+def _litellm_ready(host: str, port: str) -> bool:
+    """LiteLLM's own readiness, which needs no provider answer."""
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "--max-time", "5", "-w", "%{http_code}",
+             f"http://{host}:{port}/health/readiness"],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "200"
+
+
+def _litellm_route_failure(env: dict, *, model: str = "ods/current") -> tuple[int | None, str, bool] | None:
+    """Ask the active LiteLLM route for one completion.
+
+    Returns None when it answers. Otherwise returns the HTTP status (None when
+    LiteLLM itself did not answer), a bounded error text, and whether the
+    failure is the provider's, meaning LiteLLM and its egress hop worked.
+    """
+    host = "ods-litellm" if os.environ.get("ODS_HOST_INSTALL_DIR") else "127.0.0.1"
+    port = str(env.get("LITELLM_PORT") or "4000")
+    api_key = str(env.get("LITELLM_KEY") or env.get("LITELLM_MASTER_KEY") or "")
+    command = [
+        "curl", "-s", "--max-time", "30", "--max-filesize", "65536",
+        "-w", "\n%{http_code}", "-X", "POST", f"http://{host}:{port}/v1/chat/completions",
+        "-H", "Content-Type: application/json", "-H", "@-",
+        "-d", json.dumps(_completion_probe_payload(model, disable_thinking=False)),
+    ]
+    try:
+        result = subprocess.run(
+            command, capture_output=True, encoding="utf-8", errors="replace", timeout=35,
+            # Keep the key out of process listings (see _chat_completion_ready).
+            input=f"Authorization: Bearer {api_key}\n",
+        )
+        timed_out = result.returncode == 28
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    if timed_out:
+        # LiteLLM took the request but no answer came: the API's slowness if
+        # LiteLLM itself still answers, else LiteLLM's own fault.
+        if _litellm_ready(host, port):
+            return 504, "The API did not answer within 30 seconds", True
+        return None, "LiteLLM did not answer in time", False
+    body, _, code = result.stdout.rpartition("\n")
+    if result.returncode != 0 or not code.isdigit() or code == "000":
+        return None, "LiteLLM did not answer", False
+    status = int(code)
+    if status == 200:
+        try:
+            response = json.loads(body)
+        except json.JSONDecodeError:
+            return status, "LiteLLM returned an invalid completion", False
+        if _completion_response_ready(response, require_visible_content=False):
+            return None
+        return status, "The API answered with an empty completion", True
+    line = _provider_error_line(body)
+    provider = (status >= 500 or status in {408, 429}) and not _LITELLM_OWN_FAULT.match(line)
+    return status, _provider_error_text(line) or f"HTTP {status}", provider
+
+
 def _read_hermes_container_config() -> str:
     if not _container_running("ods-hermes"):
         raise RuntimeError("Hermes live config is host-inaccessible and ods-hermes is not running")
@@ -18652,6 +20201,26 @@ def _default_runtime_incompatibility(model: dict, env: dict) -> str | None:
     return note or "This model needs a newer llama.cpp runtime than ODS ships by default."
 
 
+def _catalog_model_images(library: list[dict]) -> frozenset[str]:
+    """Images that a catalog entry or one of its runtime profiles selects."""
+    images = set()
+    for entry in library:
+        profiles = entry.get("runtime_profiles")
+        candidates = [entry.get("llama_server_image")]
+        if isinstance(profiles, list):
+            candidates.extend(
+                profile.get("llama_server_image")
+                for profile in profiles
+                if isinstance(profile, dict)
+            )
+        images.update(
+            candidate.strip()
+            for candidate in candidates
+            if isinstance(candidate, str) and candidate.strip()
+        )
+    return frozenset(images)
+
+
 def _select_runtime_profile(model: dict, env: dict) -> dict | None:
     profiles = model.get("runtime_profiles")
     if not isinstance(profiles, list):
@@ -18939,6 +20508,17 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
         if projector is None:
             raise RuntimeError("The memory-qualified vision projector is unavailable")
         args.extend(["--mmproj", str(projector)])
+    else:
+        # A vision import's own projector (WP2), downloaded with its weights.
+        imported_projector = _model_projector_file(_library_record_for_gguf(gguf_file), model_path.parent)
+        if imported_projector is not None:
+            args.extend(["--mmproj", str(imported_projector)])
+    # A fixed chat template the activation chose for an exact template match
+    # (WP5), checked against its SHA-256 before every launch. The LaunchAgent
+    # plist keeps these arguments across restarts.
+    template_file = _native_chat_template_file(env)
+    if template_file is not None:
+        args.extend(["--chat-template-file", str(template_file)])
     # On macOS the default runtime gets its reasoning flags from the tuning
     # helper below (--reasoning on b9014, where --reasoning-format none put an
     # empty think block into every reply). Everything else passes the format.
@@ -19665,8 +21245,9 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
     logger.info("llama-server container created successfully")
 
 
-def _write_model_status(path: Path, status: str, model: str, downloaded: int, total: int, error: str = ""):
-    """Write model download status JSON atomically."""
+def _write_model_status(path: Path, status: str, model: str, downloaded: int, total: int, error: str = "",
+                        *, strict: bool = False):
+    """Write status atomically; strict callers must report publication failure."""
     data = {
         "status": status,
         "model": model,
@@ -19690,6 +21271,8 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        if strict:
+            raise
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -19816,9 +21399,14 @@ def _reconcile_native_pixel_startup():
                          and projection.get('busy') is False
                          and projection.get('reason') in (
                              'admission-gate-unavailable', 'runtime-unavailable-or-busy',
-                             'managed-runtime-unavailable')))
+                             'managed-runtime-unavailable',
+                             # Boot order: after a WSL or machine restart this check can
+                             # run before Docker or the Pixel edge container is up.
+                             'edge-container-unavailable', 'host-command-failed')))
                 if not retry:
-                    logger.warning('Pixel startup reproof requires attention')
+                    # Both values are bounded tokens from the helper's projection.
+                    logger.warning('Pixel startup reproof requires attention (stage=%s reason=%s)',
+                                   diagnostic.get('stage'), projection.get('reason'))
                     return
                 unavailable = (diagnostic.get('stage'), projection.get('reason'))
             except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
@@ -19904,6 +21492,328 @@ def _public_docker_client_config(install_dir: Path, environ) -> Path | None:
     logger.warning("Docker credential helper not on this service's PATH (%s); "
                    "pulling public images with %s", ", ".join(missing), config_dir)
     return config_dir
+
+
+# `wsl --shutdown`, which ODS's own messages recommend, restarts Docker
+# Desktop's VM, and Docker brings ODS's unless-stopped containers back healthy.
+# Some of their published 127.0.0.1 ports then accept a connection and close
+# it at once, from Windows and from WSL, until that container restarts: Open
+# WebUI, llama-server, LiteLLM, Whisper and Kokoro stayed unreachable this way
+# (fleet test, Docker Desktop 4.68 / Engine 29.3.1, 2026-10-18). Each agent
+# start under WSL checks the healthy ODS HTTP ports once and restarts a
+# container whose port stays dead, at most once per WSL VM boot.
+_WSL_PORT_CHECK_WINDOW_SECONDS = 600  # llama-server can load a model for minutes
+_WSL_PORT_CHECK_MIN_WATCH_SECONDS = 120  # a container Docker starts late still counts
+_WSL_PORT_CHECK_POLL_SECONDS = 15
+_WSL_PORT_CHECK_DEAD_POLLS = 2  # consecutive polls on which a port must be dead
+_WSL_PORT_PROBE_TIMEOUT_SECONDS = 5
+_WSL_PORT_RESTART_TIMEOUT_SECONDS = 120
+_WSL_PORT_CHECK_RECORD = "wsl-port-check.json"
+# Published bindings that 127.0.0.1 reaches: loopback and the IPv4 wildcard.
+_WSL_PORT_LOOPBACK_HOST_IPS = frozenset({"127.0.0.1", "0.0.0.0", ""})
+# States after which this agent start leaves a container alone.
+_WSL_PORT_DONE_STATES = frozenset({
+    "answering", "repaired", "still-dead", "restarted-earlier", "restart-failed", "gone",
+})
+_LINUX_BOOT_ID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _linux_boot_id(path: Path = Path("/proc/sys/kernel/random/boot_id")) -> str | None:
+    """Return this kernel boot's id. WSL draws a new one each time its VM starts."""
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return value if _LINUX_BOOT_ID_RE.fullmatch(value) else None
+
+
+def _declared_http_ports() -> dict[str, tuple[str, int]]:
+    """Map declared container names to (service id, in-container HTTP port).
+
+    A manifest ``health`` path marks ``port`` as HTTP. An empty one marks a
+    database or broker port, which an HTTP request cannot judge.
+    """
+    ports = {}
+    for name, service_id in _declared_docker_containers().items():
+        ext_dir = _find_ext_dir(service_id)
+        manifest = _read_manifest(ext_dir) if ext_dir is not None else None
+        service = manifest.get("service") if manifest else None
+        if not isinstance(service, dict):
+            continue
+        port, health = service.get("port"), service.get("health")
+        if type(port) is int and 0 < port < 65536 and isinstance(health, str) and health.strip():
+            ports[name] = (service_id, port)
+    return ports
+
+
+def _running_ods_container_rows() -> list:
+    """Inspect the running containers of the ODS Compose project; [] without an answer."""
+    try:
+        listed = subprocess.run(
+            ["docker", "ps", "--no-trunc", "--quiet", "--filter", "status=running",
+             "--filter", "label=com.docker.compose.project=ods"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if listed.returncode != 0 or not listed.stdout.split():
+            return []
+        inspected = subprocess.run(
+            ["docker", "inspect", "--type", "container", *listed.stdout.split()],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.debug("WSL port check: Docker did not answer: %s", exc)
+        return []
+    # A container that stops between the two commands fails the inspect;
+    # the next poll sees the new state.
+    if inspected.returncode != 0:
+        return []
+    rows = json.loads(inspected.stdout)
+    return rows if isinstance(rows, list) else []
+
+
+def _wsl_port_check_targets(rows: list, http_ports: dict, install_dir: Path) -> list[dict]:
+    """Select this installation's running containers whose declared HTTP port
+    is published where 127.0.0.1 reaches it (pure).
+
+    Ownership is the Compose project and its working directory, as in
+    scripts/stop-owned-containers.py: a container name alone can belong to
+    another installation on the same Docker engine.
+    """
+    root = os.path.realpath(install_dir)
+    targets = []
+    for row in rows:
+        labels = (row.get("Config") or {}).get("Labels") or {}
+        state = row.get("State") or {}
+        working_dir = labels.get("com.docker.compose.project.working_dir")
+        name = str(row.get("Name") or "").lstrip("/")
+        container_id = str(row.get("Id") or "")
+        if (labels.get("com.docker.compose.project") != "ods"
+                or not isinstance(working_dir, str) or not os.path.isabs(working_dir)
+                or os.path.realpath(working_dir) != root
+                or name not in http_ports or state.get("Running") is not True
+                or not re.fullmatch(r"[0-9a-f]{64}", container_id)):
+            continue
+        service_id, port = http_ports[name]
+        bindings = ((row.get("NetworkSettings") or {}).get("Ports") or {}).get(f"{port}/tcp") or []
+        host_ports = sorted({
+            int(binding["HostPort"]) for binding in bindings
+            if binding.get("HostIp") in _WSL_PORT_LOOPBACK_HOST_IPS
+            and re.fullmatch(r"[1-9][0-9]{0,4}", str(binding.get("HostPort") or ""))
+            and int(binding["HostPort"]) < 65536
+        })
+        if host_ports:
+            health = (state.get("Health") or {}).get("Status") or "none"
+            targets.append({"id": container_id, "name": name, "service": service_id,
+                            "health": health, "ports": host_ports})
+    return targets
+
+
+def _probe_loopback_http(port: int) -> str:
+    """Send one minimal HTTP request to 127.0.0.1:<port> and classify the reply.
+
+    Any reply byte, whatever the status code, proves the forward works
+    ("answering"). A refused connection, or one closed without a reply, is
+    the dead Docker Desktop forward ("refused", "closed"). A timeout proves
+    nothing either way.
+    """
+    request = f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    try:
+        with socket.create_connection(
+            ("127.0.0.1", port), timeout=_WSL_PORT_PROBE_TIMEOUT_SECONDS,
+        ) as connection:
+            connection.sendall(request.encode("ascii"))
+            reply = connection.recv(64)
+    except ConnectionRefusedError:
+        return "refused"
+    except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+        return "closed"
+    except socket.timeout:
+        return "timeout"
+    return "answering" if reply else "closed"
+
+
+def _wsl_port_verdict(outcomes: list[str]) -> str:
+    """Combine one container's probes (pure): any reply proves its forward works."""
+    if "answering" in outcomes:
+        return "answering"
+    if any(outcome in ("refused", "closed") for outcome in outcomes):
+        return "dead"
+    return "unknown"
+
+
+def _wsl_port_check_decision(state: str, verdict: str, dead_polls: int,
+                             restarted_earlier: bool) -> str | None:
+    """Return a container's next state, "restart", or None to probe again (pure).
+
+    ``dead_polls`` counts consecutive dead verdicts, this one included.
+    """
+    if state == "restarted":
+        return {"answering": "repaired", "dead": "still-dead"}.get(verdict)
+    if verdict == "answering":
+        return "answering"
+    if verdict != "dead" or dead_polls < _WSL_PORT_CHECK_DEAD_POLLS:
+        return None
+    return "restarted-earlier" if restarted_earlier else "restart"
+
+
+def _read_wsl_port_restarts(path: Path, boot_id: str) -> set[str]:
+    """Return the containers already restarted during this WSL boot."""
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return set()
+    except ValueError:
+        logger.warning("WSL port check: ignoring unreadable restart record %s", path)
+        return set()
+    if not isinstance(record, dict) or record.get("bootId") != boot_id:
+        return set()
+    names = record.get("restarted")
+    if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+        logger.warning("WSL port check: ignoring invalid restart record %s", path)
+        return set()
+    return set(names)
+
+
+def _record_and_restart(target: dict, restarted: set, record_path: Path,
+                        boot_id: str) -> tuple[str, str]:
+    """Record the restart for this boot first, so no crash or later agent
+    start can repeat it, then restart the same container (same model, same
+    settings: a restart, not a recreate)."""
+    restarted.add(target["name"])
+    try:
+        _atomic_write_json(record_path, {"bootId": boot_id, "restarted": sorted(restarted)})
+        result = subprocess.run(
+            ["docker", "restart", target["id"]],
+            capture_output=True, text=True, timeout=_WSL_PORT_RESTART_TIMEOUT_SECONDS,
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return "restart-failed", str(exc)
+    if result.returncode != 0:
+        return "restart-failed", (result.stderr or result.stdout or "").strip()[:300]
+    return "restarted", ""
+
+
+def _restart_dead_port_container(target: dict, restarted: set, record_path: Path,
+                                 boot_id: str) -> tuple[str, str]:
+    """Restart one container whose published port is dead; return (state, detail).
+
+    Like the dashboard's Restart button, this holds the service's lock.
+    llama-server also claims the model lifecycle and waits out a pending
+    Pixel model transaction, so it never races a model switch.
+    """
+    service = target["service"]
+    model_runtime = service == "llama-server"
+    if model_runtime:
+        acquired, active = _begin_model_lifecycle("wsl_port_restart")
+        if not acquired:
+            return "deferred", f"{active.get('operation') or 'a model operation'} is in progress"
+    lock = _service_locks[service]
+    locked = lock.acquire(blocking=False)
+    try:
+        if not locked:
+            return "deferred", "another operation on this service is in progress"
+        if model_runtime and _pixel_model_transition_pending_for_route_proof():
+            return "deferred", "a Pixel model transaction is pending"
+        if not _container_running(target["id"]):
+            return "gone", "it stopped or was replaced before the restart"
+        return _record_and_restart(target, restarted, record_path, boot_id)
+    finally:
+        if locked:
+            lock.release()
+        if model_runtime:
+            _end_model_lifecycle("wsl_port_restart")
+
+
+def _log_wsl_port_state(name: str, state: str, previous: str, detail: str) -> None:
+    if state == "restarted":
+        logger.info("WSL port check: restarted %s because its published port stopped "
+                    "forwarding (%s)", name, detail)
+    elif state == "deferred" and previous != "deferred":
+        logger.info("WSL port check: not restarting %s yet: %s", name, detail)
+    elif state == "gone":
+        logger.info("WSL port check: left %s alone: %s", name, detail)
+    elif state == "restart-failed":
+        logger.warning("WSL port check: could not restart %s: %s", name, detail)
+    elif state == "still-dead":
+        logger.warning("WSL port check: %s still has a dead port after one restart; "
+                       "not restarting it again during this WSL boot", name)
+    elif state == "restarted-earlier":
+        logger.info("WSL port check: %s has a dead port but was restarted once during "
+                    "this WSL boot already; leaving it", name)
+
+
+def _wsl_port_check_step(target: dict, states: dict, dead_polls: dict, restarted: set,
+                         record_path: Path, boot_id: str) -> None:
+    """Probe one container that Docker reports healthy and act on the result."""
+    name = target["name"]
+    state = states.setdefault(name, "waiting")
+    # Healthy means the service answers inside its container, so a dead
+    # published port is the forward, not a service that is still starting.
+    if state in _WSL_PORT_DONE_STATES or target["health"] != "healthy":
+        return
+    outcomes = [_probe_loopback_http(port) for port in target["ports"]]
+    verdict = _wsl_port_verdict(outcomes)
+    dead_polls[name] = dead_polls.get(name, 0) + 1 if verdict == "dead" else 0
+    decision = _wsl_port_check_decision(state, verdict, dead_polls[name], name in restarted)
+    if decision is None:
+        return
+    detail = ", ".join(f"127.0.0.1:{port} {outcome}"
+                       for port, outcome in zip(target["ports"], outcomes))
+    if decision == "restart":
+        decision, failure = _restart_dead_port_container(target, restarted, record_path, boot_id)
+        detail = failure or detail
+    _log_wsl_port_state(name, decision, state, detail)
+    states[name] = decision
+
+
+def _wsl_port_check(boot_id: str, record_path: Path, *, clock=time.monotonic,
+                    sleep=time.sleep) -> dict[str, str]:
+    """Watch ODS's published HTTP ports after a WSL VM boot, within a bound.
+
+    Returns each container's state; "waiting" never became healthy in time.
+    """
+    restarted = _read_wsl_port_restarts(record_path, boot_id)
+    states: dict[str, str] = {}
+    dead_polls: dict[str, int] = {}
+    started = clock()
+    while True:
+        rows = _running_ods_container_rows()
+        targets = _wsl_port_check_targets(rows, _declared_http_ports(), INSTALL_DIR) if rows else []
+        for target in targets:
+            _wsl_port_check_step(target, states, dead_polls, restarted, record_path, boot_id)
+        elapsed = clock() - started
+        settled = bool(targets) and all(states[t["name"]] in _WSL_PORT_DONE_STATES for t in targets)
+        if elapsed >= _WSL_PORT_CHECK_WINDOW_SECONDS or (
+            settled and elapsed >= _WSL_PORT_CHECK_MIN_WATCH_SECONDS
+        ):
+            return states
+        sleep(_WSL_PORT_CHECK_POLL_SECONDS)
+
+
+def _run_wsl_port_check() -> None:
+    """Thread body: one bounded check per agent start, summarized in one line."""
+    boot_id = _linux_boot_id()
+    if boot_id is None:
+        logger.warning("WSL port check skipped: no boot id to limit restarts to one per WSL boot")
+        return
+    logger.info("WSL port check: watching ODS's published HTTP ports for up to %d minutes",
+                _WSL_PORT_CHECK_WINDOW_SECONDS // 60)
+    states = _wsl_port_check(boot_id, DATA_DIR / _WSL_PORT_CHECK_RECORD)
+    by_state: dict[str, list[str]] = {}
+    for name, state in sorted(states.items()):
+        by_state.setdefault(state, []).append(name)
+    summary = "; ".join(f"{state} {', '.join(names)}" for state, names in sorted(by_state.items()))
+    logger.info("WSL port check finished: %s", summary or "no running ODS HTTP service")
+
+
+def _start_wsl_port_check() -> threading.Thread | None:
+    """Start the check in the background under WSL; the agent never waits on it."""
+    # An agent inside a container would probe that container's own loopback.
+    if not _is_wsl_linux() or os.environ.get("ODS_HOST_INSTALL_DIR"):
+        return None
+    thread = threading.Thread(target=_run_wsl_port_check, name="ods-wsl-port-check", daemon=True)
+    thread.start()
+    return thread
 
 
 def main():
@@ -20029,6 +21939,7 @@ def main():
         if platform.system() in ('Darwin', 'Linux'):
             threading.Thread(target=_monitor_native_pixel_access,
                              name='ods-pixel-startup-reproof', daemon=True).start()
+        _start_wsl_port_check()
         server.serve_forever()
     except KeyboardInterrupt:
         logger.info("Shutting down")

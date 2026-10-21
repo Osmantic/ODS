@@ -378,6 +378,40 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
                     "test-model", 65536, 16384, "false", "", "unsupported")
 
+    def test_thinking_control_fast_path_and_rollback_belong_to_the_live_model(self):
+        self.prepare_snapshot()
+        live_path = self.home / ".openclaw/openclaw.json"
+        live = json.loads(live_path.read_text())
+        live["agents"]["defaults"] = {}
+        live["plugins"] = {"entries": {"pixel-ods": {"config": {"modelImageInput": "unknown"}}}}
+        live["models"]["providers"]["ods-gateway"]["models"][0]["input"] = ["text", "image"]
+        live_path.write_text(json.dumps(live))
+        self.save(dict(self.original, modelThinkingControl="always"))
+        # The no-op shortcut needs the same control; a new one is applied.
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", "", "unknown", "always")
+        for other in ("", "enable_thinking", "none"):
+            self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                        "test-model", 65536, 16384, "false", "", "unknown", other, success=False)
+        backup = Path(self.snapshot().stdout.strip())
+        rollback = json.loads((backup / "rollback-onboarding.json").read_text())
+        self.assertEqual(rollback["modelThinkingControl"], "always")
+        # Answers that lag a native switch name another model: no control moves over.
+        self.save(dict(self.original, modelName="ODS Current (other-model)", modelThinkingControl="always"))
+        backup = Path(self.snapshot().stdout.strip())
+        rollback = json.loads((backup / "rollback-onboarding.json").read_text())
+        self.assertEqual(rollback["modelName"], "ODS Current (test-model)")
+        self.assertNotIn("modelThinkingControl", rollback)
+        self.save(dict(self.original, modelThinkingControl="sometimes"))
+        self.snapshot(success=False)
+        self.save(self.original)
+        self.invoke("_ods_pixel_update_onboarding_model", self.answers,
+                    "test-model", 65536, 16384, "false", "", "unknown", "none")
+        self.assertEqual(json.loads(self.answers.read_text())["modelThinkingControl"], "none")
+        self.invoke("_ods_pixel_update_onboarding_model", self.answers,
+                    "test-model", 65536, 16384, "false")
+        self.assertNotIn("modelThinkingControl", json.loads(self.answers.read_text()))
+
 
 if __name__ == "__main__":
     unittest.main()

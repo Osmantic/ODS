@@ -112,8 +112,14 @@ function errorMessageFromPayload(data, fallback) {
   return fallback
 }
 
-async function errorMessageFromResponse(response, fallback) {
-  return errorMessageFromPayload(await responseJson(response), fallback)
+class ModelActionError extends Error {
+  constructor(message, deletionDetail = null) {
+    super(message)
+    // Only a typed, committed deletion outcome authorizes immediate readback.
+    const committedOutcome = deletionDetail?.code === 'model_delete_cleanup_pending' ||
+      deletionDetail?.code === 'model_delete_status_update_failed'
+    this.deletionCommitted = committedOutcome && deletionDetail.deletionCommitted === true
+  }
 }
 
 async function modelActionRequest(url, options, budget, timeoutMessage, failureMessage, expectedStatus = null) {
@@ -129,7 +135,13 @@ async function modelActionRequest(url, options, budget, timeoutMessage, failureM
     await Promise.race([
       (async () => {
         const response = await fetch(url, { ...options, signal: controller.signal })
-        if (!response.ok) throw new Error(await errorMessageFromResponse(response, failureMessage))
+        if (!response.ok) {
+          const data = await responseJson(response)
+          throw new ModelActionError(
+            errorMessageFromPayload(data, failureMessage),
+            options.method === 'DELETE' ? data?.detail : null,
+          )
+        }
         if (expectedStatus && (await responseJson(response)).status !== expectedStatus) {
           throw new Error('The runtime operation was not confirmed. Refresh its status before retrying.')
         }
@@ -177,14 +189,22 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
+const START_REFUSALS = new Set(['memory_refused', 'gpu_busy'])
+
 function normalizeModelManagement(value) {
   const managed = typeof value?.managed === 'boolean' ? value.managed : null
+  const running = managed === true && value.running === true
+  // Why a managed Windows model is not running, in the launcher's words; a
+  // memory refusal makes Resume start the model anyway.
+  const runtimeError = managed === true && !running && typeof value.runtimeError === 'string' ? value.runtimeError : ''
   return {
     managed,
     canActivate: managed === true && value.canActivate === true,
     canUnload: managed === true && value.canUnload === true,
-    running: managed === true && value.running === true,
+    running,
     reason: typeof value?.reason === 'string' ? value.reason : '',
+    runtimeError,
+    startRefusal: runtimeError && START_REFUSALS.has(value.startRefusal) ? value.startRefusal : '',
   }
 }
 
@@ -642,6 +662,7 @@ export function useModels({observe=true} = {}) {
       await fetchModels() // Refresh
     } catch (err) {
       setMutationError(err.message)
+      if (err instanceof ModelActionError && err.deletionCommitted) await fetchModels()
     } finally {
       finishAction(action.token)
     }

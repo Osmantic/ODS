@@ -122,7 +122,10 @@ preserve_model_cache() {
 print_model_retention_summary() {
     local backup="${INSTALL_DIR%/}.models-backup"
     echo "Retained model files: $backup/models"
-    echo "A later install does not automatically restore this backup. After you reinstall, recover needed models into $INSTALL_DIR/data/models without overwriting existing files. Verify the recovered models, then delete $backup (or move it aside): the next --keep-models uninstall stops while it exists."
+    if [[ -f "$backup/model-imports.json" ]]; then
+        echo "Retained Hugging Face import records: $backup/model-imports.json"
+    fi
+    echo "A later install does not automatically restore this backup. After you reinstall, recover needed models into $INSTALL_DIR/data/models (and model-imports.json into $INSTALL_DIR/data) without overwriting existing files. Verify the recovered models, then delete $backup (or move it aside): the next --keep-models uninstall stops while it exists."
 }
 
 KEEP_MODELS=false

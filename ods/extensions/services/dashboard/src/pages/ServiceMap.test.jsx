@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import ServiceMap, { buildTopology } from './ServiceMap'
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -29,6 +29,21 @@ it('fits the map initially, offers actual size, and opens details by keyboard', 
   expect(screen.getByRole('button', { name: 'Close service details' })).toBeInTheDocument()
   fireEvent.click(screen.getByRole('button', { name: 'Close service details' }))
   expect(screen.queryByRole('button', { name: 'Close service details' })).toBeNull()
+})
+
+it('re-checks the ODS session before opening Hermes from its details', async () => {
+  vi.stubGlobal('fetch', vi.fn(async url => url === '/api/auth/verify-session'
+    ? {ok:false,status:401}
+    : {ok:true,json:async () => ({services:[{id:'hermes-proxy',name:'Hermes Auth Proxy',status:'healthy',port:9120,ui_path:'/auth/ods'}]})}))
+  const tab = {opener:window,closed:false,location:{replace:vi.fn()}}
+  const open = vi.spyOn(window, 'open').mockReturnValue(tab)
+  render(<ServiceMap compact />)
+  fireEvent.click(await screen.findByRole('button',{name:/Hermes Auth Proxy/}))
+  expect(fireEvent.click(screen.getByRole('link',{name:'Open service'}))).toBe(false)
+  expect(open).toHaveBeenCalledWith('', '_blank')
+  await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/auth/ods'))
+  expect(fetch).toHaveBeenCalledWith('/api/auth/admin-session', expect.objectContaining({method:'POST'}))
+  open.mockRestore()
 })
 
 it('starts with readable service rows in a panel and keeps the full map accessible', async () => {

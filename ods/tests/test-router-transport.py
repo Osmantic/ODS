@@ -64,6 +64,29 @@ class OwnershipTests(unittest.TestCase):
         self.assertEqual(calls[2].kwargs["timeout"], 15)
         self.assertNotIn(".Config.Env", calls[1].args[0][5])
 
+    def test_exchange_asks_for_an_envelope_and_returns_status_and_text(self):
+        envelope = json.dumps({"status": 400, "body": "Unable to generate parser for this template."}).encode()
+        results = [self.process((CONTAINER_ID + "\n").encode()), self.process(json.dumps(self.info).encode()),
+                   self.process(envelope)]
+        with patch.object(transport.subprocess, "run", side_effect=results) as run:
+            status, text = transport.exchange(self.root, ORIGIN, "/v1/chat/completions", {"messages": []},
+                                              api_key="private-test-key", timeout=30)
+        self.assertEqual((status, text), (400, "Unable to generate parser for this template."))
+        message = json.loads(run.call_args_list[2].kwargs["input"])
+        self.assertIs(message["envelope"], True)
+        self.assertTrue(all("private-test-key" not in " ".join(call.args[0]) for call in run.call_args_list))
+        # The plain request keeps its exact message: no envelope key at all.
+        _result, calls = self.run_request()
+        self.assertNotIn("envelope", json.loads(calls[2].kwargs["input"]))
+
+    def test_exchange_rejects_a_malformed_envelope(self):
+        for raw in (b'{"status":"400","body":"x"}', b'{"status":200}', b"not json", b"[1]"):
+            results = [self.process((CONTAINER_ID + "\n").encode()), self.process(json.dumps(self.info).encode()),
+                       self.process(raw)]
+            with patch.object(transport.subprocess, "run", side_effect=results):
+                with self.assertRaises(OSError):
+                    transport.exchange(self.root, ORIGIN, "/props")
+
     def test_proof_and_telemetry_routes_use_the_owned_container(self):
         for path in ("/health", "/v1/models", "/props", "/metrics"):
             with self.subTest(path=path):
@@ -181,13 +204,22 @@ class HTTPHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                     time.sleep(0.04)
             else:
-                self.wfile.write(b"x" * 65537 if self.server.mode == "large" else b'{"status":"ok"}')
+                sizes = {"large": 65537, "stream": 400000, "huge": 2097153}
+                size = sizes.get(self.server.mode)
+                self.wfile.write(b"x" * size if size else b'{"status":"ok"}')
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # The timeout and size-limit tests intentionally close early.
 
     def do_POST(self):
         body = self.rfile.read(int(self.headers["Content-Length"]))
         self.server.requests.append((self.path, self.headers.get("Authorization"), json.loads(body)))
+        if self.server.mode == "parser400":
+            error = b'{"error":{"code":400,"message":"Unable to generate parser for this template."}}'
+            self.send_response(400)
+            self.send_header("Content-Length", str(len(error)))
+            self.end_headers()
+            self.wfile.write(error)
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'{"choices":[{"message":{"content":"READY"}}]}')
@@ -213,10 +245,13 @@ class WorkerTests(unittest.TestCase):
     def write_endpoints(self, endpoints):
         self.config.write_text(json.dumps({"endpoints": endpoints}), encoding="utf-8")
 
-    def worker(self, path="/health", payload=None, timeout=2):
+    def worker(self, path="/health", payload=None, timeout=2, envelope=False):
         code = transport._WORKER.replace('"/config/endpoints.json"', repr(str(self.config)))
-        data = json.dumps(dict(endpoint_id=transport.ENDPOINT_ID, origin=self.origin, path=path,
-                               payload=payload, api_key="private-test-key", timeout=timeout)).encode()
+        message = dict(endpoint_id=transport.ENDPOINT_ID, origin=self.origin, path=path,
+                       payload=payload, api_key="private-test-key", timeout=timeout)
+        if envelope:
+            message["envelope"] = True
+        data = json.dumps(message).encode()
         # A bogus proxy proves the worker does not inherit ambient routing.
         env = dict(os.environ, HTTP_PROXY="http://127.0.0.1:1", http_proxy="http://127.0.0.1:1",
                    NO_PROXY="", no_proxy="")
@@ -260,6 +295,38 @@ class WorkerTests(unittest.TestCase):
             self.assertIn(f"HTTP {status}".encode(), result.stderr)
             self.assertEqual(result.stdout, b"")
         self.assertEqual(len(self.server.requests), 2)
+
+    def test_envelope_returns_status_and_the_runtimes_own_error_text(self):
+        result = self.worker(envelope=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": 200, "body": '{"status":"ok"}'})
+        self.server.mode = "parser400"
+        payload = {"messages": [{"role": "user", "content": "x"}], "tools": []}
+        result = self.worker("/v1/chat/completions", payload, envelope=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads(result.stdout)
+        self.assertEqual(envelope["status"], 400)
+        self.assertIn("Unable to generate parser", envelope["body"])
+        # Without the envelope the same answer still fails the request.
+        result = self.worker("/v1/chat/completions", payload)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"")
+
+    def test_envelope_still_refuses_redirects_and_oversized_answers(self):
+        for mode, needle in (("redirect", b"HTTP 302"), ("huge", b"response exceeds 2 MiB")):
+            self.server.mode = mode
+            result = self.worker(envelope=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"")
+            self.assertIn(needle, result.stderr)
+        self.assertNotIn("/should-never-be-requested", [request[0] for request in self.server.requests])
+
+    def test_envelope_carries_a_streamed_probe_answer(self):
+        # One JSON event per token: a thinking model's 1,000 tokens are ~400 KB.
+        self.server.mode = "stream"
+        result = self.worker(envelope=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(json.loads(result.stdout)["body"]), 400000)
 
     def test_oversized_response_produces_no_partial_output(self):
         self.server.mode = "large"

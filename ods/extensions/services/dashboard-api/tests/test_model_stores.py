@@ -289,3 +289,84 @@ def test_normal_stack_resolution_recreates_active_mount_after_restart(tmp_path):
     restored = subprocess.run(command,env=environment,capture_output=True,text=True,check=True).stdout
     assert '.active-model-store.compose.json' not in restored
     assert '.model-stores.compose.json' in restored
+
+
+def test_native_launch_loads_a_vision_imports_own_projector(tmp_path, monkeypatch):
+    agent_path = Path(__file__).resolve().parents[4] / 'bin/ods-host-agent.py'
+    spec = importlib.util.spec_from_file_location('test_native_launch_import_mmproj', agent_path)
+    agent = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(agent)
+    launched: list = []
+
+    class Process:
+        pid = 4321
+
+    def popen(args, **_kwargs):
+        launched.append(args)
+        return Process()
+
+    models = tmp_path / 'data' / 'models'
+    models.mkdir(parents=True)
+    (models / 'hf-vision-Q4.gguf').write_bytes(b'weights')
+    (models / 'hf-vision-mmproj-F16.gguf').write_bytes(b'projector')
+    monkeypatch.setattr(agent, 'INSTALL_DIR', tmp_path)
+    monkeypatch.setattr(agent.platform, 'system', lambda: 'Linux')
+    monkeypatch.setattr(agent.subprocess, 'Popen', popen)
+    monkeypatch.setattr(agent, 'load_env', lambda _path: {'GGUF_FILE': 'hf-vision-Q4.gguf', 'CTX_SIZE': '8192'})
+    for record, expected in (({'gguf_file': 'hf-vision-Q4.gguf', 'mmproj_file': 'hf-vision-mmproj-F16.gguf'}, True),
+                             ({'gguf_file': 'hf-vision-Q4.gguf'}, False)):
+        monkeypatch.setattr(agent, '_library_record_for_gguf', lambda _gguf, _record=record: _record)
+        agent._launch_native_llama_server(tmp_path / '.env', tmp_path / 'llama-server', tmp_path / 'log', tmp_path / 'pid')
+        command = launched.pop()
+        assert ('--mmproj' in command) is expected
+        if expected:
+            assert command[command.index('--mmproj') + 1] == str(models / 'hf-vision-mmproj-F16.gguf')
+
+
+def test_selection_reports_a_vision_imports_projector_for_native_restarts(tmp_path):
+    # WP2: `ods start` and installer reruns on macOS read the projector here,
+    # the way the host agent's switch does, so a vision import keeps its vision.
+    models = tmp_path / 'data' / 'models'
+    models.mkdir(parents=True)
+    (models / 'vision.gguf').write_bytes(b'weights')
+    (models / 'vision-mmproj-F16.gguf').write_bytes(b'projector')
+    (tmp_path / '.env').write_text('GGUF_FILE=vision.gguf\n')
+    imports = {'version': 1, 'models': [{'id': 'hf-vision', 'source': 'huggingface', 'gguf_file': 'vision.gguf',
+                                         'mmproj_file': 'vision-mmproj-F16.gguf'}]}
+    (tmp_path / 'data' / 'model-imports.json').write_text(json.dumps(imports))
+
+    selected = resolve_runtime_selection(tmp_path, verify_hashes=False)
+    assert selected['projectorPath'] == str((models / 'vision-mmproj-F16.gguf').resolve())
+
+    (models / 'vision-mmproj-F16.gguf').unlink()
+    assert resolve_runtime_selection(tmp_path, verify_hashes=False)['projectorPath'] is None
+    (tmp_path / 'data' / 'model-imports.json').write_text('{not json')
+    assert resolve_runtime_selection(tmp_path, verify_hashes=False)['projectorPath'] is None
+
+
+def test_selection_reports_a_qualified_profiles_measured_projector(tmp_path):
+    # A memory-qualified native profile was measured with its projector loaded;
+    # restarts launch exactly that, never an import record's projector instead.
+    fit = {'runtimeMode': 'native', 'contextLength': 16384, 'visionProjectorFile': 'measured-mmproj.gguf',
+           'visionProjectorSha256': hashlib.sha256(b'measured').hexdigest()}
+    data, external = registry(tmp_path, memoryQualification=fit)
+    (tmp_path / '.env').write_text('GGUF_FILE=new.gguf\nODS_ACTIVE_MODEL_STORE=ssd\n')
+    (external / 'measured-mmproj.gguf').write_bytes(b'measured')
+    (external / 'import-mmproj.gguf').write_bytes(b'other')
+    imports = {'models': [{'id': 'x', 'source': 'huggingface', 'gguf_file': 'new.gguf', 'mmproj_file': 'import-mmproj.gguf'}]}
+    (data / 'model-imports.json').write_text(json.dumps(imports))
+    selected = resolve_runtime_selection(tmp_path, verify_hashes=False)
+    assert selected['projectorPath'] == str((external / 'measured-mmproj.gguf').resolve())
+
+
+def test_vision_projectors_are_not_listed_as_models(tmp_path):
+    # WP2: an import keeps its projector next to its weights as
+    # hf-<repo>-mmproj-<quant>-<hash>.gguf; it must not appear as a runnable model.
+    models = tmp_path / 'data' / 'models'
+    models.mkdir(parents=True)
+    for name in ('hf-unsloth-gemma-4-E4B-it-GGUF-gemma-4-E4B-it-Q4_K_M-1a2b3c4d.gguf',
+                 'hf-unsloth-gemma-4-E4B-it-GGUF-mmproj-F16-ca7d7e15.gguf',
+                 'mmproj-F16.gguf', 'llava.mmproj.gguf', 'mtp-head.gguf'):
+        (models / name).write_bytes(b'gguf')
+    listed = scan_model_files(tmp_path / 'data')
+    assert sorted(listed) == ['hf-unsloth-gemma-4-E4B-it-GGUF-gemma-4-E4B-it-Q4_K_M-1a2b3c4d.gguf']

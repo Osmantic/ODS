@@ -151,8 +151,9 @@ See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 ### Fresh reinstall with cached models
 
 On Linux, WSL, or native macOS, `get-ods.sh --force --keep-models` replaces an
-existing ODS installation while retaining `data/models`. All other installation
-data, configuration, and runtime files are replaced. Without `--keep-models`,
+existing ODS installation while retaining `data/models` and the Hugging Face
+import records that describe those files (`data/model-imports.json`). All other
+installation data, configuration, and runtime files are replaced. Without `--keep-models`,
 `--force` keeps its normal full cleanup behavior. The option requires an
 identified existing installation and is consumed by the bootstrap, not `install.sh`.
 
@@ -188,10 +189,12 @@ If you plan to reinstall over the kept data, copy those somewhere safe first
 and put `.env` back before running the installer; without it, the installer
 generates new secrets.
 
-On Linux and macOS, `--keep-models` moves models to `<install>.models-backup`
+On Linux and macOS, `--keep-models` moves models, and the Hugging Face import
+records that describe them (`model-imports.json`), to `<install>.models-backup`
 (for example `~/ods.models-backup`). A later install does not automatically
 restore a backup left by a standalone uninstall. After reinstalling, recover
-needed models into `data/models` without overwriting existing files. Verify
+needed models into `data/models` (and `model-imports.json` into `data`) without
+overwriting existing files. Verify
 the recovered models before deleting the backup, or move the backup aside;
 the next `--keep-models` uninstall stops while it exists.
 This is separate from `get-ods.sh --force --keep-models`, which restores the

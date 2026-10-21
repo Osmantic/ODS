@@ -1,0 +1,45 @@
+{
+  "capturedFrom": "ghcr.io/ggml-org/llama.cpp server-cuda-b11429 on Tower3 (RTX 5090), GET /props, 2026-10-09; key names only",
+  "build_info": "b11429-d81235049",
+  "keys": [
+    "bos_token",
+    "build_info",
+    "chat_template",
+    "chat_template_caps",
+    "cors_proxy_enabled",
+    "default_generation_settings",
+    "endpoint_metrics",
+    "endpoint_props",
+    "endpoint_slots",
+    "eos_token",
+    "is_sleeping",
+    "media_marker",
+    "modalities",
+    "model_alias",
+    "model_ftype",
+    "model_path",
+    "total_slots",
+    "ui",
+    "ui_settings"
+  ],
+  "chat_template_caps": [
+    "supports_object_arguments",
+    "supports_parallel_tool_calls",
+    "supports_preserve_reasoning",
+    "supports_reasoning_effort",
+    "supports_string_content",
+    "supports_system_role",
+    "supports_tool_calls",
+    "supports_tools",
+    "supports_typed_content"
+  ],
+  "modalities": [
+    "audio",
+    "video",
+    "vision"
+  ],
+  "default_generation_settings": [
+    "n_ctx",
+    "params"
+  ]
+}

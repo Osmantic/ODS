@@ -189,6 +189,25 @@ JSON
     rm -f -- "$PIXEL_FAKE_DOCKER_STATE"
     ;;
   compose) echo "fake compose: ${*:2}" ;;
+  run)
+    # Only the bootstrap sandbox runtime proof runs a container here. It must
+    # stay offline and read-only and use a known image ID.
+    for required in '--rm' '--network none' '--read-only' '--cap-drop ALL' '--user sandbox' '--entrypoint /usr/local/bin/node'; do
+      [[ " $* " == *" $required "* ]] || fake_docker_die "run is limited to the offline sandbox runtime proof (missing $required)"
+    done
+    # The proof names its container so it can remove it after a client timeout.
+    [[ " $* " =~ \ --name\ ods-pixel-sandbox-proof-[a-f0-9]{16}\  ]] \
+      || fake_docker_die "run requires the proof's unique container name"
+    (( $# >= 4 )) || fake_docker_die "run requires IMAGE -e PROGRAM"
+    run_image=${@: -3:1}
+    [[ ${@: -2:1} == -e ]] || fake_docker_die "run requires IMAGE -e PROGRAM"
+    if [[ -n $image_state_dir ]]; then
+      load_image_state_id "$run_image" || fake_docker_die "unknown image: $run_image"
+    fi
+    case "$(uname -m)" in x86_64) run_arch=x64 ;; aarch64|arm64) run_arch=arm64 ;; *) run_arch=unknown ;; esac
+    printf '%s\n' "${PIXEL_FAKE_DOCKER_RUN_OUTPUT-v$PIXEL_GENERATED_SANDBOX_NODE_VERSION $run_arch none}"
+    exit "${PIXEL_FAKE_DOCKER_RUN_STATUS:-0}"
+    ;;
   build)
     if [[ -n $image_state_dir ]]; then
       build_target=

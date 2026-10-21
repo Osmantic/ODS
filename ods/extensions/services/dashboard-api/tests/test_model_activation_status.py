@@ -5,7 +5,7 @@ from model_activation_status import model_activation_status
 from test_pixel import pixel, pixel_env as pixel_env
 
 
-@pytest.mark.parametrize('phase', ['preparing', 'loading', 'verifying', 'rolling_back', 'rollback_verifying'])
+@pytest.mark.parametrize('phase', ['preparing', 'loading', 'profiling', 'verifying', 'rolling_back', 'rollback_verifying'])
 def test_owned_phase_is_projected_without_private_diagnostics(phase):
     value = model_activation_status({'lifecycleActive': True, 'activeOperation': 'model_activation',
         'activationPhase': phase, 'activationFailureCode': 'runtime_load_failed', 'error': '/private/raw failure',
@@ -55,3 +55,19 @@ async def test_terminal_result_does_not_override_unfinished_transaction(monkeypa
     monkeypatch.setattr(pixel, '_host_model_status', status)
     value = await pixel.pixel_status()
     assert value['available'] is False and value['state'] == 'model_switching'
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_hold_retains_main_model_recovery_metadata_without_gateway_probe(monkeypatch, pixel_env):
+    async def status():
+        return {'activationResult': {'outcome': 'rolled_back', 'failureCode': 'runtime_load_failed'}}
+    async def access():
+        return ({'available': True, 'pending': True, 'reason': 'model-transition-pending'}, None)
+    def forbidden():
+        raise AssertionError('A held gateway must not be probed')
+    monkeypatch.setattr(pixel, '_host_model_status', status)
+    monkeypatch.setattr(pixel, '_current_access_readiness', access)
+    monkeypatch.setattr(pixel, 'get_edge_read_client', forbidden)
+    value = await pixel.pixel_status()
+    assert value['available'] is False and value['state'] == 'model_transition_pending'
+    assert value['modelActivation'] == {'active': False, 'outcome': 'rolled_back', 'failureCode': 'runtime_load_failed'}

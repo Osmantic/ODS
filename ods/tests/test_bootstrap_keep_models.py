@@ -54,7 +54,7 @@ set -euo pipefail
 python3 - "$@" <<'PY'
 import json,os,pathlib,sys
 root=pathlib.Path.cwd();model=root/'data/models/llm/model.gguf'
-pathlib.Path(os.environ['RESULT']).write_text(json.dumps({'args':sys.argv[1:],'model':model.read_bytes().hex() if model.exists() else None,'oldRuntime':(root/'old-runtime').exists(),'oldEnv':(root/'.env').exists(),'hidden':(root/'data/models/.cache-state').exists(),'candidate':(root/'candidate-only').read_text()}))
+pathlib.Path(os.environ['RESULT']).write_text(json.dumps({'args':sys.argv[1:],'model':model.read_bytes().hex() if model.exists() else None,'oldRuntime':(root/'old-runtime').exists(),'oldEnv':(root/'.env').exists(),'hidden':(root/'data/models/.cache-state').exists(),'imports':(root/'data/model-imports.json').read_text() if (root/'data/model-imports.json').exists() else None,'candidate':(root/'candidate-only').read_text()}))
 PY
 '''
         (ods / 'install.sh').write_text(installer)
@@ -190,6 +190,50 @@ rm -rf "$INSTALL_DIR"
         self.assertEqual(source.stat().st_ino, before.st_ino)
         self.assertEqual((source / '.cache-state').read_bytes(), b'hidden-cache\n')
         self.assertFalse(backup.exists())
+
+    REGISTRY = '{"models": [{"id": "hf-org-model", "gguf_file": "llm/model.gguf"}]}\n'
+
+    def test_import_registry_travels_with_the_models(self):
+        registry = self.install / 'data/model-imports.json'
+        registry.write_text(self.REGISTRY)
+        with self.helper_env():
+            custody.preserve(self.install)
+            backup = Path(str(self.install) + '.models-backup')
+            self.assertEqual((backup / 'model-imports.json').read_text(), self.REGISTRY)
+            self.assertFalse(registry.exists())
+            custody.restore(self.install)
+        self.assertEqual(registry.read_text(), self.REGISTRY)
+        self.assertFalse(backup.exists())
+
+    def test_force_keep_models_reinstall_keeps_hugging_face_imports(self):
+        (self.install / 'data/model-imports.json').write_text(self.REGISTRY)
+        result = self.bootstrap('--non-interactive', '--force', '--keep-models')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The candidate installer already sees the registry beside the restored models.
+        self.assertEqual(json.loads(self.result.read_text())['imports'], self.REGISTRY)
+        self.assertEqual((self.install / 'data/model-imports.json').read_text(), self.REGISTRY)
+
+    def test_a_linked_import_registry_stops_preservation_before_any_change(self):
+        registry = self.install / 'data/model-imports.json'
+        registry.symlink_to(self.root / 'elsewhere.json')
+        with self.helper_env():
+            with self.assertRaisesRegex(ValueError, 'import registry'):
+                custody.preflight(self.install)
+        self.assertTrue((self.install / 'data/models/llm/model.gguf').is_file())
+        self.assertFalse(Path(str(self.install) + '.models-backup').exists())
+
+    def test_restore_never_overwrites_an_existing_import_registry(self):
+        registry = self.install / 'data/model-imports.json'
+        registry.write_text(self.REGISTRY)
+        with self.helper_env():
+            custody.preserve(self.install)
+            registry.write_text('{"models": []}\n')
+            with self.assertRaisesRegex(ValueError, 'registry restore destination already exists'):
+                custody.restore(self.install)
+        backup = Path(str(self.install) + '.models-backup')
+        self.assertEqual((backup / 'model-imports.json').read_text(), self.REGISTRY)
+        self.assertTrue((backup / 'models/llm/model.gguf').is_file())
+        self.assertFalse((self.install / 'data/models').exists())
 
     def test_cross_device_rename_never_copies_or_deletes_source(self):
         source = self.install / 'data/models'

@@ -9,6 +9,8 @@ import pytest
 
 
 WRITER = Path(__file__).resolve().parents[1] / 'installers/lib/pixel-runtime-budget.py'
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'bin'))
+import pixel_model_contract  # noqa: E402
 
 
 def configuration(context=16384):
@@ -197,3 +199,119 @@ def test_document_delivery_overlay_preserves_an_explicit_owner_deny(tmp_path):
     updated = json.loads(Path(result.stdout.strip()).read_text())
     assert tool in updated['tools']['alsoAllow']
     assert tool in updated['agents']['list'][0]['tools']['deny']
+
+
+R11 = 'DeepSeek-R1-Distill-Qwen-1.5B-Q4_K_M.gguf'
+
+
+def routed(model, reasoning):
+    value = configuration(65536)
+    value['models']['providers']['ods-local']['models'][0].update(
+        id=model, name=f'ODS Local {model}', reasoning=reasoning)
+    value['agents']['list'][0]['model'] = f'ods-local/{model}'
+    return value
+
+
+def render_thinking(folder, value, control, home):
+    """Return the overlay's bytes for an answers file naming the config's own route.
+
+    The input is written in the renderer's own format, so an "unchanged" result
+    yields the same bytes a staged write would.
+    """
+    folder.mkdir(mode=0o700)
+    path = folder / 'openclaw.json'
+    path.write_bytes((json.dumps(value, indent=2, sort_keys=True) + '\n').encode())
+    path.chmod(0o600)
+    row = value['models']['providers']['ods-local']['models'][0]
+    answers = {'modelProvider': 'ods-local', 'modelId': row['id'], 'modelName': row['name'],
+               'modelImageInput': 'unknown'}
+    if control is not None:
+        answers['modelThinkingControl'] = control
+    answers_path = folder / 'onboarding.json'
+    answers_path.write_text(json.dumps(answers))
+    answers_path.chmod(0o600)
+    result = subprocess.run([sys.executable, str(WRITER), str(path), '3099', str(answers_path), str(home)],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    return (path if result.stdout.strip() == 'unchanged' else Path(result.stdout.strip())).read_bytes()
+
+
+QWEN_COMPAT = {'thinkingFormat': 'qwen-chat-template'}
+
+
+# T-U-4 Pixel config builder: a measured control replaces the "qwen" name rule.
+@pytest.mark.parametrize('model,reasoning,control,expected', [
+    # No control: today's name rule.
+    ('Qwen3.5-9B', True, None, (True, QWEN_COMPAT, 'low', {'enable_thinking': True})),
+    ('Qwen3.5-9B', False, None, (False, None, None, {'enable_thinking': False})),
+    ('gpt-oss-20b', True, None, (True, None, None, None)),
+    # enable_thinking: today's Qwen output, whatever the name says.
+    ('gpt-oss-20b', True, 'enable_thinking', (True, QWEN_COMPAT, 'low', {'enable_thinking': True})),
+    ('gpt-oss-20b', False, 'enable_thinking', (False, None, None, {'enable_thinking': False})),
+    # always: no kwargs, reasoning true even when the flag says otherwise.
+    (R11, True, 'always', (True, None, None, None)),
+    (R11, False, 'always', (True, None, None, None)),
+    # none: no kwargs, reasoning false.
+    ('Qwen3.5-9B', True, 'none', (False, None, None, None)),
+    ('Qwen3.5-9B', False, 'none', (False, None, None, None)),
+])
+def test_thinking_control_selects_the_openclaw_thinking_config(tmp_path, model, reasoning, control, expected):
+    tmp_path.chmod(0o700)
+    value = json.loads(render_thinking(tmp_path / 'render', routed(model, reasoning), control, tmp_path / '.openclaw'))
+    row = value['models']['providers']['ods-local']['models'][0]
+    agent = value['agents']['list'][0]
+    assert (row['reasoning'], row.get('compat'), agent.get('thinkingDefault'),
+            agent.get('params', {}).get('chat_template_kwargs')) == expected
+    # The native model coordinator reads every result with an unchanged contract shape.
+    contract = pixel_model_contract.projection(value)['contract']
+    assert set(contract) == {'model', 'contextLength', 'maxTokens', 'reasoning', 'imageInput'}
+    assert contract['reasoning'] is expected[0]
+
+
+@pytest.mark.parametrize('model,reasoning,control', [
+    ('Qwen3.5-9B', True, 'enable_thinking'), ('Qwen3.5-9B', False, 'enable_thinking'),
+    ('gpt-oss-20b', True, 'always'), ('gpt-oss-20b', False, 'none')])
+def test_control_that_agrees_with_the_name_rule_writes_todays_bytes(tmp_path, model, reasoning, control):
+    tmp_path.chmod(0o700)
+    home = tmp_path / '.openclaw'
+    assert (render_thinking(tmp_path / 'measured', routed(model, reasoning), control, home)
+            == render_thinking(tmp_path / 'named', routed(model, reasoning), None, home))
+
+
+@pytest.mark.parametrize('control,reasoning', [('enable_thinking', True), ('always', True), ('none', False)])
+def test_measured_control_leaves_nothing_a_previous_release_cannot_regenerate(tmp_path, control, reasoning):
+    # The previous release's plugin schema rejects unknown keys and its renderer
+    # never removes them, so the control must not add a plugin setting. After a
+    # rollback its onboarding writer drops the control and its renderer (today's
+    # rule) must regenerate exactly its own output from what this one wrote.
+    tmp_path.chmod(0o700)
+    home = tmp_path / '.openclaw'
+    measured = render_thinking(tmp_path / 'measured', routed(R11, reasoning), control, home)
+    named = render_thinking(tmp_path / 'named', routed(R11, reasoning), None, home)
+    assert json.loads(measured)['plugins'] == json.loads(named)['plugins']
+    assert render_thinking(tmp_path / 'rollback', json.loads(measured), None, home) == named
+    # And the reverse: a measured control fully replaces the name-rule fields.
+    assert render_thinking(tmp_path / 'upgrade', json.loads(named), control, home) == measured
+
+
+@pytest.mark.parametrize('control', ['sometimes', 'ALWAYS', '', True, None])
+def test_invalid_or_foreign_thinking_control_is_refused_without_staging(tmp_path, control):
+    tmp_path.chmod(0o700)
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(routed(R11, True)))
+    path.chmod(0o600)
+    before = path.read_bytes()
+    answers = {'modelProvider': 'ods-local', 'modelId': R11, 'modelName': f'ODS Local {R11}',
+               'modelThinkingControl': control}
+    if control is None:
+        # A valid control measured for another model is never inherited.
+        answers.update(modelId='Qwen3.5-9B', modelName='ODS Local Qwen3.5-9B', modelThinkingControl='always')
+    answers_path = tmp_path / 'onboarding.json'
+    answers_path.write_text(json.dumps(answers))
+    answers_path.chmod(0o600)
+    result = subprocess.run([sys.executable, str(WRITER), str(path), '3099', str(answers_path),
+                             str(tmp_path / '.openclaw')], capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0
+    assert ('route does not match' if control is None else 'invalid ODS Pixel thinking-control contract') in result.stderr
+    assert path.read_bytes() == before
+    assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))

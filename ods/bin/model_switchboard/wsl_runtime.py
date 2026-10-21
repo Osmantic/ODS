@@ -31,6 +31,9 @@ _SOURCE = Path(__file__).resolve().parents[2]
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _PLAN_KEYS = {"ExecutablePath", "Port", "ModelsDir", "ContextSize", "GgufFile",
               "WslDistro", "WslInstallDir"}
+# A vision model's projector, beside its weights. Only a launcher whose
+# options declare it (status ``planFeatures``) is planned one.
+_PROJECTOR_KEY = "MmprojFile"
 TRANSPORT_KEY = "ODS_HOST_LLM_TRANSPORT"
 HOST_BASE_URL_KEY = "NATIVE_LLM_BASE_URL"
 CONTAINER_BASE_URL_KEY = "NATIVE_LLM_CONTAINER_BASE_URL"
@@ -43,6 +46,11 @@ _LEGACY_KEYS = {
 }
 _ENDPOINT_PATHS = {"", "/v1"}
 _LEGACY_ENDPOINT_PATHS = {"", "/api", "/api/v1", "/v1"}
+# Status may carry why the model is not running: the launcher's own error, at
+# most 1024 printable characters, and on the CUDA route the memory refusal
+# the owner can override with Start anyway (the next start of that plan).
+_RUNTIME_ERROR_LIMIT = 1024
+START_REFUSALS = frozenset({"memory_refused", "gpu_busy"})
 
 
 def env_value(env: dict, key: str):
@@ -206,6 +214,16 @@ def _path(path: str, direction: str) -> str:
     return value
 
 
+def drive_mount(drive: str) -> Path:
+    """Where this distribution mounts a Windows drive such as ``C:``.
+
+    wslpath honours a custom DrvFS mount root ([automount] root in wsl.conf).
+    """
+    if not isinstance(drive, str) or not re.fullmatch(r"[A-Za-z]:", drive):
+        raise ValueError("A Windows drive letter such as C: is required")
+    return Path(_path(drive + "\\", "-u"))
+
+
 def _windows_tools(env: dict) -> _WindowsTools:
     system = env.get('ODS_WINDOWS_SYSTEM_DIRECTORY', '')
     if not system:
@@ -253,15 +271,20 @@ def _context(install_dir: Path, env: dict) -> _Context:
     return _Context(match[1], root.as_posix(), _path(str(controller), "-w"), windows)
 
 
+def _projector(gguf, projector) -> bool:
+    return _gguf(projector) and projector.casefold() != str(gguf).casefold()
+
+
 def _plan(plan, context: _Context) -> None:
-    if not isinstance(plan, dict) or set(plan) != _PLAN_KEYS:
+    if not isinstance(plan, dict) or set(plan) - {_PROJECTOR_KEY} != _PLAN_KEYS:
         raise ValueError("Invalid Windows runtime plan schema")
     if (not isinstance(plan["WslDistro"], str) or plan["WslDistro"].casefold() != context.distro.casefold()
             or plan["WslInstallDir"] != context.install_dir
             or not _windows_path(plan["ExecutablePath"]) or not _windows_path(plan["ModelsDir"])
             or not _gguf(plan["GgufFile"]) or type(plan["Port"]) is not int
             or not 1 <= plan["Port"] <= 65535 or type(plan["ContextSize"]) is not int
-            or not 4096 <= plan["ContextSize"] <= 262144):
+            or not 4096 <= plan["ContextSize"] <= 262144
+            or (_PROJECTOR_KEY in plan and not _projector(plan["GgufFile"], plan[_PROJECTOR_KEY]))):
         raise ValueError("Windows runtime plan does not match this installation")
 
 
@@ -273,6 +296,9 @@ def _response(value, context: _Context) -> dict:
     if not value["managed"]:
         return value
     _plan(value.get("plan"), context)
+    features = value.get("planFeatures", [])
+    if not isinstance(features, list) or len(features) > 16 or not all(_text(item, 64) for item in features):
+        raise BridgeError("Windows controller returned invalid plan features")
     if (not isinstance(value.get("planDigest"), str) or not _DIGEST.fullmatch(value["planDigest"])
             or value.get("modelStoreWindowsPath") != value["plan"]["ModelsDir"]):
         raise BridgeError("Windows controller returned an invalid plan identity")
@@ -284,7 +310,33 @@ def _response(value, context: _Context) -> dict:
             or not _text(observed.get("modelId"), 512) or type(observed.get("contextLength")) is not int
             or not 4096 <= observed["contextLength"] <= 262144 or not value["running"]):
         raise BridgeError("Windows controller returned an invalid runtime observation")
+    error = value.get("runtimeError")
+    if error is not None and not _text(error, _RUNTIME_ERROR_LIMIT):
+        raise BridgeError("Windows controller returned an invalid runtime error")
+    source = value.get("runtimeErrorSource")
+    if source is not None and (source not in ("launcher", "observation") or error is None):
+        raise BridgeError("Windows controller returned an invalid runtime error source")
+    refusal = value.get("startRefusal")
+    if refusal is not None and (not isinstance(refusal, str) or refusal not in START_REFUSALS
+                                or value["running"] or source != "launcher"):
+        raise BridgeError("Windows controller returned an invalid start refusal")
     return value
+
+
+def launcher_error(value: dict) -> dict:
+    """The launcher's own startup error and memory refusal from a validated status, if any.
+
+    Observation failures (a stale process record, a model that is still
+    loading) stay internal; only what the launcher wrote is shown to owners.
+    """
+    if value.get("managed") is not True or value.get("running") is not False:
+        return {}
+    if value.get("runtimeErrorSource") != "launcher" or not isinstance(value.get("runtimeError"), str):
+        return {}
+    fields = {"runtimeError": value["runtimeError"]}
+    if value.get("startRefusal") in START_REFUSALS:
+        fields["startRefusal"] = value["startRefusal"]
+    return fields
 
 
 def _environment(socket: str, windows: _WindowsTools) -> dict:
@@ -441,17 +493,30 @@ def _mutate(install_dir: Path, env: dict, action: str, expected_plan_digest: str
     target = values.get("plan") if action == "restore" else current["plan"]
     gguf = values.get("gguf", target["GgufFile"])
     size = values.get("contextSize", target["ContextSize"])
-    if result["plan"]["GgufFile"] != gguf or result["plan"]["ContextSize"] != size:
+    projector = values.get("mmproj") if action == "activate" else target.get(_PROJECTOR_KEY)
+    if (result["plan"]["GgufFile"] != gguf or result["plan"]["ContextSize"] != size
+            or result["plan"].get(_PROJECTOR_KEY) != projector):
         raise BridgeError("Windows controller did not persist the requested model plan")
     if action != "stop" and (not result.get("observation") or result["observation"]["contextLength"] != size):
         raise BridgeError("Windows controller did not prove the requested model context")
     return result
 
 
-def activate(install_dir: Path, env: dict, gguf: str, context_size: int, expected_plan_digest: str) -> dict:
+def supports_projector(value: dict) -> bool:
+    """Does the owned launcher declare that it loads a vision projector?"""
+    return value.get("managed") is True and _PROJECTOR_KEY in value.get("planFeatures", [])
+
+
+def activate(install_dir: Path, env: dict, gguf: str, context_size: int, expected_plan_digest: str,
+             mmproj: str | None = None) -> dict:
     if not _gguf(gguf) or type(context_size) is not int or not 4096 <= context_size <= 262144:
         raise ValueError("A safe GGUF filename and supported context size are required")
-    return _mutate(install_dir, env, "activate", expected_plan_digest, gguf=gguf, contextSize=context_size)
+    if mmproj is None:
+        return _mutate(install_dir, env, "activate", expected_plan_digest, gguf=gguf, contextSize=context_size)
+    if not _projector(gguf, mmproj):
+        raise ValueError("A vision projector needs its own safe GGUF filename")
+    return _mutate(install_dir, env, "activate", expected_plan_digest, gguf=gguf, contextSize=context_size,
+                   mmproj=mmproj)
 
 
 def restore(install_dir: Path, env: dict, plan: dict, expected_plan_digest: str) -> dict:

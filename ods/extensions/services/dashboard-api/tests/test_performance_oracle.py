@@ -2394,6 +2394,28 @@ def test_talk_verdict_follows_the_context_the_model_is_served_at():
     assert model_app_compatibility(model)["hermesTalk"]["status"] == "verified"
 
 
+def test_a_failed_tool_check_adds_a_talk_advisory_not_a_block():
+    # Any-model WP4.4 (owner decision: advisory only, no lockout).
+    model = {
+        "id": "import", "context_length": 65536, "max_context_length": 131072,
+        "app_compatibility": {"hermes_talk": {"status": "verified"}},
+    }
+    measured = model_app_compatibility(model, context_length=65536, profile_tools=False)
+    assert measured["hermesTalk"]["status"] == "verified"
+    assert measured["hermesTalkAdvisory"] == {"code": "tools-unavailable"}
+    unchanged = model_app_compatibility(model, context_length=65536)
+    assert "hermesTalkAdvisory" not in unchanged
+    assert unchanged == {key: value for key, value in measured.items() if key != "hermesTalkAdvisory"}
+    assert "hermesTalkAdvisory" not in model_app_compatibility(model, context_length=65536, profile_tools=True)
+
+
+def test_a_talk_block_keeps_priority_over_the_tools_advisory():
+    model = {"id": "import", "context_length": 65536, "max_context_length": 131072}
+    blocked = model_app_compatibility(model, context_length=32768, profile_tools=False)
+    assert blocked["hermesTalk"]["code"] == "context_below_hermes_minimum"
+    assert "hermesTalkAdvisory" not in blocked
+
+
 def test_talk_verdict_names_a_native_context_limit():
     native = model_app_compatibility({"id": "phi4-q4", "context_length": 16384, "max_context_length": 16384})
     assert native["hermesTalk"]["status"] == "unsupported"

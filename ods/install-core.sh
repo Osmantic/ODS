@@ -22,15 +22,34 @@ set -euo pipefail
 # Track what phases have completed so we can provide useful context on failure.
 export INSTALL_PHASE="init"
 cleanup_on_error() {
-    local exit_code=$?
+    local exit_code=$? outcome=partial
     echo ""
     case "${INSTALL_PHASE}" in
         init|01-preflight|02-detection|02b-external-services)
             # These phases check the host and choose a route; they change no
             # ODS files or services, so an existing install is as it was. Say
             # that first, not "Installation failed" (fleet row 30).
+            outcome=unchanged
+            ;;
+        03-features|04-requirements)
+            # Phase 03 only adjusts the source tree's feature selection and
+            # phase 04 only checks; phase 06 is the first to set ODS up (data/,
+            # .env). A fresh install (no .env when this run started) has
+            # nothing to recover yet, and the strict advice below made its
+            # rerun look unsafe (fleet 2026-10-18: a port in use in phase 04). A
+            # rerun over an installation keeps that advice: phase 03 may have
+            # changed the installed feature selection.
+            [[ "${ODS_EXISTING_INSTALL:-true}" == true ]] || outcome=unconfigured
+            ;;
+    esac
+    case "$outcome" in
+        unchanged)
             echo -e "${AMB:-}[!] Nothing was changed: the install stopped during its checks (${INSTALL_PHASE}).${NC:-}"
             echo "An existing ODS installation keeps working as it was."
+            echo "Fix the problem above, then run the same command again."
+            ;;
+        unconfigured)
+            echo -e "${AMB:-}[!] Nothing was set up yet: the install stopped before configuring ODS (${INSTALL_PHASE}).${NC:-}"
             echo "Fix the problem above, then run the same command again."
             ;;
         *)
@@ -135,6 +154,8 @@ TIER=""
 # Phase 03 selects Portal chat on fresh, qualified Pixel hosts. Keep WebUI as
 # the provisional choice until that host check completes. Reruns retain their
 # installed selection, and older installs without the key keep WebUI.
+# cleanup_on_error reads it too, so it is set here, before any phase runs, and
+# never reassigned.
 ODS_EXISTING_INSTALL=false
 [[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
 ODS_GATEWAY_ONLY=false
@@ -202,6 +223,9 @@ NATIVE_LLM_GPU_NAME=""
 NATIVE_LLM_GPU_VRAM_MB=""
 NATIVE_LLM_API_KEY_ENV=""
 ODS_WINDOWS_SYSTEM_DIRECTORY="${ODS_WINDOWS_SYSTEM_DIRECTORY:-}"
+# The Windows drive under this WSL distribution's virtual disk (Windows setup);
+# the host agent checks its free space before model downloads.
+ODS_WSL_DISK_DRIVE="${ODS_WSL_DISK_DRIVE:-}"
 # Retired Lemonade flags, kept parseable for one release (see the shims below).
 _legacy_lemonade_flags=()
 _legacy_lemonade_external=false
@@ -261,6 +285,9 @@ Options:
                       key (never the key itself)
     --windows-system-directory PATH
                       Windows System32 directory supplied by Windows setup
+    --wsl-disk-drive X:
+                      Windows drive that stores this WSL distribution's disk,
+                      supplied by Windows setup
     --use-existing-lemonade, --lemonade-*
                       Retired; mapped to --external-llm-* or --native-llm-* with a notice
     --external-llm-url U
@@ -372,6 +399,10 @@ while [[ $# -gt 0 ]]; do
         --windows-system-directory)
             [[ -n "${2:-}" && "${2:-}" != --* ]] || { echo "--windows-system-directory requires a Windows System32 path" >&2; exit 1; }
             ODS_WINDOWS_SYSTEM_DIRECTORY="$2"
+            shift 2 ;;
+        --wsl-disk-drive)
+            [[ "${2:-}" =~ ^[A-Za-z]:$ ]] || { echo "--wsl-disk-drive requires a Windows drive such as C:" >&2; exit 1; }
+            ODS_WSL_DISK_DRIVE="$2"
             shift 2 ;;
         # Retired Lemonade flags: collected here, mapped after parsing.
         --use-existing-lemonade) _legacy_lemonade_flags+=("$1"); _legacy_lemonade_external=true; shift ;;
@@ -738,11 +769,13 @@ INSTALL_PHASE="10-amd-tuning";   source "$SCRIPT_DIR/installers/phases/10-amd-tu
 INSTALL_PHASE="11-services";     source "$SCRIPT_DIR/installers/phases/11-services.sh"
 ods_model_lifecycle_lock_release
 INSTALL_PHASE="12-health";       source "$SCRIPT_DIR/installers/phases/12-health.sh"
-# Phase 13 is informational (URLs, shortcuts, preflight). It must never fail
-# the install — any error here is cosmetic. Run with set +e to prevent
-# stray non-zero exit codes (e.g., a crashing privacy-shield health probe)
-# from triggering the cleanup_on_error trap.
+# Preserve the summary phase's errexit-disabled execution. The ERR trap remains
+# installed; independently propagate explicitly required readiness failures.
 INSTALL_PHASE="13-summary"
+ODS_INSTALL_REQUIRED_READINESS_FAILED=false
 set +e
 source "$SCRIPT_DIR/installers/phases/13-summary.sh"
 set -e
+if [[ "$ODS_INSTALL_REQUIRED_READINESS_FAILED" == true ]]; then
+    exit 1
+fi

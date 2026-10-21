@@ -231,6 +231,8 @@ test('invisible proc reclaims only a stable systemd-attested ingress PID, never 
       };
       childProcessApi.spawnSync = (command, args, opts) => {
         if (command !== '/usr/bin/systemctl') return originalSpawn(command, args, opts);
+        // Only the ingress proof is under test here; the manager attributes no other unit.
+        if (args[0] === 'whoami') return {status:1,stdout:'',stderr:'unattributed'};
         const unit = args[1];
         const own = unit === 'openclaw-gateway.service';
         assert.ok(own || unit === 'pixel-ingress.service');
@@ -247,6 +249,65 @@ test('invisible proc reclaims only a stable systemd-attested ingress PID, never 
       try {
         const runtime = createAccessRuntime(options);
         assert.equal(runtime.status().available, expectedAvailable);
+        assert.equal(runtime.admit({}, {runId:'native'}).outcome, 'block');
+        if (!expectedAvailable) {
+          assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.directory, 'process.json'))), previous);
+        }
+      } finally {
+        fs.readFileSync = read;
+        childProcessApi.spawnSync = originalSpawn;
+        syncBuiltinESMExports();
+      }
+    });
+  }
+});
+
+test('invisible proc reclaims a PID the manager attributes to another stable unit invocation, never the gateway or an unknown owner', linux, async t => {
+  // After a WSL restart the old gateway PID came back as pixel-workspace-preview,
+  // hidden by ProtectProc=invisible, and fenced every Portal run until recovery.
+  const {child} = await childProcess(t, `process.send({ready:true}); setInterval(() => {}, 1000);`);
+  const previous = {version: 3, pid: child.pid, invocationId: 'd'.repeat(32),
+    startTicks: identity(child.pid).startTicks};
+  const owner = os.userInfo().username, currentInvocation = 'e'.repeat(32), sibling = 'pixel-workspace-preview.service';
+  for (const [attributed, siblingPid, siblingInvocation, gatewayPid, unstable, expectedAvailable] of [
+    [sibling, child.pid, 'f'.repeat(32), process.pid, false, true],
+    [null, child.pid, 'f'.repeat(32), process.pid, false, false],
+    ['openclaw-gateway.service', child.pid, 'f'.repeat(32), process.pid, false, false],
+    ['session-2.scope', child.pid, 'f'.repeat(32), process.pid, false, false],
+    [sibling, child.pid + 1, 'f'.repeat(32), process.pid, false, false],
+    [sibling, child.pid, previous.invocationId, process.pid, false, false],
+    [sibling, child.pid, currentInvocation, process.pid, false, false],
+    [sibling, child.pid, 'f'.repeat(32), process.pid + 1, false, false],
+    [sibling, child.pid, 'f'.repeat(32), process.pid, true, false],
+  ]) {
+    const options = fixture(); seed(options, previous, 'held');
+    withInvocations({[process.pid]: `INVOCATION_ID=${currentInvocation}\0`}, () => {
+      const read = fs.readFileSync, originalSpawn = childProcessApi.spawnSync;
+      let attributions = 0;
+      fs.readFileSync = function (name, ...args) {
+        if (name === `/proc/${child.pid}/stat`) throw Object.assign(new Error('hidden'), {code:'ENOENT'});
+        return read.call(this, name, ...args);
+      };
+      childProcessApi.spawnSync = (command, args, opts) => {
+        if (command !== '/usr/bin/systemctl') return originalSpawn(command, args, opts);
+        if (args[0] === 'whoami') {
+          assert.deepEqual(args.slice(1), [String(child.pid)]);
+          const unit = unstable && ++attributions > 1 ? 'ods-mdns.service' : attributed;
+          return unit ? {status:0,stdout:unit+'\n',stderr:''} : {status:1,stdout:'',stderr:'unattributed'};
+        }
+        const unit = args[1];
+        assert.notEqual(unit, 'session-2.scope');
+        if (unit === 'pixel-ingress.service') return {status:0,stdout:'MainPID=0\nActiveState=inactive\n',stderr:''};
+        const lines = unit === 'openclaw-gateway.service'
+          ? [`MainPID=${gatewayPid}`, `InvocationID=${currentInvocation}`, `User=${owner}`, 'ActiveState=active']
+          : [`MainPID=${siblingPid}`, `InvocationID=${siblingInvocation}`, `User=${owner}`, 'ActiveState=active'];
+        return {status:0,stdout:lines.join('\n')+'\n',stderr:''};
+      };
+      syncBuiltinESMExports();
+      try {
+        const runtime = createAccessRuntime(options);
+        assert.equal(runtime.status().available, expectedAvailable);
+        assert.equal(runtime.status().initialization_failure, expectedAvailable ? null : 'process-identity');
         assert.equal(runtime.admit({}, {runId:'native'}).outcome, 'block');
         if (!expectedAvailable) {
           assert.deepEqual(JSON.parse(fs.readFileSync(path.join(options.directory, 'process.json'))), previous);

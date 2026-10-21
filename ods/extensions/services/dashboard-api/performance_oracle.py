@@ -683,11 +683,15 @@ def model_app_compatibility(
     performance: Optional[dict[str, Any]] = None,
     runtime_context: Optional[dict[str, Any]] = None,
     context_length: Optional[int] = None,
+    profile_tools: Optional[bool] = None,
 ) -> dict[str, Any]:
     """App verdicts for ``model``.
 
     ``context_length`` is the context the model is (or will be) served at;
     below the Hermes floor it rules ODS Talk out on its own.
+    ``profile_tools`` is the active model's measured tool-call result (ODS
+    Talk passes it with profiles enabled); a failure adds an advisory, never a
+    block, and a context or catalog block keeps priority.
     """
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
     hermes_talk = _app_compatibility_entry(
@@ -740,6 +744,12 @@ def model_app_compatibility(
             "reason": exact_speed_block["reason"],
             "userMessage": f"Too slow on this machine for Portal agent tasks ({speed}).",
         }
+    talk_blocked = any(
+        str(compatibility[key].get("status") or "").strip().lower() in _TALK_BLOCKING_STATUSES
+        for key in ("hermesTalk", "agentViability")
+    )
+    if profile_tools is False and not talk_blocked:
+        compatibility["hermesTalkAdvisory"] = {"code": "tools-unavailable"}
     return compatibility
 
 

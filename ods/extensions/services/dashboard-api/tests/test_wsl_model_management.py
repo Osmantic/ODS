@@ -201,8 +201,40 @@ def test_handler_authenticates_before_cache_and_preserves_no_store(management, m
     assert calls == []
     allowed = fixtures._ResponseHandler(request_body={})
     host.AgentHandler._handle_model_management(allowed)
-    assert allowed.parse_response() == {'managed': True, 'running': False, 'canActivate': False, 'canUnload': True}
+    assert allowed.parse_response() == {'managed': True, 'running': False, 'canActivate': False, 'canUnload': True,
+                                        'vision': False}
     assert ('Cache-Control', 'no-store') in allowed.response_headers
+
+
+def test_management_reports_a_launcher_that_loads_vision_projectors(management, monkeypatch):
+    monkeypatch.setattr(host, '_managed_wsl_runtime',
+                        lambda env: {'managed': True, 'running': True, 'planFeatures': ['MmprojFile']})
+    assert host._model_management_snapshot() == (200, {'managed': True, 'canActivate': True, 'canUnload': True,
+                                                       'running': True, 'vision': True})
+
+
+def test_management_reports_the_launchers_own_error_and_start_refusal(management, monkeypatch):
+    refused = {'managed': True, 'running': False, 'runtimeError': 'The model was not started: Windows can lend it only 1.0 GiB right now.',
+               'runtimeErrorSource': 'launcher', 'startRefusal': 'memory_refused'}
+    monkeypatch.setattr(host, '_managed_wsl_runtime', lambda env: refused)
+    assert host._model_management_snapshot() == (200, {
+        'managed': True, 'canActivate': False, 'canUnload': True, 'running': False, 'vision': False,
+        'runtimeError': refused['runtimeError'], 'startRefusal': 'memory_refused'})
+
+
+@pytest.mark.parametrize('value,shown', [
+    # An AMD launch failure: the text, no Start anyway.
+    ({'runtimeError': 'llama-server startup failed: Port 18080 is already occupied.', 'runtimeErrorSource': 'launcher'},
+     {'runtimeError': 'llama-server startup failed: Port 18080 is already occupied.'}),
+    # Observation failures stay internal.
+    ({'runtimeError': 'The saved Windows process identity is stale.', 'runtimeErrorSource': 'observation'}, {}),
+    ({'runtimeError': 'An older controller without a source.'}, {}),
+])
+def test_management_shows_only_launcher_text(management, monkeypatch, value, shown):
+    monkeypatch.setattr(host, '_managed_wsl_runtime', lambda env: {'managed': True, 'running': False, **value})
+    code, result = host._model_management_snapshot()
+    assert code == 200
+    assert {key: result[key] for key in ('runtimeError', 'startRefusal') if key in result} == shown
 
 
 def test_mutation_preflight_does_not_consume_management_cache(management, monkeypatch):

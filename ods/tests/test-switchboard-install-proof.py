@@ -58,6 +58,9 @@ class InstallProof(unittest.TestCase):
             _initial_switchboard_route_env_matches=lambda env: True,
             _runtime_model_identity_matches=lambda *args, **kwargs: True,
             _model_agent_viable=lambda model, context: True,
+            # Any-model WP4.1: only ODS_MODEL_PROFILES=enabled re-publishes measured
+            # capabilities; observe keeps today's route record.
+            _model_profiles_mode=lambda env: 'observe',
             _SWITCHBOARD_ROUTE_ENV_KEYS=(),
             load_env=lambda path: {},
             INSTALL_DIR=Path('/tmp'),

@@ -85,6 +85,24 @@ def test_management_fails_closed_on_malformed_evidence(model_runtime, monkeypatc
     assert capability == UNVERIFIED
 
 
+def test_management_carries_the_launchers_error_and_start_refusal(model_runtime, monkeypatch):
+    stopped = {**MANAGED, "running": False, "canActivate": False}
+    refused = {**stopped, "runtimeError": "The model was not started: Windows can lend it only 1.0 GiB right now.",
+               "startRefusal": "memory_refused"}
+    monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, **_kwargs: refused)
+    assert model_runtime._model_management() == refused
+    long_text = {**stopped, "runtimeError": "x" * 5000, "startRefusal": "out_of_memory"}
+    monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, **_kwargs: long_text)
+    assert model_runtime._model_management() == {**stopped, "runtimeError": "x" * 1024}
+    for value in ({**MANAGED, "runtimeError": "running models carry no error"},
+                  {**UNMANAGED, "runtimeError": "not ours", "startRefusal": "memory_refused"},
+                  {**stopped, "runtimeError": 7, "startRefusal": "memory_refused"},
+                  {**stopped, "runtimeError": "  "}):
+        monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, value=value, **_kwargs: value)
+        capability = model_runtime._model_management()
+        assert "runtimeError" not in capability and "startRefusal" not in capability
+
+
 def test_management_fails_closed_when_agent_unavailable(model_runtime, monkeypatch):
     def request(*_args, **_kwargs):
         raise model_runtime.AgentUnavailable("fixture unavailable")

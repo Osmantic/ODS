@@ -453,7 +453,7 @@ class TestHostAgentWiring:
         monkeypatch.setattr(
             tma._mod,
             "_llama_runtime_props",
-            lambda *_args: (1024 if staged()[-1:] == ["new-model.gguf"] else 2048, ""),
+            lambda *_args: (1024 if staged()[-1:] == ["new-model.gguf"] else 2048, "", None),
         )
         handler = tma._ResponseHandler()
         tma._mod.AgentHandler._do_model_activate(handler, "target-model")
@@ -574,7 +574,7 @@ def _isolation(monkeypatch, tmp_path, request):
     )
     monkeypatch.setattr(tma._mod, "_chat_completion_ready", lambda *_a, **_k: True)
     monkeypatch.setattr(tma._mod, "_runtime_health", lambda _env: "ok")
-    monkeypatch.setattr(tma._mod, "_llama_runtime_props", lambda _env: (65536, ""))
+    monkeypatch.setattr(tma._mod, "_llama_runtime_props", lambda _env: (65536, "", None))
     monkeypatch.setattr(tma._mod, "_container_exists", lambda _c: False)
     monkeypatch.setattr(tma._mod, "_container_running", lambda _c: False)
     monkeypatch.setattr(

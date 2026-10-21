@@ -29,6 +29,7 @@ from pixel_runtime_state import begin_pixel_stream, end_pixel_stream, try_begin_
 from pixel_chat_results import ChatResultStore, ResultCapacity, ResultConflict, owner_namespace
 from security import verify_api_key
 from config import read_live_env_value
+from context_policy import PIXEL_MIN_CONTEXT
 from helpers import get_loaded_model, get_llama_context_size
 from pixel_chat_identity import messages_with_identity
 from pixel_chat_context import HistoryMessage, HistorySnapshot, public_context
@@ -73,10 +74,31 @@ _OPS_STATUSES = frozenset(
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _MODEL_SWITCH_DETAIL = "Model switch in progress; Portal will be ready when activation completes"
+_MODEL_HOLD_DETAIL = "A model transition is holding new messages. Check model update progress. If it has stopped, restore Sandbox in Portal permissions."
+_CHAT_RECOVERY_DETAIL = "Portal stopped during an earlier turn and new messages are held. Open Portal permissions and use Verify Sandbox or Restore Sandbox before continuing."
 _MODEL_CAPABILITY_DETAIL = (
     "The active model is recorded as not agent-qualified. Tool-driven tasks "
     "may be unreliable; chat and experiments remain available."
 )
+# Measured-profile advisories (WP4.3). The dashboard shows its own copy per
+# reason; this text serves API readers and older dashboards.
+_MODEL_SUPPORT_REASONS = {
+    "context-too-small": (
+        f"This model runs with less than {PIXEL_MIN_CONTEXT // 1024}K tokens of context, too small for "
+        f"Portal tasks. Set its context to {PIXEL_MIN_CONTEXT // 1024}K or more in Models, or switch model."
+    ),
+    "tools-unavailable": (
+        "This model failed the tool-call check, so Portal tasks that use tools will likely fail. "
+        "Chat still works."
+    ),
+    "not-profiled": (
+        "ODS has not checked this model yet, so Portal tasks may not work. To check it, choose "
+        "Check again on the running model in Models."
+    ),
+    "thinking-always-on": (
+        "This model always thinks before it answers, so Portal tasks are slower and use more of its context."
+    ),
+}
 
 
 def _validate_edge_url(raw: str) -> str:
@@ -450,14 +472,43 @@ def _model_readiness_issue_from_status(status: object) -> tuple[str, str] | None
     return None
 
 
+def _profile_support_reason(profile: dict, status: dict) -> str | None:
+    """The most important measured advisory for the active model, if any.
+
+    A context below Portal's floor breaks every task, so it comes first; then
+    a failed tool check, a model never checked, and one that always thinks.
+    """
+    runtime = _active_runtime_projection(status)
+    context = runtime.get("contextLength") if isinstance(runtime, dict) else None
+    if (runtime or {}).get("source") == "local-switchboard" and type(context) is int \
+            and 0 < context < PIXEL_MIN_CONTEXT:
+        return "context-too-small"
+    if profile.get("tools") is False:
+        return "tools-unavailable"
+    if profile.get("state") == "not-profiled":
+        return "not-profiled"
+    if profile.get("thinkingControl") == "always":
+        return "thinking-always-on"
+    return None
+
+
 def _model_support_from_status(status: object) -> dict[str, str] | None:
     """Return fixed advisory metadata without turning model quality into access.
 
     ODS model qualification is a recommendation signal. Pixel's brokers,
     approvals, and typed capabilities enforce safety independently of model
     intelligence, so an unqualified model remains usable and testable.
+    With ``ODS_MODEL_PROFILES=enabled`` the host reports the active model's
+    measured profile and the advisory names its reason; it never blocks a send.
     """
-    if isinstance(status, dict) and status.get("activeAgentViable") is False:
+    if not isinstance(status, dict):
+        return None
+    profile = status.get("activeModelProfile")
+    if isinstance(profile, dict):
+        reason = _profile_support_reason(profile, status)
+        if reason is not None:
+            return {"tier": "adaptive", "detail": _MODEL_SUPPORT_REASONS[reason], "reason": reason}
+    if status.get("activeAgentViable") is False:
         # Keep the legacy wire value for rolling UI upgrades. It denotes an
         # advisory, not evidence that the runtime adapts or the model can act.
         return {"tier": "adaptive", "detail": _MODEL_CAPABILITY_DETAIL}
@@ -572,9 +623,19 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     config = _pixel_config()
     if config is None:
         return {"available": False, "model": None, "detail": "Portal is not enabled"}
-    host_status = await _host_model_status()
+    host_status, (access, access_issue) = await asyncio.gather(
+        _host_model_status(), _current_access_readiness())
     activation = model_activation_status(host_status)
     activation_metadata = {"modelActivation": activation} if activation else {}
+    # Bootstrap promotion owns the root coordinator's journal rather than
+    # the host agent's model journal. Observe its validated hold before
+    # probing the backend that the coordinator may currently be restarting.
+    if access and access["available"] and access["pending"] and access["reason"] == "model-transition-pending":
+        return {**activation_metadata, "available": False, "model": None, "state": "model_transition_pending",
+                "detail": _MODEL_HOLD_DETAIL}
+    if access and access["available"] and access["reason"] == "chat-recovery-required":
+        return {**activation_metadata, "available": False, "model": None, "state": "chat_recovery_required",
+                "detail": _CHAT_RECOVERY_DETAIL}
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:
         state, detail = readiness_issue
@@ -625,21 +686,22 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         # Availability is not installed-release verification. A missing, old,
         # or malformed diagnostic route must not disable otherwise working chat.
         identity = unknown_runtime_identity()
-        access, access_issue = None, "access-probe-unavailable"
         if available:
-            identity, (access, access_issue) = await asyncio.gather(
-                _current_runtime_identity(edge_url, key), _current_access_readiness())
+            identity = await _current_runtime_identity(edge_url, key)
         result.update(activation_metadata)
         result["runtimeIdentity"] = identity
         result["runtimeMatchesRelease"] = identity["runtimeMatchesRelease"]
-        result["readiness"] = project_readiness(available, access, identity, access_issue)
+        readiness = project_readiness(available, access, identity, access_issue)
+        result["readiness"] = readiness
         if available:
             result["detail"] = "Owner agent available; " + ("runtime files changed since initialization" if identity["state"] == "mismatch"
                                                          else "release identity is not fully verified")
-            if result["readiness"]["accessState"] == "failed":
+            if readiness["accessState"] == "failed":
                 result["detail"] = "Owner agent available; host access verification failed; effective access and release readiness are unverified"
-            elif result["readiness"]["accessState"] == "transitioning":
-                result["detail"] = "Owner agent available; access transition is unfinished; release readiness is unverified"
+            elif readiness["accessState"] == "transitioning":
+                result["detail"] = ("Owner agent available; model transition needs recovery; release readiness is unverified"
+                                    if readiness["reasonCode"] == "model-transition-recovery-required" else
+                                    "Owner agent available; access transition is unfinished; release readiness is unverified")
         return result
     except (httpx.HTTPError, asyncio.TimeoutError) as exc:
         # Exception text and request objects can contain upstream credentials.
@@ -838,6 +900,115 @@ async def pixel_chat_activity(body: ChatCancelRequest) -> dict[str, str]:
     return {"state": "unknown"}
 
 
+_EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_EXAMPLE_PREVIEW_KEYS = frozenset(("bytes", "entrySha256", "files", "kind", "port", "relativeDirectory",
+                                   "schemaVersion", "sha256", "siteId", "url"))
+_SHA256 = re.compile(r"[a-f0-9]{64}")
+_EXAMPLE_OPEN_SECONDS = 42.0
+
+
+class ExampleProjectOpenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def _example_name(cls, value: str) -> str:
+        if not _EXAMPLE_PROJECT_NAME.fullmatch(value):
+            raise ValueError("invalid example project name")
+        return value
+
+
+def _example_projects(value) -> dict[str, object]:
+    projects = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(projects, list) or len(projects) > 8
+            or any(not isinstance(name, str) or not _EXAMPLE_PROJECT_NAME.fullmatch(name) for name in projects)
+            or len(set(projects)) != len(projects)):
+        raise ValueError("invalid example projects")
+    return {"schemaVersion": 1, "projects": list(projects)}
+
+
+def _example_preview(value, name: str) -> dict[str, object]:
+    preview = value.get("preview") if isinstance(value, dict) else None
+
+    def integer(key, low, high):
+        return type(preview.get(key)) is int and low <= preview[key] <= high
+
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "preview"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(preview, dict) or set(preview) != _EXAMPLE_PREVIEW_KEYS
+            or type(preview["schemaVersion"]) is not int or preview["schemaVersion"] != 1
+            or preview["kind"] != "ods-pixel-workspace-preview"
+            or preview["relativeDirectory"] != f"Playground/{name}"
+            or not isinstance(preview["sha256"], str) or not _SHA256.fullmatch(preview["sha256"])
+            or not isinstance(preview["entrySha256"], str) or not _SHA256.fullmatch(preview["entrySha256"])
+            or preview["siteId"] != f"site-{preview['sha256'][:24]}"
+            or not integer("port", 1, 65535) or not integer("files", 1, 128) or not integer("bytes", 1, 16 * 1024 * 1024)
+            or preview["url"] != f"http://{preview['siteId']}.localhost:{preview['port']}/{preview['siteId']}/"):
+        raise ValueError("invalid example preview")
+    return {"schemaVersion": 1, "preview": {key: preview[key] for key in sorted(_EXAMPLE_PREVIEW_KEYS)}}
+
+
+@router.get("/example-projects", dependencies=[Depends(verify_api_key)])
+async def pixel_example_projects() -> dict[str, object]:
+    """The shipped example projects (Elf of Doom) whose folder is in the owner's workspace.
+
+    Portal's sidebar lists them with the other Playground projects. A deleted
+    or renamed folder is simply absent. Without Portal there are none.
+    """
+    config = _pixel_config()
+    if config is None:
+        return {"schemaVersion": 1, "projects": []}
+    edge_url, key = config
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=6.0, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("GET", f"{edge_url}/v1/example-projects",
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("example projects unavailable")
+                raw = await _bounded_response_bytes(response, 4096)
+        return _example_projects(json.loads(raw))
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail="Portal could not list its example projects.") from exc
+
+
+@router.post("/example-projects/open", dependencies=[Depends(verify_api_key)])
+async def pixel_example_project_open(body: ExampleProjectOpenRequest) -> dict[str, object]:
+    """Open one shipped example project in Portal's Workspace preview, with no model run.
+
+    The host publishes the owner's existing Playground/<name> folder through
+    the same create-only preview service a model run uses and returns its
+    verified receipt. Nothing in the workspace is written.
+    """
+    config = _pixel_config()
+    if config is None:
+        raise HTTPException(status_code=503, detail="Portal is not set up on this ODS install.")
+    edge_url, key = config
+    try:
+        timeout = httpx.Timeout(connect=2.0, read=_EXAMPLE_OPEN_SECONDS, write=2.0, pool=2.0)
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/example-projects", json={"name": body.name},
+                                     headers=_edge_headers(key, accept="application/json")) as response:
+                if response.status_code == 404:
+                    raise HTTPException(status_code=404,
+                                        detail="This example project is no longer in your Portal workspace.")
+                if response.status_code == 422:
+                    raise HTTPException(status_code=422,
+                                        detail="This example project's folder is still there, but it cannot open as the example.")
+                if response.status_code == 409:
+                    raise HTTPException(status_code=409,
+                                        detail="Some files in this example project's folder cannot be previewed.")
+                if response.status_code != 200 or not response.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("example preview unavailable")
+                raw = await _bounded_response_bytes(response, 8192)
+        return _example_preview(json.loads(raw), body.name)
+    except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError) as exc:
+        raise HTTPException(status_code=503, detail="Portal could not publish the example project's preview.") from exc
+
+
 class _ClientDisconnected(Exception):
     """The dashboard consumer left while Pixel was still producing a turn."""
 
@@ -882,13 +1053,15 @@ async def _retained_chat_stream(request, body, owner):
                         raise HTTPException(status_code=409, detail=_CHAT_ONLY_ROUTE_DETAIL)
                 messages = await _prepare_chat_messages(body, owner)
                 await conversation_storage("assert_available", owner, body.chat_id)
-            except Exception:
+            except Exception as exc:
                 # The attempt ID was committed, but no producer or agent turn
                 # was started. Retain an exact terminal receipt for reloads.
                 text = "Portal did not start this attempt. Restore its connection and send your message again."
                 frame = {"choices": [{"delta": {"content": text}}]}
                 data = f"data: {json.dumps(frame)}\n\n".encode() + _error_event(text) + b"data: [DONE]\n\n"
-                store.reject_before_submission(identity, data)
+                deleted = (isinstance(exc, HTTPException) and exc.status_code == 410
+                           and isinstance(exc.detail, dict) and exc.detail.get("code") == "conversation_deleted")
+                store.reject_before_submission(identity, data, rejected=deleted)
                 raise
             begin_pixel_stream()
             task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))
@@ -943,6 +1116,13 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     failed = False
     stopped = False
     rejected = False
+    admission_rejected = False
+    admission_code = "transition_in_progress"
+    gateway_refusal_confirmed = False
+    gateway_refusal_line = None
+    upstream_event_seen = False
+    routing_rollback_failed = False
+    extension_preparation: dict = {}
     oversized_image = False
     model_switch = False
     try:
@@ -950,7 +1130,8 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
         if not chat_only and owner is not None and body.messages and body.messages[-1].role == 'user':
             from routers.extensions import chat_extension_request_context
             extension_context = await chat_extension_request_context(
-                owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True)
+                owner, body.chat_id, body.request_id, body.messages[-1].content, include_evidence=True,
+                preparation=extension_preparation)
         if chat_only:
             upstream_url = f"{_MODEL_ROUTER_URL}/v1/chat/completions"
             upstream_args: dict[str, Any] = {"json": {"model": "ods/current", "stream": True, "messages": messages}}
@@ -969,6 +1150,15 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                         **upstream_args, headers=upstream_headers) as upstream:
                     model_switch = chat_only and upstream.status_code in {409, 503} and upstream.headers.get("retry-after") == "10"
                     rejected = 400 <= upstream.status_code < 500
+                    if not chat_only and upstream.status_code == 409:
+                        # Only Edge's exact admission refusal proves this turn
+                        # never reached the agent. Never echo an upstream body
+                        # or classify an arbitrary conflict as safe to retry.
+                        try:
+                            raw = await _bounded_response_bytes(upstream, 1024)
+                            admission_rejected = json.loads(raw) == {"error": "pixel_transition_in_progress"}
+                        except (ValueError, UnicodeDecodeError):
+                            pass
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
                     buffered = bytearray()
@@ -981,17 +1171,41 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                             if len(line.rstrip(b"\r\n")) > _MAX_SSE_LINE_BYTES:
                                 raise ResultCapacity("SSE line limit")
                             stripped = line.rstrip(b"\r\n")
+                            if gateway_refusal_line is not None and stripped != b"data: [DONE]":
+                                if not stripped or stripped.startswith(b":"):
+                                    continue
+                                # Extra upstream data invalidates the exact no-run
+                                # receipt. Keep the ordinary uncertain-error path.
+                                store.append(identity, gateway_refusal_line)
+                                gateway_refusal_line = None
+                                terminal_error_seen = True
+                                failed = True
                             if stripped.startswith(b"data: ") and stripped != b"data: [DONE]":
                                 try:
                                     event = json.loads(stripped[6:])
                                 except (json.JSONDecodeError, UnicodeDecodeError):
                                     event = None
+                                if not chat_only and not upstream_event_seen and event == {"error": {
+                                        "type": "pixel_ingress_error", "code": "gateway_connect_refused"}}:
+                                    # This exact trusted ingress receipt is usable
+                                    # only with its terminator and no prior run
+                                    # evidence. Withhold it until owned extension
+                                    # preparation is rolled back in finally.
+                                    gateway_refusal_line = line
+                                    upstream_event_seen = True
+                                    continue
+                                upstream_event_seen = True
                                 if isinstance(event, dict):
                                     if "error" in event:
                                         if chat_only:
                                             # The router's raw upstream errors may contain
                                             # provider details. Keep a fixed owner-facing reply.
                                             raise ValueError("Chat-only upstream error")
+                                        # The admission receipt namespace is
+                                        # owned here, never by an upstream SSE
+                                        # producer that may already have run.
+                                        if isinstance(event["error"], dict) and event["error"].get("type") == "pixel_dashboard_error":
+                                            line = _error_event("Portal could not complete the response.").rstrip(b"\n") + b"\n"
                                         # A syntactically terminal SSE stream can still be
                                         # a failed attempt. Keep its sanitized error bytes
                                         # for replay, but never publish it as complete.
@@ -1014,6 +1228,14 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                                             ):
                                                 answer_seen = True
                             if stripped == b"data: [DONE]":
+                                if gateway_refusal_line is not None:
+                                    admission_rejected = True
+                                    admission_code = "gateway_connect_refused"
+                                    gateway_refusal_confirmed = True
+                                    terminal_error_seen = True
+                                    failed = True
+                                    done_seen = True
+                                    break
                                 if not answer_seen and not terminal_error_seen:
                                     # Live Pixel Edge cancellations can end with only
                                     # [DONE]. The host session reports zero output and
@@ -1050,6 +1272,17 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
         failed = True
         logger.warning("Pixel retained stream failed (%s)", type(exc).__name__)
     finally:
+        if admission_rejected and extension_preparation:
+            try:
+                from routers.extensions import rollback_chat_extension_request
+                await rollback_chat_extension_request(owner, body.chat_id, body.request_id, extension_preparation)
+            except (Exception, asyncio.CancelledError) as exc:
+                # A safe-to-resend receipt also promises that this turn left no
+                # new actionable routing. Reserve the attempt if that cannot
+                # be persisted; never fabricate a successful rollback.
+                admission_rejected = False
+                routing_rollback_failed = True
+                logger.warning("Pixel admission routing rollback failed (%s)", type(exc).__name__)
         # Keep this conversation reserved until cancellation has finished. A late
         # native cancellation must never target the next attempt in this chat.
         if chat_only and not done_seen:
@@ -1062,22 +1295,29 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
         try:
-            if not done_seen:
+            if not done_seen or gateway_refusal_confirmed:
                 text = ("Portal was stopped." if cancelled else
                         "This image turn exceeds the 16 MiB encoded limit. Reduce attachments or conversation text." if oversized_image else
                         _MODEL_SWITCH_DETAIL if model_switch else
                         "Portal did not accept this turn. Check the conversation's context status before continuing." if rejected else
                         "Portal could not complete the response. Check saved work before continuing.")
-                store.append(identity, _error_event(text) + b"data: [DONE]\n\n", terminal=True)
+                if admission_rejected:
+                    event = {"error": {"type": "pixel_dashboard_error", "code": admission_code}}
+                    data = f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode()
+                else:
+                    data = _error_event(text) + b"data: [DONE]\n\n"
+                store.append(identity, data, terminal=True)
         finally:
             state = (
-                "complete" if done_seen and not terminal_error_seen
+                "unresolved" if routing_rollback_failed
+                else "complete" if done_seen and not terminal_error_seen
                 else "cancelled" if cancelled
                 # A DONE-only frame can overtake the Edge Stop acknowledgment.
                 # Keep the attempt reserved until Stop resolves; an acknowledged
                 # abort then commits cancelled, while an unacknowledged native
                 # run must remain unresolved instead of admitting a successor.
                 else "unresolved" if empty_done_seen and identity[:2] in _result_stops
+                else "rejected" if admission_rejected
                 else "interrupted" if rejected or terminal_error_seen or failed and stopped
                 else "unresolved" if failed
                 else "complete"

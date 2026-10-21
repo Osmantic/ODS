@@ -4,6 +4,7 @@ import {
   AlertCircle, CheckCircle2, Loader2, Mic, Paperclip, RefreshCw,
   Send, Volume2, VolumeX,
 } from 'lucide-react'
+import HelpLink from '../components/HelpLink'
 
 // Hermes likes to format with markdown (bold, lists, code). Rendering it as
 // HTML keeps the chat bubbles readable instead of showing raw `**` and `-`.
@@ -45,6 +46,10 @@ const TALK_STATUS_RETRY_MS = 1000
 // `reasonCode` says so, otherwise this fallback is shown.
 const MODEL_NOT_SUPPORTED_CODE = 'model_not_supported'
 const MODEL_NOT_SUPPORTED_MESSAGE = "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+// A model that failed the tool check gets an advisory, never a block: no
+// probe result may lock an owner out of chat. Unknown codes are ignored.
+const TALK_TOOLS_ADVISORY_CODE = 'tools-unavailable'
+const TALK_TOOLS_ADVISORY_MESSAGE = 'This model failed the tool-call check. Talk can still chat, but actions that need tools may fail.'
 const TALK_BLOCKING_COMPATIBILITY_STATUSES = new Set([
   'blocked',
   'incompatible',
@@ -101,6 +106,7 @@ export default function ODSTalk() {
   const [status, setStatus] = useState('loading')
   const [statusText, setStatusText] = useState('Connecting to ODS Talk...')
   const [compatibilityNotice, setCompatibilityNotice] = useState(null)
+  const [toolsAdvisory, setToolsAdvisory] = useState(false)
   const [retryStatusRefresh, setRetryStatusRefresh] = useState(false)
   // Advances after every offline retry so the polling effect re-arms; a
   // repeated failure otherwise leaves every dependency unchanged.
@@ -128,7 +134,6 @@ export default function ODSTalk() {
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
   const recorderRef = useRef(null)
-  const recordingChunksRef = useRef([])
   const streamControllerRef = useRef(null)
   // React state disables the buttons visibly; this synchronous guard closes
   // the smaller window before that state update paints.
@@ -177,6 +182,8 @@ export default function ODSTalk() {
       }
       if (!resp.ok) throw new Error(await parseError(resp, 'ODS Talk is not ready.'))
       const data = await resp.json()
+      // Shown only while Talk is ready; it never changes the status.
+      setToolsAdvisory(data.modelCompatibility?.hermesTalkAdvisory?.code === TALK_TOOLS_ADVISORY_CODE)
       const capabilities = data.capabilities || {}
       setVoiceState({
         tts: Boolean(capabilities.tts),
@@ -476,7 +483,7 @@ export default function ODSTalk() {
     // prompt for images ("Describe what you see in this image."). Without
     // either a caption or an attachment, there's nothing to send.
     if (!clean && !attachment) return
-    if (sending || status !== 'ready') return
+    if (sending || recorderRef.current || status !== 'ready') return
     setSending(true)
 
     const userId = transcriptId || makeId('user')
@@ -703,36 +710,69 @@ export default function ODSTalk() {
     }
   }, [refreshStatus, sending, speak, status])
 
+  // Each permission request owns its recorder, tracks and callbacks. Removing
+  // that identity cancels capture even when browser permission resolves later.
+  useEffect(() => () => {
+    const capture = recorderRef.current
+    recorderRef.current = null
+    if (!capture) return
+    if (capture.recorder) {
+      capture.recorder.ondataavailable = null
+      capture.recorder.onstop = null
+      if (capture.recorder.state !== 'inactive') {
+        try { capture.recorder.stop() } catch { /* tracks still need releasing */ }
+      }
+    }
+    capture.stream?.getTracks().forEach(track => track.stop())
+  }, [])
+
   const startRecording = async () => {
-    if (!voiceState.liveMic || recording || sending) return
+    if (!voiceState.liveMic || recorderRef.current || sending) return
+    const capture = { stream: null, recorder: null, chunks: [] }
+    recorderRef.current = capture
+    setRecording(true)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (recorderRef.current !== capture) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      capture.stream = stream
       const recorder = new MediaRecorder(stream)
-      recordingChunksRef.current = []
+      capture.recorder = recorder
       recorder.ondataavailable = event => {
-        if (event.data?.size) recordingChunksRef.current.push(event.data)
+        if (recorderRef.current === capture && event.data?.size) capture.chunks.push(event.data)
       }
       recorder.onstop = () => {
         stream.getTracks().forEach(track => track.stop())
-        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        if (recorderRef.current !== capture) return
+        recorderRef.current = null
+        setRecording(false)
+        const blob = new Blob(capture.chunks, { type: recorder.mimeType || 'audio/webm' })
         if (blob.size > 0) {
           sendAudioFile(new File([blob], 'recording.webm', { type: blob.type || 'audio/webm' }))
         }
       }
-      recorderRef.current = recorder
       recorder.start()
-      setRecording(true)
     } catch {
+      capture.stream?.getTracks().forEach(track => track.stop())
+      if (recorderRef.current !== capture) return
+      recorderRef.current = null
+      setRecording(false)
       setVoiceState(current => ({ ...current, liveMic: false }))
     }
   }
 
   const stopRecording = () => {
-    const recorder = recorderRef.current
-    if (!recorder || recorder.state === 'inactive') return
-    recorder.stop()
-    recorderRef.current = null
-    setRecording(false)
+    const capture = recorderRef.current
+    if (!capture) return
+    if (!capture.recorder) {
+      // Permission is still pending; its eventual stream must be discarded.
+      recorderRef.current = null
+      setRecording(false)
+      return
+    }
+    if (capture.recorder.state !== 'inactive') capture.recorder.stop()
   }
 
   const handleAttachmentPicked = useCallback((file) => {
@@ -770,7 +810,7 @@ export default function ODSTalk() {
 
   // Send is enabled either with text OR an attachment (an image alone is a
   // valid message — the model gets a default "describe this" prompt).
-  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status === 'ready'
+  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && !recording && status === 'ready'
 
   return (
     <div className="pixel-app ods-talk min-h-dvh bg-theme-bg text-theme-text antialiased">
@@ -851,6 +891,25 @@ export default function ODSTalk() {
           </div>
         )}
 
+        {status === 'ready' && toolsAdvisory && (
+          <div
+            role="status"
+            data-testid="talk-tools-notice"
+            className="mx-4 mb-3 rounded-lg border border-theme-border bg-theme-card/80 px-3 py-2 text-sm text-theme-text-secondary"
+          >
+            <p>{TALK_TOOLS_ADVISORY_MESSAGE}</p>
+            <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <a
+                href={modelsPageUrl()}
+                className="inline-block font-medium text-theme-text underline decoration-zinc-400 underline-offset-2"
+              >
+                Choose a model
+              </a>
+              <HelpLink className="text-xs" />
+            </div>
+          </div>
+        )}
+
         {status === 'offline' && (
           <div className="mx-4 mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900">
             {statusText || 'ODS Talk cannot reach its local services. Try again after the box finishes starting.'}
@@ -909,7 +968,7 @@ export default function ODSTalk() {
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  if (canSend) sendText(input)
+                  if (canSend) submit(event)
                 }
               }}
               rows={1}

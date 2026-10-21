@@ -84,8 +84,33 @@ def resolve_runtime_selection(install_dir: Path, *, verify_hashes: bool = True, 
                 profile["contextLength"] = int(context)
     if profile and verify_hashes:
         validate_profile_command(profile, checkpoint)
+    # The projector the host agent's switch launches with: a memory-qualified
+    # profile's measured one (hash-checked above), else a vision import's own.
+    fit = profile.get("memoryQualification") if profile else None
+    projector = safe_artifact(store["path"], fit.get("visionProjectorFile")) if isinstance(fit, dict) \
+        else library_projector(install_dir, store["path"], filename)
     return {"schemaVersion":1,"storeId":store["id"],"modelsDirectory":str(store["path"]),
-            "modelPath":str(checkpoint),"available":available,"profile":profile}
+            "modelPath":str(checkpoint),"available":available,"profile":profile,
+            "projectorPath":str(projector) if projector else None}
+
+
+def library_projector(install_dir: Path, models_dir: Path, gguf_file: str) -> Path | None:
+    """The vision projector a catalog or import record downloaded with ``gguf_file`` (WP2).
+
+    Native launches outside a model switch (``ods start``, an installer rerun)
+    read it here, as the host agent's switch does, so a vision import keeps its
+    vision. An unreadable library launches without it, like the agent.
+    """
+    for rel in ("config/model-library.json", "data/model-imports.json"):
+        try:
+            records = json.loads((Path(install_dir) / rel).read_text(encoding="utf-8")).get("models")
+        except (OSError, ValueError, AttributeError):
+            continue
+        for record in records if isinstance(records, list) else []:
+            if isinstance(record, dict) and record.get("gguf_file") == gguf_file:
+                filename = str(record.get("mmproj_file") or "").strip()
+                return safe_artifact(models_dir, filename) if filename else None
+    return None
 
 
 def active_compose_overlay(install_dir: Path, identifier: str) -> Path | None:
@@ -193,6 +218,11 @@ def safe_artifact(root: Path, filename: str, *, allow_empty: bool = False) -> Pa
         return None
 
 
+# A vision projector is not a model: upstream names them mmproj-*.gguf and an
+# import stores its own as hf-<repo>-mmproj-<quant>-<hash>.gguf (WP2).
+_PROJECTOR_FILE = re.compile(r"(?:^|[-_.])mmproj(?:[-_.]|$)", re.IGNORECASE)
+
+
 def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Path | None = None) -> dict[str, Path]:
     stores = registered_stores(data_dir, container=container)
     if default_dir is not None:
@@ -201,7 +231,8 @@ def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Pa
     for store in stores:
         try:
             for child in store["path"].iterdir():
-                if not child.name.lower().endswith(".gguf") or child.name.lower().startswith(("mmproj", "mtp-")):
+                if (not child.name.lower().endswith(".gguf") or child.name.lower().startswith("mtp-")
+                        or _PROJECTOR_FILE.search(child.name)):
                     continue
                 target = safe_artifact(store["path"], child.name)
                 if target is not None:

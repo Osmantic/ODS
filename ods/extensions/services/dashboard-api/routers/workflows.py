@@ -231,19 +231,39 @@ async def enable_workflow(workflow_id: str, api_key: str = Depends(verify_api_ke
     except (OSError, json.JSONDecodeError) as e:
         raise HTTPException(status_code=500, detail=f"Failed to read workflow: {e}")
 
+    # Public create accepts workflow content, not export-only/read-only fields
+    # such as active, meta and tags present in the bundled templates.
+    workflow_data = {key: value for key, value in workflow_data.items() if key in (
+        "name", "nodes", "connections", "settings", "staticData", "pinData",
+        "nodeGroups", "projectId", "parentFolderId", "shared",
+    )}
     try:
         headers = {"Content-Type": "application/json", **_n8n_headers()}
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.post(f"{N8N_URL}/api/v1/workflows", headers=headers, json=workflow_data) as resp:
                 if resp.status in (200, 201):
-                    result = await resp.json()
-                    n8n_id = result.get("data", {}).get("id")
+                    try:
+                        result = await resp.json()
+                    except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+                        raise HTTPException(status_code=502, detail="n8n accepted the workflow import but its response was unavailable. Check n8n before importing again.")
+                    n8n_id = result.get("id") if isinstance(result, dict) else None
+                    if not isinstance(n8n_id, str) or not _WORKFLOW_ID_RE.fullmatch(n8n_id):
+                        raise HTTPException(status_code=502, detail="n8n imported the workflow but returned no valid ID. Check n8n before importing again.")
                     activated = False
-                    if n8n_id:
-                        async with session.patch(f"{N8N_URL}/api/v1/workflows/{n8n_id}", headers=headers, json={"active": True}) as activate_resp:
-                            activated = activate_resp.status == 200
-                    return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": activated, "message": f"{wf_info['name']} is now active!"}
+                    try:
+                        async with session.post(f"{N8N_URL}/api/v1/workflows/{n8n_id}/activate", headers=headers, json={}) as activate_resp:
+                            if activate_resp.status == 200:
+                                activation = await activate_resp.json()
+                                activated = isinstance(activation, dict) and activation.get("active") is True
+                    except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError):
+                        # Import already committed. Preserve its ID even when
+                        # activation's outcome is unavailable, avoiding a retry
+                        # that would create a second copy of the workflow.
+                        logger.warning("Workflow %s imported; n8n activation was not confirmed", n8n_id)
+                    message = (f"{wf_info['name']} is now active!" if activated else
+                               f"{wf_info['name']} was imported, but activation was not confirmed. Open workflow {n8n_id} in n8n to check and activate it before importing again.")
+                    return {"status": "success", "workflowId": workflow_id, "n8nId": n8n_id, "activated": activated, "message": message}
                 else:
                     error_text = await resp.text()
                     raise HTTPException(status_code=resp.status, detail=f"n8n API error: {error_text}")

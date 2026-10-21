@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 ENDPOINT_ID = "llama-server-default"
 _LIMIT = 65536
+_ANSWER_LIMIT = 2097152  # the worker's ANSWER_LIMIT for a probe exchange
 _PATHS = frozenset({"/health", "/props", "/v1/models", "/v1/chat/completions", "/metrics"})
 _INSPECT = ('{"Id":{{json .Id}},"Running":{{json .State.Running}},'
             '"Project":{{json (index .Config.Labels "com.docker.compose.project")}},'
@@ -37,6 +38,9 @@ import urllib.error
 import urllib.request
 
 LIMIT = 65536
+# A probe exchange (the envelope) can carry a streamed answer: one JSON event
+# per token, about 400 KB for 1,000 tokens of a thinking model.
+ANSWER_LIMIT = 2097152
 
 class ProofError(ValueError):
     pass
@@ -76,11 +80,24 @@ def serve():
         request = urllib.request.Request(message["origin"] + message["path"],
                                          data=body, headers=headers)
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        with opener.open(request, timeout=message["timeout"]) as response:
-            body = response.read(LIMIT + 1)
-        if len(body) > LIMIT:
-            raise ProofError("runtime response exceeds 64 KiB")
-        body.decode("utf-8")
+        limit, words = (ANSWER_LIMIT, "2 MiB") if message.get("envelope") else (LIMIT, "64 KiB")
+        try:
+            with opener.open(request, timeout=message["timeout"]) as response:
+                status, body = response.status, response.read(limit + 1)
+        except urllib.error.HTTPError as exc:
+            # Redirects are never followed. Only an envelope request reports an
+            # error status, with its bounded body, instead of failing.
+            if not message.get("envelope") or 300 <= exc.code < 400:
+                raise
+            status, body = exc.code, exc.read(limit + 1)
+        if len(body) > limit:
+            raise ProofError("runtime response exceeds " + words)
+        text = body.decode("utf-8")
+        if message.get("envelope"):
+            # JSON escaping can at most double the body.
+            body = json.dumps({"status": status, "body": text}, ensure_ascii=False).encode("utf-8")
+            if len(body) > 2 * limit + 64:
+                raise ProofError("runtime response exceeds " + words)
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.flush()
     finally:
@@ -100,11 +117,12 @@ except (OSError, ValueError, KeyError, TypeError) as exc:
 '''
 
 
-def _docker(arguments: list[str], *, timeout: float, data: bytes | None = None) -> bytes:
+def _docker(arguments: list[str], *, timeout: float, data: bytes | None = None,
+            output_limit: int = _LIMIT) -> bytes:
     result = subprocess.run(["docker", *arguments], input=data, capture_output=True,
                             timeout=timeout, check=False)
-    if len(result.stdout) > _LIMIT or len(result.stderr) > _LIMIT:
-        raise OSError("Docker runtime transport output exceeds 64 KiB")
+    if len(result.stdout) > output_limit or len(result.stderr) > _LIMIT:
+        raise OSError("Docker runtime transport output exceeds its size limit")
     if result.returncode:
         detail = result.stderr.decode("utf-8", errors="replace").strip()[:512]
         raise OSError(f"Docker runtime transport failed (exit {result.returncode}): {detail}")
@@ -145,8 +163,36 @@ def request(install_dir: Path, origin: str, path: str,
     """Return bounded HTTP text; never grant readiness or publish model state.
 
     ``origin`` is the router's ``llama-server-default`` base URL without a
-    path; ``path`` is one of the proof and telemetry routes.
+    path; ``path`` is one of the proof and telemetry routes. An HTTP error
+    status fails the request.
     """
+    return _send(install_dir, origin, path, payload, api_key, timeout, project, envelope=False)
+
+
+def exchange(install_dir: Path, origin: str, path: str,
+             payload: dict | None = None, api_key: str = "", timeout: float = 5,
+             *, project: str = "ods") -> tuple[int, str]:
+    """Return ``(http_status, text)``, error statuses included, for capability probes.
+
+    Same ownership, route and size rules as ``request``. A model's own error
+    text (llama-server's 400 "Unable to generate parser for this template")
+    is evidence a probe classifies, so it comes back instead of failing.
+    Redirects are still refused.
+    """
+    raw = _send(install_dir, origin, path, payload, api_key, timeout, project, envelope=True)
+    try:
+        envelope = json.loads(raw)
+    except ValueError as exc:
+        raise OSError("Runtime transport returned a malformed envelope") from exc
+    status = envelope.get("status") if isinstance(envelope, dict) else None
+    text = envelope.get("body") if isinstance(envelope, dict) else None
+    if not isinstance(status, int) or isinstance(status, bool) or not isinstance(text, str):
+        raise OSError("Runtime transport returned a malformed envelope")
+    return status, text
+
+
+def _send(install_dir: Path, origin: str, path: str, payload: dict | None, api_key: str,
+          timeout: float, project: str, *, envelope: bool) -> str:
     parsed = urlsplit(origin)
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname
             or parsed.username is not None or parsed.password is not None
@@ -164,11 +210,15 @@ def request(install_dir: Path, origin: str, path: str,
         raise ValueError("Runtime proof timeout must be between 0 and 900 seconds")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project):
         raise ValueError("Invalid Compose project")
-    data = json.dumps(dict(endpoint_id=ENDPOINT_ID, origin=origin, path=path, payload=payload,
-                           api_key=api_key, timeout=timeout), allow_nan=False).encode("utf-8")
+    message = dict(endpoint_id=ENDPOINT_ID, origin=origin, path=path, payload=payload,
+                   api_key=api_key, timeout=timeout)
+    if envelope:
+        message["envelope"] = True
+    data = json.dumps(message, allow_nan=False).encode("utf-8")
     if len(data) > _LIMIT:
         raise ValueError("Runtime proof request exceeds 64 KiB")
     container_id = _owned_router(install_dir, project)
     body = _docker(["exec", "-i", container_id, "python", "-I", "-S", "-c", _WORKER],
-                   data=data, timeout=timeout + 10)
+                   data=data, timeout=timeout + 10,
+                   output_limit=2 * _ANSWER_LIMIT + 64 if envelope else _LIMIT)
     return body.decode("utf-8")

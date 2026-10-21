@@ -61,6 +61,7 @@ make_install() {
     cp "$ROOT_DIR/scripts/backup-native-preflight.py" "$ROOT_DIR/scripts/source-update-preflight.py" "$install_dir/scripts/"
     cp "$ROOT_DIR/lib/rsync.sh" "$install_dir/lib/rsync.sh"
     cp "$ROOT_DIR/lib/backup-paths.sh" "$install_dir/lib/backup-paths.sh"
+    cp "$ROOT_DIR/lib/dashboard-private-state.sh" "$install_dir/lib/dashboard-private-state.sh"
     cp "$ROOT_DIR/lib/backup-archive.py" "$install_dir/lib/backup-archive.py"
     touch "$install_dir/docker-compose.base.yml"
     touch "$install_dir/docker-compose.cpu.yml"

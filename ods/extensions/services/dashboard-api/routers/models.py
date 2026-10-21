@@ -22,8 +22,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 
 from env_values import parse_env_value
+import hf_gguf_header
+import model_preflight
+from bootstrap_download_control import valid_generation
 from config import (
     DATA_DIR,
+    GPU_BACKEND,
     INSTALL_DIR,
     LLM_BACKEND,
     LOCAL_MODEL_MODES,
@@ -59,6 +63,7 @@ from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
     model_files_dir as model_files_dir,
+    planned_model_context,
     read_env_file_value,
     read_env_value,
 )
@@ -113,8 +118,10 @@ _HF_REPO_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-
 _HF_AUTHOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _HF_AVATAR_HOSTS = {"huggingface.co", "cdn-avatars.huggingface.co"}
 _HF_SPLIT_GGUF_RE = re.compile(r"^(?P<prefix>.+)-(?P<part>\d{5})-of-(?P<total>\d{5})\.gguf$", re.IGNORECASE)
+# MXFP4 is gpt-oss's native format ("gpt-oss-20b-MXFP4.gguf", unsloth's
+# "*-MXFP4_MOE.gguf"); without it the import was named "· unknown".
 _HF_QUANT_RE = re.compile(
-    r"(?:^|[-_.])(?P<quant>(?:IQ\d(?:_[A-Z0-9]+)+|Q\d(?:_[A-Z0-9]+)+|BF16|F16|F32))(?:[-_.]|$)",
+    r"(?:^|[-_.])(?P<quant>(?:IQ\d(?:_[A-Z0-9]+)+|Q\d(?:_[A-Z0-9]+)+|MXFP4(?:_MOE)?|BF16|F16|F32))(?:[-_.]|$)",
     re.IGNORECASE,
 )
 _HF_SEARCH_CACHE_TTL_SECONDS = 300.0
@@ -850,11 +857,24 @@ def _hf_nonnegative_int(value: Any) -> int:
         return 0
 
 
+# Speculative-decoding heads published beside a model's weights: EAGLE-3
+# drafts (ggml-org's "eagle3-*.gguf"), multi-token-prediction heads
+# (unsloth's "MTP/mtp-*.gguf") and DFlash drafts. None runs on its own, and
+# read as the repository's header one misdescribes the model: gpt-oss-20b
+# was refused as "eagle3" on b9014 and gemma-4-E4B shown without a chat
+# template (fleet, 2026-10-09).
+_HF_SPECULATIVE_HEAD_RE = re.compile(r"(?:^|[/._-])(?:eagle3|mtp|dflash)(?:[/._-]|$)")
+
+
 def _hf_supported_gguf_filename(filename: str) -> bool:
     basename = Path(filename).name.lower()
     if not basename.endswith(".gguf"):
         return False
-    unsupported_markers = ("mmproj", "projector", "adapter", "lora", "tokenizer")
+    if _HF_SPECULATIVE_HEAD_RE.search(filename.lower()):
+        return False
+    # imatrix: llama.cpp importance-matrix calibration data that quantizers
+    # publish next to the weights (bartowski's "*-imatrix.gguf"); not a model.
+    unsupported_markers = ("mmproj", "projector", "adapter", "lora", "tokenizer", "imatrix")
     return not any(marker in basename for marker in unsupported_markers)
 
 
@@ -873,6 +893,7 @@ def _hf_llm_runtime_compatibility(payload: dict[str, Any]) -> tuple[bool, str | 
         "image-classification",
         "image-to-image",
         "sentence-similarity",
+        "text-ranking",
         "text-to-image",
         "text-to-speech",
         "zero-shot-image-classification",
@@ -883,6 +904,7 @@ def _hf_llm_runtime_compatibility(payload: dict[str, Any]) -> tuple[bool, str | 
         "automatic-speech-recognition",
         "feature-extraction",
         "sentence-transformers",
+        "text-ranking",
         "text-to-image",
         "text-to-speech",
     }
@@ -945,6 +967,42 @@ def _hf_gguf_artifacts(payload: dict[str, Any]) -> list[dict[str, Any]]:
         })
     groups.sort(key=lambda item: (item["sizeBytes"], item["label"].lower()))
     return groups
+
+
+_HF_PROJECTOR_PRECISION_ORDER = ("F16", "BF16", "F32", "Q8_0")
+
+
+def _hf_gguf_projectors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Vision projector files (mmproj) a repository publishes next to its weights."""
+    siblings = payload.get("siblings") if isinstance(payload.get("siblings"), list) else []
+    projectors = []
+    for sibling in siblings:
+        filename = str(sibling.get("rfilename") or "") if isinstance(sibling, dict) else ""
+        basename = Path(filename).name.lower()
+        if not basename.endswith(".gguf") or "mmproj" not in basename:
+            continue
+        size, sha = _hf_file_metadata(sibling)
+        if size is None or sha is None:
+            continue
+        projectors.append({
+            "id": _hf_artifact_id([filename]),
+            "label": Path(filename).name,
+            "filename": filename,
+            "sizeBytes": size,
+            "sha256": sha,
+            "precision": _hf_quantization(filename),
+        })
+    projectors.sort(key=lambda item: str(item["label"]).lower())
+    return projectors
+
+
+def _hf_default_projector(projectors: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """F16, then BF16 (then F32, Q8_0), else the only one: llama.cpp -hf's closest-name pick."""
+    for precision in _HF_PROJECTOR_PRECISION_ORDER:
+        matches = [item for item in projectors if str(item.get("precision") or "").upper() == precision]
+        if matches:
+            return matches[0]
+    return projectors[0] if len(projectors) == 1 else None
 
 
 def _hf_search_item(payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1059,6 +1117,9 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502, detail="Hugging Face returned an invalid repository record")
     artifacts = _hf_gguf_artifacts(payload)
+    projectors = _hf_gguf_projectors(payload)
+    vision_unavailable = await asyncio.to_thread(_projector_unavailable_reason) if projectors else None
+    default_projector = None if vision_unavailable else _hf_default_projector(projectors)
     imported_by_artifact = {
         str(record.get("source_artifact_id") or ""): record
         for record in _read_model_records(_imported_library_path(), required=False)
@@ -1083,9 +1144,15 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
             artifact["installed"] = False
     context_length, context_source = _hf_context_length(payload)
     runtime_compatible, runtime_reason = _hf_llm_runtime_compatibility(payload)
+    raw_gguf = payload.get("gguf") if isinstance(payload.get("gguf"), dict) else {}
+    raw_tags = payload.get("tags")
     return {
         "id": repo_id,
         "sha": str(payload.get("sha") or ""),
+        # The Hub summary describes one file only; the per-file header read
+        # in the preflight is authoritative.
+        "ggufArchitecture": raw_gguf.get("architecture") if isinstance(raw_gguf.get("architecture"), str) else None,
+        "tags": [str(tag) for tag in raw_tags] if isinstance(raw_tags, list) else [],
         "downloads": _hf_nonnegative_int(payload.get("downloads")),
         "likes": _hf_nonnegative_int(payload.get("likes")),
         "lastModified": payload.get("lastModified"),
@@ -1098,9 +1165,299 @@ async def _hf_repo_details(repo_id: str) -> dict[str, Any]:
         "runtimeCompatible": runtime_compatible,
         "runtimeReason": runtime_reason,
         "artifacts": artifacts,
+        # Vision projectors (WP2): one is imported with the chosen weights by default.
+        "projectors": projectors,
+        "defaultProjectorId": default_projector["id"] if default_projector else None,
+        "visionUnavailableReason": vision_unavailable,
         "authenticated": bool(_hf_token()),
         "url": f"{_HF_API_BASE}/{repo_id}",
     }
+
+
+_ARCHITECTURES_PATH = Path(INSTALL_DIR) / "config" / "llama-cpp-architectures.json"
+
+
+def _preflight_header_artifact(artifacts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Default to one small artifact; its header speaks only for that artifact."""
+    candidates = [artifact for artifact in artifacts if artifact.get("files")]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda artifact: (_hf_artifact_size(artifact), str(artifact.get("label") or "")))
+
+
+def _hf_artifact_binding(details: dict[str, Any], artifact: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "repoId": details["id"],
+        "revision": details["sha"],
+        "artifactId": artifact.get("id") if artifact else None,
+        "file": artifact["files"][0]["filename"] if artifact and artifact.get("files") else None,
+    }
+
+
+def _hf_artifact_context(details: dict[str, Any]) -> tuple[int | None, str]:
+    # Hub metadata describes one file, without identifying which artifact.
+    if len(details.get("artifacts") or []) != 1:
+        return None, "unavailable"
+    return details.get("contextLength"), details.get("contextSource") or "unavailable"
+
+
+def _hf_artifact_size(artifact: dict[str, Any]) -> int:
+    """Total bytes of one artifact (all split parts)."""
+    declared = artifact.get("sizeBytes")
+    if isinstance(declared, int) and not isinstance(declared, bool) and declared > 0:
+        return declared
+    return sum(
+        int(item.get("sizeBytes") or 0)
+        for item in artifact.get("files") or []
+        if isinstance(item, dict)
+    )
+
+
+async def _hf_preflight_gate(
+    details: dict[str, Any],
+    artifact: dict[str, Any] | None = None,
+    *,
+    read_header: bool = True,
+) -> dict[str, Any]:
+    """The header read and the two hard refusals, shared by preflight and import.
+
+    The import passes ``read_header=False`` and uses only a header the
+    preflight already read, so a slow Hub never delays an import; without one
+    the gate can use Hub hints only for a repository with one artifact.
+    """
+    header = None
+    header_status: dict[str, Any] = {"status": "unavailable", "reason": "no_artifact"}
+    if artifact is None:
+        artifact = _preflight_header_artifact(details.get("artifacts") or [])
+    source = artifact["files"][0] if artifact and artifact.get("files") else None
+    if source is not None and not read_header:
+        header = hf_gguf_header.cached_gguf_header(details["id"], details["sha"], source["filename"])
+        header_status = (
+            {"status": "read", "file": source["filename"], "bytesRead": header.get("bytes_read")}
+            if header else {"status": "unavailable", "file": source["filename"], "reason": "not_read"}
+        )
+    elif source is not None:
+        try:
+            header = await hf_gguf_header.fetch_gguf_header(
+                details["id"],
+                details["sha"],
+                source["filename"],
+                expected_size=source.get("sizeBytes"),
+                token=_hf_token(),
+            )
+            header_status = {
+                "status": "read",
+                "file": source["filename"],
+                "bytesRead": header.get("bytes_read"),
+            }
+        except hf_gguf_header.HeaderUnavailable as exc:
+            header_status = {
+                "status": "unavailable",
+                "file": source["filename"],
+                "reason": exc.code,
+                "message": exc.message,
+            }
+    policy = model_preflight.load_runtime_policy(_ARCHITECTURES_PATH)
+    runtime_key, build = model_preflight.effective_build(
+        policy,
+        GPU_BACKEND,
+        windows_hosted=_windows_hosted_runtime(),
+    )
+    single_artifact = len(details.get("artifacts") or []) == 1
+    header_architecture = (header or {}).get("architecture")
+    summary_architecture = details.get("ggufArchitecture") if single_artifact else None
+    architecture = (
+        header_architecture
+        if isinstance(header_architecture, str) and header_architecture not in {"", "unknown"}
+        else summary_architecture
+    )
+    kind = model_preflight.model_kind(
+        header,
+        details.get("pipelineTag") if single_artifact else None,
+        details.get("tags") if single_artifact else None,
+    )
+    supported = (
+        model_preflight.architecture_supported(policy, build, architecture)
+        if kind == "chat" else None
+    )
+    # The Hub serves a gated repository's files only with a token whose
+    # account accepted the license: refuse when no token is set, or when the
+    # header read with the token was itself refused as gated.
+    gated = bool(details.get("gated")) and (
+        not _hf_token() or header_status.get("reason") == "gated"
+    )
+    return {
+        "artifact": _hf_artifact_binding(details, artifact),
+        "header": header,
+        "headerStatus": header_status,
+        "policy": policy,
+        "architecture": architecture,
+        "runtime": {"key": runtime_key, "build": build, "architectureSupported": supported},
+        "modelKind": kind,
+        "refusal": model_preflight.refusal(kind, supported, architecture, build, gated=gated),
+    }
+
+
+# Resolving a Windows-managed model store from WSL asks Windows first (about 5 s
+# on the fleet's Strix Halo host), the same cost /v1/model/management carries.
+_MODEL_STORAGE_TIMEOUT_SECONDS = 20
+
+
+async def _model_storage_status() -> dict[str, Any] | None:
+    """Free space where downloads land, from the host agent; None when unknown."""
+    try:
+        value = await asyncio.to_thread(
+            request_agent_json, "GET", "/v1/model/storage", timeout=_MODEL_STORAGE_TIMEOUT_SECONDS,
+        )
+    except AgentClientError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    status = {key: value.get(key) for key in ("freeBytes", "totalBytes", "marginBytes")}
+    # WSL only: whether the Windows drive under the virtual disk was counted.
+    status.update({key: value[key] for key in ("windowsDrive", "windowsDriveChecked") if key in value})
+    return status
+
+
+def _hf_default_context(declared: int | None) -> int:
+    """The context an import starts at: min(declared, 32K), or 8K when unknown."""
+    if isinstance(declared, int) and 512 <= declared <= _MAX_MODEL_CONTEXT:
+        return min(declared, 32768)
+    return 8192
+
+
+def _hf_artifact_fit(
+    artifact: dict[str, Any],
+    layout: dict[str, Any],
+    declared_context: int | None,
+    gpu_info: Any,
+    extra_bytes: int = 0,
+) -> dict[str, Any]:
+    """Will this quantization fit, and at what context, on this machine?
+
+    ``extra_bytes`` is the vision projector loaded with the weights (WP2).
+    """
+    estimate = "architecture" if "recurrent_state_bytes" in layout else "rough"
+    if gpu_info is None:
+        return {"status": "unknown", "estimate": estimate}
+    size = _hf_artifact_size(artifact) + max(int(extra_bytes or 0), 0)
+    model = {
+        "id": f"hf-preflight-{artifact['id']}",
+        "gguf_file": artifact["files"][0]["filename"],
+        "size_bytes": size,
+        "size_mb": round(size / (1024 ** 2), 2),
+        "context_length": _hf_default_context(declared_context),
+        **layout,
+    }
+    plan = planned_model_context(model, gpu_info)
+    if not plan["fits"]:
+        status = "too_large"
+    elif plan["meets_min_context"]:
+        status = "fits"
+    else:
+        status = "fits_short_context"
+    return {
+        "status": status,
+        "contextLength": plan["context_length"],
+        "requiredGb": plan["required_gb"],
+        "capacityGb": plan["capacity_gb"],
+        "estimate": estimate,
+    }
+
+
+def _hf_artifact_tensors(gate: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
+    """WP1.6: can this host's llama.cpp read the artifact's tensor types?
+
+    The header read for the repository speaks for its own file only; every
+    other quantization is judged by a label that names a ggml type outright.
+    """
+    header = gate.get("header") or {}
+    files = artifact.get("files") or []
+    same_file = bool(files) and files[0].get("filename") == (gate.get("headerStatus") or {}).get("file")
+    check = model_preflight.artifact_tensor_check(
+        gate.get("policy"),
+        gate["runtime"]["build"],
+        artifact.get("quantization"),
+        header.get("tensor_types") if same_file else None,
+    )
+    if check["status"] == "unsupported":
+        check["refusal"] = model_preflight.tensor_refusal(gate["runtime"]["build"], check["unknown"])
+    return check
+
+
+async def _hf_preflight(
+    details: dict[str, Any], artifact: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    # The Hub header read and the host's own answers are independent: wait for
+    # the slowest, not their sum.
+    gate, gpu_info, storage = await asyncio.gather(
+        _hf_preflight_gate(details, artifact),
+        asyncio.to_thread(get_gpu_info),
+        _model_storage_status(),
+    )
+    header = gate["header"]
+    layout = model_preflight.memory_fields(header)
+    fallback_context, fallback_source = _hf_artifact_context(details)
+    declared_context = layout.get("max_context_length") or fallback_context
+    context_source = "gguf_header" if layout.get("max_context_length") else fallback_source
+    projector = next((item for item in details.get("projectors") or []
+                      if item["id"] == details.get("defaultProjectorId")), None)
+    projector_bytes = int(projector["sizeBytes"]) if projector else 0
+    artifacts = {}
+    for artifact in details.get("artifacts") or []:
+        artifact_gate = gate if gate["artifact"] == _hf_artifact_binding(details, artifact) else await _hf_preflight_gate(
+            details, artifact, read_header=False,
+        )
+        artifact_layout = model_preflight.memory_fields(artifact_gate["header"])
+        artifact_context = artifact_layout.get("max_context_length") or fallback_context
+        # Access denial applies to the repository; model evidence does not.
+        refusal = gate["refusal"] if (gate["refusal"] or {}).get("code") == "gated" else artifact_gate["refusal"]
+        weights = 0 if artifact.get("installed") else _hf_artifact_size(artifact)
+        artifacts[artifact["id"]] = {
+            "header": artifact_gate["headerStatus"],
+            "architecture": artifact_gate["architecture"],
+            "template": model_preflight.template_signals(artifact_gate["header"]),
+            "contextLength": artifact_context,
+            "contextSource": "gguf_header" if artifact_layout.get("max_context_length") else fallback_source,
+            "refusal": refusal,
+            "fit": _hf_artifact_fit(artifact, artifact_layout, artifact_context, gpu_info, projector_bytes),
+            "disk": model_preflight.disk_status(weights + projector_bytes if weights else 0, storage),
+            # An import with Include vision unticked downloads the weights alone.
+            "diskWithoutProjector": model_preflight.disk_status(weights, storage),
+            "tensors": _hf_artifact_tensors(artifact_gate, artifact),
+        }
+    return {
+        "id": details["id"],
+        "sha": details["sha"],
+        "artifactId": gate["artifact"]["artifactId"],
+        "header": gate["headerStatus"],
+        "architecture": gate["architecture"],
+        "runtime": gate["runtime"],
+        "modelKind": gate["modelKind"],
+        "contextLength": declared_context,
+        "contextSource": context_source,
+        "template": model_preflight.template_signals(header),
+        "storage": storage,
+        "artifacts": artifacts,
+        "projector": {key: projector[key] for key in ("id", "label", "sizeBytes", "precision")} if projector else None,
+        "refusal": gate["refusal"],
+    }
+
+
+@router.get("/api/models/huggingface/preflight/{repo_id:path}")
+async def huggingface_repository_preflight(
+    repo_id: str,
+    artifactId: str | None = None,
+    api_key: str = Depends(verify_api_key),
+):
+    """What ODS can tell about a repository's GGUFs before downloading one."""
+    details = await _hf_repo_details(repo_id)
+    artifact = None
+    if artifactId is not None:
+        artifact = next((item for item in details["artifacts"] if item["id"] == artifactId), None)
+        if artifact is None:
+            raise HTTPException(status_code=409, detail="The selected GGUF artifact is no longer available at this revision")
+    return await _hf_preflight(details, artifact)
 
 
 def _hf_local_filename(repo_id: str, remote_filename: str, revision: str) -> str:
@@ -1126,7 +1483,76 @@ def _hf_local_filename(repo_id: str, remote_filename: str, revision: str) -> str
     return filename
 
 
-def _hf_import_record(details: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
+def _hf_projector_fields(details: dict[str, Any], projector: dict[str, Any]) -> dict[str, Any]:
+    """The import record's vision projector: downloaded, verified and deleted with the weights."""
+    repo_id, revision = details["id"], details["sha"]
+    return {
+        "mmproj_file": _hf_local_filename(repo_id, projector["filename"], revision),
+        "mmproj_url": f"{_HF_API_BASE}/{quote(repo_id, safe='/')}/resolve/{revision}/{quote(projector['filename'], safe='/')}",
+        "mmproj_sha256": projector["sha256"],
+        "mmproj_size_bytes": projector["sizeBytes"],
+        "mmproj_source_file": projector["filename"],
+    }
+
+
+def _hf_requested_projector(details: dict[str, Any], body: dict[str, Any]) -> dict[str, Any] | None:
+    """The projector an import brings: the chosen one, else the default, unless vision is off."""
+    if body.get("includeVision") is False or not details.get("projectors") or not details.get("defaultProjectorId"):
+        return None
+    wanted = str(body.get("projectorId") or details.get("defaultProjectorId") or "")
+    projector = next((item for item in details["projectors"] if item["id"] == wanted), None)
+    if body.get("projectorId") and projector is None:
+        raise HTTPException(status_code=409, detail="The selected vision projector is no longer available at this revision")
+    return projector
+
+
+def _hf_download_payload(record: dict[str, Any]) -> dict[str, Any]:
+    """The host-agent download request for a model record, projector included."""
+    payload: dict[str, Any] = {
+        "gguf_file": record["gguf_file"],
+        "gguf_url": record.get("gguf_url", ""),
+        "gguf_sha256": record.get("gguf_sha256", ""),
+    }
+    if record.get("gguf_parts"):
+        payload["gguf_parts"] = record["gguf_parts"]
+    if record.get("mmproj_file"):
+        payload["mmproj"] = {
+            "file": record["mmproj_file"],
+            "url": record.get("mmproj_url", ""),
+            "sha256": record.get("mmproj_sha256", ""),
+        }
+    return payload
+
+
+def _hf_import_record(
+    details: dict[str, Any],
+    artifact: dict[str, Any],
+    *,
+    gate: dict[str, Any] | None = None,
+    runtime_override: dict[str, Any] | None = None,
+    projector: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bound = (gate or {}).get("artifact") == _hf_artifact_binding(details, artifact)
+    header = (gate or {}).get("header") if bound else None
+    layout = model_preflight.memory_fields(header)
+    context_length, context_source = _hf_artifact_context(details)
+    details = {**details, "contextLength": context_length, "contextSource": context_source}
+    if layout.get("max_context_length"):
+        # Only the selected artifact's own header can supply its layout/context.
+        details = {**details, "contextLength": layout["max_context_length"], "contextSource": "gguf_header"}
+    record = _hf_import_record_base(details, artifact)
+    if header:
+        record.update({key: value for key, value in layout.items() if key != "max_context_length"})
+        record["architecture"] = (gate or {}).get("architecture")
+        record["template_signals"] = model_preflight.template_signals(header)
+    if runtime_override and bound:
+        record["runtime_override"] = runtime_override
+    if projector:
+        record.update(_hf_projector_fields(details, projector))
+    return record
+
+
+def _hf_import_record_base(details: dict[str, Any], artifact: dict[str, Any]) -> dict[str, Any]:
     repo_id = details["id"]
     revision = details["sha"]
     if not re.fullmatch(r"[0-9a-fA-F]{40,64}", revision):
@@ -1238,7 +1664,29 @@ async def search_huggingface_models(
     if query:
         params["search"] = query
     try:
-        payload, _headers = await _hf_get_json("/api/models", params=params)
+        payload = None
+        if _HF_REPO_RE.fullmatch(query):
+            # A pasted repository ID does not need the Hub's search index.
+            # The metadata endpoint can remain healthy during search outages.
+            try:
+                repository, _headers = await _hf_get_json(
+                    f"/api/models/{quote(query, safe='/')}",
+                    timeout_seconds=6.0,
+                    connect_timeout_seconds=3.0,
+                )
+            except HTTPException as exc:
+                if exc.status_code != 404:
+                    raise
+                # An owner/name prefix can still be a useful fuzzy search.
+            else:
+                if not isinstance(repository, dict) or str(
+                    repository.get("id") or repository.get("modelId") or ""
+                ).lower() != query.lower():
+                    raise HTTPException(status_code=502, detail="Hugging Face returned an unexpected repository")
+                item = _hf_search_item(repository)
+                payload = [repository] if item and item["ggufFileCount"] else []
+        if payload is None:
+            payload, _headers = await _hf_get_json("/api/models", params=params)
     except HTTPException as exc:
         if cached and exc.status_code in {429, 502, 504}:
             return {**cached[1], "stale": True}
@@ -1291,6 +1739,8 @@ async def _prepare_huggingface_import(body: dict[str, Any]):
     if not _HF_REPO_RE.fullmatch(repo_id) or not re.fullmatch(r"[0-9a-f]{20}", artifact_id):
         raise HTTPException(status_code=400, detail="repoId and artifactId are required")
     details = await _hf_repo_details(repo_id)
+    if "revision" in body and body["revision"] != details.get("sha"):
+        raise HTTPException(status_code=409, detail="The repository revision changed. Reopen it and check the selected file before importing.")
     if not details["runtimeCompatible"]:
         raise HTTPException(status_code=422, detail=details["runtimeReason"])
     artifact = next((item for item in details["artifacts"] if item["id"] == artifact_id), None)
@@ -1301,7 +1751,44 @@ async def _prepare_huggingface_import(body: dict[str, Any]):
             status_code=403,
             detail="Private or gated repositories require HF_TOKEN",
         )
-    record = _hf_import_record(details, artifact)
+    gate = await _hf_preflight_gate(details, artifact, read_header=False)
+    refusal = gate["refusal"]
+    runtime_override = None
+    if refusal is not None:
+        if not (refusal["overridable"] and body.get("allowUnsupportedRuntime") is True):
+            raise HTTPException(status_code=422, detail={
+                "code": refusal["code"],
+                "message": refusal["message"],
+                "overridable": refusal["overridable"],
+            })
+        runtime_override = {
+            "code": refusal["code"],
+            "architecture": gate["architecture"],
+            "build": gate["runtime"]["build"],
+            "acknowledgedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.warning(
+            "Hugging Face import of %s acknowledged an architecture (%s) that llama.cpp %s does not list",
+            repo_id, gate["architecture"], gate["runtime"]["build"],
+        )
+    tensors = _hf_artifact_tensors(gate, artifact)
+    if tensors["status"] == "unsupported":
+        tensor_refusal = tensors["refusal"]
+        if body.get("allowUnsupportedRuntime") is not True:
+            raise HTTPException(status_code=422, detail=tensor_refusal)
+        runtime_override = {
+            **(runtime_override or {}),
+            "code": tensor_refusal["code"] if runtime_override is None else runtime_override["code"],
+            "tensorTypes": tensors["unknown"],
+            "build": gate["runtime"]["build"],
+            "acknowledgedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.warning(
+            "Hugging Face import of %s (%s) acknowledged tensor types %s that llama.cpp %s cannot read",
+            repo_id, artifact["label"], tensors["unknown"], gate["runtime"]["build"],
+        )
+    projector = _hf_requested_projector(details, body)
+    record = _hf_import_record(details, artifact, gate=gate, runtime_override=runtime_override, projector=projector)
 
     bootstrap_conflict = _bootstrap_upgrade_download_conflict()
     if bootstrap_conflict is not None:
@@ -1361,20 +1848,15 @@ async def import_huggingface_model(
             headers={"X-ODS-Import-Started": "false"},
         ) from exc
 
-    payload = {
-        "gguf_file": record["gguf_file"],
-        "gguf_url": record["gguf_url"],
-        "gguf_sha256": record["gguf_sha256"],
-    }
-    if record.get("gguf_parts"):
-        payload["gguf_parts"] = record["gguf_parts"]
+    payload = _hf_download_payload(record)
     try:
-        result = await asyncio.to_thread(
-            _call_agent_model,
-            "/v1/model/download",
-            payload,
-        )
-    except HTTPException:
+        result = await asyncio.to_thread(_request_agent_download, payload)
+    except HTTPException as exc:
+        busy = exc.status_code == 409 and isinstance(exc.detail, dict) \
+            and exc.detail.get("code") == "model_lifecycle_busy"
+        if exc.status_code == 507 or busy:
+            # The host refused before starting: a definitive, retryable refusal.
+            exc.headers = {**(exc.headers or {}), "X-ODS-Import-Started": "false"}
         raise
     return {
         **result,
@@ -1397,10 +1879,14 @@ def _newly_measured_tps(metrics: dict, loaded_model: str | None) -> float:
     return float(metrics.get("tokens_per_second") or 0)
 
 
-def _model_management() -> dict:
-    """Project capability evidence; a network topology flag grants no control."""
+_RUNTIME_ERROR_LIMIT = 1024
+_START_REFUSALS = ("memory_refused", "gpu_busy")
+
+
+def _model_management_proof() -> dict:
+    """The host agent's management proof, with whether its launcher loads a vision projector."""
     if not _windows_hosted_runtime():
-        return {"managed": False, "canActivate": False, "canUnload": False, "running": False}
+        return {"managed": False, "canActivate": False, "canUnload": False, "running": False, "vision": False}
     try:
         value = request_agent_json("GET", "/v1/model/management", timeout=20)
         if not isinstance(value, dict) or any(type(value.get(key)) is not bool for key in (
@@ -1411,13 +1897,62 @@ def _model_management() -> dict:
                 or value['canActivate'] and not value['running']):
             raise ValueError("Inconsistent model management response")
         result = {key: value[key] for key in ("managed", "canActivate", "canUnload", "running")}
+        result["vision"] = value["managed"] and value.get("vision") is True
         if isinstance(value.get('reason'), str):
             result['reason'] = value['reason'][:500]
+        # Why a managed Windows model is not running (the launcher's own
+        # error), and a memory refusal its Resume overrides ("Start anyway").
+        error = value.get("runtimeError")
+        if value["managed"] and not value["running"] and isinstance(error, str) and error.strip():
+            result["runtimeError"] = error[:_RUNTIME_ERROR_LIMIT]
+            if value.get("startRefusal") in _START_REFUSALS:
+                result["startRefusal"] = value["startRefusal"]
         return result
     except (AgentClientError, ValueError):
         # A failed proof is unknown, not evidence of an independently managed service.
-        return {"managed": None, "canActivate": False, "canUnload": False, "running": False,
+        return {"managed": None, "canActivate": False, "canUnload": False, "running": False, "vision": False,
                 "reason": "Runtime management could not be verified"}
+
+
+def _model_management() -> dict:
+    """Project capability evidence; a network topology flag grants no control."""
+    proof = _model_management_proof()
+    if not _windows_hosted_runtime():
+        return {key: proof[key] for key in ("managed", "canActivate", "canUnload", "running")}
+    return {key: value for key, value in proof.items() if key != "vision"}
+
+
+# Docker Desktop installs whose host agent launches llama-server.exe on
+# Windows itself (the host agent's _WINDOWS_NATIVE_RUNTIME_MODES); that
+# launch takes no projector.
+_LEGACY_WINDOWS_NATIVE_MODES = frozenset({"windows-native-llama-server", "windows-llama-server-fallback"})
+
+
+def _projector_unavailable_reason() -> str | None:
+    """Why this runtime cannot load a vision projector, or None when it can."""
+    mode = read_live_env_values(("AMD_INFERENCE_RUNTIME_MODE",)).get("AMD_INFERENCE_RUNTIME_MODE")
+    if str(mode or "").strip().casefold() in _LEGACY_WINDOWS_NATIVE_MODES:
+        return "The Windows llama.cpp runtime of this installation does not load vision files, so the model imports without one"
+    if not _windows_hosted_runtime():
+        return None
+    management = _model_management_proof()
+    if management.get("vision") is True:
+        return None
+    if management.get("managed") is True:
+        return ("This Windows model runtime was set up before vision support, so the model imports "
+                "without its vision file. Run Windows setup again to add vision")
+    return "ODS could not confirm that the Windows model runtime loads vision files, so the model imports without one"
+
+
+async def _discover_loaded_model() -> str | None:
+    """Try both identity sources within the catalog's one discovery budget."""
+    loaded_model = await get_loaded_model()
+    if loaded_model:
+        return loaded_model
+    service = SERVICES.get("llama-server", {})
+    return await _fetch_llama_loaded_model(
+        service.get("host", "llama-server"), int(service.get("port", 8080)),
+    )
 
 
 @router.get("/api/models", response_model=ModelLibraryResponse)
@@ -1427,23 +1962,13 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     gpu_info, loaded_model, agent_status = await asyncio.gather(
         asyncio.to_thread(get_gpu_info),
         _await_or_default(
-            get_loaded_model(),
+            _discover_loaded_model(),
             None,
-            "loaded model",
+            "loaded model discovery",
             timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
         ),
         asyncio.to_thread(_get_agent_model_status),
     )
-    if not loaded_model:
-        service = SERVICES.get("llama-server", {})
-        host = service.get("host", "llama-server")
-        port = int(service.get("port", 8080))
-        loaded_model = await _await_or_default(
-            _fetch_llama_loaded_model(host, port),
-            None,
-            "loaded model fallback",
-            timeout_seconds=_MODEL_DISCOVERY_TIMEOUT_SECONDS,
-        )
     metrics, context_size = await asyncio.gather(
         _await_or_default(
             get_llama_metrics(model_hint=loaded_model),
@@ -1540,6 +2065,9 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
     status_path = Path(DATA_DIR) / "model-download-status.json"
     if not status_path.exists():
         bootstrap_status = _read_bootstrap_status_file()
+        if _is_cancelled_download_status(bootstrap_status):
+            terminal = {**bootstrap_status, "error": "Download cancelled by user; partial file preserved."}
+            return _idle_download_status(last_terminal_status=terminal)
         if _is_stale_active_bootstrap_status(bootstrap_status):
             return _stale_bootstrap_download_status(bootstrap_status)
         bootstrap_info = get_bootstrap_status()
@@ -1769,6 +2297,28 @@ _PIXEL_LIFECYCLE_OPERATIONS = frozenset({
     "pixel_providers", "pixel_settings",
 })
 _MODEL_PIXEL_BUSY_ACTIVATION_GRACE_SECONDS = 30.0
+# Short holds a download, import or delete waits out instead of refusing: the
+# Pixel access re-proof above (about every 45 s; a delete that landed on one
+# was refused on Strixy, 2026-10-09), and the integrity check a restarted host
+# agent runs when it finds a download status left "verifying" (minutes after an
+# install, Mac, 2026-10-09). This retry grace is not the whole import deadline:
+# metadata preparation and the transport's other timeout phases are separate.
+_DOWNLOAD_SHORT_HOLD_OPERATIONS = _PIXEL_LIFECYCLE_OPERATIONS | {"artifact_verification"}
+_DOWNLOAD_SHORT_HOLD_GRACE_SECONDS = 30.0
+_LIFECYCLE_BUSY_WORDS = {
+    "model_download": "downloading another model",
+    "artifact_verification": "checking a downloaded model file",
+    "model_activation": "switching models",
+    "model_delete": "deleting a model",
+    "model_recovery": "restoring the previous model",
+    "model_runtime": "changing the model runtime",
+    "route_migration": "updating the model route",
+    "system_update": "installing an update",
+    "opencode_setup": "setting up OpenCode",
+    "opencode_start": "starting OpenCode",
+    "model_profile_recheck": "checking what the running model can do",
+    **{operation: "checking Pixel" for operation in _PIXEL_LIFECYCLE_OPERATIONS},
+}
 
 
 def _agent_http_detail(exc: AgentHTTPError) -> Any:
@@ -1780,6 +2330,32 @@ def _agent_http_detail(exc: AgentHTTPError) -> Any:
     except (json.JSONDecodeError, TypeError):
         pass
     return detail
+
+
+def _format_gb(value: Any) -> str:
+    try:
+        return f"{max(int(value), 0) / (1024 ** 3):.1f} GB"
+    except (TypeError, ValueError, OverflowError):
+        return "an unknown amount"
+
+
+def _insufficient_disk_detail(agent_detail: Any) -> dict[str, Any]:
+    """Explain a host-agent disk refusal in words; no download was started."""
+    detail = agent_detail if isinstance(agent_detail, dict) else {}
+    required = detail.get("requiredBytes")
+    free = detail.get("freeBytes")
+    margin = detail.get("marginBytes")
+    return {
+        "code": "insufficient_disk_space",
+        "message": (
+            f"Not enough free disk space for this model. It needs {_format_gb(required)}, "
+            f"ODS keeps {_format_gb(margin)} free, and {_format_gb(free)} is free now. "
+            "Delete models you no longer use or free up space on this drive, then retry."
+        ),
+        "requiredBytes": required,
+        "freeBytes": free,
+        "marginBytes": margin,
+    }
 
 
 def _is_download_lifecycle_busy(detail: Any) -> bool:
@@ -1798,10 +2374,27 @@ def _is_pixel_lifecycle_busy(detail: Any) -> bool:
     )
 
 
+def _is_short_lifecycle_hold(detail: Any) -> bool:
+    return (
+        isinstance(detail, dict)
+        and detail.get("code") == "model_lifecycle_busy"
+        and detail.get("activeOperation") in _DOWNLOAD_SHORT_HOLD_OPERATIONS
+    )
+
+
+def _lifecycle_busy_detail(detail: dict[str, Any], blocked: str = "this download cannot start yet") -> dict[str, Any]:
+    """A busy refusal in words; nothing was started, so retrying is safe."""
+    doing = _LIFECYCLE_BUSY_WORDS.get(str(detail.get("activeOperation") or ""), "finishing another model task")
+    return {
+        **detail,
+        "message": f"ODS is {doing} right now, so {blocked}. Try again in a minute.",
+    }
+
+
 def _call_agent_model(
     path: str,
     body: dict,
-    timeout: int = 30,
+    timeout: float = 30,
     *,
     retry_download_busy_seconds: float = 0.0,
     retry_pixel_busy_seconds: float = 0.0,
@@ -1834,11 +2427,52 @@ def _call_agent_model(
             raise HTTPException(status_code=409, detail=_agent_http_detail(exc)) from exc
         if exc.status_code == 400:
             raise HTTPException(status_code=400, detail=_agent_http_detail(exc)) from exc
+        detail = _agent_http_detail(exc)
+        if (path == "/v1/model/delete" and exc.status_code == 500
+                and isinstance(detail, dict)
+                and detail.get("code") in {
+                    "model_delete_recovery_required", "model_delete_cleanup_pending", "model_delete_status_update_failed",
+                }):
+            # Keep the existing gateway status while carrying the deletion
+            # outcome and recovery instruction to the Library consumer.
+            raise HTTPException(status_code=502, detail=detail) from exc
+        if exc.status_code == 507:
+            raise HTTPException(
+                status_code=507,
+                detail=_insufficient_disk_detail(_agent_http_detail(exc)),
+            ) from exc
         raise HTTPException(status_code=502, detail=exc.detail) from exc
     except AgentUnavailable as exc:
         raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
     except AgentProtocolError as exc:
         raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
+
+
+def _request_agent_download(payload: dict) -> dict:
+    """Start a host-agent download; wait out short holds, refuse longer ones in words."""
+    return _request_agent_waiting_short_holds("/v1/model/download", payload, "this download cannot start yet")
+
+
+def _request_agent_waiting_short_holds(path: str, payload: dict, blocked: str,
+                                       grace_seconds: float = _DOWNLOAD_SHORT_HOLD_GRACE_SECONDS) -> dict:
+    """Call a host-agent model route; wait out short holds, refuse longer ones in words."""
+    remaining = grace_seconds
+    deadline = time.monotonic() + remaining
+    while True:
+        try:
+            return _call_agent_model(path, payload, timeout=remaining)
+        except HTTPException as exc:
+            detail = exc.detail
+            if exc.status_code != 409 or not isinstance(detail, dict) \
+                    or detail.get("code") != "model_lifecycle_busy":
+                raise
+            remaining = deadline - time.monotonic()
+            if _is_short_lifecycle_hold(detail) and remaining > 0:
+                time.sleep(min(0.5, remaining))
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    continue
+            raise HTTPException(status_code=409, detail=_lifecycle_busy_detail(detail, blocked)) from exc
 
 
 def _find_model_in_library(model_id: str) -> Optional[dict]:
@@ -2140,22 +2774,53 @@ def download_model(model_id: str, api_key: str = Depends(verify_api_key)):
             detail={**bootstrap_conflict, "requestedModelId": model_id},
         )
 
-    payload = {
-        "gguf_file": model["gguf_file"],
-        "gguf_url": model.get("gguf_url", ""),
-        "gguf_sha256": model.get("gguf_sha256", ""),
-    }
-    # Split-file models provide gguf_parts array
-    if model.get("gguf_parts"):
-        payload["gguf_parts"] = model["gguf_parts"]
-
-    result = _call_agent_model("/v1/model/download", payload)
-    return result
+    # Split-file models provide gguf_parts; imports may carry a vision projector.
+    return _request_agent_download(_hf_download_payload(model))
 
 
 @router.post("/api/models/download/cancel")
 def cancel_download(api_key: str = Depends(verify_api_key)):
     """Cancel an in-progress model download."""
+    bootstrap = _read_bootstrap_status_file()
+    if bootstrap and bootstrap.get("status") in _ACTIVE_BOOTSTRAP_STATUSES:
+        if bootstrap.get("status") not in {"starting", "downloading"}:
+            raise HTTPException(status_code=409, detail="The full model has finished downloading and is being activated. It cannot be cancelled now.")
+        generation = bootstrap.get("downloadGeneration")
+        if not valid_generation(generation):
+            raise HTTPException(status_code=409, detail="This full-model download worker does not support cancellation acknowledgements. It is still running.")
+        # This is a nonce, not a secret. The native owner must be able to read
+        # a request written by the API container; only the API writes requests.
+        directory = Path(DATA_DIR)
+        request_path = directory / "bootstrap-download.cancel.json"
+        temporary = None
+        try:
+            fd, temporary = tempfile.mkstemp(prefix=".bootstrap-cancel-", dir=directory)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump({"generation": generation}, handle)
+                handle.flush()
+                os.fchmod(handle.fileno(), 0o644)
+                os.fsync(handle.fileno())
+            os.replace(temporary, request_path)
+        except OSError:
+            raise HTTPException(status_code=503, detail="The download cancellation request could not be delivered. The download may still be running.") from None
+        finally:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except FileNotFoundError:
+                    pass
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            current = _read_bootstrap_status_file()
+            if not current or current.get("downloadGeneration") != generation:
+                raise HTTPException(status_code=409, detail="The download changed before cancellation was acknowledged. Check its current progress.")
+            state = current.get("status")
+            if state == "cancelled":
+                return {"status": "cancelled", "cancelled": True, "downloadGeneration": generation}
+            if state not in {"starting", "downloading"}:
+                raise HTTPException(status_code=409, detail="The download finished or changed before it could be cancelled. Check its current progress.")
+            time.sleep(0.2)
+        raise HTTPException(status_code=409, detail="The download has not acknowledged cancellation yet. Check progress before retrying.")
     result = _call_agent_model("/v1/model/download/cancel", {})
     return result
 
@@ -2261,6 +2926,16 @@ def load_model(
     api_key: str = Depends(verify_api_key),
 ):
     """Activate a model — update config and restart llama-server."""
+    return _activate_model(model_id, body)
+
+
+def _activate_model(model_id: str, body: dict[str, Any] | None, *, chat_template_override: str | None = None):
+    """Run ``model_id`` through the host agent's activation transaction.
+
+    ``chat_template_override`` (any-model WP5) asks for the model's fixed
+    chat template; such a request always restarts the runtime, even when the
+    model already runs.
+    """
     mode_denial = _model_activation_mode_denial(
         ODS_MODE_EFFECTIVE,
         _configured_ods_mode(),
@@ -2307,7 +2982,7 @@ def load_model(
         and served_context is not None
         and served_context < HERMES_MIN_CONTEXT <= policy_context
     )
-    if already_active and not raise_below_floor and (
+    if chat_template_override is None and already_active and not raise_below_floor and (
         requested_context is None
         or requested_context == served_context
     ):
@@ -2367,6 +3042,8 @@ def load_model(
             activation_context = configured_context
     if activation_context is not None:
         activation_body["context_length"] = activation_context
+    if chat_template_override is not None:
+        activation_body["chat_template_override"] = chat_template_override
     try:
         result = _call_agent_model(
             "/v1/model/activate",
@@ -2381,6 +3058,71 @@ def load_model(
         # sent as soon as this response lands, sees the settled state.
         _invalidate_agent_model_status_cache()
     return result
+
+
+@router.get("/api/models/{model_id}/profile")
+async def model_profile(model_id: str, api_key: str = Depends(verify_api_key)):
+    """What a model was measured to do on this machine (PLAN WP3); advisory."""
+    try:
+        return await asyncio.to_thread(
+            request_agent_json, "GET", "/v1/model/profile", params={"model": model_id}, timeout=10,
+        )
+    except AgentHTTPError as exc:
+        raise HTTPException(status_code=502, detail=_agent_http_detail(exc)) from exc
+    except AgentClientError as exc:
+        raise HTTPException(status_code=503, detail=f"Host agent unreachable: {exc}") from exc
+
+
+# The probe battery's own budget (120 s) plus the runtime's /props read.
+_MODEL_PROFILE_RECHECK_TIMEOUT_SECONDS = 180
+
+
+@router.post("/api/models/{model_id}/profile/recheck")
+def recheck_model_profile(model_id: str, api_key: str = Depends(verify_api_key)):
+    """Measure the running model again, ignoring its stored profile."""
+    return _call_agent_model(
+        "/v1/model/profile/recheck", {"model": model_id}, timeout=_MODEL_PROFILE_RECHECK_TIMEOUT_SECONDS,
+    )
+
+
+# A fixed chat template's id, as config/chat-templates/index.json spells it.
+_CHAT_TEMPLATE_ID_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?")
+
+
+def _chat_template_unavailable_reason() -> str | None:
+    """Why this runtime cannot load a fixed chat template, or None when it can."""
+    mode = read_live_env_values(("AMD_INFERENCE_RUNTIME_MODE",)).get("AMD_INFERENCE_RUNTIME_MODE")
+    if str(mode or "").strip().casefold() in _LEGACY_WINDOWS_NATIVE_MODES or _windows_hosted_runtime():
+        return "The Windows model runtime on this machine cannot use a fixed chat template yet. Nothing was changed."
+    return None
+
+
+@router.post("/api/models/{model_id}/chat-template")
+def run_with_fixed_chat_template(
+    model_id: str,
+    body: dict[str, Any] | None = Body(default=None),
+    api_key: str = Depends(verify_api_key),
+):
+    """Run a model with ODS's fixed chat template for it (any-model WP5).
+
+    The host agent accepts the template only when its index fixes exactly the
+    template this model was measured with. A running model keeps its context.
+    """
+    override = body.get("override") if isinstance(body, dict) and set(body) == {"override"} else None
+    if not isinstance(override, str) or not _CHAT_TEMPLATE_ID_RE.fullmatch(override):
+        raise HTTPException(status_code=400, detail='Ask for a fixed chat template as {"override": "<id>"}.')
+    reason = _chat_template_unavailable_reason()
+    if reason is not None:
+        raise HTTPException(status_code=409, detail={
+            "code": "chat_template_override_unsupported", "message": reason, "requestedModelId": model_id,
+        })
+    model = _find_loadable_model(model_id)
+    activation = None
+    if model is not None and _configured_model_identity_matches(model):
+        configured = _configured_context_length()
+        if configured is not None and _MIN_MODEL_CONTEXT <= configured <= _MAX_MODEL_CONTEXT:
+            activation = {"context_length": configured}
+    return _activate_model(model_id, activation, chat_template_override=override)
 
 
 @router.post("/api/models/{model_id}/benchmark")
@@ -2415,5 +3157,6 @@ def delete_model(model_id: str, api_key: str = Depends(verify_api_key)):
     }
     if model.get("gguf_parts"):
         payload["gguf_parts"] = model["gguf_parts"]
-    result = _call_agent_model("/v1/model/delete", payload)
-    return result
+    # 20 s leaves the delete itself inside the Models page's 35 s deadline.
+    return _request_agent_waiting_short_holds("/v1/model/delete", payload, "this model cannot be deleted yet",
+                                              grace_seconds=20.0)

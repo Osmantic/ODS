@@ -8,7 +8,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 INSTALL_DIR="$TMP_DIR/install"
 BIN_DIR="$TMP_DIR/bin"
 mkdir -p "$INSTALL_DIR" "$BIN_DIR"
-touch "$INSTALL_DIR/docker-compose.yml" "$INSTALL_DIR/.env"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+touch "$INSTALL_DIR/docker-compose.base.yml" "$INSTALL_DIR/.env"
+python3 "$ROOT_DIR/tests/fixtures/macos-private-store-cli.py" "$INSTALL_DIR"
 
 cat > "$BIN_DIR/docker" <<'EOF'
 #!/usr/bin/env bash

@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import threading
+from typing import Any
 
 import pytest
 import test_model_activate as fixtures
@@ -51,7 +52,8 @@ def managed(tmp_path, monkeypatch):
                 "maxTokens": 3072, "reasoning": True, "routeFingerprint": "d" * 64}
     pixel = dict(schemaVersion=1, status="ready", revision="a" * 64,
                  contract=copy.deepcopy(previous), pending=False, transactionId=None, outcome=None)
-    runtime = {"plan": copy.deepcopy(plan), "running": True, "managed": True, "failure": None}
+    runtime: dict[str, Any] = {"plan": copy.deepcopy(plan), "running": True, "managed": True, "failure": None,
+                               "features": []}
     events = []
 
     def persist():
@@ -64,11 +66,12 @@ def managed(tmp_path, monkeypatch):
             "modelStoreWindowsPath": plan["ModelsDir"], "planPathWindows": r"C:\fixture\portal-runtime\runtime.json",
             "observation": {"status": "verified", "modelId": runtime["plan"]["GgufFile"],
                             "contextLength": runtime["plan"]["ContextSize"]} if runtime["running"] else None,
+            "planFeatures": list(runtime["features"]),
         }
 
     persist()
 
-    def activate(_install, _env, gguf, context, digest):
+    def activate(_install, _env, gguf, context, digest, mmproj=None):
         assert pixel["pending"] is True, "Portal must hold before Windows process mutation"
         assert digest == status()["planDigest"]
         events.append("windows-activate")
@@ -76,6 +79,9 @@ def managed(tmp_path, monkeypatch):
             runtime["running"] = False
             raise host._wsl_runtime.BridgeError("fixture stopped before plan publication")
         runtime["plan"].update(GgufFile=gguf, ContextSize=context)
+        runtime["plan"].pop("MmprojFile", None)
+        if mmproj is not None:
+            runtime["plan"]["MmprojFile"] = mmproj
         persist()
         if runtime["failure"] in {"load", "unknown"}:
             runtime["running"] = False
@@ -297,6 +303,32 @@ def test_start_without_pending_journal_cannot_claim_success_for_another_startup_
     assert "windows-start" not in managed["events"] or managed["pixel"]["pending"] is True
 
 
+def test_resume_of_a_memory_refused_model_starts_it_anyway(managed, monkeypatch):
+    # Sign-in left the saved plan refused for memory: intent running, the
+    # model not running, the launcher's refusal in status. The Models page's
+    # Resume ("Start anyway") is the ordinary start; the Windows controller
+    # turns it into the override for that plan.
+    managed["runtime"]["running"] = False
+    fixture_status = host._wsl_runtime.status
+    refusal = {"runtimeError": "The model was not started: Windows can lend it only 1.0 GiB right now.",
+               "runtimeErrorSource": "launcher", "startRefusal": "memory_refused"}
+    monkeypatch.setattr(host._wsl_runtime, "status", lambda *args: {
+        **fixture_status(*args), **({} if managed["runtime"]["running"] else refusal)})
+    monkeypatch.setattr(host, "_model_management_cache", None)
+    monkeypatch.setattr(host, "_model_management_lock", threading.Lock())
+    code, shown = host._model_management_snapshot()
+    assert code == 200 and shown["startRefusal"] == "memory_refused" and shown["canUnload"] is True
+    assert shown["running"] is False and shown["runtimeError"].startswith("The model was not started")
+    handler = fixtures._ResponseHandler(request_body={})
+    host.AgentHandler._handle_model_runtime(handler, "start")
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["events"].count("windows-start") == 1
+    assert managed["runtime"]["running"] is True
+    monkeypatch.setattr(host, "_model_management_cache", None)
+    code, shown = host._model_management_snapshot()
+    assert code == 200 and shown["running"] is True and "runtimeError" not in shown and "startRefusal" not in shown
+
+
 def test_start_after_external_exit_holds_and_recovers_portal_before_success(managed):
     managed["runtime"]["running"] = False
     handler = fixtures._ResponseHandler(request_body={})
@@ -388,3 +420,73 @@ def test_missing_runtime_registration_never_implicitly_adopts_model_store(manage
     with pytest.raises(RuntimeError, match="register its managed model store"):
         host._model_download_directory()
     assert managed["events"] == []
+
+
+def _vision_target(managed, projector="mmproj-new.gguf"):
+    """Make target-model a vision import whose projector sits in the Windows store."""
+    (managed["models"] / projector).write_bytes(b"projector")
+    path = managed["install"] / "config/model-library.json"
+    library = json.loads(path.read_text(encoding="utf-8"))
+    library["models"][0].update(mmproj_file=projector, mmproj_url=f"https://example.test/{projector}",
+                                mmproj_sha256=hashlib.sha256(b"projector").hexdigest())
+    path.write_text(json.dumps(library), encoding="utf-8")
+
+
+def test_vision_import_plans_its_projector_on_a_launcher_that_declares_it(managed):
+    _vision_target(managed)
+    managed["runtime"]["features"] = ["MmprojFile"]
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert managed["runtime"]["plan"]["MmprojFile"] == "mmproj-new.gguf"
+    # The Windows launcher takes it as --mmproj; the Linux container key stays unset.
+    assert "LLAMA_ARG_MMPROJ" not in host.load_env(managed["env"])
+
+
+def test_an_older_windows_launcher_runs_a_vision_model_without_its_projector(managed):
+    _vision_target(managed)
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert "MmprojFile" not in managed["runtime"]["plan"]
+
+
+def test_a_failed_vision_switch_restores_the_previous_projector(managed):
+    managed["runtime"]["plan"]["MmprojFile"] = "mmproj-old.gguf"
+    (managed["models"] / "mmproj-old.gguf").write_bytes(b"old projector")
+    managed["runtime"]["features"] = ["MmprojFile"]
+    managed["runtime"]["failure"] = "load"
+    _vision_target(managed)
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 500, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "old-model.gguf"
+    assert managed["runtime"]["plan"]["MmprojFile"] == "mmproj-old.gguf"
+
+
+def test_delete_keeps_the_projector_the_windows_plan_loads(managed, monkeypatch):
+    _vision_target(managed, projector="mmproj-old.gguf")
+    managed["runtime"]["plan"]["MmprojFile"] = "mmproj-old.gguf"
+    monkeypatch.setattr(host, "_live_runtime_has_model", lambda *_args: False)
+    handler = fixtures._ResponseHandler(request_body={"gguf_file": "new-model.gguf"})
+    host.AgentHandler._handle_model_delete(handler)
+    assert handler.response_code == 409, handler.parse_response()
+    assert (managed["models"] / "new-model.gguf").exists()
+    assert (managed["models"] / "mmproj-old.gguf").exists()
+
+
+@pytest.mark.parametrize("control", ["enable_thinking", "always", "none", None])
+def test_measured_thinking_control_reaches_the_held_model_transaction(managed, monkeypatch, control):
+    monkeypatch.setattr(host, "_profile_traits", lambda *_args: {"control": control, "tools": True, "vision": False} if control else None)
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    contract = managed["pixel"]["contract"]
+    if control is None:
+        assert "thinkingControl" not in contract
+    else:
+        assert contract["thinkingControl"] == control
+    assert managed["pixel"]["pending"] is False
+    assert host._read_pixel_model_journal()["phase"] == "completed"

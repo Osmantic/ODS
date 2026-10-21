@@ -30,6 +30,7 @@ in ODS. This overview does not replace those licenses.
 | Bundled Pixel and Pixel-derived material used within ODS | [Pixel License for ODS](vendor/pixel/LICENSE.md); retain attribution and any third-party notices |
 | OpenClaw runtime and derived patches | [Pixel third-party notices](vendor/pixel/THIRD_PARTY_NOTICES.md) and the [runtime source notice](extensions/services/pixel-agent/runtime-source/OPENCLAW-LICENSE) |
 | Dashboard fonts and visual assets | [Dashboard asset notices](extensions/services/dashboard/ASSET-NOTICES.md) and [per-file artwork evidence](docs/ASSET-PROVENANCE.md) |
+| ODS example Portal project (Elf of Doom) | [Apache-2.0](LICENSE) to the extent applicable rights exist; written in ODS by Portal running Qwen3.8-Flash-Next from natural-language prompts, with exact bytes pinned in `installers/lib/pixel-example-projects.py`; see [its README](extensions/services/pixel-agent/example-projects/elf-of-doom/README.md) |
 | Downloaded services and model artifacts | Their exact upstream versions and terms; see [third-party review](docs/THIRD-PARTY-LICENSING.md) |
 
 The old notices under `docs/pixel/upstream/` are a historical attribution

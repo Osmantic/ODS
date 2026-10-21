@@ -123,6 +123,19 @@ def test_switchboard_surface_gated_on_enabled_mode() -> None:
     assert switchboard["content"].count("http://model-router:9099/v1") == 4
 
 
+def test_switchboard_route_injects_no_thinking_settings() -> None:
+    # Any-model WP4.5: a model's thinking control reaches only the consumer that
+    # sends per-request kwargs (Pixel's rendered config). The switchboard route
+    # must pass requests through unchanged, whatever model is active.
+    enabled = run_renderer("--surface", "all", "--switchboard-mode", "enabled")
+    switchboard = file_by_surface(enabled, "litellm-switchboard")["content"]
+    shipped = (ROOT / "config" / "litellm" / "switchboard.yaml").read_text(encoding="utf-8")
+    for content in (switchboard, shipped):
+        assert "enable_thinking" not in content
+        assert "chat_template_kwargs" not in content
+        assert "reasoning_effort" not in content
+
+
 def test_local_profiles_allow_long_agent_streams() -> None:
     local = run_renderer("--surface", "litellm-local")
     local_config = file_by_surface(local, "litellm-local")["content"]

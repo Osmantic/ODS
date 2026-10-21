@@ -1,0 +1,2 @@
+Available devices:
+  CUDA0: NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU) (22950 MiB, 11738 MiB free)

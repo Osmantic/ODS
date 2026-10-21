@@ -201,15 +201,23 @@ def test_cli_cached_flags_use_the_same_native_selection_rules(tmp_path, mode):
         (directory / 'activation.json').unlink()
         (directory / 'activation.json').symlink_to(directory / 'absent')
     (tmp_path / 'installers/macos/lib').mkdir(parents=True, exist_ok=True)
-    for name in ('pixel-native-stack.py', 'pixel-native-install.py'):
+    for name in ('pixel-native-stack.py', 'pixel-native-install.py',
+                 'dashboard-private-state.py', 'dashboard-private-state-worker.py'):
         shutil.copyfile(ROOT / 'installers/macos/lib' / name, tmp_path / 'installers/macos/lib' / name)
+    recipe = 'installers/macos/dashboard-private-state.compose.yaml'
+    shutil.copyfile(ROOT / recipe, tmp_path / recipe)
+    shutil.copyfile(ROOT / 'docker-compose.base.yml', tmp_path / 'docker-compose.base.yml')
     script = (ROOT / 'installers/macos/ods-macos.sh').read_text()
     function = script[script.index('get_compose_flags() {'):script.index('\n_get_base_compose_flags() {')]
-    shell = 'set -euo pipefail\n_get_base_compose_flags() { echo "-f docker-compose.base.yml"; }\n' + function + '\nget_compose_flags\n'
+    child_initialization = next(line for line in script.splitlines() if line == 'NATIVE_LIFECYCLE_CHILD=false')
+    shell = ('set -euo pipefail\n' + child_initialization + '\n'
+             '_get_base_compose_flags() { echo "-f docker-compose.base.yml"; }\n'
+             + function + '\nget_compose_flags\n')
     result = subprocess.run(['bash'], input=shell, text=True, capture_output=True,
         env={**os.environ, 'INSTALL_DIR': str(tmp_path)})
     if mode == 'ready':
         assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == ' '.join('-f ' + value for value in ['docker-compose.base.yml', *module.installer.FRAGMENTS])
+        assert result.stdout.strip() == ' '.join('-f ' + value for value in ['docker-compose.base.yml', recipe, *module.installer.FRAGMENTS])
     else:
         assert result.returncode != 0 and not result.stdout.strip()
+        assert 'Native Pixel Compose selection needs review; keep its receipts and configuration intact.' in result.stderr

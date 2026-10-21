@@ -64,22 +64,20 @@ MAX_RESPONSE_BYTES = 8192
 MAX_FILES = 128
 MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_TOTAL_BYTES = 16 * 1024 * 1024
-# Version-control metadata and config names that are skipped entirely during
-# source enumeration.  Their directories (e.g. .git/) are pruned from the
-# walk; their config files (.gitignore, .gitattributes, .gitmodules) and
-# worktree metadata files (the .git file in a git-worktree) are skipped by
-# name.  These files are never entered, read, or copied into snapshots.
-VC_METADATA_NAMES = frozenset(
-    {
-        ".git", ".hg", ".svn",
-        ".gitignore", ".gitattributes", ".gitmodules",
-    }
-)
-# Bytecode and test-runner caches appear whenever project code or its tests run
-# in the directory. They are never site content, so prune them by exact
-# directory name like VC metadata: never entered, read, copied or published.
-# Files with these names are still validated normally.
-GENERATED_CACHE_DIRECTORY_NAMES = frozenset({"__pycache__", ".pytest_cache"})
+# Hidden entries (any directory or file whose name starts with '.') are never
+# site content: version-control metadata (.git/, .gitignore, a worktree's .git
+# file), tool and editor state (.harness/, .vscode/, .idea/, .pytest_cache/),
+# OS files (.DS_Store) and private files (.env). _source_files prunes hidden
+# directories before os.walk descends, so nothing inside them is listed,
+# stat'ed or read, and skips hidden files by name. Neither counts toward the
+# file limits, the digest or the manifest, and neither is ever copied or
+# published: an index.html that references one gets a 404 rather than its
+# bytes (the HTTP handler's ASSET_COMPONENT check refuses a leading '.' too).
+#
+# Bytecode caches appear whenever project code or its tests run in the
+# directory. They are never site content either, so prune them by exact
+# directory name. A file with this name is still validated normally.
+GENERATED_CACHE_DIRECTORY_NAMES = frozenset({"__pycache__"})
 
 SOURCE_ID = re.compile(r"source-[a-f0-9]{24}")
 SOURCE_SUFFIXES = frozenset({'.html', '.css', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx',
@@ -312,9 +310,10 @@ def _source_files(
             or root_info.st_mode & 0o022
         ):
             raise PreviewError("unsafe preview directory")
-        # Exclude metadata by its own name; ordinary symlinks stay rejected.
+        # Exclude hidden and cache directories by their own name before
+        # descending; every other directory, symlink or not, is validated.
         pruned = [d for d in directories
-                  if d not in VC_METADATA_NAMES and d not in GENERATED_CACHE_DIRECTORY_NAMES]
+                  if not d.startswith(".") and d not in GENERATED_CACHE_DIRECTORY_NAMES]
         for directory in pruned:
             info = (root_path / directory).lstat()
             if (
@@ -327,9 +326,9 @@ def _source_files(
                 raise PreviewError("unsafe preview directory")
         directories[:] = pruned
         for name in names:
-            # Skip version-control metadata files (e.g. the .git worktree
-            # pointer file, which is a regular file named .git).
-            if name in VC_METADATA_NAMES:
+            # Hidden files (.DS_Store, .env, a worktree's .git pointer file)
+            # are skipped by name before any lstat, size or count check.
+            if name.startswith("."):
                 continue
             source = root_path / name
             info = source.lstat()
@@ -948,7 +947,10 @@ def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:
 
     The reserved HTTP filename cannot be supplied by a generated site (its
     reserved __ods_ prefix is excluded by ASSET_COMPONENT). Old snapshots work
-    without migration or adding metadata files to their content hash.
+    without migration or adding metadata files to their content hash. Hidden
+    names are skipped here as in publication: publication verifies that a
+    snapshot holds exactly its captured files, none hidden, and the HTTP
+    handler never serves a hidden name.
     """
     if SITE_ID.fullmatch(site_id) is None:
         raise PreviewError("invalid preview snapshot")

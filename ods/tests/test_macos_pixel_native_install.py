@@ -53,6 +53,24 @@ def test_main_reports_allowlisted_activation_failures(monkeypatch, capsys, code,
     assert 'do not reset receipts or repeat activation automatically' in captured.err
 
 
+@pytest.mark.parametrize('code,detail', [
+    ('native-sandbox-build-failed', 'pinned Node.js runtime from nodejs.org'),
+    ('native-sandbox-execution-proof-failed', 'no npm, npx or corepack'),
+    ('invalid-sandbox-node-runtime', 'leave PIXEL_SOURCE_REF unset'),
+])
+def test_main_reports_sandbox_image_failures_with_recovery(monkeypatch, capsys, code, detail):
+    def fail(**kwargs):
+        raise ValueError(code)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    captured = capsys.readouterr()
+    assert '[' + code + ']' in captured.err
+    assert detail in captured.err
+    assert 'https://discord.gg/4ntNp9MAwC' in captured.err
+
+
 def test_main_reports_individual_health_without_docker_output(monkeypatch, capsys):
     compose = module.helper('compose')
     states = {name: {'state': 'running', 'health': 'healthy'} for name in compose.SERVICES}
@@ -532,8 +550,9 @@ def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persiste
     assert script.index('compose_exit="${PIPESTATUS[0]}"') < launch
     save = 'echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"'
     # The base stack is saved before it starts; Pixel's fragments only after it.
-    assert script.index(save) < script.index(
-        'docker compose "${COMPOSE_FLAGS[@]}" "${_macos_compose_up_args[@]}"')
+    base_launch = script.index('/usr/bin/python3 "$INSTALL_DIR/installers/macos/lib/dashboard-private-state.py"')
+    assert script.index(save) < base_launch < script.index('compose_exit="${PIPESTATUS[0]}"') < launch
+    assert 'launch --operation install --install-dir "$INSTALL_DIR" --flags="${COMPOSE_FLAGS[*]}"' in script
     assert launch < script.rindex(save)
     shared = (ROOT / 'installers/phases/06-directories.sh').read_text()
     source_contract = (ROOT / 'installers/lib/pixel-integration.sh').read_text()

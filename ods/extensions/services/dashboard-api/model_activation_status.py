@@ -1,11 +1,11 @@
 """Fixed, nonsecret progress from the host's actual activation owner/result."""
 
-PHASES = frozenset({'preparing', 'loading', 'verifying', 'rolling_back', 'rollback_verifying'})
+PHASES = frozenset({'preparing', 'loading', 'profiling', 'verifying', 'rolling_back', 'rollback_verifying'})
 FAILURES = frozenset({'runtime_load_failed', 'runtime_readiness_failed',
                       'consumer_verification_failed', 'rollback_unconfirmed'})
 OUTCOMES = frozenset({'activated', 'rolled_back', 'rollback_unconfirmed'})
 NEUTRAL_OPERATIONS = frozenset({'pixel_startup_reproof', 'pixel_access_mode', 'pixel_open_app',
-                                'pixel_providers', 'pixel_settings'})
+                                'pixel_providers', 'pixel_settings', 'model_profile_recheck'})
 
 
 def model_activation_status(status):

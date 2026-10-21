@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   ArrowDownToLine,
   Box,
   CheckCircle2,
   Cloud,
+  Cpu,
   ExternalLink,
   FileArchive,
   Gauge,
@@ -17,13 +19,18 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react'
+import HelpLink from '../HelpLink'
 
 const SEARCH_DELAY_MS = 350
 const SEARCH_TIMEOUT_MS = 30000
 const IMPORT_TIMEOUT_MS = 45000
+// The check reads the repository and one file's header from the Hub, then
+// this machine's storage; on a slow link that outlasts a search (Mac mini,
+// 2026-10-09). Selected-artifact checks use the same bounded allowance.
+const PREFLIGHT_TIMEOUT_MS = 90000
 
-async function boundedJsonRequest(url, options = {}, timeout = SEARCH_TIMEOUT_MS) {
-  const controller = new AbortController()
+async function boundedJsonRequest(url, options = {}, timeout = SEARCH_TIMEOUT_MS, control = {}) {
+  const controller = control.controller || new AbortController()
   let timer
   try {
     return await Promise.race([
@@ -34,13 +41,14 @@ async function boundedJsonRequest(url, options = {}, timeout = SEARCH_TIMEOUT_MS
           const error = new Error(errorMessage(body, 'Could not confirm the model operation.'))
           error.rejected = (response.status >= 400 && response.status < 500) ||
             response.headers?.get('X-ODS-Import-Started') === 'false'
+          error.detail = body?.detail
           throw error
         }
         return body
       })(),
       new Promise((_, reject) => {
         timer = setTimeout(() => {
-          reject(new Error('The request timed out. Check download status before retrying.'))
+          reject(new Error(control.timeoutMessage || 'The request timed out. Retry this request.'))
           controller.abort()
         }, timeout)
       }),
@@ -49,6 +57,16 @@ async function boundedJsonRequest(url, options = {}, timeout = SEARCH_TIMEOUT_MS
     clearTimeout(timer)
     controller.abort()
   }
+}
+
+function artifactCheck(body, repository, artifact, selected = false) {
+  const check = body?.artifacts?.[artifact.id]
+  const filename = artifact.files?.[0]?.filename
+  if (!repository.sha || !filename || body?.id !== repository.id || body.sha !== repository.sha
+      || (selected && body.artifactId !== artifact.id) || check?.header?.file !== filename
+      || !Object.hasOwn(check, 'refusal')) return null
+  if (selected && body.header?.file !== filename) return null
+  return check
 }
 
 export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportStarted }) {
@@ -71,6 +89,55 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   const checkImportLock = useRef(false)
   const [searchAttempt, setSearchAttempt] = useState(0)
   const detailsRequestRef = useRef(0)
+  const [preflight, setPreflight] = useState(null)
+  const [preflightLoading, setPreflightLoading] = useState(false)
+  const [preflightError, setPreflightError] = useState(null)
+  const [overrideOffer, setOverrideOffer] = useState(null)
+  // WP2: a repository's vision projector is imported with the weights unless unticked.
+  const [includeVision, setIncludeVision] = useState(true)
+  const [checkingArtifact, setCheckingArtifact] = useState(null)
+  const [artifactCheckIssue, setArtifactCheckIssue] = useState(null)
+  const artifactCheckRef = useRef(null)
+  const downloadBusyRef = useRef(downloadBusy)
+  downloadBusyRef.current = downloadBusy
+
+  const cancelArtifactCheck = () => {
+    artifactCheckRef.current?.controller.abort()
+    artifactCheckRef.current = null
+    if (importLock.current?.phase === 'check') importLock.current = false
+    setCheckingArtifact(null)
+    setArtifactCheckIssue(null)
+  }
+
+  useEffect(() => () => {
+    detailsRequestRef.current += 1
+    artifactCheckRef.current?.controller.abort()
+    if (importLock.current?.phase === 'check') importLock.current = false
+  }, [])
+
+  // Facts about the repository's GGUFs before any download: whether this
+  // machine's llama.cpp can load it, whether it is a chat model, fit and disk.
+  const loadPreflight = async (repository, requestId) => {
+    const modelId = repository.id
+    setPreflight(null)
+    setPreflightError(null)
+    setPreflightLoading(true)
+    try {
+      const body = await boundedJsonRequest(`/api/models/huggingface/preflight/${encodeURI(modelId)}`, {},
+        PREFLIGHT_TIMEOUT_MS, { timeoutMessage: 'the check took longer than 90 seconds' })
+      if (detailsRequestRef.current !== requestId) return
+      const artifact = repository.artifacts.find(item => item.id === body?.artifactId)
+      if (!artifact || !artifactCheck(body, repository, artifact, true)
+          || Array.isArray(body.artifacts) || typeof body.modelKind !== 'string') {
+        throw new Error('the check returned an unexpected answer')
+      }
+      setPreflight(body)
+    } catch (requestError) {
+      if (detailsRequestRef.current === requestId) setPreflightError(requestError.message)
+    } finally {
+      if (detailsRequestRef.current === requestId) setPreflightLoading(false)
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -109,11 +176,17 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   }, [query, sort, searchAttempt])
 
   const openRepository = async (model) => {
+    cancelArtifactCheck()
+    setOverrideOffer(null)
     const requestId = detailsRequestRef.current + 1
     detailsRequestRef.current = requestId
     setSelectedRepo(model)
+    setIncludeVision(true)
     setDetails(null)
     setDetailsError(null)
+    setPreflight(null)
+    setPreflightError(null)
+    setPreflightLoading(false)
     setDetailsLoading(true)
     try {
       const body = await boundedJsonRequest(`/api/models/huggingface/repositories/${encodeURI(model.id)}`)
@@ -122,6 +195,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         throw new Error('Could not read repository metadata. Retry details.')
       }
       setDetails(body)
+      if (body.runtimeCompatible !== false && body.artifacts.length > 0) {
+        loadPreflight(body, requestId)
+      }
     } catch (requestError) {
       if (detailsRequestRef.current === requestId) setDetailsError(requestError.message)
     } finally {
@@ -131,39 +207,107 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
 
   const closeRepository = () => {
     detailsRequestRef.current += 1
+    cancelArtifactCheck()
+    setOverrideOffer(null)
     setSelectedRepo(null)
     setDetails(null)
     setDetailsError(null)
+    setPreflight(null)
+    setPreflightError(null)
+    setPreflightLoading(false)
   }
 
-  const importArtifact = async (artifact) => {
+  const importArtifact = async (artifact, { allowUnsupportedRuntime = false, allowUnknownHeader = false } = {}) => {
     if (!details?.id || downloadBusy || pendingImport || importLock.current) return
-    importLock.current = true
-    const request = { repoId: details.id, artifactId: artifact.id }
-    setPendingImport({ ...request, startedAt: Date.now() })
-    setImportNotice('Starting the import. You can close this dialog; the download will continue on the host.')
-    setImportingArtifact(artifact.id)
-    setDetailsError(null)
+    const requestId = detailsRequestRef.current
+    const repository = details
+    const owner = { phase: 'check' }
+    importLock.current = owner
+    const request = { repoId: details.id, artifactId: artifact.id, revision: details.sha }
+    if (details.defaultProjectorId) request.includeVision = includeVision
+    if (allowUnsupportedRuntime) request.allowUnsupportedRuntime = true
+    setOverrideOffer(null)
+    let posted = false
     try {
+      let check = artifactCheck(preflight, repository, artifact)
+      const confirmedUnknown = allowUnknownHeader && artifactCheckIssue?.unknown === true
+        && artifactCheckIssue.repoId === repository.id && artifactCheckIssue.revision === repository.sha
+        && artifactCheckIssue.artifactId === artifact.id
+      setArtifactCheckIssue(null)
+      if (!confirmedUnknown && (!check || (check.header.status !== 'read' && !check.refusal && !check.tensors?.refusal))) {
+        setCheckingArtifact(artifact.id)
+        const controller = new AbortController()
+        artifactCheckRef.current = { controller, owner }
+        const body = await boundedJsonRequest(
+          `/api/models/huggingface/preflight/${encodeURI(repository.id)}?artifactId=${encodeURIComponent(artifact.id)}`,
+          {}, PREFLIGHT_TIMEOUT_MS,
+          { controller, timeoutMessage: 'The artifact check timed out. Retry the check.' },
+        )
+        if (detailsRequestRef.current !== requestId || importLock.current !== owner) return
+        check = artifactCheck(body, repository, artifact, true)
+        if (!check) throw new Error('The artifact check did not match this repository revision and file. Reopen the repository before importing.')
+        setPreflight(body)
+        setPreflightError(null)
+      }
+      if (detailsRequestRef.current !== requestId || importLock.current !== owner || downloadBusyRef.current) return
+      const refusal = check?.refusal || check?.tensors?.refusal
+      if (refusal && !(refusal.overridable && allowUnsupportedRuntime)) return
+      // Use the vision choice captured before the selected-artifact check began.
+      const disk = request.includeVision === false ? check?.diskWithoutProjector : check?.disk
+      if (disk === 'insufficient' && !artifact.installed) return
+      if (!confirmedUnknown && check?.header.status !== 'read') {
+        setArtifactCheckIssue({
+          repoId: repository.id, revision: repository.sha, artifactId: artifact.id, unknown: true, allowUnsupportedRuntime,
+          message: 'This file’s header could not be read. Its architecture, context and template remain unknown. No download was requested.',
+        })
+        return
+      }
+      owner.phase = 'import'
+      posted = true
+      setCheckingArtifact(null)
+      setPendingImport({ ...request, startedAt: Date.now() })
+      setImportNotice('Starting the import. You can close this dialog; the download will continue on the host.')
+      setImportingArtifact(artifact.id)
+      setDetailsError(null)
       const body = await boundedJsonRequest('/api/models/huggingface/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
-      }, IMPORT_TIMEOUT_MS)
+      }, IMPORT_TIMEOUT_MS, { timeoutMessage: 'The request timed out. Check download status before retrying.' })
       if (typeof body?.modelId !== 'string' || !body.modelId.trim()) {
         throw new Error('The import acknowledgement is incomplete.')
       }
       setPendingImport(null)
       setImportNotice('')
       Promise.resolve(onImportStarted?.(body)).catch(() => setImportNotice('Import accepted. Refresh Models to check download progress.'))
-      setSelectedRepo(current => current?.id === request.repoId ? null : current)
-      setDetails(current => current?.id === request.repoId ? null : current)
+      if (detailsRequestRef.current === requestId) {
+        setSelectedRepo(null)
+        setDetails(null)
+      }
     } catch (requestError) {
+      if (!posted) {
+        if (detailsRequestRef.current === requestId && importLock.current === owner) {
+          setArtifactCheckIssue({
+            repoId: repository.id, revision: repository.sha, artifactId: artifact.id, unknown: false,
+            message: `Could not check this artifact: ${requestError.message} No download was requested.`,
+          })
+        }
+        return
+      }
       if (requestError.rejected) setPendingImport(null)
       setImportNotice(requestError.rejected ? requestError.message : `${requestError.message} The host may still be processing this import. Check its status; no second download has been requested.`)
+      const detail = requestError.detail
+      setOverrideOffer(
+        detailsRequestRef.current === requestId && requestError.rejected && !allowUnsupportedRuntime && detail?.overridable === true
+          && ['runtime_architecture_unsupported', 'runtime_tensor_type_unsupported'].includes(detail?.code) ? artifact : null,
+      )
     } finally {
-      setImportingArtifact(null)
-      importLock.current = false
+      if (artifactCheckRef.current?.owner === owner) artifactCheckRef.current = null
+      if (importLock.current === owner) {
+        setCheckingArtifact(null)
+        setImportingArtifact(null)
+        importLock.current = false
+      }
     }
   }
 
@@ -209,6 +353,12 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
         {pendingImport && <button type="button" onClick={reconcileImport} disabled={Boolean(importingArtifact || checkingImport)} className="mt-2 rounded border border-theme-border px-3 py-1 disabled:opacity-50">
           {checkingImport ? 'Checking download…' : 'Check download status'}
         </button>}
+        {overrideOffer && !pendingImport && (
+          <button type="button" onClick={() => importArtifact(overrideOffer, { allowUnsupportedRuntime: true })} disabled={Boolean(importingArtifact)} className="mt-2 mr-3 rounded border border-theme-border px-3 py-1 disabled:opacity-50">
+            Import anyway
+          </button>
+        )}
+        {!pendingImport && <HelpLink className="mt-2 text-xs text-theme-text-muted" />}
       </div>
 
   return (
@@ -319,10 +469,17 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
           details={details}
           loading={detailsLoading}
           error={detailsError}
+          preflight={preflight}
+          preflightLoading={preflightLoading}
+          preflightError={preflightError}
           gpu={gpu}
           downloadBusy={downloadBusy || Boolean(pendingImport)}
           importingArtifact={importingArtifact}
+          checkingArtifact={checkingArtifact}
+          artifactCheckIssue={artifactCheckIssue}
           importStatus={importStatus}
+          includeVision={includeVision}
+          onIncludeVisionChange={setIncludeVision}
           onClose={closeRepository}
           onImport={importArtifact}
           onRetry={() => openRepository(selectedRepo)}
@@ -391,13 +548,16 @@ function RepositoryRow({ model, onInspect }) {
   )
 }
 
-function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, importingArtifact, importStatus, onClose, onImport, onRetry }) {
+function ArtifactDialog({ model, details, loading, error, preflight, preflightLoading, preflightError, gpu, downloadBusy, importingArtifact, checkingArtifact, artifactCheckIssue, importStatus, includeVision = true, onIncludeVisionChange, onClose, onImport, onRetry }) {
+  const projector = (details?.projectors || []).find(item => item.id === details?.defaultProjectorId) || null
+  const refusal = preflight?.refusal || null
   const [artifactFilter, setArtifactFilter] = useState('')
   const filteredArtifacts = useMemo(() => {
     const query = artifactFilter.trim().toLowerCase()
     return (details?.artifacts || []).filter(artifact => (
       artifact.label.toLowerCase().includes(query)
       || (artifact.quantization || '').toLowerCase().includes(query)
+      || (artifact.files || []).some(file => (file.filename || '').toLowerCase().includes(query))
     ))
   }, [details, artifactFilter])
   return (
@@ -437,9 +597,9 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
                 <Metric icon={ShieldCheck} label="License" value={formatLicense(details.license)} />
                 <Metric
                   icon={Gauge}
-                  label="Context metadata"
-                  value={formatContext(details.contextLength)}
-                  detail={contextSourceLabel(details.contextSource)}
+                  label={preflight?.artifactId ? 'Checked artifact context' : 'Context metadata'}
+                  value={formatContext(preflight?.artifactId ? preflight.contextLength : (preflight?.contextLength || details.contextLength))}
+                  detail={contextSourceLabel(preflight?.artifactId ? preflight.contextSource : (preflight?.contextLength ? preflight.contextSource : details.contextSource))}
                 />
                 <Metric icon={HardDrive} label="Available artifacts" value={`${details.artifacts.length} choices`} />
                 <Metric icon={CheckCircle2} label="Pinned revision" value={details.sha?.slice(0, 10) || 'Unknown'} mono />
@@ -447,8 +607,35 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
 
               {details.runtimeCompatible === false && (
                 <div className="mb-4 rounded-lg border border-theme-border bg-theme-text-secondary/8 px-4 py-3 text-sm text-theme-text-secondary">
-                  {details.runtimeReason}. You can inspect its artifacts here, but ODS will not route it through the LLM runtime.
+                  <p>{details.runtimeReason}. You can inspect its artifacts here, but ODS will not route it through the LLM runtime.</p>
+                  <HelpLink className="mt-1 text-xs" />
                 </div>
+              )}
+
+              {details.runtimeCompatible !== false && details.artifacts.length > 0 && (
+                <PreflightSummary preflight={preflight} loading={preflightLoading} error={preflightError} />
+              )}
+
+              {details.runtimeCompatible !== false && projector && (
+                <label className="mb-4 flex items-start gap-2 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-secondary">
+                  <input type="checkbox" className="mt-0.5" checked={includeVision} disabled={downloadBusy || Boolean(importingArtifact || checkingArtifact)} onChange={event => onIncludeVisionChange?.(event.target.checked)} />
+                  <span>Include vision: also download {projector.label} ({formatBytes(projector.sizeBytes)}) so this model can read images. Memory estimates below include it.</span>
+                </label>
+              )}
+
+              {details.runtimeCompatible !== false && !projector && details.visionUnavailableReason && (
+                <div className="mb-4 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-secondary">
+                  <p>{details.visionUnavailableReason}.</p>
+                  <HelpLink className="mt-1" />
+                </div>
+              )}
+
+              {preflight && details.runtimeCompatible !== false && details.artifacts.length > 0 && (
+                <StorageSummary storage={preflight.storage} blocked={details.artifacts.some(artifact => (
+                  !artifact.installed && (projector && !includeVision
+                    ? preflight.artifacts?.[artifact.id]?.diskWithoutProjector
+                    : preflight.artifacts?.[artifact.id]?.disk) === 'insufficient'
+                ))} />
               )}
 
               {details.artifacts.length === 0 ? (
@@ -461,7 +648,7 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
                     <input
                       type="search"
                       aria-label="Filter GGUF artifacts"
-                      placeholder="Filename or quantization"
+                      placeholder="Repository path or quantization"
                       maxLength={200}
                       value={artifactFilter}
                       onChange={event => setArtifactFilter(event.target.value)}
@@ -482,10 +669,18 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
                         key={artifact.id}
                         artifact={artifact}
                         gpu={gpu}
-                        busy={downloadBusy || Boolean(importingArtifact)}
+                        check={preflight?.artifacts?.[artifact.id] || null}
+                        storage={preflight?.storage}
+                        projectorBytes={projector && includeVision ? projector.sizeBytes : 0}
+                        projectorSkipped={Boolean(projector) && !includeVision}
+                        checking={preflightLoading}
+                        checkingHeader={checkingArtifact === artifact.id}
+                        checkIssue={artifactCheckIssue?.artifactId === artifact.id ? artifactCheckIssue : null}
+                        refusal={preflight?.artifactId ? (preflight.artifacts?.[artifact.id]?.refusal || null) : refusal}
+                        busy={downloadBusy || Boolean(importingArtifact || checkingArtifact)}
                         importing={importingArtifact === artifact.id}
                         runtimeCompatible={details.runtimeCompatible !== false}
-                        onImport={() => onImport(artifact)}
+                        onImport={(options) => onImport(artifact, options)}
                       />
                     ))}
                   </div>
@@ -506,28 +701,195 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
   )
 }
 
-function ArtifactRow({ artifact, gpu, busy, importing, runtimeCompatible, onImport }) {
-  const sizeGb = artifact.sizeBytes / (1024 ** 3)
-  const estimatedVram = sizeGb + Math.min(Math.max(sizeGb * 0.18, 0.5), 3.5)
-  const totalVram = Number(gpu?.vramTotal || 0)
-  const fits = totalVram > 0 ? estimatedVram <= totalVram + 0.25 : null
+function ArtifactRow({ artifact, gpu, check, storage, projectorBytes, projectorSkipped, checking, checkingHeader, checkIssue, refusal: artifactRefusal, busy, importing, runtimeCompatible, onImport }) {
+  const artifactPath = artifact.files?.[0]?.filename || artifact.label
+  const refusal = artifactRefusal || check?.tensors?.refusal || null
+  const [confirmingOverride, setConfirmingOverride] = useState(false)
+  const memory = artifactMemory(artifact, gpu, check, checking)
+  // check.disk counts the default projector; with Include vision unticked only the weights download.
+  const disk = projectorSkipped ? check?.diskWithoutProjector : check?.disk
+  const diskShort = disk === 'insufficient' && !artifact.installed
+  const shortfall = knownStorage(storage) && diskBytes(artifact.sizeBytes) && diskBytes(projectorBytes)
+    ? artifact.sizeBytes + projectorBytes + storage.marginBytes - storage.freeBytes : null
+  const blocked = !runtimeCompatible || (refusal && !refusal.overridable)
+  const needsOverride = Boolean(refusal?.overridable) && !blocked
+  // Import records survive deletion; their IDs identify artifacts, not a failed action.
+  const label = checkingHeader ? 'Checking file…' : importing ? 'Starting'
+    : artifact.installed ? 'Installed'
+      : blocked ? (refusal?.code === 'gated' ? 'Needs access' : 'Not supported')
+        : diskShort ? 'Not enough disk'
+          : needsOverride ? 'Import anyway…'
+            : 'Import'
+  const startImport = () => {
+    if (needsOverride) {
+      setConfirmingOverride(true)
+      return
+    }
+    onImport()
+  }
   return (
     <div className="grid grid-cols-2 gap-3 px-4 py-3.5 lg:grid-cols-[minmax(220px,1fr)_100px_120px_130px_130px] lg:items-center lg:gap-4">
       <div className="col-span-2 min-w-0 lg:col-span-1">
-        <p className="truncate text-xs font-semibold text-theme-text" title={artifact.label}>{artifact.label}</p>
+        <p className="break-all text-xs font-semibold text-theme-text" title={artifactPath}>{artifactPath}</p>
         <p className="mt-1 text-[10px] text-theme-text-muted">{artifact.split ? `${artifact.files.length} verified parts` : 'Single verified file'}</p>
+        {check?.header?.reason === 'not_read' && <p className="mt-1 text-[10px] text-theme-text-muted">This artifact’s header has not been checked.</p>}
+        {refusal && !refusal.overridable && refusal.code !== 'gated' && <p className="mt-1 text-[10px] text-theme-text-secondary">{refusal.message}</p>}
       </div>
       <span className="text-xs font-semibold text-theme-text-secondary">{artifact.quantization || 'Unknown'}</span>
       <span className="font-mono text-xs text-theme-text-secondary">{formatBytes(artifact.sizeBytes)}</span>
       <div>
-        <p className={`text-xs font-semibold ${fits === false ? 'text-theme-text-secondary' : 'text-emerald-300'}`}>~{estimatedVram.toFixed(1)} GB</p>
-        <p className="mt-0.5 text-[10px] text-theme-text-muted">{fits === null ? 'GPU unknown' : fits ? 'Fits detected GPU' : 'Exceeds GPU VRAM'}</p>
+        <p className={`text-xs font-semibold ${memory.ok === false ? 'text-theme-text-secondary' : 'text-emerald-300'}`}>{memory.value}</p>
+        <p className="mt-0.5 text-[10px] text-theme-text-muted">{memory.detail}</p>
+        {diskShort && <p className="mt-0.5 text-[10px] font-semibold text-amber-300">{shortfall > 0
+          ? `Free ${formatDiskBytes(shortfall, true)} more to download.`
+          : 'Not enough free disk space'}</p>}
+        {check?.tensors?.status === 'unsupported' && (
+          <p className="mt-0.5 text-[10px] font-semibold text-amber-300">Stored as {check.tensors.unknown.join(', ')}: needs a newer llama.cpp</p>
+        )}
       </div>
-      <button type="button" onClick={onImport} disabled={busy || artifact.installed || !runtimeCompatible} className="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-theme-accent px-3 text-xs font-semibold text-white transition-colors hover:bg-theme-accent-light disabled:cursor-not-allowed disabled:opacity-45">
+      <button type="button" onClick={startImport} disabled={busy || checking || artifact.installed || blocked || diskShort} className="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-theme-accent px-3 text-xs font-semibold text-white transition-colors hover:bg-theme-accent-light disabled:cursor-not-allowed disabled:opacity-45">
         {importing ? <Loader2 size={13} className="animate-spin" /> : artifact.installed ? <CheckCircle2 size={13} /> : <ArrowDownToLine size={13} />}
-        {importing ? 'Starting' : artifact.installed ? 'Installed' : !runtimeCompatible ? 'Not supported' : artifact.importedModelId ? 'Retry' : 'Import'}
+        {label}
       </button>
+      {checkIssue && (
+        <div role="alert" className="col-span-2 rounded border border-amber-400/25 p-3 text-xs text-amber-100 lg:col-span-5">
+          <p>{checkIssue.message}</p>
+          <button type="button" onClick={() => onImport()} disabled={busy} className="mt-2 mr-3 rounded border border-theme-border px-3 py-1 disabled:opacity-50">Retry check</button>
+          {checkIssue.unknown && <button type="button" onClick={() => onImport({ allowUnknownHeader: true, allowUnsupportedRuntime: checkIssue.allowUnsupportedRuntime === true })} disabled={busy} className="mt-2 rounded border border-theme-border px-3 py-1 disabled:opacity-50">Import with unknown metadata</button>}
+        </div>
+      )}
+      {confirmingOverride && needsOverride && (
+        <div role="alertdialog" aria-label="Import anyway" className="col-span-2 rounded-lg border border-amber-400/25 bg-amber-500/10 p-3 text-xs text-amber-100 lg:col-span-5">
+          <p>{refusal.message}</p>
+          <p className="mt-1">Loading it will most likely fail, and ODS will then switch back to your current model.</p>
+          <div className="mt-2 flex gap-2">
+            <button type="button" onClick={() => { setConfirmingOverride(false); onImport({ allowUnsupportedRuntime: true }) }} disabled={busy} className="rounded border border-amber-300/40 px-3 py-1 font-semibold disabled:opacity-50">
+              Import anyway
+            </button>
+            <button type="button" onClick={() => setConfirmingOverride(false)} className="rounded border border-white/[0.12] px-3 py-1">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+function diskBytes(value) {
+  return Number.isSafeInteger(value) && value >= 0
+}
+
+function knownStorage(storage) {
+  return diskBytes(storage?.freeBytes) && diskBytes(storage?.marginBytes)
+}
+
+function formatDiskBytes(bytes, roundUp = false) {
+  if (bytes === 0) return '0 bytes'
+  const unit = bytes >= 1024 ** 3 ? 1024 ** 3 : bytes >= 1024 ** 2 ? 1024 ** 2 : 1
+  const label = unit === 1024 ** 3 ? 'GiB' : unit === 1024 ** 2 ? 'MiB' : 'bytes'
+  const value = roundUp ? Math.ceil(bytes / unit * 100) / 100 : bytes / unit
+  return `${value.toFixed(unit === 1 ? 0 : 2)} ${label}`
+}
+
+function StorageSummary({ storage, blocked }) {
+  // WSL: the Windows drive that stores the virtual disk, when its free space is the figure shown.
+  const windowsDrive = /^[A-Z]:$/.test(storage?.windowsDrive ?? '') ? storage.windowsDrive : null
+  return (
+    <section aria-label="Model storage" className="mb-4 space-y-1 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-secondary">
+      {knownStorage(storage) ? <>
+        <p>Disk space: {formatDiskBytes(storage.freeBytes)} available{windowsDrive && ` on the Windows drive ${windowsDrive}`}. ODS must keep {formatDiskBytes(storage.marginBytes)} free after the download.</p>
+        {storage.windowsDriveChecked === false && <p>ODS could not check the Windows drive that stores WSL, so this is the space inside WSL only. Make sure that drive has room for the download.</p>}
+        {blocked && <p>Free up space on the model drive, then reopen this repository to check again.</p>}
+      </> : <p>Disk space details are unavailable. ODS will check space before downloading.</p>}
+    </section>
+  )
+}
+
+function artifactMemory(artifact, gpu, check, checking) {
+  const fit = check?.fit
+  if (fit && fit.status !== 'unknown' && Number(fit.requiredGb) > 0) {
+    const required = `~${Number(fit.requiredGb).toFixed(1)} GB`
+    const context = formatContext(fit.contextLength)
+    const rough = fit.estimate === 'rough' ? ' (rough estimate)' : ''
+    if (fit.status === 'fits') return { value: required, detail: `Fits at ${context}${rough}`, ok: true }
+    if (fit.status === 'fits_short_context') return { value: required, detail: `Fits at ${context}; ODS Talk needs 64K${rough}`, ok: true }
+  }
+  if (fit?.status === 'too_large') {
+    return { value: 'Too large', detail: 'Exceeds this machine’s model memory', ok: false }
+  }
+  if (checking && !fit) return { value: 'Checking…', detail: 'Reading the model header', ok: null }
+  const sizeGb = artifact.sizeBytes / (1024 ** 3)
+  const estimatedVram = sizeGb + Math.min(Math.max(sizeGb * 0.18, 0.5), 3.5)
+  const totalVram = Number(gpu?.vramTotal || 0)
+  const fits = totalVram > 0 ? estimatedVram <= totalVram + 0.25 : null
+  return {
+    value: `~${estimatedVram.toFixed(1)} GB`,
+    detail: fits === null ? 'GPU unknown' : fits ? 'Fits detected GPU' : 'Exceeds GPU VRAM',
+    ok: fits,
+  }
+}
+
+const THINKING_TEXT = {
+  toggle: 'Thinking can be turned off',
+  effort: 'Thinking has effort levels',
+  tags: 'Thinks; it may not turn off',
+  none: 'No thinking markers',
+}
+
+function PreflightSummary({ preflight, loading, error }) {
+  if (loading && !preflight) {
+    return (
+      <div className="mb-4 flex items-center gap-2 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-muted" aria-live="polite">
+        <Loader2 size={13} className="animate-spin" /> Checking this repository before download…
+      </div>
+    )
+  }
+  if (error && !preflight) {
+    return (
+      <div className="mb-4 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs text-theme-text-muted" aria-live="polite">
+        Could not check this repository before download ({error}). You can still import; ODS verifies the model when you switch to it.
+      </div>
+    )
+  }
+  if (!preflight) return null
+  const { refusal, runtime, template, header } = preflight
+  const architecture = preflight.architecture || 'unknown'
+  const supported = runtime?.architectureSupported
+  return (
+    <section aria-label="Before you download" className="mb-4 space-y-2 rounded-lg border border-white/[0.07] bg-black/20 px-4 py-3 text-xs">
+      {preflight.artifactId && header?.file && <p className="text-theme-text-muted">Checks for {header.file}. Other artifacts use their own available metadata.</p>}
+      {refusal && (
+        <div role="alert" className={`flex items-start gap-2 rounded-md border px-3 py-2 ${refusal.overridable ? 'border-amber-400/25 bg-amber-500/10 text-amber-100' : 'border-red-400/25 bg-red-500/10 text-red-200'}`}>
+          <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+          <div>
+            <p>{refusal.message}</p>
+            <HelpLink className="mt-1 text-[11px]" />
+          </div>
+        </div>
+      )}
+      <p className="flex items-center gap-2 text-theme-text-secondary">
+        <Cpu size={12} />
+        {supported === true && `Architecture ${architecture} runs on this machine’s llama.cpp (${runtime.build}).`}
+        {supported === false && `Architecture ${architecture} is not in this machine’s llama.cpp (${runtime.build}).`}
+        {supported == null && (preflight.modelKind === 'chat'
+          ? `Architecture ${architecture}: runtime support could not be checked.`
+          : `Not a chat model (${preflight.modelKind}).`)}
+      </p>
+      {template?.present === false && (
+        <p className="text-theme-text-secondary">No chat template in this file: chat quality and tool use are unlikely to work.</p>
+      )}
+      {template?.present === true && (
+        <p className="text-theme-text-secondary">
+          {template.tools ? 'Its template describes tool calls' : 'Its template does not describe tool calls, so Pixel cannot use tools with it'}
+          {' · '}{THINKING_TEXT[template.thinking] || 'Thinking unknown'}
+        </p>
+      )}
+      {header?.status === 'unavailable' && header.message && refusal?.code !== 'gated' && (
+        <p className="text-theme-text-muted">Some checks could not run: {header.message}.</p>
+      )}
+      <p className="text-[10px] text-theme-text-muted">From the repository’s own files. How a model actually behaves shows only once you use it.</p>
+    </section>
   )
 }
 
@@ -557,6 +919,7 @@ async function responseJson(response) {
 function errorMessage(body, fallback) {
   if (typeof body?.detail === 'string') return body.detail
   if (typeof body?.detail?.message === 'string') return body.detail.message
+  if (typeof body?.detail?.error === 'string') return body.detail.error
   if (typeof body?.error === 'string') return body.error
   return fallback
 }
@@ -592,6 +955,7 @@ function formatContext(value) {
 }
 
 function contextSourceLabel(source) {
+  if (source === 'gguf_header') return 'This file’s GGUF header'
   if (source === 'gguf_metadata') return 'GGUF metadata'
   if (source === 'hub_config') return 'Hub config'
   return 'Not published by repository'

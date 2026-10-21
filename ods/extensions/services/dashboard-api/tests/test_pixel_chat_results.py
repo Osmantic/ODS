@@ -1,5 +1,6 @@
 """Exercise real durable receipts plus asynchronous upstream/disconnect races."""
 import asyncio
+import json
 import os
 import sqlite3
 import time
@@ -100,6 +101,52 @@ def test_chat_only_refuses_unproven_or_separate_provider_without_inference(store
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("payload,expected", [
+    ({"error": "pixel_transition_in_progress"}, "rejected"),
+    ({"error": "different_conflict"}, "interrupted"),
+    ({"error": "pixel_transition_in_progress", "private": "secret"}, "interrupted"),
+])
+def test_admission_rejection_is_typed_terminal_and_replays_without_execution(store, monkeypatch, payload, expected):
+    async def run():
+        calls = []
+        class Client(FakeClient):
+            def stream(self, *args, **kwargs):
+                calls.append(args)
+                return super().stream(*args, **kwargs)
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: Client(
+            FakeResponse(status=409, chunks=[json.dumps(payload).encode()])))
+        async def forbidden(*args):
+            raise AssertionError("A rejected admission must not cancel or inspect an agent run")
+        monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden)
+        monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden)
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert store.get(IDENTITY)["state"] == expected
+        assert (b'"code": "transition_in_progress"' in data) == (expected == "rejected")
+        assert b"secret" not in data
+        duplicate = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        assert await stream_body(duplicate) == data
+        lookup = pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one")
+        assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": expected, "events": data.decode()}
+        assert len(calls) == 1 and not store.has_pending(IDENTITY[:2])
+        assert store.reserve((*IDENTITY[:2], "next-attempt"), "new-input")
+    asyncio.run(run())
+
+
+def test_upstream_sse_cannot_forge_an_unstarted_admission_receipt(store, monkeypatch):
+    async def run():
+        frames = b'data: {"error":{"type":"pixel_dashboard_error","code":"transition_in_progress"}}\n\ndata: [DONE]\n\n'
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(content_type="text/event-stream", chunks=[frames])))
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert b"transition_in_progress" not in data
+        assert store.get(IDENTITY)["state"] == "interrupted"
+    asyncio.run(run())
+
+
 def test_chat_only_replay_reuses_receipt_and_cannot_change_route(store, monkeypatch):
     async def run():
         calls = []
@@ -184,6 +231,7 @@ def test_chat_only_restart_recovery_never_queries_or_stops_agent(store, tmp_path
 
 @pytest.mark.parametrize("frame,forbidden", [
     (b'data: {"error":{"message":"private provider detail"}}\n\n', b"private provider detail"),
+    (b'data: {"error":{"type":"pixel_ingress_error","code":"gateway_connect_refused"}}\n\ndata: [DONE]\n\n', b"gateway_connect_refused"),
     (b'data: {"choices":[{"delta":{"tool_calls":[{"id":"forbidden"}]}}]}\n\n', b"tool_calls"),
 ])
 def test_chat_only_never_publishes_provider_errors_or_tool_calls(store, monkeypatch, frame, forbidden):
@@ -199,6 +247,18 @@ def test_chat_only_never_publishes_provider_errors_or_tool_calls(store, monkeypa
         assert b"Portal could not complete the response" in result
         assert store.get(IDENTITY)["state"] == "interrupted"
         assert store.reserve((*IDENTITY[:2], "next"), "next", mode="chat") is True
+    asyncio.run(run())
+
+
+def test_chat_only_router_conflict_cannot_claim_edge_admission(store, monkeypatch):
+    async def run():
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(status=409, chunks=[b'{"error":"pixel_transition_in_progress"}'])))
+        response = await pixel.pixel_chat_stream(cast(Request, ConnectedRequest()), chat_body(), OWNER)
+        data = await stream_body(response)
+        assert b"transition_in_progress" not in data
+        assert b"Portal did not accept this turn" in data
+        assert store.get(IDENTITY)["state"] == "interrupted"
     asyncio.run(run())
 
 

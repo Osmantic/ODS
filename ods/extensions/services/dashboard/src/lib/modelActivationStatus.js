@@ -1,4 +1,4 @@
-const phases = new Set(['preparing', 'loading', 'verifying', 'rolling_back', 'rollback_verifying'])
+const phases = new Set(['preparing', 'loading', 'profiling', 'verifying', 'rolling_back', 'rollback_verifying'])
 const outcomes = new Set(['activated', 'rolled_back', 'rollback_unconfirmed'])
 const failures = new Set(['runtime_load_failed', 'runtime_readiness_failed', 'consumer_verification_failed', 'rollback_unconfirmed'])
 

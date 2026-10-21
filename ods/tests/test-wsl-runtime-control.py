@@ -161,6 +161,57 @@ class ControlTests(unittest.TestCase):
                     bridge.restore(ROOT, ENV, {**previous, key: value}, DIGEST)
                 self.assertEqual(run.call_count, 1)
 
+    def test_vision_projector_is_planned_and_proven_with_its_model(self):
+        target = {**PLAN, "GgufFile": "gemma-4-E4B-it-Q4_K_M.gguf", "ContextSize": 16384,
+                  "MmprojFile": "mmproj-F16.gguf"}
+        capable = {**response(), "planFeatures": ["MmprojFile"]}
+        self.assertTrue(bridge.supports_projector(capable))
+        self.assertFalse(bridge.supports_projector(response()))
+        self.assertFalse(bridge.supports_projector({"ok": True, "managed": False, "running": False}))
+        with patch.object(bridge, "_run", side_effect=[completed(capable),
+                completed({**response(plan=target, digest="b" * 64), "planFeatures": ["MmprojFile"]})]) as run:
+            result = bridge.activate(ROOT, ENV, target["GgufFile"], 16384, DIGEST, mmproj="mmproj-F16.gguf")
+        self.assertEqual(result["plan"], target)
+        self.assertEqual(json.loads(run.call_args.kwargs["data"])["mmproj"], "mmproj-F16.gguf")
+        text = {**PLAN, "GgufFile": "next.gguf", "ContextSize": 16384}
+        with patch.object(bridge, "_run", side_effect=[completed(response(plan=target)),
+                completed(response(plan=text, digest="b" * 64))]) as run:
+            self.assertEqual(bridge.activate(ROOT, ENV, "next.gguf", 16384, DIGEST)["plan"], text)
+        self.assertNotIn("mmproj", json.loads(run.call_args.kwargs["data"]))
+        # A switch that dropped the requested projector, or kept the previous one, is unproven.
+        for returned, requested in ((text, "mmproj-F16.gguf"), ({**text, "MmprojFile": "mmproj-F16.gguf"}, None)):
+            with self.subTest(returned=returned, requested=requested), patch.object(bridge, "_run", side_effect=[
+                    completed(capable), completed(response(plan=returned, digest="b" * 64))]):
+                with self.assertRaisesRegex(bridge.BridgeError, "did not persist"):
+                    bridge.activate(ROOT, ENV, "next.gguf", 16384, DIGEST, mmproj=requested)
+        for projector in ("../mmproj.gguf", "mmproj.bin", "NEXT.gguf", "bad:stream.gguf", ""):
+            with self.subTest(projector=projector), patch.object(bridge, "_run") as run:
+                with self.assertRaises(ValueError):
+                    bridge.activate(ROOT, ENV, "next.gguf", 16384, DIGEST, mmproj=projector)
+                run.assert_not_called()
+
+    def test_restore_returns_the_previous_projector_with_its_model(self):
+        previous = {**PLAN, "GgufFile": "Previous.gguf", "ContextSize": 32768, "MmprojFile": "mmproj-F16.gguf"}
+        with patch.object(bridge, "_run", side_effect=[completed(response()), completed(response(plan=previous))]) as run:
+            self.assertEqual(bridge.restore(ROOT, ENV, previous, DIGEST)["plan"], previous)
+            self.assertEqual(json.loads(run.call_args.kwargs["data"])["plan"]["MmprojFile"], "mmproj-F16.gguf")
+        with patch.object(bridge, "_run", side_effect=[completed(response()), completed(response(plan={
+                **previous, "MmprojFile": "other-mmproj.gguf"}))]):
+            with self.assertRaisesRegex(bridge.BridgeError, "did not persist"):
+                bridge.restore(ROOT, ENV, previous, DIGEST)
+
+    def test_projector_plan_and_features_are_validated(self):
+        with patch.object(bridge, "_run", return_value=completed(response(plan={**PLAN, "MmprojFile": "mmproj-F16.gguf"}))):
+            self.assertEqual(bridge.status(ROOT, ENV)["plan"]["MmprojFile"], "mmproj-F16.gguf")
+        for projector in ("../mmproj.gguf", "QWEN-9B.GGUF", None, 7):
+            with self.subTest(projector=projector), patch.object(bridge, "_run",
+                    return_value=completed(response(plan={**PLAN, "MmprojFile": projector}))):
+                with self.assertRaises(ValueError):
+                    bridge.status(ROOT, ENV)
+        for features in ("MmprojFile", [7], ["x" * 65], ["MmprojFile"] * 17):
+            with self.subTest(features=features), self.assertRaisesRegex(bridge.BridgeError, "plan features"):
+                bridge._response({**response(), "planFeatures": features}, CONTEXT)
+
     def test_unmanaged_or_changed_plan_never_dispatches_mutation(self):
         for info in ({"ok": True, "managed": False, "running": False}, response(digest="b" * 64)):
             with self.subTest(info=info), patch.object(bridge, "_run", return_value=completed(info)) as run:
@@ -293,6 +344,41 @@ class ControlTests(unittest.TestCase):
         for value in invalid:
             with self.subTest(value=value), self.assertRaises(bridge.BridgeError):
                 bridge._response(value, CONTEXT)
+
+    def test_launcher_error_and_start_refusal_are_bounded_and_typed(self):
+        refused = {**response(running=False), "runtimeError": "The model was not started: Windows can lend it only 1.0 GiB.",
+                   "runtimeErrorSource": "launcher", "startRefusal": "memory_refused"}
+        self.assertIs(bridge._response(copy.deepcopy(refused), CONTEXT)["startRefusal"], "memory_refused")
+        self.assertEqual(bridge._response({**response(running=False), "runtimeError": "x" * 1024,
+                                           "runtimeErrorSource": "observation"}, CONTEXT)["runtimeError"], "x" * 1024)
+        for changes in ({"runtimeError": "x" * 1025}, {"runtimeError": "line\nbreak"}, {"runtimeError": ""},
+                        {"runtimeError": 7}, {"runtimeErrorSource": "engine"},
+                        {"startRefusal": "out_of_memory"}, {"startRefusal": ["memory_refused"]},
+                        {"runtimeErrorSource": "observation"}, {"running": True}):
+            value = {**copy.deepcopy(refused), **changes}
+            if changes == {"running": True}:
+                value["observation"] = response()["observation"]
+            with self.subTest(changes=changes), self.assertRaises(bridge.BridgeError):
+                bridge._response(value, CONTEXT)
+        orphan = {**response(running=False), "runtimeErrorSource": "launcher"}
+        with self.assertRaisesRegex(bridge.BridgeError, "runtime error source"):
+            bridge._response(orphan, CONTEXT)
+
+    def test_only_the_launchers_own_error_is_shown(self):
+        refused = {**response(running=False), "runtimeError": "The model was not started: fixture.",
+                   "runtimeErrorSource": "launcher", "startRefusal": "gpu_busy"}
+        self.assertEqual(bridge.launcher_error(refused),
+                         {"runtimeError": "The model was not started: fixture.", "startRefusal": "gpu_busy"})
+        amd = {**response(running=False), "runtimeError": "llama-server startup failed: Port 18080 is already occupied.",
+               "runtimeErrorSource": "launcher"}
+        self.assertEqual(bridge.launcher_error(amd), {"runtimeError": amd["runtimeError"]})
+        for value in ({**response(running=False), "runtimeError": "The saved Windows process identity is stale.",
+                       "runtimeErrorSource": "observation"},
+                      {**response(running=False), "runtimeError": "older controller"},
+                      response(), {"ok": True, "managed": False, "running": False, "runtimeError": "x",
+                                   "runtimeErrorSource": "launcher"}):
+            with self.subTest(value=value):
+                self.assertEqual(bridge.launcher_error(value), {})
 
     def test_model_store_requires_roundtrip_and_canonical_directory(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -436,6 +522,17 @@ class WindowsLocationTests(unittest.TestCase):
             with self.subTest(raw=raw), patch.object(bridge, '_path') as translate:
                 with self.assertRaises(ValueError):
                     bridge._windows_tools({'ODS_WINDOWS_SYSTEM_DIRECTORY': raw})
+                translate.assert_not_called()
+
+    def test_drive_mount_translates_only_a_drive_letter(self):
+        # wslpath answers with the drive's mount under a custom DrvFS root too.
+        with patch.object(bridge, '_path', return_value='/drives/d/') as translate:
+            self.assertEqual(bridge.drive_mount('D:'), Path('/drives/d'))
+        translate.assert_called_once_with('D:\\', '-u')
+        for raw in ('D', 'D:\\', 'D:\n', 'DE:', '1:', r'\\peer\share', None):
+            with self.subTest(raw=raw), patch.object(bridge, '_path') as translate:
+                with self.assertRaises(ValueError):
+                    bridge.drive_mount(raw)
                 translate.assert_not_called()
 
     def test_missing_legacy_windows_path_has_actionable_error_without_guessing_drive(self):
