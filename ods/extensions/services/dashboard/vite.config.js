@@ -9,7 +9,9 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3002',
-        changeOrigin: true
+        // Preserve browser Host so the API's Origin-vs-Host same-origin check
+        // sees the frontend origin; changeOrigin:true rewrites Host and 403s.
+        changeOrigin: false
       }
     }
   },
