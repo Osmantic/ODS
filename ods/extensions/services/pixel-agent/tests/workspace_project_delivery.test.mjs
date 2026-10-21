@@ -230,3 +230,54 @@ test('write coaching does not expand delivery to unsupported, unrequested or que
     assert.doesNotMatch(call('write',{path:file,content:fileBytes}),/exact publication args/,request);
   }
 });
+
+// The installed run created three files and ran tests but ended with plain
+// filenames. Keep the ordinary owner's wording, without adding "download".
+const fileHandoffPrompt = 'Create a small standard-library Python project in a new folder fleet-json-totals-20261021-0824. Provide totals.py, test_totals.py and README.md. The command python3 totals.py INPUT.json must read a JSON array of objects with category (nonempty string) and amount (integer, not boolean), sum amounts by category, and print one JSON object with category keys sorted. Empty input should print {}. Malformed JSON or invalid records must print a useful error to stderr and exit nonzero without a traceback. Use unittest to cover valid aggregation, empty input, malformed JSON and a boolean amount. Run the tests and exercise the real CLI with valid and invalid input. Report actual results and give me the project files.';
+
+test('ordinary owner file handoffs select delivery without special download wording',()=>{
+  for(const request of [fileHandoffPrompt,'Give me the project files.','Provide the project files.',
+    'Send me the source code.','Return the files to me.','Give me totals.py and test_totals.py.',
+    'Provide the project source code.','Please give me the project files.',
+    'Can you give me the project files?','Could you please provide me with report.pdf?',
+    'Verify archive contents. Give me the files.','Run the tests and give me the files.',
+    'Do not attach old.zip; give me current.zip.','Give me the updated files with their original filenames.',
+    'Give me "docs/summary.md".','Give me status.py.','Give me the file named totals.py.',
+    'I need you to return the archive to me.']) {
+    assert.equal(userMessageRequestsWorkspaceDocumentDelivery([],request),true,request);
+  }
+  for(const request of ['Give me the file names.','Give me a list of files.','Give me file details.',
+    'Give me the status of the project.','Give me the contents of totals.py in chat.',
+    'Give me the file paths.','Give me the hashes.','Give me the file sizes.',
+    'Give me a summary of the project.','Give me the files in a code block.',
+    'Send the files to Alice.','Send Alice the project files.','Return the file to the server.',
+    'Give me the project files. Do not send anything.','Give me the files. Do not attach them.',
+    'Do not give me the project files; summarize them.','Never provide the files.',
+    'Ask Alice to give me the project files.','Tell the reviewer to verify and give me the files.',
+    'Alice will give me the project files.','Summarize this example: "give me the project files".',
+    '> Give me the project files.','Example: give me the project files.',
+    'Create a Python project and run the tests.','Give me the files from https://example.com/project.zip.',
+    'Do not use tools. Give me the project files.']) {
+    assert.equal(userMessageRequestsWorkspaceDocumentDelivery([],request),false,request);
+  }
+  assert.equal(userMessageRequestsWorkspaceDocumentDelivery([{role:'user',content:'Give me the project files.'},{role:'user',content:'Thanks.'}]),false);
+  assert.equal(userMessageRequestsWorkspaceDocumentDelivery([],'Thanks.\n\n[ODS Portal delivery requirement: Give me the project files.]'),false);
+});
+
+for(const deferred of [false,true]) test(`ordinary project handoff retains publication coaching and missing-file verdict (${deferred?'deferred':'native'})`,t=>{
+  const {guard,call}=fixture(t,{deferred,request:fileHandoffPrompt});
+  call('write',{path:'fleet-json-totals-20261021-0824/totals.py',content:'import json,sys\n'});
+  call('write',{path:'fleet-json-totals-20261021-0824/test_totals.py',content:'import unittest\nclass Totals(unittest.TestCase):\n def test_valid(self): self.assertEqual(1+1,2)\n'});
+  call('write',{path:'fleet-json-totals-20261021-0824/README.md',content:'# Totals\n'});
+  const result=call('exec',{command:'python3 -m unittest -v',workdir:'/workspace/fleet-json-totals-20261021-0824'},
+    {text:'test_valid ... ok\n\nRan 1 test in 0.001s\n\nOK'});
+  assert.equal(guard.verificationForRun(context.runId).status,'passed');
+  assert.match(result,/pixel_ods_workspace_artifact/);
+  assert.doesNotMatch(result,/Give the owner the concise final result now/);
+  const delivery=guard.deliveryVerificationForRun(context.runId);
+  assert.equal(delivery.status,'failed');
+  assert.equal(delivery.artifacts,undefined,'coaching cannot manufacture publication');
+  assert.match(delivery.text,/requested download was not attached/);
+  const reply=guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text:'Done. Files: totals.py, test_totals.py, README.md'}});
+  assert.match(reply.payload.text,/requested download was not attached/);
+});
