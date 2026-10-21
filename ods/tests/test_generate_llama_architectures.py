@@ -84,14 +84,48 @@ def test_tensor_types_need_the_enum():
         generator.tensor_types("int main() {}")
 
 
-def test_build_entry_reads_both_local_sources(tmp_path, monkeypatch):
+def test_build_entry_reads_every_local_source(tmp_path, monkeypatch):
     arch = tmp_path / "llama-arch.cpp"
     arch.write_text('LLM_ARCH_NAMES = {\n    { LLM_ARCH_LLAMA, "llama" },\n};\n', encoding="utf-8")
     ggml = tmp_path / "ggml.h"
     ggml.write_text(GGML_H, encoding="utf-8")
+    model = tmp_path / "llama-model.cpp"
+    model.write_text("void llama_model::load_hparams() { hparams.n_layer_nextn = 0; }\n", encoding="utf-8")
     monkeypatch.setattr(generator, "_fetch", lambda url: b'{"sha": "' + b"a" * 40 + b'"}')
 
-    entry = generator.build_entry("b1", arch, ggml)
+    entry = generator.build_entry("b1", arch, ggml, model)
 
     assert entry == {"commit": "a" * 40, "architectures": ["llama"],
-                     "tensorTypes": {"F32": 0, "F16": 1, "Q4_0": 2, "Q8_0": 8, "Q4_K": 12, "Q2_0": 42}}
+                     "tensorTypes": {"F32": 0, "F16": 1, "Q4_0": 2, "Q8_0": 8, "Q4_K": 12, "Q2_0": 42},
+                     "nextnLoader": True}
+
+
+GENERIC_NEXTN = """
+void llama_model::load_hparams(llama_model_loader & ml) {
+    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS,    hparams.n_layer_nextn,   false);
+}
+"""
+PER_ARCH_NEXTN = """
+void llama_model::load_hparams(llama_model_loader & ml) {
+    switch (arch) {
+        case LLM_ARCH_GLM4_MOE:
+            ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
+            break;
+    }
+}
+"""
+
+
+def test_nextn_loader_needs_the_generic_layer_count():
+    assert generator.nextn_loader(GENERIC_NEXTN) is True
+    assert generator.nextn_loader(PER_ARCH_NEXTN) is False
+
+
+def test_nextn_loader_rejects_an_unrelated_file():
+    with pytest.raises(ValueError, match="load_hparams"):
+        generator.nextn_loader("int main() {}")
+
+
+def test_committed_document_records_nextn_loading_for_every_build():
+    document = json.loads((ROOT / "config" / "llama-cpp-architectures.json").read_text(encoding="utf-8"))
+    assert all(isinstance(entry["nextnLoader"], bool) for entry in document["builds"].values())

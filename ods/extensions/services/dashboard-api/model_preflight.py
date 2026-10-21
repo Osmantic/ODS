@@ -2,9 +2,10 @@
 
 Pure functions over Hub metadata, the GGUF metadata header and this host's
 llama.cpp release policy, so the Models page and the import endpoint reach
-the same verdict. Everything here is advisory except two refusals made only
-on positive evidence: the file is not a chat model, or this host's llama.cpp
-build does not know its architecture.
+the same verdict. Everything here is advisory except refusals made only on
+positive evidence: the file is not a chat model, this host's llama.cpp build
+does not know its architecture, or the build cannot load the file's NextN
+block.
 """
 
 from __future__ import annotations
@@ -242,6 +243,32 @@ def refusal(
             "overridable": True,
         }
     return None
+
+
+def nextn_layers(header: dict[str, Any] | None) -> int:
+    """``<arch>.nextn_predict_layers`` from the GGUF header, 0 when absent."""
+    value = _first_suffix(_metadata(header), ".nextn_predict_layers")
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+
+def nextn_supported(policy: dict[str, Any] | None, build: str | None) -> bool | None:
+    """Whether the build loads NextN blocks for every architecture, if known."""
+    entry = (policy or {}).get("builds", {}).get(build) if build else None
+    value = entry.get("nextnLoader") if isinstance(entry, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def nextn_refusal(build: str | None) -> dict[str, Any]:
+    """Refuse a NextN/MTP file the build would load as an ordinary layer and fail on."""
+    return {
+        "code": "runtime_nextn_unsupported",
+        "message": (
+            f"This file includes a NextN (multi-token prediction) block that this machine's llama.cpp "
+            f"(build {build}) cannot load, so the model would fail to start. Choose a file without it, "
+            "or import anyway if you know this runtime can load it."
+        ),
+        "overridable": True,
+    }
 
 
 def build_tensor_types(policy: dict[str, Any] | None, build: str | None) -> dict[str, int] | None:

@@ -14,9 +14,10 @@ _TYPES_B9014 = {"F32": 0, "F16": 1, "Q8_0": 8, "Q4_K": 12, "Q6_K": 14}
 POLICY = {
     "backendBuilds": {"nvidia": "b11429", "cpu": "b9014", "amd": "b9014"},
     "builds": {
-        "b9014": {"commit": "1" * 40, "architectures": ["llama", "qwen3"], "tensorTypes": _TYPES_B9014},
+        "b9014": {"commit": "1" * 40, "architectures": ["llama", "qwen3"], "tensorTypes": _TYPES_B9014,
+                  "nextnLoader": False},
         "b11429": {"commit": "2" * 40, "architectures": ["llama", "nanbeige", "qwen3"],
-                   "tensorTypes": {**_TYPES_B9014, "Q2_0": 42}},
+                   "tensorTypes": {**_TYPES_B9014, "Q2_0": 42}, "nextnLoader": True},
     },
 }
 GIB = 1024 ** 3
@@ -173,6 +174,56 @@ def test_preflight_refuses_an_architecture_this_build_lacks(test_client, preflig
     assert body["refusal"]["code"] == "runtime_architecture_unsupported"
     assert body["refusal"]["overridable"] is True
     assert "b9014" in body["refusal"]["message"]
+
+
+@pytest.mark.parametrize("backend, layers, refused", [
+    ("amd", 1, True),      # b9014 loads the NextN block as an ordinary layer and fails (#7914)
+    ("nvidia", 1, False),  # b11429 reads NextN layers for every architecture
+    ("amd", 0, False),     # no NextN block
+])
+def test_preflight_refuses_a_nextn_file_this_build_cannot_load(
+    test_client, preflight_env, monkeypatch, backend, layers, refused,
+):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, "GPU_BACKEND", backend)
+    state["details"] = _details(ggufArchitecture="qwen3")
+    state["header"] = _dense_header("qwen3", {"qwen3.nextn_predict_layers": layers})
+
+    body = _preflight(test_client).json()
+
+    assert body["runtime"]["architectureSupported"] is True
+    if refused:
+        assert body["refusal"]["code"] == "runtime_nextn_unsupported"
+        assert body["refusal"]["overridable"] is True
+        assert "b9014" in body["refusal"]["message"]
+        assert body["artifacts"]["a" * 20]["refusal"]["code"] == "runtime_nextn_unsupported"
+    else:
+        assert body["refusal"] is None
+
+
+def test_import_refuses_a_nextn_file_this_build_cannot_load_unless_acknowledged(
+    test_client, preflight_env, monkeypatch,
+):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, "GPU_BACKEND", "amd")
+    state["details"] = _details(ggufArchitecture="qwen3")
+    state["header"] = _dense_header("qwen3", {"qwen3.nextn_predict_layers": 1})
+    dispatched = []
+    monkeypatch.setattr(models_router, "_call_agent_model",
+                        lambda _path, payload, **_kwargs: dispatched.append(payload) or {"status": "started"})
+
+    refused = _import(test_client)
+
+    assert refused.status_code == 422
+    assert refused.json()["detail"]["code"] == "runtime_nextn_unsupported"
+    assert dispatched == []
+
+    accepted = _import(test_client, allowUnsupportedRuntime=True)
+
+    assert accepted.status_code == 200
+    assert len(dispatched) == 1
+    registry = json.loads((models_router.Path(models_router.DATA_DIR) / "model-imports.json").read_text(encoding="utf-8"))
+    assert registry["models"][0]["runtime_override"]["code"] == "runtime_nextn_unsupported"
 
 
 def test_preflight_names_a_reranker_from_its_header(test_client, preflight_env):

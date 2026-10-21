@@ -272,3 +272,41 @@ def test_the_committed_policy_lists_tensor_types_for_every_build():
         assert 4 not in types.values(), f"{build}: removed Q4_2 must not be listed"
     assert "Q2_0" in policy["builds"]["b11429"]["tensorTypes"]
     assert "Q2_0" not in policy["builds"]["b9014"]["tensorTypes"]
+
+
+@pytest.mark.parametrize("metadata, layers", [
+    ({"qwen35.nextn_predict_layers": 1}, 1),
+    ({"qwen35.nextn_predict_layers": 0}, 0),
+    ({"qwen35.nextn_predict_layers": True}, 0),
+    ({"qwen35.nextn_predict_layers": "1"}, 0),
+    ({}, 0),
+])
+def test_nextn_layers_reads_only_a_positive_integer(metadata, layers):
+    assert preflight.nextn_layers({"metadata": metadata}) == layers
+    assert preflight.nextn_layers(None) == 0
+
+
+def test_nextn_support_is_known_only_from_the_policy():
+    policy = {"builds": {"b9014": {"nextnLoader": False}, "b11429": {"nextnLoader": True}, "b1": {}}}
+    assert preflight.nextn_supported(policy, "b9014") is False
+    assert preflight.nextn_supported(policy, "b11429") is True
+    assert preflight.nextn_supported(policy, "b1") is None
+    assert preflight.nextn_supported(policy, None) is None
+    assert preflight.nextn_supported(None, "b9014") is None
+
+
+def test_the_shipped_policy_knows_which_builds_load_nextn():
+    from pathlib import Path
+
+    policy = json.loads((Path(__file__).resolve().parents[4] / "config" / "llama-cpp-architectures.json")
+                        .read_text(encoding="utf-8"))
+    assert all(isinstance(entry.get("nextnLoader"), bool) for entry in policy["builds"].values())
+    assert policy["builds"]["b9014"]["nextnLoader"] is False
+    assert policy["builds"]["b11429"]["nextnLoader"] is True
+
+
+def test_nextn_refusal_is_overridable_and_names_the_build():
+    refusal = preflight.nextn_refusal("b9014")
+    assert refusal["code"] == "runtime_nextn_unsupported"
+    assert refusal["overridable"] is True
+    assert "b9014" in refusal["message"]
