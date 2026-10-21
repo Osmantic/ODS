@@ -323,12 +323,24 @@ def _prune(store: dict) -> dict:
         # Expired: keep if redeemed (audit), drop if never used.
         if record.get("redemptions"):
             keep.append(record)
-    # Cap retention — oldest-first eviction.
+    # Cap retention — oldest-first eviction of records that can no longer be
+    # redeemed. A live token is never evicted: owner cards are revoke-only and
+    # are usually the oldest record, so evicting by age alone would silently
+    # invalidate the owner's sign-in card once enough invites were kept.
     keep.sort(key=lambda r: r["created_at"])
-    if len(keep) > MAX_TOKENS_RETAINED:
-        keep = keep[-MAX_TOKENS_RETAINED:]
+    excess = len(keep) - MAX_TOKENS_RETAINED
+    if excess > 0:
+        evicted = {id(r) for r in [r for r in keep if not _is_redeemable(r, now)][:excess]}
+        keep = [r for r in keep if id(r) not in evicted]
     store["tokens"] = keep
     return store
+
+
+def _is_redeemable(record: dict, now: datetime) -> bool:
+    """Whether redemption could still accept this record."""
+    if record.get("revoked_at") or _is_expired(record, now):
+        return False
+    return bool(record.get("reusable")) or not record.get("redemptions")
 
 
 def _find_by_hash(store: dict, token_hash: str) -> Optional[dict]:
