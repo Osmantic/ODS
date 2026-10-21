@@ -427,7 +427,9 @@ jobs:
         run: bash tests/test-phase06-env-rerun-quoting.sh
 
       - name: Installer Cloud Provider and Source Mode Preservation Tests
-        run: bash tests/test-phase06-cloud-config-preservation.sh
+        run: |
+          python3 tests/test_cloud_config_permissions.py
+          bash tests/test-phase06-cloud-config-preservation.sh
 
       - name: Installer Created Container Ownership Tests
         run: bash tests/test-phase11-created-container-ownership.sh
