@@ -93,3 +93,6 @@ public class SttTriggerFixture {
     if (-not $resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture escaped temp root' }
     if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
 }
+# The native fixture deliberately ends with curl exit 28. GitHub's Windows
+# PowerShell wrapper propagates LASTEXITCODE even after every assertion passes.
+exit 0
