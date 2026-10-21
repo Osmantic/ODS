@@ -17,7 +17,7 @@ it('keeps a verified download free of authored navigation throughout reveal',()=
   const {container}=render(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
   for(let elapsed=0;elapsed<2000;elapsed+=16){
     advance(16)
-    expect([...container.querySelectorAll('a')].filter(a=>a.href.startsWith('https://untrusted.example')),
+    expect([...container.querySelectorAll('a')].filter(a=>new URL(a.href).hostname==='untrusted.example'),
       `${elapsed}: ${container.innerHTML}`).toHaveLength(0)
   }
   expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
