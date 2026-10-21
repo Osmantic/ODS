@@ -5597,12 +5597,22 @@ cmd_agent() {
                         success "Agent started (LaunchAgent)" || warn "Agent start failed"
                     ;;
                 systemd)
-                    if sudo systemctl start ods-host-agent.service 2>/dev/null; then
-                        success "Agent started (systemd)"
-                    else
+                    if ! sudo systemctl start ods-host-agent.service 2>/dev/null; then
                         log_error "Agent start failed"
                         return 1
                     fi
+                    # The unit is Type=simple: systemctl returns once the
+                    # process is forked, even if it then fails to bind.
+                    local attempt
+                    for attempt in {1..20}; do
+                        if _agent_health_ready; then
+                            success "Agent started (systemd)"
+                            return 0
+                        fi
+                        sleep 0.5
+                    done
+                    log_error "Agent did not become healthy on port ${port}; check: journalctl -u ods-host-agent.service"
+                    return 1
                     ;;
                 *)
                     # Fallback: nohup + PID file
