@@ -85,6 +85,16 @@ export function deliveredArtifactForDownloadHref(href, artifacts) {
   return matches.length === 1 ? matches[0] : null
 }
 
+// An explicit Download filename in ordinary prose may select one completed
+// receipt. The authored URL is not consulted or fetched; the receipt remains
+// the sole authority for the snapshot, filename, digest and bytes.
+export function deliveredArtifactForDownloadName(name, artifacts) {
+  const delivered = parseDeliveredArtifacts(artifacts)
+  if (!delivered?.length || typeof name !== 'string') return null
+  const matches = delivered.filter(({file}) => file.path === name)
+  return matches.length === 1 ? matches[0] : null
+}
+
 const EMBED_DIRECTIVE = /^\[embed ref="artifact_([a-f0-9]{64})" title="([^"]+)" height="([0-9]+)" \/\](?:\r?\n)*$/
 
 // Returns '' only when the entire assistant content is exactly one stand-alone

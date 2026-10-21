@@ -70,3 +70,11 @@ it('mutes only paragraphs that are exactly a Portal note about an embed it canno
   expect(screen.getByText('Before').closest('p')).not.toHaveClass('portal-embed-note')
   expect(container.querySelector('pre code')).toHaveTextContent(EMBED_NOTE)
 })
+
+it('renders a document download image label as text before a receipt arrives',()=>{
+  const href='https://untrusted.example/api/download?siteId=invented'
+  const {container}=render(<PortalStreamingText active instant>{`[![Download report.csv](${href})](${href})`}</PortalStreamingText>)
+  expect(screen.getByRole('link',{name:/Download report.csv/})).toHaveAttribute('href',href)
+  expect(container.querySelector('img')).toBeNull()
+  expect(screen.queryByRole('button',{name:/Download verified/})).toBeNull()
+})
