@@ -75,6 +75,12 @@ const friendlyError = (detail) => {
   return detail
 }
 
+// While a start recreates dashboard-api (the first Hermes enable does), the
+// dashboard's nginx answers the open request itself. dashboard-api's own
+// refusals always carry a JSON detail; these gateway answers carry none.
+const GATEWAY_STATUSES = new Set([502, 503, 504])
+const isGatewayAnswer = (status, body) => GATEWAY_STATUSES.has(status) && body?.detail === undefined
+
 const STATUS_STYLES = {
   enabled:       'bg-green-500/20 text-green-400',
   cli_installed: 'bg-green-500/20 text-green-400',
@@ -136,7 +142,9 @@ export default function Extensions({ compact = false }) {
   // Keyed by serviceId because multiple installs can be polling concurrently.
   const recoveryTrackers = useRef({})
 
-  const pollProgress = (serviceId) => {
+  // followCatalog: the start's own answer was lost, so its progress record may
+  // predate it or have been orphaned by the restart; the catalog decides.
+  const pollProgress = (serviceId, { followCatalog = false } = {}) => {
     if (activePollers.current[serviceId]) return
     recoveryTrackers.current[serviceId] = createRecoveryTracker({
       threshold: 3,
@@ -175,7 +183,7 @@ export default function Extensions({ compact = false }) {
           setToast({ type: 'error', text: data.error || 'Installation failed' })
           setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           fetchCatalog()
-        } else if (data.status === 'started' || data.status === 'idle' || data.status === 'prepared') {
+        } else if (followCatalog || data.status === 'started' || data.status === 'idle' || data.status === 'prepared') {
           // Enable can finish without an install-progress record. Keep checking
           // live health even when progress is idle after the selection changed.
           // Refresh catalog — if it shows "enabled" (long-running service)
@@ -367,6 +375,17 @@ export default function Extensions({ compact = false }) {
     }
   }
 
+  // The host keeps starting services while dashboard-api restarts, so a start
+  // whose answer was lost may well have succeeded. Follow it like any start:
+  // the poller rides out the restart and reads the catalog once the API is back.
+  const followLostStart = (serviceId, action, displayServiceId) => {
+    const name = extensions.find(e => e.id === displayServiceId)?.name || displayServiceId
+    setToast({ type: 'info', text: action === 'install'
+      ? `Connection to ODS was interrupted while installing ${name}. Checking whether it finished…`
+      : `Connection to ODS was interrupted while starting ${name}. Checking whether it started…` })
+    pollProgress(serviceId, { followCatalog: true })
+  }
+
   const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false, displayServiceId = serviceId } = {}) => {
     setMutating(displayServiceId)
     setConfirm(null)
@@ -397,9 +416,22 @@ export default function Extensions({ compact = false }) {
         opts.headers = { 'Content-Type': 'application/json' }
         opts.body = JSON.stringify({ confirm: true })
       }
-      const res = await fetch(url, opts)
+      const followsStart = action === 'install' || action === 'enable'
+      let res
+      try {
+        res = await fetch(url, opts)
+      } catch (err) {
+        // fetch rejects with a TypeError when the connection drops unanswered.
+        if (!followsStart || !(err instanceof TypeError)) throw err
+        followLostStart(serviceId, action, displayServiceId)
+        return
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
+        if (followsStart && isGatewayAnswer(res.status, err)) {
+          followLostStart(serviceId, action, displayServiceId)
+          return
+        }
         const detail = err.detail
         // Handle missing dependencies response
         if (action === 'enable' && res.status === 400 && detail?.missing_dependencies) {

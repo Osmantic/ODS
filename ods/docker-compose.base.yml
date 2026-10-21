@@ -147,11 +147,18 @@ services:
       # ODS pins and updates Open WebUI itself; the upstream "new version"
       # check only calls GitHub and advertises releases ODS has not qualified.
       ENABLE_VERSION_UPDATE_CHECK: "false"
+      # Arbitrary local models may answer chat but fail native tool calling.
+      # Explicit per-model or chat Native settings override this default.
+      DEFAULT_MODEL_PARAMS: '{"function_calling":"legacy"}'
       # Switchboard: OPEN_WEBUI_LLM_BASE_URL overrides to the LiteLLM gateway
       # (ods/current) in enabled mode; default is byte-identical to the prior
       # direct llama-server route for legacy/observe.
       OPENAI_API_BASE_URL: "${OPEN_WEBUI_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}"
       OPENAI_API_KEY: "${OPEN_WEBUI_LLM_API_KEY:-}"
+      # openwebui-model-list.py applies the LiteLLM config choice to the model
+      # picker; same defaults as the LiteLLM service.
+      ODS_MODE: "${ODS_MODE:-local}"
+      ODS_MODEL_SWITCHBOARD: "${ODS_MODEL_SWITCHBOARD:-enabled}"
       # PWA / branding — surfaces as the app title, page title, and PWA install name.
       # When a user adds ODS to their home screen, this is the label they see
       # next to the ODS icon. Defaults to "ODS"; users can override per-install.
@@ -228,6 +235,7 @@ services:
       - ./data/open-webui:/app/backend/data:z
       - ./extensions/services/open-webui/openwebui-entrypoint.sh:/opt/ods/openwebui-entrypoint.sh:ro,z
       - ./extensions/services/open-webui/openwebui-prepare.py:/opt/ods/openwebui-prepare.py:ro,z
+      - ./extensions/services/open-webui/openwebui-model-list.py:/opt/ods/openwebui-model-list.py:ro,z
     ports:
       - "${BIND_ADDRESS:-127.0.0.1}:${WEBUI_PORT:-3000}:8080"
     deploy:

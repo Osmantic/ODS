@@ -364,6 +364,48 @@ OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
   ods/extensions/services/pixel-agent/tests/runtime_long_run_compaction.integration.mjs
 ```
 
+## Preview screenshots stay in their run
+
+`pixel_ods_workspace_preview_inspect` can return one screenshot of the agent's
+own preview to a model ODS declares image-capable
+(`host/preview-inspection-protocol.md`, Viewport screenshot). The tool result,
+image included, stays in the session transcript, because ODS sends the
+persisted copy of a result to the next request of the attempt. The pinned
+runtime then resends tool-result images from the last three completed turns to
+whatever model serves the next turn. It strips them only for a row whose
+`input` lacks `image`, and Portal writes `["text","image"]` for an `unknown`
+route too. So after a switch of the Portal alias from a vision model to one
+whose image input is unknown, earlier screenshots would reach it as
+`image_url` parts (up to nine in one request): an image test the owner never
+allowed, and one that llama-server without a projector rejects.
+
+`openclaw-compaction-budget.json` extends `pruneProcessedHistoryImages` in
+`selection-BEwSQKM-.js`, which runs before every model request. Before the
+latest user message, every image block of a
+`pixel_ods_workspace_preview_inspect` result, direct or as a Tool Search
+`tool_call` result whose first block names that child
+(`openclaw-image-envelope.json`), becomes the runtime's own
+`[image data removed - already processed by model]`. The result's text,
+including the screenshot sentence, is unchanged. Owner images and other tools'
+images keep the runtime's three-turn rule. The cleanup is idempotent, so later
+requests resend identical history; the prompt prefix changes once, at the
+first request of the run after the one that took the screenshot. A host retry
+prompt is a user message as well, so a retry within a run no longer sees the
+image, only its sentence.
+
+The transcript is unchanged. The recipe keeps the previous reviewed hash in
+`previousReplacements`, so installed Linux/WSL runtimes migrate through the
+original source with `--compaction-budget` (and `--restore`); the macOS staged
+bundle composes it as before.
+`runtime_preview_screenshot_context.integration.mjs` runs the reviewed prune
+with the Tool Search envelope and the openai-completions request ODS's gateway
+route uses:
+
+```sh
+OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_preview_screenshot_context.integration.mjs
+```
+
 ## Tool-call arguments under the native macOS stream order
 
 OpenClaw 2026.6.33's openai-completions transport parses streamed tool-call

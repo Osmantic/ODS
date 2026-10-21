@@ -1,5 +1,6 @@
 """Tests for workflows router endpoints."""
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -715,8 +716,9 @@ def test_workflow_executions_installed(test_client, tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
-    """POST /api/workflows/{id}/enable → 200, imports workflow to n8n."""
+@pytest.mark.parametrize("activation", ["active", "inactive", "rejected", "timeout", "connection", "invalid-json", "missing-id", "invalid-id", "invalid-create-json", "create-body-timeout"])
+def test_workflow_enable_success(test_client, tmp_path, monkeypatch, activation):
+    """The pinned public API creates at top level and activates with POST."""
     import routers.workflows as wf_mod
 
     catalog = {
@@ -732,17 +734,31 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
 
     workflow_dir = tmp_path / "workflows"
     workflow_dir.mkdir()
-    (workflow_dir / "ok-wf.json").write_text(json.dumps({"name": "OK Workflow", "nodes": []}))
+    template = {"name": "OK Workflow", "nodes": [], "connections": {}, "settings": {"executionOrder": "v1"},
+                "meta": {"templateId": "ok"}, "tags": [], "active": False}
+    (workflow_dir / "ok-wf.json").write_text(json.dumps(template))
     monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", workflow_dir)
+    monkeypatch.setattr(wf_mod, "_n8n_headers", lambda: {"X-N8N-API-KEY": "fixture-api-key"})
 
     # Mock n8n POST (create) → 201 with id
     create_resp = AsyncMock()
     create_resp.status = 201
-    create_resp.json = AsyncMock(return_value={"data": {"id": "n8n-99"}})
+    create_resp.json = AsyncMock(return_value={"id": "n8n-99", "active": False})
+    if activation == "missing-id":
+        create_resp.json.return_value = {"data": {"id": "old-wrong-contract"}}
+    elif activation == "invalid-id":
+        create_resp.json.return_value = {"id": "../outside"}
+    elif activation == "invalid-create-json":
+        create_resp.json.side_effect = json.JSONDecodeError("invalid", "", 0)
+    elif activation == "create-body-timeout":
+        create_resp.json.side_effect = asyncio.TimeoutError()
 
-    # Mock n8n PATCH (activate) → 200
+    # n8n 2.41.6 rejects read-only create fields and requires POST /activate.
     activate_resp = AsyncMock()
-    activate_resp.status = 200
+    activate_resp.status = 400 if activation == "rejected" else 200
+    activate_resp.json = AsyncMock(return_value={"id": "n8n-99", "active": activation == "active"})
+    if activation == "invalid-json":
+        activate_resp.json.side_effect = json.JSONDecodeError("invalid", "", 0)
 
     create_ctx = AsyncMock()
     create_ctx.__aenter__ = AsyncMock(return_value=create_resp)
@@ -751,10 +767,11 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
     activate_ctx = AsyncMock()
     activate_ctx.__aenter__ = AsyncMock(return_value=activate_resp)
     activate_ctx.__aexit__ = AsyncMock(return_value=False)
+    if activation in ("timeout", "connection"):
+        activate_ctx.__aenter__.side_effect = asyncio.TimeoutError() if activation == "timeout" else aiohttp.ClientError("lost")
 
     session_mock = AsyncMock()
-    session_mock.post = MagicMock(return_value=create_ctx)
-    session_mock.patch = MagicMock(return_value=activate_ctx)
+    session_mock.post = MagicMock(side_effect=[create_ctx, activate_ctx])
     session_mock.__aenter__ = AsyncMock(return_value=session_mock)
     session_mock.__aexit__ = AsyncMock(return_value=False)
 
@@ -764,11 +781,30 @@ def test_workflow_enable_success(test_client, tmp_path, monkeypatch):
             headers=test_client.auth_headers,
         )
 
+    if activation in ("missing-id", "invalid-id", "invalid-create-json", "create-body-timeout"):
+        assert resp.status_code == 502
+        assert "before importing again" in resp.json()["detail"]
+        assert session_mock.post.call_count == 1
+        session_mock.delete.assert_not_called()
+        return
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
     assert data["n8nId"] == "n8n-99"
-    assert data["activated"] is True
+    assert data["activated"] is (activation == "active")
+    if activation == "active":
+        assert "now active" in data["message"]
+    else:
+        assert "now active" not in data["message"]
+        assert "n8n-99" in data["message"]
+        assert "import" in data["message"].lower()
+    calls = session_mock.post.call_args_list
+    assert len(calls) == 2
+    assert calls[0].args[0] == f"{wf_mod.N8N_URL}/api/v1/workflows"
+    assert calls[0].kwargs["json"] == {key: template[key] for key in ("name", "nodes", "connections", "settings")}
+    assert calls[1].args[0] == f"{wf_mod.N8N_URL}/api/v1/workflows/n8n-99/activate"
+    assert calls[1].kwargs["headers"]["X-N8N-API-KEY"] == "fixture-api-key"
+    session_mock.delete.assert_not_called()
 
 
 def test_workflow_enable_n8n_error(test_client, tmp_path, monkeypatch):

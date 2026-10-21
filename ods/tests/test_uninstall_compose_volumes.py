@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -70,9 +71,11 @@ class FakeDocker:
         assert root == self.root
         if args[0] == "compose" and args[-3:] == ("config", "--format", "json"):
             return json.dumps(self.config)
-        if args[0] == "compose" and args[-3:] == ("config", "--hash", "pixel-native-ingress"):
+        if args[0] == "compose" and args[-3:-1] == ("config", "--hash"):
             self.hash_commands.append(args)
-            return "pixel-native-ingress " + self.frozen_hash
+            return args[-1] + " " + self.frozen_hash
+        if args[:4] == ("image", "inspect", "--format", "{{json .Config.User}}"):
+            return json.dumps("")
         if args[0] == "ps":
             visible = [
                 row for row in self.containers
@@ -400,6 +403,321 @@ class NativeIngressRollbackVolumeTests(unittest.TestCase):
             return result
         with patch.object(MODULE, "docker", changing_docker):
             self.assert_refused()
+
+
+@unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "native macOS custody requires POSIX file semantics")
+class NativeLifecycleVolumeTests(unittest.TestCase):
+    """Public full-stack restart produces a frozen label on ordinary services too."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="ods-lifecycle-uninstall-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve() / "ods"
+        self.root.mkdir()
+        self.snapshot = self.root.parent / "snapshot.json"
+        self.snapshot.touch()
+        self.base = self.root / "docker-compose.base.yml"
+        self.base.write_text("services:\n  dashboard:\n    image: dashboard:latest\n", encoding="utf-8")
+        self.inputs = [self.base, self.root / ".env", self.root / ".compose-flags"]
+        self.inputs[1].write_text("LLM_MODEL=original\n", encoding="utf-8")
+        self.inputs[2].write_text("-f docker-compose.base.yml\n", encoding="utf-8")
+        for relative in ("installers/macos/pixel-native.compose.yaml.disabled",
+                         "extensions/services/pixel-edge/compose.yaml.disabled"):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / relative, path)
+            self.inputs.append(path)
+        self.source_files = []
+        for relative in ("installers/macos/ods-macos.sh", "installers/macos/lib/pixel-native-lifecycle.py",
+                         "lib/selection.sh", "scripts/selection.py"):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("# installed lifecycle source\n", encoding="utf-8")
+            self.source_files.append(path)
+        self.directory = self.root / "data/pixel-native/preparation/ingress-refresh-c430c576c1c8b40701845fe70fb8965d"
+        self.directory.mkdir(parents=True, mode=0o700)
+        self.path, self.journal = self.directory / "lifecycle.compose.json", self.directory / "refresh.json"
+        image = "sha256:" + "b" * 64
+        self.recipe = {"name": "ods", "services": {
+            "dashboard": {"image": image, "build": {"context": str(self.root)}, "pull_policy": "build",
+                "volumes": [{"type": "bind", "source": str(self.root / "data"), "target": "/data", "read_only": True}]},
+            "pixel-native-ingress": {"image": image, "user": "501:20", "depends_on": {"pixel-edge": {"condition": "service_started"}},
+                "volumes": [{"type": "volume", "source": "pixel-native-runtime", "target": "/runtime"}]},
+            "pixel-edge": {"image": image, "volumes": [
+                {"type": "volume", "source": "pixel-transition-state", "target": "/state"}]},
+            # freeze() preserves inactive definitions without pinning their image.
+            "inactive": {"image": "unselected:latest", "profiles": ["optional"]},
+        }, "volumes": {key: {"name": "ods_" + key} for key in ("pixel-native-runtime", "pixel-transition-state")}, "networks": {}}
+        selected = ["dashboard", "pixel-edge", "pixel-native-ingress"]
+        self.record = {"schemaVersion": 1, "phase": "ready", "project": "ods",
+            "source": str(self.root / "data/pixel-native/home/.openclaw/openclaw.json"),
+            "child": {"outcome": "completed", "exitCode": 0},
+            "childAuthority": {"source": {"action": "restart", "service": "", "bash": "/bin/bash",
+                "bashSHA256": "a" * 64, "files": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in self.source_files}}},
+            "lifecycleStack": {"phase": "selected", "action": "restart", "service": "", "project": "ods",
+                "installDir": str(self.root), "path": str(self.path), "services": selected,
+                "images": {name: image for name in selected}, "previousRecipeSHA256": None,
+                "inputs": {"definitionSHA256": "e" * 64, "buildInputs": None,
+                    "files": {str(path): self.identity(path) for path in self.inputs}}}}
+        self.write_records()
+        self.fake = FakeDocker(self.root)
+        self.fake.volumes = {value["name"]: FakeDocker._volume(value["name"], key) for key, value in self.recipe["volumes"].items()}
+        self.fake.containers = []
+        for index, service in enumerate(selected):
+            definition = self.recipe["services"][service]
+            mounts = [{"Type": item["type"], "Destination": item["target"], "RW": not item.get("read_only", False),
+                **({"Name": self.recipe["volumes"][item["source"]]["name"]} if item["type"] == "volume" else {"Source": item["source"]})}
+                for item in definition.get("volumes", [])]
+            self.fake.containers.append({"Id": str(index + 1) * 64, "Image": image,
+                "Config": {"User": definition.get("user", ""), "Labels": {
+                    "com.docker.compose.project": "ods", "com.docker.compose.service": service,
+                    "com.docker.compose.project.working_dir": str(self.root),
+                    "com.docker.compose.project.config_files": str(self.path),
+                    "com.docker.compose.config-hash": self.fake.frozen_hash}},
+                "State": {"Status": "exited", "ExitCode": 0}, "Mounts": mounts})
+        self.container = self.fake.containers[0]
+        patcher = patch.object(MODULE, "docker", self.fake)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def identity(path):
+        info = path.stat()
+        return {"sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "uid": info.st_uid,
+                "gid": info.st_gid, "mode": info.st_mode & 0o777}
+
+    def write_records(self):
+        body = json.dumps(self.recipe, sort_keys=True).encode()
+        self.path.write_bytes(body)
+        self.path.chmod(0o600)
+        self.record["lifecycleStack"]["sha256"] = hashlib.sha256(body).hexdigest()
+        source = self.record["childAuthority"]["source"]
+        key = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+        self.record["childAuthority"]["sourceKey"] = key
+        self.record["operation"] = {"kind": "cli-" + source["action"], "key": key}
+        self.journal.write_text(json.dumps(self.record), encoding="utf-8")
+        self.journal.chmod(0o600)
+
+    def preflight(self, **kwargs):
+        MODULE.preflight(self.root, self.snapshot, ["-f", "docker-compose.base.yml"], **kwargs)
+
+    def assert_refused(self):
+        with self.assertRaises(ValueError):
+            self.preflight()
+        self.assertEqual(self.snapshot.stat().st_size, 0)
+        self.assertFalse(self.fake.removed)
+        self.assertFalse((self.root / MODULE.RESUME_RECORD).exists())
+
+    def test_full_stack_restart_proves_native_and_shared_edge_volumes_before_purge(self):
+        self.preflight()
+        self.assertEqual(set(json.loads(self.snapshot.read_text())["volumes"]), set(self.fake.volumes))
+        self.assertEqual({args[-1] for args in self.fake.hash_commands}, set(self.record["lifecycleStack"]["services"]))
+        self.assertTrue(all(args[5:7] == ("--env-file", "/dev/null") for args in self.fake.hash_commands))
+        self.fake.containers = []
+        MODULE.postflight_containers(self.root, self.snapshot)
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(set(self.fake.removed), {"ods_pixel-native-runtime", "ods_pixel-transition-state"})
+        self.assertEqual(self.fake.foreign, {"ods-pixel-retired-research", "ods-unrelated"})
+
+    def test_actual_lifecycle_producer_record_is_accepted(self):
+        modules = {}
+        for name in ("pixel-native-lifecycle", "pixel-native-lifecycle-stack"):
+            path = self.root / "installers/macos/lib" / (name + ".py")
+            shutil.copyfile(ROOT / "installers/macos/lib" / path.name, path)
+            spec = importlib.util.spec_from_file_location(name.replace("-", "_"), path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            modules[name] = module
+        source, key = modules["pixel-native-lifecycle"].source_binding(self.root, Path("/bin/bash"), "restart", "")
+        self.record["childAuthority"].update(source=source, sourceKey=key)
+        self.record["operation"] = {"kind": "cli-restart", "key": key}
+        del self.record["lifecycleStack"]
+        self.path.unlink()
+        original = json.loads(json.dumps(self.recipe))
+        for name in ("dashboard", "pixel-edge", "pixel-native-ingress"):
+            original["services"][name]["image"] = "fixture:" + name
+        def image_inspect(*args, **kwargs):
+            self.assertEqual(args[:4], ("image", "inspect", "--format", "{{.Id}}"))
+            return types.SimpleNamespace(returncode=0, stdout="sha256:" + "b" * 64)
+        def checkpoint(record):
+            self.journal.write_text(json.dumps(record), encoding="utf-8")
+        modules["pixel-native-lifecycle-stack"].freeze(self.root, self.directory, self.record,
+            action="restart", service="", read_selection=lambda: (self.inputs, original),
+            run=lambda *a, **kw: self.fail("restart must not build or pull"), docker_run=image_inspect,
+            checkpoint=checkpoint)
+        self.assertNotEqual(self.record["lifecycleStack"]["inputs"]["definitionSHA256"], self.record["lifecycleStack"]["sha256"])
+        self.preflight()
+        self.assertEqual(set(json.loads(self.snapshot.read_text())["volumes"]), set(self.fake.volumes))
+
+    def test_candidate_uninstaller_retains_exact_shipped_disabled_recipe_provenance(self):
+        trusted = self.root.parent / "candidate"
+        for relative in ("docker-compose.base.yml", "installers/macos/pixel-native.compose.yaml.disabled",
+                         "extensions/services/pixel-edge/compose.yaml.disabled"):
+            path = trusted / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(self.root / relative, path)
+        self.preflight(trusted_root=trusted)
+        self.assertEqual(set(json.loads(self.snapshot.read_text())["volumes"]), set(self.fake.volumes))
+
+    def test_newer_pointer_changed_env_and_mixed_base_consumer_are_accepted(self):
+        (self.directory.parent / "ingress-refresh-current.json").write_text(json.dumps({"directory": "ingress-refresh-" + "f" * 32}))
+        (self.root / ".env").write_text("LLM_MODEL=owner-selected-later\n")
+        (self.root / ".compose-flags").write_text("-f docker-compose.base.yml -f later.yml\n")
+        # The later recreation of one service need not retain the old frozen label.
+        self.container["Config"]["Labels"]["com.docker.compose.project.config_files"] = str(self.base)
+        self.preflight()
+
+    def test_selected_start_update_and_ingress_only_records_are_accepted(self):
+        for action, selected in (("start", ""), ("update", ""), ("restart", "pixel-native-ingress")):
+            with self.subTest(action=action, selected=selected):
+                self.record["lifecycleStack"].update(action=action, service=selected)
+                self.record["childAuthority"]["source"].update(action=action, service=selected)
+                if selected:
+                    self.record["lifecycleStack"]["services"].remove("dashboard")
+                    del self.record["lifecycleStack"]["images"]["dashboard"]
+                    self.fake.containers = self.fake.containers[1:]
+                self.write_records()
+                MODULE.project_containers(self.root, "ods")
+
+    def test_foreign_workdir_config_service_image_user_hash_and_mount_are_refused(self):
+        labels = self.container["Config"]["Labels"]
+        changes = [(labels, "com.docker.compose.project.working_dir", "/other/ods"),
+            (labels, "com.docker.compose.project.config_files", str(self.path) + "," + str(self.base)),
+            (labels, "com.docker.compose.service", "inactive"),
+            (labels, "com.docker.compose.config-hash", "f" * 64),
+            (self.container, "Image", "sha256:" + "f" * 64),
+            (self.container["Config"], "User", "0:0"),
+            (self.container["Mounts"][0], "Source", "/other/ods/data"),
+            (self.container["Mounts"][0], "RW", True)]
+        for target, key, value in changes:
+            with self.subTest(key=key, value=value):
+                old = target[key]
+                target[key] = value
+                self.assert_refused()
+                target[key] = old
+
+    def test_unfinished_wrong_install_or_mismatching_operation_journal_is_refused(self):
+        changes = [(self.record, "phase", "operating"), (self.record, "project", "foreign"),
+            (self.record, "source", "/other/ods/openclaw.json"),
+            (self.record["child"], "exitCode", 1), (self.record["child"], "outcome", "unconfirmed"),
+            (self.record["lifecycleStack"], "installDir", "/other/ods"),
+            (self.record["lifecycleStack"], "phase", "selecting-images"),
+            (self.record["lifecycleStack"], "path", str(self.path.with_name("other.json"))),
+            (self.record["lifecycleStack"], "action", "stop")]
+        for target, key, value in changes:
+            with self.subTest(key=key, value=value):
+                old = target[key]
+                target[key] = value
+                self.write_records()
+                self.assert_refused()
+                target[key] = old
+        self.write_records()
+        self.record["operation"]["key"] = "f" * 64
+        self.journal.write_text(json.dumps(self.record))
+        self.assert_refused()
+
+    def test_tampered_recipe_digest_source_manifest_or_recorded_input_is_refused(self):
+        self.path.write_bytes(self.path.read_bytes() + b" ")
+        self.assert_refused()
+        self.write_records()
+        for path in (self.source_files[0], self.base):
+            with self.subTest(path=path):
+                original = path.read_bytes()
+                path.write_bytes(original + b"# changed\n")
+                self.assert_refused()
+                path.write_bytes(original)
+        files = self.record["childAuthority"]["source"]["files"]
+        del files[str(self.source_files[-1])]
+        self.write_records()
+        self.assert_refused()
+
+    def test_env_path_and_historical_hash_syntax_are_still_required(self):
+        inputs = self.record["lifecycleStack"]["inputs"]["files"]
+        env = inputs.pop(str(self.root / ".env"))
+        inputs["/other/ods/.env"] = env
+        self.write_records()
+        self.assert_refused()
+        del inputs["/other/ods/.env"]
+        inputs[str(self.root / ".env")] = {**env, "sha256": "unproven"}
+        self.write_records()
+        self.assert_refused()
+
+    def test_nonrecipe_config_input_is_not_returned_as_volume_provenance(self):
+        path = self.root / "config/example.yaml"
+        path.parent.mkdir()
+        path.write_text("services:\n  unrelated:\nvolumes:\n  pixel-native-runtime:\n")
+        self.record["lifecycleStack"]["inputs"]["files"][str(path)] = self.identity(path)
+        self.write_records()
+        proven = MODULE.native_lifecycle_provenance(self.root, "ods", self.container, str(self.path))
+        self.assertNotIn(str(path), proven)
+
+    def test_exact_extension_enable_and_disable_rename_preserves_volume_provenance(self):
+        disabled = self.inputs[-1]
+        enabled = disabled.with_name("compose.yaml")
+        disabled.rename(enabled)
+        self.preflight()
+        # A later lifecycle can record the enabled spelling, then the ordinary
+        # extension operation disables it again without changing its bytes.
+        inputs = self.record["lifecycleStack"]["inputs"]["files"]
+        inputs[str(enabled)] = inputs.pop(str(disabled))
+        self.write_records()
+        enabled.rename(disabled)
+        self.preflight()
+        self.assertIn("ods_pixel-transition-state", json.loads(self.snapshot.read_text())["volumes"])
+
+    def test_changed_duplicate_or_symlink_extension_alias_is_refused(self):
+        disabled = self.inputs[-1]
+        enabled = disabled.with_name("compose.yaml")
+        original = disabled.read_bytes()
+        disabled.rename(enabled)
+        enabled.write_bytes(original + b"# edited alias\n")
+        self.assert_refused()
+        enabled.write_bytes(original)
+        disabled.write_bytes(original + b"# conflicting duplicate\n")
+        self.assert_refused()
+        disabled.unlink()
+        copy = enabled.with_name("elsewhere.yaml")
+        enabled.rename(copy)
+        enabled.symlink_to(copy)
+        self.assert_refused()
+
+    def test_private_files_cannot_be_symlinks_or_writable_by_another_user(self):
+        for path in (self.path, self.journal):
+            with self.subTest(path=path):
+                path.chmod(0o644)
+                self.assert_refused()
+                path.chmod(0o600)
+                copy = path.with_name(path.name + ".saved")
+                path.rename(copy)
+                path.symlink_to(copy)
+                self.assert_refused()
+                path.unlink()
+                copy.rename(path)
+
+    def test_foreign_consumer_candidate_policy_and_named_mount_still_block_purge(self):
+        self.fake.foreign_consumers["ods_pixel-native-runtime"] = ["f" * 64]
+        self.assert_refused()
+        self.fake.foreign_consumers.clear()
+        self.container["Mounts"].append({"Type": "volume", "Name": "unrelated", "Destination": "/extra", "RW": True})
+        self.assert_refused()
+        self.container["Mounts"].pop()
+        trusted = self.root.parent / "candidate"
+        trusted.mkdir()
+        with self.assertRaises(ValueError):
+            self.preflight(trusted_root=trusted)
+        self.assertFalse(self.fake.removed)
+
+    def test_journal_or_recipe_change_during_compose_hash_is_refused(self):
+        for path in (self.path, self.journal):
+            with self.subTest(path=path):
+                self.write_records()
+                def changing(root, *args):
+                    value = self.fake(root, *args)
+                    if args[-3:-1] == ("config", "--hash"):
+                        path.write_bytes(path.read_bytes() + b" ")
+                    return value
+                with patch.object(MODULE, "docker", changing):
+                    self.assert_refused()
 
 
 class UninstallVolumeTests(unittest.TestCase):

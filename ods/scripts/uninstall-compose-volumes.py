@@ -281,6 +281,34 @@ def retired_volume_keys(root: Path) -> set[str]:
     return set(keys)
 
 
+def native_custody_document(root: Path, selected: Path, limit: int, failure: str, *, private=True) -> bytes:
+    owner = root.stat().st_uid
+    # All ancestors within this install must retain owner custody. Never
+    # follow a moved journal/recipe through a symlink, even inside root.
+    for parent in (root, *(root / value for value in
+                          reversed(selected.parent.relative_to(root).parents) if value != Path("."))):
+        info = parent.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022):
+            raise ValueError(failure)
+    info = selected.parent.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022 or
+            (private and stat.S_IMODE(info.st_mode) != 0o700) or selected.resolve() != selected):
+        raise ValueError(failure)
+    fd = os.open(selected, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner or
+                before.st_nlink != 1 or (stat.S_IMODE(before.st_mode) != 0o600 if private else before.st_mode & 0o022)
+                or before.st_size > limit):
+            raise ValueError(failure)
+        body = stream.read(limit + 1)
+        after = os.fstat(stream.fileno())
+    if (len(body) > limit or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+            (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+        raise ValueError(failure)
+    return body
+
+
 def native_ingress_rollback_provenance(root: Path, project: str, row: dict, files: str) -> str:
     """Prove the terminal frozen rollback recipe without merging current config."""
     service = "pixel-native-ingress"
@@ -292,32 +320,8 @@ def native_ingress_rollback_provenance(root: Path, project: str, row: dict, file
             not re.fullmatch(r"ingress-refresh-[a-f0-9]{32}", path.parent.name)):
         raise ValueError("Compose project contains a container from another installation")
     failure = "Native ingress rollback ownership could not be proven"
-    owner = root.stat().st_uid
-
     def private_document(selected: Path, limit: int) -> bytes:
-        # All ancestors within this install must retain owner custody. Never
-        # follow a moved journal/recipe through a symlink, even inside root.
-        for parent in (root, *(root / value for value in
-                              reversed(selected.parent.relative_to(root).parents) if value != Path("."))):
-            info = parent.lstat()
-            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or info.st_mode & 0o022):
-                raise ValueError(failure)
-        info = selected.parent.lstat()
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner or
-                stat.S_IMODE(info.st_mode) != 0o700 or selected.resolve() != selected):
-            raise ValueError(failure)
-        fd = os.open(selected, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner or
-                    before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600 or before.st_size > limit):
-                raise ValueError(failure)
-            body = stream.read(limit + 1)
-            after = os.fstat(stream.fileno())
-        if (len(body) > limit or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
-                (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
-            raise ValueError(failure)
-        return body
+        return native_custody_document(root, selected, limit, failure)
 
     journal = path.parent / "refresh.json"
     try:
@@ -380,6 +384,159 @@ def native_ingress_rollback_provenance(root: Path, project: str, row: dict, file
     return str(native.resolve())
 
 
+def native_lifecycle_provenance(root: Path, project: str, row: dict, files: str) -> list[str]:
+    """Recover original recipe provenance from a completed public CLI operation.
+
+    Restart/start/update run a frozen whole-stack recipe, not just ingress.
+    Verify the container-bound historical journal; a later config refresh may
+    legitimately replace the current pointer, environment or native config.
+    """
+    failure = "Native lifecycle ownership could not be proven"
+    path = Path(files)
+    if ("," in files or path.parent.parent != root / "data/pixel-native/preparation"
+            or path.name != "lifecycle.compose.json"
+            or not re.fullmatch(r"ingress-refresh-[a-f0-9]{32}", path.parent.name)):
+        raise ValueError(failure)
+    journal = path.parent / "refresh.json"
+    owner = root.stat().st_uid
+    checked = {}
+    absent_aliases = []
+
+    def read(selected, limit=16 * 1024 * 1024, *, private=False):
+        value = native_custody_document(root, selected, limit, failure, private=private)
+        checked[selected] = (value, limit, private)
+        return value
+
+    try:
+        record = json.loads(read(journal, private=True))
+        body = read(path, private=True)
+        recipe = json.loads(body)
+        saved = record["lifecycleStack"]
+        authority = record["childAuthority"]
+        source = authority["source"]
+        action, selection = saved["action"], saved["service"]
+        service = row["Config"]["Labels"]["com.docker.compose.service"]
+        source_key = hashlib.sha256(json.dumps(source, sort_keys=True).encode()).hexdigest()
+        if (record.get("schemaVersion") != 1 or record.get("phase") != "ready"
+                or record.get("project") != project
+                or record.get("source") != str(root / "data/pixel-native/home/.openclaw/openclaw.json")
+                or action not in ("start", "restart", "update")
+                or selection not in ("", "pixel-native-ingress") or action == "update" and selection
+                or saved["phase"] != "selected" or saved["project"] != project
+                or saved["installDir"] != str(root) or saved["path"] != str(path)
+                or saved["sha256"] != hashlib.sha256(body).hexdigest()
+                or record["child"].get("outcome") != "completed" or record["child"].get("exitCode") != 0
+                or source["action"] != action or source["service"] != selection
+                or authority["sourceKey"] != source_key
+                or record["operation"] != {"kind": "cli-" + action, "key": source_key}
+                or recipe["name"] != project or service not in saved["services"]
+                or len(saved["services"]) != len(set(saved["services"]))
+                or set(saved["images"]) != set(saved["services"])):
+            raise ValueError(failure)
+        # The completed child attests exactly these installed CLI sources. Do
+        # not execute an installed helper or accept an arbitrary journal file map.
+        library = root / "installers/macos/lib"
+        sources = {root / "installers/macos/ods-macos.sh", *library.glob("*.py"), *library.glob("*.sh"),
+                   *(root / "lib").glob("*.sh"), *(root / "scripts").glob("*.sh"),
+                   *(root / "scripts").glob("*.py")}
+        if set(source["files"]) != {str(value) for value in sources}:
+            raise ValueError(failure)
+        for selected in sources:
+            if hashlib.sha256(read(selected)).hexdigest() != source["files"][str(selected)]:
+                raise ValueError(failure)
+        if (not os.path.isabs(source["bash"]) or not CONTAINER_RE.fullmatch(source["bashSHA256"])):
+            raise ValueError(failure)
+        inputs = saved["inputs"]["files"]
+        if (str(root / ".env") not in inputs or str(root / ".compose-flags") not in inputs
+                or not CONTAINER_RE.fullmatch(saved["inputs"]["definitionSHA256"])):
+            raise ValueError(failure)
+        original_files = []
+        for name, identity in inputs.items():
+            selected = Path(name)
+            if not selected.is_absolute() or not selected.is_relative_to(root) or selected != selected.resolve():
+                raise ValueError(failure)
+            relative = selected.relative_to(root).as_posix()
+            extension_recipe = re.fullmatch(
+                r"extensions/(?:library/)?services/[a-zA-Z0-9_-]+/compose(?:\.[a-zA-Z0-9_-]+)?\.ya?ml(?:\.disabled)?", relative)
+            if extension_recipe:
+                alias = selected.with_name(selected.name.removesuffix(".disabled")
+                    if selected.name.endswith(".disabled") else selected.name + ".disabled")
+                if os.path.lexists(alias):
+                    if os.path.lexists(selected):
+                        raise ValueError(failure)
+                    # Public enable/disable renames exactly this recipe. Its
+                    # bytes and full recorded identity still have to match.
+                    absent_aliases.append(selected)
+                    selected = alias
+            if identity is None and selected == root / ".compose-flags":
+                continue
+            if (set(identity) != {"sha256", "uid", "gid", "mode"}
+                    or not CONTAINER_RE.fullmatch(identity["sha256"]) or type(identity["uid"]) is not int or identity["uid"] != owner
+                    or type(identity["gid"]) is not int or type(identity["mode"]) is not int
+                    or not 0 <= identity["mode"] <= 0o777 or identity["mode"] & 0o022):
+                raise ValueError(failure)
+            # These are historical interpolation/selection inputs, not today's
+            # authority. Never expand the frozen definition with today's .env.
+            if selected in (root / ".env", root / ".compose-flags"):
+                continue
+            value = read(selected)
+            info = selected.stat()
+            if identity != {"sha256": hashlib.sha256(value).hexdigest(), "uid": info.st_uid,
+                            "gid": info.st_gid, "mode": stat.S_IMODE(info.st_mode)}:
+                raise ValueError(failure)
+            if (re.fullmatch(r"docker-compose(?:\.[a-zA-Z0-9_-]+)?\.yml", relative)
+                    or relative in NATIVE_STACK_RECIPES
+                    or re.fullmatch(r"installers/macos/docker-compose\.[a-zA-Z0-9_-]+\.yml", relative)
+                    or extension_recipe):
+                if extension_recipe and selected.relative_to(root).as_posix() in NATIVE_STACK_RECIPES:
+                    original_files.append(str(selected))
+                original_files.append(str(selected.with_name(selected.name.removesuffix(".disabled")))
+                    if extension_recipe else str(selected))
+        if not any(str(root / name) in original_files for name in ("docker-compose.base.yml", "docker-compose.yml")):
+            raise ValueError(failure)
+        definition = recipe["services"][service]
+        image = saved["images"][service]
+        if (not re.fullmatch(r"sha256:[a-f0-9]{64}", image)
+                or definition["image"] != image or row["Image"] != image):
+            raise ValueError(failure)
+        expected_user = definition.get("user")
+        if expected_user is None:
+            expected_user = json.loads(docker(root, "image", "inspect", "--format", "{{json .Config.User}}", image))
+        if row["Config"].get("User", "") != (expected_user or ""):
+            raise ValueError(failure)
+        mounts, declared = row.get("Mounts", []), definition.get("volumes", [])
+        if not isinstance(mounts, list) or not isinstance(declared, list) or len(mounts) != len(declared):
+            raise ValueError(failure)
+        targets = set()
+        for mount in declared:
+            target = mount["target"]
+            actual = [value for value in mounts if value.get("Destination") == target]
+            if (target in targets or len(actual) != 1 or actual[0]["Type"] != mount["type"]
+                    or actual[0]["RW"] is not (not mount.get("read_only", False))):
+                raise ValueError(failure)
+            targets.add(target)
+            if mount["type"] == "volume":
+                if actual[0]["Name"] != recipe["volumes"][mount["source"]]["name"]:
+                    raise ValueError(failure)
+            elif mount["type"] != "bind" or actual[0]["Source"] != mount["source"].replace("$$", "$"):
+                raise ValueError(failure)
+        expected = row["Config"]["Labels"].get("com.docker.compose.config-hash", "")
+        if not CONTAINER_RE.fullmatch(expected):
+            raise ValueError(failure)
+        hashed = docker(root, "compose", "--project-directory", str(root), "--project-name", project,
+                        "--env-file", "/dev/null", "-f", str(path), "config", "--hash", service).strip()
+        if hashed != service + " " + expected:
+            raise ValueError(failure)
+        for selected, (value, limit, private) in checked.items():
+            if native_custody_document(root, selected, limit, failure, private=private) != value:
+                raise ValueError(failure)
+        if any(os.path.lexists(selected) for selected in absent_aliases):
+            raise ValueError(failure)
+    except (OSError, KeyError, TypeError, AttributeError, ValueError):
+        raise ValueError(failure) from None
+    return original_files
+
+
 def project_containers(
     root: Path, project: str,
 ) -> tuple[set[str], set[str], dict[str, set[tuple[str, str]]]]:
@@ -416,7 +573,9 @@ def project_containers(
                 raise ValueError("Compose project contains a container from another installation")
             provenance_files = files.split(",")
             if os.path.realpath(provenance_files[0]) not in base_files:
-                provenance_files = [native_ingress_rollback_provenance(root, project, row, files)]
+                provenance_files = (native_lifecycle_provenance(root, project, row, files)
+                    if Path(files).name == "lifecycle.compose.json" else
+                    [native_ingress_rollback_provenance(root, project, row, files)])
             mounts = row.get("Mounts") or []
             if not isinstance(mounts, list):
                 raise ValueError("Docker returned invalid container mounts")

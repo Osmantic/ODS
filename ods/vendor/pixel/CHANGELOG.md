@@ -1,5 +1,27 @@
 # Changelog
 
+## 4.3.33 - ODS-maintained candidate
+
+- Patch Web Courier's hash-locked certifi to 2026.10.19 and urllib3 to 2.8.0.
+- Advance the public source version so existing installations can accept the
+  changed dependency lock through the existing source-upgrade checks.
+- See `ODS-QUALIFICATION-4.3.33.md` for scoped validation and pending installed
+  upgrade qualification. Prior compatibility records remain historical.
+
+## 4.3.32 - ODS-maintained candidate
+
+- Install the official Node.js 24.21.0 `node` binary in the agent sandbox image,
+  pinned by SHA-256 for amd64 and arm64 in `RELEASE-MANIFEST.json`
+  (`sandboxNodeRuntime`). npm, npx and corepack are not installed.
+- Bootstrap runs the candidate's node offline and refuses another version,
+  architecture or a package manager before any live change. The check is
+  bounded at 120 seconds, removes its own named container on failure, and
+  fails with a fixed `Sandbox runtime proof failed:` message that names the
+  image to remove.
+- The Node.js download stops on a stalled connection (under 1 KB/s for 60
+  seconds, or 30 minutes per attempt) instead of hanging the build.
+- Keep the sandbox networkless with a read-only root and unchanged limits.
+
 ## 4.3.31 - ODS-maintained candidate
 
 - Wait for Operations Broker executable startup before the inventory deadline

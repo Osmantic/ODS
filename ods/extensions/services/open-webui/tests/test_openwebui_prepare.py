@@ -502,7 +502,8 @@ def test_the_wrapper_checks_the_built_in_administrator_whenever_other_devices_ca
     assert started.returncode == 0, started.stderr
     assert started.stdout == expected
     step = (tmp_path / "step.log").read_text().splitlines()
-    assert step == ["/opt/ods/openwebui-prepare.py" + (" --published-on-network" if published else "")]
+    assert step == ["/opt/ods/openwebui-prepare.py" + (" --published-on-network" if published else ""),
+                    "/opt/ods/openwebui-model-list.py"]
 
 
 def add_account(database: Path, email: str, password_hash: str, active: bool = True) -> None:

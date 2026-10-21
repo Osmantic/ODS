@@ -1,0 +1,27 @@
+{
+  "_source": "Measured on an RTX Spark on 2026-10-17 (read-only probe): GPU carve-out 98,240 MiB, 30.49 GiB visible to Windows, commit limit 126.49 GiB, a fixed 98,304 MB page file on C: with automatic management off, no .wslconfig, 26.9 GB (25.05 GiB) free on C: after the GPU route probe, Docker Desktop's data disk present. CommittedGiB is the 12 GiB measured at idle; WslNowGiB and RunningModelGiB are fixture values.",
+  "VisibleGiB": 30.49,
+  "CommitLimitGiB": 126.49,
+  "CommittedGiB": 12.0,
+  "CarveOutMiB": 98240,
+  "SystemDrive": "C:",
+  "PageFileActiveGiB": 96,
+  "PageFileConfiguredGiB": 96,
+  "OtherPageFileGiB": 0.0,
+  "PageFileAutomatic": false,
+  "PageFilePending": false,
+  "PagingFiles": [
+    "C:\\pagefile.sys 98304 98304"
+  ],
+  "WslConfig": {
+    "GiB": null,
+    "Owner": null
+  },
+  "WslNowGiB": null,
+  "RunningModelGiB": 0,
+  "ModelsDrive": "C:",
+  "FreeGiB": {
+    "C:": 25.05
+  },
+  "StackPresent": true
+}

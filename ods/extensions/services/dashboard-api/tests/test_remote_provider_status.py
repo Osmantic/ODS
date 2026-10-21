@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 
 def _route_state(
     model: str = "qwen/remote:latest",
@@ -1508,6 +1510,45 @@ def test_remote_provider_probe_reports_nonfatal_proof_record_failure(
     }
     assert "unit-test-provider-token" not in dumped
     assert "ssh-identity" not in dumped
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (
+            {"error": "The remote provider did not serve a completion through the active route",
+             "code": "provider_not_serving", "providerStatus": 500, "providerMessage": "Connection error."},
+            {"recorded": False, "reachable": True, "reason": "provider_not_serving", "statusCode": 502,
+             "providerStatus": 500, "providerMessage": "Connection error."},
+        ),
+        (
+            {"code": "provider_not_serving", "providerStatus": 503, "providerMessage": "line\nbreak"},
+            {"recorded": False, "reachable": True, "reason": "provider_not_serving", "statusCode": 502,
+             "providerStatus": 503},
+        ),
+        (
+            {"code": "provider_not_serving", "providerStatus": "500", "providerMessage": "unit-test-provider-token"},
+            {"recorded": False, "reachable": True, "reason": "host_agent_http_502", "statusCode": 502},
+        ),
+        (
+            {"error": "unit-test-provider-token ssh-identity"},
+            {"recorded": False, "reachable": True, "reason": "host_agent_http_502", "statusCode": 502},
+        ),
+    ],
+)
+def test_remote_provider_proof_names_a_provider_that_serves_no_chat(monkeypatch, response, expected):
+    """Fleet 2026-10-18: an outage read "probe: ok" with no cause."""
+    from routers import remote_provider_status as rps
+
+    async def fake_agent_request(*_args, **_kwargs):
+        raise rps.AgentHTTPError(502, "detail", json.dumps(response))
+
+    monkeypatch.setattr(rps, "async_request_agent_json", fake_agent_request)
+
+    proof = asyncio.run(rps._record_egress_probe_proof({"ok": True}))
+
+    assert proof == expected
+    assert "unit-test-provider-token" not in json.dumps(proof)
 
 
 def test_remote_provider_probe_preserves_sanitized_egress_errors(

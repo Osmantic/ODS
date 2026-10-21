@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shlex
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -18,13 +20,35 @@ HELPER = ROOT / "scripts" / "preserve-active-model.py"
 
 SAVED_CUDA_IMAGE = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
 
+# A vision import's projector, named as the Models page names its downloads.
+PROJECTOR = "hf-osmantic-agent-test-mmproj-F16-0a1b2c3d.gguf"
+PROJECTOR_BYTES = 2048
+# A fixed chat template (any-model WP5) as config/chat-templates/index.json lists it.
+TEMPLATE_ID = "fixed-agent-tools"
+TEMPLATE_FILE = "upstream-b9014/Agent-Test.jinja"
+TEMPLATE_BODY = b"{%- for message in messages %}{{ message.content }}{% endfor %}\n"
+ACTIVATION_KEYS = ("LLAMA_ARG_MMPROJ", "MODEL_CHAT_TEMPLATE_OVERRIDE", "LLAMA_ARG_CHAT_TEMPLATE_FILE")
+
 
 def image_phase_rerun(saved_backend: str, detected_backend: str, *,
                       reselect: bool = False, image: str = SAVED_CUDA_IMAGE) -> dict[str, str]:
+    def prepare(install: Path, source: Path) -> Path:
+        env, catalog, _, _ = write_model_fixture(install)
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write(f"GPU_BACKEND={saved_backend}\nLLAMA_SERVER_IMAGE={image}\n")
+        return catalog
+    return installer_rerun(prepare, detected_backend, reselect=reselect)
+
+
+def installer_rerun(prepare: Callable[[Path, Path], Path], detected_backend: str = "nvidia", *,
+                    reselect: bool = False, caller_env: dict[str, str] | None = None) -> dict[str, str]:
     """Run the shipped preservation block, AMD filter and full .env template.
 
-    Hardware detection/service setup is outside this fixture. No Docker, model
-    load or installed paths are used; the catalog artifact is a four-KiB file.
+    ``prepare(install, source)`` writes the retained installation and returns
+    its catalog. Hardware detection/service setup is outside this fixture. No
+    Docker, model load or installed paths are used; the catalog artifact is a
+    four-KiB file. ``caller_env`` is exported by whoever runs the installer.
     """
     detection = (ROOT / "installers/phases/02-detection.sh").read_text(encoding="utf-8")
     phase02 = detection[detection.index("# The tier/catalog result is a recommendation."):
@@ -45,12 +69,10 @@ def image_phase_rerun(saved_backend: str, detected_backend: str, *,
         root = Path(tmp)
         install = root / "install"
         install.mkdir()
-        env, catalog, _, _ = write_model_fixture(install)
-        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
-        with env.open("a", encoding="utf-8") as handle:
-            handle.write(f"GPU_BACKEND={saved_backend}\nLLAMA_SERVER_IMAGE={image}\n")
         source = root / "source"
         (source / "config").mkdir(parents=True)
+        catalog = prepare(install, source)
+        env = install / ".env"
         shutil.copyfile(catalog, source / "config/model-library.json")
         for name in ("lib", "scripts", "installers"):
             (source / name).symlink_to(ROOT / name, target_is_directory=True)
@@ -91,7 +113,7 @@ _env_existing="$_phase06_previous_env"
         completed = subprocess.run(
             ["bash", str(script), str(source), str(install), sys.executable,
              detected_backend, str(reselect).lower()],
-            env={"PATH": os.environ["PATH"], "HOME": str(root), "LC_ALL": "C"},
+            env={**(caller_env or {}), "PATH": os.environ["PATH"], "HOME": str(root), "LC_ALL": "C"},
             text=True, capture_output=True, timeout=20,
         )
         assert completed.returncode == 0, completed.stderr
@@ -142,7 +164,13 @@ def test_invalid_saved_image_is_not_emitted_or_executed() -> None:
             assert not marker.exists()
 
 
-def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Path, Path, Path]:
+def write_model_fixture(root: Path, *, imported: bool = False,
+                        projector: bool = False) -> tuple[Path, Path, Path, Path]:
+    """A retained installation whose Dashboard-activated model is on disk.
+
+    ``projector``: the model is a vision import that model activation started
+    with its projector (LLAMA_ARG_MMPROJ, as bin/ods-host-agent.py writes it).
+    """
     models_dir = root / "data" / "models"
     models_dir.mkdir(parents=True)
     model_file = models_dir / "Agent-Test-Q4_K_M.gguf"
@@ -178,6 +206,15 @@ def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Pa
             }
         ],
     }
+    if projector:
+        (models_dir / PROJECTOR).write_bytes(b"P" * PROJECTOR_BYTES)
+        record.update({
+            "mmproj_file": PROJECTOR,
+            "mmproj_url": "https://huggingface.co/osmantic/agent-test/resolve/pinned/mmproj-F16.gguf",
+            "mmproj_sha256": "c" * 64,
+            "mmproj_size_bytes": PROJECTOR_BYTES,
+            "mmproj_source_file": "mmproj-F16.gguf",
+        })
     catalog = root / "catalog.json"
     imports = root / "model-imports.json"
     if imported:
@@ -208,12 +245,36 @@ def write_model_fixture(root: Path, *, imported: bool = False) -> tuple[Path, Pa
                 "LLAMA_ARG_FLASH_ATTN=on",
                 "LLAMA_ARG_CACHE_TYPE_K=q4_0",
                 "LLAMA_ARG_CACHE_TYPE_V=q4_0",
+                *([f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}"] if projector else []),
             ]
         )
         + "\n",
         encoding="utf-8",
     )
     return env, catalog, imports, models_dir
+
+
+def write_chat_templates(parent: Path) -> Path:
+    """``parent``/chat-templates with one fixed template, laid out as config/chat-templates."""
+    root = parent / "chat-templates"
+    (root / TEMPLATE_FILE).parent.mkdir(parents=True)
+    (root / TEMPLATE_FILE).write_bytes(TEMPLATE_BODY)
+    (root / "index.json").write_text(json.dumps({"schemaVersion": 1, "overrides": [{
+        "id": TEMPLATE_ID,
+        "embeddedTemplateSha256": "d" * 64,
+        "file": TEMPLATE_FILE,
+        "fileSha256": hashlib.sha256(TEMPLATE_BODY).hexdigest(),
+        "builds": ["b9014"],
+        "reason": "Fixture: the model's own template drops tool calls.",
+    }]}), encoding="utf-8")
+    return root
+
+
+def add_fixed_template(env: Path) -> None:
+    """The two keys activation writes for a container that runs the fixed template."""
+    with env.open("a", encoding="utf-8") as handle:
+        handle.write(f"MODEL_CHAT_TEMPLATE_OVERRIDE={TEMPLATE_ID}\n"
+                     f"LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/{TEMPLATE_FILE}\n")
 
 
 def run_helper(env: Path, catalog: Path, imports: Path, models_dir: Path, **overrides: object) -> dict[str, str]:
@@ -247,7 +308,12 @@ def run_helper(env: Path, catalog: Path, imports: Path, models_dir: Path, **over
         command.append("--native-llm")
     if overrides.get("served_model") is not None:
         command.extend(["--served-model", str(overrides["served_model"])])
+    if overrides.get("chat_templates") is not None:
+        command.extend(["--chat-templates", str(overrides["chat_templates"])])
     result = subprocess.run(command, check=True, capture_output=True, text=True)
+    log = overrides.get("log")
+    if isinstance(log, list):
+        log.append(result.stderr)  # phase 02 appends it to the install log
     values: dict[str, str] = {}
     for line in result.stdout.splitlines():
         key, raw = line.split("=", 1)
@@ -1119,6 +1185,328 @@ def test_legacy_managed_lemonade_install_is_preserved_on_the_migration_rerun() -
         assert run_helper(env, catalog, imports, models_dir) == {}
 
 
+# F14 (fleet test, Windows 11 + WSL2, RTX 5070, 2026-10-18): an installer rerun
+# kept a vision import active but rewrote .env without LLAMA_ARG_MMPROJ, so
+# llama-server answered every image with HTTP 500 ("image input is not
+# supported - hint: if this is unexpected, you may need to provide the mmproj").
+
+KEPT_MODEL = "Agent-Test-Q4_K_M.gguf"
+
+
+def update_import(imports: Path, **fields: object) -> None:
+    """Change the import record; a None value removes the field."""
+    payload = json.loads(imports.read_text(encoding="utf-8"))
+    record = payload["models"][0]
+    for key, value in fields.items():
+        if value is None:
+            record.pop(key, None)
+        else:
+            record[key] = value
+    imports.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def write_switchboard_state(path: Path, gguf_file: str = KEPT_MODEL) -> Path:
+    """A completed switchboard proof that ``gguf_file`` (record agent-test-q4) is served."""
+    path.write_text(json.dumps({
+        "schema": "ods.model-state.v1", "seq": 5, "routeSeq": 4, "operation": None,
+        "desired": {"catalogId": "agent-test-q4"},
+        "active": {
+            "routeSeq": 4, "catalogId": "agent-test-q4", "runtimeModelId": gguf_file,
+            "publicModel": "ods/current",
+            "backend": {"kind": "llama-server", "endpointId": "llama-server-default", "nativeRoute": None},
+            "contextLength": 65536, "verifiedAt": "2026-10-18T09:00:00Z",
+            "proof": {"identity": gguf_file, "completion": True},
+        },
+        "availability": {"mode": "serve_active", "queueDeadline": None},
+    }) + "\n", encoding="utf-8")
+    return path
+
+
+def test_same_vision_import_keeps_its_projector() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True, projector=True)
+        log: list[str] = []
+        values = run_helper(env, catalog, imports, models_dir, log=log)
+        assert (values["GGUF_FILE"], values["MODEL_SELECTION_SOURCE"]) == (KEPT_MODEL, "dashboard")
+        assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        assert log == [""]
+        # A quoted or commented line is the same setting.
+        replace_env(env, f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}",
+                    f"LLAMA_ARG_MMPROJ='/models/{PROJECTOR}' # vision")
+        assert run_helper(env, catalog, imports, models_dir)["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+    with tempfile.TemporaryDirectory() as tmp:
+        # An import's projector lives beside its weights in its registered store.
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        external = root / "ssd-models"
+        external.mkdir()
+        for name in (KEPT_MODEL, PROJECTOR):
+            (models_dir / name).rename(external / name)
+        (root / "data/model-stores.json").write_text(json.dumps({"schemaVersion": 1, "stores": [
+            {"id": "ssd", "hostPath": str(external), "containerPath": "/model-stores/ssd"}]}))
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("ODS_ACTIVE_MODEL_STORE=ssd\n")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert (values["ODS_ACTIVE_MODEL_STORE"], values["LLAMA_ARG_MMPROJ"]) == ("ssd", f"/models/{PROJECTOR}")
+    with tempfile.TemporaryDirectory() as tmp:
+        # A text model never gets one.
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in values
+
+
+def test_projector_is_dropped_unless_it_is_the_models_own_file_on_disk() -> None:
+    def missing(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).unlink()
+
+    def directory(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).unlink()
+        (models_dir / PROJECTOR).mkdir()
+
+    def partial(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).write_bytes(b"P" * (PROJECTOR_BYTES // 2))
+
+    def empty(models_dir: Path, imports: Path) -> None:
+        (models_dir / PROJECTOR).write_bytes(b"")
+        update_import(imports, mmproj_size_bytes=None)
+
+    def another_models_projector(models_dir: Path, imports: Path) -> None:
+        # The file is there, but this import brings a different projector.
+        update_import(imports, mmproj_file="hf-osmantic-other-mmproj-F16-99999999.gguf")
+
+    def imported_without_vision(models_dir: Path, imports: Path) -> None:
+        update_import(imports, mmproj_file=None, mmproj_url=None, mmproj_sha256=None,
+                      mmproj_size_bytes=None, mmproj_source_file=None)
+
+    def names_the_weights(models_dir: Path, imports: Path) -> None:
+        update_import(imports, mmproj_file=KEPT_MODEL, mmproj_size_bytes=None)
+
+    for change in (missing, directory, partial, empty, another_models_projector,
+                   imported_without_vision, names_the_weights):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True, projector=True)
+            if change is names_the_weights:
+                replace_env(env, f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}", f"LLAMA_ARG_MMPROJ=/models/{KEPT_MODEL}")
+            change(models_dir, imports)
+            log: list[str] = []
+            values = run_helper(env, catalog, imports, models_dir, log=log)
+            # The model itself is still kept; only its projector setting goes.
+            assert values["GGUF_FILE"] == KEPT_MODEL, change.__name__
+            assert "LLAMA_ARG_MMPROJ" not in values, change.__name__
+            assert "Not keeping LLAMA_ARG_MMPROJ" in log[0], (change.__name__, log)
+
+
+def test_a_linked_projector_is_not_kept() -> None:
+    for inside_models_dir in (True, False):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+            target = (models_dir if inside_models_dir else root) / "real-projector.gguf"
+            (models_dir / PROJECTOR).rename(target)
+            (models_dir / PROJECTOR).symlink_to(target)
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values["GGUF_FILE"] == KEPT_MODEL
+            assert "LLAMA_ARG_MMPROJ" not in values, inside_models_dir
+
+
+def test_malformed_projector_values_are_dropped_without_running_them() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        marker = root / "projector-value-executed"
+        saved = f"LLAMA_ARG_MMPROJ=/models/{PROJECTOR}"
+        # Each names the real projector file in a form activation never writes.
+        for value in (
+            f"/models/../models/{PROJECTOR}",
+            f"/models/./{PROJECTOR}",
+            f"/models//{PROJECTOR}",
+            f"{models_dir}/{PROJECTOR}",
+            PROJECTOR,
+            f"models/{PROJECTOR}",
+            f"/model-stores/ssd/{PROJECTOR}",
+            f"/chat-templates/{PROJECTOR}",
+            f"'/models/$(touch {shlex.quote(str(marker))}){PROJECTOR}'",
+            f"/models/{PROJECTOR}`touch {marker}`",
+        ):
+            replace_env(env, saved, f"LLAMA_ARG_MMPROJ={value}")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values["GGUF_FILE"] == KEPT_MODEL, value
+            assert "LLAMA_ARG_MMPROJ" not in values, value
+            replace_env(env, f"LLAMA_ARG_MMPROJ={value}", saved)
+        assert not marker.exists()
+        # A projector that is not a GGUF, even when the record names it.
+        binary = PROJECTOR.removesuffix(".gguf") + ".bin"
+        (models_dir / PROJECTOR).rename(models_dir / binary)
+        update_import(imports, mmproj_file=binary)
+        replace_env(env, saved, f"LLAMA_ARG_MMPROJ=/models/{binary}")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in values
+
+
+def test_activation_settings_never_reach_another_model_or_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        # A file name that differs from the record only in case is not the
+        # file activation started (Linux names are case-sensitive).
+        replace_env(env, f"GGUF_FILE={KEPT_MODEL}", f"GGUF_FILE={KEPT_MODEL.lower()}")
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+        replace_env(env, f"GGUF_FILE={KEPT_MODEL.lower()}", f"GGUF_FILE={KEPT_MODEL}")
+        # Native macOS takes both as llama-server arguments, never from these keys.
+        replace_env(env, "MODEL_RUNTIME_PROFILE=nvidia-8gb-64k", "MODEL_RUNTIME_PROFILE=")
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates, backend="apple")
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+    with tempfile.TemporaryDirectory() as tmp:
+        # A Windows-hosted llama-server takes its projector from its own plan.
+        root = Path(tmp)
+        env = write_host_native_fixture(root, LLAMA_ARG_MMPROJ=f"/models/{PROJECTOR}",
+                                        MODEL_CHAT_TEMPLATE_OVERRIDE=TEMPLATE_ID,
+                                        LLAMA_ARG_CHAT_TEMPLATE_FILE=f"/chat-templates/{TEMPLATE_FILE}")
+        (root / "no-model-artifacts").mkdir()
+        (root / "no-model-artifacts" / PROJECTOR).write_bytes(b"P" * PROJECTOR_BYTES)
+        values = run_helper(env, CATALOG, root / "no-imports.json", root / "no-model-artifacts",
+                            native_llm=True, served_model=SERVED_35B,
+                            chat_templates=write_chat_templates(root / "release"))
+        assert values["GGUF_FILE"] == SERVED_35B
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+
+
+def test_switchboard_recovery_keeps_activation_settings_only_for_the_same_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        state = write_switchboard_state(root / "data" / "model-state.json")
+        values = run_helper(env, catalog, imports, models_dir, state=state, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        assert values["MODEL_CHAT_TEMPLATE_OVERRIDE"] == TEMPLATE_ID
+        # An interrupted installer already wrote its bootstrap model: the proven
+        # import comes back, but the settings in this .env are another model's.
+        replace_env(env, "LLM_MODEL=agent-test", "LLM_MODEL=bootstrap-model")
+        replace_env(env, f"GGUF_FILE={KEPT_MODEL}", "GGUF_FILE=Bootstrap-2B.gguf")
+        values = run_helper(env, catalog, imports, models_dir, state=state, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert not any(key in values for key in ACTIVATION_KEYS), values
+
+
+def test_same_model_keeps_its_fixed_chat_template() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+        assert values["MODEL_CHAT_TEMPLATE_OVERRIDE"] == TEMPLATE_ID
+        assert values["LLAMA_ARG_CHAT_TEMPLATE_FILE"] == f"/chat-templates/{TEMPLATE_FILE}"
+        assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        # Without this release's template directory nothing proves it still ships.
+        log: list[str] = []
+        values = run_helper(env, catalog, imports, models_dir, log=log)
+        assert values["GGUF_FILE"] == KEPT_MODEL and values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+        assert "MODEL_CHAT_TEMPLATE_OVERRIDE" not in values and "LLAMA_ARG_CHAT_TEMPLATE_FILE" not in values
+        assert "Not keeping the fixed chat template" in log[0], log
+
+
+def test_fixed_chat_template_is_dropped_unless_this_release_ships_it() -> None:
+    saved_file = f"LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/{TEMPLATE_FILE}"
+    saved_id = f"MODEL_CHAT_TEMPLATE_OVERRIDE={TEMPLATE_ID}"
+
+    def env_edit(old: str, new: str) -> Callable[[Path, Path], None]:
+        def change(env: Path, templates: Path) -> None:
+            replace_env(env, old, new)
+        change.__name__ = f"env: {new!r}"
+        return change
+
+    def missing_file(env: Path, templates: Path) -> None:
+        (templates / TEMPLATE_FILE).unlink()
+
+    def changed_file(env: Path, templates: Path) -> None:
+        (templates / TEMPLATE_FILE).write_bytes(TEMPLATE_BODY + b"{{ extra }}\n")
+
+    def entry_retired(env: Path, templates: Path) -> None:
+        (templates / "index.json").write_text(json.dumps({"schemaVersion": 1, "overrides": []}), encoding="utf-8")
+
+    def unreadable_index(env: Path, templates: Path) -> None:
+        (templates / "index.json").write_text("{not json", encoding="utf-8")
+
+    for change in (
+        missing_file, changed_file, entry_retired, unreadable_index,
+        env_edit(saved_id, "MODEL_CHAT_TEMPLATE_OVERRIDE=unknown-fix"),
+        env_edit(saved_id, "MODEL_CHAT_TEMPLATE_OVERRIDE=../fixed-agent-tools"),
+        env_edit(saved_file, "LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/upstream-b9014/Other.jinja"),
+        env_edit(saved_file, f"LLAMA_ARG_CHAT_TEMPLATE_FILE=/chat-templates/../chat-templates/{TEMPLATE_FILE}"),
+        env_edit(saved_file, f"LLAMA_ARG_CHAT_TEMPLATE_FILE={TEMPLATE_FILE}"),
+        env_edit(saved_file, "LLAMA_ARG_CHAT_TEMPLATE_FILE=/models/Agent-Test.jinja"),
+        # Activation writes both together for the container; one alone is not its record.
+        env_edit(saved_file, ""),
+        env_edit(saved_id, ""),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            env, catalog, imports, models_dir = write_model_fixture(root, imported=True, projector=True)
+            add_fixed_template(env)
+            templates = write_chat_templates(root / "release")
+            change(env, templates)
+            values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+            assert values["GGUF_FILE"] == KEPT_MODEL, change.__name__
+            assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}", change.__name__
+            assert "MODEL_CHAT_TEMPLATE_OVERRIDE" not in values, change.__name__
+            assert "LLAMA_ARG_CHAT_TEMPLATE_FILE" not in values, change.__name__
+
+
+def test_a_linked_chat_template_is_not_kept() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, imports, models_dir = write_model_fixture(root, imported=True)
+        add_fixed_template(env)
+        templates = write_chat_templates(root / "release")
+        copy = root / "same-bytes.jinja"
+        copy.write_bytes(TEMPLATE_BODY)
+        (templates / TEMPLATE_FILE).unlink()
+        (templates / TEMPLATE_FILE).symlink_to(copy)
+        values = run_helper(env, catalog, imports, models_dir, chat_templates=templates)
+        assert values["GGUF_FILE"] == KEPT_MODEL
+        assert "MODEL_CHAT_TEMPLATE_OVERRIDE" not in values and "LLAMA_ARG_CHAT_TEMPLATE_FILE" not in values
+
+
+def test_vision_projector_and_fixed_template_survive_the_actual_installer_phases() -> None:
+    def retained(*, projector: bool) -> Callable[[Path, Path], Path]:
+        def prepare(install: Path, source: Path) -> Path:
+            env, catalog, imports, _ = write_model_fixture(install, imported=True, projector=projector)
+            shutil.copyfile(imports, install / "data" / "model-imports.json")
+            add_fixed_template(env)
+            write_chat_templates(source / "config")
+            with env.open("a", encoding="utf-8") as handle:
+                handle.write("GPU_BACKEND=nvidia\n")
+            return catalog
+        return prepare
+
+    values = installer_rerun(retained(projector=True))
+    assert (values["LLM_MODEL"], values["GGUF_FILE"], values["MAX_CONTEXT"]) == ("agent-test", KEPT_MODEL, "65536")
+    assert values["LLAMA_ARG_MMPROJ"] == f"/models/{PROJECTOR}"
+    assert values["MODEL_CHAT_TEMPLATE_OVERRIDE"] == TEMPLATE_ID
+    assert values["LLAMA_ARG_CHAT_TEMPLATE_FILE"] == f"/chat-templates/{TEMPLATE_FILE}"
+    text_model = installer_rerun(retained(projector=False))
+    assert text_model["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in text_model
+    # --reselect-model runs this release's recommendation: another model. Values
+    # the caller happens to export never reach .env either.
+    stray = {"LLAMA_ARG_MMPROJ": "/models/stray-mmproj.gguf", "MODEL_CHAT_TEMPLATE_OVERRIDE": TEMPLATE_ID,
+             "LLAMA_ARG_CHAT_TEMPLATE_FILE": f"/chat-templates/{TEMPLATE_FILE}"}
+    for caller_env in (None, stray):
+        reselected = installer_rerun(retained(projector=True), reselect=True, caller_env=caller_env)
+        assert reselected["LLM_MODEL"] == "recommended-other"
+        assert not any(key in reselected for key in ACTIVATION_KEYS), reselected
+    text_model = installer_rerun(retained(projector=False), caller_env={"LLAMA_ARG_MMPROJ": "/models/stray-mmproj.gguf"})
+    assert text_model["GGUF_FILE"] == KEPT_MODEL and "LLAMA_ARG_MMPROJ" not in text_model
+
+
 def main() -> int:
     tests = [
         test_same_backend_image_pin_survives_actual_installer_phases,
@@ -1160,6 +1548,18 @@ def main() -> int:
         test_fresh_install_mismatch_is_repaired_from_the_served_gguf,
         test_native_repair_refuses_anything_but_the_installer_written_mismatch,
         test_legacy_managed_lemonade_install_is_preserved_on_the_migration_rerun,
+        # F14: the settings model activation owns (vision projector, fixed
+        # chat template) stay with the same model across a rerun.
+        test_same_vision_import_keeps_its_projector,
+        test_projector_is_dropped_unless_it_is_the_models_own_file_on_disk,
+        test_a_linked_projector_is_not_kept,
+        test_malformed_projector_values_are_dropped_without_running_them,
+        test_activation_settings_never_reach_another_model_or_runtime,
+        test_switchboard_recovery_keeps_activation_settings_only_for_the_same_file,
+        test_same_model_keeps_its_fixed_chat_template,
+        test_fixed_chat_template_is_dropped_unless_this_release_ships_it,
+        test_a_linked_chat_template_is_not_kept,
+        test_vision_projector_and_fixed_template_survive_the_actual_installer_phases,
     ]
     for test in tests:
         test()

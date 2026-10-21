@@ -188,6 +188,40 @@ test.each([
   expect(importBodies()).toEqual([])
 })
 
+test('on WSL the storage line names the Windows drive whose free space it shows', async () => {
+  // Fleet laptop: WSL's virtual disk offered 836.21 GiB while its 1 TB drive C: had 68.8 GB free.
+  preflightBody = preflight({storage: {
+    freeBytes: 68800000000, totalBytes: 1022580748288, marginBytes: 51129037414,
+    windowsDrive: 'C:', windowsDriveChecked: true,
+  }})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent(
+    'Disk space: 64.07 GiB available on the Windows drive C:. ODS must keep 47.62 GiB free after the download.')
+  expect(storage).not.toHaveTextContent('could not check')
+})
+
+test('on WSL a Windows drive that could not be checked is said plainly', async () => {
+  preflightBody = preflight({storage: {
+    freeBytes: 897873650647, totalBytes: 1081054005821, marginBytes: 54052700291,
+    windowsDrive: null, windowsDriveChecked: false,
+  }})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent('Disk space: 836.21 GiB available. ODS must keep 50.34 GiB free after the download.')
+  expect(storage).toHaveTextContent(
+    'ODS could not check the Windows drive that stores WSL, so this is the space inside WSL only.')
+  expect(dialog.getAllByText(/ODS must keep/)).toHaveLength(1)
+})
+
+test('a malformed drive name is never shown', async () => {
+  preflightBody = preflight({storage: {freeBytes: 1e11, marginBytes: 5e10, windowsDrive: 'C:\\x', windowsDriveChecked: true}})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent('Disk space: 93.13 GiB available. ODS must keep')
+  expect(storage).not.toHaveTextContent('Windows drive')
+})
+
 test('a measured zero reserve is shown without inventing the host minimum', async () => {
   preflightBody = preflight({storage: {freeBytes: 1e11, marginBytes: 0}})
   const dialog = await open()

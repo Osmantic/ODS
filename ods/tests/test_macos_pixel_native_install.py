@@ -53,6 +53,24 @@ def test_main_reports_allowlisted_activation_failures(monkeypatch, capsys, code,
     assert 'do not reset receipts or repeat activation automatically' in captured.err
 
 
+@pytest.mark.parametrize('code,detail', [
+    ('native-sandbox-build-failed', 'pinned Node.js runtime from nodejs.org'),
+    ('native-sandbox-execution-proof-failed', 'no npm, npx or corepack'),
+    ('invalid-sandbox-node-runtime', 'leave PIXEL_SOURCE_REF unset'),
+])
+def test_main_reports_sandbox_image_failures_with_recovery(monkeypatch, capsys, code, detail):
+    def fail(**kwargs):
+        raise ValueError(code)
+    monkeypatch.setattr(module, 'install', fail)
+    monkeypatch.setattr(module.sys, 'argv', ['pixel-native-install.py',
+        '--install-dir', '/unused', '--ods-source', '/unused'])
+    assert module.main() == 1
+    captured = capsys.readouterr()
+    assert '[' + code + ']' in captured.err
+    assert detail in captured.err
+    assert 'https://discord.gg/4ntNp9MAwC' in captured.err
+
+
 def test_main_reports_individual_health_without_docker_output(monkeypatch, capsys):
     compose = module.helper('compose')
     states = {name: {'state': 'running', 'health': 'healthy'} for name in compose.SERVICES}

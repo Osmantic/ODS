@@ -90,6 +90,8 @@ def init_db():
         "filter_tools_removed": "INTEGER DEFAULT 0",
         "provider_name": "TEXT",
         "cost_source": "TEXT",
+        # NULL preserves historical event arithmetic; never infer old formats.
+        "token_buckets_version": "INTEGER",
     }
 
     import re
@@ -129,6 +131,8 @@ def log_usage(entry: dict):
         "filter_chars_saved", "filter_tokens_saved", "filter_tools_removed",
     ]
     values = [entry.get(c) for c in cols]
+    cols.append("token_buckets_version")
+    values.append(1)  # New receipts use disjoint input/cache token buckets.
     placeholders = ", ".join(["?"] * len(cols))
     col_names = ", ".join(cols)
     conn.execute(f"INSERT INTO usage ({col_names}) VALUES ({placeholders})", values)
@@ -502,7 +506,9 @@ def query_recent_events(limit: int = 100, after_id: str = None):
             SELECT
                 id, agent as agent_name, model,
                 input_tokens, output_tokens,
-                (input_tokens + output_tokens) as total_tokens,
+                (input_tokens + output_tokens + CASE WHEN token_buckets_version = 1
+                    THEN COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+                    ELSE 0 END) as total_tokens,
                 estimated_cost_usd as cost_usd, timestamp
             FROM usage
             WHERE id > ?
@@ -517,7 +523,9 @@ def query_recent_events(limit: int = 100, after_id: str = None):
             SELECT
                 id, agent as agent_name, model,
                 input_tokens, output_tokens,
-                (input_tokens + output_tokens) as total_tokens,
+                (input_tokens + output_tokens + CASE WHEN token_buckets_version = 1
+                    THEN COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)
+                    ELSE 0 END) as total_tokens,
                 estimated_cost_usd as cost_usd, timestamp
             FROM usage
             WHERE id IN (SELECT id FROM usage ORDER BY id DESC LIMIT ?)

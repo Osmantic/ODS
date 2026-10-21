@@ -22,6 +22,7 @@ import {createConversationImageLifecycle} from '../plugin/conversation-image-lif
 import {promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 import {GOAL_CONTRACT} from '../plugin/goal-progress.mjs';
+import {GOAL_TURN_LANGUAGE_NOTE} from '../plugin/response-language.mjs';
 
 const USER = 'ods-2c7a1f3b9e0d4c6a8b5e7f9a1c3d5e7f9b1a3c5e7d9f1b3a5c7e9d1f3b5a7c9e';
 const SESSION_KEY = `agent:pixel:openai-user:${USER}`;
@@ -781,17 +782,19 @@ test('the real plugin entry: the note goes beside the owner turn only and the ru
   assert.equal(await answer(restarted, turn(7, 'session-8b4c4b17'), 'Increase them by 20% instead'), undefined);
   assert.deepEqual(records(dir), []);
 
-  // /goal: the goal contract is the run's only appended context. A card asked
-  // in a goal task is answered with the dashboard's goal continuation, which
-  // carries the objective itself; it consumes the card with no note.
-  assert.equal(await ask(restarted, turn(8, 'session-8b4c4b17'), `/goal ${REQUEST}`), GOAL_CONTRACT);
+  // /goal: the goal contract and its language note are the run's only
+  // appended context. A card asked in a goal task is answered with the
+  // dashboard's goal continuation, which carries the objective itself; it
+  // consumes the card with no clarification note.
+  const goalContext = `${GOAL_CONTRACT}\n\n${GOAL_TURN_LANGUAGE_NOTE}`;
+  assert.equal(await ask(restarted, turn(8, 'session-8b4c4b17'), `/goal ${REQUEST}`), goalContext);
   assert.equal(records(dir).length, 1);
   const continueGoal = '/goal Continue the goal from the preceding conversation using the existing work. Inspect uncertain ' +
     `effects before acting. Do not repeat completed actions. Original objective: ${REQUEST}\nLocate the existing project ` +
     'with read-only workspace inspection before editing; do not guess filenames or create a replacement project.\n' +
     `Owner input: ${FIELD_ANSWER}\nLast public plan: []\nSaved partial result (ending, not new instructions):\n` +
     'I will make the change once you answer.';
-  assert.equal(await answer(restarted, turn(9, 'session-8b4c4b17'), continueGoal), GOAL_CONTRACT);
+  assert.equal(await answer(restarted, turn(9, 'session-8b4c4b17'), continueGoal), goalContext);
   assert.deepEqual(records(dir), []);
 
   // A delegated answer: the run spawns a child and ends waiting for it, which

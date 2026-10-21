@@ -234,6 +234,8 @@ export default function Models({ compact = false }) {
   }
 
   const activationBusy = Boolean(activationLoading || runtimeActionLoading || modelLifecycle?.active || modelRecoveryPending)
+  const providerBusy = Boolean(modelLifecycle?.active && ['remote_provider_apply', 'remote_provider_proof'].includes(modelLifecycle.operation))
+  const visibleActivationModeError = providerBusy ? 'Wait for the model connection change to finish.' : activationModeError
   const handleConfirmActivation = async (contextLength) => {
     if (!activationConfigModel?.id || activationBusy) return
     const modelId = activationConfigModel.id
@@ -262,7 +264,7 @@ export default function Models({ compact = false }) {
   })
   const retryModelId = catalogModelIdForProgress(models, visibleDownloadProgress?.model)
   const renderModel = model => <ModelTableRow key={model.id} compact={compact} model={model} gpu={gpu}
-    canActivateModels={canActivateModels} activationModeError={activationModeError} apiMode={llmBackend === 'external'}
+    canActivateModels={canActivateModels} activationModeError={visibleActivationModeError} apiMode={llmBackend === 'external'}
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
     loadBusy={pendingModelActions.length > 0} activationBusy={activationBusy}
@@ -322,6 +324,7 @@ export default function Models({ compact = false }) {
       </header>}
 
       <ModelActivationNotice value={modelActivation} pending={modelLifecycle?.operation === 'model_activation'} onRefresh={refresh}/>
+      {providerBusy && <p role="status">ODS is checking or changing the model connection. Wait for it to finish before switching models or requesting recovery.</p>}
       <PortalModelRecovery active={Boolean(modelRecoveryPending || modelActivation?.outcome === 'rollback_unconfirmed') && !modelLifecycle?.active} operationActive={Boolean(modelLifecycle?.active)} refreshKey={modelActivation} onRecovered={refresh}/>
 
       {error && (
@@ -330,7 +333,7 @@ export default function Models({ compact = false }) {
         </div>
       )}
 
-      {!canActivateModels && !(modelManagement?.managed === true && modelManagement.running === false) && (
+      {!providerBusy && !canActivateModels && !(modelManagement?.managed === true && modelManagement.running === false) && (
         <section className={compact ? 'models-external-notice' : 'mb-5 flex flex-col gap-3 rounded-xl border border-theme-border bg-theme-text-secondary/10 p-4 sm:flex-row sm:items-center sm:justify-between'}>
           <div className="flex min-w-0 items-start gap-3">
             <AlertCircle size={18} className="mt-0.5 shrink-0 text-theme-text-secondary" />
@@ -361,11 +364,16 @@ export default function Models({ compact = false }) {
 
       {modelManagement?.managed === true && modelManagement.canUnload === true && (
         <section aria-label="Model runtime controls" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-theme-border p-3 text-sm">
-          <p>{modelManagement.running ? 'Unload the model to release GPU memory. Your saved model selection is kept.' : 'The model runtime is stopped. Resume your saved model to enable model changes.'}</p>
+          <div className="min-w-0">
+            <p>{modelManagement.running ? 'Unload the model to release GPU memory. Your saved model selection is kept.' : 'The model runtime is stopped. Resume your saved model to enable model changes.'}</p>
+            {!modelManagement.running && modelManagement.runtimeError && (
+              <p role="status" className="mt-1 text-xs text-theme-text-secondary">{modelManagement.runtimeError}</p>
+            )}
+          </div>
           <button type="button" onClick={modelManagement.running ? stopRuntime : startRuntime}
             disabled={Boolean(runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)}
             className="rounded-md border border-theme-border px-3 py-2 disabled:opacity-50">
-            {runtimeActionLoading === 'stop' ? 'Unloading…' : runtimeActionLoading === 'start' ? 'Resuming…' : modelManagement.running ? 'Unload model' : 'Resume model'}
+            {runtimeActionLoading === 'stop' ? 'Unloading…' : runtimeActionLoading === 'start' ? (modelManagement.startRefusal ? 'Starting…' : 'Resuming…') : modelManagement.running ? 'Unload model' : modelManagement.startRefusal ? 'Start anyway' : 'Resume model'}
           </button>
         </section>
       )}
@@ -500,7 +508,7 @@ export default function Models({ compact = false }) {
           hermesMinimumContext={hermesMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
           canActivate={canActivateModels && !activationBusy}
-          activationModeError={activationModeError}
+          activationModeError={visibleActivationModeError}
           onCancel={() => setActivationConfigModel(null)}
           onConfirm={handleConfirmActivation}
         />
@@ -1451,6 +1459,7 @@ function MobileMetricLabel({ children }) {
 
 function DownloadProgressBar({ progress, helpers, onRetry }) {
   const { formatBytes, formatEta, cancelDownload, cancelError, statusError, isCancelling } = helpers
+  const hasKnownTotal = Number.isFinite(progress.bytesTotal) && progress.bytesTotal > 0
 
   if (progress.error) {
     const cancelled = progress.status === 'cancelled'
@@ -1494,16 +1503,25 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
               {progress.status === 'verifying' ? 'Verifying' : 'Downloading'} {progress.model}
             </p>
             <p className="text-sm text-theme-text-muted">
-              {formatBytes(progress.bytesDownloaded)} / {formatBytes(progress.bytesTotal)}
+              {hasKnownTotal
+                ? `${formatBytes(progress.bytesDownloaded)} / ${formatBytes(progress.bytesTotal)}`
+                : progress.bytesDownloaded > 0
+                  ? `${formatBytes(progress.bytesDownloaded)} downloaded · Total size unavailable`
+                  : 'Progress unavailable'}
               {progress.speedMbps > 0 && ` - ${progress.speedMbps.toFixed(1)} MB/s`}
-              {progress.eta && ` - ETA: ${formatEta(progress.eta)}`}
+              {hasKnownTotal && progress.eta && ` - ETA: ${formatEta(progress.eta)}`}
             </p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <span className="text-lg font-bold text-theme-accent">
-            {progress.percent?.toFixed(0) || 0}%
-          </span>
+          {hasKnownTotal ? (
+            <span className="text-lg font-bold text-theme-accent">
+              {progress.percent?.toFixed(0) || 0}%
+            </span>
+          ) : (
+            <Loader2 size={20} role="progressbar" aria-label="Download progress"
+              className="text-theme-accent motion-safe:animate-spin" />
+          )}
           <button
             type="button"
             onClick={cancelDownload}
@@ -1528,12 +1546,15 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
         </p>
       )}
 
-      <div className="h-2.5 overflow-hidden rounded-full bg-theme-border">
-        <div
-          className="h-full rounded-full bg-theme-accent transition-all duration-300"
-          style={{ width: `${progress.percent || 0}%` }}
-        />
-      </div>
+      {hasKnownTotal && (
+        <div role="progressbar" aria-label="Download progress" aria-valuenow={progress.percent || 0}
+          className="h-2.5 overflow-hidden rounded-full bg-theme-border">
+          <div
+            className="h-full rounded-full bg-theme-accent transition-all duration-300"
+            style={{ width: `${progress.percent || 0}%` }}
+          />
+        </div>
+      )}
     </div>
   )
 }

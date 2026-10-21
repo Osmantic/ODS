@@ -520,6 +520,36 @@ raise SystemExit(0 if actual and hashlib.sha256(actual.encode()).hexdigest() == 
 HERMES_AUTH_VERIFY_PY
 }
 
+# Copy the finished example projects ODS ships (Elf of Doom) into the owner's
+# native Portal workspace whenever Playground/elf-of-doom is absent and this
+# workspace has never received it, so a deleted or renamed example stays that
+# way. The record of received examples lives in Portal's state folder, which
+# the agent's sandbox never mounts. Portal's sidebar then lists it with the
+# other projects; the installer prints nothing about it. Runs after native
+# activation; a failure never fails the install. The outcome, and a workspace
+# layout the helper never writes into (exit status 3, which stays as the owner
+# made it), go only to the install log. Only a failure warns, with its cause,
+# recovery and help link.
+_macos_add_example_projects() {
+    local install_root status code=0
+    # The native workspace path is built from the resolved install directory,
+    # and the helper refuses any symlinked path component.
+    if ! install_root="$(cd "$INSTALL_DIR" && pwd -P)"; then
+        ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: it could not open the ODS install folder $INSTALL_DIR. Nothing in your Portal workspace was changed. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)"
+        return 0
+    fi
+    status="$(/usr/bin/python3 -B "$INSTALL_DIR/installers/lib/pixel-example-projects.py" \
+        --workspace "$install_root/data/pixel-native/home/.openclaw/workspace-pixel" \
+        --state-dir "$install_root/data/pixel-native/home/.openclaw" 2>>"$ODS_LOG_FILE")" || code=$?
+    case "$code" in
+        0) printf 'Portal example projects: %s\n' "$status" >>"$ODS_LOG_FILE" ;;
+        3) printf 'Portal example projects not added: %s\n' "$status" >>"$ODS_LOG_FILE" ;;
+        4) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: $status Nothing in your Portal workspace was replaced. Ask on Discord if you need help: ${ODS_HELP_DISCORD_URL} (details: $ODS_LOG_FILE)" ;;
+        *) ai_warn "Portal is ready, but ODS could not add its Elf of Doom example project: its copy step stopped unexpectedly (exit $code). Nothing in your Portal workspace was replaced. Ask on Discord with the details from $ODS_LOG_FILE: ${ODS_HELP_DISCORD_URL}" ;;
+    esac
+    return 0
+}
+
 
 _macos_bootstrap_upgrade_pid_is_owned() {
     local pid="$1"
@@ -3019,6 +3049,9 @@ for service in (data.get("services") or {}).values():
 
     # Save compose flags for ods-macos.sh
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
+    if $ENABLE_PIXEL; then
+        _macos_add_example_projects
+    fi
 
     # ── Launch background model upgrade ──────────────────────────────────
     if [[ "$_BOOTSTRAP_ACTIVE" == "true" ]]; then
