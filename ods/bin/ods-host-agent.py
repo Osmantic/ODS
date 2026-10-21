@@ -7067,6 +7067,9 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
     action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
+        ok, error = _remove_dead_service_container(service_id, flags)
+        if not ok:
+            return False, error
         if service_id == "ods-proxy":
             ok, error = _prepare_proxy_auth_start(flags)
             if not ok:
@@ -7318,6 +7321,34 @@ def _enable_webui_selection() -> tuple[int, dict]:
     finally:
         _model_activate_lock.release()
         service_lock.release()
+
+
+def _remove_dead_service_container(service_id: str, flags: list[str]) -> tuple[bool, str]:
+    """Remove only a compose container proven dead before re-enabling it."""
+    try:
+        listed = subprocess.run(
+            ["docker", "compose"] + flags + ["ps", "-aq", service_id],
+            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=15,
+        )
+        if listed.returncode != 0:
+            return False, (listed.stderr or "Could not inspect existing service container")[:500]
+        for container_id in (line.strip() for line in listed.stdout.splitlines() if line.strip()):
+            inspected = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}}", container_id],
+                capture_output=True, text=True, timeout=10,
+            )
+            if inspected.returncode != 0:
+                return False, (inspected.stderr or "Could not inspect existing service container")[:500]
+            if inspected.stdout.strip().lower() in {"dead", "removing"}:
+                removed = subprocess.run(
+                    ["docker", "rm", "-f", container_id],
+                    capture_output=True, text=True, timeout=30,
+                )
+                if removed.returncode != 0:
+                    return False, (removed.stderr or "Could not remove dead service container")[:500]
+    except subprocess.TimeoutExpired:
+        return False, "Timed out while cleaning up a dead service container"
+    return True, ""
 
 
 def _proxy_compose_enabled() -> bool:
