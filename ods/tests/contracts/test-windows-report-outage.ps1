@@ -6,7 +6,7 @@ $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'installers/windows/ods.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
-foreach ($name in @('Test-Install', 'Test-DockerRunning', 'Invoke-Report')) {
+foreach ($name in @('Test-Install', 'Test-DockerRunning', 'Get-ComposeFlags', 'Invoke-Report')) {
     $definition = $ast.Find({ param($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
     }, $true)
@@ -46,7 +46,7 @@ function Invoke-WebRequest {
     $script:probes += $Uri
     throw 'fixture endpoint unavailable'
 }
-function Get-ComposeFlags { @('-f', 'docker-compose.base.yml', '-f', 'compose.fixture.yaml') }
+function Ensure-HermesDashboardSessionToken { }
 
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods report outage ' + [guid]::NewGuid().ToString('N'))
 try {
@@ -54,6 +54,7 @@ try {
     $InstallDir = Join-Path $fixture 'install'
     [void][IO.Directory]::CreateDirectory($InstallDir)
     [IO.File]::WriteAllText((Join-Path $InstallDir 'docker-compose.base.yml'), 'services: {}')
+    [IO.File]::WriteAllText((Join-Path $InstallDir '.compose-flags'), '-f docker-compose.base.yml -f compose.fixture.yaml')
     [IO.File]::WriteAllText((Join-Path $InstallDir '.env'), "WEBUI_PORT=13000`nDASHBOARD_PORT=13001`nDASHBOARD_API_PORT=13002`nWHISPER_PORT=19000`nOLLAMA_PORT=18080`nAUDIO_STT_MODEL=fixture/model`n")
     $sentinel = Join-Path $fixture 'foreign-sentinel'
     [IO.File]::WriteAllText($sentinel, 'retain')
