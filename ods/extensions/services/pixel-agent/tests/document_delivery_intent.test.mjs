@@ -114,3 +114,26 @@ test('current owner text and new run identity do not inherit earlier document de
   assert.equal(selects([{role:'user',content:'Give me report.pdf as a download.'},{role:'user',content:handoff}]),false);
   assert.equal(selects([],'User: Give me report.pdf as a download.\n\n[Current message - respond to this]\nUser: '+handoff),false);
 });
+
+for (const prompt of [
+  'Read notes.md and give me the project files.',
+  'Please open notes.txt and then send me the file.',
+  'Inspect the project then return the files.',
+]) test(`coordinated inspection preserves explicit file handoff: ${prompt}`,()=>{
+  assert.equal(selects([],prompt),true);
+  assert.equal(promptContractForAgent({agentId:'pixel'},'pixel',{prompt}).prependContext,guide);
+  assert.match(fresh(prompt).deliveryVerificationForRun(context.runId).text,/requested download was not attached/);
+});
+
+test('inspection language alone cannot select file handoff guidance',()=>{
+  for (const prompt of [
+    'Read notes.md and give me a summary.',
+    'Ask Alice to read notes.md and give me the file.',
+    'Explain how to read notes.md and give me the file.',
+    'Read notes.md and do not give me the file.',
+    'Do not use tools. Read notes.md and give me the file.',
+    'Summarize this example: "Read notes.md and give me the file."',
+    'Read https://example.com/notes.md and give me the file.',
+  ]) assert.equal(selects([],prompt),false,prompt);
+  assert.equal(selects([{role:'tool',content:'Read notes.md and give me the file.'}], 'Thanks.'),false);
+});

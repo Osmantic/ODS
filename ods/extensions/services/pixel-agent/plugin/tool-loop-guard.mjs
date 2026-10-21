@@ -4701,6 +4701,35 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
+// Ordinary owner file handoff is independent of the words download/attach.
+// Match a direct request and its object together; filenames mentioned in an
+// explanation, a list-of-files request or another person's instruction do not
+// select delivery. This is guidance only, never publication authority.
+function ownerRequestsFileHandoff(lane) {
+  const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
+  // An unqualified later refusal overrides an earlier ordinary handoff. A
+  // refusal naming old.zip still leaves a separate current.zip request intact.
+  if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those|all(?:\s+the)?)\s+(?:(?:existing|requested|generated|completed|updated)\s+)?(?:(?:project|source)\s+)?(?:files?|documents?|archives?|attachments?)|them)(?:\s+at\s+all)?(?:\s*,?\s*please)?\s*$/i.test(clause))) return false;
+  const filename = String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx|py|[cm]?[jt]sx?|css|sh|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|pl|dart)["'\x60]?`;
+  const namedFiles = `${filename}(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)${filename})*`;
+  const object = new RegExp(`^(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
+    `(?:(?:existing|requested|generated|completed|updated)\\s+)?(?:(?:project|source)\\s+)?(?:files?|documents?|archives?)|` +
+    `(?:project(?:\\s+source(?:\\s+code)?)?|source\\s+code)|${namedFiles}|(?:file|document|archive)\\s+(?:named|called)\\s+${filename})` +
+    `(?:\\s+with\\s+(?:(?:their|the)\\s+)?original\\s+filenames)?(?:\\s+to\\s+(?:me|us))?(?:\\s+please)?$`, 'i');
+  return clauses.some(raw => {
+    const clause = raw.trim();
+    if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\b/i.test(clause)) return false;
+    const parts = clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:give|provide|send|return)\b)/i);
+    // A coordinated request must itself begin as an owner work directive,
+    // rather than "Ask Alice to ... and give me ..." or a quoted example.
+    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|give|provide|send|return)\b/i.test(parts[0])) return false;
+    return parts.some(part => {
+      const request = part.trim().match(/^(?:(?:please|also|then)\s+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:I|we)\s+(?:want|need)\s+you\s+to\s+)?(?:give|provide|send|return)\s+(?:(?:me|us)\s+(?:with\s+)?)?(.+)$/i);
+      return Boolean(request && object.test(request[1]));
+    });
+  });
+}
+
 // This selects prompt guidance only; it grants no tool or publication authority.
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
@@ -4714,6 +4743,7 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
   // The noun delivery (for example, a file's delivery date) is not itself
   // a publication request. Preserve the existing download/attachment phrases
   // and deliver verb without combining a schedule with a file mention.
+  if (ownerRequestsFileHandoff(lane)) return true;
   return /\b(?:download(?:able)?|attach(?:ment)?|deliver)\b/i.test(positive) &&
     (/\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)\b/i.test(positive) ||
       (/\b(?:documents?|files?|archives?|projects?|source\s+(?:code|filenames?))\b/i.test(positive) &&
@@ -6997,17 +7027,28 @@ function workspaceReadFingerprint(event) {
 // Preserve an explicit execution method when choosing how to create a named
 // output. This is routing guidance, not evidence that a program created bytes.
 export function userMessagePythonCreationPath(messages, prompt = undefined) {
+  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
+    {preserveFileTargets: true});
   // A named output plus an explicit Python method is sufficient even when the
   // owner does not spell out "workspace". This binds only one bare filename;
   // it does not grant directory access or establish execution provenance.
   const expected = userMessageWorkspaceContinuationPath(messages, prompt) ??
-    userMessageBareWorkspaceFilename(messages, prompt);
+    userMessageBareWorkspaceFilename(messages, prompt) ??
+    // Research sentences may contain dotted API names or documentation URLs.
+    // For method routing only, apply the same conservative filename selector
+    // to all creation clauses together. Keeping every creation clause means
+    // competing outputs, directory paths and traversal still fail closed.
+    userMessageBareWorkspaceFilename([], text.split(/[!?;\n]+|\.(?=\s|$)/)
+      .filter(clause => /\b(?:create|generate|write|save|produce|emit)\s+/i.test(clause))
+      .join('. '));
   if (!expected) return undefined;
-  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
-    {preserveFileTargets: true});
   const path = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const output = `(?:/workspace/|workspace/|\\./)?${path}(?=$|[\\s,;!?]|\\.(?:\\s|$))`;
-  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?(?:file\\s+)?';
+  // Keep the explicit method bound to the already validated single output,
+  // including ordinary descriptions such as "a downloadable CSV named ...".
+  const create = '\\b(?:create|generate|write|save|produce|emit)\\s+(?:(?:a|the)\\s+)?' +
+    '(?:downloadable\\s+)?(?:(?:csv|(?:plain\\s+)?text)\\s+)?' +
+    '(?:file\\s+)?(?:(?:named|called)\\s+)?';
   const methodFirst = new RegExp('\\b(?:use|run|execute|invoke)\\s+python3?\\b' +
     '(?:\\s+(?:in|inside)\\s+(?:the\\s+)?workspace)?\\s+to\\s+' + create + output, 'i');
   const outputFirst = new RegExp(create + output +
@@ -9154,14 +9195,30 @@ export function createToolLoopGuard({
         : effectiveToolName === EVIDENCE_READBACK_TOOL
           ? "read"
           : effectiveToolName;
+    if (state?.ownerIntentObserved && state.workspaceMutationRequested &&
+        ['write', 'edit', 'apply_patch', 'exec'].includes(workspaceOperation) &&
+        !state.privateNetworkRequestDenied && !state.privateNetworkExhausted &&
+        !state.workspacePreviewRestrictions?.web &&
+        (typeof hostCitationVerifier?.allowed !== 'function' || hostCitationVerifier.allowed())) {
+      const reminder = state.completionAssurance.beforeWorkspaceMutation();
+      if (reminder) return reminder;
+    }
     if (state?.workspacePythonCreationPath &&
         (workspaceOperation === 'write' || workspaceOperation === 'edit')) {
       const args = toolName === 'tool_call' ? wrappedToolParams?.args : normalizedParams ?? event?.params;
       const target = effectiveToolName === EVIDENCE_REPORT_TOOL
         ? state.operationsWorkspaceExpectedPath : normalizeWorkspaceFilePath(args?.path);
-      if (target === state.workspacePythonCreationPath) return {
+      const requested = state.workspacePythonCreationPath;
+      const leafStart = requested.lastIndexOf('/') + 1;
+      const leaf = requested.slice(leafStart);
+      // Correct the observed hidden-output shortcut without treating paths in
+      // different directories as equivalent or changing workspace normalization.
+      const hiddenAlternate = leaf && !leaf.startsWith('.') &&
+        target === `${requested.slice(0, leafStart)}.${leaf}`;
+      if (target === requested || hiddenAlternate) return {
         block: true,
-        blockReason: `The owner explicitly requested creating "${target}" by executing Python in the workspace. ` +
+        blockReason: `The owner explicitly requested creating "${requested}" by executing Python in the workspace. ` +
+          (hiddenAlternate ? `Use the requested filename "${requested}", not the hidden alternate "${target}". ` : '') +
           'Use sandbox exec to run Python that creates this output; do not substitute directly written output bytes. ' +
           'You may write a Python generator script at a different path, then execute it. ' +
           'Read the generated file back and publish that exact file. Host observations remain independent; ' +

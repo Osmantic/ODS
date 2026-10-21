@@ -1142,6 +1142,55 @@ def test_owner_token_survives_pruning(magic_link_module):
     assert pruned["tokens"][0]["token_type"] == "owner"
 
 
+def test_retention_cap_never_evicts_a_live_owner_card(magic_link_client, magic_link_module):
+    """The audit cap drops spent invites, not the oldest record by age.
+
+    The owner card is usually the first record in the store. Once the
+    retained invite history reached the cap, generating another invite
+    evicted it and the owner's sign-in card stopped working.
+    """
+    owner = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "owner", "token_type": "owner"},
+        headers=magic_link_client.auth_headers,
+    ).json()["token"]
+
+    long_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    store = magic_link_module._ensure_store()
+    for index in range(magic_link_module.MAX_TOKENS_RETAINED):
+        created = long_ago + timedelta(minutes=index)
+        store["tokens"].append({
+            "token_hash": f"{index:064x}",
+            "target_username": f"guest{index}",
+            "scope": "chat",
+            "reusable": False,
+            "token_type": "guest",
+            "url_mode": "auto",
+            "created_at": created.isoformat(),
+            "expires_at": (created + timedelta(hours=1)).isoformat(),
+            "created_by_ip": "127.0.0.1",
+            "redemptions": [{"at": created.isoformat(), "ip": "127.0.0.1", "user_agent": ""}],
+            "revoked_at": None,
+            "note": None,
+        })
+    # The owner card predates every retained invite.
+    store["tokens"][0]["created_at"] = (long_ago - timedelta(days=1)).isoformat()
+    magic_link_module._write_store(store)
+
+    guest = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "newguest"},
+        headers=magic_link_client.auth_headers,
+    )
+    assert guest.status_code == 200
+
+    usernames = [record["target_username"] for record in magic_link_module._ensure_store()["tokens"]]
+    assert usernames[0] == "owner"
+    assert "guest0" not in usernames  # the oldest spent invite made room instead
+    assert magic_link_client.get(f"/magic-link/{owner}", follow_redirects=False).status_code == 302
+    assert magic_link_client.get(f"/magic-link/{guest.json()['token']}", follow_redirects=False).status_code == 302
+
+
 # ---------------------------------------------------------------------------
 # Rate-limit
 # ---------------------------------------------------------------------------
