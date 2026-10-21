@@ -53,7 +53,7 @@ try {
         Principal = [pscustomobject]@{ UserId = Get-ODSPortalUserSid }; Actions = @($registration.Action) }
     $script:taskMissing = $false; $script:occupied = $false; $script:running = $false
     $script:healthFailure = $false; $script:staleProcess = $false; $script:wrongModel = $false
-    $script:failStart = $false; $script:failReady = $false; $script:mutateDuringStop = $false
+    $script:failStart = $false; $script:failReady = $false; $script:mutateDuringStop = $false; $script:failStop = $false
     $script:probeMutexDuringHealth = $false; $script:replacePlanDuringHealth = $false
     $script:contextOffset = 0; $script:wrongKey = $false; $script:visionLoaded = $true
     $script:events = [Collections.Generic.List[string]]::new()
@@ -73,6 +73,7 @@ try {
     }
     function Stop-ODSPortalRuntime([string]$ExecutablePath) {
         Assert-Control ($ExecutablePath -eq $exe) 'controller stops only the verified plan executable'
+        if ($script:failStop) { throw 'fixture stop refused' }
         $script:events.Add('stop'); $script:running = $false
         if ($script:mutateDuringStop) { [IO.File]::AppendAllText($planPath, ' ') }
     }
@@ -82,13 +83,14 @@ try {
         if ($script:failStart) { throw 'fixture task start failed' }
         $script:running = $true
     }
+    # Stop-ODSPortalRuntime disarms sign-in startup itself (its order is pinned
+    # in test-windows-portal-llama-restart.ps1) and is a fixture here, so the
+    # controller never disables the task on its own.
     function Disable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
-        Assert-Control (-not (Test-ODSNativeLlamaWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json'))) 'stop intent is durable before retries are disabled'
-        $script:taskDisabled = $true
+        throw 'The controller must not disarm sign-in startup ahead of Stop-ODSPortalRuntime.'
     }
     function Enable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction)
         Assert-Control (Test-ODSNativeLlamaWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json')) 'explicit start publishes running intent before enabling the owned task'
-        $script:taskDisabled = $false
     }
     function Wait-ODSPortalRuntimeReady($Registration, [int]$Seconds = 1020) {
         if ($script:failReady) { throw 'fixture load failure' }
@@ -300,6 +302,13 @@ try {
     $script:occupied = $true
     $null = Assert-ControlError (New-ControlRequest 'stop' (Get-ODSPortalPlanDigest $planPath)) 'stop_unverified'
     $script:occupied = $false
+    # The stop itself disarms and re-arms; the controller never disarms ahead of it.
+    $script:failStop = $true
+    $failed = $null
+    try { $null = Invoke-ODSPortalModelControl (New-ControlRequest 'stop' (Get-ODSPortalPlanDigest $planPath)) } catch { $failed = $_.Exception }
+    Assert-Control ($failed.Message -eq 'fixture stop refused' -and
+        (Test-ODSNativeLlamaWanted (Join-Path (Split-Path -Parent $planPath) 'intent.json'))) 'a refused Unload leaves sign-in startup armed'
+    $script:failStop = $false
     # --- Vision projector (WP2): planned only for a launcher that declares it ---
     [IO.File]::WriteAllText((Join-Path $models 'mmproj-F16.gguf'), 'fixture')
     function New-VisionRequest([string]$Digest, [string]$Projector = 'mmproj-F16.gguf') {
@@ -338,6 +347,155 @@ try {
     $request = New-ControlRequest 'restore' $text.planDigest; $request.plan = $visionPlan
     $back = Invoke-ODSPortalModelControl $request
     Assert-Control ($back.running -and $back.plan.MmprojFile -ceq 'mmproj-F16.gguf' -and $back.observation.modelId -ceq 'Small-0.6B.gguf') 'rollback restores the previous projector with its model'
+
+    # --- Launcher errors in status (every GPU) --------------------------------------
+    $runtimeDir = Split-Path -Parent $planPath
+    $readyFile = Join-Path $runtimeDir 'ready.json'
+    $current = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    $script:running = $false
+    Write-ODSPrivateEnvFile -Path $readyFile -Content '{"Error":"llama-server startup failed: Port 18080 is already occupied; no existing process was changed."}'
+    $amdError = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control ($amdError.managed -and -not $amdError.running -and $amdError.runtimeError -ceq 'llama-server startup failed: Port 18080 is already occupied; no existing process was changed.' -and
+        $amdError.runtimeErrorSource -ceq 'launcher' -and -not $amdError.Contains('startRefusal')) 'the launcher''s own error reaches status as written (AMD launch failures become visible), with no start refusal'
+    Write-ODSPrivateEnvFile -Path $readyFile -Content (@{ Error = ('The model was not started: ' + ([string][char]0x00E9 * 3) + "`n" + ('x' * 2000)) } | ConvertTo-Json -Compress)
+    $long = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control ($long.runtimeError.Length -le 1024 -and $long.runtimeError -cmatch '^[\x20-\x7e]+$' -and $long.runtimeError.StartsWith('The model was not started: ???')) 'status text is bounded printable ASCII (at most 1024 characters)'
+    foreach ($damaged in @([Text.Encoding]::ASCII.GetBytes('{not json'), [byte[]]@(0x7B, 0xFF, 0xFE, 0x7D))) {
+        Write-ODSPrivateFileBytes -Path $readyFile -Bytes $damaged
+        $broken = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+        Assert-Control ($broken.managed -and -not $broken.running -and $broken.runtimeErrorSource -ceq 'observation' -and -not $broken.Contains('startRefusal')) 'a damaged ready.json is an observation failure as before, never a failed status'
+    }
+    $script:running = $true
+    $null = Invoke-ODSPortalModelControl (New-ControlRequest 'start' (Get-ODSPortalPlanDigest $planPath))
+    $observed = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control ($observed.running -and -not $observed.Contains('runtimeError')) 'a started model clears the launcher error'
+    Assert-Control ((@($observed.Keys) -join ',') -ceq 'ok,managed,running,observation,modelStoreWindowsPath,planPathWindows,planDigest,plan,planFeatures') 'a running AMD status keeps exactly its earlier shape'
+    $script:staleProcess = $true
+    $stale = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control (-not $stale.running -and $stale.runtimeErrorSource -ceq 'observation' -and -not $stale.Contains('startRefusal')) 'an observation failure is marked as such, so only launcher text reaches the Models page'
+    $script:staleProcess = $false
+
+    # --- CUDA route (RTX Spark): memory before a switch, Start anyway -----------------
+    $cudaOptions = Get-Content -LiteralPath $optionsPath -Raw | ConvertFrom-Json
+    $cudaOptions.Device = 'CUDA0'; $cudaOptions.NGpuLayers = 'all'; $cudaOptions.ReleaseTag = 'b11429'
+    $cudaOptions | Add-Member -NotePropertyName Backend -NotePropertyValue 'cuda'
+    $cudaOptions | Add-Member -NotePropertyName Architecture -NotePropertyValue 'arm64'
+    $amdOptionsJson = [IO.File]::ReadAllText($optionsPath)
+    Write-ODSPrivateEnvFile -Path $optionsPath -Content ($cudaOptions | ConvertTo-Json -Depth 4 -Compress)
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 14 }
+    $script:gpuState = [pscustomobject]@{ Name = 'NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)'; TotalMiB = 98240; UsedMiB = 1200; DriverVersion = '616.62' }
+    $script:memoryReads = 0
+    function Get-ODSNativeCommitState { $script:memoryReads++; return $script:commitState }
+    function Get-ODSNativeGpuMemoryState([string]$GpuName = '') { $script:memoryReads++; return $script:gpuState }
+    function Get-ODSWslEffectiveMemory([double]$VisibleGiB) { return [pscustomobject]@{ GiB = 15.25; Source = 'default' } }
+    $catalogModel = 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'
+    [IO.File]::WriteAllText((Join-Path $models $catalogModel), 'fixture')
+    $memoryFile = Join-Path $runtimeDir 'memory-plan.json'
+    $overrideFile = Join-Path $runtimeDir 'start-override.json'
+    function New-SwitchRequest([string]$Gguf, $Context) {
+        $request = New-ControlRequest 'activate' (Get-ODSPortalPlanDigest $planPath); $request.gguf = $Gguf; $request.contextSize = $Context
+        return $request
+    }
+    $help = 'Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC'
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 30.49; CommittedGiB = 14 }
+    $digest = Get-ODSPortalPlanDigest $planPath
+    $before = $script:events.Count
+    $refused = Assert-ControlError (New-SwitchRequest $catalogModel 131072) 'insufficient_memory'
+    Assert-Control ($refused.Message -match "^$([regex]::Escape($catalogModel)) at 128K needs about 25\.8 GiB, but Windows can lend about 0\.0 GiB once the current model stops \(memory limit 30\.5 GiB\)\. Your current model keeps running\." -and
+        $refused.Message.EndsWith($help)) 'a switch Windows cannot lend memory for is refused with the cause and the way out (M18)'
+    Assert-Control ($script:events.Count -eq $before -and (Get-ODSPortalPlanDigest $planPath) -ceq $digest -and -not (Test-Path -LiteralPath $memoryFile) -and
+        (Test-ODSNativeLlamaWanted (Join-Path $runtimeDir 'intent.json'))) 'the refusal comes before any disarm or stop: plan, intent and the running model are untouched'
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 14 }
+    $script:gpuState.UsedMiB = 90000
+    $gpuRefused = Assert-ControlError (New-SwitchRequest $catalogModel 131072) 'insufficient_memory'
+    Assert-Control ($gpuRefused.Message -match 'needs about 23\.8 GiB of GPU memory, but NVIDIA RTX Spark N1X .* has about 8\.0 GiB free once the current model stops' -and
+        $script:events.Count -eq $before) 'a GPU another program fills refuses the switch the same way'
+    $script:gpuState.UsedMiB = 1200
+    $switched = Invoke-ODSPortalModelControl (New-SwitchRequest $catalogModel 131072)
+    $memory = Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json
+    Assert-Control ($switched.running -and $switched.plan.GgufFile -ceq $catalogModel -and -not $switched.plan.Contains('MmprojFile') -and
+        $memory.GgufFile -ceq $catalogModel -and $memory.ContextSize -eq 131072 -and $memory.DeviceNeedGiB -eq 23.83 -and $memory.CommitNeedGiB -eq 25.8 -and
+        $memory.WslGiB -eq 15.25 -and $memory.Source -ceq 'catalog') 'a switch that fits starts, and memory-plan.json records the catalog estimate for the launcher''s own check'
+    Assert-ODSPortalPrivateControlFile $memoryFile
+    $imported = Invoke-ODSPortalModelControl (New-SwitchRequest 'Original-9B.gguf' 65536)
+    $memory = Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json
+    Assert-Control ($imported.running -and $memory.GgufFile -ceq 'Original-9B.gguf' -and $memory.Source -ceq 'files' -and $memory.CommitNeedGiB -eq 2) 'a model outside the catalog is sized from its files plus 2 GiB'
+    $previousPlan = $imported.plan | ConvertTo-Json | ConvertFrom-Json
+    $null = Invoke-ODSPortalModelControl (New-SwitchRequest $catalogModel 131072)
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 30.49; CommittedGiB = 14 }
+    $request = New-ControlRequest 'restore' (Get-ODSPortalPlanDigest $planPath); $request.plan = $previousPlan
+    $restored = Invoke-ODSPortalModelControl $request
+    Assert-Control ($restored.running -and $restored.plan.GgufFile -ceq 'Original-9B.gguf' -and
+        (Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json).GgufFile -ceq 'Original-9B.gguf') 'restore is never refused for memory (it is the rollback), and writes the restored plan''s memory figures'
+    $stopped = Invoke-ODSPortalModelControl (New-ControlRequest 'stop' (Get-ODSPortalPlanDigest $planPath))
+    $resumed = Invoke-ODSPortalModelControl (New-ControlRequest 'start' $stopped.planDigest)
+    Assert-Control ($resumed.running -and $resumed.planDigest -ceq $stopped.planDigest) 'start is never refused for memory either'
+    $nineB = $resumed.plan | ConvertTo-Json | ConvertFrom-Json
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 14 }
+    $null = Invoke-ODSPortalModelControl (New-SwitchRequest $catalogModel 131072)
+    & {
+        function Get-ODSPortalControlMemoryNeed { throw 'fixture: the catalog cannot be read' }
+        $before = $script:events.Count
+        $unsized = $null
+        try { $null = Invoke-ODSPortalModelControl (New-SwitchRequest 'Small-0.6B.gguf' 65536) } catch { $unsized = $_.Exception }
+        Assert-Control ($unsized.Message -match 'catalog cannot be read' -and $script:events.Count -eq $before) 'a switch whose memory cannot be sized fails before anything is stopped'
+        $request = New-ControlRequest 'restore' (Get-ODSPortalPlanDigest $planPath); $request.plan = $nineB
+        $rolled = Invoke-ODSPortalModelControl $request
+        Assert-Control ($rolled.running -and $rolled.plan.GgufFile -ceq 'Original-9B.gguf' -and
+            (Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json).GgufFile -ceq $catalogModel) 'a rollback whose memory cannot be sized still runs (the launcher then skips its check for the other plan''s figures)'
+    }
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 14 }
+
+    # The launcher refused the saved plan: status says so, and Resume starts it anyway.
+    $script:running = $false
+    $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    $refusal = [ordered]@{ Error = "The model was not started: Windows can lend it only 1.0 GiB right now. $help"; Code = 'memory_refused'
+        GgufFile = [string]$plan.GgufFile; ContextSize = [long]$plan.ContextSize }
+    Write-ODSPrivateEnvFile -Path $readyFile -Content ($refusal | ConvertTo-Json -Compress)
+    $status = Invoke-ODSPortalModelControl (New-ControlRequest 'status')
+    Assert-Control (-not $status.running -and $status.startRefusal -ceq 'memory_refused' -and $status.runtimeErrorSource -ceq 'launcher' -and
+        $status.runtimeError.StartsWith('The model was not started:')) 'a memory refusal for the saved plan reaches status as startRefusal with the launcher''s text'
+    $other = [ordered]@{ Error = 'The model was not started: fixture'; Code = 'gpu_busy'; GgufFile = 'Small-0.6B.gguf'; ContextSize = 65536 }
+    Write-ODSPrivateEnvFile -Path $readyFile -Content ($other | ConvertTo-Json -Compress)
+    Assert-Control (-not (Invoke-ODSPortalModelControl (New-ControlRequest 'status')).Contains('startRefusal')) 'a refusal recorded for another plan is no start refusal for this one'
+    Write-ODSPrivateEnvFile -Path $readyFile -Content ($refusal | ConvertTo-Json -Compress)
+    $anyway = Invoke-ODSPortalModelControl (New-ControlRequest 'start' (Get-ODSPortalPlanDigest $planPath))
+    $override = Get-Content -LiteralPath $overrideFile -Raw | ConvertFrom-Json
+    Assert-Control ($anyway.running -and $override.GgufFile -ceq $plan.GgufFile -and $override.ContextSize -eq $plan.ContextSize) 'Resume of the refused plan is Start anyway: start-override.json names that plan for the launcher'
+    Assert-ODSPortalPrivateControlFile $overrideFile
+    Remove-Item -LiteralPath $overrideFile
+    $script:running = $false
+    Write-ODSPrivateEnvFile -Path $readyFile -Content ($refusal | ConvertTo-Json -Compress)
+    $null = Invoke-ODSPortalModelControl (New-SwitchRequest $catalogModel 131072)
+    Assert-Control (-not (Test-Path -LiteralPath $overrideFile)) 'a switch to another model never starts it anyway'
+
+    # The durable launcher writes the refusal's code and plan beside its text,
+    # and an AMD failure exactly as before.
+    $launcherText = [IO.File]::ReadAllText((Join-Path $runtimeDir 'launch.ps1'))
+    $invokeLine = '    $code = Invoke-ODSNativeLlamaRuntime $plan $options (Join-Path $PSScriptRoot ''ready.json'')'
+    Assert-Control ($launcherText.Contains($invokeLine)) 'the generated launcher can be isolated before its runtime call'
+    $probe = Join-Path $runtimeDir 'refusal-probe.ps1'
+    Write-ODSPrivateEnvFile -Path $probe -Content $launcherText.Replace($invokeLine,
+        '    throw (New-ODSNativeStartRefusal ([pscustomobject]@{ Code = ''gpu_busy''; Text = ''The model was not started: fixture refusal'' }) $plan)')
+    & $testShell -NoProfile -ExecutionPolicy Bypass -File $probe
+    $written = Get-Content -LiteralPath $readyFile -Raw | ConvertFrom-Json
+    $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
+    Assert-Control ($LASTEXITCODE -eq 1 -and $written.Error -ceq 'The model was not started: fixture refusal' -and $written.Code -ceq 'gpu_busy' -and
+        $written.GgufFile -ceq $plan.GgufFile -and $written.ContextSize -eq $plan.ContextSize) 'the launcher records a refusal with its code and the plan it was for'
+    Write-ODSPrivateEnvFile -Path $probe -Content $launcherText.Replace($invokeLine, '    throw ''Port 18080 is already occupied; no existing process was changed.''')
+    & $testShell -NoProfile -ExecutionPolicy Bypass -File $probe
+    Assert-Control ($LASTEXITCODE -eq 1 -and [IO.File]::ReadAllText($readyFile) -ceq '{"Error":"llama-server startup failed: Port 18080 is already occupied; no existing process was changed."}') 'any other launcher failure is recorded exactly as before'
+    $global:LASTEXITCODE = 0
+    Remove-Item -LiteralPath $probe
+
+    # Vulkan (AMD) never runs the memory check.
+    Write-ODSPrivateEnvFile -Path $optionsPath -Content $amdOptionsJson
+    $script:running = $true
+    $script:memoryReads = 0
+    $script:commitState = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 1; CommittedGiB = 1 }
+    $amdSwitch = Invoke-ODSPortalModelControl (New-SwitchRequest 'Small-0.6B.gguf' 65536)
+    Assert-Control ($amdSwitch.running -and $script:memoryReads -eq 0 -and
+        (Get-Content -LiteralPath $memoryFile -Raw | ConvertFrom-Json).GgufFile -cne 'Small-0.6B.gguf') 'a Vulkan switch reads no memory figures and writes no memory plan'
     # The real entrypoint must return one JSON error and a nonzero process exit.
     # Invalid actions fail before any task/process/network inspection can occur.
     $entry = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../installers/windows/portal-model-control.ps1'))

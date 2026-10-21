@@ -21,6 +21,9 @@ function Resolve-WindowsODSPort {
     .SYNOPSIS
         Resolve a Windows installer port from an explicit process override,
         persisted .env state, or the platform default.
+    .PARAMETER RequireValidProcessOverride
+        Reject a present process value that Compose cannot use as a decimal
+        port, rather than falling back while Compose still inherits that value.
     #>
     param(
         [Parameter(Mandatory = $true)]
@@ -30,11 +33,24 @@ function Resolve-WindowsODSPort {
         [int]$DefaultPort,
 
         [hashtable]$ExistingEnv,
-        [string]$InstallDir = ""
+        [string]$InstallDir = "",
+        [switch]$RequireValidProcessOverride
     )
 
     $candidates = New-Object 'System.Collections.Generic.List[string]'
     $processValue = [Environment]::GetEnvironmentVariable($Name)
+    if ($RequireValidProcessOverride -and
+        [Environment]::GetEnvironmentVariables("Process").Contains($Name)) {
+        # Compose inherits process values ahead of --env-file, including empty
+        # values. A fallback here would check/write a different port from the
+        # one Compose consumes. Keep the legacy WebUI/Whisper contract opt-out.
+        $processPort = 0
+        if ($processValue -cnotmatch '\A[0-9]+\z' -or
+            -not [int]::TryParse($processValue, [ref]$processPort) -or
+            $processPort -lt 1 -or $processPort -gt 65535) {
+            throw "$Name process override must be a decimal port from 1 to 65535. Remove the environment variable to use the retained .env value or default."
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($processValue)) {
         [void]$candidates.Add($processValue)
     }
@@ -745,23 +761,32 @@ COMFYUI_CPU_LIMIT=$comfyuiCpuLimit
 COMFYUI_CPU_RESERVATION=$comfyuiCpuReservation
 
 #=== Ports ===
+DASHBOARD_PORT=$(Resolve-WindowsODSPort -Name "DASHBOARD_PORT" -DefaultPort 3001 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+DASHBOARD_REMOTE_PORT=$(Resolve-WindowsODSPort -Name "DASHBOARD_REMOTE_PORT" -DefaultPort 3011 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+DASHBOARD_API_PORT=$(Resolve-WindowsODSPort -Name "DASHBOARD_API_PORT" -DefaultPort 3002 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+PERPLEXICA_PORT=$(Resolve-WindowsODSPort -Name "PERPLEXICA_PORT" -DefaultPort 3004 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+EMBEDDINGS_PORT=$(Resolve-WindowsODSPort -Name "EMBEDDINGS_PORT" -DefaultPort 8090 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+SHIELD_PORT=$(Resolve-WindowsODSPort -Name "SHIELD_PORT" -DefaultPort 8085 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+TOKEN_SPY_PORT=$(Resolve-WindowsODSPort -Name "TOKEN_SPY_PORT" -DefaultPort 3005 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+COMFYUI_PORT=$(Resolve-WindowsODSPort -Name "COMFYUI_PORT" -DefaultPort 8188 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+APE_PORT=$(Resolve-WindowsODSPort -Name "APE_PORT" -DefaultPort 7890 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 OLLAMA_PORT=11434
 WEBUI_PORT=$webuiPort
 WHISPER_PORT=$whisperPort
-TTS_PORT=8880
-N8N_PORT=5678
-QDRANT_PORT=6333
-QDRANT_GRPC_PORT=6334
+TTS_PORT=$(Resolve-WindowsODSPort -Name "TTS_PORT" -DefaultPort 8880 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+N8N_PORT=$(Resolve-WindowsODSPort -Name "N8N_PORT" -DefaultPort 5678 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+QDRANT_PORT=$(Resolve-WindowsODSPort -Name "QDRANT_PORT" -DefaultPort 6333 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+QDRANT_GRPC_PORT=$(Resolve-WindowsODSPort -Name "QDRANT_GRPC_PORT" -DefaultPort 6334 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 QDRANT_API_KEY=$qdrantApiKey
-LITELLM_PORT=4000
-SEARXNG_PORT=8888
+LITELLM_PORT=$(Resolve-WindowsODSPort -Name "LITELLM_PORT" -DefaultPort 4000 -ExistingEnv $existingEnv -RequireValidProcessOverride)
+SEARXNG_PORT=$(Resolve-WindowsODSPort -Name "SEARXNG_PORT" -DefaultPort 8888 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 
 #=== Hermes Agent ===
 HERMES_LLM_BASE_URL=$hermesLlmBaseUrl
 HERMES_LLM_API_KEY=$hermesLlmApiKey
 HERMES_LANGUAGE=en
 HERMES_REQUIRE_OWNER_CARD=$(Get-EnvOrNew "HERMES_REQUIRE_OWNER_CARD" $(if ($env:HERMES_REQUIRE_OWNER_CARD) { $env:HERMES_REQUIRE_OWNER_CARD } else { "false" }))
-HERMES_PROXY_PORT=9120
+HERMES_PROXY_PORT=$(Resolve-WindowsODSPort -Name "HERMES_PROXY_PORT" -DefaultPort 9120 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 HERMES_PROXY_UPSTREAM=ods-hermes:9119
 ODS_AUTH_UPSTREAM=ods-dashboard-api:3002
 
@@ -779,7 +804,7 @@ $(if ($windowsAmdHostInference) { "LLAMA_SERVER_API_KEY=$llamaServerApiKey" })
 LIVEKIT_API_KEY=$livekitApiKey
 LIVEKIT_API_SECRET=$livekitSecret
 OPENCODE_SERVER_PASSWORD=$opencodePassword
-OPENCODE_PORT=3003
+OPENCODE_PORT=$(Resolve-WindowsODSPort -Name "OPENCODE_PORT" -DefaultPort 3003 -ExistingEnv $existingEnv -RequireValidProcessOverride)
 TOKEN_SPY_API_KEY=$tokenSpyApiKey
 SEARXNG_SECRET=$searxngSecret
 DIFY_SECRET_KEY=$difySecretKey

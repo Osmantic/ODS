@@ -617,3 +617,102 @@ def test_real_transport_activation_roundtrip(mod, tmp_path, monkeypatch):
         assert posts == [('POST', '/v1/model/activate')]
     finally:
         server.shutdown()
+
+
+def _fake_clock(mod, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(mod.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(mod.time, 'sleep', lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    return clock
+
+
+def test_busy_lifecycle_refusal_is_sent_again_until_activation_starts(mod, tmp_path, monkeypatch):
+    # Native Pixel's periodic access check held the model lifecycle (fleet Mac, 2026-10-18).
+    _fake_clock(mod, monkeypatch)
+    install, env_path, transport = _setup(
+        tmp_path, mod, monkeypatch,
+        responses=[
+            {'pending': False},
+            {'status': 'idle', 'modelTransactionPending': False},
+            mod.LifecycleBusy('model-lifecycle-busy'),
+            mod.LifecycleBusy('model-lifecycle-busy'),
+            _ok_activation(),
+            {'pending': False},
+            _ok_status(),
+        ])
+    _write_env(env_path, _base_env(install, GGUF_FILE='model-2b.gguf', LLM_MODEL='qwen3.5-2b',
+                                   MAX_CONTEXT='32768', CTX_SIZE='32768'))
+
+    def activating_transport(url, **kwargs):
+        response = transport(url, **kwargs)
+        if kwargs['method'] == 'POST':
+            _write_env(env_path, _base_env(install, GGUF_FILE='model-9b.gguf',
+                LLM_MODEL='qwen3.5-9b', MAX_CONTEXT='32768', CTX_SIZE='32768'))
+        return response
+    monkeypatch.setattr(mod, '_request', activating_transport)
+
+    assert _run(mod, install, env_path) == 0
+    posts = [c for c in transport.calls if c['method'] == 'POST']
+    assert len(posts) == 3
+    assert len({c['body'] for c in posts}) == 1
+
+
+def test_busy_lifecycle_stops_at_its_bound_with_nothing_activated(mod, tmp_path, monkeypatch):
+    clock = _fake_clock(mod, monkeypatch)
+    attempts = int(mod.LIFECYCLE_BUSY_WAIT_SECONDS / mod.LIFECYCLE_BUSY_RETRY_SECONDS) + 1
+    install, env_path, transport = _setup(
+        tmp_path, mod, monkeypatch,
+        responses=[{'pending': False}, {'status': 'idle', 'modelTransactionPending': False}]
+        + [mod.LifecycleBusy('model-lifecycle-busy')] * attempts)
+    before = env_path.read_bytes()
+
+    with pytest.raises(mod.PreflightFailure) as raised:
+        _run(mod, install, env_path)
+
+    assert str(raised.value) == 'model-lifecycle-busy'
+    assert not isinstance(raised.value, mod.LifecycleBusy)
+    assert clock[0] == mod.LIFECYCLE_BUSY_WAIT_SECONDS
+    assert len([c for c in transport.calls if c['method'] == 'POST']) == attempts
+    assert env_path.read_bytes() == before
+
+
+def test_busy_timeout_tells_the_owner_how_to_finish(mod, monkeypatch, capsys):
+    def busy(*_args, **_kwargs):
+        raise mod.PreflightFailure('model-lifecycle-busy')
+    monkeypatch.setattr(mod, 'run', busy)
+    assert mod.main(['/tmp/ods', 'model-9b.gguf', 'qwen3.5-9b', '32768']) == 1
+    err = capsys.readouterr().err
+    assert 'preflight_failure: model-lifecycle-busy' in err
+    assert 'Models page' in err
+
+
+class _BusyActivationServer(BaseHTTPRequestHandler):
+    code = 'model_lifecycle_busy'
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        body = json.dumps({'error': 'Cannot activate a model while pixel_startup_reproof is in progress',
+                           'code': _BusyActivationServer.code,
+                           'activeOperation': 'pixel_startup_reproof'}).encode('utf-8')
+        self.send_response(409)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.parametrize('code, busy', [('model_lifecycle_busy', True), ('chat_template_refused', False)])
+def test_real_transport_types_only_the_busy_409(mod, code, busy):
+    _BusyActivationServer.code = code
+    server, _ = _serve(_BusyActivationServer)
+    try:
+        with pytest.raises(mod.PreflightFailure) as raised:
+            mod._request(f'http://127.0.0.1:{server.server_port}/v1/model/activate', method='POST',
+                         headers={'Content-Type': 'application/json'}, body=b'{}', timeout=5.0)
+    finally:
+        server.shutdown()
+    assert isinstance(raised.value, mod.LifecycleBusy) is busy
+    assert str(raised.value) == ('model-lifecycle-busy' if busy else 'http-409')

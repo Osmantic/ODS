@@ -386,4 +386,150 @@ $stuck | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($M
 $stopError = $null
 try { Stop-ODSPortalOwnedProcesses @($stuck) } catch { $stopError = $_.Exception.Message }
 Check ($stopError -match 'did not exit within 60 seconds') 'a runtime that never exits still fails the stop, after a bounded wait'
+
+# --- Memory at a CUDA start (RTX Spark): wait, refuse, Start anyway ---------------
+# Windows charges GPU memory against its commit limit, so a CUDA start is
+# checked against memory-plan.json first. WMI, nvidia-smi, the clock and
+# Start-Process are fixtures; the Vulkan (AMD) launch never runs the check.
+$memoryFixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-native-memory-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $memoryFixture
+try {
+    & {
+        $help = 'Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC'
+        $runtimeDir = $memoryFixture
+        $readyPath = Join-Path $runtimeDir 'ready.json'
+        $logPath = Join-Path $runtimeDir 'native-llama-launch.log'
+        $plan = [pscustomobject]@{ ExecutablePath = (Join-Path $runtimeDir 'llama-server.exe'); Port = 18080; ModelsDir = $runtimeDir
+            ContextSize = 131072; GgufFile = 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' }
+        $record = [ordered]@{ GgufFile = $plan.GgufFile; ContextSize = 131072; DeviceNeedGiB = 23.83; CommitNeedGiB = 25.8; WslGiB = 15.25; Source = 'catalog' }
+        function Write-MemoryPlan($Value) { [IO.File]::WriteAllText((Join-Path $runtimeDir 'memory-plan.json'), ($Value | ConvertTo-Json -Compress)) }
+        function Write-Override([string]$Gguf, [long]$Context) {
+            [IO.File]::WriteAllText((Join-Path $runtimeDir 'start-override.json'), (@{ GgufFile = $Gguf; ContextSize = $Context } | ConvertTo-Json -Compress))
+        }
+        $script:idle = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 12 }
+        $script:commits = [Collections.Generic.Queue[object]]::new()
+        $script:commitReads = 0
+        $script:gpu = [pscustomobject]@{ Name = 'NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)'; TotalMiB = 98240; UsedMiB = 1200; DriverVersion = '616.62' }
+        function Get-ODSNativeCommitState { $script:commitReads++; if ($script:commits.Count) { return $script:commits.Dequeue() }; return $script:idle }
+        function Get-ODSNativeGpuMemoryState([string]$GpuName = '') { return $script:gpu }
+        $script:clock = [datetime]'2026-10-17T12:00:00Z'
+        $script:sleeps = 0
+        function Get-Date { return $script:clock }
+        function Start-Sleep { param($Seconds, $Milliseconds) $script:sleeps++; $script:clock = $script:clock.AddSeconds($Seconds) }
+        function Reset-Memory { $script:commits.Clear(); $script:commitReads = 0; $script:sleeps = 0
+            foreach ($name in @('memory-plan.json', 'start-override.json', 'native-llama-launch.log')) {
+                $path = Join-Path $runtimeDir $name; if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force } } }
+        function Get-Refusal([scriptblock]$Action) { try { & $Action; return $null } catch { return $_.Exception } }
+
+        # The rule (pure).
+        $fit = Get-ODSNativeCommitFit -CommitNeedGiB 25.8 -CommitLimitGiB 126.49 -OtherCommitGiB 16 -WslGiB 15.25
+        Check ($fit.Fits -and $fit.CapacityGiB -eq 93.24) 'the commit rule lends the commit limit less 16 GiB for Windows, the WSL limit and 2 GiB'
+        Check ((Get-ODSNativeModelStartRefusal $record $script:idle $script:gpu) -ceq '') 'a plan that fits the commit limit and the free GPU memory starts'
+        $structural = Get-ODSNativeModelStartRefusal $record ([pscustomobject]@{ CommitLimitGiB = 30.49; CommittedGiB = 12 }) $script:gpu
+        Check ($structural.Code -ceq 'memory_refused' -and $structural.Kind -ceq 'structural' -and
+            $structural.Text -match '^The model was not started: it needs about 25\.8 GiB, and with this page file Windows can never lend it more than about 0\.0 GiB \(memory limit 30\.5 GiB\)\. Rerun install\.ps1 and answer yes to the page-file offer' -and
+            $structural.Text.EndsWith($help)) 'a page file too small for the model is structural (M16b), with the page-file offer and Start anyway'
+        $transient = Get-ODSNativeModelStartRefusal $record ([pscustomobject]@{ CommitLimitGiB = 126.49; CommittedGiB = 110 }) $script:gpu
+        Check ($transient.Code -ceq 'memory_refused' -and $transient.Kind -ceq 'transient' -and
+            $transient.Text -match 'Windows can lend it only 16\.5 GiB right now \(memory limit 126\.5 GiB, 110\.0 GiB in use\) and it needs about 25\.8 GiB\. Close large programs, then press Start anyway' -and
+            $transient.Text.EndsWith($help)) 'other programs holding the commit now is transient (M16a)'
+        $busy = Get-ODSNativeModelStartRefusal $record $script:idle ([pscustomobject]@{ Name = $script:gpu.Name; TotalMiB = 98240; UsedMiB = 90647 })
+        Check ($busy.Code -ceq 'gpu_busy' -and $busy.Text -match 'another program is using 88\.5 GiB of NVIDIA RTX Spark N1X \(6144-core Blackwell RTX GPU\) \(7\.4 GiB free; the model needs about 23\.8 GiB\)' -and
+            $busy.Text.EndsWith($help)) 'another model on the GPU is gpu_busy (M17)'
+        Check ((Get-ODSNativeModelStartRefusal $record $script:idle $null) -ceq '') 'without nvidia-smi only the commit is checked'
+        Check ((ConvertFrom-ODSNativeGpuMemoryCsv @('NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU), 98240, 1200, 616.62', 'NVIDIA NPU, [N/A], [N/A], [N/A]')).TotalMiB -eq 98240 -and
+            $null -eq (ConvertFrom-ODSNativeGpuMemoryCsv @('A, 1, 1, 1.0', 'B, 2, 2, 1.0'))) 'nvidia-smi rows: the only one with a memory size (never the NPU), none when several and none named'
+
+        # The wait and the refusal.
+        Reset-Memory
+        $skipped = Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir
+        Check (-not $skipped.Checked -and $script:commitReads -eq 0 -and [IO.File]::ReadAllText($logPath) -match 'Memory check skipped: no memory-plan\.json') 'without memory-plan.json the check is skipped and logged'
+        Reset-Memory
+        Write-MemoryPlan ([ordered]@{ GgufFile = 'Other.gguf'; ContextSize = 131072; DeviceNeedGiB = 1; CommitNeedGiB = 1; WslGiB = 1; Source = 'catalog' })
+        Check (-not (Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir).Checked -and [IO.File]::ReadAllText($logPath) -match 'for Other\.gguf at 131072, not this plan') 'a memory plan for another model is stale: skipped and logged'
+        Reset-Memory
+        [IO.File]::WriteAllText((Join-Path $runtimeDir 'memory-plan.json'), '{not json')
+        Check (-not (Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir).Checked) 'an unreadable memory plan is skipped, never a reason the model cannot start'
+        [IO.File]::WriteAllBytes((Join-Path $runtimeDir 'memory-plan.json'), [byte[]]@(0x7B, 0xFF, 0xFE, 0x7D))
+        Check (-not (Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir).Checked -and
+            [IO.File]::ReadAllText($logPath) -match 'not valid UTF-8 JSON') 'a memory plan that is not UTF-8 is skipped the same way'
+        [IO.File]::WriteAllBytes((Join-Path $runtimeDir 'start-override.json'), [byte[]]@(0xFF, 0xFE))
+        Check (-not (Use-ODSNativeStartOverride (Join-Path $runtimeDir 'start-override.json') $plan) -and
+            -not (Test-Path -LiteralPath (Join-Path $runtimeDir 'start-override.json'))) 'an unreadable Start anyway file is discarded, not applied'
+        Reset-Memory
+        Write-MemoryPlan $record
+        $started = Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir
+        Check ($started.Checked -and -not $started.Override -and $started.CommitBeforeGiB -eq 12 -and $script:sleeps -eq 0) 'a plan that fits starts at once'
+        Reset-Memory
+        Write-MemoryPlan $record
+        $script:commits.Enqueue([pscustomobject]@{ CommitLimitGiB = 126.49; CommittedGiB = 110 })
+        $script:commits.Enqueue([pscustomobject]@{ CommitLimitGiB = 126.49; CommittedGiB = 105 })
+        $settled = Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir
+        Check ($settled.Checked -and $script:sleeps -eq 2 -and $script:commitReads -eq 3) 'while sign-in settles the check polls every 5 seconds and starts once memory is free'
+        Reset-Memory
+        Write-MemoryPlan $record
+        $script:idle = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 110 }
+        $refusal = Get-Refusal { Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir }
+        Check ($refusal.Message -match '^The model was not started: Windows can lend it only' -and $refusal.Data['refusal'] -ceq 'memory_refused' -and
+            $refusal.Data['GgufFile'] -ceq $plan.GgufFile -and $refusal.Data['ContextSize'] -eq 131072 -and $script:sleeps -eq 24 -and
+            [IO.File]::ReadAllText($logPath) -match 'Model start refused \(memory_refused, transient\)') 'a shortage that lasts the 120-second wait is refused with its code and plan'
+        Reset-Memory
+        Write-MemoryPlan $record
+        $script:idle = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 30.49; CommittedGiB = 12 }
+        $refusal = Get-Refusal { Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir }
+        Check ($refusal.Data['refusal'] -ceq 'memory_refused' -and $script:sleeps -eq 0) 'a structural shortage is refused at once: waiting cannot change the page file'
+        Reset-Memory
+        Write-MemoryPlan $record
+        Write-Override $plan.GgufFile 131072
+        $anyway = Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir
+        Check ($anyway.Override -and -not (Test-Path -LiteralPath (Join-Path $runtimeDir 'start-override.json')) -and $script:sleeps -eq 0 -and
+            [IO.File]::ReadAllText($logPath) -match 'Started although memory looked short') 'Start anyway for this plan starts it at once, is logged and is used up'
+        Check ($null -ne (Get-Refusal { Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir })) 'the next start checks again'
+        Write-Override 'Other.gguf' 131072
+        $refusal = Get-Refusal { Wait-ODSNativeLlamaMemory -Plan $plan -RuntimeDir $runtimeDir }
+        Check ($null -ne $refusal -and -not (Test-Path -LiteralPath (Join-Path $runtimeDir 'start-override.json'))) 'Start anyway for another plan is discarded, not applied'
+
+        # What ready.json records after a CUDA start (measurements only).
+        $server = [pscustomobject]@{ PagedMemorySize64 = 27GB }
+        $server | Add-Member ScriptMethod Refresh { }
+        $fields = Get-ODSNativeReadyMemoryFields ([pscustomobject]@{ Checked = $true; Override = $true; CommitBeforeGiB = 12; Gpu = $script:gpu }) $server
+        Check ($fields.DriverVersion -ceq '616.62' -and $fields.MemoryOverride -and $fields.CommitBeforeGiB -eq 12 -and $fields.CommitAfterGiB -eq $script:idle.CommittedGiB -and
+            $fields.ProcessCommitGiB -eq 27) 'after a CUDA start ready.json records the driver, a Start anyway, and the commit before, after and of the server'
+        $gone = [pscustomobject]@{}
+        $gone | Add-Member ScriptMethod Refresh { throw [InvalidOperationException]::new('fixture: the process has exited') }
+        $fields = Get-ODSNativeReadyMemoryFields ([pscustomobject]@{ Checked = $false; Override = $false; CommitBeforeGiB = $null; Gpu = $null }) $gone
+        Check (-not $fields.Contains('ProcessCommitGiB') -and -not $fields.Contains('DriverVersion') -and -not $fields.Contains('MemoryOverride')) 'a measurement that cannot be read is left out, never a failure'
+
+        # The launcher: CUDA checks before Start-Process; Vulkan never checks.
+        $keyPath = Join-Path $runtimeDir 'api-key'
+        Write-ODSNativeLlamaApiKeyFile $keyPath ('b' * 64)
+        $cuda = [pscustomobject]@{ schemaVersion = 1; Device = 'CUDA0'; NGpuLayers = 'all'; ApiKeyPath = $keyPath; LogPath = (Join-Path $runtimeDir 'llama-server.log')
+            ReleaseTag = 'b11429'; ZipSha256 = ('a' * 64); ReasoningArguments = @('--reasoning', 'off'); ExtraArguments = @(); Backend = 'cuda'; Architecture = 'arm64' }
+        $vulkan = [pscustomobject]@{ schemaVersion = 1; Device = 'Vulkan0'; NGpuLayers = 'auto'; ApiKeyPath = $keyPath; LogPath = (Join-Path $runtimeDir 'llama-server.log')
+            ReleaseTag = 'b9014'; ZipSha256 = ('a' * 64); ReasoningArguments = @('--reasoning', 'off'); ExtraArguments = @() }
+        $script:events = [Collections.Generic.List[string]]::new()
+        function Test-ODSNativeLlamaInstall { param($Directory, $ExpectedZipSha256, $ExpectedReleaseTag) $script:events.Add('pin') }
+        function Get-NetTCPConnection { param($LocalPort, $State, $ErrorAction) }
+        function Start-Process { param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle, [switch]$PassThru) $script:events.Add('start'); throw 'fixture: stop after the start' }
+        $script:realWait = ${function:Wait-ODSNativeLlamaMemory}
+        function Wait-ODSNativeLlamaMemory { param($Plan, [string]$RuntimeDir) $script:events.Add('memory'); & $script:realWait -Plan $Plan -RuntimeDir $RuntimeDir }
+        Reset-Memory
+        Write-MemoryPlan $record
+        [IO.File]::WriteAllText($readyPath, '{"Error":"The model was not started: earlier refusal","Code":"memory_refused"}')
+        $refusal = Get-Refusal { Invoke-ODSNativeLlamaRuntime $plan $cuda $readyPath }
+        Check ($refusal.Data['refusal'] -ceq 'memory_refused' -and ($script:events -join ',') -ceq 'pin,memory' -and
+            [IO.File]::ReadAllText($readyPath) -match 'earlier refusal') 'a refused CUDA start never runs llama-server, and the last refusal stays visible while it waits'
+        $script:events.Clear()
+        $script:idle = [pscustomobject]@{ VisibleGiB = 30.49; CommitLimitGiB = 126.49; CommittedGiB = 12 }
+        Check ((Get-Refusal { Invoke-ODSNativeLlamaRuntime $plan $cuda $readyPath }).Message -match 'stop after the start' -and
+            ($script:events -join ',') -ceq 'pin,memory,start' -and -not (Test-Path -LiteralPath $readyPath)) 'a CUDA start that fits checks memory, clears the old record, then starts llama-server'
+        $script:events.Clear()
+        Check ((Get-Refusal { Invoke-ODSNativeLlamaRuntime $plan $vulkan $readyPath }).Message -match 'stop after the start' -and
+            ($script:events -join ',') -ceq 'pin,start') 'a Vulkan (AMD) start never runs the memory check'
+    }
+} finally {
+    $resolved = [IO.Path]::GetFullPath($memoryFixture)
+    if (-not $resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing to clean a fixture outside the temporary directory.' }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
 Microsoft.PowerShell.Utility\Write-Host "Passed $script:checks Windows native llama.cpp runtime contracts."

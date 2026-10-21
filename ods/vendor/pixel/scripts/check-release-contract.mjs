@@ -237,7 +237,7 @@ const expectedReactivationArchiveBridge = {
   operation: "exact-terminal-no-live-mutation-reactivation-preservation-outside-bounded-staging",
   boundary: "terminal-no-live-mutation-reactivation-evidence-only-no-active-deployment-change",
 };
-if (!["4.3.27", "4.3.28", "4.3.29", "4.3.31"].includes(version) || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)) throw new Error("Release reactivation archive bridge contract is invalid");
+if (!["4.3.27", "4.3.28", "4.3.29", "4.3.32", "4.3.33"].includes(version) || JSON.stringify(manifest.releaseReactivationArchive) !== JSON.stringify(expectedReactivationArchiveBridge)) throw new Error("Release reactivation archive bridge contract is invalid");
 if (manifest.legacyCleanMigration?.schemaVersion !== 1 || manifest.legacyCleanMigration?.cli !== "./scripts/migrate-legacy-clean.py" || manifest.legacyCleanMigration?.evidenceSchema !== "./schemas/legacy-clean-migration-v1.schema.json" || manifest.legacyCleanMigration?.boundary !== "terminal-only-clean-migration-no-in-place-update" || manifest.legacyCleanMigration?.v1Contract?.sourcePixel !== "3.2.2" || manifest.legacyCleanMigration?.v1Contract?.targetPixel !== version || manifest.legacyCleanMigration?.activation !== "self-contained-migrate-legacy-clean-activate-transaction") throw new Error("Legacy clean-migration contract is invalid");
 if (manifest.customizationKit?.schemaVersion !== 1 || manifest.customizationKit?.defaultEnabled !== false || manifest.customizationKit?.signature !== "openssh-ed25519-detached") throw new Error("Customization kit trust contract is invalid");
 if (manifest.customizationKit?.clientOverlaySchema !== "./schemas/client-overlay-v1.schema.json" || manifest.customizationKit?.clientOverlayExample !== "./client-overlay.example.json" || manifest.customizationKit?.clientOverlayBoundary !== "private-client-state-outside-golden-core") throw new Error("Client overlay boundary is invalid");
@@ -335,6 +335,7 @@ const pinValues = new Set([
   manifest.baseImage,
   ...Object.values(manifest.openclawPluginPackages).map((item) => item.url),
   ...Object.values(manifest.referenceImages),
+  ...Object.values(manifest.sandboxNodeRuntime.artifacts).map((item) => item.url),
 ]);
 const ignoredDirectories = new Set([".git", ".generated", ".openclaw", ".runtime", ".secrets", "dist", "node_modules", "secrets", "__pycache__"]);
 const authoredTextExtensions = new Set(["", ".env", ".js", ".json", ".json5", ".md", ".mjs", ".sh", ".yaml", ".yml"]);
@@ -1287,6 +1288,13 @@ const contracts = [
   ["deploy/compose.yaml", "internal: true"],
   ["deploy/sandbox/Dockerfile", "python3-pil"],
   ["deploy/sandbox/Dockerfile", "rsync"],
+  ["deploy/sandbox/Dockerfile", "xz-utils"],
+  ...Object.values(manifest.sandboxNodeRuntime.artifacts).flatMap((artifact) => [
+    ["deploy/sandbox/Dockerfile", artifact.url],
+    ["deploy/sandbox/Dockerfile", artifact.sha256],
+  ]),
+  ["deploy/sandbox/Dockerfile", `LABEL org.osmantic.pixel.sandbox-node="${manifest.sandboxNodeRuntime.version}"`],
+  ["scripts/bootstrap.sh", 'pixel_prove_sandbox_runtime "$candidate_sandbox_id" "$PIXEL_GENERATED_SANDBOX_NODE_VERSION"'],
   ["deploy/compose.yaml", manifest.referenceImages.searxng],
   ["deploy/compose.yaml", 'driver: "none"'],
   ["deploy/searxng/settings.yml.template", 'method: "POST"'],

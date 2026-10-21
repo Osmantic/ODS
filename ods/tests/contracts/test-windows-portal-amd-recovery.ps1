@@ -102,6 +102,19 @@ try {
     Assert-Recovery (-not ($script:events | Where-Object { $_ -like 'register:ODSLemonade*' })) 'no Lemonade-era task is ever registered'
     $found = Get-ODSPortalRuntimeTask
     Assert-Recovery ($found.TaskName -ceq $firstName) 'the registered task is found by its exact per-user name'
+    $launch = Get-ODSPortalRuntimeOwnedLaunch $found
+    Assert-Recovery ($launch.Port -eq 18080 -and $launch.ExecutablePath -ceq $plan.ExecutablePath) 'the registered task is owned through its saved plan'
+    # Uninstall keeps the task; deleting ODS files afterwards removes its plan.
+    $planPath = Join-Path (Get-ODSPortalRuntimeDir) 'runtime.json'
+    $planBytes = [IO.File]::ReadAllBytes($planPath)
+    Remove-Item -LiteralPath $planPath -Force
+    foreach ($attempt in @({ Get-ODSPortalRuntimeOwnedLaunch $found }, { Stop-ODSPortalRuntime })) {
+        $message = ''
+        try { $null = & $attempt } catch { $message = $_.Exception.Message }
+        Assert-Recovery ($message -match 'no saved runtime plan' -and $message -match 'no process was stopped' -and
+            $message.Contains("Unregister-ScheduledTask -TaskPath '\' -TaskName '$firstName' -Confirm:`$false")) 'a task without its saved plan fails closed with the command that removes it'
+    }
+    [IO.File]::WriteAllBytes($planPath, $planBytes)
     $script:tasks[$firstName].Principal = @{ UserId = 'S-1-5-21-100-200-300-1002' }
     $message = ''
     try { $null = Get-ODSPortalRuntimeTask } catch { $message = $_.Exception.Message }

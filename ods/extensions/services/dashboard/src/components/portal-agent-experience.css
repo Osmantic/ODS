@@ -40,6 +40,7 @@
 @keyframes portal-text-arrive { from { opacity:.35; filter:blur(1px); } to { opacity:1; filter:blur(0); } }
 @media (prefers-reduced-motion:reduce) { .portal-stream-reveal { animation:none; } }
 .portal-streaming-text { min-width:0; overflow-wrap:anywhere; }
+.portal-streaming-text .portal-embed-note { color:rgb(var(--theme-text-muted)); }
 .portal-stream-cursor { display:inline-block; width:5px; height:13px; margin:4px 3px 0; border-radius:3px; background:currentColor; animation:portal-silver-pulse 1.3s ease-in-out infinite; }
 .portal-citation { position:relative; }
 .portal-citation > a { color:rgb(var(--theme-text)); text-decoration:underline; text-decoration-color:rgb(var(--theme-text-muted) / .5); text-underline-offset:3px; }

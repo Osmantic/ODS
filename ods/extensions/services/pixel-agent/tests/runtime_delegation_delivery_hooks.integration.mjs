@@ -7,7 +7,7 @@ import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {spawn,execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {cpSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from 'node:fs';
+import {cpSync,mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,renameSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -110,8 +110,19 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     // Invoke it after Stop deterministically instead of waiting for the native
     // startup orphan scanner to happen to overlap cancellation on a slow host.
     const recoveryPath=join(pkg,'dist','subagent-orphan-recovery-D8V30dko.js');
-    const recoverySource=readFileSync(recoveryPath,'utf8');
+    let recoverySource=readFileSync(recoveryPath,'utf8');
     assert.equal(recoverySource.split('async function resumeOrphanedSession(params) {').length,2);
+    if(interim==='cancel') {
+      // This case explicitly invokes the real helper below. A scheduled scan
+      // can otherwise resume that same child a second time and take over its
+      // session before the first blocked run emits agent_end. Isolate only
+      // the fixture scheduler; native resume, admission and terminal checks stay real.
+      assert.equal(sha(recoverySource),'5d9adf49eb201bfc8ec7c7a54ecc85b22cde933dcd1bd2354403dd34e3a5fad2');
+      const schedulerExport='export { scheduleOrphanRecovery };';
+      assert.equal(recoverySource.split(schedulerExport).length,2);
+      recoverySource=recoverySource.replace(schedulerExport,
+        'function fixtureSkipScheduledRecovery() {}\nexport { fixtureSkipScheduledRecovery as scheduleOrphanRecovery };');
+    }
     writeFileSync(recoveryPath,recoverySource+'\nexport { resumeOrphanedSession as fixtureResumeOrphanedSession };\n');
   }
   mkdirSync(workspace);mkdirSync(plugin);
@@ -266,7 +277,10 @@ test(`real gateway deferred delegation waits for two children and a verified rev
             if(yielded)break;await delay(20);
           }
           assert.ok(yielded,'cross the reset boundary only after the owner has yielded');
-          writeFileSync(clockFile,JSON.stringify({now:Date.parse('2026-10-09T04:00:01Z'),started:Date.now()}));
+          // The gateway reads this file on every Date.now(); publish the new
+          // clock atomically so it cannot observe a truncated JSON document.
+          writeFileSync(clockFile+'.next',JSON.stringify({now:Date.parse('2026-10-09T04:00:01Z'),started:Date.now()}));
+          renameSync(clockFile+'.next',clockFile);
         }
       }
       delta={role:'assistant',content:childTexts[userMessages.includes('CHILD_FIXTURE_TASK 1')?1:0]};
@@ -410,6 +424,8 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         await delay(50);
       }
       assert.ok(resumeAdmission,'pinned runtime supplies orphan-resume provenance');
+      assert.equal(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_interrupted_resume').length,1,
+        'only the explicitly requested native resume runs in this fixture');
       assert.notEqual(resumeAdmission.runId,collisionRun,'native recovery replaces the child run UUID');
       assert.equal(resumeAdmission.decision?.outcome,'block','Stop fences the same child before resumed inference');
       assert.ok(events.some(e=>e.hook==='end'&&e.runId===resumeAdmission.runId&&e.success===false),'resumed child reaches a blocked terminal event');

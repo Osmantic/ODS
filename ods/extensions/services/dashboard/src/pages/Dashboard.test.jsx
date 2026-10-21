@@ -581,6 +581,39 @@ describe('Dashboard system overview', () => {
     expect(screen.getByText('Remote Access')).toBeInTheDocument()
   })
 
+  it('re-checks the ODS session before the Hermes feature card opens Hermes', async () => {
+    mockFeatures = [
+      { id: 'chat', name: 'AI Chat', description: 'Chat with a local model', icon: 'MessageSquare', status: 'enabled',
+        launch: { type: 'service', service: 'open-webui' }, requirements: { servicesMissing: [] } },
+      { id: 'hermes-agent', name: 'Hermes Agent', description: 'Advanced Hermes agent console', icon: 'MessageSquare', status: 'enabled',
+        launch: { type: 'service', service: 'hermes-proxy' }, requirements: { servicesMissing: [] } },
+    ]
+    const routes = fetch.getMockImplementation()
+    fetch.mockImplementation(async (url, options) => url === '/api/auth/verify-session'
+      ? { ok: true, json: async () => ({ valid: true, expires_at: Math.floor(Date.now() / 1000) + 6 * 3600 }) }
+      : routes(url, options))
+    const tab = { opener: window, closed: false, location: { replace: vi.fn() } }
+    vi.spyOn(window, 'open').mockReturnValue(tab)
+
+    await renderDashboard({
+      ...baseStatus,
+      services: [
+        { id: 'open-webui', name: 'Open WebUI (Chat)', status: 'healthy', port: 3000, uptime: 14400 },
+        { id: 'hermes-proxy', name: 'Hermes Auth Proxy', status: 'healthy', port: 9120, uptime: 14400, ui_path: '/auth/ods' },
+      ],
+    })
+
+    const chat = await screen.findByRole('link', { name: /AI Chat/ })
+    chat.addEventListener('click', event => event.preventDefault())
+    fireEvent.click(chat)
+    expect(window.open).not.toHaveBeenCalled()
+
+    expect(fireEvent.click(screen.getByRole('link', { name: /Hermes Agent/ }))).toBe(false)
+    expect(window.open).toHaveBeenCalledWith('', '_blank')
+    await waitFor(() => expect(tab.location.replace).toHaveBeenCalledWith('http://localhost:9120/auth/ods'))
+    expect(fetch).toHaveBeenCalledWith('/api/auth/verify-session', expect.objectContaining({ credentials: 'same-origin' }))
+  })
+
   it('opens Portal chat without Open WebUI when the Portal agent is available', async () => {
     mockPixelStatus = { available: true, state: 'ready' }
     mockFeatures = [{

@@ -180,7 +180,7 @@ test('explicit later background trigger or foreign session revokes merged identi
  }
 });
 
-for(const wrapped of [false,true]) test(`document download recovers from a rejected ${wrapped?'deferred':'direct'} website tool`,async()=>{
+for(const wrapped of [false,true]) for(const failure of ['result','error']) test(`document download recovers from a rejected ${wrapped?'deferred':'direct'} website tool (${failure})`,async()=>{
  const guard=createToolLoopGuard();
  guard.observeRun(context,'pixel',{prompt:'Create report.md containing exactly "Hello." and give me the file as a download.'});
  const preview='pixel_ods_workspace_preview';
@@ -191,7 +191,7 @@ for(const wrapped of [false,true]) test(`document download recovers from a rejec
  const decision=guard.beforeToolCall(event,scope);
  assert.equal(decision.block,true);
  const rejected={isError:true,content:[{type:'text',text:decision.blockReason}]};
- guard.afterToolCall({...event,result:wrapped?{details:{tool:{id:'openclaw:pixel-ods:'+preview,name:preview},result:rejected}}:rejected},scope);
+ guard.afterToolCall({...event,...(failure==='error' ? {error:decision.blockReason} : {result:wrapped?{details:{tool:{id:'openclaw:pixel-ods:'+preview,name:preview},result:rejected}}:rejected})},scope);
  const admission=createWorkspaceArtifactAdmission();
  const artifactEvent={toolName:ARTIFACT_TOOL,params:args};
  admission.before(artifactEvent,context);
@@ -205,20 +205,74 @@ for(const wrapped of [false,true]) test(`document download recovers from a rejec
  assert.match(decision.blockReason,/relativePath/);
 });
 
-test('document receipt cannot bypass an owner-requested website preview',()=>{
+for(const failure of ['result','error']) test(`document receipt cannot bypass an owner-requested website preview (${failure})`,()=>{
  const guard=createToolLoopGuard();
  guard.observeRun(context,'pixel',{prompt:'Build a website preview with a working button, and give me report.md as a download.'});
  const event={toolName:'pixel_ods_workspace_preview',params:{relativeDirectory:'site'}};
  const decision=guard.beforeToolCall(event,{...context,toolName:event.toolName});
  assert.equal(decision.block,true);
  assert.doesNotMatch(decision.blockReason,/Do not call pixel_ods_workspace_preview for documents/);
- guard.afterToolCall({...event,result:{isError:true,content:[{type:'text',text:decision.blockReason}]}},context);
+ guard.afterToolCall({...event,...(failure==='error' ? {error:decision.blockReason} : {result:{isError:true,content:[{type:'text',text:decision.blockReason}]}})},context);
  assert.equal(guard.reserveWorkspaceArtifact(context),true);
  assert.equal(guard.acceptWorkspaceArtifact(context,receipt),true);
  const delivery=guard.deliveryVerificationForRun('run');
  assert.equal(delivery.status,'failed');
  assert.match(delivery.text,/website|browser preview/i);
  assert.deepEqual(delivery.artifacts,[receipt]);
+});
+
+for(const failure of ['result','error']) test(`plain text attachment survives four blocked previews and two artifact deliveries (${failure})`,async()=>{
+ // The owner prompt and seven-call order match the Mac fleet-check journey.
+ // Broker metadata is a fixture. The live transcript retains isError, not the
+ // after-tool hook envelope; exercise both supported failure representations.
+ const prompt='Create a plain text file named fleet-check.txt containing exactly these three lines, then attach it so I can download it:\nMaya: quote Thursday\nLuis: testing Friday\nCSV: owner and date unassigned';
+ const content='Maya: quote Thursday\nLuis: testing Friday\nCSV: owner and date unassigned\n';
+ const relativePath='fleet-check.txt',sha256='2f04ae05f1d8d14be14f26dec03ca48e3b804ea67d8353d654e391b0235ce3e0';
+ const documentReceipt={...receipt,relativePath,file:{path:relativePath,bytes:73,sha256}};
+ const guard=createToolLoopGuard(),admission=createWorkspaceArtifactAdmission();
+ guard.observeRun(context,'pixel',{prompt});
+ const write={toolName:'write',toolCallId:'write',params:{path:relativePath,content}};
+ const writeScope={...context,toolName:'write',toolCallId:'write'};
+ assert.notEqual(guard.beforeToolCall(write,writeScope)?.block,true);
+ guard.afterToolCall({...write,result:{content:[{type:'text',text:'Successfully wrote 73 bytes to fleet-check.txt'}]}},writeScope);
+ let publications=0;
+ const artifact=createWorkspaceArtifactTool(context,{admission,
+  reserve:s=>guard.reserveWorkspaceArtifact(s),unavailableReason:s=>guard.workspaceArtifactUnavailableReason(s),
+  accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request:async()=>{
+   publications++;return {...host,...documentReceipt};
+  }});
+ for(const [index,name] of ['preview','preview','preview','artifact','preview','artifact'].entries()) {
+  const toolCallId='call-'+index;
+  if(name==='preview') {
+   const event={toolName:'pixel_ods_workspace_preview',toolCallId,params:{relativeDirectory:relativePath}};
+   const scope={...context,toolName:event.toolName,toolCallId};
+   const blocked=guard.beforeToolCall(event,scope);
+   assert.equal(blocked.block,true);
+   assert.match(blocked.blockReason,/Do not call pixel_ods_workspace_preview for documents/);
+   const result={content:[{type:'text',text:blocked.blockReason}],details:{status:'blocked'}};
+   guard.afterToolCall({...event,...(failure==='error' ? {result,error:blocked.blockReason} : {result:{...result,isError:true}})},scope);
+   guard.toolResultPersist({toolName:event.toolName,toolCallId,message:{role:'toolResult',toolName:event.toolName,toolCallId,...result,isError:true}},scope);
+  } else {
+   const event={toolName:'tool_call',toolCallId,params:{id:ARTIFACT_TOOL,args:{relativePath}}};
+   const scope={...context,toolName:event.toolName,toolCallId};
+   const decision=guard.beforeToolCall(event,scope);
+   assert.notEqual(decision?.block,true);
+   admission.before(event,scope,decision);
+   const result=await artifact.execute(`tool_search_code:${toolCallId}:${ARTIFACT_TOOL}:1`,{relativePath});
+   assert.equal(result.isError,undefined);
+   const wrapped={content:result.content,details:{tool:{id:ARTIFACT_TOOL,name:ARTIFACT_TOOL},result}};
+   guard.afterToolCall({...event,result:wrapped},scope);
+   guard.toolResultPersist({toolName:event.toolName,toolCallId,message:{role:'toolResult',toolName:event.toolName,toolCallId,...wrapped}},scope);
+  }
+ }
+ assert.equal(publications,2);
+ const delivery=guard.deliveryVerificationForRun(context.runId);
+ assert.ok(['none','passed'].includes(delivery.status),JSON.stringify(delivery));
+ assert.deepEqual(delivery.artifacts,[documentReceipt]);
+ const text='Attached fleet-check.txt with the three requested lines.';
+ const sent=guard.replyPayloadSending({runId:context.runId,kind:'final',payload:{text}})?.payload?.text??text;
+ assert.ok(sent.includes(text),sent);
+ assert.doesNotMatch(sent,/requested website files|retry the build|browser preview/i);
 });
 
 test('a rejected document preview cannot validate an invalid artifact or survive owner cancellation',async()=>{

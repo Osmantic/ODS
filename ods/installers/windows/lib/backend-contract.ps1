@@ -50,25 +50,6 @@ function Test-ODSLoopbackAddress {
     return $normalized -in @("", "localhost", "127.0.0.1", "::1", "[::1]")
 }
 
-function Get-ODSEnvFileValue {
-    [CmdletBinding()]
-    param(
-        [string]$EnvPath,
-        [Parameter(Mandatory = $true)]
-        [string]$Key
-    )
-
-    if ([string]::IsNullOrWhiteSpace($EnvPath) -or -not (Test-Path -LiteralPath $EnvPath -PathType Leaf)) {
-        return $null
-    }
-    foreach ($line in (Get-Content -LiteralPath $EnvPath -ErrorAction SilentlyContinue)) {
-        if ($line -match ('^\s*' + [regex]::Escape($Key) + '=(.*)$')) {
-            return $Matches[1].Trim().Trim('"').Trim("'")
-        }
-    }
-    return $null
-}
-
 function ConvertTo-ODSPowerShellSingleQuotedLiteral {
     param([AllowNull()][string]$Value)
     if ($null -eq $Value) { return "''" }

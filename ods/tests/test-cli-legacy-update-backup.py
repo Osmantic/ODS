@@ -20,7 +20,7 @@ class LegacyUpdateBackupTests(unittest.TestCase):
         self.binary.mkdir()
         for relative in ("data/open-webui", "config", "lib", "installers/lib"):
             (self.install / relative).mkdir(parents=True)
-        for relative in ("ods-backup.sh", "lib/rsync.sh", "lib/backup-paths.sh",
+        for relative in ("ods-backup.sh", "lib/rsync.sh", "lib/backup-paths.sh", "lib/dashboard-private-state.sh",
                          "installers/lib/compose-images.sh", "docker-compose.base.yml", "manifest.json"):
             shutil.copy2(ODS / relative, self.install / relative)
         # Use the real safety checks, with their trusted source dependencies,
