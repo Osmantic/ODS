@@ -78,6 +78,7 @@ tests/test-fleet-multi-distro-keep-going.sh
 tests/test-gpu-apple.sh
 tests/test-gpu-layer-contract.py
 tests/test-hardware-compatibility.sh
+tests/test-health-check-core-services.sh
 tests/test-health-check-json-output.sh
 tests/test-hermes-context-floor.sh
 tests/test-hermes-dashboard-session-token.py

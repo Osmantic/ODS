@@ -171,6 +171,14 @@ test_service() {
     local port="$default_port"
     [[ -n "$port_env" ]] && port="${!port_env:-$default_port}"
 
+    if [[ "${SERVICE_HEALTH_SOURCES[$sid]:-http}" == "container" ]]; then
+        # No host port to probe: trust the container's own healthcheck, as
+        # `ods status` does.
+        [[ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' \
+            "${SERVICE_CONTAINERS[$sid]}" 2>/dev/null)" == "healthy" ]]
+        return
+    fi
+
     [[ -z "$health" || "$port" == "0" ]] && return 1
 
     # Check container state first (if docker available)
@@ -282,6 +290,19 @@ check_service_async() {
     fi
 }
 
+# Core services this check must leave out, matching `ods status`: one with no
+# host port and no container healthcheck to read (Pixel host agent, Pixel
+# edge, remote-provider sidecars), and one whose fragment ships disabled and
+# has no container (Pixel relay on a non-Pixel install).
+core_service_not_probed() {
+    local sid="$1" service_dir="$EXTENSIONS_DIR/$1"
+    if [[ "${SERVICE_PORTS[$sid]}" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]]; then
+        return 0
+    fi
+    [[ -f "$service_dir/compose.yaml.disabled" && ! -f "$service_dir/compose.yaml" ]] || return 1
+    [[ "$(check_container_state "$sid")" == "not_found" ]]
+}
+
 # ── Run tests ───────────────────────────────────────────────────────────────
 
 # Create temp dir for parallel results
@@ -308,6 +329,7 @@ declare -a CORE_SIDS=()
 for sid in "${SERVICE_IDS[@]}"; do
     [[ "$sid" == "llama-server" ]] && continue
     [[ "${SERVICE_CATEGORIES[$sid]}" != "core" ]] && continue
+    core_service_not_probed "$sid" && continue
     result_file="$TEMP_DIR/core_$sid"
     check_service_async "$sid" "$result_file" &
     CORE_PIDS+=($!)
