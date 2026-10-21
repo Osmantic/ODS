@@ -12689,10 +12689,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             # Use docker logs directly (faster than docker compose logs, no flag resolution needed)
             container_name = f"ods-{service_id}"
             cmd = ["docker", "logs", "--tail", str(tail), container_name]
-            result = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
-            )
-            output = result.stdout or ""
+            with tempfile.SpooledTemporaryFile(max_size=65536) as log_buffer:
+                result = subprocess.run(
+                    cmd, stdout=log_buffer, stderr=log_buffer, timeout=5,
+                )
+                log_buffer.seek(0)
+                output = log_buffer.read()[-50000:].decode("utf-8", errors="replace")
             # Handle container not yet created (e.g. during image pull)
             if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
@@ -12738,11 +12740,13 @@ class AgentHandler(BaseHTTPRequestHandler):
         container_name = _resolve_container_name(sid)
 
         try:
-            result = subprocess.run(
-                ["docker", "logs", "--tail", str(tail), container_name],
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=5,
-            )
-            output = result.stdout or ""
+            with tempfile.SpooledTemporaryFile(max_size=65536) as log_buffer:
+                result = subprocess.run(
+                    ["docker", "logs", "--tail", str(tail), container_name],
+                    stdout=log_buffer, stderr=log_buffer, timeout=5,
+                )
+                log_buffer.seek(0)
+                output = log_buffer.read()[-50000:].decode("utf-8", errors="replace")
             if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
                     "service_id": sid,
