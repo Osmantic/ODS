@@ -81,4 +81,27 @@ GGUF_FILE=not-in-catalog.gguf LLM_MODEL=imported LLM_MODEL_SIZE_MB=30000 MAX_CON
 [[ "$(llama_required_mb)" == "30000" ]] || fail "imported model must plan on LLM_MODEL_SIZE_MB"
 pass "non-catalog model plans on LLM_MODEL_SIZE_MB"
 
+# Occupied GPUs: the requirement must not shrink to the free VRAM, and the
+# planner must reject a model that no longer fits.
+write_occupied_topology() {
+    jq -n '{vendor: "nvidia", gpu_count: 2,
+        gpus: [range(2) | {index: ., name: "NVIDIA GeForce RTX 3090",
+                           memory_gb: 24, memory_free_gb: 10, uuid: "GPU-\(.)"}],
+        links: [{gpu_a: 0, gpu_b: 1, rank: 10, link_type: "PHB", link_label: "PHB"}]}' > "$TOPOLOGY_FILE"
+}
+write_occupied_topology
+GGUF_FILE=not-in-catalog.gguf LLM_MODEL=imported LLM_MODEL_SIZE_MB=30000 MAX_CONTEXT=8192
+[[ "$(llama_required_mb)" == "30000" ]]     || fail "occupied GPUs: imported model requirement was clamped to free VRAM"
+if python3 "$ROOT_DIR/scripts/assign_gpus.py" --topology "$TOPOLOGY_FILE"         --model-size "$(llama_required_mb)" >/dev/null 2>&1; then
+    fail "occupied GPUs: planner accepted 30000MB on 2x10GB free"
+fi
+pass "occupied GPUs: imported model keeps 30000MB and the planner rejects it"
+
+select_for 2
+write_occupied_topology
+need_mb="$(llama_required_mb)"
+(( need_mb >= LLM_MODEL_SIZE_MB )) || fail "occupied GPUs: catalog requirement $need_mb below GGUF size"
+(( need_mb > 20480 )) || fail "occupied GPUs: catalog requirement $need_mb capped at free VRAM"
+pass "occupied GPUs: catalog ${LLM_MODEL} keeps ${need_mb}MB requirement"
+
 echo "[PASS] multi-GPU context fit"

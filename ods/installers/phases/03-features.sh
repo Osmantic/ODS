@@ -719,7 +719,7 @@ done < <(jq -r '.links[] | [.gpu_a, .gpu_b, .rank, .link_type] | @tsv' "$TOPOLOG
 # start). Same contract as the model-swap replanner (ods-host-agent.py).
 # Falls back to LLM_MODEL_SIZE_MB when the model is not a catalog entry.
 llama_required_mb() {
-  local need_mb="${LLM_MODEL_SIZE_MB:-0}" fit_json="" required_mb="" free_mb python=""
+  local need_mb="${LLM_MODEL_SIZE_MB:-0}" fit_json="" required_mb="" python=""
   if declare -F ods_catalog_fit_check >/dev/null 2>&1 \
       && [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]] \
       && [[ -f "$SCRIPT_DIR/scripts/select-model.py" && -f "$SCRIPT_DIR/config/model-library.json" ]]; then
@@ -736,12 +736,8 @@ llama_required_mb() {
   if [[ "$required_mb" =~ ^[0-9]+$ ]] && (( required_mb > need_mb )); then
     need_mb=$required_mb
   fi
-  # Never ask the planner for more than all GPUs together offer; the
-  # selector already accepted this pick against that total.
-  free_mb=$(jq '[.gpus[] | (.memory_free_gb // .memory_gb) * 1024] | add | floor' "$TOPOLOGY_FILE")
-  if (( need_mb > free_mb )); then
-    need_mb=$free_mb
-  fi
+  # Report the real requirement; assign_gpus.py rejects it when free VRAM
+  # cannot hold it (never clamp it down to what happens to be free).
   echo "$need_mb"
 }
 
