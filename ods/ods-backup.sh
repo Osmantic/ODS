@@ -584,7 +584,8 @@ do_backup() (
         if command -v ods >/dev/null 2>&1; then
             echo "  ods restore $backup_id"
         else
-            echo "  $SCRIPT_DIR/ods-restore.sh $backup_id"
+            printf '  %q %q
+' "$SCRIPT_DIR/ods-restore.sh" "$backup_id"
         fi
     fi
 )
