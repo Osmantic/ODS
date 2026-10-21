@@ -2696,6 +2696,16 @@ cmd_config() {
     esac
 }
 
+_chat_curl() {
+    local token="$1"
+    shift
+    if [[ -n "$token" ]]; then
+        curl -H @<(printf 'Authorization: Bearer %s\n' "$token") "$@"
+    else
+        curl "$@"
+    fi
+}
+
 cmd_chat() {
     check_install
     load_env  # B6 fix: use safe env loading function
@@ -2703,14 +2713,32 @@ cmd_chat() {
     local message="${1:-Hello}"
     local model="${2:-}"
 
-    # Resolve llama-server port once, regardless of how the model is provided
+    # Match the installed route used by ODS clients. A gateway-selected install
+    # may deliberately have no local llama-server, or keep one loaded while a
+    # remote provider is active. Never probe it as a fallback for that route.
+    # shellcheck source=lib/preflight-llm-route.sh
+    . "$SCRIPT_DIR/lib/preflight-llm-route.sh"
     local _llm_port="${SERVICE_PORTS[llama-server]:-11434}"
     _llm_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-$_llm_port}}"
+    local _token="" _route_name="llama-server"
+    if [[ "${ODS_MODEL_SWITCHBOARD:-}" == enabled ]] || ods_preflight_uses_litellm; then
+        _llm_port="${LITELLM_PORT:-4000}"
+        _token="${LITELLM_KEY:-${LITELLM_MASTER_KEY:-}}"
+        [[ -n "$_token" ]] || error "Chat cannot authenticate to the gateway: LITELLM_KEY is missing."
+        _route_name="LLM gateway"
+        if [[ -z "$model" ]]; then
+            if [[ "${ODS_MODEL_SWITCHBOARD:-}" == enabled ]]; then
+                model="ods/current"
+            else
+                model="default"
+            fi
+        fi
+    fi
 
     local _probe
-    _probe=$(curl --silent --show-error --fail --max-time 3 \
+    _probe=$(_chat_curl "$_token" --silent --show-error --fail --max-time 3 \
         "http://127.0.0.1:${_llm_port}/v1/models" 2>&1) || {
-        error "llama-server not reachable at http://127.0.0.1:${_llm_port} - is 'ods status' showing it healthy?"
+        error "$_route_name not reachable at http://127.0.0.1:${_llm_port} - is 'ods status' showing it healthy?"
     }
 
     if [[ -z "$model" ]]; then
@@ -2725,7 +2753,7 @@ cmd_chat() {
         '{model: $model, messages: [{role: "user", content: $msg}], max_tokens: 500}')
 
     local _resp
-    _resp=$(curl --silent --show-error --max-time 30 \
+    _resp=$(_chat_curl "$_token" --silent --show-error --fail --max-time 30 \
         "http://127.0.0.1:${_llm_port}/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>&1) || {
