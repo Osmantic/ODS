@@ -14430,10 +14430,26 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
 
         selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+        guarded_runtime_profile = None
+        runtime_profile_guarded = False
         try:
             local_runtime_profile = _model_stores.registered_runtime_profile(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
             if model_from_catalog and not local_runtime_profile:
-                runtime_block = _default_runtime_incompatibility(model, persisted_env)
+                verdict = model.get("default_runtime_compatibility")
+                if (
+                    isinstance(verdict, dict)
+                    and _normalize_key(verdict.get("status")) == "incompatible"
+                    and isinstance(model.get("runtime_profiles"), list)
+                    and model["runtime_profiles"]
+                ):
+                    # A profile for another host cannot replace this host's
+                    # incompatible default. Select before any model mutation,
+                    # then launch with this same approved profile below.
+                    guarded_runtime_profile = _select_runtime_profile(model, persisted_env)
+                    runtime_profile_guarded = True
+                runtime_block = _default_runtime_incompatibility(
+                    model, persisted_env, guarded_runtime_profile,
+                )
                 if runtime_block:
                     raise ValueError(runtime_block)
             # A registered executable replaces the binary of a native launch
@@ -14466,7 +14482,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     raise ValueError(f"Qualified vision projector changed: {reason}")
             if local_runtime_profile:
                 _model_stores.validate_profile_command(local_runtime_profile, target)
-        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+        except (ValueError, OSError, subprocess.SubprocessError, RuntimeError) as exc:
             json_response(self, 400, {"error": str(exc)})
             return
 
@@ -14914,7 +14930,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             gpu_backend = env_pre.get("GPU_BACKEND", "nvidia")
             windows_native_llama = _is_windows_host_llama_server(env_pre)
             host_native_llama = windows_native_llama or wsl_managed.get('managed') is True
-            runtime_profile = _select_runtime_profile(model, env_pre)
+            runtime_profile = (
+                guarded_runtime_profile if runtime_profile_guarded
+                else _select_runtime_profile(model, env_pre)
+            )
             logger.info(
                 "Model activation runtime profile for %s: %s",
                 model_id,
@@ -20173,20 +20192,22 @@ def _nvidia_vram_gb() -> float:
     return 0.0
 
 
-def _default_runtime_incompatibility(model: dict, env: dict) -> str | None:
+def _default_runtime_incompatibility(
+    model: dict, env: dict, selected_profile: dict | None = None,
+) -> str | None:
     """Return why ODS's default llama.cpp runtime cannot serve a catalog model.
 
     ``default_runtime_compatibility`` records a model the pinned llama.cpp
     build cannot load. Such a model can only be activated with a runtime of
     its own: a catalog image on a Docker llama.cpp backend, or a registered
-    native runtime (checked by the caller).
+    native runtime (checked by the caller). Only the profile selected for this
+    host can replace its default image; unrelated profiles confer no support.
     """
     verdict = model.get("default_runtime_compatibility")
     if not isinstance(verdict, dict) or _normalize_key(verdict.get("status")) != "incompatible":
         return None
-    own_image = bool(model.get("llama_server_image")) or any(
-        isinstance(profile, dict) and profile.get("llama_server_image")
-        for profile in model.get("runtime_profiles") or []
+    own_image = bool(model.get("llama_server_image")) or bool(
+        isinstance(selected_profile, dict) and selected_profile.get("llama_server_image")
     )
     # Apple runs native binaries, AMD's overlay pins its own image (catalog
     # images are CUDA builds), and a Windows-owned server is not an image.
