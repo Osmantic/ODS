@@ -531,6 +531,8 @@ jobs:
           bash tests/test-dashboard-data-permissions.sh
           bash tests/test-extensions-library-copy.sh
           sudo -n python3 tests/test_dashboard_data_permissions.py
+          python3 tests/test_dashboard_extensions_lock.py
+          sudo -n python3 tests/test_dashboard_extensions_lock.py
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/test-pixel-support-services.sh

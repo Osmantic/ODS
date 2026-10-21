@@ -13,6 +13,7 @@ const ctx = {trigger:'user',agentId:'pixel',runId:'exec-artifact',sessionId:'exe
   sessionKey:`agent:pixel:openai-user:${user}`};
 const textResult = text => ({content:[{type:'text',text}]});
 const matchedFooter = /read back .* and verified that the published download contains the same bytes/;
+const noWorkspacePythonPrompt = 'Use Python to create fleet-even.csv with columns n,double and rows 1 through 6. Read it back and check the final row is 6,12. Publish the file for download. In the final answer, format the download as bold Download: followed by a link labelled only fleet-even.csv.';
 
 function fixture(ownerPrompt=prompt) {
   const guard=api.createToolLoopGuard({abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})});
@@ -78,6 +79,35 @@ test('repeated conjunctions cannot cause filename-intent backtracking',()=>{
   assert.equal(api.userMessageWorkspaceContinuationPath([],hostile),undefined);
   assert.ok(performance.now()-start<1000,'bounded owner-intent classification');
   assert.equal(api.userMessageWorkspaceContinuationPath([],'Inspect the workspace. And then create fleet-squares.csv.'),name);
+});
+
+test('explicit Python file creation does not require the word workspace',()=>{
+  for(const p of [noWorkspacePythonPrompt, 'Use Python to create fleet-even.csv.',
+    'Please create fleet-even.csv using Python.', 'Use Python3 to generate fleet-even.csv.'])
+    assert.equal(api.userMessagePythonCreationPath([],p),'fleet-even.csv',p);
+  for(const p of ['Do not use Python to create fleet-even.csv.',
+    'Explain how to use Python to create fleet-even.csv.',
+    'Write a note containing "Use Python to create fleet-even.csv".',
+    '> Use Python to create fleet-even.csv.',
+    '```text\nUse Python to create fleet-even.csv.\n```',
+    'Use Python to create fleet-even.csv and another.csv.',
+    'Use Python to create ../fleet-even.csv.',
+    'Create fleet-even.csv. Python is an example, not a requirement.'])
+    assert.equal(api.userMessagePythonCreationPath([],p),undefined,p);
+});
+
+test('the unchanged live Python prompt blocks directly writing the requested output',()=>{
+  for(const wrapped of [false,true]) {
+    const f=fixture(noWorkspacePythonPrompt);
+    const params={path:'/workspace/fleet-even.csv',content:'n,double\n6,12\n'};
+    const action=f.guard.beforeToolCall({toolName:wrapped?'tool_call':'write',
+      params:wrapped?{id:'write',args:params}:params,runId:ctx.runId,toolCallId:'direct-output'},ctx,'pixel');
+    assert.equal(action?.block,true);
+    assert.match(action.blockReason,/executing Python/);
+    f.call('write',{path:'/workspace/create_csv.py',content:'print("generator")'},textResult('Written'));
+    f.call('exec',{command:'python3 create_csv.py'},
+      {...textResult('created'),details:{status:'completed',exitCode:0}});
+  }
 });
 
 for(const wrapped of [false,true]) test(`Python-created CSV composes with readback and accepted download, wrapped=${wrapped}`,()=>{

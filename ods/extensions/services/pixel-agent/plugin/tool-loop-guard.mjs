@@ -6997,7 +6997,11 @@ function workspaceReadFingerprint(event) {
 // Preserve an explicit execution method when choosing how to create a named
 // output. This is routing guidance, not evidence that a program created bytes.
 export function userMessagePythonCreationPath(messages, prompt = undefined) {
-  const expected = userMessageWorkspaceContinuationPath(messages, prompt);
+  // A named output plus an explicit Python method is sufficient even when the
+  // owner does not spell out "workspace". This binds only one bare filename;
+  // it does not grant directory access or establish execution provenance.
+  const expected = userMessageWorkspaceContinuationPath(messages, prompt) ??
+    userMessageBareWorkspaceFilename(messages, prompt);
   if (!expected) return undefined;
   const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
     {preserveFileTargets: true});
