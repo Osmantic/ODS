@@ -17,27 +17,25 @@
     },
     {
       "parameters": {
-        "url": "http://tts:8880/v1/audio/speech",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  model: 'kokoro',\n  input: $json.body?.text || $json.text || $json.message || 'Default text',\n  voice: $json.body?.voice || $json.voice || 'af_heart',\n  response_format: 'wav',\n  speed: parseFloat($json.body?.speed || $json.speed || '1.0')\n}) }}",
+        "url": "http://tts:8880/v1/audio/speech",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  model: 'kokoro',\n  input: $json.body?.text || $json.text || $json.message || 'Default text',\n  voice: $json.body?.voice || $json.voice || 'af_heart',\n  response_format: 'wav',\n  speed: parseFloat($json.body?.speed || $json.speed || '1.0')\n}) }}",
         "options": {
-          "timeout": 60000
-        },
-        "responseFormat": "file",
-        "dataPropertyName": "data"
+          "timeout": 60000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
       },
       "id": "piper-tts-api",
       "name": "OpenAI-compatible TTS API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [450, 300]
     },
     {

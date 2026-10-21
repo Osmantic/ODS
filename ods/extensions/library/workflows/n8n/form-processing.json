@@ -17,10 +17,7 @@
       },
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
-      "position": [
-        250,
-        300
-      ],
+      "position": [250, 300],
       "webhookId": "form-submit-webhook",
       "credentials": {
         "httpHeaderAuth": {
@@ -37,10 +34,7 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        450,
-        300
-      ]
+      "position": [450, 300]
     },
     {
       "id": "check-validation",
@@ -66,10 +60,7 @@
       },
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
-      "position": [
-        650,
-        300
-      ]
+      "position": [650, 300]
     },
     {
       "id": "send-error-response",
@@ -84,10 +75,7 @@
       },
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [
-        650,
-        500
-      ]
+      "position": [650, 500]
     },
     {
       "id": "process-llm",
@@ -96,46 +84,15 @@
         "method": "POST",
         "url": "http://llama-server:8080/v1/chat/completions",
         "authentication": "none",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "model",
-              "value": "default"
-            },
-            {
-              "name": "messages",
-              "value": "={{ JSON.stringify([{ role: 'system', content: 'You are a helpful assistant processing form submissions.' }, { role: 'user', content: 'Process this form submission: ' + JSON.stringify($json.data) }]) }}"
-            },
-            {
-              "name": "temperature",
-              "value": "0.7"
-            },
-            {
-              "name": "max_tokens",
-              "value": "500"
-            }
-          ]
-        },
-        "options": {
-          "continueOnFail": true
-        }
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'default', messages: [{ role: 'system', content: 'You are a helpful assistant processing form submissions.' }, { role: 'user', content: 'Process this form submission: ' + JSON.stringify($json.data) }], temperature: 0.7, max_tokens: 500 }) }}",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        850,
-        200
-      ]
+      "position": [850, 200],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "handle-llm-response",
@@ -145,10 +102,7 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        1050,
-        200
-      ]
+      "position": [1050, 200]
     },
     {
       "id": "store-result",
@@ -158,40 +112,21 @@
         "url": "https://example.invalid/api/v1/forms/submissions",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "submission",
-              "value": "={{ JSON.stringify({\n                id: $('Validate Form').item.json.submission_id,\n                data: $('Validate Form').item.json.data,\n                llm_result: $json.llm_response || null,\n                llm_error: $json.llm_error || null,\n                success: $json.success,\n                timestamp: new Date().toISOString()\n              }) }}"
-            }
-          ]
-        },
-        "options": {
-          "continueOnFail": true
-        }
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ submission: {\n                id: $('Validate Form').item.json.submission_id,\n                data: $('Validate Form').item.json.data,\n                llm_result: $json.llm_response || null,\n                llm_error: $json.llm_error || null,\n                success: $json.success,\n                timestamp: new Date().toISOString()\n              } }) }}",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        1250,
-        200
-      ],
+      "position": [1250, 200],
       "credentials": {
         "httpHeaderAuth": {
           "id": "",
           "name": "Form Storage API Key"
         }
-      }
+      },
+      "onError": "continueRegularOutput"
     },
     {
       "id": "prepare-success-response",
@@ -201,10 +136,7 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        1450,
-        200
-      ]
+      "position": [1450, 200]
     },
     {
       "id": "send-success-response",
@@ -219,10 +151,7 @@
       },
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [
-        1650,
-        200
-      ]
+      "position": [1650, 200]
     },
     {
       "id": "sticky-placeholder-endpoints",
@@ -234,10 +163,7 @@
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [
-        250,
-        60
-      ]
+      "position": [250, 60]
     }
   ],
   "connections": {

@@ -15,10 +15,7 @@
       "comment": "Accepts JSON: { audio (base64), channel (optional) }. Auth via X-API-Key header only. Set WHISPER_API_KEY env var to enable authentication.",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [
-        250,
-        300
-      ],
+      "position": [250, 300],
       "credentials": {
         "httpHeaderAuth": {
           "id": "",
@@ -28,33 +25,34 @@
     },
     {
       "parameters": {
-        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst input = $input.first().json || {};\nconst audio = input.audio || '';\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\n\n// === AUDIO VALIDATION ===\nif (!audio || audio.trim().length === 0) {\n  throw new Error('Missing required field: audio (base64)');\n}\nif (audio.length > 2097152) { // ~2MB base64 \u2248 1.5MB binary\n  throw new Error('Audio too large: max ~2MB base64 encoded');\n}\n\n// === CHANNEL VALIDATION ===\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  throw new Error('Invalid channel: must be alphanumeric, dash, or underscore only');\n}\nconst channel = channelRaw;\n\nreturn [{\n  json: {\n    audio: audio.trim(),\n    channel: channel\n  }\n}];"
+        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst input = $input.first().json || {};\nconst audio = input.audio || '';\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\n\n// === AUDIO VALIDATION ===\nif (!audio || audio.trim().length === 0) {\n  throw new Error('Missing required field: audio (base64)');\n}\nif (audio.length > 2097152) { // ~2MB base64 ≈ 1.5MB binary\n  throw new Error('Audio too large: max ~2MB base64 encoded');\n}\n\n// === CHANNEL VALIDATION ===\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  throw new Error('Invalid channel: must be alphanumeric, dash, or underscore only');\n}\nconst channel = channelRaw;\n\nreturn [{\n  json: {\n    channel: channel\n  },\n  binary: {\n    audio: {\n      data: audio.trim(),\n      mimeType: 'audio/wav',\n      fileName: 'audio.wav'\n    }\n  }\n}];"
       },
       "id": "validate-input",
       "name": "Validate Input",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
-      "position": [
-        450,
-        300
-      ],
+      "position": [450, 300],
       "comment": "API key auth via X-API-Key header only (if WHISPER_API_KEY set). Validates audio size (max ~2MB base64), channel format.",
       "notes": "Validates: audio (required, max ~2MB base64), channel (alphanumeric/dash/underscore)"
     },
     {
       "parameters": {
-        "url": "http://whisper:8000/v1/audio/transcriptions",
         "method": "POST",
-        "headers": {
-          "list": [
+        "url": "http://whisper:8000/v1/audio/transcriptions",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
             {
-              "name": "Content-Type",
-              "value": "multipart/form-data"
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "audio"
+            },
+            {
+              "name": "model",
+              "value": "Systran/faster-whisper-base"
             }
           ]
-        },
-        "binary": {
-          "file": "={{ $('Validate Input').first().json.audio ? { data: $('Validate Input').first().json.audio, mimeType: 'audio/wav' } : null }}"
         },
         "options": {
           "timeout": 120000
@@ -63,11 +61,8 @@
       "id": "whisper-stt-api",
       "name": "Whisper STT API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
-      "position": [
-        650,
-        300
-      ],
+      "typeVersion": 4.2,
+      "position": [650, 300],
       "comment": "Uses validated audio input. 120 second timeout."
     },
     {
@@ -78,10 +73,7 @@
       "name": "Process STT Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
-      "position": [
-        850,
-        300
-      ]
+      "position": [850, 300]
     },
     {
       "parameters": {
@@ -92,10 +84,7 @@
       "name": "Discord Output",
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
-      "position": [
-        1050,
-        300
-      ]
+      "position": [1050, 300]
     },
     {
       "parameters": {
@@ -106,10 +95,7 @@
       "name": "Discord Error",
       "type": "n8n-nodes-base.discord",
       "typeVersion": 1,
-      "position": [
-        650,
-        500
-      ],
+      "position": [650, 500],
       "comment": "Catches errors from all nodes. Uses Validate Input for channel access and shows validation requirements."
     }
   ],

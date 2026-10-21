@@ -13,7 +13,11 @@ each template under extensions/library/workflows for:
   (or an allowlisted extra HTTP port) and the service speaks HTTP,
 - every Code node's jsCode parses (`node --check`, wrapped in an async
   function because n8n code may `return` at top level),
-- every Webhook node using headerAuth names its credential.
+- every Webhook node using headerAuth names its credential,
+- every HTTP Request node uses typeVersion 4.2 with that version's request
+  fields (V1's `body`/`headers`/`binary` are silently ignored by V4, and V4's
+  `method`/`jsonBody` are ignored by V1), sends the body it declares, and
+  keeps its JSON body expression parseable.
 """
 
 from __future__ import annotations
@@ -87,10 +91,82 @@ def webhook_errors(rel: Path, workflow: dict) -> list[str]:
     return errors
 
 
-def jscode_errors(rel: Path, workflow: dict, node_bin: str) -> list[str]:
+HTTP_NODE = "n8n-nodes-base.httpRequest"
+HTTP_VERSION = 4.2
+HTTP_PARAMS = {
+    "method", "url", "authentication", "genericAuthType", "nodeCredentialType",
+    "sendQuery", "queryParameters", "sendHeaders", "headerParameters",
+    "sendBody", "contentType", "specifyBody", "jsonBody", "bodyParameters", "options",
+}
+HTTP_OPTIONS = {"timeout", "response", "redirect", "batching", "proxy", "allowUnauthorizedCerts", "queryParameterArrays", "lowercaseHeaders"}
+# Request bodies the bundled services need; a template that drops one fails.
+REQUIRED_BODY = {
+    ("piper/tts-convert.json", "OpenAI-compatible TTS API"): ("json", {"model", "input", "voice"}),
+    ("whisper/stt-convert.json", "Whisper STT API"): ("multipart-form-data", {"file", "model"}),
+    ("rvc/voice-convert.json", "RVC API"): ("multipart-form-data", {"file", "model"}),
+}
+
+
+def http_node_errors(rel: Path, key: str, workflow: dict) -> list[str]:
     errors: list[str] = []
     for node in workflow.get("nodes", []):
-        code = (node.get("parameters") or {}).get("jsCode")
+        if node.get("type") != HTTP_NODE:
+            continue
+        name = node.get("name")
+        where = f"{rel}: HTTP node {name!r}"
+        params = node.get("parameters") or {}
+        if node.get("typeVersion") != HTTP_VERSION:
+            errors.append(f"{where} uses typeVersion {node.get('typeVersion')}, expected {HTTP_VERSION}")
+        unknown = sorted(set(params) - HTTP_PARAMS)
+        if unknown:
+            errors.append(f"{where} has fields V{HTTP_VERSION} ignores: {unknown}")
+        bad_options = sorted(set(params.get("options") or {}) - HTTP_OPTIONS)
+        if bad_options:
+            errors.append(f"{where} has unsupported options {bad_options} (use node onError for continue-on-fail)")
+        headers = (params.get("headerParameters") or {}).get("parameters") or []
+        if any(str(h.get("value", "")).startswith("multipart/") for h in headers):
+            errors.append(f"{where} hard-codes a multipart Content-Type (drops the boundary)")
+        has_body = bool(params.get("jsonBody") or params.get("bodyParameters"))
+        if has_body and params.get("sendBody") is not True:
+            errors.append(f"{where} declares a body without sendBody: true")
+        if params.get("method", "GET") in {"POST", "PUT", "PATCH"} and not has_body:
+            errors.append(f"{where} is {params.get('method')} without a request body")
+        if params.get("jsonBody") and params.get("specifyBody") != "json":
+            errors.append(f"{where} has jsonBody without specifyBody: json")
+        expected = REQUIRED_BODY.get((key, name))
+        if expected is not None:
+            content_type, fields = expected
+            if content_type == "json":
+                body = str(params.get("jsonBody") or "")
+                sent = {f for f in fields if re.search(r"\b" + f + r"\s*:", body)}
+            else:
+                if params.get("contentType") != content_type:
+                    errors.append(f"{where} must send {content_type}")
+                sent = {p.get("name") for p in (params.get("bodyParameters") or {}).get("parameters") or []}
+                binaries = [p for p in (params.get("bodyParameters") or {}).get("parameters") or []
+                            if p.get("parameterType") == "formBinaryData"]
+                if not binaries:
+                    errors.append(f"{where} sends no binary file part")
+            missing = sorted(fields - sent)
+            if missing:
+                errors.append(f"{where} request body is missing {missing}")
+    return errors
+
+
+def json_body_sources(workflow: dict) -> list[tuple[str, str]]:
+    sources = []
+    for node in workflow.get("nodes", []):
+        body = (node.get("parameters") or {}).get("jsonBody")
+        if node.get("type") == HTTP_NODE and isinstance(body, str) and body.startswith("={{") and body.endswith("}}"):
+            sources.append((f"jsonBody of {node.get('name')!r}", "return (" + body[3:-2] + ");"))
+    return sources
+
+
+def jscode_errors(rel: Path, workflow: dict, node_bin: str) -> list[str]:
+    errors: list[str] = []
+    sources = [(f"Code node {node.get('name')!r}", (node.get("parameters") or {}).get("jsCode"))
+               for node in workflow.get("nodes", [])]
+    for label, code in sources + json_body_sources(workflow):
         if not code:
             continue
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as handle:
@@ -100,7 +176,7 @@ def jscode_errors(rel: Path, workflow: dict, node_bin: str) -> list[str]:
         js_path.unlink()
         if result.returncode != 0:
             detail = next((line for line in result.stderr.splitlines() if "Error" in line), result.stderr.strip())
-            errors.append(f"{rel}: Code node {node.get('name')!r} does not parse: {detail}")
+            errors.append(f"{rel}: {label} does not parse: {detail}")
     return errors
 
 
@@ -134,6 +210,7 @@ def main() -> int:
                 errors.append(f"{rel}: URL host {host!r} is not an ODS compose service or example.invalid")
         errors.extend(url_errors(rel, text, services))
         errors.extend(webhook_errors(rel, workflow))
+        errors.extend(http_node_errors(rel, path.relative_to(WORKFLOW_DIR).as_posix(), workflow))
         if node_bin is not None:
             errors.extend(jscode_errors(rel, workflow, node_bin))
 
@@ -143,7 +220,7 @@ def main() -> int:
             print(f"  - {error}")
         return 1
 
-    print(f"[PASS] {len(templates)} library n8n workflows use literal ODS service URLs")
+    print(f"[PASS] {len(templates)} library n8n workflows use literal ODS service URLs and valid HTTP Request V4.2 nodes")
     return 0
 
 

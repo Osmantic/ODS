@@ -42,13 +42,13 @@
         "method": "GET",
         "url": "http://dashboard-api:3002/health",
         "options": {
-          "continueOnFail": true,
           "timeout": 30000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [650, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "respond-webhook",

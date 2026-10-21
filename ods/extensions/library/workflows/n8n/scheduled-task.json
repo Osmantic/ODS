@@ -29,13 +29,13 @@
         "method": "GET",
         "url": "http://dashboard-api:3002/health",
         "options": {
-          "continueOnFail": true,
           "timeout": 30000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [450, 300]
+      "position": [450, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "c3d4e5f6-a7b8-9012-cdef-345678901234",

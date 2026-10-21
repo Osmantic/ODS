@@ -27,15 +27,14 @@
       "id": "fetch-source-a",
       "name": "Fetch Source A",
       "parameters": {
-        "url": "https://example.invalid/source/api/data",
         "method": "GET",
-        "options": {
-          "continueOnFail": true
-        }
+        "url": "https://example.invalid/source/api/data",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [450, 300]
+      "position": [450, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "handle-source-a-error",
@@ -51,15 +50,14 @@
       "id": "fetch-source-b",
       "name": "Fetch Source B",
       "parameters": {
-        "url": "https://example.invalid/destination/api/data",
         "method": "GET",
-        "options": {
-          "continueOnFail": true
-        }
+        "url": "https://example.invalid/destination/api/data",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [650, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "handle-source-b-error",
@@ -105,31 +103,17 @@
       "id": "store-sync-result",
       "name": "Store Sync Result",
       "parameters": {
-        "url": "https://example.invalid/api/sync/results",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": {
-          "sourceA_count": "={{ $json.sourceA.count }}",
-          "sourceB_count": "={{ $json.sourceB.count }}",
-          "count_difference": "={{ $json.comparison.countDifference }}",
-          "has_differences": "={{ $json.comparison.hasDifferences }}",
-          "timestamp": "={{ $json.timestamp }}",
-          "sync_type": "scheduled"
-        },
-        "options": {
-          "continueOnFail": true
-        }
+        "url": "https://example.invalid/api/sync/results",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ sourceA_count: $json.sourceA.count, sourceB_count: $json.sourceB.count, count_difference: $json.comparison.countDifference, has_differences: $json.comparison.hasDifferences, timestamp: $json.timestamp, sync_type: \"scheduled\" }) }}",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1250, 300]
+      "position": [1250, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "sync-error",

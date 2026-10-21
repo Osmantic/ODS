@@ -34,17 +34,11 @@
     },
     {
       "parameters": {
-        "url": "http://llama-server:8080/v1/chat/completions",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  messages: [\n    {\n      role: 'system',\n      content: `You are a ComfyUI workflow generator. Generate a valid ComfyUI workflow JSON that can be directly used with the ComfyUI API.\n      \n      Requirements:\n      - Output ONLY valid JSON, no markdown formatting\n      - Use the workflow structure with node IDs as strings\n      - Include all required fields for each node\n      - Generate an image generation workflow based on the user prompt\n      - Include nodes for: CheckpointLoaderSimple, KSampler, VAEDecode, SaveImage\n      - Set positive and negative prompts from the user input\n      - Return just the workflow object, wrapped in {\"workflow\": ...}`\n    },\n    {\n      role: 'user',\n      content: $json.prompt\n    }\n  ],\n  model: $json.model || 'local-model',\n  max_tokens: $json.max_tokens || 2000,\n  temperature: $json.temperature || 0.7,\n  top_p: $json.top_p || 0.9,\n  stream: false\n}) }}",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  messages: [\n    {\n      role: 'system',\n      content: `You are a ComfyUI workflow generator. Generate a valid ComfyUI workflow JSON that can be directly used with the ComfyUI API.\n      \n      Requirements:\n      - Output ONLY valid JSON, no markdown formatting\n      - Use the workflow structure with node IDs as strings\n      - Include all required fields for each node\n      - Generate an image generation workflow based on the user prompt\n      - Include nodes for: CheckpointLoaderSimple, KSampler, VAEDecode, SaveImage\n      - Set positive and negative prompts from the user input\n      - Return just the workflow object, wrapped in {\"workflow\": ...}`\n    },\n    {\n      role: 'user',\n      content: $json.prompt\n    }\n  ],\n  model: $json.model || 'local-model',\n  max_tokens: $json.max_tokens || 2000,\n  temperature: $json.temperature || 0.7,\n  top_p: $json.top_p || 0.9,\n  stream: false\n}) }}",
         "options": {
           "timeout": 300000
         }
@@ -52,7 +46,7 @@
       "id": "llm-api",
       "name": "LLM Chat API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [650, 300]
     },
     {
@@ -67,17 +61,11 @@
     },
     {
       "parameters": {
-        "url": "http://comfyui:8188/prompt",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  prompt: $json.workflow,\n  client_id: 'n8n-comfyui-integration'\n}) }}",
+        "url": "http://comfyui:8188/prompt",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  prompt: $json.workflow,\n  client_id: 'n8n-comfyui-integration'\n}) }}",
         "options": {
           "timeout": 600000
         }
@@ -85,7 +73,7 @@
       "id": "comfyui-api",
       "name": "ComfyUI Prompt API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [1050, 300]
     },
     {

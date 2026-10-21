@@ -31,13 +31,12 @@
       "parameters": {
         "method": "GET",
         "url": "https://example.invalid/data",
-        "options": {
-          "continueOnFail": true
-        }
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [450, 300]
+      "position": [450, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "code-transform",
@@ -53,15 +52,17 @@
       "id": "http-internal-ingest",
       "name": "HTTP Request 2",
       "parameters": {
-        "url": "https://example.invalid/ingest",
         "method": "POST",
-        "options": {
-          "continueOnFail": true
-        }
+        "url": "https://example.invalid/ingest",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [850, 300]
+      "position": [850, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "sticky-placeholder-endpoints",

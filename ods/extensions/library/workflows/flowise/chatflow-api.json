@@ -16,10 +16,7 @@
       "name": "Flowise Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
-      "position": [
-        250,
-        300
-      ],
+      "position": [250, 300],
       "credentials": {
         "httpHeaderAuth": {
           "id": "",
@@ -35,37 +32,25 @@
       "name": "Validate Request",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        450,
-        300
-      ]
+      "position": [450, 300]
     },
     {
       "parameters": {
-        "url": "={{ 'http://flowise:3000' + '/api/v1/prediction/' + encodeURIComponent($json.chatflowId) }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  question: $json.question,\n  streaming: $json.streaming,\n  overrideConfig: $json.overrideConfig\n}) }}",
+        "url": "={{ 'http://flowise:3000' + '/api/v1/prediction/' + encodeURIComponent($json.chatflowId) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  question: $json.question,\n  streaming: $json.streaming,\n  overrideConfig: $json.overrideConfig\n}) }}",
         "options": {
-          "timeout": 120000,
-          "continueOnFail": true
+          "timeout": 120000
         }
       },
       "id": "flowise-api",
       "name": "Flowise API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [
-        650,
-        300
-      ]
+      "position": [650, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -75,10 +60,7 @@
       "name": "Format Response",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [
-        850,
-        300
-      ]
+      "position": [850, 300]
     },
     {
       "parameters": {
@@ -90,10 +72,7 @@
       "name": "Respond to Webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
-      "position": [
-        1050,
-        300
-      ]
+      "position": [1050, 300]
     }
   ],
   "connections": {

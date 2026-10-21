@@ -17,17 +17,11 @@
     },
     {
       "parameters": {
-        "url": "http://text-generation-webui:5001/v1/chat/completions",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  messages: [\n    { role: 'system', content: $json.system || 'You are a helpful assistant.' },\n    { role: 'user', content: $json.prompt || $json.message || 'Hello' }\n  ],\n  model: $json.model || 'local-model',\n  max_tokens: parseInt($json.max_tokens || '512'),\n  temperature: parseFloat($json.temperature || '0.7'),\n  top_p: parseFloat($json.top_p || '0.9'),\n  stream: false\n}) }}",
+        "url": "http://text-generation-webui:5001/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  messages: [\n    { role: 'system', content: $json.system || 'You are a helpful assistant.' },\n    { role: 'user', content: $json.prompt || $json.message || 'Hello' }\n  ],\n  model: $json.model || 'local-model',\n  max_tokens: parseInt($json.max_tokens || '512'),\n  temperature: parseFloat($json.temperature || '0.7'),\n  top_p: parseFloat($json.top_p || '0.9'),\n  stream: false\n}) }}",
         "options": {
           "timeout": 300000
         }
@@ -35,7 +29,7 @@
       "id": "textgen-api",
       "name": "TextGen Chat API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [450, 300]
     },
     {
