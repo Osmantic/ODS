@@ -20,6 +20,7 @@ import hashlib
 import http.client
 import importlib
 import importlib.util
+import io
 import json
 import logging
 import math
@@ -10145,6 +10146,21 @@ def _darwin_system_metrics():
         return payload
 
 
+_LOG_TAIL_CHARS = 50000
+
+
+def _read_log_tail(log_buffer) -> str:
+    """Decode the last log characters from a spooled ``docker logs`` buffer.
+
+    Reads a bounded byte window (UTF-8 is at most 4 bytes per character) and
+    normalizes newlines the way ``text=True`` did for a captured pipe.
+    """
+    size = log_buffer.seek(0, os.SEEK_END)
+    log_buffer.seek(max(0, size - _LOG_TAIL_CHARS * 4))
+    text = log_buffer.read().decode("utf-8", errors="replace")
+    return io.StringIO(text, newline=None).read()[-_LOG_TAIL_CHARS:]
+
+
 class AgentHandler(BaseHTTPRequestHandler):
     # Dashboard API keeps a small connection pool to avoid exhausting macOS
     # ephemeral ports when requests traverse the private Colima TCP bridge.
@@ -12693,8 +12709,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                 result = subprocess.run(
                     cmd, stdout=log_buffer, stderr=log_buffer, timeout=5,
                 )
-                log_buffer.seek(0)
-                output = log_buffer.read()[-50000:].decode("utf-8", errors="replace")
+                output = _read_log_tail(log_buffer)
             # Handle container not yet created (e.g. during image pull)
             if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
@@ -12745,8 +12760,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                     ["docker", "logs", "--tail", str(tail), container_name],
                     stdout=log_buffer, stderr=log_buffer, timeout=5,
                 )
-                log_buffer.seek(0)
-                output = log_buffer.read()[-50000:].decode("utf-8", errors="replace")
+                output = _read_log_tail(log_buffer)
             if result.returncode != 0 and "no such container" in output.lower():
                 json_response(self, 200, {
                     "service_id": sid,

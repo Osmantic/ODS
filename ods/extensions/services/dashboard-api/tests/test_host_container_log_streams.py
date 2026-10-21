@@ -48,7 +48,7 @@ def log_process(monkeypatch, emissions, returncode=0):
     def child(command, **kwargs):
         assert command == ["docker", "logs", "--tail", "100", "ods-log-demo"]
         commands.append(command)
-        return run([sys.executable, "-c", program, str(returncode)], input=json.dumps(emissions), **kwargs)
+        return run([sys.executable, "-c", program, str(returncode)], input=json.dumps(emissions).encode(), **kwargs)
 
     monkeypatch.setattr(_mod.subprocess, "run", child)
     return commands
