@@ -6,6 +6,7 @@ import PortalInlineCitation from './PortalInlineCitation'
 import {useMemo,useLayoutEffect} from 'react'
 import {useResponseReveal} from '../lib/useResponseReveal'
 import {EMBED_NOTES} from '../lib/embedDisplay'
+import {parseDeliveredArtifacts} from '../lib/pixelDeliveredArtifacts'
 
 // Portal's own note, in its own paragraph where an embed it can't display
 // was, reads as a muted aside rather than as the model's words.
@@ -51,9 +52,9 @@ function markDocumentDownloads() {
     : node.tagName==='img' ? String(node.properties?.alt || '')
     : (node.children || []).map(text).join('')
   return tree=>{
-    function visit(node) {
+    function visit(node,downloadPrefix=false) {
       if(['pre','code','blockquote'].includes(node.tagName))return
-      let before=''
+      let before='',previous=null
       for(const child of node.children || []) {
         if(child.tagName==='a') {
           const label=text(child).trim(), href=String(child.properties?.href || '')
@@ -72,9 +73,24 @@ function markDocumentDownloads() {
               child.children=[{type:'text',value:label}]
             }
           }
+        } else if(child.tagName==='img') {
+          const label=text(child).trim()
+          const named=/^download\s+(?:verified\s+)?(.+?)\s*:?$/i.exec(label)
+          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before) || (downloadPrefix && !before.trim())
+          const filename=named?.[1] || (prefixed ? label : '')
+          if(/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(filename)) {
+            // An image-shaped document label must not load the model's URL.
+            // The citation renderer binds only a unique completed receipt;
+            // without one, this remains plain text with no invented link.
+            child.tagName='a'
+            child.properties={'data-ods-download-intent':true,'data-ods-download-filename':filename}
+            child.children=[{type:'text',value:label}]
+          }
         }
-        visit(child)
+        const nextPrefix=child.tagName==='p' && previous?.tagName==='p' && /^download\s*:$/i.test(text(previous).trim())
+        visit(child,nextPrefix)
         before+=text(child)
+        if(child.type!=='text' || child.value.trim())previous=child
       }
     }
     visit(tree)
@@ -83,7 +99,12 @@ function markDocumentDownloads() {
 const PLUGINS=[rehypeHighlight,muteEmbedNotes,markDocumentDownloads,revealNewText]
 export default function PortalStreamingText({children, active=false, animate=active, instant=false, onReveal, components=EMPTY_COMPONENTS, artifacts=null}) {
   const fullSource=String(children ?? '')
-  const source=useResponseReveal(fullSource,{animate,instant})
+  // Once a completed answer has verified files, show its complete Markdown.
+  // Revealing half of an image-wrapped link can otherwise turn the unfinished
+  // outer destination into a separate clickable GFM autolink beside the real
+  // download button. Ordinary prose and in-flight responses still animate.
+  const delivered=!active && Boolean(parseDeliveredArtifacts(artifacts)?.length)
+  const source=useResponseReveal(fullSource,{animate,instant:instant || delivered})
   const revealing=source!==fullSource
   useLayoutEffect(()=>{onReveal?.()},[source,onReveal])
   const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,span:StreamSpan}),[components,artifacts])

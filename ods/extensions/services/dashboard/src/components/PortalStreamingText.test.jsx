@@ -9,6 +9,38 @@ beforeEach(()=>{
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const advance=ms=>act(()=>vi.advanceTimersByTime(ms))
 
+it('keeps a verified download free of authored navigation throughout reveal',()=>{
+  const href='https://untrusted.example/api/download?siteId=invented'
+  const source=`[![Download report.md](${href})](${href})`
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.md',
+    siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),file:{path:'report.md',bytes:20,sha256:'b'.repeat(64)}}
+  const {container}=render(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
+  for(let elapsed=0;elapsed<2000;elapsed+=16){
+    advance(16)
+    expect([...container.querySelectorAll('a')].filter(a=>new URL(a.href).hostname==='untrusted.example'),
+      `${elapsed}: ${container.innerHTML}`).toHaveLength(0)
+  }
+  expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
+})
+
+it('finishes partially revealed Markdown atomically when its completed receipt arrives',()=>{
+  const href='https://untrusted.example/download'
+  const source=`[![Download report.md](${href})](${href})\n\n[Python docs](https://docs.python.org/3/)`
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.md',
+    siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),file:{path:'report.md',bytes:20,sha256:'b'.repeat(64)}}
+  const {container,rerender}=render(<PortalStreamingText active>{source}</PortalStreamingText>)
+  advance(400)
+  expect(container.firstChild).toHaveAttribute('aria-busy','true')
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+  rerender(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
+  expect(container.firstChild).toHaveAttribute('aria-busy','false')
+  expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+  expect(screen.getByRole('link',{name:/Python docs/})).toHaveAttribute('href','https://docs.python.org/3/')
+  advance(2000)
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+})
+
 it('reveals a final response received in one batch rather than displaying it instantly',()=>{
   const text='Uma resposta completa recebida de uma vez, com conteúdo real e sem perder nenhuma palavra.'
   const {container}=render(<PortalStreamingText animate>{text}</PortalStreamingText>)
@@ -77,4 +109,49 @@ it('renders a document download image label as text before a receipt arrives',()
   expect(screen.getByRole('link',{name:/Download report.csv/})).toHaveAttribute('href',href)
   expect(container.querySelector('img')).toBeNull()
   expect(screen.queryByRole('button',{name:/Download verified/})).toBeNull()
+})
+
+const documentName='fleet-pr7893-mac-squares.csv'
+const deliveredDocument=(digit='a')=>({schemaVersion:1,kind:'ods-pixel-workspace-artifact',
+  relativePath:documentName,siteId:`site-${digit.repeat(24)}`,sha256:digit.repeat(64),
+  file:{path:documentName,bytes:149,sha256:digit.repeat(64)}})
+const standaloneDocument=`**Download:**\n\n![${documentName}](https://untrusted.example/invented.csv?sha256=wrong)`
+
+it('binds the actual standalone CSV image after its separate Download paragraph to a verified receipt',()=>{
+  const {container}=render(<PortalStreamingText artifacts={[deliveredDocument()]}>{standaloneDocument}</PortalStreamingText>)
+  expect(screen.getByRole('button',{name:`Download verified ${documentName}`})).toBeInTheDocument()
+  expect(container.querySelector('img')).toBeNull()
+  expect(container.querySelector('a[href]')).toBeNull()
+})
+it('keeps a standalone document label inert until its receipt arrives',()=>{
+  const {container,rerender}=render(<PortalStreamingText active instant>{standaloneDocument}</PortalStreamingText>)
+  expect(container.querySelector('img')).toBeNull()
+  expect(container.querySelector('a[href]')).toBeNull()
+  expect(screen.queryByRole('button')).toBeNull()
+  expect(container).toHaveTextContent(documentName)
+  rerender(<PortalStreamingText instant artifacts={[deliveredDocument()]}>{standaloneDocument}</PortalStreamingText>)
+  expect(screen.getByRole('button',{name:`Download verified ${documentName}`})).toBeInTheDocument()
+})
+it('does not guess between duplicate standalone document names',()=>{
+  const {container}=render(<PortalStreamingText artifacts={[deliveredDocument(),deliveredDocument('b')]}>{standaloneDocument}</PortalStreamingText>)
+  expect(screen.queryByRole('button')).toBeNull()
+  expect(container.querySelector('img,a[href]')).toBeNull()
+})
+it('uses only the receipt for an explicit standalone download image with a hostile source URL',()=>{
+  const {container}=render(<PortalStreamingText artifacts={[deliveredDocument()]}>{`![Download ${documentName}](javascript:alert%281%29)`}</PortalStreamingText>)
+  expect(screen.getByRole('button',{name:`Download verified ${documentName}`})).toBeInTheDocument()
+  expect(container.querySelector('img,a[href]')).toBeNull()
+})
+it('preserves ordinary images and does not carry a Download prefix across other prose',()=>{
+  const {container}=render(<PortalStreamingText artifacts={[deliveredDocument()]}>{`Download:\n\n![chart.png](https://example.com/chart.png)\n\nDownload:\n\nAn example follows.\n\n![${documentName}](https://example.com/example.csv)`}</PortalStreamingText>)
+  expect(container.querySelectorAll('img')).toHaveLength(2)
+  expect(screen.queryByRole('button')).toBeNull()
+})
+it('preserves quoted and code examples of standalone document downloads',()=>{
+  const quoted=`> Download:\n>\n> ![${documentName}](https://example.com/example.csv)`
+  const code='```md\n'+standaloneDocument+'\n```'
+  const {container}=render(<PortalStreamingText artifacts={[deliveredDocument()]}>{quoted+'\n\n'+code}</PortalStreamingText>)
+  expect(container.querySelector('blockquote img')).not.toBeNull()
+  expect(container.querySelector('pre code')).toHaveTextContent(documentName)
+  expect(screen.queryByRole('button')).toBeNull()
 })
