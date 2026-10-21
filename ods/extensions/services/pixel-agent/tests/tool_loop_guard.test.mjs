@@ -7530,10 +7530,11 @@ test("composes an explicitly requested mixed host and workspace task across ever
     event: { params: { path: "report.txt" } },
   }), { params: { path: "report.txt" } });
   assert.deepEqual(call(guard, "tool_call", {
-    event: { params: { id: "read", args: { path: "report.txt" } } },
+    event: { toolCallId: "mixed-read", params: { id: "read", args: { path: "report.txt" } } },
   }), { params: { id: "read", args: { path: "report.txt" } } });
   afterCall(guard, "tool_call", {
     event: {
+      toolCallId: "mixed-read",
       params: { id: "read", args: { path: "report.txt" } },
       result: {
         content: [{ type: "text", text: "tool wrapper result" }],
@@ -7684,6 +7685,7 @@ test("persists a trusted exact next step after each verified mixed-task boundary
   });
   afterCall(guard, "tool_call", {
     event: {
+      toolCallId: "read-call",
       params: evidenceRead.params,
       result: {
         details: {
@@ -7693,7 +7695,9 @@ test("persists a trusted exact next step after each verified mixed-task boundary
       },
     },
   });
-  assert.equal(persistToolResult(guard, "tool_call", "read-call"), undefined);
+  const afterRead = persistToolResult(guard, "tool_call", "read-call");
+  assert.deepEqual(afterRead.message.content, [{type: "text", text: "verified evidence"}]);
+  assert.doesNotMatch(JSON.stringify(afterRead), /ODS Pixel trusted continuation/);
 });
 
 test("allows requested host observations within the live extension setup request", () => {
