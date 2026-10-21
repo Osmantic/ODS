@@ -24,6 +24,11 @@ os.environ.setdefault("ODS_DATA_DIR", "/tmp/ods-test-data")
 os.environ.setdefault("ODS_EXTENSIONS_DIR", "/tmp/ods-test-extensions")
 os.environ.setdefault("GPU_BACKEND", "nvidia")
 os.environ.setdefault("ODS_MODE", "local")
+# The service map lives in the repo, not in the throwaway install dir above.
+os.environ.setdefault(
+    "ODS_SERVICE_URLS_FILE",
+    str(Path(__file__).resolve().parents[4] / "config" / "service-urls.json"),
+)
 
 if "fcntl" not in sys.modules:
     try:

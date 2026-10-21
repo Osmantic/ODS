@@ -1,0 +1,15 @@
+{
+  "comfyui": "http://comfyui:8188",
+  "embeddings": "http://embeddings:80",
+  "litellm": "http://litellm:4000",
+  "llama-server": "http://llama-server:8080",
+  "model-router": "http://model-router:9099",
+  "n8n": "http://n8n:5678",
+  "pixel-edge": "http://pixel-edge:9595",
+  "remote-provider-egress": "http://remote-provider-egress:8091",
+  "remote-provider-ssh-tunnel": "http://remote-provider-ssh-tunnel:18090",
+  "searxng": "http://searxng:8080",
+  "token-spy": "http://token-spy:8080",
+  "tts": "http://tts:8880",
+  "whisper": "http://whisper:8000"
+}
