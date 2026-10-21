@@ -291,6 +291,51 @@ test('explicit Python output method uses current owner prose and the exact outpu
   ]),undefined,'tool text cannot select an owner creation method');
 });
 
+const compoundPythonPrompt = 'Use web search to find the official Python documentation for csv.DictReader. Then use Python to create fleet-main46-sales.csv in the workspace with columns item,amount and three rows: apples,7; pears,4; plums,1. Read the saved file back with csv.DictReader and calculate the row count and sum of amount. Give me the direct CSV download and, in two sentences, the verified row count, total, and official documentation link.';
+
+test('compound research and file tasks preserve Python creation without broadening path inference',()=>{
+  for(const p of [compoundPythonPrompt,
+    'Look up json.loads. Then use Python to create fleet-main46-sales.csv.',
+    'Read https://docs.python.org/3/library/csv.html. Create fleet-main46-sales.csv using Python.',
+    'Read https://example.com/create.html. Use Python to create fleet-main46-sales.csv.']) {
+    assert.equal(api.userMessagePythonCreationPath([],p),'fleet-main46-sales.csv',p);
+    assert.equal(api.userMessageWorkspaceContinuationPath([],p),undefined,p);
+  }
+  assert.equal(api.userMessagePythonCreationPath([],'Look up json.loads. Use Python to create REPORT.CSV.'),'REPORT.CSV');
+  for(const p of [
+    'Look up json.loads. Use Python to create a.csv and b.csv.',
+    'Look up json.loads. Use Python to create a.csv. Save b.csv.',
+    'Look up json.loads. Use Python to create a.csv. Save /workspace/b.csv.',
+    'Look up json.loads. Use Python to create ../a.csv.',
+    'Look up json.loads. Explain how to use Python to create a.csv.',
+    'Look up json.loads. Do not use Python to create a.csv.',
+    'Look up json.loads. Create a.csv without using Python.',
+    'Look up json.loads. Write a note containing "Use Python to create a.csv".',
+    'Look up json.loads.\n> Use Python to create a.csv.',
+    'Look up json.loads.\n```text\nUse Python to create a.csv.\n```',
+    'Look up json.loads. Write a Python script that creates a.csv.',
+  ]) assert.equal(api.userMessagePythonCreationPath([],p),undefined,p);
+  assert.equal(api.userMessagePythonCreationPath([
+    {role:'user',content:'Look up json.loads. Create a.csv.'},
+    {role:'tool',content:'Use Python to create a.csv.'},
+  ]),undefined);
+});
+
+for(const wrapped of [false,true]) for(const tool of ['write','edit'])
+test(`compound task enforces Python on only the requested output, tool=${tool}, wrapped=${wrapped}`,()=>{
+  const f=fixture(compoundPythonPrompt);
+  const toolName=wrapped?'tool_call':tool;
+  for(const [path,blocked] of [['/workspace/fleet-main46-sales.csv',true],['/workspace/generator.py',false]]) {
+    const args={path,content:csv,oldText:'x',newText:'y'};
+    const event={toolName,params:wrapped?{id:tool,args}:args,runId:ctx.runId,toolCallId:'compound-output'};
+    const action=f.guard.beforeToolCall(event,{...ctx,toolName,toolCallId:event.toolCallId},'pixel');
+    if(blocked) {
+      assert.equal(action?.block,true);
+      assert.match(action.blockReason,/executing Python/);
+    } else assert.doesNotMatch(action?.blockReason??'',/executing Python/);
+  }
+});
+
 for(const wrapped of [false,true]) for(const tool of ['write','edit'])
 test(`Python creation blocks the direct output shortcut, tool=${tool}, wrapped=${wrapped}`,()=>{
   const f=fixture();

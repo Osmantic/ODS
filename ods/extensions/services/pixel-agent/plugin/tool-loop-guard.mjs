@@ -6997,14 +6997,21 @@ function workspaceReadFingerprint(event) {
 // Preserve an explicit execution method when choosing how to create a named
 // output. This is routing guidance, not evidence that a program created bytes.
 export function userMessagePythonCreationPath(messages, prompt = undefined) {
+  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
+    {preserveFileTargets: true});
   // A named output plus an explicit Python method is sufficient even when the
   // owner does not spell out "workspace". This binds only one bare filename;
   // it does not grant directory access or establish execution provenance.
   const expected = userMessageWorkspaceContinuationPath(messages, prompt) ??
-    userMessageBareWorkspaceFilename(messages, prompt);
+    userMessageBareWorkspaceFilename(messages, prompt) ??
+    // Research sentences may contain dotted API names or documentation URLs.
+    // For method routing only, apply the same conservative filename selector
+    // to all creation clauses together. Keeping every creation clause means
+    // competing outputs, directory paths and traversal still fail closed.
+    userMessageBareWorkspaceFilename([], text.split(/[!?;\n]+|\.(?=\s|$)/)
+      .filter(clause => /\b(?:create|generate|write|save|produce|emit)\s+/i.test(clause))
+      .join('. '));
   if (!expected) return undefined;
-  const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt),
-    {preserveFileTargets: true});
   const path = expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const output = `(?:/workspace/|workspace/|\\./)?${path}(?=$|[\\s,;!?]|\\.(?:\\s|$))`;
   // Keep the explicit method bound to the already validated single output,
