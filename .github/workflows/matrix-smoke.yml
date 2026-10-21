@@ -168,6 +168,17 @@ jobs:
             } >/etc/zypp/zypp.conf.d/99-ods-ci-network.conf
           }
 
+          configure_mint_ci_repository_transport() {
+            # The image's packages.linuxmint.com origin can be unavailable.
+            # This official mirror serves the same signed Virginia repository:
+            # https://www.linuxmint.com/mirrors.php
+            for repository in "${1:-/etc/apt/sources.list.d}"/official-package-repositories.list \
+                              "${1:-/etc/apt/sources.list.d}"/official-source-repositories.list; do
+              [ -f "$repository" ] || continue
+              sed -i -E 's#^([[:space:]]*deb(-src)?[[:space:]]+(\[[^]]*\][[:space:]]+)?)https?://packages\.linuxmint\.com/?([[:space:]]+virginia([[:space:]]|$))#\1https://mirrors.kernel.org/linuxmint-packages/\4#' "$repository"
+            done
+          }
+
           install_apt_checkout_prerequisites() {
             # Refresh indexes again after a mirror changes during package download.
             # Avoid stale proxy responses while retaining repository signatures.
@@ -178,6 +189,9 @@ jobs:
           }
 
           if command -v apt-get &>/dev/null; then
+            if [ '${{ matrix.distro }}' = linux-mint-21.3 ]; then
+              configure_mint_ci_repository_transport
+            fi
             retry install_apt_checkout_prerequisites
           elif command -v dnf &>/dev/null; then
             dnf install -y -q ca-certificates git curl-minimal
