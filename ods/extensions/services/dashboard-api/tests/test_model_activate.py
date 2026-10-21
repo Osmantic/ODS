@@ -9315,6 +9315,31 @@ class TestModelActivationJournal:
         _mod._startup_recover_interrupted_model_activation()
         assert not (install / "data" / "model-activation-transaction.json").exists()
 
+    def test_retained_journal_rejects_new_activation_and_is_preserved(self, tmp_path, monkeypatch):
+        install, env_path, *_ = self._interrupted_install(tmp_path, monkeypatch)
+        journal_path = install / "data" / "model-activation-transaction.json"
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", lambda *_a, **_kw: False)
+        _mod._startup_recover_interrupted_model_activation()  # recovery fails
+        original = journal_path.read_bytes()
+        env_after_failure = env_path.read_bytes()
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server",
+                            lambda _env: pytest.fail("a pending journal must block runtime mutation"))
+        handler = _ResponseHandler(request_body={"model_id": "target-model"})
+
+        _mod.AgentHandler._handle_model_activate(handler)
+
+        assert handler.response_code == 409
+        assert handler.parse_response()["code"] == "model_activation_recovery_pending"
+        assert journal_path.read_bytes() == original
+        assert env_path.read_bytes() == env_after_failure
+        assert _mod._model_lifecycle_status().get("lifecycleActive") is None
+        # Direct callers cannot replace the journal either.
+        with pytest.raises(RuntimeError, match="pending recovery"):
+            _mod._write_model_activation_journal("other", "compose-llama", {})
+        assert journal_path.read_bytes() == original
+
     def test_no_journal_means_no_recovery_and_idle_status(self, tmp_path, monkeypatch):
         install, *_ = _write_model_activation_fixture(tmp_path)
         monkeypatch.setattr(_mod, "INSTALL_DIR", install)

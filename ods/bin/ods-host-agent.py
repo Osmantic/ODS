@@ -5058,7 +5058,13 @@ def _model_activation_journal_targets() -> dict[str, Path]:
 
 def _write_model_activation_journal(target_model_id: str, strategy: str,
                                     snapshots: dict[str, dict]) -> None:
-    """Persist the pre-mutation snapshots before the first activation write."""
+    """Persist the pre-mutation snapshots before the first activation write.
+
+    A retained journal is the only copy of an unresolved transaction's
+    before-state, so it is never replaced by a new activation.
+    """
+    if _model_activation_journal_path().exists():
+        raise RuntimeError('An interrupted model activation is pending recovery')
     targets = _model_activation_journal_targets()
     files = {}
     for name, snapshot in snapshots.items():
@@ -14378,6 +14384,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            # Admission under the lifecycle lock: an unresolved journal from an
+            # interrupted activation must be recovered before any new mutation.
+            if _model_activation_journal_path().exists():
+                json_response(self, 409, {
+                    "error": "An interrupted model activation is pending recovery",
+                    "code": "model_activation_recovery_pending",
+                    "requestedModelId": model_id,
+                })
+                return
             activation_options = {}
             if requested_context_length is not None:
                 activation_options["requested_context_length"] = requested_context_length
