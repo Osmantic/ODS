@@ -57,7 +57,7 @@ DASHBOARD_API_KEY="$(grep '^DASHBOARD_API_KEY=' /path/to/ods/.env | cut -d= -f2-
   npm run dev
 ```
 
-Use the installed key in the Vite **server process environment**. Do not use a `VITE_` variable, client code, or a browser field. With no key, Vite warns and leaves API authentication to the caller; protected API requests retain their normal authentication error. Production builds do not require the key.
+Use the installed key in the Vite **server process environment**. Do not use a `VITE_` variable, client code, or a browser field. With no key, Vite warns and leaves API authentication to the caller; protected API requests retain their normal authentication error. Production builds do not require the key. `npm run preview` can use the same server environment to serve the built frontend on port 4173; its API and preview routes enforce the same local access checks.
 
 The API proxy preserves browser Host and Origin and adds its server-held key only for admitted local requests. Talk and dashboard login/logout retain their own cookie/session authentication and receive no admin key. The preview proxy adds no key: the installed nginx gate supplies its own credential after its normal checks.
 

@@ -11,10 +11,24 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import http from 'node:http'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve, dirname, basename } from 'node:path'
 import { Buffer } from 'node:buffer'
 import { createServer as createViteServer } from 'vite'
 import viteConfig, { createDashboardConfig } from '../../vite.config.js'
 import { createDevApiAccess } from '../../dev-api-access.js'
+
+// Proxy tests must not rewrite a contributor's running Vite dependency cache.
+const temporaryCaches = []
+afterAll(async () => {
+  for (const cache of temporaryCaches) {
+    if (dirname(resolve(cache)) !== resolve(tmpdir()) || !basename(cache).startsWith('ods-vite-proxy-')) {
+      throw new Error('Unexpected test cache path')
+    }
+    await rm(cache, {recursive:true, force:true})
+  }
+})
 
 const REQUEST_TIMEOUT_MS = 5000
 const CLOSE_TIMEOUT_MS = 5000
@@ -102,6 +116,8 @@ async function reservePort() {
 }
 
 async function startVite(upstreamPort, { withKey = true } = {}) {
+  const cacheDir = await mkdtemp(join(tmpdir(), 'ods-vite-proxy-'))
+  temporaryCaches.push(cacheDir)
   const frontendPort = await reservePort()
   const base = withKey
     ? createDashboardConfig(SYNTHETIC_KEY)
@@ -111,6 +127,8 @@ async function startVite(upstreamPort, { withKey = true } = {}) {
 
   const vite = await createViteServer({
     ...base,
+    cacheDir,
+    optimizeDeps: {noDiscovery:true, include:[]},
     configFile: false,
     logLevel: 'silent',
     server: {
