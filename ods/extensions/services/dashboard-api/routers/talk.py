@@ -993,14 +993,14 @@ async def _read_capped_form(request: Request, max_body: int) -> Any:
     return await Request(request.scope, receive).form()
 
 
-def _form_file(form: Any) -> UploadFile:
+def _form_file(form: Any) -> StarletteUploadFile:
     file = form.get("file")
     if not isinstance(file, StarletteUploadFile):
         raise HTTPException(status_code=422, detail="A file upload is required.")
     return file
 
 
-def _classify_attachment(file: UploadFile) -> str:
+def _classify_attachment(file: StarletteUploadFile) -> str:
     """Return one of: ``image``, ``text``, or raise 415.
 
     Looks at the MIME type the browser supplied first; falls back to filename
@@ -1026,7 +1026,7 @@ def _classify_attachment(file: UploadFile) -> str:
     )
 
 
-def _image_content_type(file: UploadFile) -> str:
+def _image_content_type(file: StarletteUploadFile) -> str:
     """Return a browser-safe image MIME, falling back from filename extension."""
     ct = (file.content_type or "").lower()
     if any(ct.startswith(p) for p in _IMAGE_MIME_PREFIXES):

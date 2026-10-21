@@ -2252,7 +2252,7 @@ def test_talk_upload_rejects_declared_oversized_length(talk_client):
 
 
 def test_talk_image_attachment_with_caption_still_parses(talk_client, monkeypatch):
-    seen = {}
+    seen: dict[str, object] = {}
 
     async def fake_route():
         return ("http://vision", "model", {})
