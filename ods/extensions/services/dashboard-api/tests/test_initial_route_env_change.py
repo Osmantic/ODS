@@ -16,7 +16,7 @@ def route(tmp_path, monkeypatch):
     monkeypatch.delenv('ODS_HOST_INSTALL_DIR', raising=False)
     monkeypatch.setattr(tma._mod, '_chat_completion_ready', lambda *_a, **_k: True)
     monkeypatch.setattr(tma._mod, '_runtime_health', lambda _env: 'ok')
-    monkeypatch.setattr(tma._mod, '_llama_runtime_props', lambda _env: (65536, ''))
+    monkeypatch.setattr(tma._mod, '_llama_runtime_props', lambda _env: (65536, '', None))
     monkeypatch.setattr(tma._mod, '_load_model_library_records', lambda: [])
     monkeypatch.setattr(tma._mod.time, 'sleep', lambda _s: None)
     state_path = install / 'data' / 'model-state.json'

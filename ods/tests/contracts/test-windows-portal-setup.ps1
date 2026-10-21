@@ -98,6 +98,7 @@ function Reset-Scenario {
     $script:downloaded = $false
     $script:registerNeeded = $false
     $script:virtualization = $true
+    $script:arm64 = $false
     $script:freeGB = 200
     $script:dockerInstalled = $true
     $script:dockerAlreadyInstalled = $false
@@ -114,9 +115,12 @@ function Reset-Scenario {
     $script:amdBinding = @()
     $script:distroListFailure = $null
     $script:initProbes = @()
+    $script:wslRegistrations = @([pscustomobject]@{ DistributionName='Ubuntu-24.04'; BasePath='C:\Users\maria\AppData\Local\wsl\{4c1b6a3e}' })
 }
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
+function Test-ODSSparkWindowsArm64 { $script:calls.Add('arm64-check'); return $script:arm64 }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
+function Get-ODSPortalWslRegistrations { return $script:wslRegistrations }
 function Get-ODSPortalDockerDesktop { return [pscustomobject]@{ Installed=$script:dockerInstalled; Exe='docker-desktop.exe'; Cli='docker.exe' } }
 function Install-ODSPortalDockerDesktop {
     $script:calls.Add('docker-install'); $script:dockerInstalled = $true
@@ -219,7 +223,7 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
     return [pscustomobject]@{ Code=$code; Output=$output; Error=$stderr }
 }
 try {
-    foreach ($file in @('wsl-portal-setup.ps1', 'wsl-portal-prereqs.ps1')) {
+    foreach ($file in @('wsl-portal-setup.ps1', 'wsl-portal-prereqs.ps1', 'wsl-portal-spark.ps1')) {
         $parsed = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot "../../installers/windows/lib/$file"), [ref]$null, [ref]$null)
         $bad = $parsed.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] -and $n.VariablePath.UserPath -ne '?' -and $n.VariablePath.UserPath.EndsWith('?') }, $true)
         Check (@($bad).Count -eq 0) "$file never interpolates a variable followed by ? (PowerShell reads `$name? as one variable)"
@@ -269,6 +273,16 @@ try {
     Reset-Scenario
     $null = Invoke-ODSPortalSetup @{NoHermes=$true} 'unused'
     Check ($script:capturedArguments -contains '--no-hermes') '-NoHermes turns Hermes off on a rerun too'
+    # The Windows drive under the distribution's virtual disk reaches the
+    # Linux installer, so ODS can check that drive before model downloads.
+    Reset-Scenario
+    $script:wslRegistrations = @([pscustomobject]@{ DistributionName='Ubuntu-24.04'; BasePath='\\?\D:\WSL\Ubuntu-24.04' })
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'a distribution stored on drive D: installs'
+    Check ((@($script:capturedArguments)[0..1] -join ' ') -ceq '--wsl-disk-drive D:' -and $script:capturedArguments[-1] -ceq '--pixel') 'the drive that stores the distribution reaches the Linux installer ahead of the Pixel policy'
+    Reset-Scenario
+    $script:wslRegistrations = @()
+    $driveNotice = @(& { $script:noDriveResult = Invoke-ODSPortalSetup @{} 'unused' } 6>&1 | ForEach-Object { [string]$_ }) -join "`n"
+    Check ($script:noDriveResult -eq 0 -and $script:capturedArguments -notcontains '--wsl-disk-drive' -and $driveNotice -match 'Could not find the Windows drive that stores Ubuntu-24\.04') 'an unknown storage drive is said, and no drive flag is passed'
     # windows.ps1 owns the new-installation probe (no <root>/.env before
     # install-core). Run its real flag block for a new installation and a rerun.
     $windowsAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../installers/windows.ps1'), [ref]$null, [ref]$null)
@@ -543,6 +557,13 @@ try {
     $message=''
     try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
     Check ($message -match 'BIOS' -and -not $script:calls.Contains('features')) 'disabled virtualization stops before enabling WSL'
+    Reset-Scenario
+    $script:scenario='no-wsl'; $script:virtualization=$false; $script:arm64=$true
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'firmware \(UEFI\)' -and $message -notmatch 'Intel|AMD' -and -not $script:calls.Contains('features')) 'on Windows on Arm, disabled virtualization names the UEFI setting and stops before enabling WSL'
+    Reset-Scenario
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0 -and -not $script:calls.Contains('arm64-check')) 'setup reads the architecture only to word a virtualization stop'
     Reset-Scenario
     $script:scenario='no-wsl'; $script:dockerInstalled=$false
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 3010) 'WSL and Docker Desktop share one restart'

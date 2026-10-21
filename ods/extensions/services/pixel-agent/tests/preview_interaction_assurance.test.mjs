@@ -1153,15 +1153,16 @@ test('verified preview delivery retains storage scope beside contradictory model
   const event={runId:'run',kind:'final',payload:{text:modelText}};
   const delivered=guard.replyPayloadSending(event).payload;
   assert.ok(delivered.text.startsWith(modelText));
-  assert.ok(delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
+  // The owner asked not to see the temporary-input note under every preview.
+  assert.ok(!delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
   assert.ok(delivered.text.includes(preview.url));
   assert.equal(guard.replyPayloadSending({...event,payload:delivered}).payload.text,delivered.text);
 });
 
-test('published but unverified interactions still disclose temporary preview input',()=>{
+test('published but unverified interactions drop an unverified persistence claim without the temporary-input note',()=>{
   const {guard}=setup();
   assert.equal(guard.verificationForRun('run').status,'failed');
   const delivered=guard.replyPayloadSending({runId:'run',kind:'final',payload:{text:'Everything persists.'}}).payload;
-  assert.ok(delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
+  assert.ok(!delivered.text.includes(PREVIEW_STORAGE_DISCLOSURE));
   assert.doesNotMatch(delivered.text,/Everything persists/);
 });

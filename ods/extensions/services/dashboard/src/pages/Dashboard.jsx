@@ -27,6 +27,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import CompactDashboard from '../components/CompactDashboard'
 import { serviceUrl } from '../lib/serviceUrls'
+import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import { getInferenceMode } from '../lib/inferenceMode'
 
 // Compute overall health from services (excludes not_deployed from counts)
@@ -103,6 +104,13 @@ function findHealthyService(services, serviceId) {
     service?.port &&
     serviceMatchesTarget(service, serviceId)
   )
+}
+
+// Features that launch a cookie-gated service (Hermes) refresh the ODS
+// session on click.
+function featureOpensWithOdsSession(feature) {
+  const launch = feature?.launch || FEATURE_LAUNCH_FALLBACKS[normalizeServiceKey(feature?.id)]
+  return launch?.type === 'service' && opensWithOdsSession(launch.service)
 }
 
 function pickFeatureLink(feature, services, portalChatAvailable = false) {
@@ -958,6 +966,7 @@ export default function Dashboard({ status, loading, compact = false }) {
               title={feature.name}
               description={featureDescription(feature, remoteInference, status?.currentModel)}
               href={pickFeatureLink(feature, status?.services, portalChatAvailable)}
+              onLaunch={featureOpensWithOdsSession(feature) ? openWithFreshSession : undefined}
               status={portalChat ? portalChatAvailable ? 'ready' : 'disabled' : normalizeFeatureStatus(feature.status)}
               hint={portalChat
                 ? portalChatAvailable ? 'Portal agent chat' : 'Portal agent unavailable'
@@ -1027,7 +1036,7 @@ export default function Dashboard({ status, loading, compact = false }) {
 }
 
 
-const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, status, hint }) {
+const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, onLaunch, status, hint }) {
   const isExternal = href?.startsWith('http')
   const isInteractive = status !== 'disabled' && status !== 'coming' && Boolean(href)
   const statusColors = {
@@ -1094,7 +1103,7 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
 
   if (isExternal) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="block h-full liquid-metal-sequence-slot">
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={onLaunch} className="block h-full liquid-metal-sequence-slot">
         {content}
       </a>
     )

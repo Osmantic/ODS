@@ -20,6 +20,21 @@
 #   writes either.
 # ============================================================================
 
+# Match load_env_file's key trimming and last-assignment semantics without
+# decoding the value: keep its quotes/comments for the next runtime load.
+# A present empty value prints KEY=, distinct from an absent assignment.
+_ods_carry_env_assignment() {
+    local file="$1" key="$2"
+    awk -v wanted="$key" '
+        index($0, "=") {
+            equal = index($0, "=")
+            key = substr($0, 1, equal - 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            if (key == wanted) { last = key substr($0, equal); found = 1 }
+        }
+        END { if (found) print last }' "$file"
+}
+
 # Append to NEW_ENV every key an extension declares in its manifest env_vars
 # that NEW_ENV lacks and PREVIOUS_ENV has, copying the exact line.
 # Usage: ods_carry_extension_env_keys PREVIOUS_ENV NEW_ENV EXTENSIONS_DIR...
@@ -32,8 +47,9 @@ ods_carry_extension_env_keys() {
         for manifest in "$extensions_dir"/*/manifest.yaml; do
             [[ -f "$manifest" ]] || continue
             while IFS= read -r key; do
-                grep -q "^${key}=" "$new_env" && continue
-                line="$(grep -m1 "^${key}=" "$previous_env")" || continue
+                [[ -n "$(_ods_carry_env_assignment "$new_env" "$key")" ]] && continue
+                line="$(_ods_carry_env_assignment "$previous_env" "$key")"
+                [[ -n "$line" ]] || continue
                 if [[ "$header_written" != true ]]; then
                     printf '\n#=== Installed extensions (kept from the previous .env) ===\n' >> "$new_env"
                     header_written=true
@@ -72,17 +88,19 @@ ods_carry_public_url_env_keys() {
     local previous_env="$1" new_env="$2" line header_written=false
     [[ -f "$previous_env" && -f "$new_env" ]] || return 0
     while IFS= read -r line; do
-        grep -q "^${line%%=*}=" "$new_env" && continue
+        [[ -n "$(_ods_carry_env_assignment "$new_env" "${line%%=*}")" ]] && continue
         if [[ "$header_written" != true ]]; then
             printf '\n#=== Public URLs (kept from the previous .env) ===\n' >> "$new_env"
             header_written=true
         fi
         printf '%s\n' "$line" >> "$new_env"
     done < <(awk '
-        /^[A-Z][A-Z0-9_]*_PUBLIC_URLS?=/ {
+        index($0, "=") {
             key = substr($0, 1, index($0, "=") - 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            if (key !~ /^[A-Z][A-Z0-9_]*_PUBLIC_URLS?$/) next
             if (!(key in last)) order[++n] = key
-            last[key] = $0
+            last[key] = key substr($0, index($0, "="))
         }
         END { for (i = 1; i <= n; i++) print last[order[i]] }' "$previous_env")
 }
@@ -92,7 +110,8 @@ ods_carry_public_url_env_keys() {
 # gated downloads (routers/models.py), the Intel Arc image override
 # (docker-compose.arc.yml), Open WebUI's speech settings (tts/README.md) and
 # whether apps use measured model profiles (ODS_MODEL_PROFILES,
-# docs/MODEL-MANAGEMENT.md).
+# docs/MODEL-MANAGEMENT.md) and the opt-out from the dashboard's GitHub
+# release check (DISABLE_UPDATE_CHECK, FAQ.md).
 # Installer-managed keys must not be listed: an old value would override the
 # installer's new choice.
 # shellcheck disable=SC2034  # read by installers/phases/06-directories.sh
@@ -106,6 +125,7 @@ ODS_OWNER_ENV_KEYS=(
     AUDIO_TTS_OPENAI_API_BASE_URL
     AUDIO_TTS_OPENAI_API_KEY
     ODS_MODEL_PROFILES
+    DISABLE_UPDATE_CHECK
 )
 
 # Append to NEW_ENV each named KEY that NEW_ENV lacks and PREVIOUS_ENV has,
@@ -116,8 +136,8 @@ ods_carry_named_env_keys() {
     shift 2
     [[ -f "$previous_env" && -f "$new_env" ]] || return 0
     for key in "$@"; do
-        grep -q "^${key}=" "$new_env" && continue
-        line="$(awk -v key="$key" 'index($0, key "=") == 1 { last = $0 } END { if (last != "") print last }' "$previous_env")"
+        [[ -n "$(_ods_carry_env_assignment "$new_env" "$key")" ]] && continue
+        line="$(_ods_carry_env_assignment "$previous_env" "$key")"
         [[ -n "$line" ]] || continue
         if [[ "$header_written" != true ]]; then
             printf '\n#=== Owner settings (kept from the previous .env) ===\n' >> "$new_env"

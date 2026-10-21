@@ -88,3 +88,16 @@ test('real HTTP lifecycle uses owner authority, bounded exact frames, and one co
   assert.equal(response.status,503);
   assert.equal(calls.length,previousCalls+3);
 });
+
+
+test('measured thinking controls survive the owner relay and reject malformed values',()=>{
+  for(const thinkingControl of ['enable_thinking','always','none']) {
+    const proposed={...target,thinkingControl};
+    assert.equal(validModelControl({operation:'model-apply',request:{transactionId,target:proposed}}),true);
+    assert.deepEqual(publicModelControl({...state,contract:proposed}).contract,proposed);
+  }
+  for(const thinkingControl of [null,true,1,[],{},'','auto','none\n']) {
+    const proposed={...target,thinkingControl};
+    assert.equal(validModelControl({operation:'model-apply',request:{transactionId,target:proposed}}),false);
+  }
+});

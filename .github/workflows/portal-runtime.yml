@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-14, windows-2022]
+        os: [ubuntu-24.04, macos-15, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -56,12 +56,20 @@ jobs:
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/tool_result_projection.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
+      - name: Verify the run-deadline notice and the stop the owner sees
+        run: node --test ods/extensions/services/pixel-agent/tests/run_deadline.test.mjs ods/extensions/services/pixel-agent/tests/run_deadline_delivery.test.mjs
+      - name: Verify the output-limit stop the owner sees
+        run: node --test ods/extensions/services/pixel-agent/tests/output_limit_delivery.test.mjs
       - name: Verify repository handoff and bounded host intent
-        run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs ods/extensions/services/pixel-agent/tests/host_service_constraint_intent.test.mjs ods/extensions/services/pixel-agent/tests/download_terminal_receipt.test.mjs
+        run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/english_default.test.mjs ods/extensions/services/pixel-agent/tests/response_language.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs ods/extensions/services/pixel-agent/tests/host_service_constraint_intent.test.mjs ods/extensions/services/pixel-agent/tests/download_terminal_receipt.test.mjs
+      - name: Verify host report download continuation across platforms
+        run: node --test ods/extensions/services/pixel-agent/tests/host_workspace_artifact_continuation.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
           node --test ods/extensions/services/pixel-agent/tests/preview_delivery_recovery.test.mjs
           node --test --test-name-pattern="saved project|automatic preview|publication .*not retried|concurrent finalizers" ods/extensions/services/pixel-agent/tests/tool_loop_guard.test.mjs
+      - name: Verify the Operations-boundary stop the owner sees
+        run: node --test ods/extensions/services/pixel-agent/tests/operations_abort_delivery.test.mjs
       - name: Install pinned read-tool runtime for integration
         shell: bash
         run: npm install --prefix "$RUNNER_TEMP/read-runtime" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org openclaw@2026.6.33
@@ -80,11 +88,16 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_tool_result_projection.integration.mjs
+      - name: Verify preview screenshots leave the model context by the pinned runtime rules
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_preview_screenshot_context.integration.mjs
       - name: Verify native compaction lock and abort ownership
         shell: bash
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_context.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_no_work.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_32k_prompt_budget.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_hook_provenance.integration.mjs
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_context.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_no_work.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_32k_prompt_budget.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_hook_provenance.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_long_run_compaction.integration.mjs
       - name: Verify deferred delegation through the real gateway and Portal ingress
         shell: bash
         env:
@@ -137,6 +150,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_cancel_recovery.integration.mjs
+      - name: Verify a clarification answer in a replaced session gets its request as model-only context with the real runtime
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_clarification_answer.integration.mjs
       - name: Verify tool-call arguments reach the tool unchanged in the native macOS stream order
         if: runner.os != 'Windows'
         shell: bash

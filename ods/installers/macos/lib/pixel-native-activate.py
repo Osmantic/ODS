@@ -6,6 +6,7 @@ does not infer model settings, accept a license, or overwrite an existing
 preparation/activation attempt.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -113,6 +114,9 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         compose.validate_stack(install_dir, paths)
         return subprocess.run([*command, *args], cwd=install_dir, env=process_env,
             capture_output=True, text=True, timeout=timeout, input=input)
+    def docker_run(*args, timeout=60, input=None):
+        return subprocess.run([source_env['PIXEL_HISTORY_DOCKER'], *args], cwd=install_dir, env=process_env,
+            capture_output=True, text=True, timeout=timeout, input=input)
     # Validate Compose interpolation before recording or starting an attempt.
     if run('config', '--quiet').returncode:
         raise ValueError('native-compose-configuration-invalid')
@@ -133,6 +137,33 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         '--services-bundle', str(preparation / 'services'), '--services-digest', receipt['serviceDigest'],
         '--pixel-source-ref', receipt['pixelSourceRef'], '--initial-install']
     if resume_final_health:
+        def refresh_ingress(complete_held):
+            nonlocal selected_services, optional_snapshot
+            native_env = helper('pixel-native-env.py')
+            if restore_optional_tools and native_env.snapshot(install_dir / '.env') != optional_snapshot:
+                raise ValueError('retained-model-environment-changed')
+            def operation(selection, record, checkpoint):
+                nonlocal selected_services, optional_snapshot
+                if restore_optional_tools:
+                    after = native_env.snapshot(install_dir / '.env')
+                    if hashlib.sha256(after[0]).hexdigest() != selection['environmentAfterSha256']:
+                        raise ValueError('retained-model-environment-changed')
+                    optional_snapshot = after
+                current = run('config', '--format', 'json')
+                if current.returncode:
+                    raise ValueError('native-recovery-compose-selection-changed')
+                latest = json.loads(current.stdout)['services']
+                selected_services.clear()
+                selected_services.update(latest)
+                return complete_held()
+            key = hashlib.sha256(json.dumps({'receipt': receipt,
+                'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                'restoreHostAgent': restore_host_agent, 'restoreOptionalTools': restore_optional_tools,
+                'opencodeChoice': opencode_choice}, sort_keys=True).encode()).hexdigest()
+            refreshed = helper('pixel-native-ingress-refresh.py').refresh_locked(run, docker_run,
+                install_dir=install_dir, project=source_env['PIXEL_HISTORY_PROJECT'], dashboard_key=keys[0],
+                operation=operation, operation_kind='retained-recovery', operation_key=key)
+            return refreshed['operationResult']
         def verify_selection(unchanged):
             unchanged()
             current = run('config', '--format', 'json')
@@ -162,7 +193,8 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
                     install_dir, paths, process_env, verify_selection=lambda: verify_selection(unchanged))
             continuation['resume_model'] = continue_model
         return helper('pixel-native-recover.py').finish(preparation=preparation, receipt=receipt,
-            run=run, verify=verify, compose=compose, selected_services=selected_services, **continuation)
+            run=run, verify=verify, compose=compose, selected_services=selected_services,
+            refresh_ingress=refresh_ingress, **continuation)
     record = {'schemaVersion': 1, 'phase': 'infrastructure', 'status': 'activating',
         'runtimeDigest': receipt['runtimeDigest'], 'serviceDigest': receipt['serviceDigest']}
     def checkpoint():
@@ -179,6 +211,14 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
             'dashboard-api', 'pixel-model-relay', timeout=300)
         if prerequisites.returncode:
             raise ValueError('native-compose-prerequisites-failed')
+        def config_checkpoint(value):
+            record['ingressConfig'] = value
+            checkpoint()
+        record['ingressConfig'] = helper('pixel-native-ingress-config.py').prepare(run,
+            docker_run=docker_run,
+            environment_path=install_dir / '.env', backup=preparation / 'ingress-environment.before.env',
+            checkpoint=config_checkpoint)
+        checkpoint()
         compose.start_infrastructure(run, dashboard_key=keys[0])
         record['phase'] = 'protected-activation'
         checkpoint()

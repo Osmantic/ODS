@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCompletionAssurance, UNREAD_SOURCE_MARKER, UNREAD_SOURCE_MARKER_PT, UNREAD_SOURCE_NOTE,
-  UNREAD_SOURCE_NOTE_PT, UNREAD_SOURCES_REPLACEMENT, UNREAD_SOURCES_REPLACEMENT_PT,
+import {createCompletionAssurance, UNREAD_SOURCE_MARKER, UNREAD_SOURCE_NOTE, UNREAD_SOURCES_REPLACEMENT,
   UNREAD_SOURCES_REVISION_INSTRUCTION} from '../plugin/completion-assurance.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
@@ -105,7 +104,7 @@ test('all cited pages unread: the full replacement stays', () => {
 
   const pt = sourceReadGuard('Pesquise na internet e abra as fontes antes de citar.');
   assert.equal(pt.finalize('O evento é em 2026-10-01: https://example.org/a')?.action, 'revise');
-  assert.equal(pt.terminal, UNREAD_SOURCES_REPLACEMENT_PT);
+  assert.equal(pt.terminal, UNREAD_SOURCES_REPLACEMENT, 'built-in notices are English');
 });
 
 test('an answer without verifiable content keeps the full replacement', () => {
@@ -195,7 +194,7 @@ test('citation matching normalizes scheme/host case, trailing slash, default por
   assert.equal(guard.finalize('The listing is at https://example.org/events.'), undefined);
 });
 
-test('Portuguese answers get the Portuguese marker and note', () => {
+test('a Portuguese answer keeps its own words; only the fixed marker and note are added, in English', () => {
   const guard = sourceReadGuard('Pesquise na internet eventos em Lisboa nos próximos 30 dias e abra as fontes antes de citar.');
   guard.observe('web_fetch', pageReceipt('https://www.visitlisboa.com/pt-pt/eventos'));
   guard.observe('web_fetch', {result: {details: {status: 'error'}}});
@@ -206,10 +205,10 @@ test('Portuguese answers get the Portuguese marker and note', () => {
   assert.equal(revision.retry.instruction, UNREAD_SOURCES_REVISION_INSTRUCTION.join('["https://www.coliseulisboa.com/agenda"]'));
   assert.equal(guard.finalize(answer)?.action, 'finalize');
   assert.equal(guard.terminalStatus, 'failed');
-  assert.equal(guard.terminal, answer.replace('[Coliseu](https://www.coliseulisboa.com/agenda)', `Coliseu ${UNREAD_SOURCE_MARKER_PT}`) +
-    `\n\n${UNREAD_SOURCE_NOTE_PT}`);
+  assert.equal(guard.terminal, answer.replace('[Coliseu](https://www.coliseulisboa.com/agenda)', `Coliseu ${UNREAD_SOURCE_MARKER}`) +
+    `\n\n${UNREAD_SOURCE_NOTE}`);
   assert.ok(guard.terminal.includes('https://www.visitlisboa.com/pt-pt/eventos/'), 'trailing-slash variant of a read page is kept');
-  assert.ok(!guard.terminal.includes(UNREAD_SOURCE_NOTE));
+  assert.ok(guard.terminal.startsWith('Encontrei dois eventos:'), 'the model answer itself is not translated');
 });
 
 test('only unlabelled unread citations change; Markdown links, autolinks, JSON and fences stay well formed', () => {

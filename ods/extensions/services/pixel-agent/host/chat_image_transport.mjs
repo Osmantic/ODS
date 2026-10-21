@@ -45,6 +45,18 @@ export function decodeChatImageTurn(message, archived) {
   });
 }
 
+// The current turn carries the pixels themselves. Small vision models read the
+// history wording as a cue to fetch them, so this note says no tool is needed.
+// The plugin's tool guard keys on CURRENT_IMAGE_NOTE to refuse tool calls that
+// name these identifiers during this turn.
+export const CURRENT_IMAGE_NOTE='[Attached pictures: the image parts of this message are the pictures themselves, '
+  +'already in your context. Look at them and answer directly. No tool can fetch, open or search these pictures; '
+  +'never pass their identifiers to web, search, file or shell tools. The identifiers below only let '
+  +'pixel_ods_image_read show a picture again in a later turn that no longer contains it.]\n';
+export function currentImageNote(images) {
+  return CURRENT_IMAGE_NOTE+JSON.stringify(images.map(normalizeChatImageReference));
+}
+
 export function nativeHistoryMessages(messages) {
   return messages.map(message=>{
     if(!message.images) return {role:message.role,content:message.content};

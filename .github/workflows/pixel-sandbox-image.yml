@@ -1,0 +1,121 @@
+name: Pixel sandbox image
+
+# Builds Portal's agent sandbox image (ods/vendor/pixel/deploy/sandbox) the way
+# Pixel bootstrap does and runs it with the production confinement on amd64 and
+# arm64: the pinned Node.js, offline syntax checks and tests, no package
+# manager, no network, and the Linux bootstrap and macOS native install proofs.
+# Then the agent's exec tool runs node through the real pinned OpenClaw Docker
+# sandbox. The weekly run catches a moved nodejs.org or Debian artifact before
+# an owner's install does.
+on:
+  pull_request:
+    paths:
+      - 'ods/vendor/pixel/deploy/sandbox/**'
+      - 'ods/vendor/pixel/RELEASE-MANIFEST.json'
+      - 'ods/vendor/pixel/schemas/release-manifest-v1.schema.json'
+      - 'ods/vendor/pixel/scripts/generate-release-files.mjs'
+      - 'ods/vendor/pixel/scripts/generated/**'
+      - 'ods/vendor/pixel/scripts/bootstrap.sh'
+      - 'ods/vendor/pixel/scripts/lib/common.sh'
+      - 'ods/vendor/pixel/scripts/render-config.mjs'
+      - 'ods/installers/lib/pixel-host-install.sh'
+      - 'ods/installers/macos/lib/pixel-native-bootstrap.py'
+      - 'ods/extensions/services/pixel-agent/plugin/prompt-contract.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/tool-loop-guard.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/run-progress-budget.mjs'
+      - 'ods/extensions/services/pixel-agent/host/cancellable-exec.sh'
+      - 'ods/extensions/services/pixel-agent/tests/runtime_sandbox_node.integration.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs'
+      - 'ods/tests/test_pixel_sandbox_image.py'
+      - 'ods/tests/test_pixel_sandbox_node_pins.py'
+      - '.github/workflows/pixel-sandbox-image.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'ods/vendor/pixel/deploy/sandbox/**'
+      - 'ods/vendor/pixel/RELEASE-MANIFEST.json'
+      - 'ods/vendor/pixel/schemas/release-manifest-v1.schema.json'
+      - 'ods/vendor/pixel/scripts/generate-release-files.mjs'
+      - 'ods/vendor/pixel/scripts/generated/**'
+      - 'ods/vendor/pixel/scripts/bootstrap.sh'
+      - 'ods/vendor/pixel/scripts/lib/common.sh'
+      - 'ods/vendor/pixel/scripts/render-config.mjs'
+      - 'ods/installers/lib/pixel-host-install.sh'
+      - 'ods/installers/macos/lib/pixel-native-bootstrap.py'
+      - 'ods/extensions/services/pixel-agent/plugin/prompt-contract.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/tool-loop-guard.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/run-progress-budget.mjs'
+      - 'ods/extensions/services/pixel-agent/host/cancellable-exec.sh'
+      - 'ods/extensions/services/pixel-agent/tests/runtime_sandbox_node.integration.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs'
+      - 'ods/tests/test_pixel_sandbox_image.py'
+      - 'ods/tests/test_pixel_sandbox_node_pins.py'
+      - '.github/workflows/pixel-sandbox-image.yml'
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-sandbox-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: sandbox image (${{ matrix.arch }}, ${{ matrix.builder }}${{ matrix.platform && ', --platform' || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux and WSL installs build natively with the host's builder.
+          - {runner: ubuntu-24.04, arch: amd64, builder: buildkit, buildkit: '1', platform: '', agent: true}
+          # ODS supports legacy Docker builders; the Dockerfile must not need BuildKit.
+          - {runner: ubuntu-24.04, arch: amd64, builder: legacy, buildkit: '0', platform: '', agent: false}
+          # Arm64 Linux, and WSL on the Arm64 RTX Spark.
+          - {runner: ubuntu-24.04-arm, arch: arm64, builder: buildkit, buildkit: '1', platform: '', agent: true}
+          # Native macOS Pixel builds this exact form; GitHub's macOS runners have no Docker.
+          - {runner: ubuntu-24.04-arm, arch: arm64, builder: buildkit, buildkit: '1', platform: linux/arm64, agent: false}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '24'
+      - name: Install test runner
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Static sandbox Node.js pins
+        run: python -m pytest -q ods/tests/test_pixel_sandbox_node_pins.py
+      - name: Build the sandbox image and run it with production confinement
+        env:
+          ODS_TEST_PIXEL_SANDBOX_IMAGE: '1'
+          ODS_TEST_PIXEL_SANDBOX_PLATFORM: ${{ matrix.platform }}
+          ODS_TEST_PIXEL_SANDBOX_IIDFILE: ${{ runner.temp }}/pixel-sandbox-image-id
+          DOCKER_BUILDKIT: ${{ matrix.buildkit }}
+        run: python -m pytest -q -s ods/tests/test_pixel_sandbox_image.py
+      - name: Report image and node sizes
+        run: |
+          image="$(cat "$RUNNER_TEMP/pixel-sandbox-image-id")"
+          docker image inspect --format 'image {{.Architecture}} {{.Size}} bytes' "$image"
+          docker run --rm --network none --entrypoint /bin/sh "$image" -c 'stat -c "node %s bytes" /usr/local/bin/node'
+          echo "OPENCLAW_TEST_SANDBOX_IMAGE=$image" >> "$GITHUB_ENV"
+      - name: Install the pinned OpenClaw runtime for the agent exec tests
+        if: matrix.agent
+        run: npm install --prefix "$RUNNER_TEMP/openclaw-runtime" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org openclaw@2026.6.33
+      - name: Agent exec runs node in the real OpenClaw Docker sandbox
+        if: matrix.agent
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/openclaw-runtime/node_modules/openclaw
+        run: node --test --test-timeout=180000 ods/extensions/services/pixel-agent/tests/runtime_sandbox_node.integration.mjs
+      - name: Existing exec completion guidance in Sandbox mode
+        if: matrix.agent
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/openclaw-runtime/node_modules/openclaw
+        run: node --test --test-name-pattern='sandbox$' ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs

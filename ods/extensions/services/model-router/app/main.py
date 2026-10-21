@@ -45,6 +45,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from .completed_tool_sse import (
     CompletionStreamIdentityError, assemble_chat_completion_sse,
+    completion_stream_rejection_code,
 )
 from .probe_attempts import ProbeAttempts
 
@@ -1824,14 +1825,18 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                             raw_stream, route["runtimeModelId"],
                             max_bytes=MAX_COMPLETED_TOOL_STREAM_BYTES,
                         )
-                    except CompletionStreamIdentityError:
+                    except CompletionStreamIdentityError as exc:
+                        rejection = completion_stream_rejection_code(exc)
+                        logger.warning("Completed tool stream rejected: %s", rejection)
                         _finish_probe_attempt(attempt_handle, "stream-error",
                                               streaming_upstream.status_code)
                         return JSONResponse({"error": {
-                            "message": "Backend response identity changed",
+                            "message": f"Backend response identity changed [{rejection}]",
                             "type": "response_identity_mismatch", "code": "502",
+                            "diagnosticCode": rejection,
                         }}, status_code=502, headers=ods_headers), False
-                    except ValueError:
+                    except ValueError as exc:
+                        rejection = completion_stream_rejection_code(exc)
                         # Some backends ignore stream:true and return a
                         # completed JSON response. Process that one response
                         # without issuing a second inference.
@@ -1844,9 +1849,11 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                                 and not isinstance(complete.get("error"), dict)):
                             _finish_probe_attempt(attempt_handle, "stream-error",
                                                   streaming_upstream.status_code)
+                            logger.warning("Completed tool stream rejected: %s", rejection)
                             return JSONResponse({"error": {
-                                "message": "Backend returned an invalid completed tool stream",
+                                "message": f"Backend returned an invalid completed tool stream [{rejection}]",
                                 "type": "upstream_invalid_response", "code": "502",
+                                "diagnosticCode": rejection,
                             }}, status_code=502, headers=ods_headers), False
                         if ("error" not in complete
                                 and complete.get("model") != route["runtimeModelId"]):

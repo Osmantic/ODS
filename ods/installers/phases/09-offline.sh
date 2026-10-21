@@ -29,6 +29,9 @@ elif [[ "$OFFLINE_MODE" == "true" ]] && ! $DRY_RUN; then
     _sed_i 's/^BRAVE_API_KEY=.*/BRAVE_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
     _sed_i 's/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
     _sed_i 's/^OPENAI_API_KEY=.*/OPENAI_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
+    # Phase 06 keeps an owner's DISABLE_UPDATE_CHECK across its rewrite; drop
+    # it so the block below leaves a single assignment.
+    _sed_i '/^DISABLE_UPDATE_CHECK=/d' "$INSTALL_DIR/.env"
 
     # Add offline mode config
     cat >> "$INSTALL_DIR/.env" << 'OFFLINE_EOF'

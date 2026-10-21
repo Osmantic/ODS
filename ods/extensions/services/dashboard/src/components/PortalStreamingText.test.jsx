@@ -1,5 +1,6 @@
 import {act,render,screen} from '@testing-library/react'
 import PortalStreamingText from './PortalStreamingText'
+import {EMBED_NOTE,EMBED_ONLY_NOTE} from '../lib/embedDisplay'
 
 beforeEach(()=>{
   vi.useFakeTimers()
@@ -60,4 +61,12 @@ it('does not replay delivered prose when a publication receipt is stripped',()=>
   expect(container.textContent).toBe('The page is ready.')
   expect(container.querySelector('.portal-stream-reveal')).toBe(first)
   expect(container.firstChild).toHaveAttribute('aria-busy','false')
+})
+it('mutes only paragraphs that are exactly a Portal note about an embed it cannot display',()=>{
+  const source=`Before\n\n${EMBED_NOTE}\n\n- Item\n\n  ${EMBED_ONLY_NOTE}\n\nThe model wrote ${EMBED_NOTE} inline.\n\n\`\`\`\n${EMBED_NOTE}\n\`\`\``
+  const {container}=render(<PortalStreamingText>{source}</PortalStreamingText>)
+  const muted=[...container.querySelectorAll('.portal-embed-note')].map(element=>[element.tagName,element.textContent])
+  expect(muted).toEqual([['P',EMBED_NOTE],['P',EMBED_ONLY_NOTE]])
+  expect(screen.getByText('Before').closest('p')).not.toHaveClass('portal-embed-note')
+  expect(container.querySelector('pre code')).toHaveTextContent(EMBED_NOTE)
 })

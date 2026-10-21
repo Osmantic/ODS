@@ -411,6 +411,107 @@ async def test_huggingface_search_returns_stale_cache_on_transient_hub_failure(m
     assert result == {**cached, "stale": True}
 
 
+@pytest.mark.asyncio
+async def test_huggingface_exact_repository_works_without_search_index(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    calls = []
+
+    async def metadata(path, **kwargs):
+        calls.append((path, kwargs))
+        assert path == "/api/models/owner/Model-GGUF", "The unavailable search index must not be called"
+        return {
+            "id": "owner/model-GGUF", "downloads": 12,
+            "siblings": [{"rfilename": "model-Q4_K_M.gguf"}],
+        }, {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    result = await models_router.search_huggingface_models(
+        q=" owner/Model-GGUF ", sort="downloads", limit=20, api_key="test",
+    )
+    assert [item["id"] for item in result["models"]] == ["owner/model-GGUF"]
+    assert result["models"][0]["ggufFileCount"] == 1
+    assert result["authenticated"] is False
+    assert calls == [("/api/models/owner/Model-GGUF", {"timeout_seconds": 6.0, "connect_timeout_seconds": 3.0})]
+
+
+@pytest.mark.asyncio
+async def test_huggingface_repository_prefix_falls_back_only_when_not_found(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    calls = []
+
+    async def metadata(path, **kwargs):
+        calls.append(path)
+        if path == "/api/models/owner/partial":
+            raise models_router.HTTPException(status_code=404, detail="Not found")
+        assert kwargs["params"]["search"] == "owner/partial"
+        return [{"id": "owner/partial-GGUF", "siblings": [{"rfilename": "model.gguf"}]}], {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    result = await models_router.search_huggingface_models(
+        q="owner/partial", sort="downloads", limit=20, api_key="test",
+    )
+    assert calls == ["/api/models/owner/partial", "/api/models"]
+    assert result["models"][0]["id"] == "owner/partial-GGUF"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 502, 504])
+async def test_huggingface_exact_repository_preserves_access_and_transient_errors(monkeypatch, status):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    calls = []
+
+    async def metadata(path, **_kwargs):
+        calls.append(path)
+        raise models_router.HTTPException(status_code=status, detail="Hub refused")
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    with pytest.raises(models_router.HTTPException) as error:
+        await models_router.search_huggingface_models(q="owner/model", sort="downloads", limit=20, api_key="test")
+    assert error.value.status_code == status
+    assert calls == ["/api/models/owner/model"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repository", [[], {"id": "another/model"}, {}])
+async def test_huggingface_exact_repository_rejects_unrelated_metadata(monkeypatch, repository):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+
+    async def metadata(*_args, **_kwargs):
+        return repository, {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    with pytest.raises(models_router.HTTPException) as error:
+        await models_router.search_huggingface_models(q="owner/model", sort="downloads", limit=20, api_key="test")
+    assert error.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_huggingface_exact_repository_keeps_gguf_only_filter(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_hf_token", lambda: "")
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+
+    async def metadata(*_args, **_kwargs):
+        return {"id": "owner/model", "siblings": [{"rfilename": "model.safetensors"}]}, {}
+
+    monkeypatch.setattr(models_router, "_hf_get_json", metadata)
+    result = await models_router.search_huggingface_models(q="owner/model", sort="downloads", limit=20, api_key="test")
+    assert result["models"] == []
+
+
 def test_huggingface_cache_identity_changes_without_exposing_token(monkeypatch):
     import routers.models as models_router
 
@@ -978,6 +1079,55 @@ def test_default_model_discovery_timeout_covers_slow_local_runtime():
     import routers.models as models_router
 
     assert models_router._MODEL_DISCOVERY_TIMEOUT_SECONDS >= 10.0
+
+
+@pytest.mark.parametrize("lifecycle_active", [False, True])
+def test_api_models_discovery_shares_a_deadline_without_losing_host_state(
+    test_client, monkeypatch, tmp_path, lifecycle_active,
+):
+    models_router, install_dir, _ = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen3.5-9b-q4", "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf", "size_mb": 5760,
+        "vram_required_gb": 8, "context_length": 32768,
+        "quantization": "Q4_K_M", "specialty": "General",
+        "description": "Balanced default.", "llm_model_name": "qwen3.5-9b",
+    }])
+    cancelled = []
+
+    async def primary():
+        await asyncio.sleep(0.6)
+        return None
+
+    async def fallback(*_args):
+        try:
+            await asyncio.sleep(0.6)
+            return "Qwen3.5-9B-Q4_K_M.gguf"
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+
+    monkeypatch.setattr(models_router, "_MODEL_DISCOVERY_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(models_router, "get_loaded_model", primary)
+    monkeypatch.setattr(models_router, "_fetch_llama_loaded_model", fallback)
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0, "lifetime_tokens": 0}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda: {
+        "status": "idle", "lifecycleActive": lifecycle_active,
+        "activeOperation": "remote_provider_apply" if lifecycle_active else None,
+        "modelTransactionPending": True,
+    })
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert cancelled == [True]
+    assert data["currentModel"] is None
+    assert data["modelRecoveryPending"] is True
+    assert data["modelLifecycle"] == ({
+        "active": True, "operation": "remote_provider_apply",
+        "target": None, "modelId": None,
+    } if lifecycle_active else None)
 
 
 def test_agent_model_status_collapses_concurrent_poll_bursts(monkeypatch):
@@ -3387,6 +3537,57 @@ def test_external_api_host_keeps_only_host_and_port(url, host):
     assert models_router._external_api_host(url) == host
 
 
+@pytest.mark.parametrize("code,cleanup_pending", [
+    ("model_delete_recovery_required", False),
+    ("model_delete_cleanup_pending", True),
+    ("model_delete_status_update_failed", False),
+    ("model_delete_status_update_failed", True),
+])
+def test_delete_api_preserves_recovery_detail(test_client, monkeypatch, tmp_path, code, cleanup_pending):
+    models_router, install, data = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install, [])
+    (data / "models/inactive.gguf").write_bytes(b"inactive model")
+    message = "Recover files in model store directory .ods-model-delete-receipt"
+    payload: dict[str, object] = {
+        "error": message,
+        "code": code,
+        "recoveryDirectory": ".ods-model-delete-receipt",
+    }
+    if code in {"model_delete_cleanup_pending", "model_delete_status_update_failed"}:
+        payload["deletionCommitted"] = True
+    if cleanup_pending:
+        payload["cleanupPending"] = True
+    elif code == "model_delete_status_update_failed":
+        payload.pop("recoveryDirectory")
+
+    def failure(method, path, **_kwargs):
+        assert method == "POST" and path == "/v1/model/delete"
+        raise models_router.AgentHTTPError(500, message, json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", failure)
+    response = test_client.delete("/api/models/inactive", headers=test_client.auth_headers)
+    assert response.status_code == 502
+    assert response.json()["detail"] == payload
+
+
+@pytest.mark.parametrize("path,code", [
+    ("/v1/model/delete", "unrelated_failure"),
+    ("/v1/model/activate", "model_delete_cleanup_pending"),
+    ("/v1/model/activate", "model_delete_status_update_failed"),
+])
+def test_model_agent_generic_failure_mapping_stays_unchanged(monkeypatch, path, code):
+    import routers.models as models_router
+    message = "generic failure"
+    payload = {"error": message, "code": code, "deletionCommitted": True}
+
+    def failure(*_args, **_kwargs):
+        raise models_router.AgentHTTPError(500, message, json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", failure)
+    with pytest.raises(models_router.HTTPException) as error:
+        models_router._call_agent_model(path, {})
+    assert error.value.status_code == 502
+    assert error.value.detail == "generic failure"
 def test_huggingface_quantization_names_mxfp4_artifacts():
     import routers.models as models_router
 

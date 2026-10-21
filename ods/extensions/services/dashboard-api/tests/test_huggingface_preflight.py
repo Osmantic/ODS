@@ -552,6 +552,24 @@ def test_storage_check_allows_for_a_windows_managed_model_store(monkeypatch):
     assert models_router._MODEL_STORAGE_TIMEOUT_SECONDS >= 15
 
 
+@pytest.mark.parametrize("wsl", [
+    {"windowsDrive": "C:", "windowsDriveChecked": True},
+    {"windowsDrive": None, "windowsDriveChecked": False},
+])
+def test_storage_check_keeps_the_wsl_windows_drive_fields(monkeypatch, wsl):
+    import asyncio
+
+    import routers.models as models_router
+
+    storage = {"freeBytes": 73873989632, "totalBytes": 1022580748288, "marginBytes": 51129037414}
+    monkeypatch.setattr(models_router, "request_agent_json",
+                        lambda *_args, **_kwargs: {**storage, **wsl, "extra": "dropped"})
+
+    status = asyncio.run(models_router._model_storage_status())
+
+    assert status == {**storage, **wsl}
+
+
 def _busy(operation):
     from fastapi import HTTPException
 
@@ -786,6 +804,31 @@ def test_selected_header_tensor_refusal_is_preserved_through_import(test_client,
     record = json.loads((router.Path(router.DATA_DIR) / "model-imports.json").read_text())["models"][0]
     assert record["architecture"] == "qwen3"
     assert record["runtime_override"]["tensorTypes"] == ["Q2_0"]
+
+
+@pytest.mark.parametrize("artifact_id", [None, "b" * 20])
+@pytest.mark.parametrize("weights_gib, expected", [(15, "ok"), (16, "insufficient")])
+def test_preflight_reports_disk_for_an_import_without_the_projector(
+    test_client, preflight_env, artifact_id, weights_gib, expected,
+):
+    _router, state = preflight_env
+    state["details"] = _vision_details()
+    # 20 GiB free, 5 GiB margin: 15 GiB fits without the projector; 16 GiB never fits.
+    state["details"]["artifacts"][1]["sizeBytes"] = weights_gib * GIB
+    state["details"]["artifacts"][1]["files"][0]["sizeBytes"] = weights_gib * GIB
+
+    url = f"/api/models/huggingface/preflight/{REPO}"
+    if artifact_id:
+        url += f"?artifactId={artifact_id}"
+    response = test_client.get(url, headers=test_client.auth_headers)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifactId"] == (artifact_id or "a" * 20)
+    artifacts = body["artifacts"]
+
+    assert artifacts["b" * 20]["disk"] == "insufficient"
+    assert artifacts["b" * 20]["diskWithoutProjector"] == expected
+    assert artifacts["a" * 20]["diskWithoutProjector"] == "ok"
 
 
 def test_a_windows_launcher_without_vision_support_imports_the_weights_alone(test_client, monkeypatch):

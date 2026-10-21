@@ -29,6 +29,9 @@ function Test-ODSDockerRunningQuiet { return $true }
 function Assert-ODSInstallDirSafeForRemoval { }
 function Invoke-Agent { param([string]$Action) }
 function Stop-ODSOpenCodeRuntime { }
+# Startup publication/cleanup has its own real-filesystem contract. Never
+# inspect the machine's actual Startup entry in this Docker ownership fixture.
+function Remove-ODSOpenCodeStartupFallback { param($InstallDir) }
 function Get-NativeInferenceBackend { return 'none' }
 function Stop-NativeInferenceServer { }
 $script:ODS_AGENT_TASK_NAME = 'ODSHostAgent'; $script:ODS_MODEL_UPGRADE_TASK_NAME = 'ODSModelUpgrade'
