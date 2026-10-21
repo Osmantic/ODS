@@ -169,6 +169,7 @@ tests/test-path-utils-cross-platform.py
 tests/test-perplexica-embedding-defaults.py
 tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
+tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
