@@ -51,9 +51,9 @@ function markDocumentDownloads() {
     : node.tagName==='img' ? String(node.properties?.alt || '')
     : (node.children || []).map(text).join('')
   return tree=>{
-    function visit(node) {
+    function visit(node,downloadPrefix=false) {
       if(['pre','code','blockquote'].includes(node.tagName))return
-      let before=''
+      let before='',previous=null
       for(const child of node.children || []) {
         if(child.tagName==='a') {
           const label=text(child).trim(), href=String(child.properties?.href || '')
@@ -72,9 +72,24 @@ function markDocumentDownloads() {
               child.children=[{type:'text',value:label}]
             }
           }
+        } else if(child.tagName==='img') {
+          const label=text(child).trim()
+          const named=/^download\s+(?:verified\s+)?(.+?)\s*:?$/i.exec(label)
+          const prefixed=/(?:^|\n)\s*download\s*:\s*$/i.test(before) || (downloadPrefix && !before.trim())
+          const filename=named?.[1] || (prefixed ? label : '')
+          if(/^[A-Za-z0-9][A-Za-z0-9._-]*\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(filename)) {
+            // An image-shaped document label must not load the model's URL.
+            // The citation renderer binds only a unique completed receipt;
+            // without one, this remains plain text with no invented link.
+            child.tagName='a'
+            child.properties={'data-ods-download-intent':true,'data-ods-download-filename':filename}
+            child.children=[{type:'text',value:label}]
+          }
         }
-        visit(child)
+        const nextPrefix=child.tagName==='p' && previous?.tagName==='p' && /^download\s*:$/i.test(text(previous).trim())
+        visit(child,nextPrefix)
         before+=text(child)
+        if(child.type!=='text' || child.value.trim())previous=child
       }
     }
     visit(tree)
