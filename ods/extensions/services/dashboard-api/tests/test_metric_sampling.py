@@ -146,17 +146,30 @@ async def test_no_measurement_has_no_fabricated_lifetime_count(sampler):
     assert result["lifetime_tokens"] is None
 
 
+def host_native(monkeypatch, request):
+    """A Windows-hosted llama-server: its counters come through the host agent."""
+    monkeypatch.setattr(helpers, "LLM_BACKEND", "llama-server")
+    monkeypatch.setattr(helpers, "read_live_env_value",
+                        lambda key: "host" if key == "AMD_INFERENCE_LOCATION" else "")
+    monkeypatch.setattr(helpers, "request_agent_json", request)
+
+
+def host_status(model, predicted, seconds, processing=0):
+    return {"health": {"status": "ok", "model_loaded": model},
+            "metrics": {"tokens_predicted_total": predicted, "tokens_predicted_seconds_total": seconds,
+                        "requests_processing": processing}}
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("rate", [None, "bad", -1, float("nan"), float("inf"), 0])
-async def test_lemonade_rate_is_nullable_but_explicit_zero_is_preserved(sampler, monkeypatch, rate):
-    monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
-    monkeypatch.setattr(helpers, "read_live_env_value", lambda _key: "host")
-    monkeypatch.setattr(helpers, "request_agent_json", AsyncMock(return_value={"stats": {"tokens_per_second": rate, "output_tokens": 0}}))
+@pytest.mark.parametrize("counter", [None, "bad", -1, float("nan"), float("inf")])
+async def test_host_native_counters_are_never_invented(sampler, monkeypatch, counter):
+    client, _clock = sampler
+    host_native(monkeypatch, AsyncMock(return_value=host_status("model-a", counter, 5.0)))
     result = await helpers.get_llama_metrics("model-a")
-    assert result["tokens_per_second"] is None  # no valid positive measurement yet
-    assert result["lifetime_tokens"] == 0
-    assert result["token_count_mode"] == "latest_completion"
-    assert result["throughput_mode"] == "latest_completion"
+    assert result["tokens_per_second"] is None
+    assert result["throughput_state"] == "unavailable"
+    assert result["token_count_mode"] == "cumulative"
+    client.get.assert_not_awaited()  # the keyed server is never read directly
 
 
 @pytest.mark.asyncio
@@ -202,24 +215,22 @@ async def test_reset_after_unavailable_gap_discards_old_runtime_measurement(samp
 
 
 @pytest.mark.asyncio
-async def test_lemonade_identical_latest_completion_is_held_without_new_timestamp(sampler, monkeypatch):
+async def test_host_native_idle_counters_hold_the_last_measurement(sampler, monkeypatch):
     _client, clock = sampler
-    monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
-    monkeypatch.setattr(helpers, "read_live_env_value", lambda _key: "host")
-    request = AsyncMock(return_value={"stats": {"tokens_per_second": 50, "output_tokens": 100}})
-    monkeypatch.setattr(helpers, "request_agent_json", request)
-    first = await helpers.get_llama_metrics("model-a")
+    request = AsyncMock(return_value=host_status("model-a", 100, 5.0))
+    host_native(monkeypatch, request)
+    await helpers.get_llama_metrics("model-a")
+    clock[0] += 2
+    request.return_value = host_status("model-a", 200, 10.0)
+    measured = await helpers.get_llama_metrics("model-a")
+    assert measured["tokens_per_second"] == 20.0
+    assert measured["throughput_state"] == "measured"
     clock[0] += 2
     held = await helpers.get_llama_metrics("model-a")
-    assert held["tokens_per_second"] == 50
-    assert held["throughput_sampled_at"] == first["throughput_sampled_at"]
+    assert held["tokens_per_second"] == 20.0
+    assert held["throughput_sampled_at"] == measured["throughput_sampled_at"]
     assert held["throughput_state"] == "retained"
-    clock[0] += 2
-    request.return_value = {"stats": {"tokens_per_second": 50, "output_tokens": 200}}
-    next_run = await helpers.get_llama_metrics("model-a")
-    assert next_run["tokens_per_second"] == 50
-    assert next_run["throughput_sampled_at"] == 104.0
-    assert next_run["throughput_state"] == "measured"
+    assert held["throughput_mode"] == "generation_interval"
 
 
 def test_legacy_lifetime_counter_migrates_without_recounting(sampler):
@@ -251,22 +262,18 @@ async def test_unknown_model_discovery_holds_only_same_endpoint_sample_as_unavai
 
 
 @pytest.mark.asyncio
-async def test_lemonade_unhinted_and_status_pollers_share_authoritative_model(sampler, monkeypatch):
+async def test_host_native_unhinted_and_status_pollers_share_the_agent_model(sampler, monkeypatch):
     _client, clock = sampler
-    monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
-    monkeypatch.setattr(helpers, "read_live_env_value", lambda _key: "host")
-    request = AsyncMock(return_value={"health": {"status": "ok", "model_loaded": "model-a"},
-                                     "stats": {"tokens_per_second": 50, "output_tokens": 100}})
-    monkeypatch.setattr(helpers, "request_agent_json", request)
+    request = AsyncMock(return_value=host_status("model-a", 100, 5.0))
+    host_native(monkeypatch, request)
     first = await helpers.get_llama_metrics("model-a")
     unhinted = await helpers.get_llama_metrics()
     assert unhinted == first
     assert unhinted["throughput_model"] == "model-a"
-    # One stats call and one discovery call; no second metrics acquisition.
+    # One counter read and one discovery read; no second metrics acquisition.
     assert request.await_count == 2
     clock[0] += 2
-    request.return_value = {"health": {"status": "ok", "model_loaded": "model-b"},
-                            "stats": {"tokens_per_second": 0, "output_tokens": 0}}
+    request.return_value = host_status("model-b", 0, 0.0)
     changed = await helpers.get_llama_metrics()
     assert changed["throughput_model"] == "model-b"
     assert changed["tokens_per_second"] is None

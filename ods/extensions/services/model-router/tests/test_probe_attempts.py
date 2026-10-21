@@ -184,6 +184,7 @@ def test_failed_sends_are_observable_without_retries_or_exception_text(router, f
     mod.app.state.http = httpx.AsyncClient(transport=httpx.MockTransport(fail))
     response = client.post("/v1/chat/completions", json=payload(probe))
     assert response.status_code in [502, 504] and len(sent) == 1
+    assert "private backend detail" not in response.text
     rows = observed(client, probe)["attempts"]
     assert len(rows) == 1 and rows[0]["status"] == failure
     assert "private backend detail" not in json.dumps(rows)

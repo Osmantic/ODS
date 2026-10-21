@@ -18,8 +18,25 @@ sys.path.insert(0, str(SOURCE / 'extensions/services/dashboard-api'))
 from env_values import parse_env_value
 from model_switchboard import wsl_lemonade
 
-_KEYS = {'LEMONADE_HOST_TRANSPORT', 'LEMONADE_BASE_URL', 'LEMONADE_CONTAINER_BASE_URL',
+# The Lemonade migration writes the round-F keys. The WSL bridge
+# (bin/model_switchboard) still reads the Lemonade-era names, so the bridge
+# gets both, filled from whichever the .env holds (compatibility, one release).
+_BRIDGE_ALIASES = {
+    'ODS_HOST_LLM_TRANSPORT': 'LEMONADE_HOST_TRANSPORT',
+    'NATIVE_LLM_BASE_URL': 'LEMONADE_BASE_URL',
+    'NATIVE_LLM_CONTAINER_BASE_URL': 'LEMONADE_CONTAINER_BASE_URL',
+}
+_KEYS = {*_BRIDGE_ALIASES, *_BRIDGE_ALIASES.values(),
          'AMD_INFERENCE_PORT', 'ODS_WINDOWS_SYSTEM_DIRECTORY', 'ODS_WSL_STATE_ROOT'}
+
+
+def _with_bridge_aliases(values: dict) -> dict:
+    for key, legacy in _BRIDGE_ALIASES.items():
+        if values.get(key) and not values.get(legacy):
+            values[legacy] = values[key]
+        elif values.get(legacy) and not values.get(key):
+            values[key] = values[legacy]
+    return values
 
 
 def _owner(root: Path) -> None:
@@ -54,7 +71,7 @@ def _environment(root: Path) -> dict:
         key, separator, value = line.partition('=')
         if separator and key.strip() in _KEYS:
             values[key.strip()] = parse_env_value(value)
-    return values
+    return _with_bridge_aliases(values)
 
 
 def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
@@ -73,12 +90,23 @@ def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
     if 'ODS_WINDOWS_SYSTEM_DIRECTORY' in values and not values['ODS_WINDOWS_SYSTEM_DIRECTORY']:
         raise ValueError('The registered Windows system directory is empty; restore it before uninstalling')
     managed = None
-    if wsl_lemonade.candidate(values):
-        managed = wsl_lemonade.status(root, values)
+    runtime_values = values
+    routed = wsl_lemonade.candidate(values)
+    if registered and not routed:
+        # Routing can move to an API or the cloud while the owned Windows task
+        # stays registered. Custody comes from that task's user, distro,
+        # install root and immutable plan, not from the current endpoint, so
+        # probe it with a control-only environment. Nothing here changes the
+        # installation's routing or is written to its .env.
+        runtime_values = _with_bridge_aliases({
+            **{key: values[key] for key in ('ODS_WINDOWS_SYSTEM_DIRECTORY', 'ODS_WSL_STATE_ROOT')
+               if key in values},
+            'ODS_HOST_LLM_TRANSPORT': 'model-router',
+        })
+    if routed or registered:
+        managed = wsl_lemonade.status(root, runtime_values)
         if not managed['managed'] and registered:
             raise ValueError('The registered Windows runtime no longer belongs to this installation')
-    elif registered:
-        raise ValueError('Restore the registered Windows runtime transport before uninstalling')
     # All Windows ownership checks precede the first mutation. Disable and
     # settle sign-in startup before stopping Lemonade or retiring Pixel, so a
     # boot coordinator cannot restart services during their removal.
@@ -87,7 +115,7 @@ def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
         return {'state': 'validated', 'startup': startup['state']}
     startup = wsl_lemonade.disable_startup(root, values, retire_relay=True)
     if managed and managed['managed']:
-        wsl_lemonade.stop(root, values, managed['planDigest'])
+        wsl_lemonade.stop(root, runtime_values, managed['planDigest'])
     return {'state': 'retired', 'startup': startup['state']}
 
 

@@ -21,6 +21,7 @@ import path from "node:path";
 import http from "node:http";
 import net from "node:net";
 import { createHash } from "node:crypto";
+import {createSubagentDelivery} from '../plugin/subagent-delivery.mjs';
 
 const {
   gatewayRuntimeFromConfig,
@@ -249,6 +250,54 @@ test('anonymous chat retains ephemeral sessions with distinct internal delivery 
     }
     assert.notEqual(requests[0].user,requests[1].user);
     for(let i=0;i<2;i++){assert.match(requests[i].user,/^ods-[a-f0-9]{64}$/);assert.equal(reads[i].user,requests[i].user);}
+  } finally {await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));}
+});
+
+for(const stream of [false,true])for(const outcome of ['ready','overflow'])
+test(`accepted spawn without yield keeps actual ingress open until ${outcome} (stream=${stream})`,async()=>{
+  let submissions=0,reads=0,registry,owner;
+  const child='agent:pixel:subagent:22222222-2222-4333-8444-555555555555';
+  const childRun='33333333-2222-4333-8444-555555555555';
+  const gw=await fakeGateway({completionText:'I am waiting for the review.',onRequest:captured=>{
+    if(captured.url!=='/v1/chat/completions')return;
+    submissions++;
+    owner={agentId:'pixel',runId:TEST_RUN_ID,sessionId:'native-owner',
+      sessionKey:'agent:pixel:openai-user:'+captured.body.user,trigger:'user'};
+    registry=createSubagentDelivery({resolveOwnerSession:()=>({sessionId:owner.sessionId}),
+      finalText:message=>message.content.filter(block=>block.type==='text').map(block=>block.text).join('\n')});
+    registry.observe({},owner);
+    const ctx={...owner,toolName:'sessions_spawn',toolCallId:'actual-spawn'};
+    registry.before({params:{runtime:'subagent',mode:'run'}},ctx);
+    registry.nativeSpawn({runId:childRun,childSessionKey:child},
+      {runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+    registry.after({result:{details:{status:'accepted',runId:childRun,childSessionKey:child}}},ctx);
+    registry.end({success:true,messages:[{role:'assistant',stopReason:'stop',content:[
+      {type:'text',text:'I am waiting for the review.'}]}]},owner);
+  },delivery:captured=>{
+    reads++;
+    if(reads===2) {
+      const ctx={...owner,runId:`announce:v1:${child}:${childRun}`,
+        inputProvenance:{kind:'inter_session',sourceTool:'subagent_announce',sourceSessionKey:child}};
+      registry.observe({prompt:'Actual registered child result'},ctx);
+      const text=outcome==='ready'?'The verified review is complete.':'Context overflow: prompt too large for the model.';
+      if(outcome==='ready')registry.finalize({lastAssistantMessage:text},ctx);
+      registry.end({success:true,messages:[{role:'assistant',stopReason:outcome==='ready'?'stop':'error',
+        content:[{type:'text',text}]}]},ctx);
+    }
+    return registry.read(captured.body.user,captured.body.runId);
+  }});
+  const srv=await startIngress({gatewayPort:gw.port});
+  try {
+    const response=await request(srv,'POST','/v1/chat/completions',{
+      body:JSON.stringify({user:'native-no-yield',messages:[{role:'user',content:'Delegate one review and return findings.'}],stream}),
+      headers:{'Content-Type':'application/json'},
+    });
+    assert.equal(response.status,outcome==='ready'||stream?200:502);
+    assert.equal(reads,2,'accepted native work must not publish the original introduction');
+    assert.equal(submissions,1,'delivery never replays the owner request');
+    assert.ok(!response.body.includes('I am waiting for the review.'));
+    if(outcome==='ready')assert.match(response.body,/The verified review is complete/);
+    else {assert.match(response.body,/error/);assert.ok(!response.body.includes('Context overflow'));}
   } finally {await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));}
 });
 

@@ -1,9 +1,11 @@
 import base64
 import hashlib
+import http.client
 import importlib.util
 import json
 import shutil
 import subprocess
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +36,7 @@ def test_public_ods_bundle_acquires_without_private_repository(tmp_path, monkeyp
     else:
         assert bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF,
             destination=destination, source_url=str(bundle)) == destination
-        assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.28'
+        assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.33'
 
 
 def test_standalone_acquisition_defaults_to_ods_bundle(tmp_path, monkeypatch):
@@ -58,7 +60,7 @@ def test_standalone_acquisition_defaults_to_ods_bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(bootstrap, 'command', audited_command)
     destination = tmp_path / 'source'
     assert bootstrap.acquire_source(ref=bootstrap.ODS_BUNDLED_REF, destination=destination) == destination
-    assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.28'
+    assert bootstrap.selected_release(destination, bootstrap.ODS_BUNDLED_REF)['pixel'] == '4.3.33'
     assert len(local_git_calls) == 2
 
 
@@ -138,6 +140,7 @@ def release():
     value['openclawPluginPackages'] = {key: {**value['openclawPackage'],
         'url': 'https://registry.npmjs.org/' + name + '/-/' + name.split('/')[-1] + '-2026.6.33.tgz'}
         for key, _, name in bootstrap.PLUGINS}
+    value['sandboxNodeRuntime'] = {'version': '24.21.0', 'artifacts': {}}
     return value
 
 
@@ -169,10 +172,145 @@ def test_download_verifies_both_hashes(tmp_path, release, monkeypatch, fault):
     if fault == 'checksum': package['sha256'] = '0' * 64
     if fault == 'integrity': package['integrity'] = 'sha512-' + 'A' * 86 + '=='
     if fault:
-        with pytest.raises(bootstrap.BootstrapError): bootstrap.download(package, tmp_path / 'archive')
+        with pytest.raises(bootstrap.BootstrapError, match='checksum-mismatch'):
+            bootstrap.download(package, tmp_path / 'archive')
+        assert not (tmp_path / 'archive').exists()
     else:
         bootstrap.download(package, tmp_path / 'archive')
         assert (tmp_path / 'archive').read_bytes() == b'fixture archive'
+
+
+@pytest.mark.parametrize('network_error', [
+    ConnectionResetError('Connection reset by peer'),
+    urllib.request.URLError('connection refused'),
+    TimeoutError('operation timed out'),
+    http.client.RemoteDisconnected('Remote end closed connection without response'),
+])
+@pytest.mark.parametrize('mid_stream', [False, True])
+def test_download_network_drop_cleans_up_and_reports_bootstrap_error(
+        tmp_path, release, monkeypatch, network_error, mid_stream):
+    class MockStream:
+        def __init__(self):
+            self.delivered = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, block_size):
+            if mid_stream and not self.delivered:
+                self.delivered = True
+                return b'partial block of bytes'
+            raise network_error
+
+    class MockOpener:
+        def open(self, *args, **kwargs):
+            if not mid_stream:
+                raise network_error
+            return MockStream()
+
+    sleep_calls = []
+    monkeypatch.setattr(bootstrap.time, 'sleep', sleep_calls.append)
+    monkeypatch.setattr(bootstrap.urllib.request, 'build_opener', lambda *a: MockOpener())
+    package = release['openclawPackage']
+    destination = tmp_path / 'archive.tgz'
+    with pytest.raises(bootstrap.BootstrapError, match='pinned-package-download-failed') as exc_info:
+        bootstrap.download(package, destination)
+
+    assert isinstance(exc_info.value, ValueError)
+    assert exc_info.value.__cause__ is network_error
+    assert not destination.exists()
+    assert sleep_calls == [1, 2]
+
+
+@pytest.mark.parametrize('error_cls', [ConnectionResetError, urllib.request.URLError, TimeoutError])
+def test_download_transient_network_drop_recovers_within_retry_budget(
+        tmp_path, release, monkeypatch, error_cls):
+    import io
+    attempts = []
+
+    class FlakyOpener:
+        def open(self, *args, **kwargs):
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise error_cls('transient drop')
+            return io.BytesIO(b'fixture archive')
+
+    sleep_calls = []
+    monkeypatch.setattr(bootstrap.time, 'sleep', sleep_calls.append)
+    monkeypatch.setattr(bootstrap.urllib.request, 'build_opener', lambda *a: FlakyOpener())
+    package = release['openclawPackage']
+    destination = tmp_path / 'archive.tgz'
+    bootstrap.download(package, destination)
+
+    assert destination.read_bytes() == b'fixture archive'
+    assert len(attempts) == 2
+    assert sleep_calls == [1]
+
+
+def test_download_oversized_package_cleans_up(tmp_path, release, monkeypatch):
+    class OversizedStream:
+        def __init__(self):
+            self.count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self, block_size):
+            if self.count < 65:
+                self.count += 1
+                return b'x' * (1024 * 1024)
+            return b''
+
+    sleep_calls = []
+    monkeypatch.setattr(bootstrap.time, 'sleep', sleep_calls.append)
+    monkeypatch.setattr(bootstrap.urllib.request, 'build_opener',
+        lambda *a: SimpleNamespace(open=lambda *a, **k: OversizedStream()))
+    package = release['openclawPackage']
+    destination = tmp_path / 'oversized.tgz'
+    with pytest.raises(bootstrap.BootstrapError, match='pinned-package-too-large'):
+        bootstrap.download(package, destination)
+    assert not destination.exists()
+    assert sleep_calls == []
+
+
+def test_download_refuses_preexisting_destination_without_deleting(tmp_path, release, monkeypatch):
+    import io
+    monkeypatch.setattr(bootstrap.urllib.request, 'build_opener',
+        lambda *a: SimpleNamespace(open=lambda *a, **k: io.BytesIO(b'fixture archive')))
+    destination = tmp_path / 'preexisting.tgz'
+    destination.write_bytes(b'pre-existing artifact data')
+    with pytest.raises(FileExistsError):
+        bootstrap.download(release['openclawPackage'], destination)
+    assert destination.read_bytes() == b'pre-existing artifact data'
+
+
+@pytest.mark.parametrize('network_error', [
+    ConnectionResetError('connection dropped before opening destination'),
+    urllib.request.URLError('DNS resolution failed'),
+])
+def test_download_preserves_existing_destination_even_when_transport_is_down(
+        tmp_path, release, monkeypatch, network_error):
+    calls = []
+
+    def unavailable(*args, **kwargs):
+        calls.append(True)
+        raise network_error
+
+    monkeypatch.setattr(bootstrap.urllib.request, 'build_opener',
+        lambda *a: SimpleNamespace(open=unavailable))
+    monkeypatch.setattr(bootstrap.time, 'sleep', lambda seconds: None)
+    destination = tmp_path / 'existing.tgz'
+    destination.write_bytes(b'owner artifact')
+    with pytest.raises(FileExistsError):
+        bootstrap.download(release['openclawPackage'], destination)
+    assert destination.read_bytes() == b'owner artifact'
+    assert calls == []
 
 
 @pytest.mark.parametrize('fault', [None, 'root', 'arch', 'npm', 'version', 'probe', 'plugin-version', 'plugin-id'])
@@ -267,12 +405,22 @@ def test_plugin_probe_checks_loaded_identity_and_isolated_state(tmp_path, monkey
         run()
 
 
-@pytest.mark.parametrize('fault', [None, 'root', 'arch', 'user', 'label', 'uid', 'tools', 'run', 'changed'])
+NODE_PROOF_FAULTS = {
+    'node-missing': None,
+    'node-version': ['v22.23.1', 'arm64'],
+    'node-arch': ['v24.21.0', 'x64'],
+}
+
+
+@pytest.mark.parametrize('fault', [None, 'root', 'arch', 'user', 'label', 'uid', 'tools', 'run', 'changed',
+                                   'build', 'no-node-pin', 'npm-present', *NODE_PROOF_FAULTS])
 @pytest.mark.parametrize('existing', [False, True])
 def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch, fault, existing):
     monkeypatch.setattr(bootstrap.sys, 'platform', 'darwin')
     monkeypatch.setattr(bootstrap.os, 'geteuid', lambda: 0 if fault == 'root' else 501)
     monkeypatch.setattr(bootstrap.os, 'getuid', lambda: 501)
+    if fault == 'no-node-pin':
+        del release['sandboxNodeRuntime']
     monkeypatch.setattr(bootstrap, 'selected_release', lambda *a: release)
     docker = tmp_path / 'docker'
     docker.touch()
@@ -282,6 +430,7 @@ def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch,
         if args[1:3] == ['image', 'ls']: return '{}' if existing else ''
         if args[1] == 'build':
             assert 'PIXEL_SANDBOX_UID=501' in args and 'linux/arm64' in args
+            if fault == 'build': raise bootstrap.BootstrapError('native-bootstrap-command-failed')
             return ''
         if args[1:3] == ['image', 'inspect']:
             inspections.append(True)
@@ -303,20 +452,35 @@ def test_sandbox_build_and_proof_are_owner_bound(tmp_path, release, monkeypatch,
         assert workspace.name.startswith('ods-sandbox-workspace-')
         assert workspace.parent == tmp_path.parent
         (workspace / 'ods-proof.txt').write_text('ods-sandbox-proof')
+        # The proof runs node inside the image and lists any package manager.
+        program = args[args.index('-c') + 1]
+        assert '"-p","JSON.stringify([process.version,process.arch])"' in program
+        assert '["npm","npx","corepack"]' in program
         return json.dumps({'uid': 0 if fault == 'uid' else 501,
-                           'readback': 'ods-sandbox-proof', 'tools': fault != 'tools'})
+                           'readback': 'ods-sandbox-proof', 'tools': fault != 'tools',
+                           'node': NODE_PROOF_FAULTS.get(fault, ['v24.21.0', 'arm64']),
+                           'packageManagers': ['npm', 'npx'] if fault == 'npm-present' else []})
     monkeypatch.setattr(bootstrap, 'command', command)
     cleanups = []
     monkeypatch.setattr(bootstrap.subprocess, 'run', lambda args, **kwargs: cleanups.append(args))
     def run():
         return bootstrap.prepare_sandbox(source=tmp_path, ref='a' * 40, docker=docker)
-    if fault:
-        with pytest.raises(bootstrap.BootstrapError): run()
+    expected_error = {'build': 'native-sandbox-build-failed', 'no-node-pin': 'invalid-sandbox-node-runtime',
+        'run': 'native-sandbox-execution-proof-failed', 'tools': 'native-sandbox-execution-proof-failed',
+        'npm-present': 'native-sandbox-execution-proof-failed',
+        **{name: 'native-sandbox-execution-proof-failed' for name in NODE_PROOF_FAULTS}}.get(fault)
+    if fault == 'build' and existing:
+        receipt = run()  # an existing tag is not rebuilt; it still passes the proof
+        assert receipt['imageId'] == 'sha256:' + 'a' * 64
+    elif fault:
+        with pytest.raises(bootstrap.BootstrapError, match=expected_error): run()
     else:
         receipt = run()
         assert receipt['ownerUid'] == 501 and receipt['imageId'] == 'sha256:' + 'a' * 64
-    if fault != 'root':
+    if fault not in ('root', 'no-node-pin'):
         assert any(args[1] == 'build' for args in calls) is not existing
+    if fault == 'no-node-pin':
+        assert calls == [], 'refuse before building or running anything'
     ran = [args for args in calls if args[1] == 'run']
     assert bool(cleanups) == bool(ran)
     if ran:

@@ -21,8 +21,8 @@ import { parseTaskActivity } from "./task_activity_schema.mjs";
 import { parseQuestions } from "./questions_schema.mjs";
 import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
 import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
-import {decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
-import {handleAccessMode, handleModelControl, readAccessOwnerKey} from './access_mode_relay.mjs';
+import {currentImageNote,decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
+import {handleAccessMode, handleModelControl, publicModelControl, readAccessOwnerKey, requestAccessController} from './access_mode_relay.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -38,9 +38,13 @@ const MAX_STREAM_RESPONSE = 4 * 1024 * 1024; // 4 MiB terminal completion cap fo
 // Keep this channel far below the normal completion cap while allowing the
 // guard's structurally rendered evidence to cross the private ingress intact.
 const MAX_VERIFICATION_TEXT = 32 * 1024;
+// One host line for the owner after the delivered reply (the plugin's
+// shipped-example guard, plugin/example-guard.mjs).
+const MAX_VERIFICATION_NOTICE = 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
+const EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS = "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying.";
 const OPERATIONS_UNAVAILABLE_ZERO_SUBMISSIONS_CODE =
   "operations-unavailable-zero-submissions";
 const CONNECT_TIMEOUT_MS = 5000;
@@ -200,6 +204,10 @@ class HttpError extends Error {
   }
 }
 
+// Only the owned transport can establish that no request reached its selected
+// loopback listener. Provider payloads cannot construct this local error type.
+class GatewayConnectRefused extends Error {}
+
 // ---------------------------------------------------------------------------
 // Injectable dependencies (defaults to the real host primitives). Tests pass
 // a `deps` object with fakes for deterministic behavior.
@@ -323,6 +331,11 @@ export function createLoopbackGatewayFetch(fetchImpl = directGatewayFetch, {
       // HTTP bodies/streams are never retried. Even a transport reset can
       // arrive after the gateway has accepted a mutation or started a run.
       if (endpoints.get(port)?.origin === origin) endpoints.delete(port);
+      const address = new URL(origin).hostname.replace(/^\[|\]$/g, '');
+      if (transport === 'loopback' && error?.code === 'ECONNREFUSED' &&
+          error.syscall === 'connect' && error.address === address && error.port === Number(port)) {
+        throw new GatewayConnectRefused('gateway connection refused before submission', {cause:error});
+      }
       throw error;
     }
   };
@@ -770,7 +783,8 @@ function validSourceReview(value, directory) {
     && Object.values(value.omitted).every(n => Number.isInteger(n) && n >= 0 && n <= 16384);
 }
 
-function parseVerificationResponse(value, runId) {
+// Exported for tests of the exact delivery path.
+export function parseVerificationResponse(value, runId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -803,6 +817,9 @@ function parseVerificationResponse(value, runId) {
   if (hasTask) expectedKeys.push("task");
   const hasQuestions = Object.prototype.hasOwnProperty.call(value, 'questions');
   if (hasQuestions) expectedKeys.push('questions');
+  // A pending question card carries no notice.
+  const hasNotice = status !== 'pending' && Object.hasOwn(value, 'notice');
+  if (hasNotice) expectedKeys.push('notice');
   if (status === "passed" && carriesAuthoritativeText && value.deliveryMode === "append") {
     expectedKeys.push("deliveryMode");
   }
@@ -859,7 +876,9 @@ function parseVerificationResponse(value, runId) {
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text))) ||
     (hasArtifacts && (!['none','passed','failed'].includes(status) || !validDeliveredArtifacts(value.artifacts))) ||
     !previewValid || (hasTask && !parseTaskActivity(value.task, runId)) ||
-    (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions)))
+    (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions))) ||
+    (hasNotice && (typeof value.notice !== 'string' || !value.notice.trim() ||
+      value.notice.length > MAX_VERIFICATION_NOTICE || /[\u0000-\u001f\u007f]/.test(value.notice)))
   ) {
     throw new HttpError(502, "verification state unavailable");
   }
@@ -921,8 +940,8 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
   }
 }
 
-// A native sessions_yield response is an introduction, not the completed owner
-// answer. Keep this exact request open for its registered parent continuation.
+// An accepted native spawn can return a waiting introduction without calling
+// sessions_yield. Keep the exact request open for its registered continuation.
 // Polling reads host receipts only; it never invokes the model or replays tools.
 async function awaitSubagentDelivery(completion, user, token, gatewayPort, signal, deps) {
   const runId=completion?.id;
@@ -959,7 +978,8 @@ async function awaitSubagentDelivery(completion, user, token, gatewayPort, signa
 
 function missingVisibleAssistantText(content) {
   return typeof content === 'string' && (!content.trim() ||
-    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE].includes(content.trim()));
+    ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE,
+      EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS].includes(content.trim()));
 }
 
 // Standalone ingress is installed beside host helpers, without plugin code.
@@ -999,11 +1019,25 @@ function deliveryVerification(completion, verification) {
   };
 }
 
-function applyVerificationToCompletion(completion, verification) {
-  const result=baseApplyVerificationToCompletion(completion,verification);
+// Exported for tests of the exact delivery path.
+export function applyVerificationToCompletion(completion, verification) {
+  const result=withNotice(baseApplyVerificationToCompletion(completion,verification),verification.notice);
   const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
   return verification.artifacts?.length
     ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
+}
+
+// The host's one owner line follows the reply as delivered (kept, appended
+// to or replaced), once.
+function withNotice(completion, notice) {
+  const choice = completion?.choices?.[0];
+  const content = choice?.message?.content;
+  if (!notice || typeof content !== 'string' || content.includes(notice)) return completion;
+  return {
+    ...completion,
+    choices: [{ ...choice, message: { ...choice.message, content: content.trim() ? `${content}\n\n${notice}` : notice } },
+      ...completion.choices.slice(1)],
+  };
 }
 
 function baseApplyVerificationToCompletion(completion, verification) {
@@ -1219,7 +1253,8 @@ async function unfinishedExtensionDecision(completion, user, token, gatewayPort,
   if (!OPENAI_RUN_ID.test(completion?.id ?? '') || typeof user !== 'string' ||
       completion?.choices?.length !== 1 || completion.choices[0]?.finish_reason !== 'stop' ||
       typeof completion.choices[0]?.message?.content !== 'string' ||
-      completion.choices[0].message.content === EMPTY_ASSISTANT_RESPONSE) return null;
+      [EMPTY_ASSISTANT_RESPONSE, EMPTY_ASSISTANT_RESPONSE_WITH_SIDE_EFFECTS]
+        .includes(completion.choices[0].message.content)) return null;
   try {
     const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/unfinished-extension-decision`, {
       method:'POST', headers:upstreamHeaders(false, token),
@@ -1280,6 +1315,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
   res.once("close", abortOnDownstreamClose);
   const wantsStream = outgoing.stream === true;
   let stopActivity;
+  let gatewayResponsePending = false;
   // OpenClaw's OpenAI-compatible streaming route concatenates assistant block
   // replies from every tool continuation. Its non-stream route returns only
   // the terminal assistant reply. This ingress already withholds response
@@ -1304,6 +1340,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     await hooks.beforeRequest?.(controller.signal);
     if(controller.signal.aborted) throw new HistoryError('history-preparation-interrupted',503);
     hooks.onSubmitted?.();
+    gatewayResponsePending = true;
     const upstream = await deps.fetch(
       `http://127.0.0.1:${gatewayPort}/v1/chat/completions`,
       {
@@ -1314,6 +1351,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         signal: controller.signal,
       }
     );
+    gatewayResponsePending = false;
     if (upstream.status < 200 || upstream.status >= 300) {
       await drain(upstream.body);
       // Classify only the gateway's status, never its potentially sensitive body.
@@ -1418,6 +1456,21 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     });
     res.end(responseBody);
   } catch (error) {
+    // Only an actual refusal to connect to this exact loopback gateway proves
+    // that its chat POST never arrived. Timeouts, resets, missing run IDs and
+    // failures after a response/continuation remain execution uncertainty.
+    if (gatewayResponsePending && !controller.signal.aborted && error instanceof GatewayConnectRefused) {
+      let notSubmitted = false;
+      try { notSubmitted = hooks.onNotSubmitted ? hooks.onNotSubmitted() === true : true; } catch { /* Keep uncertain history fenced. */ }
+      if (notSubmitted && !res.destroyed && !res.writableEnded) {
+        if (wantsStream) {
+          res.end('data: {"error":{"type":"pixel_ingress_error","code":"gateway_connect_refused"}}\n\ndata: [DONE]\n\n');
+        } else {
+          sendError(res, 503, 'gateway connection refused before submission', 'gateway_connect_refused');
+        }
+        return;
+      }
+    }
     if (!res.headersSent) {
       const message = error instanceof HttpError ? error.message : "upstream unavailable";
       sendError(res, error instanceof HttpError ? error.status : 502, message);
@@ -1498,6 +1551,89 @@ export function projectRuntimeIdentity(value) {
     identities:Object.fromEntries(['odsReleaseCommit','pixelSourceRevision','pluginSha256','openclawVersion','openclawModuleSha256','previewImageDigest'].map(key=>[key,identity[key]])),
     toolSchemas:Object.fromEntries(['boundary','registeredPluginToolCount','registeredPluginToolSchemasSha256','offeredToolCount','offeredToolSchemasSha256'].map(key=>[key,schemas[key]])),
   };
+}
+
+// Shipped example projects (Elf of Doom). Portal's sidebar lists the ones whose
+// folder is in the owner's workspace and opens one with a create-only preview
+// publication of that folder, with no model run. The gateway decides which
+// names exist; this relay forwards one fixed request shape and returns only a
+// validated projection, never upstream text.
+const EXAMPLE_PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const EXAMPLE_PROJECT_BODY = 256;
+const EXAMPLE_PROJECT_RESPONSE = 8192;
+// The gateway's preview transport bounds one publication at 30 seconds.
+const EXAMPLE_PROJECT_OPEN_TIMEOUT_MS = 35000;
+
+export function projectExampleProjects(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join() !== 'projects,schemaVersion' || value.schemaVersion !== 1
+      || !Array.isArray(value.projects) || value.projects.length > 8
+      || value.projects.some(name => typeof name !== 'string' || !EXAMPLE_PROJECT_NAME.test(name))
+      || new Set(value.projects).size !== value.projects.length) throw new Error('invalid example projects');
+  return {schemaVersion: 1, projects: [...value.projects]};
+}
+
+export function projectExamplePreview(value, name) {
+  const preview = value?.preview;
+  const keys = 'bytes,entrySha256,files,kind,port,relativeDirectory,schemaVersion,sha256,siteId,url';
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || Object.keys(value).sort().join() !== 'preview,schemaVersion' || value.schemaVersion !== 1
+      || !preview || typeof preview !== 'object' || Array.isArray(preview)
+      || Object.keys(preview).sort().join() !== keys || preview.schemaVersion !== 1
+      || preview.kind !== 'ods-pixel-workspace-preview' || preview.relativeDirectory !== `Playground/${name}`
+      || !/^[a-f0-9]{64}$/.test(preview.sha256) || !/^[a-f0-9]{64}$/.test(preview.entrySha256)
+      || preview.siteId !== `site-${preview.sha256.slice(0, 24)}`
+      || !Number.isInteger(preview.port) || preview.port < 1 || preview.port > 65535
+      || preview.url !== `http://${preview.siteId}.localhost:${preview.port}/${preview.siteId}/`
+      || !Number.isInteger(preview.files) || preview.files < 1 || preview.files > 128
+      || !Number.isInteger(preview.bytes) || preview.bytes < 1 || preview.bytes > 16 * 1024 * 1024) {
+    throw new Error('invalid example preview');
+  }
+  return {schemaVersion: 1, preview: Object.fromEntries(keys.split(',').map(key => [key, preview[key]]))};
+}
+
+async function handleExampleProjects(req, res, token, gatewayPort, deps) {
+  if (req.method !== 'GET' && req.method !== 'POST') { sendError(res, 405, 'method not allowed'); return; }
+  if (req.url !== '/v1/example-projects') { sendError(res, 400, 'invalid request'); return; }
+  const open = req.method === 'POST';
+  let name;
+  if (open) {
+    if (String(req.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase() !== 'application/json') {
+      sendError(res, 415, 'content type must be application/json');
+      return;
+    }
+    try {
+      const body = JSON.parse((await readBody(req, EXAMPLE_PROJECT_BODY)).toString('utf8'));
+      if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).join() !== 'name'
+          || typeof body.name !== 'string' || !EXAMPLE_PROJECT_NAME.test(body.name)) throw new Error('invalid');
+      name = body.name;
+    } catch { sendError(res, 400, 'invalid example project request'); return; }
+  }
+  const controller = new AbortController();
+  const timer = deps.setTimeout(() => controller.abort(), open ? EXAMPLE_PROJECT_OPEN_TIMEOUT_MS : GATEWAY_PROBE_TIMEOUT_MS);
+  try {
+    const response = await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/example-projects`, {
+      method: open ? 'POST' : 'GET', headers: upstreamHeaders(false, token),
+      ...(open ? {body: JSON.stringify({name})} : {}), redirect: 'error', signal: controller.signal,
+    });
+    // 404: the folder is gone. 409: the host refused files in it. 422: a
+    // folder of that name is there but cannot open as the example.
+    const refusal = {404: 'example-project-unavailable', 409: 'example-project-not-previewable',
+      422: 'example-project-not-playable'}[response.status];
+    if (open && refusal) {
+      await drain(response.body);
+      sendJson(res, response.status, {error: refusal});
+      return;
+    }
+    if (response.status !== 200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {
+      await drain(response.body);
+      throw new Error('unavailable');
+    }
+    const value = JSON.parse((await readBounded(response.body, EXAMPLE_PROJECT_RESPONSE)).toString('utf8'));
+    sendJson(res, 200, open ? projectExamplePreview(value, name) : projectExampleProjects(value));
+  } catch {
+    sendJson(res, 503, {error: open ? 'example-project-preview-unavailable' : 'example-projects-unavailable'});
+  } finally { deps.clearTimeout(timer); }
 }
 
 async function handleRuntimeIdentity(res, token, gatewayPort, deps) {
@@ -1802,6 +1938,11 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
       return;
     }
 
+    if (pathname === '/v1/example-projects') {
+      void handleExampleProjects(req, res, token, gatewayPort, deps);
+      return;
+    }
+
     if (pathname === "/v1/chat/completions") {
       if (req.method !== "POST") {
         sendError(res, 405, "method not allowed");
@@ -2018,8 +2159,8 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
       imageStore.put(user,images,prepared.state.messages.flatMap(message=>message.images||[]));
     }
     const nativeLatest={role:latest.role,content:latest.content};
-    if(images.length) nativeLatest.content=[...latest.content,{type:'text',text:
-      nativeHistoryMessages([{role:'user',content:'',images:archivedLatest.images}])[0].content}];
+    // The pixels ride in this message; history replay uses the retrieval note.
+    if(images.length) nativeLatest.content=[...latest.content,{type:'text',text:currentImageNote(archivedLatest.images)}];
     // Identity/delivery policy belongs to the trusted API/edge messages. The
     // snapshot is data only; it cannot introduce system/developer instructions.
     outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...nativeHistoryMessages(prepared.delta.slice(0,-1)),nativeLatest];
@@ -2043,6 +2184,15 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
         if(state.compaction?.requestId!==request_id || !['completed','skipped'].includes(state.compaction.status)) throw new HistoryError('history-compaction-unconfirmed',503);
       },
       onSubmitted:()=>{submitted=true;},
+      onNotSubmitted:()=>{
+        const current=historyLedger.read(user);
+        if(!submitted || completed || current?.requestId!==prepared.state.requestId || current.status!=='pending') return false;
+        historyLedger.abandon(user,prepared,'gateway-connect-refused');
+        const settled=historyLedger.read(user);
+        if(settled?.requestId!==prepared.state.requestId || settled.status!=='ready' || settled.reason!=='gateway-connect-refused') return false;
+        submitted=false;
+        return true;
+      },
       onComplete:async(completion,verification)=>{
         let after;
         try {after=await nativeContextRequest('context',{user},token,gatewayPort,deps)} catch { /* The verified completion still proves this input ran. */ }
@@ -2170,19 +2320,43 @@ export async function start(cfg = configFromEnv(), opts = {}) {
     throw error;
   }
 
-  const interval = setInterval(() => {
-    void writeStatus(
+  let closed = false;
+  let statusRefresh = null;
+  const refreshStatus = async () => {
+    // systemd binds one config inode into this service. Atomic model changes
+    // replace the owner's file, leaving that private bind on the old inode.
+    // The existing owner controller reads the current committed route without
+    // giving ingress access to the owner's home or restarting active chats.
+    let configuredRuntime = null;
+    try {
+      const request = deps.requestAccessController ?? requestAccessController;
+      const result = await request({operation: 'model-route-status'}, {timeout: 20000});
+      if (result.status === 200) {
+        const current = publicModelControl(result.body);
+        if (!current.pending) {
+          configuredRuntime = {model: current.contract.model, context_length: current.contract.contextLength};
+        }
+      }
+    } catch {
+      // Missing, busy or invalid current evidence means unknown, never the
+      // bound startup config or an unrelated local model kept for rollback.
+    }
+    await writeStatus(
       true,
       cfg.gatewayPort,
       cfg.statusFile,
       cfg.odsVersion,
       deps,
       cfg.appPorts,
-      gateway.runtimeAuthoritative ? gateway.runtime : undefined
-    ).catch(() => {});
+      configuredRuntime
+    );
+  };
+  const interval = setInterval(() => {
+    // Skip ticks while a probe is pending instead of queuing stale projections.
+    if (closed || statusRefresh) return;
+    statusRefresh = refreshStatus().catch(() => {}).finally(() => { statusRefresh = null; });
   }, cfg.statusIntervalMs);
   interval.unref();
-  let closed = false;
   return {
     server,
     interval,
@@ -2190,6 +2364,7 @@ export async function start(cfg = configFromEnv(), opts = {}) {
       if (closed) return;
       closed = true;
       clearInterval(interval);
+      if (statusRefresh) await statusRefresh;
       await new Promise((resolve) => server.close(resolve));
       try {
         const current = fs.lstatSync(cfg.socketPath);

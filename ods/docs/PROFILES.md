@@ -22,7 +22,7 @@ To skip a service, create `docker-compose.override.yml`:
 services:
   n8n:
     profiles: [disabled]    # Prevents this service from starting
-  openclaw:
+  perplexica:
     profiles: [disabled]
 ```
 

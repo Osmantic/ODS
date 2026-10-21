@@ -93,12 +93,19 @@ try {
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $removed -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "removed flag"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $failing -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none") "help exits non-zero"
 
-    # Every Windows launcher goes through the probes.
+    # Every Windows launch goes through the probes: install-windows.ps1 and
+    # ods.ps1 start llama-server only through native-llama-legacy.ps1, and the
+    # Portal records its reasoning flags in wsl-portal-amd.ps1.
     foreach ($relative in @("installers\windows\install-windows.ps1", "installers\windows\ods.ps1")) {
         $text = Get-Content -LiteralPath (Join-Path $root $relative) -Raw
-        if ($text -notmatch 'native-llama-args\.ps1') { throw "$relative does not load native-llama-args.ps1" }
-        if ($text -notmatch 'Get-ODSNativeCheckpointIntervalArgs') { throw "$relative does not qualify the checkpoint interval" }
-        if ($text -match '"--checkpoint-every-n-tokens",\s*\$') { throw "$relative passes --checkpoint-every-n-tokens without the probe" }
+        if ($text -notmatch 'native-llama-args\.ps1' -or $text -notmatch 'native-llama-legacy\.ps1') { throw "$relative does not load the shared native launcher" }
+        if ($text -match '"--checkpoint-every-n-tokens"|"--reasoning-format"') { throw "$relative builds its own llama-server arguments" }
+    }
+    $legacy = Get-Content -LiteralPath (Join-Path $root "installers\windows\lib\native-llama-legacy.ps1") -Raw
+    if ($legacy -notmatch 'Get-ODSNativeCheckpointIntervalArgs') { throw "native-llama-legacy.ps1 does not qualify the checkpoint interval" }
+    if ($legacy -match "'--checkpoint-every-n-tokens'") { throw "native-llama-legacy.ps1 passes --checkpoint-every-n-tokens without the probe" }
+    foreach ($relative in @("installers\windows\lib\native-llama-legacy.ps1", "installers\windows\lib\wsl-portal-amd.ps1")) {
+        $text = Get-Content -LiteralPath (Join-Path $root $relative) -Raw
         if ($text -notmatch 'Get-ODSNativeReasoningArgs') { throw "$relative does not qualify the reasoning flags" }
     }
     Write-Output "Windows native checkpoint interval and reasoning contract OK"

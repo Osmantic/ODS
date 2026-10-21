@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`9f3b6ecd25db3ab51bef4091473d88ee5824bc3b`, and its SHA-256 is
-`b499ac4fe2f183caaafc8c3ccefd4824bb6e491a589e07ba0e2495b8b37e7d68`.
+`3d2acd8f22a53d28b36b7e6ee017bb3143dc428b`, and its SHA-256 is
+`f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -60,30 +60,30 @@ profile has a placeholder `anthropic/claude-sonnet-4-5` default, which is never
 sent because that lane is owner-pinned. `tests/test-cloud-model-ids.py` tracks
 both IDs and fails once a re-vendor drops them.
 
-## Pending upstream change: retired workspace guidance
+## Retired workspace guidance
 
-`workspace-template/AGENTS.md` still carries one retired section, and
+Through 4.3.28, `workspace-template/AGENTS.md` carried one retired section, and
 `MEMORY.md` one matching entry, describing a maintainer's private multi-machine
-workflow. They arrived with ODS #6156 and apply to no user installation.
-Removing them changes this bundle, and Pixel installs releases by version: an
-existing installation refuses different source with the version it already runs
-("Pixel 4.3.28 is already the active release"). The removal therefore ships with
-the next Pixel source release, qualified through the held source upgrade on real
-installations.
+workflow. They arrived with ODS #6156 and applied to no user installation.
+Pixel 4.3.29 removes them. The template carries neutral model-routing guidance
+in their place and is byte-identical to what the installer migration below
+produces from the 4.3.28 files.
 
-Until then:
+Workspaces created from older releases keep their files, because Pixel copies
+template files only where a workspace lacks them. For those workspaces:
 
 - `installers/lib/pixel-workspace-guidance.py` replaces the exact retired bytes
-  with neutral model-routing guidance: in the generated workspace at configure
-  time, and in an existing owner workspace before the gateway restarts. Edited
-  copies stay in place and are reported for review. The original files of an
-  owner workspace are kept in a private `.ods-workspace-guidance-backups/`
-  directory beside the workspace, outside what the agent reads.
-- The `pixel-ods` plugin's bootstrap hook substitutes the same section at run
-  time when a workspace still holds the exact old default.
+  with the same guidance: in the generated workspace at configure time, and in
+  an existing owner workspace before the gateway restarts. Edited copies stay in
+  place and are reported for review. The original files of an owner workspace
+  are kept in a private `.ods-workspace-guidance-backups/` directory beside the
+  workspace, outside what the agent reads.
+- The `pixel-ods` plugin's bootstrap hook presents a workspace that still holds
+  the exact 4.3.28 `AGENTS.md` as the 4.3.29 default, in memory only, before it
+  scopes Calendar and Frontier guidance.
 - `tests/test-seeded-content-privacy.py` fails CI if owner-private or
-  fleet-specific text reaches the template by any other route, or if the
-  retired block changes so that the migration no longer recognizes it.
+  fleet-specific text reaches the template by any route, or if the shipped
+  template would need the migration again.
 
 ## ODS access-release coordination adaptation
 
@@ -102,7 +102,7 @@ was verified. Existing source-digest and installer custody checks remain active.
 
 ## ODS-maintained 4.3.28 source-upgrade candidate
 
-The current bundle advances the public ODS-maintained source to 4.3.28 so the
+The 4.3.28 bundle advanced the public ODS-maintained source to 4.3.28 so the
 existing increasing-version checks can reconcile the access/release helpers
 without changing an installed same-version release in place. It does not claim
 an upstream/private Pixel release. The functional source checkpoint is
@@ -130,3 +130,123 @@ existing evidence links and historical JSON metadata remain intact. The two
 targeted generation tests and documentation link check passed. Two independent
 builds verified identical bundle bytes and every source blob/mode. This replaces
 the earlier draft candidate; it does not claim a protected live broker upgrade.
+
+## ODS-maintained 4.3.29 source release
+
+This release removes the retired workspace guidance described above. It changes
+only workspace template text and version metadata; runtime code, OpenClaw,
+plugin, Node and dependency versions, image digests and trust anchors are
+unchanged. The version moves to 4.3.29 because an existing installation refuses
+different source at the version it already runs, and the held source upgrade
+requires a strictly newer version for a changed source. The functional source
+checkpoint is `50762d145adf245b4c32bdf0b40f5eee8359a510`;
+`pixel/ODS-QUALIFICATION-4.3.29.md` records the automated evidence and the fleet
+qualification that is still pending. The release stays a `candidate` until the
+held source upgrade is qualified on real Linux/WSL installations, in Sandbox
+mode and with Full Access, and through a macOS native update.
+
+The bundle was built from the committed `vendor/pixel` tree
+`4dbf58eccdd25806e9d955a47c3109561eda14c5`. An empty bare repository whose
+`objects/info/alternates` names this repository's object store received
+`git commit-tree` of that tree with the retained synthetic author, committer,
+timestamp and message; `HEAD` was pointed at that commit, and
+`git -c pack.threads=1 bundle create <file> HEAD` wrote the bundle. Two builds
+were byte-identical, and builds with the default and four pack threads matched
+them (Git 2.53 on Windows). The bytes depend on the packs in the object store
+that the alternates name; the commit identity depends only on the tree. The
+source contains 1,308 files, including 96 executable entrypoints, and only the
+single synthetic root commit is advertised. `scripts/verify-pixel-bundle.py`
+verified every blob and Git executable mode against the public source. No
+release signature was generated and no private repository was accessed. Clients
+prepared with the 4.3.28 bundle remain readable through their exact retained
+receipt identity.
+
+## ODS-maintained 4.3.30 Operations startup candidate
+
+This candidate waits for the Operations Broker inventory before applying
+the existing reader ACL checks. A real WSL clean install exposed the
+missing projection; a controlled delayed-file test reproduces the old
+failure and accepts the new wait. `pixel/ODS-QUALIFICATION-4.3.30.md`
+records the evidence and remaining live qualification. The version
+advance preserves the existing strictly increasing source-upgrade gate.
+
+The public vendor tree is `b4a2db3cfc6d3d6388c57f94dc6befaf2ed5a292`. Two independent empty bare
+repositories used the same alternates-based procedure documented above
+with the retained synthetic identity, timestamp and root message. The
+two bundles were byte-identical. Only the single public root is advertised;
+no private history or signing credentials were accessed. Runtime and
+dependency versions, image digests, policies and trust anchors are unchanged.
+Current source/bundle pins above identify this candidate; prior release
+sections remain historical evidence.
+
+## ODS-maintained 4.3.31 Operations executable-start candidate
+
+This candidate separates systemd filesystem-isolation setup from Operations
+inventory readiness. Type=exec and a bounded 180-second startup window preserve
+every existing isolation setting. The existing inventory and private-state
+checks remain required. See `pixel/ODS-QUALIFICATION-4.3.31.md` for measured
+WSL behavior and the boundary between fixture and fleet acceptance.
+
+The public vendor tree is `3c8abd7b0f95ffdb72d0f97685d89ef81b927eb1`. Two independent empty bare
+repositories produced byte-identical bundles using the documented synthetic
+identity, timestamp and message. Only one public root is advertised. Runtime
+and dependency versions, image pins, policies and trust anchors are unchanged.
+Current source/bundle pins above identify this candidate; prior sections remain
+historical evidence. No private source history or signing credentials were used.
+
+## ODS-maintained 4.3.32 sandbox Node.js candidate
+
+This candidate installs the official Node.js 24.21.0 `node` binary in the agent
+sandbox image, pinned per architecture by SHA-256 in `RELEASE-MANIFEST.json`
+(`sandboxNodeRuntime`), without npm, npx or corepack. Bootstrap and native macOS
+preparation prove the image's node offline before any live change. The pins
+were read from the release's `SHASUMS256.txt`; its clearsigned
+`SHASUMS256.txt.asc` verified with the Node.js release key
+`5BE8A3F6C8A5C01D106C0AD820B1A390B168D356`, which the Node.js README lists.
+See `pixel/ODS-QUALIFICATION-4.3.32.md` for the change, its evidence and the
+fleet qualification still required.
+
+The public vendor tree is `38f08da83aa844c1363ef2629fa31e250806f9b9`. Two
+independent empty bare repositories produced byte-identical bundles with the
+alternates-based procedure, synthetic identity, timestamp and message
+documented above (Git 2.53 on Windows, `pack.threads=1`); the same procedure
+first rebuilt the 4.3.31 bundle byte for byte. Only one public root is
+advertised. The sandbox image gains the Node.js runtime; OpenClaw, plugin and
+dependency versions, the base image digest, policies and trust anchors are
+unchanged. Current source/bundle pins above identify this candidate; prior
+sections remain historical evidence. No private source history or signing
+credentials were used.
+
+The candidate was rebuilt before publication with review fixes: bootstrap's
+node proof is bounded at 120 seconds, removes its own named container and
+fails with a fixed `Sandbox runtime proof failed:` message; the Node.js
+download stops on a stalled connection; the e2e suite covers both; and the
+qualification record names the macOS update's sandbox retirement and the new
+functional source checkpoint. The public vendor tree is
+`bcfd325ce22da8f859bfb580c21897e2abd81f29`. Two independent empty bare
+repositories produced byte-identical bundles with the same procedure, identity,
+timestamp and message (Git 2.53 on Windows, `pack.threads=1`); the same
+procedure reproduced the earlier candidate's commit
+`b966b349b6cb2863157f9b2793a90508ead6a08d` from its tree, though not its bytes,
+since the packs the alternates name have changed. This replaces the unpublished
+earlier candidate. Only one public root is advertised; versions, image digests,
+policies and trust anchors are unchanged, and no private source history or
+signing credentials were used.
+
+## ODS-maintained 4.3.33 Courier dependency candidate
+
+This candidate updates Web Courier's hash-locked certifi and urllib3. The
+version advance preserves the strictly increasing source-upgrade gate;
+`pixel/ODS-QUALIFICATION-4.3.33.md` records the isolated runtime validation
+and installed upgrade qualification still required. Existing compatibility
+records and all source custody checks remain intact.
+
+The public vendor tree is `15b6fb0cecb6978624aa96014f5ebccdb591a2fa` at ODS source
+commit `f76c335d9b9e9ce87980ce909ede4e3ec368dcbb`. Two independent empty bare repositories
+using the alternates procedure above produced byte-identical bundles with
+the retained public synthetic author, timestamp and root message. The
+bundle advertises one root commit and no private history. Current pins
+above identify this candidate. The prior 4.3.32 bundle commit
+`4bf2203c56cce323490e41e36736062d4f74cf39` and digest
+`0f45a292d978bd766d19606404554a0ebdca6e1f8e0fb95d870e2f7d3ceded5b` remain historical identities in Git
+and in existing clients' retained receipts. No release signature was generated.

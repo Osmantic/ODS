@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import pwd
 import re
 import stat
 import socket
@@ -130,7 +131,7 @@ def mount_id(fd):
 FEATURE_COMPOSE_SERVICES = frozenset({
     'litellm', 'searxng', 'token-spy', 'whisper', 'tts', 'n8n', 'qdrant',
     'embeddings', 'hermes', 'hermes-proxy', 'pixel-edge', 'pixel-model-relay',
-    'openclaw', 'ape', 'comfyui', 'perplexica', 'privacy-shield', 'ods-proxy',
+    'ape', 'comfyui', 'perplexica', 'privacy-shield', 'ods-proxy',
     'tailscale', 'langfuse', 'brave-search',
 })
 
@@ -358,7 +359,7 @@ def _prove_provision(bridge, manager, plan, kind):
     return dict(files=evidence, unit=status, socket=[info.st_dev, info.st_ino], images=images)
 
 
-def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None):
+def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None, thinking_control=None):
     config = _overlay_json(anchor)
     args = config['plugins']['entries']['pixel-ods']['config']
     port = args['perplexicaPort']
@@ -386,6 +387,8 @@ def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None):
                    modelImageInput=image_policy)
     if provider == 'ods-gateway':
         answers['modelRouteFingerprint'] = args['modelRouteFingerprint']
+    if thinking_control is not None:
+        answers['modelThinkingControl'] = thinking_control
     payload = dict(renderer=renderer.decode('utf-8'), config=anchor.decode('utf-8'),
                    port=port, transport=transport, socket=socket, home=str(home / '.openclaw'),
                    answers=answers)
@@ -491,7 +494,14 @@ def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
         promoted.append('project')
     provision = {kind: _prove_provision(bridge, manager, plan, kind) for kind in promoted}
     render_args = dict(provision=provision) if provision else {}
-    if len(renderer) > 256 * 1024 or _render_overlay(renderer, anchor, home, uid, gid, **render_args) != config_sha:
+    # A measured thinking control reaches the renderer only through the owner's
+    # answers file (a plugin-config key would break rollback), so the release
+    # cannot name it. It selects one of the renderer's fixed thinking policies:
+    # accept any of them, with every other input still derived from the release.
+    derived = (_render_overlay(renderer, anchor, home, uid, gid, **render_args,
+                               **({'thinking_control': control} if control else {}))
+               for control in (None, 'enable_thinking', 'always', 'none'))
+    if len(renderer) > 256 * 1024 or config_sha not in derived:
         raise UpgradeError('source-overlay-not-derived')
     if {kind: _prove_provision(bridge, manager, plan, kind) for kind in promoted} != provision:
         raise UpgradeError('source-overlay-provision-changed')
@@ -642,12 +652,18 @@ class SourceUpgrade:
     state_uid is explicit for isolated unprivileged tests. Production callers
     use root-owned state and a non-root installation owner. The callbacks must
     check the actual coordinator, never a stale verified.json or a caller bool.
+    owner_gid defaults to the owner's primary group; tests may pass another
+    group the test user belongs to.
     """
 
-    def __init__(self, state, install, owner_uid, *, state_uid=0):
+    def __init__(self, state, install, owner_uid, *, state_uid=0, owner_gid=None):
         self.state = Path(state)
         self.install = Path(install)
         self.uid = owner_uid
+        # Root writes every published path. A fresh install's owner-run copy
+        # leaves them in the owner's primary group, so published paths must
+        # not keep root's group (the host agent then cannot replace them).
+        self.gid = pwd.getpwuid(owner_uid).pw_gid if owner_gid is None else owner_gid
         self.state_uid = state_uid
         directory(self.state, state_uid, private=True)
         directory(self.install, owner_uid)
@@ -817,10 +833,10 @@ class SourceUpgrade:
         value = self.journal()
         if (value is None or value['phase'] != 'staged' or value['hold'] is not None
                 or os.path.lexists(self.state.parent / 'transition.json')):
-            return
+            return False
         item, raw = read_file(self.state, 'source-scratch.json', self.state_uid)
         if item is None:
-            return
+            return False
         record = json.loads(raw)
         parent = self.install.stat()
         if (type(record) is not dict or set(record) != {'version','name','parent','identity'}
@@ -829,10 +845,10 @@ class SourceUpgrade:
                 or any(type(record[k]) is not list or len(record[k]) != 2
                        or any(type(n) is not int or n < 0 for n in record[k])
                        for k in ('parent', 'identity'))):
-            return
+            return False
         if (record['parent'][0] == parent.st_dev or record['parent'][1] != parent.st_ino
                 or record['identity'][0] != record['parent'][0]):
-            return
+            return False
         fd = os.open(self.install / record['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             info = os.fstat(fd)
@@ -845,8 +861,54 @@ class SourceUpgrade:
             self._write('source-scratch.json', encoded(dict(version=1,
                 name='.ods-source-staging-' + os.urandom(16).hex(),
                 parent=[parent.st_dev, parent.st_ino], identity=None)))
+            return True
         finally:
             os.close(fd)
+
+    def _completed_scratch_remounted(self):
+        """Accept a completed plan's empty buffer after a device renumbering.
+
+        WSL attaches its virtual disks in a different order on every VM start,
+        and Linux can renumber block devices across reboots, so the same
+        directories come back under a new st_dev. Uninstall only reads the
+        buffer, so it accepts exactly that renumbering: the same parent and
+        buffer inodes, a receipt whose two device numbers agreed, and a
+        buffer that is still root-owned, 0700, empty and on the parent's
+        current device. False leaves every other receipt to the strict
+        checks in _scratch(). Nothing is written.
+        """
+        item, raw = read_file(self.state, 'source-scratch.json', self.state_uid)
+        if item is None:
+            return False
+        record = json.loads(raw)
+        if (type(record) is not dict or set(record) != {'version', 'name', 'parent', 'identity'}
+                or record['version'] != 1 or type(record['name']) is not str
+                or not re.fullmatch(r'\.ods-source-staging-[a-f0-9]{32}', record['name'])
+                or any(type(record[k]) is not list or len(record[k]) != 2
+                       or any(type(n) is not int or n < 0 for n in record[k])
+                       for k in ('parent', 'identity'))):
+            return False
+        root = os.open(self.install, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            parent = os.fstat(root)
+            if (record['parent'][0] == parent.st_dev or record['parent'][1] != parent.st_ino
+                    or record['identity'][0] != record['parent'][0]):
+                return False
+            fd = os.open(record['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            try:
+                info = os.fstat(fd)
+                linked = os.stat(record['name'], dir_fd=root, follow_symlinks=False)
+                if (parent.st_uid != self.uid or parent.st_mode & 0o022
+                        or info.st_dev != parent.st_dev or info.st_ino != record['identity'][1]
+                        or (linked.st_dev, linked.st_ino) != (info.st_dev, info.st_ino)
+                        or info.st_uid != self.state_uid or stat.S_IMODE(info.st_mode) != 0o700
+                        or os.listdir(fd)):
+                    raise UpgradeError('source-scratch-remount-refused')
+            finally:
+                os.close(fd)
+        finally:
+            os.close(root)
+        return True
 
     def _prepare_scratch(self):
         with self._scratch(prepare=True) as (scratch, validate):
@@ -918,8 +980,8 @@ class SourceUpgrade:
         self._write(wanted['sha256'], raw)
         self._write(self._mirror_name(), encoded(record))
 
-    def _mirror_record(self, *, require_complete=True):
-        item, raw = read_file(self.state, self._mirror_name(), self.state_uid)
+    def _mirror_record(self, *, require_complete=True, name=None):
+        item, raw = read_file(self.state, name or self._mirror_name(), self.state_uid)
         if item is None:
             raise UpgradeError('source-mirror-journal-missing')
         record = json.loads(raw)
@@ -961,10 +1023,11 @@ class SourceUpgrade:
         # The uninstall validates its protected mirror and install binding;
         # it must not require a mutable source tree to remain a time capsule.
         self.verify_mirror()
-        with self._scratch() as (scratch, validate):
-            validate()
-            if os.listdir(scratch):
-                raise UpgradeError('source-scratch-unexpected')
+        if not self._completed_scratch_remounted():
+            with self._scratch() as (scratch, validate):
+                validate()
+                if os.listdir(scratch):
+                    raise UpgradeError('source-scratch-unexpected')
         total = 0
         for index, path in enumerate(self.state.iterdir()):
             if index >= MAX_FILES * 3:
@@ -984,8 +1047,44 @@ class SourceUpgrade:
                 raise UpgradeError('source-journal-invalid')
         return self._mirror_record()['after']
 
+    def _check_unheld_refresh(self, existing, identity, candidate, *, rebase_unheld,
+                              replace_unheld_ref=False):
+        # Called under stage's source lock and the CLI's admission lock. A new
+        # download may replace an unused plan, never a held/applied update.
+        baseline = {'configSha256', 'receiptSha256'} if rebase_unheld else set()
+        if replace_unheld_ref:
+            if identity['afterRef'] == existing['identity']['afterRef']:
+                raise UpgradeError('source-unheld-refresh-refused')
+            baseline |= {'afterRef'}
+        if (existing['phase'] != 'staged' or existing['hold'] is not None
+                or os.path.lexists(self.state.parent / 'transition.json')
+                or os.path.lexists(self.state / self.downstream_name())
+                or {k: v for k, v in identity.items() if k not in baseline}
+                != {k: v for k, v in existing['identity'].items() if k not in baseline}
+                or inventory(self.install, self.uid) != existing['before']):
+            raise UpgradeError('source-unheld-refresh-refused')
+        with self._scratch() as (scratch, validate):
+            validate()
+            if os.listdir(scratch):
+                raise UpgradeError('source-unheld-refresh-refused')
+        next_mirror = 'mirror-' + sha(encoded([identity, candidate])) + '.json'
+        if os.path.lexists(self.state / next_mirror.replace('mirror-', 'downstream-', 1)):
+            raise UpgradeError('source-unheld-refresh-refused')
+        # The prior installer may have replaced all or part of the protected
+        # coordinator before hold failed. Accept only its recorded before/after
+        # bytes. Retain that record; the next installer journals its own writes.
+        # Reusing a historical candidate also requires its mirror to match now.
+        for name in {self._mirror_name(), next_mirror}:
+            item, _ = read_file(self.state, name, self.state_uid)
+            if item is not None:
+                record = self._mirror_record(require_complete=False, name=name)
+                for key in record['after']:
+                    if absolute_file(Path(key))[0] not in (record['before'][key], record['after'][key]):
+                        raise UpgradeError('source-mirror-changed')
+
     @locked
-    def stage(self, source, source_uid, identity, *, retire_complete=None, rebase_unheld=False):
+    def stage(self, source, source_uid, identity, *, retire_complete=None, rebase_unheld=False,
+              supersede=False, refresh_unheld=False, replace_unheld_ref=False):
         source = Path(source)
         if source.resolve() == self.install:
             raise UpgradeError('source-separate-candidate-required')
@@ -1001,6 +1100,8 @@ class SourceUpgrade:
         candidate = inventory(source, source_uid, candidate=True)
         existing = self.journal()
         preserved_mirror = None
+        superseded = None
+        refreshed = None
         if existing is not None:
             same = existing['identity'] == identity and existing['candidate'] == candidate
             if existing['phase'] == 'complete' and callable(retire_complete):
@@ -1012,6 +1113,13 @@ class SourceUpgrade:
                 # One compact prior receipt survives journal replacement. Blobs
                 # remain content-addressed, never adopted as active authority.
                 self._write('previous-completion.json', encoded(existing))
+            elif not same and refresh_unheld and (candidate != existing['candidate']
+                    or replace_unheld_ref):
+                if self._renew_unheld_scratch_after_remount():
+                    self._prepare_scratch()
+                self._check_unheld_refresh(existing, identity, candidate, rebase_unheld=rebase_unheld,
+                                           replace_unheld_ref=replace_unheld_ref)
+                refreshed = existing
             elif not same and rebase_unheld:
                 baseline_keys = {'configSha256', 'receiptSha256'}
                 if (existing['phase'] != 'staged' or existing['hold'] is not None
@@ -1027,6 +1135,19 @@ class SourceUpgrade:
                         if absolute_file(Path(key))[0] not in (record['before'][key], record['after'][key]):
                             raise UpgradeError('source-mirror-changed')
                     preserved_mirror = raw
+            elif not same and supersede:
+                # Resume-only recovery cannot finish an update whose own
+                # candidate fails every time. A corrected candidate of the
+                # SAME update may take over its exactly applied tree under the
+                # same hold. Nothing is rolled back, admission stays held, and
+                # the new plan is past the downstream boundary from the start.
+                if (existing['phase'] != 'applied' or existing['hold'] is None
+                        or existing['identity'] != identity):
+                    raise UpgradeError('source-supersede-refused')
+                if inventory(self.install, self.uid) != existing['after']:
+                    raise UpgradeError('source-live-drift')
+                self.verify_mirror()
+                superseded = existing
             elif not same:
                 raise UpgradeError("source-candidate-changed")
             else:
@@ -1035,12 +1156,23 @@ class SourceUpgrade:
                     self._prepare_scratch()
                 return existing
         before = inventory(self.install, self.uid)
+        if refreshed is not None and before != refreshed['before']:
+            raise UpgradeError('source-live-drift')
+        if superseded is not None and before != superseded['after']:
+            raise UpgradeError('source-live-drift')
         # Match source-copy's existing non-deleting semantics: an upgrade is
         # not authorization to remove owner-added extensions or old helpers.
         after = installed_projection(before, candidate)
         value = dict(version=1, install=str(self.install), uid=self.uid,
                      identity=identity, before=before, after=after, candidate=candidate,
                      hold=None, phase="staged", outcome=None)
+        if refreshed is not None:
+            # Archive first. If publication is interrupted the old plan stays
+            # authoritative; no installed source or coordinator is changed here.
+            raw = encoded(refreshed)
+            self._write(sha(raw), raw)
+        if superseded is not None:
+            value.update(hold=superseded['hold'], phase='held')
         # Capture both complete inventories before publishing intent. A crash
         # leaves unused hash-addressed blobs, never an authorized partial plan.
         for root, uid, listing, is_candidate in ((self.install, self.uid, before, False), (source, source_uid, candidate, True)):
@@ -1051,11 +1183,21 @@ class SourceUpgrade:
                 self._write(expected["sha256"], raw)
         if before != inventory(self.install, self.uid) or candidate != inventory(source, source_uid, candidate=True):
             raise UpgradeError("source-file-changed")
+        if refreshed is not None:
+            self._check_unheld_refresh(refreshed, identity, candidate, rebase_unheld=rebase_unheld,
+                                       replace_unheld_ref=replace_unheld_ref)
         if preserved_mirror is not None:
             name = 'mirror-' + sha(encoded([identity, candidate])) + '.json'
             self._write(name, preserved_mirror)
+        if superseded is not None:
+            # The replaced plan, its mirror and its downstream record remain
+            # as content-addressed evidence; none of them is authority again.
+            raw = encoded(superseded)
+            self._write(sha(raw), raw)
         self._save(value)
         self.journal()  # validate the complete serialized contract before use
+        if superseded is not None:
+            self._write(self.downstream_name(), encoded({'transaction': value['hold']}))
         self._renew_unheld_scratch_after_remount()
         self._prepare_scratch()
         return value
@@ -1097,7 +1239,7 @@ class SourceUpgrade:
                 os.close(fd)
                 fd = child
                 if created:
-                    os.fchown(fd, self.uid, -1)
+                    os.fchown(fd, self.uid, self.gid)
                     os.fsync(fd)
                 info = os.fstat(fd)
                 if info.st_uid != self.uid or info.st_mode & 0o022:
@@ -1127,7 +1269,7 @@ class SourceUpgrade:
                     with os.fdopen(output, "wb") as handle:
                         handle.write(raw)
                         handle.flush()
-                        os.fchown(handle.fileno(), self.uid, -1)
+                        os.fchown(handle.fileno(), self.uid, self.gid)
                         os.fchmod(handle.fileno(), target["mode"])
                         os.fsync(handle.fileno())
                     # Recheck immediately before publication; concurrent owner
@@ -1342,12 +1484,29 @@ def _stage(manager, account, source, requested_ref):
         raise UpgradeError("source-managed-identity-invalid")
     fresh = existing is None or (existing['phase'] == 'complete'
                                and not os.path.lexists(manager.state.parent / 'transition.json'))
+    replace_unheld_ref = (not fresh and existing['phase'] == 'staged' and existing['hold'] is None
+                         and existing['identity']['afterRef'] != requested_ref)
     rebase_unheld = False
-    if fresh:
+    if fresh or replace_unheld_ref:
+        if replace_unheld_ref:
+            # A never-started plan may target an older bundled Pixel release.
+            # Keep its exact installed/marker identity, and let stage recheck
+            # the untouched tree, empty scratch, mirrors and absence of holds
+            # before archiving it and publishing any replacement.
+            previous = existing['identity']
+            # The hash binds every marker field, including a requested ref
+            # left by an even earlier unused plan. This also permits a second
+            # release to replace a plan that never reached marker publication.
+            if (marker.get('state') != 'ready' or marker_sha != previous['markerSha256']
+                    or marker.get('pixel_source_ref') != previous['beforeRef']):
+                raise UpgradeError('source-resume-identity-changed')
         if marker.get("state") != "ready" or not re.fullmatch(r"[a-f0-9]{40}", marker.get("pixel_source_ref", "")):
             raise UpgradeError("source-ready-baseline-required")
         identity = dict(beforeRef=marker["pixel_source_ref"], afterRef=requested_ref, markerSha256=marker_sha,
                         **owner_baseline(account.pw_dir, account.pw_uid))
+        if replace_unheld_ref:
+            rebase_unheld = any(identity[key] != existing['identity'][key]
+                               for key in ('configSha256', 'receiptSha256'))
         if identity["beforeRef"] != requested_ref:
             _, version_bytes = read_file(Path(source), 'vendor/pixel/VERSION', account.pw_uid, candidate=True)
             if version_bytes is None or len(version_bytes) > 128:
@@ -1360,9 +1519,18 @@ def _stage(manager, account, source, requested_ref):
                 raise UpgradeError("source-new-version-required")
     else:
         identity = existing["identity"]
+        # Replacement is journaled before the installer changes the owner
+        # marker. An interrupted rerun can therefore retain the old requested
+        # ref in that exact, hash-bound ready marker. This exception never
+        # applies after admission was held or the installed ref advanced.
+        unchanged_unheld_marker = (existing['phase'] == 'staged' and existing['hold'] is None
+                                   and marker_sha == identity['markerSha256']
+                                   and marker.get('state') == 'ready'
+                                   and marker.get('pixel_source_ref') == identity['beforeRef'])
         if (identity["afterRef"] != requested_ref or marker.get("state") not in ("ready", "installing")
                 or marker.get("pixel_source_ref") not in (identity["beforeRef"], identity["afterRef"])
-                or marker.get("requested_source_ref") not in (None, identity["afterRef"])):
+                or (not unchanged_unheld_marker
+                    and marker.get("requested_source_ref") not in (None, identity["afterRef"]))):
             raise UpgradeError("source-resume-identity-changed")
         if existing['phase'] == 'staged' and existing['hold'] is None:
             current = owner_baseline(account.pw_dir, account.pw_uid)
@@ -1377,7 +1545,28 @@ def _stage(manager, account, source, requested_ref):
     def retire(_completed):
         if os.path.lexists(manager.state.parent / 'transition.json'):
             raise UpgradeError('source-previous-hold-pending')
-    manager.stage(Path(source), account.pw_uid, identity, retire_complete=retire, rebase_unheld=rebase_unheld)
+    # Only a fully applied plan whose own model transaction still holds
+    # admission (matched to this hold above) may be taken over.
+    supersede = (not fresh and existing['phase'] == 'applied'
+                 and os.path.lexists(manager.state.parent / 'transition.json'))
+    manager.stage(Path(source), account.pw_uid, identity, retire_complete=retire,
+                  rebase_unheld=rebase_unheld, supersede=supersede,
+                  refresh_unheld=not fresh and existing['phase'] == 'staged' and existing['hold'] is None,
+                  replace_unheld_ref=replace_unheld_ref)
+
+
+def needs_source_begin(plan, status, past_downstream):
+    """Whether `hold` must acquire admission rather than re-verify its hold.
+
+    Acquisition requires the original owner baseline, which no longer exists
+    after the downstream boundary. A plan past it, including one that took
+    over a failed update, re-verifies its existing hold even after an error.
+    """
+    if plan['hold'] is None or status == {'pending': False}:
+        return True
+    if status.get('phase') in ('acquiring', 'draining'):
+        return True
+    return status.get('phase') == 'error' and plan['phase'] == 'held' and not past_downstream
 
 
 @contextlib.contextmanager
@@ -1422,22 +1611,20 @@ def main(argv):
             return
         raise UpgradeError("source-stage-required")
     client = _client()
+    past_downstream = os.path.lexists(manager.state / manager.downstream_name())
     if action == "status":
         pending = client("status")
         if value["phase"] == "complete" and pending == {"pending": False}:
             print(json.dumps({"pending": False}))
         else:
             print(json.dumps(dict(pending=True, transaction=value["hold"], phase=value["phase"],
-                                  mode=pending.get("configured_mode"))))
+                                  mode=pending.get("configured_mode"), downstream=past_downstream)))
         return
     if action == "hold":
         transaction = value["hold"]
         # source-begin reserves this exact token under the root admission lock
         # before any gate call. A lost reply can never orphan an unrelated hold.
-        status = client('status')
-        if (transaction is None or status == {'pending': False}
-                or status.get('phase') in ('acquiring', 'draining')
-                or status.get('phase') == 'error' and value['phase'] == 'held'):
+        if needs_source_begin(value, client('status'), past_downstream):
             transaction = client("source-begin")
         manager.bind(transaction, lambda token: client("verify", token))
         print(transaction)
@@ -1477,7 +1664,35 @@ def _failure_message(error):
         return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
                 "installation state, or use an owner-authorized clean install. "
                 "Do not recreate protected state or discard any existing admission hold.")
-    return ("Pixel source upgrade is incomplete. Preserve any existing admission hold and protected "
+    # The helper's and the coordinator's refusal codes are fixed tokens (for
+    # example model-hold-unconfirmed); naming one tells the owner what blocks
+    # the update. Any other text, which could carry a path, stays out.
+    code = str(error) if isinstance(error, (UpgradeError, RuntimeError)) else ""
+    detail = f" (reason: {code})" if re.fullmatch(r"[a-z][a-z0-9-]{0,95}", code) else ""
+    if code == "source-previous-hold-pending":
+        # Unload model keeps Portal admission held until Resume model, and a
+        # Windows rerun restarts the model without releasing that hold. The
+        # generic text below only said "recover"; name the owner's way out.
+        return (f"Portal is paused by an unfinished model change, such as Unload model{detail}, so the "
+                "Pixel update did not start. Open the ODS dashboard's Models page and choose Recover model "
+                "switch (or run 'ods model recover'); if the model is still unloaded, choose Resume model "
+                "instead. Then run the installer again. The paused state and source snapshots were kept.")
+    edge_reason = {
+        "source-edge-ownership-unverified": "The stopped Pixel Edge could not be bound to this installation and its original private volume.",
+        "source-edge-clean-stop-required": "Pixel Edge is not a cleanly exited container; automatic restart was refused.",
+        "source-edge-admission-unverified": "The retained Edge admission state is missing, held, interrupted or unverified; automatic restart was refused.",
+        "source-edge-unheld-plan-required": "The source plan is no longer an unchanged, unheld staged upgrade; automatic restart was refused.",
+        "source-edge-runtime-proof-required": "The active gateway does not prove the saved access mode; automatic Edge restart was refused.",
+        "source-edge-restart-state-changed": "The Edge identity or verified installation state changed during recovery.",
+        "source-edge-start-failed": "The single attempt to restart the verified Edge did not confirm a running container.",
+        "source-edge-readiness-unconfirmed": "The restarted Edge did not become healthy within the startup check.",
+        "source-edge-admission-changed": "The restarted Edge did not confirm its retained idle admission state.",
+    }.get(code)
+    if edge_reason:
+        return (f"{edge_reason} Pixel source upgrade stopped before acquiring a new hold{detail}. "
+                "Source snapshots, existing holds and the selected access mode were preserved. "
+                "Keep the first reported reason for diagnosis; do not delete the retained state.")
+    return (f"Pixel source upgrade is incomplete{detail}. Preserve any existing admission hold and protected "
             "source snapshots; recover the verified installation state before retrying.")
 
 

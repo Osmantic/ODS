@@ -1,6 +1,8 @@
 """Prepare and activate a native Pixel update without replacing owner data."""
 import argparse
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,25 @@ import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
+# Preparation builds and checks the new sandbox image before activation, so
+# these failures leave the installed Pixel running unchanged. The recovery is
+# to run the update again, never a reinstall (see the trailer in main()).
+SANDBOX_GUIDANCE = {
+    'native-sandbox-build-failed':
+        'Pixel could not build the agent sandbox image for this update. The build downloads Debian '
+        'packages from deb.debian.org and the pinned Node.js runtime from nodejs.org. Check that this '
+        'Mac can reach both and that Docker has free disk space, then run the update again.',
+    'native-sandbox-execution-proof-failed':
+        'The new agent sandbox image failed its offline check: workspace write, the pinned Node.js for '
+        'linux/arm64, and no npm, npx or corepack. Check that Docker runs linux/arm64 images. Removing '
+        'the ods-pixel-native-sandbox image for this Pixel version (docker image ls '
+        'ods-pixel-native-sandbox) is safe because it holds no Pixel state. Then run the update again.',
+    'invalid-sandbox-node-runtime':
+        'The selected Pixel source does not pin the Node.js runtime this ODS version expects in the '
+        'agent sandbox. Update with the Pixel source bundled with ODS (leave PIXEL_SOURCE_REF unset).',
+}
+SANDBOX_ERRORS = frozenset(SANDBOX_GUIDANCE)
+HELP = 'Need help? https://discord.gg/4ntNp9MAwC'
 
 
 def helper(name):
@@ -38,6 +59,20 @@ def activation_command(preparation, prepared, *, install_dir, ods_source, owner,
     return command
 
 
+def _portal_agent(document):
+    """The candidate profile's one Portal agent entry.
+
+    A malformed document (agents not a list, or an entry that is not an
+    object) is a ValueError like any other wrong profile, never an
+    AttributeError that would escape after the proved update.
+    """
+    agents = document['agents']['list'] if isinstance(document, dict) and isinstance(document.get('agents'), dict) else None
+    if (not isinstance(agents, list) or len(agents) != 1 or not isinstance(agents[0], dict)
+            or agents[0].get('id') != 'pixel'):
+        raise ValueError('native-portal-profile-agent-required')
+    return agents[0]
+
+
 def migrate_public_identity(*, source, preparation, node):
     """Refresh only unmodified legacy profiles after a proved native update.
 
@@ -48,10 +83,7 @@ def migrate_public_identity(*, source, preparation, node):
     try:
         candidate = preparation / 'candidate'
         document = helper('pixel-native-config').private_json(candidate / 'openclaw.json')
-        agents = document['agents']['list']
-        if len(agents) != 1 or agents[0].get('id') != 'pixel':
-            raise ValueError('native-portal-profile-agent-required')
-        workspace = Path(agents[0]['workspace'])
+        workspace = Path(_portal_agent(document)['workspace'])
         if not workspace.is_absolute() or not workspace.is_dir() or workspace.resolve(strict=True) != workspace:
             raise ValueError('native-portal-profile-workspace-required')
         generated = candidate / 'workspace'
@@ -69,7 +101,52 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'manual-review-required'}
 
 
-def update(*, install_dir, ods_source, prepare_only=False):
+def add_example_projects(*, preparation, state_dir):
+    """Add the shipped example projects whenever Playground/elf-of-doom is absent
+    and this workspace has never received it.
+
+    Like the profile repair, this owner-side step runs after the proved update
+    and outside the protected activation. It only creates an absent
+    Playground/<name> and the record of received examples in Portal's state
+    folder (state_dir), so an example the owner deleted or renamed is never
+    added again; failure changes no owner content. Nothing reaches the
+    terminal: the helper's own notes are captured, and the outcome with them
+    goes only to the update's private log (see log_example_projects).
+    """
+    notes = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(notes), contextlib.redirect_stderr(notes):
+            document = helper('pixel-native-config').private_json(preparation / 'candidate/openclaw.json')
+            agent = _portal_agent(document)
+            spec = importlib.util.spec_from_file_location('native_update_example_projects',
+                HERE.parents[1] / 'lib/pixel-example-projects.py')
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            outcome = module.add_projects(Path(agent['workspace']), Path(state_dir))
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        outcome = {'status': 'manual-review-required', 'cause': f'{type(error).__name__}: {error}'}
+    if notes.getvalue().strip():
+        outcome = {**outcome, 'notes': notes.getvalue().strip().splitlines()}
+    return outcome
+
+
+def log_example_projects(work, outcome):
+    """Keep the example step's outcome in this update's private folder only.
+
+    Nothing about the example is printed: Portal's sidebar simply lists it.
+    The folder is the one the update names as its preparation.
+    """
+    try:
+        with (Path(work) / 'example-projects.log').open('x', encoding='utf-8') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(json.dumps(outcome, sort_keys=True) + '\n')
+    except OSError:
+        # The update itself succeeded; this outcome is diagnostic only, and
+        # failing here would report a finished update as stopped.
+        return
+
+
+def update(*, install_dir, ods_source, prepare_only=False, prompt_for_sudo=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     install_dir, ods_source = Path(install_dir).resolve(strict=True), Path(ods_source).resolve(strict=True)
@@ -110,7 +187,7 @@ def update(*, install_dir, ods_source, prepare_only=False):
         preparation = work / 'preparation'
         helper('pixel-native-prepare').prepare_migration(source=source, ref=initial.DEFAULT_REF,
             node=node, runtime=runtime, docker=transport['docker'], ods_source=ods_source,
-            install_dir=install_dir, destination=preparation)
+            install_dir=install_dir, destination=preparation, prompt_for_sudo=prompt_for_sudo)
         prepared = config.private_json(preparation / 'preparation.json')
         command = activation_command(preparation, prepared, install_dir=install_dir,
             ods_source=ods_source, owner=owner, transport=transport)
@@ -120,6 +197,8 @@ def update(*, install_dir, ods_source, prepare_only=False):
         outcome = helper('pixel-native-finalize').finalize_update(preparation)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
+        log_example_projects(work, add_example_projects(preparation=preparation,
+            state_dir=install_dir / 'data/pixel-native/home/.openclaw'))
         return outcome
     finally:
         for key, value in saved.items():
@@ -134,10 +213,19 @@ def main():
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--ods-source', required=True)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--prompt-for-sudo', action='store_true',
+        help='Allow read-only protected verification to prompt on a controlling terminal')
     args = parser.parse_args()
     try:
         print(json.dumps(update(**vars(args))))
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        if str(error) == 'native-migration-proof-or-authorization-failed':
+            print('Protected runtime verification or sudo authorization failed. Retain the preparation; '
+                'review the protected runtime, or run sudo -v and retry from the same terminal. '
+                'Interactive updates may use --prompt-for-sudo.', file=sys.stderr)
+        if str(error) in SANDBOX_ERRORS:
+            print(SANDBOX_GUIDANCE[str(error)] + ' The installed Pixel keeps running unchanged. ' + HELP,
+                file=sys.stderr)
         print('Native update stopped (' + type(error).__name__ +
             '); retain its preparation and protected recovery journal. Do not reinstall or delete state.', file=sys.stderr)
         return 1

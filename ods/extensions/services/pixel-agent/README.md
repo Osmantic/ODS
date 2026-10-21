@@ -116,7 +116,11 @@ upstream default. Other agents and existing jobs are unaffected.
   the private ingress therefore asks the plugin for the exact run's bounded
   verification state over a gateway-authenticated loopback route. Failed or
   still-running verification replaces model-authored success text with an
-  honest host-authored result. Streaming responses are bounded and buffered
+  honest host-authored result. A failed or still-running workspace preview
+  check keeps the agent's own explanation first, then a fixed note that it is
+  the agent's own account and that the request did not pass (or has not
+  finished) Portal's checks, then that host result (see
+  COMPLETION-RELIABILITY.md). Streaming responses are bounded and buffered
   until that check completes, so false content is never released and then
   retracted.
 - **Protected local host commands.** An explicit owner request to run one
@@ -139,11 +143,21 @@ upstream default. Other agents and existing jobs are unaffected.
   nothing, never overwrites a snapshot, and reads back `index.html` before its
   receipt is accepted. Only that exact receipt can produce the structured SSE
   marker that opens the Dashboard's sandboxed side panel; model-authored URLs
-  remain ordinary text. ODS supplies no creative artifact bytes: open-ended
+  remain ordinary text. ODS supplies no starter bytes for new work: open-ended
   showcases, games, task boards, animated SVGs, voxel scenes, and every other
-  visual request use the same model-authored workspace-file path. The preview
-  adapter can publish only an existing directory containing `index.html`; it
-  has no template, scaffold, HTML, title, theme, or content input.
+  visual request use the same model-authored workspace-file path. ODS ships
+  one finished example project, the Elf of Doom game at
+  `Playground/elf-of-doom`, which Portal wrote from natural-language prompts;
+  Portal's sidebar opens it through the same preview service with no model
+  run. Portal changes it only when the owner's message starts with
+  "In elf-of-doom,", for example "In elf-of-doom, make the arrows give 7";
+  a change another run makes to it while that run works is put back (what
+  ODS takes out is moved to a `Playground/elf-of-doom-recovered-<UTC time>`
+  folder, never deleted), and the owner's own changes while Portal is idle
+  stay (`plugin/example-guard.mjs`). The
+  preview adapter can publish only an existing directory containing
+  `index.html`; it has no template, scaffold, HTML, title, theme, or content
+  input.
   Published `.json` assets must parse as UTF-8 JSON without duplicate keys or
   nonstandard numeric constants. Validation uses the captured bytes and never
   rewrites them. Rejections report the artifact-relative filename and decoder
@@ -167,6 +181,26 @@ upstream default. Other agents and existing jobs are unaffected.
 
 Secrets are never configured here. The token lives only in
 `PIXEL_GATEWAY_TOKEN_FILE`.
+
+## Reply language
+
+Portal answers in the language of the owner's current message and uses English
+when that is unclear. In team and goal runs, that means the owner's own request,
+not the instructions Portal writes around it. Its own fixed notices are always
+English.
+
+To keep Portal in English whatever language the owner writes, set
+`PIXEL_RESPONSE_LANGUAGE=en` in `.env` and rerun the installer. This covers
+replies, clarification cards, progress updates and the content Portal creates,
+in ordinary, team and goal runs.
+The installer writes the owner file `~/.openclaw/.ods-response-language`, and
+the plugin reads it when the gateway starts. To return to the default, remove
+the line and rerun the installer. The Linux installer applies this setting; the
+native macOS installer does not read it yet.
+
+The setting instructs the model; it does not filter or translate what the
+model writes. A model that ignores the instruction can still answer in another
+language, and Portal delivers that answer as written.
 
 ## systemd unit
 

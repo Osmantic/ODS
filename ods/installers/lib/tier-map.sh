@@ -5,9 +5,10 @@
 # Part of: installers/lib/
 # Purpose: Map hardware tier to model name, GGUF file, URL, and context size
 #
-# Expects: TIER (set by detection phase), error()
+# Expects: TIER (set by detection phase), error(), jq (compute image map)
 # Provides: resolve_tier_config() → sets TIER_NAME, LLM_MODEL, GGUF_FILE,
-#           GGUF_URL, MAX_CONTEXT
+#           GGUF_URL, MAX_CONTEXT;
+#           ods_nvidia_llama_image_for_compute(), ods_llama_image_for_compute_cap()
 #
 # Modder notes:
 #   Add new tiers or change model assignments here.
@@ -46,10 +47,48 @@ configure_llama_runtime_defaults() {
             # Gemma 4 GGUFs require a newer llama.cpp than the legacy ODS pin.
             # Keep this aligned with docker-compose.nvidia.yml so the installer
             # pre-pulls the same image compose will start.
-            LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+            LLAMA_SERVER_IMAGE="ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
+            # Native installers remain on their separately pinned release.
             LLAMA_CPP_RELEASE_TAG_OVERRIDE="b9014"
             ;;
     esac
+}
+
+# llama.cpp's NVIDIA images server-cuda-* and server-cuda12-* are CUDA 12
+# builds. They have no kernels for compute capability 12.1 (DGX Spark GB10,
+# RTX Spark N1X): llama-server loads there and answers with "????". The CUDA
+# 13 build (server-cuda13-*) has them. config/backends/nvidia.json
+# runtime.llama_server.container_images_by_compute pins the image such a GPU
+# runs; the host agent applies the same map on Models-page switches.
+
+# ods_nvidia_llama_image_for_compute <compute_cap> <nvidia.json>
+# Prints the image pinned for that compute capability, or nothing.
+ods_nvidia_llama_image_for_compute() {
+    local compute_cap="$1" contract="$2"
+    [[ -n "$compute_cap" ]] || return 0
+    jq -r --arg cc "$compute_cap" \
+        '.runtime.llama_server.container_images_by_compute[$cc] // empty' "$contract"
+}
+
+# ods_llama_image_for_compute_cap <image> <compute image>
+# Prints the image llama-server runs. A non-empty <compute image> replaces a
+# CUDA 12 llama.cpp build and the empty value (the Compose default is a CUDA
+# 12 build). A CUDA 13 build, another backend's image and an owner's own
+# image are kept.
+ods_llama_image_for_compute_cap() {
+    local image="$1" compute_image="$2"
+    # The repository stays a variable so the pin contract does not read
+    # these patterns as unpinned image references.
+    local repo="ghcr.io/ggml-org/llama.cpp"
+    if [[ -n "$compute_image" ]]; then
+        case "$image" in
+            ""|"$repo":server-cuda-*|"$repo":server-cuda12-*)
+                printf '%s\n' "$compute_image"
+                return 0
+                ;;
+        esac
+    fi
+    printf '%s\n' "$image"
 }
 
 set_qwen_tier_config() {
@@ -69,7 +108,7 @@ set_qwen_tier_config() {
             TIER_NAME="Intel Arc"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=32768
             LLM_MODEL_SIZE_MB=5760    # Qwen3.5-9B-Q4_K_M (5.68 GB)
@@ -82,7 +121,7 @@ set_qwen_tier_config() {
             TIER_NAME="Intel Arc Lite"
             LLM_MODEL="qwen3.5-4b"
             GGUF_FILE="Qwen3.5-4B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/e87f176479d0855a907a41277aca2f8ee7a09523/Qwen3.5-4B-Q4_K_M.gguf"
             GGUF_SHA256="00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
             MAX_CONTEXT=16384
             LLM_MODEL_SIZE_MB=2870    # Qwen3.5-4B-Q4_K_M (2.74 GB)
@@ -93,7 +132,7 @@ set_qwen_tier_config() {
             TIER_NAME="NVIDIA Ultra (90GB+)"
             LLM_MODEL="qwen3-coder-next"
             GGUF_FILE="qwen3-coder-next-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/main/Qwen3-Coder-Next-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3-Coder-Next-GGUF/resolve/ce09c67b53bc8739eef83fe67b2f5d293c270632/Qwen3-Coder-Next-Q4_K_M.gguf"
             GGUF_SHA256="9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090"
             MAX_CONTEXT=131072
             LLM_MODEL_SIZE_MB=48500   # 48.5 GB per HF file listing
@@ -110,7 +149,7 @@ set_qwen_tier_config() {
                 TIER_NAME="NVIDIA Ultra (90GB+, aarch64 — A3B substitution)"
                 LLM_MODEL="qwen3.6-35b-a3b"
                 GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-                GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+                GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
                 GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
                 MAX_CONTEXT=131072
                 LLM_MODEL_SIZE_MB=21110
@@ -131,7 +170,7 @@ set_qwen_tier_config() {
             TIER_NAME="Strix Halo 90+"
             LLM_MODEL="qwen3.6-35b-a3b"
             GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
             GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
             LLM_MODEL_SIZE_MB=21110   # 21.1 GB UD-Q4_K_M per HF file listing
@@ -142,7 +181,7 @@ set_qwen_tier_config() {
             TIER_NAME="Strix Halo Compact"
             LLM_MODEL="qwen3.6-35b-a3b"
             GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
             GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
             LLM_MODEL_SIZE_MB=21110   # 21.1 GB UD-Q4_K_M per HF file listing
@@ -160,7 +199,7 @@ set_qwen_tier_config() {
             TIER_NAME="Entry Level"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=16384
             LLM_MODEL_SIZE_MB=5760    # Qwen3.5-9B-Q4_K_M (5.68 GB)
@@ -169,7 +208,7 @@ set_qwen_tier_config() {
             TIER_NAME="Prosumer"
             LLM_MODEL="qwen3.5-9b"
             GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf"
             GGUF_SHA256="03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
             MAX_CONTEXT=32768
             LLM_MODEL_SIZE_MB=5760    # Qwen3.5-9B-Q4_K_M (5.68 GB)
@@ -178,7 +217,7 @@ set_qwen_tier_config() {
             TIER_NAME="Pro"
             LLM_MODEL="qwen3.5-27b"
             GGUF_FILE="Qwen3.5-27B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/main/Qwen3.5-27B-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.5-27B-GGUF/resolve/3221f178a6b842d04f1fb42f1c413534adcc0a6a/Qwen3.5-27B-Q4_K_M.gguf"
             GGUF_SHA256="84b5f7f112156d63836a01a69dc3f11a6ba63b10a23b8ca7a7efaf52d5a2d806"
             MAX_CONTEXT=65536
             LLM_MODEL_SIZE_MB=16700   # Qwen3.5-27B-Q4_K_M (16.7 GB), the fleet 24-32 GB default
@@ -187,7 +226,7 @@ set_qwen_tier_config() {
             TIER_NAME="Enterprise"
             LLM_MODEL="qwen3.6-35b-a3b"
             GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
             GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
             LLM_MODEL_SIZE_MB=21110   # 21.1 GB UD-Q4_K_M per HF file listing

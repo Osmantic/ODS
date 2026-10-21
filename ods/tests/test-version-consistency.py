@@ -21,9 +21,7 @@ class VersionConsistencyTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.repo = Path(self.temp.name)
         files = [
-            "ARCHITECTURE.md", "installer/package.json", "installer/package-lock.json",
-            "installer/src-tauri/tauri.conf.json", "installer/src-tauri/Cargo.toml",
-            "installer/src-tauri/Cargo.lock", "ods/manifest.json", "ods/CHANGELOG.md",
+            "ARCHITECTURE.md", "ods/manifest.json", "ods/CHANGELOG.md",
             "ods/bin/ods-host-agent.py",
             "ods/extensions/services/dashboard/src/hooks/useSystemStatus.js",
             "ods/.env.example", "ods/ods-cli", "ods/installers/lib/constants.sh",
@@ -59,19 +57,13 @@ class VersionConsistencyTests(unittest.TestCase):
         self.run_gate(0)
 
     def test_package_lock_root_drift_is_detected(self):
-        self.update_json("installer/package-lock.json", lambda d: d["packages"][""].update(version="0.1.0"))
+        self.update_json("ods/extensions/services/dashboard/package-lock.json",
+                         lambda d: d["packages"][""].update(version="0.1.0"))
         self.assertIn("root package version", self.run_gate(1))
 
     def test_dashboard_package_drift_is_detected(self):
         self.update_json("ods/extensions/services/dashboard/package.json", lambda d: d.update(version="0.1.0"))
         self.assertIn("dashboard/package.json", self.run_gate(1))
-
-    def test_cargo_installer_drift_is_detected(self):
-        path = self.repo / "installer/src-tauri/Cargo.lock"
-        source = path.read_text(encoding="utf-8")
-        source = source.replace('name = "ods-installer"\nversion = "3.0.0"', 'name = "ods-installer"\nversion = "0.1.0"')
-        path.write_text(source, encoding="utf-8")
-        self.assertIn("Cargo.lock", self.run_gate(1))
 
     def test_stable_channel_cannot_claim_an_older_published_version(self):
         self.update_json("ods/manifest.json", lambda d: d["release"].update(channel="stable", stable_version="2.6.0"))
@@ -93,7 +85,8 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertIn("ods-host-agent.py ODS version", self.run_gate(1))
 
     def test_dependency_versions_are_independent(self):
-        self.update_json("installer/package.json", lambda d: d["dependencies"].update(react="99.1.2"))
+        self.update_json("ods/extensions/services/dashboard/package.json",
+                         lambda d: d["dependencies"].update(react="99.1.2"))
         self.run_gate(0)
 
 

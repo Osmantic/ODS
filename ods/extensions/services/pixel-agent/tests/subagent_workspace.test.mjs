@@ -32,7 +32,7 @@ function fixture(t) {
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
     projectRunControl:createProjectRunControl(),artifactAdmission:{before(){}},
-    delegationDelivery:{blocked(){},before(){}},
+    delegationDelivery:{blocked(){},before(){},hasPendingChildren(){return false; }},
     withPixelCronDeliveryDefault,withPixelSubagentWorkspace,withCronCommandPayloadBlock,
     getSessionEntry:scope=>{assert.equal(scope.sessionKey,ctx.sessionKey);return session;},
     resolveStorePath:()=>'/fixture/session-store',

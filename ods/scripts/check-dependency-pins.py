@@ -2,8 +2,9 @@
 """Validate pinned runtime dependency references.
 
 This is intentionally narrow: it tracks runtime container images shipped by
-ODS Compose files and extension Dockerfiles. The goal is to make image
-drift explicit in review instead of discovering it during an install.
+ODS Compose files, extension Dockerfiles and the per-GPU image maps in
+config/backends/*.json. The goal is to make image drift explicit in review
+instead of discovering it during an install.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ VAR_RE = re.compile(
 )
 EPHEMERAL_SHA_TAG_RE = re.compile(r"^sha-[0-9a-f]{7,64}$", re.IGNORECASE)
 DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
 # Repositories whose tags upstream does not treat as immutable release names.
 # llama.cpp publishes a build tag for only a fraction of builds, and ODS has
 # already shipped a pin to a tag that never existed, so every llama.cpp image
@@ -282,8 +284,39 @@ def _image_refs_from_files(files: Iterable[Path], root: Path) -> list[ImageRef]:
     return refs
 
 
+def _backend_contract_image_refs(path: Path, root: Path = ROOT) -> list[ImageRef]:
+    """Images a backend contract maps a GPU compute capability to.
+
+    The installer (phase 06) and the host agent run such an image instead of
+    the Compose default on that GPU, so it is pinned and locked like one.
+    """
+    text = path.read_text(encoding="utf-8")
+    runtime = json.loads(text).get("runtime", {}).get("llama_server", {})
+    images = runtime.get("container_images_by_compute", {})
+    if not isinstance(images, dict):
+        raise ValueError(f"{_rel(path, root)}: container_images_by_compute must map compute capabilities to images")
+    lines = text.splitlines()
+    refs: list[ImageRef] = []
+    for compute_cap, value in images.items():
+        value = str(value)
+        line_no = next((number for number, line in enumerate(lines, start=1) if value in line), 0)
+        refs.append(
+            ImageRef(
+                path=_rel(path, root),
+                line=line_no,
+                raw=value,
+                value=value,
+                source=f"backend contract image for compute capability {compute_cap}",
+            )
+        )
+    return refs
+
+
 def discover_image_refs(root: Path = ROOT) -> list[ImageRef]:
-    return _image_refs_from_files(candidate_files(root), root)
+    refs = _image_refs_from_files(candidate_files(root), root)
+    for path in sorted((root / "config" / "backends").glob("*.json")):
+        refs.extend(_backend_contract_image_refs(path, root))
+    return refs
 
 
 def discover_extension_library_image_refs(root: Path = ROOT) -> list[ImageRef]:
@@ -381,6 +414,12 @@ def _validate_lock_shape(lock: dict[str, object], root: Path) -> list[str]:
         text = file_path.read_text(encoding="utf-8")
         if raw not in text and value not in text:
             errors.append(f"lock entry value is not present in {path}: {value}")
+        entry_type = entry.get("type", "image")
+        if entry_type not in ("image", "archive"):
+            errors.append(f"lock entry {entry_id} has unknown type: {entry_type}")
+        elif entry_type == "archive" and not SHA256_HEX_RE.fullmatch(value):
+            # A downloaded release archive is pinned by its SHA-256 alone.
+            errors.append(f"archive lock entry {entry_id} must be a 64-character SHA-256: {value}")
 
     for list_name in ("allow_latest", "allow_local_images", "allow_variable_refs"):
         seen: set[tuple[str, str]] = set()
@@ -414,7 +453,12 @@ def _validate_lock_shape(lock: dict[str, object], root: Path) -> list[str]:
 
 def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path = ROOT) -> list[str]:
     errors: list[str] = []
-    entry_keys = {_key(entry) for entry in lock.get("entries", []) if isinstance(entry, dict)}
+    # Archive entries mirror non-image pins (a release zip's SHA-256); Compose
+    # and Dockerfile discovery never finds them, so only images are matched.
+    entry_keys = {
+        _key(entry) for entry in lock.get("entries", [])
+        if isinstance(entry, dict) and entry.get("type", "image") == "image"
+    }
     latest_allow = {
         _key(entry) for entry in lock.get("allow_latest", []) if isinstance(entry, dict)
     }

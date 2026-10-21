@@ -146,6 +146,10 @@ describe('App', () => {
     render(<App />)
     expect(screen.getByText(title)).toBeInTheDocument()
     expect(screen.getByText(detail)).toBeInTheDocument()
+    if (phase === 'swapping') {
+      expect(screen.queryByText(/Chat now with lightweight model/)).toBeNull()
+      expect(screen.getByText(/Chat pauses during activation/)).toBeVisible()
+    } else expect(screen.getByText(/Chat now with lightweight model/)).toBeVisible()
     expect(screen.queryByText(/ETA:/)).toBeNull()
     expect(screen.queryByText('25.0 MB/s')).toBeNull()
     if (phase !== 'starting') expect(screen.getByText('Download 100%')).toBeInTheDocument()
@@ -168,6 +172,51 @@ describe('App', () => {
     expect(screen.getByText('50.0%')).toBeInTheDocument()
     expect(screen.getByText(/ETA: 2m 0s/)).toBeInTheDocument()
     expect(screen.getByText('25.0 MB/s')).toBeInTheDocument()
+  })
+
+  // bootstrap-upgrade.sh writes bytesTotal 0 when the HEAD request returns no
+  // Content-Length, and /api/status sends that unknown percent as 0.
+  test.each([
+    [3.1e9, '3.1 GB downloaded · Total size unavailable'],
+    [0, 'Progress unavailable'],
+  ])('shows an unknown download total as indeterminate (%s bytes downloaded)', (bytesDownloaded, detail) => {
+    useSystemStatus.mockReturnValue({
+      status: {
+        gpu: null, services: [], model: null, uptime: 0, version: '1.0.0',
+        bootstrap: {
+          active: true, phase: 'downloading', model: 'Qwen 3.5 9B', percent: 0,
+          bytesDownloaded, bytesTotal: 0, speedMbps: 25, eta: null,
+        },
+      },
+      loading: false,
+      error: null,
+    })
+    render(<App />)
+    expect(screen.getByText('Downloading Full Model')).toBeInTheDocument()
+    expect(screen.queryByText('0.0%')).toBeNull()
+    expect(screen.queryByText(/\/ 0 GB/)).toBeNull()
+    expect(screen.queryByText(/ETA:/)).toBeNull()
+    expect(screen.getByText(detail)).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Full model download progress' })).not.toHaveAttribute('aria-valuenow')
+    expect(screen.getByText('25.0 MB/s')).toBeInTheDocument()
+  })
+
+  test('keeps the percentage and bar for a known total at 0%', () => {
+    useSystemStatus.mockReturnValue({
+      status: {
+        gpu: null, services: [], model: null, uptime: 0, version: '1.0.0',
+        bootstrap: {
+          active: true, phase: 'downloading', model: 'Qwen 3.5 9B', percent: 0,
+          bytesDownloaded: 0, bytesTotal: 6e9, speedMbps: null, eta: null,
+        },
+      },
+      loading: false,
+      error: null,
+    })
+    render(<App />)
+    expect(screen.getByText('0.0%')).toBeInTheDocument()
+    expect(screen.getByRole('progressbar', { name: 'Full model download progress' })).toHaveAttribute('aria-valuenow', '0')
+    expect(screen.getByText(/ETA: calculating\.\.\. • 0 \/ 6\.0 GB/)).toBeInTheDocument()
   })
 
   test('opens update details from the confirmed-release notice without replacing the conversation', async () => {

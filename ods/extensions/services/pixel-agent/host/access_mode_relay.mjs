@@ -35,14 +35,15 @@ export function validModelContract(value) {
   const required = ['model','contextLength','maxTokens','reasoning'];
   return value && typeof value === 'object' && !Array.isArray(value)
     && required.every(key => Object.hasOwn(value, key))
-    && Object.keys(value).every(key => [...required,'routeFingerprint','imageInput'].includes(key))
+    && Object.keys(value).every(key => [...required,'routeFingerprint','imageInput','thinkingControl'].includes(key))
     && typeof value.model === 'string' && value.model.length <= 256
     && /^[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]*$/.test(value.model) && !/[\r\n]/.test(value.model)
     && Number.isInteger(value.contextLength) && value.contextLength >= 4096 && value.contextLength <= 10000000
     && Number.isInteger(value.maxTokens) && value.maxTokens >= 1 && value.maxTokens <= value.contextLength
     && typeof value.reasoning === 'boolean'
     && (!Object.hasOwn(value,'routeFingerprint') || hex(value.routeFingerprint))
-    && (!Object.hasOwn(value,'imageInput') || ['supported','unsupported','unknown'].includes(value.imageInput));
+    && (!Object.hasOwn(value,'imageInput') || ['supported','unsupported','unknown'].includes(value.imageInput))
+    && (!Object.hasOwn(value,'thinkingControl') || ['enable_thinking','always','none'].includes(value.thinkingControl));
 }
 
 export function validModelControl(value) {
@@ -91,7 +92,10 @@ export async function handleModelControl(req, res, {ownerKey, request = requestA
     // model-status/begin/finish shapes differ from browser model switching.
     const controllerPayload={...payload,operation:payload.operation.replace(/^model-/, 'model-route-')};
     const result=await request(controllerPayload,{timeout:payload.operation === 'model-status' ? 20000 : 305000});
-    return reply(result.status,result.status === 200 ? publicModelControl(result.body) : {error:'model-change-unconfirmed'});
+    // The controller's own refusal code (a plain token such as
+    // model-runtime-mismatch) tells the owner what to fix; free text is never relayed.
+    const code=typeof result.body?.error === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(result.body.error) ? result.body.error : null;
+    return reply(result.status,result.status === 200 ? publicModelControl(result.body) : {error:code ?? 'model-change-unconfirmed'});
   } catch {return reply(503,{error:'model-control-unavailable'});}
 }
 

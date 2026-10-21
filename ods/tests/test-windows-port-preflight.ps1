@@ -8,6 +8,11 @@ $reportPath = Join-Path $root "installers\windows\lib\install-report.ps1"
 . (Join-Path $root "installers\windows\lib\llm-endpoint.ps1")
 . (Join-Path $root "installers\windows\lib\detection.ps1")
 . (Join-Path $root "installers\windows\lib\env-generator.ps1")
+# The generator sizes NVIDIA memory and CPU budgets from `docker info`; keep
+# the Docker daemon out of this test.
+function Get-ODSDockerMemoryGB { return 0 }
+function Get-LlamaCpuBudget { return @{ Limit = "4.0"; Reservation = "1.0"; Available = "4.0" } }
+function docker { throw "docker must not run in this test" }
 $tokens = $null
 $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -33,7 +38,9 @@ if ($phaseText -notmatch [regex]::Escape('if ($NonInteractive -and -not $Force -
 foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
-    "Test-WindowsODSLemonadeOwnsPort",
+    "Test-WindowsODSNativeLlmOwnsPort",
+    "Get-WindowsDockerPublishedPorts",
+    "Test-WindowsODSComposeOwnsPort",
     "Get-WindowsODSSelectedPortConflicts",
     "Assert-WindowsODSSelectedPortAvailability"
 )) {
@@ -99,8 +106,8 @@ try {
     Remove-Item Env:WEBUI_PORT
 
     Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd") 8080 "AMD default"
-    Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd" -LemonadeDefaultPort 18081) `
-        18081 "AMD contract default"
+    Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd" -NativeDefaultPort 18081) `
+        18081 "AMD native default"
     Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "nvidia") 11434 "Docker default"
     Assert-Equal (Resolve-WindowsLlmPreflightPort -GpuBackend "amd" -CloudMode) 0 "Cloud mode"
 
@@ -282,18 +289,39 @@ try {
         }
     }
 
-    $managedProcesses = @(
-        [pscustomobject]@{ ProcessId = 4101; Name = "lemonade-server.exe" }
+    # Only this installation's own model runtime may already hold the AMD port:
+    # proven by its exact executable, or by the ODS-owned Lemonade task's exact
+    # command line, never by a process name.
+    $ownedInstall = Join-Path ([IO.Path]::GetTempPath()) "ods-port-owner-$([Guid]::NewGuid().ToString('N'))"
+    $publishedExe = Join-Path (Join-Path $ownedInstall "llama-server") "llama-server.exe"
+    $lemonadeExe = "C:\Users\fixture\AppData\Local\lemonade_server\bin\lemonade-server.exe"
+    $lemonadeLine = '"' + $lemonadeExe + '" serve --port 8080 --host 127.0.0.1'
+    $script:ownerNodes = @(
+        [pscustomobject]@{ ProcessId = 4101; ParentProcessId = 1; ExecutablePath = $publishedExe; CommandLine = "" },
+        [pscustomobject]@{ ProcessId = 4102; ParentProcessId = 1; ExecutablePath = "C:\Tools\llama.cpp\llama-server.exe"; CommandLine = "" },
+        [pscustomobject]@{ ProcessId = 4201; ParentProcessId = 1; ExecutablePath = $lemonadeExe; CommandLine = $lemonadeLine },
+        [pscustomobject]@{ ProcessId = 4202; ParentProcessId = 4201; ExecutablePath = "C:\Users\fixture\AppData\Local\lemonade_server\bin\lemonade-router.exe"; CommandLine = "router" },
+        [pscustomobject]@{ ProcessId = 4301; ParentProcessId = 1; ExecutablePath = "C:\Program Files\Lemonade Server\bin\LemonadeServer.exe"; CommandLine = "LemonadeServer.exe" }
     )
-    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4101 } `
-        -LemonadeProcesses $managedProcesses) $true "Managed Lemonade listener"
-    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4102 } `
-        -LemonadeProcesses $managedProcesses) $false "Foreign listener"
-    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $false; ProcessId = 0 } `
-        -LemonadeProcesses $managedProcesses) $false "Free port"
+    function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) return $script:ownerNodes }
+    function Get-ODSNativeLlamaLegacyProfileExecutable { param($InstallDir, $EnvMap) return "" }
+    $script:ownedLemonade = [pscustomobject]@{ Owned = $true; ExecutablePath = $lemonadeExe; CommandLines = @($lemonadeLine) }
+    function Get-ODSLegacyLemonadeRuntime { param($InstallDir, $Port) return $script:ownedLemonade }
+    foreach ($case in @(
+        @{ Pid = 4101; Expected = $true; Label = "This installation's published llama-server" },
+        @{ Pid = 4102; Expected = $false; Label = "Another llama-server.exe" },
+        @{ Pid = 4202; Expected = $true; Label = "The ODS-owned Lemonade task's router" },
+        @{ Pid = 4301; Expected = $false; Label = "A user's own Lemonade (same product, not ODS's task)" }
+    )) {
+        Assert-Equal (Test-WindowsODSNativeLlmOwnsPort -PortResult @{ InUse = $true; ProcessId = $case.Pid } `
+            -InstallDir $ownedInstall -Port 8080) $case.Expected $case.Label
+    }
+    $script:ownedLemonade = [pscustomobject]@{ Owned = $false; Reason = "its action is not one ODS wrote" }
+    Assert-Equal (Test-WindowsODSNativeLlmOwnsPort -PortResult @{ InUse = $true; ProcessId = 4202 } `
+        -InstallDir $ownedInstall -Port 8080) $false "A Lemonade task ODS cannot prove it owns"
+    Assert-Equal (Test-WindowsODSNativeLlmOwnsPort -PortResult @{ InUse = $false; ProcessId = 0 } `
+        -InstallDir $ownedInstall -Port 8080) $false "Free port"
+    $script:ownedLemonade = [pscustomobject]@{ Owned = $true; ExecutablePath = $lemonadeExe; CommandLines = @($lemonadeLine) }
 } finally {
     if ($null -eq $savedAmdPort) { Remove-Item Env:AMD_INFERENCE_PORT -ErrorAction SilentlyContinue } else { $env:AMD_INFERENCE_PORT = $savedAmdPort }
     if ($null -eq $savedOllamaPort) { Remove-Item Env:OLLAMA_PORT -ErrorAction SilentlyContinue } else { $env:OLLAMA_PORT = $savedOllamaPort }
@@ -343,16 +371,143 @@ Assert-Equal $aborted $true "Non-interactive install fails closed on actual sele
 Assert-Equal (Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive -DryRun) `
     $false "Dry-run reports actual selected-port collision without stopping the owner"
 
-function Get-WindowsODSLemonadeProcesses {
-    return @([pscustomobject]@{ ProcessId = 4242; Name = "LemonadeServer.exe" })
+$amdPort = [ordered]@{ "llama-server (LLM)" = 8080 }
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4101; ProcessName = "llama-server" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -NativeLlmService "llama-server (LLM)" -InstallDir $ownedInstall).Count `
+    0 "Native AMD installation replaces its own llama-server"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4202; ProcessName = "lemonade-router" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -NativeLlmService "llama-server (LLM)" -InstallDir $ownedInstall).Count `
+    0 "Native AMD installation retires the Lemonade runtime its own task started"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4301; ProcessName = "LemonadeServer" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -NativeLlmService "llama-server (LLM)" -InstallDir $ownedInstall).Count `
+    1 "A user's own Lemonade on the port is a conflict, not ODS's runtime"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4101; ProcessName = "llama-server" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort).Count `
+    1 "Without the native AMD runtime no listener is exempt"
+$script:mockListeners.Remove(8080)
+
+# A retained Compose binding is allowed only with the exact install directory,
+# service, publication address and local Desktop listener. No container is stopped.
+if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+$savedDockerFunction = (Get-Item Function:docker).ScriptBlock
+$savedCimFunction = (Get-Item Function:Get-CimInstance).ScriptBlock
+$savedDockerHost = $env:DOCKER_HOST
+$savedMockListeners = $script:mockListeners
+$script:composeChecks = 0
+function Assert-ComposePort {
+    param($Actual, $Expected, [string]$Label)
+    Assert-Equal $Actual $Expected $Label
+    $script:composeChecks++
 }
-$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
-$amdPort = [ordered]@{ "Lemonade (LLM)" = 8080 }
-Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
-    0 "Native AMD installation reuses its own Lemonade listener"
-$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4343; ProcessName = "OtherServer" }
-Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
-    1 "Native AMD installation rejects a foreign listener"
+function New-ComposePortFixture {
+    param([string]$Id = ('a' * 64), [string]$Directory = $ownedInstall,
+          [string]$Project = 'ods', [string]$Service = 'dashboard', [string]$Address = '127.0.0.1')
+    return [pscustomobject]@{
+        Id = $Id; State = [pscustomobject]@{ Running = $true }
+        Config = [pscustomobject]@{ Labels = [pscustomobject]@{
+            'com.docker.compose.project' = $Project
+            'com.docker.compose.service' = $Service
+            'com.docker.compose.project.working_dir' = $Directory
+        } }
+        NetworkSettings = [pscustomobject]@{ Ports = [pscustomobject]@{
+            '3001/tcp' = @([pscustomobject]@{ HostIp = $Address; HostPort = '23001' })
+            '3001/udp' = @([pscustomobject]@{ HostIp = $Address; HostPort = '23002' })
+            '9099/tcp' = $null
+        } }
+    }
+}
+try {
+    Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue
+    $script:dockerEndpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+    $script:dockerFailure = ''
+    $script:dockerFixture = @(New-ComposePortFixture)
+    function docker {
+        $global:LASTEXITCODE = 0
+        $command = $args -join ' '
+        if ($command -eq 'context show') { return 'desktop-linux' }
+        if ($command -eq 'context inspect desktop-linux --format {{json .Endpoints.docker.Host}}') {
+            return ConvertTo-Json -InputObject $script:dockerEndpoint -Compress
+        }
+        if ($command -eq '--context desktop-linux ps -q --no-trunc') { return $script:dockerFixture.Id }
+        if ($command -like '--context desktop-linux container inspect *') {
+            if ($script:dockerFailure -eq 'exit') { $global:LASTEXITCODE = 1; return '' }
+            if ($script:dockerFailure -eq 'json') { return '{invalid' }
+            if ($script:dockerFailure -eq 'partial') { return '[]' }
+            return ConvertTo-Json -InputObject @($script:dockerFixture) -Depth 12 -Compress
+        }
+        throw "Unexpected Docker command: $command"
+    }
+    $script:desktopProcess = [pscustomobject]@{ ProcessId = 5001; ExecutablePath = (Join-Path $env:ProgramFiles 'Docker\Docker\resources\com.docker.backend.exe') }
+    function Get-CimInstance { param($ClassName, $Filter, $ErrorAction) return $script:desktopProcess }
+    $listener = @{ InUse = $true; ProcessId = 5001; ProcessName = 'com.docker.backend'; Listeners = @([pscustomobject]@{ OwningProcess = 5001; LocalAddress = '127.0.0.1' }) }
+    $bindings = @(Get-WindowsDockerPublishedPorts)
+    Assert-ComposePort $bindings.Count 1 'Only live TCP publications enter ownership proof'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $true 'Exact retained Compose binding is accepted'
+    $secondService = New-ComposePortFixture -Id ('b' * 64) -Service 'dashboard-api'
+    $secondService.NetworkSettings.Ports.'3001/tcp'[0].HostPort = '23002'
+    $script:dockerFixture = @((New-ComposePortFixture), $secondService)
+    $multiBindings = @(Get-WindowsDockerPublishedPorts)
+    Assert-ComposePort $multiBindings.Count 2 'Multiple retained containers are parsed in PS5.1 and PS7'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $multiBindings) $true 'Retained dashboard among multiple containers'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23002 'dashboard-api' $multiBindings) $true 'Retained API among multiple containers'
+    foreach ($case in @(
+        @{ Directory = ''; Project = 'ods'; Service = 'dashboard'; Label = 'Missing working directory' },
+        @{ Directory = 'relative'; Project = 'ods'; Service = 'dashboard'; Label = 'Relative working directory' },
+        @{ Directory = 'C:relative'; Project = 'ods'; Service = 'dashboard'; Label = 'Drive-relative working directory' },
+        @{ Directory = '\relative'; Project = 'ods'; Service = 'dashboard'; Label = 'Root-relative working directory' },
+        @{ Directory = ($ownedInstall + '-other'); Project = 'ods'; Service = 'dashboard'; Label = 'Another ODS installation' },
+        @{ Directory = $ownedInstall; Project = 'foreign'; Service = 'dashboard'; Label = 'Another Compose project' },
+        @{ Directory = $ownedInstall; Project = 'ods'; Service = 'other'; Label = 'Another service on the desired port' }
+    )) {
+        $script:dockerFixture = @(New-ComposePortFixture -Directory $case.Directory -Project $case.Project -Service $case.Service)
+        Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' @(Get-WindowsDockerPublishedPorts)) $false $case.Label
+    }
+    $script:dockerFixture = @(New-ComposePortFixture)
+    foreach ($failure in @('exit', 'json', 'partial')) {
+        $script:dockerFailure = $failure
+        Assert-ComposePort @(Get-WindowsDockerPublishedPorts).Count 0 "Docker $failure fails closed"
+    }
+    $script:dockerFailure = ''
+    $script:dockerEndpoint = 'ssh://other-host'
+    Assert-ComposePort @(Get-WindowsDockerPublishedPorts).Count 0 'Remote context cannot prove a local listener'
+    $script:dockerEndpoint = 'npipe:////./pipe/dockerDesktopLinuxEngine'
+    $env:DOCKER_HOST = 'tcp://other-host:2375'
+    Assert-ComposePort @(Get-WindowsDockerPublishedPorts).Count 0 'DOCKER_HOST override fails closed'
+    Remove-Item Env:DOCKER_HOST
+    $script:dockerFixture = @((New-ComposePortFixture), (New-ComposePortFixture -Id ('b' * 64) -Project 'foreign' -Address '127.0.0.2'))
+    $mixedBindings = @(Get-WindowsDockerPublishedPorts)
+    Assert-ComposePort $mixedBindings.Count 2 'Both foreign and owned publishers are inspected'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $mixedBindings) $false 'Mixed foreign publisher on another address is a conflict'
+    $script:dockerFixture = @((New-ComposePortFixture), (New-ComposePortFixture -Id ('b' * 64) -Address '127.0.0.2'))
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' @(Get-WindowsDockerPublishedPorts)) $false 'Multiple publisher identities are ambiguous'
+    $script:dockerFixture = @(New-ComposePortFixture)
+    $bindings = @(Get-WindowsDockerPublishedPorts)
+    $script:desktopProcess.ExecutablePath = 'C:\Tools\com.docker.backend.exe'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $false 'Process name alone is not ownership'
+    $script:desktopProcess.ExecutablePath = Join-Path $env:ProgramFiles 'Docker\Docker\resources\com.docker.backend.exe'
+    $listener.Listeners += [pscustomobject]@{ OwningProcess = 6002; LocalAddress = '127.0.0.1' }
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $false 'An additional Windows listener fails closed'
+    $listener.Listeners = @([pscustomobject]@{ OwningProcess = 5001; LocalAddress = '127.0.0.2' })
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23001 'dashboard' $bindings) $false 'Mismatched publication address fails closed'
+    $listener.Listeners = @([pscustomobject]@{ OwningProcess = 5001; LocalAddress = '127.0.0.1' })
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort $listener $ownedInstall 23002 'dashboard' $bindings) $false 'An exposed or UDP port is not a TCP publication'
+    Assert-ComposePort (Test-WindowsODSComposeOwnsPort @{ InUse = $true; ProcessId = 5001 } $ownedInstall 23001 'dashboard' $bindings) $false 'Incomplete listener evidence fails closed'
+    $script:mockListeners = @{ 23001 = $listener }
+    Assert-ComposePort @(Get-WindowsODSSelectedPortConflicts -PortsToCheck @{ Dashboard = 23001 } -InstallDir $ownedInstall).Count 0 'Retained preflight admits its own service'
+    Assert-ComposePort @(Get-WindowsODSSelectedPortConflicts -PortsToCheck @{ 'Dashboard API' = 23001 } -InstallDir $ownedInstall).Count 1 'Retained preflight rejects another selected service'
+    $script:dockerFixture = @(New-ComposePortFixture -Directory ($ownedInstall + '-other'))
+    $foreignConflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck @{ Dashboard = 23001 } -InstallDir $ownedInstall)
+    $aborted = $false
+    try { $null = Assert-WindowsODSSelectedPortAvailability -Conflicts $foreignConflicts -NonInteractive } catch { $aborted = $_.Exception.Message -eq 'ODS_INSTALL_ABORTED' }
+    Assert-ComposePort $aborted $true 'Non-interactive install still aborts on foreign ownership'
+} finally {
+    Set-Item Function:docker $savedDockerFunction
+    Set-Item Function:Get-CimInstance $savedCimFunction
+    $script:mockListeners = $savedMockListeners
+    if ($null -eq $savedDockerHost) { Remove-Item Env:DOCKER_HOST -ErrorAction SilentlyContinue } else { $env:DOCKER_HOST = $savedDockerHost }
+}
+Write-Host "Retained Compose port ownership: $script:composeChecks checks passed."
+}
 
 function Remove-VoiceSeedDir {
     param([string]$Path)
@@ -396,7 +551,7 @@ function Get-PhaseVoicePort {
     $gpuInfo = @{ Backend = $Backend }
     $cloudMode = $Cloud
     $installDir = $InstallDir
-    $_usesNativeLemonade = ($Backend -eq "amd" -and -not $Cloud)
+    $_usesNativeLlm = ($Backend -eq "amd" -and -not $Cloud)
     $_portsToCheck = [ordered]@{}
     . $voiceBlock
     return ,$_portsToCheck
@@ -430,10 +585,6 @@ function Get-GeneratorWhisperPort {
     $savedWhisper = $env:WHISPER_PORT
     try {
         if ($ProcessPort) { $env:WHISPER_PORT = $ProcessPort }
-        function Write-WindowsODSLemonadeLiteLlmConfig {
-            param($InstallDir, $ModelId, $Port, $ApiKey)
-            return (Join-Path $InstallDir "config\\litellm\\lemonade.yaml")
-        }
         $null = New-ODSEnv -InstallDir $dir -TierConfig $tierConfig -Tier "3" `
             -GpuBackend $Backend -AmdInferenceRuntime $Runtime `
             -AmdInferenceLocation $Location
@@ -494,11 +645,22 @@ Assert-VoiceEqual $ports["Whisper (STT)"] 9000 "phase free 9000 default"
 Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia") "9000" `
     "generator free 9000 default"
 
-# 5. Managed AMD (lemonade/host) default -> 9100
+# 5. Native AMD (llama-server.exe) has no Lemonade router on 9000 -> 9000
 $ports = Get-PhaseVoicePort -Backend "amd"
-Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase managed amd default 9100"
-Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "lemonade" -Location "host") "9100" `
-    "generator managed amd default 9100"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9000 "phase native amd default 9000"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "llama-server" -Location "host") "9000" `
+    "generator native amd default 9000"
+# 5b. A former managed Lemonade install keeps its persisted 9100
+$seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9100"
+try {
+    $script:mockListeners.Remove(9100)
+    $ports = Get-PhaseVoicePort -Backend "amd" -InstallDir $seedDir
+    Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase migrated amd keeps 9100"
+    Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "llama-server" -Location "host" -SeedEnv "WHISPER_PORT=9100") "9100" `
+        "generator migrated amd keeps 9100"
+} finally {
+    Remove-VoiceSeedDir $seedDir
+}
 
 # 6. Persisted custom 9182 is preserved
 $seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9182"

@@ -12,7 +12,6 @@ on:
       - 'ods/docker-compose.base.yml'
       - 'ods/extensions/services/n8n/compose.yaml'
       - 'ods/extensions/services/litellm/compose.yaml'
-      - 'ods/extensions/services/openclaw/compose.yaml'
       - 'ods/vendor/pixel/OPENCLAW-COMPATIBILITY.json'
       - 'ods/installers/macos/lib/constants.sh'
       - '.github/scripts/check-upstream-advisories.py'

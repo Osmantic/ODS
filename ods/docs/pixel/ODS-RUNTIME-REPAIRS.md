@@ -284,6 +284,128 @@ OPENCLAW_PACKAGE=/path/to/openclaw node --test \
   ods/extensions/services/pixel-agent/tests/runtime_tool_result_delivery.integration.mjs
 ```
 
+## Compaction during long runs
+
+Inside one long owner turn, OpenClaw 2026.6.33 compacts when its tool-loop
+guard (`installToolResultContextGuard` in `selection-BEwSQKM-.js`) throws
+`Context overflow: estimated context size exceeds safe threshold during tool
+loop.` The guard counts characters against 3.6 per window token, with tool
+results weighted at 2 characters per token. It measured the raw in-memory
+results, but the provider stream sends them through the projection above: 16k
+per result, 64k in total, older results reduced to a notice. On the RTX Spark
+(2026-10-16, 131k context) a fresh session compacted four times in 15 minutes
+while the model's real prompt was 35-46k tokens. Each compaction dropped the
+files the agent had just read, and it made no edits in 20 minutes.
+
+The compaction summarizer then read the stored transcript. The pinned
+`serializeConversation` caps each tool result at 2,000 characters, but it keeps
+every result, every reasoning block and every edit or write payload whole, and
+it sends the whole stretch in one request. In a 31-minute game build on the
+same host, 299 entries (769k JSON characters, about 190k tokens) followed the
+first overflow compaction. The next one asked the 131k model to summarize all
+of them in one request. The compaction ended incomplete (`willRetry=false`)
+and Portal showed that it could not complete the response. The Spark's log
+records only a model response (status 200 after 32 ms) and the incomplete end
+68 seconds later, with no LiteLLM or llama.cpp error. In the Spark-shaped
+regression fixture the same request is 156,902 tokens by the transport's
+estimate, so the transport cuts `max_tokens` to 1 and the server rejects it.
+
+Two hash-chained recipes fix both:
+
+- `openclaw-compaction-budget.json` passes the provider stream's projection
+  (`persistedToolResultModelProjection`, then
+  `truncateOversizedToolResultsInMessages` with the same caps) to the loop
+  guard. The guard measures the tool results the request will carry. Its
+  threshold, its returned messages and the stream itself are unchanged.
+- `openclaw-compaction-empty.json` bounds every summary request in
+  `proxy-Bsfwfsp-.js` (history and split-turn prefix, automatic, overflow and
+  manual `/compact`). Its input is held to an ordinary turn at the compaction
+  threshold: the transport's own estimate (`estimateStringChars`, 4
+  characters per token, 1.25 margin) plus `reserveTokens` fits the window.
+  The reserve covers the summary output and leaves tokenizer headroom. A
+  conversation within the budget is sent byte-for-byte as before. Above it,
+  like the live projection, the oldest long tool results, tool-call argument
+  values and reasoning become a short notice first; requests, replies, tool
+  names and short values such as paths stay. Only text that cannot be reduced
+  loses its oldest messages, with a count marker. When the previous summary
+  and the instructions leave no room for even the newest reduced message, the
+  compaction fails with `summarization_failed` before any request. This can
+  happen on an 8K or 16K model whose previous summary ends with a long
+  verbatim owner request. Without the check it would save a summary that
+  silently drops all the work since the last checkpoint.
+
+The session transcript, `reserveTokens`, `keepRecentTokens` and the one or two
+summary calls per compaction are unchanged. The read/modified file lists still
+come from every summarized message. The 1800-second run deadline is unchanged.
+Both recipes migrate from the previous reviewed hashes through the original
+source with the existing Linux/WSL receipts (`--compaction-budget`,
+`--compaction-empty`, each with `--restore`); the macOS staged bundle composes
+them as before.
+
+The regression runs the real runner and compaction wrapper with a loopback
+provider that rejects prompts larger than its context, as llama.cpp does:
+
+- Twelve reads of a 30k-character file do not compact.
+- Large writes, whose tool-call arguments the projection keeps whole, still
+  trip the guard. The last prompt before it fires is above 85% of the window,
+  the provider rejects nothing, and the run continues after the compaction.
+- A 300-entry Spark-shaped tail compacts directly (overflow and manual).
+- The same tail compacts twice inside one run, after two provider overflows.
+  Each time it uses the session's own overflow auto-compaction, the path that
+  failed on the Spark. The run retries and answers.
+- At 8K and 16K, a previous summary with no room for new work fails as
+  described above.
+
+`ODS_LONG_RUN_COMPACTION_BASELINE=1` loads the previous recipes, and the same
+assertions then fail:
+
+```sh
+OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_long_run_compaction.integration.mjs
+```
+
+## Preview screenshots stay in their run
+
+`pixel_ods_workspace_preview_inspect` can return one screenshot of the agent's
+own preview to a model ODS declares image-capable
+(`host/preview-inspection-protocol.md`, Viewport screenshot). The tool result,
+image included, stays in the session transcript, because ODS sends the
+persisted copy of a result to the next request of the attempt. The pinned
+runtime then resends tool-result images from the last three completed turns to
+whatever model serves the next turn. It strips them only for a row whose
+`input` lacks `image`, and Portal writes `["text","image"]` for an `unknown`
+route too. So after a switch of the Portal alias from a vision model to one
+whose image input is unknown, earlier screenshots would reach it as
+`image_url` parts (up to nine in one request): an image test the owner never
+allowed, and one that llama-server without a projector rejects.
+
+`openclaw-compaction-budget.json` extends `pruneProcessedHistoryImages` in
+`selection-BEwSQKM-.js`, which runs before every model request. Before the
+latest user message, every image block of a
+`pixel_ods_workspace_preview_inspect` result, direct or as a Tool Search
+`tool_call` result whose first block names that child
+(`openclaw-image-envelope.json`), becomes the runtime's own
+`[image data removed - already processed by model]`. The result's text,
+including the screenshot sentence, is unchanged. Owner images and other tools'
+images keep the runtime's three-turn rule. The cleanup is idempotent, so later
+requests resend identical history; the prompt prefix changes once, at the
+first request of the run after the one that took the screenshot. A host retry
+prompt is a user message as well, so a retry within a run no longer sees the
+image, only its sentence.
+
+The transcript is unchanged. The recipe keeps the previous reviewed hash in
+`previousReplacements`, so installed Linux/WSL runtimes migrate through the
+original source with `--compaction-budget` (and `--restore`); the macOS staged
+bundle composes it as before.
+`runtime_preview_screenshot_context.integration.mjs` runs the reviewed prune
+with the Tool Search envelope and the openai-completions request ODS's gateway
+route uses:
+
+```sh
+OPENCLAW_PACKAGE_DIR=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_preview_screenshot_context.integration.mjs
+```
+
 ## Tool-call arguments under the native macOS stream order
 
 OpenClaw 2026.6.33's openai-completions transport parses streamed tool-call
@@ -335,6 +457,28 @@ OPENCLAW_PACKAGE=/path/to/openclaw node --test \
 The transformation includes a small portion of OpenClaw's MIT-licensed
 diagnostic events runtime, Copyright (c) 2026 OpenClaw Foundation; see the
 [upstream MIT notice](upstream/THIRD_PARTY_NOTICES.md).
+
+## Delegated completion across an automatic session reset
+
+OpenClaw 2026.6.33 applies its daily/idle session policy when a native child
+completion resumes its parent. A request crossing the default 04:00 reset
+boundary could therefore replace the parent session before ODS checks the
+child's admission proof, interrupting an otherwise valid delegated response.
+
+`openclaw-subagent-session.json` binds the repair to exact `agent-Dme3RrGI.js`
+bytes. Only backend handoffs with the native ODS owner, child and announcement
+run formats preserve the current session across automatic expiration. ODS still
+requires the original exact owner/session/spawn receipt before inference or
+tools. Explicit owner resets and new owner requests retain the native policy;
+a late completion cannot adopt the replacement owner session.
+
+Linux/WSL apply the reviewed recipe with `--subagent-session`; macOS composes
+the same recipe into its verified runtime bundle. The existing private backup,
+receipt and guarded `--restore` contract applies. The real-gateway fixture
+crosses 03:59:59 to 04:00:01 inside its disposable gateway process only, verifies
+both child results and the revised final response, and separately exercises
+native owner reset with a queued late announcement. It never changes the host
+clock or the installed package.
 
 ## Runtime patches from another ODS build
 

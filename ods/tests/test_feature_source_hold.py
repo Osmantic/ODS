@@ -111,6 +111,30 @@ def test_same_ref_feature_change_requires_authenticated_transition(tmp_path):
     assert result.returncode == 2
 
 
+@pytest.mark.parametrize('artifact', [None, 'state', 'config', 'program', 'unit', 'broken-link', 'configured'])
+def test_initial_bootstrap_source_refresh_requires_absent_host_deployment(tmp_path, artifact):
+    host = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    start = host.index('_ods_pixel_source_transition_required() {')
+    function = host[start:host.index('\n}\n', start) + 3]
+    start = host.index('_ods_pixel_initial_source_copy_allowed() {')
+    function = host[start:host.index('\n}\n', start) + 3] + '\n' + function
+    paths = dict(state='/var/lib/ods-pixel-access', config='/etc/ods/pixel-access.json',
+                 program='/usr/local/libexec/ods-pixel-access', unit='/etc/systemd/system/openclaw-gateway.service')
+    for label, path in paths.items():
+        function = function.replace(path, str(tmp_path / label))
+    if artifact in paths:
+        (tmp_path / artifact).touch()
+    if artifact == 'broken-link':
+        (tmp_path / 'state').symlink_to(tmp_path / 'missing')
+    script = ('set -eu\nINSTALL_DIR=$1\n'
+              '_ods_pixel_source_transition_state(){ printf "installing|%s\\n" "$3"; }\n'
+              '_ods_pixel_initial_unconfigured_marker(){ test "${PIXEL_SOURCE_REF:?}" = "' + 'a'*40 + '" || exit 9; return ' + ('1' if artifact == 'configured' else '0') + '; }\n'
+              '_ODS_PIXEL_FEATURE_SOURCE_CHANGED=true\n' + function + '\n'
+              '_ods_pixel_source_transition_required owner "$1" ' + 'a'*40 + ' /candidate\n')
+    result = subprocess.run(['bash', '-c', script, 'fixture', str(tmp_path)], capture_output=True, text=True)
+    assert result.returncode == (1 if artifact is None else 0), result.stderr
+
+
 def test_topology_is_deferred_until_held_downstream(tmp_path):
     home, source, installed = (tmp_path / name for name in ('home', 'source', 'installed'))
     for item in (home, source, installed):
@@ -194,7 +218,7 @@ def test_phase06_applies_deferred_selection_after_authenticated_copy_and_downstr
     copy = phase.index('_ods_pixel_source_upgrade copy', hold)
     downstream = phase.index('_ods_pixel_source_upgrade downstream', copy)
     generic_copy = phase.index('_phase06_step "copy-source"', downstream)
-    reconcile = phase.index('_ods_apply_deferred_feature_state ||', generic_copy)
+    reconcile = phase.index('_ods_apply_deferred_feature_state "$_phase06_requested_pixel_ref" ||', generic_copy)
     assert stage < hold < copy < downstream < generic_copy < reconcile
     assert phase.index('ods_pixel_uninstall_managed', downstream) < reconcile
 

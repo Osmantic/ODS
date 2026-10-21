@@ -3,6 +3,8 @@
 import * as fs from 'node:fs';
 import path from 'node:path';
 import {createHash, randomBytes} from 'node:crypto';
+import {namesExample} from './example-guard.mjs';
+import {SHIPPED_EXAMPLE_PROJECTS} from './example-projects.mjs';
 
 const LIMIT = 256;
 const MAX_STATE_BYTES = 2048;
@@ -31,6 +33,9 @@ function plainIntent(value) {
     .replace(/^\s*>.*$/gm, ' ');
 }
 export function requestsNewPlaygroundProject(intent) {
+  // A change to the shipped example ("In elf-of-doom, make a game over
+  // screen") works in that folder, however the rest is worded.
+  if (namesExample(intent)) return false;
   // Filenames and path components are operands, not project-category words.
   // For example, creating macos-tool-check/probe.txt is not creating a tool.
   const text = plainIntent(intent).replace(/\b[A-Za-z0-9_]+(?:[-./\\][A-Za-z0-9_]+)+\b/g, ' ')
@@ -107,6 +112,7 @@ function freeFolder(root, name, suffixes = false) {
     catch (error) { return error.code === 'ENOENT' ? name : null; }
     for (let i = 1; i <= (suffixes ? 1000 : 1); i++) {
       const candidate = i === 1 ? name : `${name.slice(0,58)}-${i}`;
+      if (shippedExampleName(candidate)) continue;
       try { fs.lstatSync(path.join(base,candidate)); }
       catch (error) { return error.code === 'ENOENT' ? candidate : null; }
     }
@@ -474,10 +480,16 @@ function validateProject(root, binding) {
   const base = safeDirectory(path.join(safeRoot(root),'Playground'));
   safeDirectory(path.join(base,binding.directory.split('/')[1]));
 }
+function shippedExampleName(name) {
+  return SHIPPED_EXAMPLE_PROJECTS.includes(String(name).toLowerCase());
+}
 function reserveProject(root, source) {
   const base = safeDirectory(path.join(safeRoot(root),'Playground'),true);
   for (let i = 1; i <= 1000; i++) {
     const name = i === 1 ? source : `${source.slice(0,58)}-${i}`;
+    // A new project never takes a shipped example's name, even after the
+    // owner deleted that example.
+    if (shippedExampleName(name)) continue;
     try { fs.mkdirSync(path.join(base,name),{mode:0o700}); return {source,directory:`Playground/${name}`}; }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
   }

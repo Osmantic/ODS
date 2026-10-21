@@ -52,7 +52,7 @@ DASHBOARD_API_PORT=39002
 LITELLM_PORT=39040
 SEARXNG_PORT=39888
 DASHBOARD_API_KEY=super-secret-dashboard-key
-OPENCLAW_TOKEN=super-secret-openclaw-token
+HERMES_DASHBOARD_SESSION_TOKEN=super-secret-hermes-session-token
 EOF
 
 cat > "$INSTALL_DIR/.compose-flags" <<'EOF'
@@ -85,7 +85,7 @@ if [[ "$1" == "compose" ]]; then
     echo "  dashboard-api:"
     echo "    environment:"
     echo "      DASHBOARD_API_KEY: super-secret-dashboard-key"
-    echo "      OPENCLAW_TOKEN: super-secret-openclaw-token"
+    echo "      HERMES_DASHBOARD_SESSION_TOKEN: super-secret-hermes-session-token"
     exit 0
   fi
   if [[ "$*" == *" ps -a"* ]]; then
@@ -133,7 +133,7 @@ assert_contains "$report_path" "- dashboard:39001" "report includes port checks"
 assert_contains "$report_path" "Docker version" "report includes docker version section"
 assert_contains "$report_path" "Compose config tail (redacted)" "report includes redacted compose config section"
 assert_contains "$report_path" "DASHBOARD_API_KEY: [REDACTED]" "report redacts compose config secret fields"
-if grep -Fq "super-secret-dashboard-key" "$report_path" || grep -Fq "super-secret-openclaw-token" "$report_path"; then
+if grep -Fq "super-secret-dashboard-key" "$report_path" || grep -Fq "super-secret-hermes-session-token" "$report_path"; then
     fail "report leaks sensitive compose config values"
 else
     pass "report does not leak sensitive compose config values"

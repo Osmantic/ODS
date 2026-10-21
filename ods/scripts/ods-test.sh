@@ -37,7 +37,7 @@ if [[ -f "$_DT_DIR/lib/service-registry.sh" ]]; then
     . "$_DT_DIR/lib/service-registry.sh"
     sr_load
     [[ -f "$_DT_DIR/lib/safe-env.sh" ]] && . "$_DT_DIR/lib/safe-env.sh"
-    load_env_file "$_DT_DIR/.env"
+    load_env_file "$ENV_FILE"
     sr_resolve_ports
 fi
 

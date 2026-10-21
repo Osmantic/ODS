@@ -14,7 +14,7 @@ The service includes a custom VAD (Voice Activity Detection) patch that is appli
 - **Multiple Whisper models**: Supports tiny through large-v3-turbo via HuggingFace model IDs
 - **Voice Activity Detection (VAD)**: Patched at startup with tuned parameters for conversation
 - **Model caching**: Models are downloaded once and cached in `data/whisper/`
-- **TTL-based model eviction**: Unused models unloaded after 24 hours (`WHISPER__TTL=86400`)
+- **TTL-based model eviction**: Unused models unloaded after 24 hours (`STT_MODEL_TTL=86400`)
 - **CPU and GPU backends**: CPU image by default; GPU overlay available for NVIDIA
 
 ## Configuration
@@ -24,7 +24,7 @@ Environment variables (set in `.env`):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WHISPER_PORT` | `9000` | External port (maps to internal 8000) |
-| `WHISPER__TTL` | `86400` | Model time-to-live in seconds (unload after inactivity) |
+| `STT_MODEL_TTL` | `86400` | Model time-to-live in seconds (unload after inactivity); set in `compose.yaml` |
 
 The Whisper model is selected per-request using the `model` field in the API call. Open WebUI uses:
 - AMD/CPU: `Systran/faster-whisper-base`

@@ -157,6 +157,8 @@ MOCK
     assert_equal "$GPU_BACKEND" "nvidia"
     assert_equal "$GPU_COUNT" "1"
     assert_equal "$GPU_VRAM" "24564"
+    # This nvidia-smi answers no compute_cap query (a driver before 510).
+    assert_equal "$GPU_COMPUTE_CAP" ""
 }
 
 @test "detect_gpu: sums VRAM for multi-GPU and formats display name" {
@@ -187,6 +189,84 @@ MOCK
     # Two identical GPUs get the "GPU x N" naming format
     [[ "$GPU_NAME" == *"4090"* ]]
     [[ "$GPU_NAME" == *"2"* ]]
+}
+
+# RTX Spark under WSL: the N1X row is the owner's probe
+# (tests/fixtures/rtx-spark/nvidia-smi-wsl.txt). WSL lists only the N1X today;
+# the NVIDIA NPU row ([N/A] memory, as Windows lists it) is synthetic insurance.
+_mock_nvidia_rows() {
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/rows.csv"
+    cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << MOCK
+#!/bin/bash
+if [[ "\$*" == *"--query-gpu=name,memory.total"* ]]; then
+    cut -d'|' -f1 "$BATS_TEST_TMPDIR/rows.csv"
+elif [[ "\$*" == *"pci.device_id"* ]]; then
+    cut -d'|' -f2 "$BATS_TEST_TMPDIR/rows.csv"
+elif [[ "\$*" == *"compute_cap"* ]]; then
+    cut -d'|' -f3 "$BATS_TEST_TMPDIR/rows.csv"
+fi
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/nvidia-smi"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+    mkdir -p "$BATS_TEST_TMPDIR/sys/class/drm/card0/device"
+    echo "0x10de" > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/vendor"
+    export ODS_DRM_SYS="$BATS_TEST_TMPDIR/sys/class/drm"
+}
+
+_spark_row() {
+    local row
+    row=$(sed -n '2p' "$BATS_TEST_DIRNAME/../fixtures/rtx-spark/nvidia-smi-wsl.txt")
+    # name, pci.device_id, compute_cap, memory.total, driver_version
+    printf '%s, %s|%s|%s' "$(cut -d',' -f1 <<< "$row")" "$(cut -d',' -f4 <<< "$row" | xargs)" \
+        "$(cut -d',' -f2 <<< "$row" | xargs)" "$(cut -d',' -f3 <<< "$row" | xargs)"
+}
+
+@test "detect_gpu: an NVIDIA NPU row beside the RTX Spark GPU is not a second GPU" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    _mock_nvidia_rows "$(_spark_row)" "NVIDIA NPU, [N/A]|[N/A]|[N/A]"
+
+    detect_gpu
+    assert_equal "$GPU_NAME" "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_VRAM" "98240"
+    assert_equal "$GPU_MEMORY_TYPE" "discrete"
+    assert_equal "$GPU_DEVICE_ID" "0x2E03"
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
+}
+
+@test "detect_gpu: an NVIDIA NPU row listed first does not hide the GPU or its device id" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    _mock_nvidia_rows "NVIDIA NPU, [N/A]|[N/A]|[N/A]" "$(_spark_row)"
+
+    detect_gpu
+    assert_equal "$GPU_NAME" "NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_VRAM" "98240"
+    assert_equal "$GPU_DEVICE_ID" "0x2E03"
+    # The compute capability is the GPU's row, not the NPU's.
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
+}
+
+@test "detect_gpu: a lone [N/A] row (GB10) is still unified memory" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+    grep -q '^MemTotal:' /proc/meminfo 2>/dev/null || skip "needs /proc/meminfo"
+    _mock_nvidia_rows "NVIDIA GB10, [N/A]||12.1"
+
+    # As phase 02 calls it: the VRAM sum finds no digits on this path, which
+    # would stop a caller running with errexit and pipefail.
+    detect_gpu || true
+    assert_equal "$GPU_NAME" "NVIDIA GB10"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_MEMORY_TYPE" "unified"
+    [[ "$GPU_VRAM" -gt 0 ]]
+    assert_equal "$GPU_COMPUTE_CAP" "12.1"
 }
 
 @test "detect_gpu: returns failure when no GPU found" {
@@ -256,6 +336,7 @@ _setup_amd_sysfs() {
 
 @test "amd_gpu_runtime_devices_available: reports missing AMD device nodes" {
     export ODS_AMD_DEVICE_ROOT="$BATS_TEST_TMPDIR/dev"
+    export AMD_INFERENCE_BACKEND=rocm
     mkdir -p "$ODS_AMD_DEVICE_ROOT/dri"
 
     run amd_gpu_runtime_devices_available
@@ -265,6 +346,20 @@ _setup_amd_sysfs() {
     assert_success
     assert_output --partial "$ODS_AMD_DEVICE_ROOT/kfd"
     assert_output --partial "$ODS_AMD_DEVICE_ROOT/dri/renderD*"
+}
+
+@test "amd_gpu_runtime_devices_available: the Vulkan image needs no /dev/kfd" {
+    export ODS_AMD_DEVICE_ROOT="$BATS_TEST_TMPDIR/dev"
+    unset AMD_INFERENCE_BACKEND
+    mkdir -p "$ODS_AMD_DEVICE_ROOT/dri"
+    touch "$ODS_AMD_DEVICE_ROOT/dri/renderD128"
+
+    run amd_gpu_runtime_devices_available
+    assert_success
+
+    export AMD_INFERENCE_BACKEND=rocm
+    run amd_gpu_missing_devices_csv
+    assert_output --partial "$ODS_AMD_DEVICE_ROOT/kfd"
 }
 
 @test "apply_cpu_gpu_fallback: resets AMD capability state to CPU" {

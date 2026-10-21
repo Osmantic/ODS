@@ -24,6 +24,7 @@ import {PREVIEW_INSPECTION_TOOL, boundVisibilityInspection, requestedVisibilityT
 import {INSPECTION_KIND, INSPECTION_SCOPE, TRANSITION_UNTESTED, createWorkspacePreviewInspectTool, inspectionPlanHash,
   normalizeWorkspacePreviewInspectionParams, transitionCorrection} from '../plugin/workspace-preview-inspect.mjs';
 import {STATE_CLASS_WORDS, chooseTransitionTarget, stateFreeSelector} from '../plugin/inspection-target.mjs';
+import {previewScreenshotCapability} from '../plugin/preview-screenshot.mjs';
 
 const load = name => JSON.parse(fs.readFileSync(new URL(`./${name}`, import.meta.url), 'utf8'));
 const LAPTOP = load('inspection-transition-laptop-round100.json');
@@ -311,7 +312,21 @@ test('tower2 round 102 update turn: the refused edit, repairs and both plans rep
   assert.equal(r.verification().status, 'passed');
   await r.until(update, TOWER2_UPDATE_NO_MATCH);
   const failed = await r.run(TOWER2_UPDATE_NO_MATCH);
-  assert.equal(failed.content[0].text, TOWER2_UPDATE_NO_MATCH.text, 'byte-identical to the recorded failure');
+  // Keep the historical fixture intact. Only post-click coaching has changed;
+  // every observation, failed step, snapshot and plan hash must still replay.
+  assert.equal(failed.isError, true);
+  assert.equal(failed.details.status, 'failed');
+  const {ok: recordedOk, ...recordedReceipt} = TOWER2_UPDATE_NO_MATCH.details;
+  assert.equal(recordedOk, false, 'the historical host envelope also reported failure');
+  assert.deepEqual(failed.details, recordedReceipt);
+  const failedText = failed.content[0].text;
+  assert.equal(failedText.slice(failedText.indexOf(INSPECTION_SCOPE)),
+    TOWER2_UPDATE_NO_MATCH.text.slice(TOWER2_UPDATE_NO_MATCH.text.indexOf(INSPECTION_SCOPE)),
+    'scope, rendered observations and serialized evidence remain byte-identical');
+  const guidance = failedText.slice(0, failedText.indexOf(INSPECTION_SCOPE));
+  assert.match(guidance, /An earlier click passed, but the requested result remains unverified/);
+  assert.match(guidance, /either a locator mismatch or that the interaction did not create or render the expected state/);
+  assert.doesNotMatch(guidance, /the handler did not run|no DOM change|the page did not change|cannot make it appear/i);
   const {args} = assertIncomplete(await r.run(TOWER2_INSPECT_UPDATE), TOWER2_INSPECT_UPDATE, TOWER2_PUBLISH_UPDATE, TOWER2_TARGET);
   assert.equal(r.verification().status, 'failed');
   await r.inspect(args, 'update-corrected');
@@ -549,17 +564,21 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   const asked = [];
   const run = capsule(TOWER2, TOWER2_PAGE);
   vm.runInNewContext(source.slice(start, end + close.length), {
-    api: {pluginConfig: {workspacePreviewInspectionTransport: 'unix'}},
-    registerTool: (_api, tool, options) => { registered = {tool, names: [...options.names]}; },
+    api: {pluginConfig: {workspacePreviewInspectionTransport: 'unix'},
+      registerTool: (factory, options) => { registered = {tool: factory({agentId: 'pixel'}), names: [...options.names]}; }},
+    onlyPixel: factory => factory,
+    previewScreenshotCapability,
     createWorkspacePreviewInspectTool: options => createWorkspacePreviewInspectTool({...options, request: async request => run(request)}),
     toolLoopGuard: {previewInspectionTransition: (id, params) => {
       asked.push([id, params]);
       return {target: OWNER_PHRASE, outline: outlineOf(TOWER2, TOWER2_PUBLISH).outline, initiallyHidden: true};
-    }},
+    }, reservePreviewScreenshot: () => assert.fail('a configuration without image input reserves no screenshot')},
   });
   assert.deepEqual(registered.names, [PREVIEW_INSPECTION_TOOL]);
   const result = await registered.tool.execute('call-1', TOWER2_INSPECT.arguments);
   assert.deepEqual(asked, [['call-1', TOWER2_INSPECT.arguments]]);
   assert.ok(result.content[0].text.startsWith(INCOMPLETE), result.content[0].text);
+  assert.match(result.content[0].text, /No screenshot attached: this installation does not declare whether the selected model accepts images\./);
+  assert.equal(result.content.length, 1);
   assert.deepEqual(nextArgs(result.content[0].text).steps, transition(TOWER2_TARGET));
 });

@@ -7,6 +7,11 @@ import {promptContractForAgent, ODS_WORKSPACE_NEW_STATIC_CONTRACT,
 
 const context = {agentId:'pixel',runId:'basic-site-routing',sessionId:'basic-site-routing'};
 const basic = [
+  'Build a simple reading-list website where I can add a book title and mark it finished. Show me a working preview.',
+  'Create a basic household chores website where I can check off chores.',
+  'Make a simple recipe-box site that lets me save recipes.',
+  'Build a simple packing checklist website. Show me a working preview.',
+
   'Make me a basic website.',
   'Build a basic responsive website and publish it.',
   'Please create a simple landing page and show its preview.',
@@ -23,6 +28,14 @@ const basic = [
   'Construa uma página web simples.',
 ];
 const flexible = [
+  ...['Django','django','Flask','Rails','Laravel','Blazor','Qwik','Phoenix','SolidStart','FastAPI','Express'].map(stack =>
+    [`Build a simple ${stack} reading-list website.`, 'read', {path:'README.md'}]),
+  ['Build a simple reading-list website using React.','exec',{command:'npm --version'}],
+  ['Build a simple reading-list website with a database.','read',{path:'README.md'}],
+  ['Create a basic household chores website where I can check off chores, then write a Python CLI.','write',{path:'cli.py',content:'print(1)'}],
+  ['Make a simple recipe-box site in quuxstack.','read',{path:'README.md'}],
+  ['Build a simple reading-list website from books.csv.','read',{path:'books.csv'}],
+
   ['Make me a basic website using Qwik.','exec',{command:'npm --version'}],
   ['Make me a basic website in Blazor.','exec',{command:'dotnet --version'}],
   ['Make me a basic website with SolidStart framework.','read',{path:'package.json'}],
@@ -107,6 +120,7 @@ for (const wrapped of [false,true]) for (const history of [false,true]) {
     guard.observeRun(context,'pixel',owner);
     assert.equal(workspacePreviewMode(owner.messages,owner.prompt),'new-static');
     assert.equal(guard.beforeToolCall(tool('exec',{command:'mkdir -p unrelated'}),context)?.blockReason,WORKSPACE_PREVIEW_FRESH_ENTRY_REASON);
+    assert.equal(guard.beforeToolCall(tool('write',{path:'Playground/basic/package.json',content:'{}'}),context)?.blockReason,WORKSPACE_PREVIEW_FRESH_ENTRY_REASON);
     assert.notEqual(guard.beforeToolCall(tool('write',{path:'Playground/basic/index.html',content:'<!doctype html><h1>Basic</h1>'}),context)?.block,true);
     assert.ok(promptContractForAgent(context,'pixel',owner,{configuredLeanPrompt:true}).appendSystemContext.includes(ODS_WORKSPACE_NEW_STATIC_CONTRACT));
   });

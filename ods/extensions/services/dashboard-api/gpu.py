@@ -450,13 +450,16 @@ def get_gpu_info_wsl_host_detailed() -> Optional[list[IndividualGPU]]:
     result = []
     for index, row in enumerate(rows):
         total, used, utilization = row["memory_total_mb"], row["memory_used_mb"], row["utilization_percent"]
+        # NVIDIA adapters carry the Windows driver's temperature and power.
+        temperature, power = row.get("temperature_c"), row.get("power_w")
         result.append(IndividualGPU(
             index=index, uuid=row["uuid"], name=row["name"], memory_total_mb=total,
             memory_used_mb=int(used or 0), memory_percent=round(used / total * 100, 1) if used is not None else 0,
-            utilization_percent=int(utilization or 0), temperature_c=0, power_w=None,
+            utilization_percent=int(utilization or 0), temperature_c=int(temperature or 0),
+            power_w=round(power, 1) if power is not None else None,
             memory_type=row["memory_type"], assigned_services=[],
             memory_usage_available=used is not None, utilization_available=utilization is not None,
-            temperature_available=False,
+            temperature_available=temperature is not None,
         ))
     return result or None
 

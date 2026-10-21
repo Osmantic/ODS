@@ -43,6 +43,43 @@ describe('FirstBoot', () => {
     globalThis.localStorage.removeItem('ods-firstboot-progress')
   })
 
+  test.each(['http', 'network'])('retains the issued owner card across %s completion failure and retries only completion', async (failure) => {
+    let completeCalls = 0
+    const card = {url:'http://auth.ods.local/magic-link/retained-fixture', target_username:'sam', scope:'hermes', reusable:true, token_type:'owner', expires_at:null}
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/auth/magic-link/owner-card/status') return response(ownerCardReady)
+      if (url === '/api/templates/onboarding-agents/apply') return response({enabled_count:4, started_count:4, failed_services:[], skipped_services:[]})
+      if (url === '/api/auth/magic-link/generate') return response(card)
+      if (url === '/api/setup/complete') {
+        if (++completeCalls === 1) {
+          if (failure === 'network') throw new Error('Connection interrupted')
+          return response({detail:'Completion temporarily unavailable'}, 503)
+        }
+        return response({success:true})
+      }
+      if (url === '/api/auth/admin-session') return response({})
+      if (url.startsWith('/api/auth/magic-link/qr?')) return response({data_url:'data:image/png;base64,fixture'})
+      throw new Error(`Unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onComplete = vi.fn()
+    render(<FirstBoot onComplete={onComplete}/>)
+    await finishWizard('Chat \\+ Agents')
+    const retained = await screen.findByRole('textbox', {name:'Generated owner link'})
+    expect(retained).toHaveValue(card.url)
+    expect(retained).toHaveAttribute('readonly')
+    expect(globalThis.localStorage.getItem('ods-firstboot-progress')).not.toContain('retained-fixture')
+    expect(screen.getByRole('button', {name:'Back'})).toBeDisabled()
+    expect(onComplete).not.toHaveBeenCalled()
+    expect(screen.queryByRole('heading', {name:/you're set/i})).toBeNull()
+    fireEvent.click(screen.getByRole('button', {name:'Finish'}))
+    await screen.findByRole('heading', {name:/you're set/i})
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/auth/magic-link/generate')).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/templates/onboarding-agents/apply')).toHaveLength(1)
+    expect(completeCalls).toBe(2)
+    expect(globalThis.localStorage.getItem('ods-firstboot-progress')).toBeNull()
+  })
+
   test('generates the owner card, marks setup complete, and shows the QR', async () => {
     const onComplete = vi.fn()
     const fetchMock = vi.fn(async (url, options = {}) => {

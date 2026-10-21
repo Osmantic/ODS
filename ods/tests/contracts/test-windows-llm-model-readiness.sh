@@ -41,15 +41,23 @@ if grep -Eq '\$result\.Ok = \$true' "$LIB" && grep -q 'FileExists -and \$result.
 else
     fail "Ok must require file present AND completion success"
 fi
-if grep -q '\$isLemonadeEndpoint' "$LIB" && grep -q 'Endpoint.ContainsKey("Backend")' "$LIB"; then
-    pass "readiness derives Lemonade model ids from the resolved endpoint"
+# Round F: every backend serves the GGUF file name (--alias); the native
+# Windows llama-server also needs its API key on the completion.
+if grep -q '\$modelId = \$GgufFile' "$LIB"; then
+    pass "readiness requests the GGUF alias as the model id"
 else
-    fail "readiness must key Lemonade model-id prefixing off the resolved endpoint"
+    fail "readiness must request the GGUF file name, the alias every launch sets"
 fi
-if grep -q 'GpuBackend.ToLowerInvariant() -eq "amd"' "$LIB"; then
-    fail "readiness must not prefix every AMD backend with extra. (llama-server fallback uses plain GGUF id)"
+if grep -q 'extra\.' "$LIB" || grep -q -i 'lemonade' "$LIB"; then
+    fail "readiness must not derive Lemonade-era model ids"
 else
-    pass "AMD llama-server fallback is not treated as Lemonade for model ids"
+    pass "readiness has no Lemonade model-id rules"
+fi
+if grep -qF '$headers.Authorization = "Bearer " + [string]$Endpoint.ApiKey' "$LIB" \
+    && grep -qF 'Keys @("LLAMA_SERVER_API_KEY")' "$LIB"; then
+    pass "readiness authenticates to the native llama-server with LLAMA_SERVER_API_KEY"
+else
+    fail "readiness must send LLAMA_SERVER_API_KEY to the native Windows llama-server"
 fi
 
 # ---------------------------------------------------------------------------

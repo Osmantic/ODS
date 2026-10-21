@@ -29,7 +29,12 @@ an unsupported installation topology.
    agent's exact saved configuration.
 
 The fixed contract contains only model name, context length, output limit,
-reasoning support and an optional credential-free route fingerprint. Requests
+reasoning support, image input (`supported`, `unsupported` or `unknown`) and an
+optional credential-free route fingerprint. A local switch declares image
+input `supported` only when the final readiness proof's `/props` answer
+reports `modalities.vision` true, that is, the activated model's llama-server
+loaded a vision projector. Otherwise it keeps that model's catalog value or
+`unknown`; remote routes are `unknown`. Requests
 cannot select a filesystem path, endpoint, executable, user or service unit.
 Sampling and template customizations are retained; context and output limits
 are recalculated for the selected model.
@@ -53,11 +58,6 @@ inference evidence. It does not choose or load another model. An intermediate
 crash without sufficient proof remains pending and needs explicit repair;
 there is no generic reset that discards the saved state or silently unlocks an
 unverified model.
-
-Windows `/runtime/lemonade/ensure` remains a bootstrap operation outside this
-transaction. The launcher may need it before Edge and the agent have started.
-It is not the chat model-switch endpoint and must not be described as providing
-the interactive switch's admission and recovery guarantees.
 
 Remote SSH configuration can involve a staging step followed by an egress proof.
 Staging is allowed only when the previous local route can be verified unchanged.

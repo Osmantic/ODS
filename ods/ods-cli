@@ -90,6 +90,21 @@ success() { echo -e "${GREEN}✓${NC} $1"; }
 warn() { echo -e "${YELLOW}⚠${NC} $1" >&2; }
 error() { echo -e "${RED}✗${NC} $1" >&2; exit 1; }
 log_error() { echo -e "${RED}✗${NC} $1" >&2; }
+# A failed remote-provider operation also says where to get help.
+_remote_provider_fail() {
+    echo -e "${RED}✗${NC} $1" >&2
+    echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+    exit 1
+}
+# Why curl got no answer from the Dashboard API, from its exit status.
+_remote_provider_transport_reason() {
+    case "$1" in
+        6|7) printf 'could not connect to the Dashboard API; check that ODS is running with: ods status' ;;
+        28) printf 'the Dashboard API did not answer in time; check: ods status' ;;
+        52|56) printf 'the connection closed before the Dashboard API answered; check: ods status' ;;
+        *) printf 'curl exit %s' "$1" ;;
+    esac
+}
 
 # Map cmd_list status string to a colour. Returns an empty string for unknown
 # statuses so future state names don't break formatting.
@@ -915,30 +930,35 @@ get_compose_flags() {
                 prev="$tok"
             done
             local _ods_mode="${ODS_MODE:-local}"
-            local _lemonade_external="${LEMONADE_EXTERNAL:-false}"
-            local _amd_runtime="${AMD_INFERENCE_RUNTIME:-}"
-            local _amd_managed="${AMD_INFERENCE_MANAGED:-true}"
-            _lemonade_external="${_lemonade_external,,}"
-            _amd_runtime="${_amd_runtime,,}"
-            _amd_managed="${_amd_managed,,}"
-            local _external_lemonade_active="false"
-            if [[ "$_ods_mode" == "lemonade" ]]; then
-                if [[ "$_lemonade_external" =~ ^(1|true|yes|on)$ ]] || \
-                   { [[ "$_amd_runtime" == "lemonade" ]] && [[ "$_amd_managed" =~ ^(0|false|no|off)$ ]]; }; then
-                    _external_lemonade_active="true"
-                fi
-            fi
+            # An ODS-managed llama-server outside the stack (Windows Portal).
+            local _host_native_active="false"
+            [[ -n "${NATIVE_LLM_BASE_URL:-}" && "$_ods_mode" != "cloud" ]] && _host_native_active="true"
             if [[ "$_ods_mode" == "cloud" ]] && \
                { [[ "$cached" == *"docker-compose.cpu.yml"* ]] || [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" != *"docker-compose.cloud.yml"* ]]; }; then
                 stale=1
             fi
-            if [[ "$_external_lemonade_active" == "true" ]] && \
-               { [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" == *"docker-compose.amd.yml"* ]] || [[ "$cached" == *"docker-compose.cloud.yml"* ]] || [[ "$cached" != *"docker-compose.lemonade-external.yml"* ]]; }; then
+            if [[ "$_host_native_active" == "true" ]] && \
+               { [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" == *"docker-compose.amd.yml"* ]] || [[ "$cached" == *"docker-compose.cloud.yml"* ]] || [[ "$cached" != *"docker-compose.host-native-llm.yml"* ]]; }; then
                 stale=1
             fi
-            if [[ "$_ods_mode" != "cloud" ]] && [[ "$_external_lemonade_active" != "true" ]] && \
-               [[ "$cached" == *"docker-compose.cloud.yml"* ]]; then
+            if [[ "$_host_native_active" != "true" ]] && [[ "$cached" == *"docker-compose.host-native-llm.yml"* ]]; then
                 stale=1
+            fi
+            if [[ "$_ods_mode" != "cloud" ]] && [[ "$cached" == *"docker-compose.cloud.yml"* ]]; then
+                stale=1
+            fi
+            # The retired Lemonade overlay can outlive an update that kept
+            # the old file on disk; the stack must be resolved again.
+            if [[ "$cached" == *"docker-compose.lemonade-external.yml"* ]]; then
+                stale=1
+            fi
+            # The AMD image follows AMD_INFERENCE_BACKEND (vulkan or rocm).
+            if [[ "$cached" == *"docker-compose.amd.yml"* ]]; then
+                if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
+                    [[ "$cached" == *"docker-compose.amd-rocm.yml"* ]] || stale=1
+                else
+                    [[ "$cached" != *"docker-compose.amd-rocm.yml"* ]] || stale=1
+                fi
             fi
             if [[ "$stale" == "0" ]]; then
                 if [[ "$cached" == *user-extensions* || -d "$INSTALL_DIR/data/user-extensions" ]]; then
@@ -1132,18 +1152,45 @@ _compose_run_with_summary() {
 
     # Connect failed services to logs and recovery steps if not in test stub mode
     if [[ -z "${DOCKER_STUB_MODE:-}" ]]; then
-        local -a _compose_args=()
-        local _arg
+        local -a _compose_args=() _target_services=()
+        local _arg _seen_verb=false _skip_value=false
         for _arg in "$@"; do
-            [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]] && break
-            _compose_args+=("$_arg")
+            if ! $_seen_verb; then
+                if [[ "$_arg" == "up" || "$_arg" == "down" || "$_arg" == "stop" || "$_arg" == "pull" ]]; then
+                    _seen_verb=true
+                else
+                    _compose_args+=("$_arg")
+                fi
+                continue
+            fi
+            if $_skip_value; then
+                _skip_value=false
+                continue
+            fi
+            case "$_arg" in
+                --pull|--timeout|-t|--scale|--wait-timeout|--exit-code-from|--attach|--no-attach) _skip_value=true ;;
+                -*) ;;
+                *) _target_services+=("$_arg") ;;
+            esac
         done
 
         local _failed_candidates=()
         local _c
+        # Names in compose's "Found orphan containers" warning belong to
+        # stale, unrelated containers, so that line is never evidence. Other
+        # log names stay: a targeted service can fail on an unhealthy
+        # dependency ("dependency failed to start: container ods-x ...").
+        local _log_names _target_names=""
+        _log_names=$(grep -viE 'found orphan containers' "$_compose_log" | grep -oE 'ods-[a-zA-Z0-9_-]+' || true)  # no match = no names
+        if (( ${#_target_services[@]} > 0 )); then
+            # Targeted command: also include the targeted services' own
+            # containers. A ps failure only loses optional evidence; the
+            # compose error above is already surfaced.
+            _target_names=$(docker compose "${_compose_args[@]}" ps -a --format "{{.Name}}" "${_target_services[@]}" 2>/dev/null || true)
+        fi
         while read -r _c; do
             [[ -n "$_c" ]] && _failed_candidates+=("$_c")
-        done < <(grep -oE 'ods-[a-zA-Z0-9_-]+' "$_compose_log" | sort -u || true)
+        done < <(printf '%s\n%s\n' "$_log_names" "$_target_names" | sort -u)
 
         local _failed_containers=()
         if (( ${#_failed_candidates[@]} > 0 )); then
@@ -1184,6 +1231,7 @@ _compose_run_with_summary() {
     fi
     echo ""
     log "Full compose output: $_compose_log"
+    echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
     trap - INT TERM
     return "$_rc"
 }
@@ -1217,7 +1265,6 @@ _check_docker_access() {
 # Always rebuilds: dashboard, dashboard-api, ape, token-spy, privacy-shield.
 # Conditionally rebuilds based on .env state:
 #   - comfyui     (ENABLE_COMFYUI=true)
-#   - llama-server (GPU_BACKEND=amd, e.g. AMD Lemonade)
 # Mirrors the conditional logic in installers/phases/11-services.sh. Unlike that
 # phase's image-inspect fast-path, --rebuild-images is an explicit opt-in so we
 # always rebuild every applicable service from source.
@@ -1225,11 +1272,9 @@ _check_docker_access() {
 _ods_cli_rebuild_images() {
     local flags=("$@")
     local svcs=(dashboard dashboard-api ape token-spy privacy-shield)
-    # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled
-    # and llama-server on AMD (Lemonade builds the binary in the container).
-    # Other GPU backends pull pre-built images.
+    # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled.
+    # llama-server is a pulled upstream image on every GPU backend.
     [[ "${ENABLE_COMFYUI:-}" == "true" ]] && svcs+=(comfyui)
-    [[ "${GPU_BACKEND:-}" == "amd" ]] && svcs+=(llama-server)
     _check_docker_access
     log "Rebuilding local-built images (--rebuild-images)..."
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
@@ -1243,7 +1288,7 @@ _ods_cli_pull_external_images() {
 
     if ! command -v ods_compose_external_images >/dev/null 2>&1 && [[ -f "$helper" ]]; then
         # Reuse the installer's image discovery contract: pull registry images,
-        # skip local build tags such as ods-lemonade-server:latest.
+        # skip local build tags such as ods-llama-sycl:local.
         . "$helper"
     fi
 
@@ -1325,9 +1370,26 @@ _ods_cli_pull_external_images() {
 # A core service the installation deliberately left out is not part of the
 # stack, so status must not report it as "not responding". Lean and
 # gateway-only installs set ENABLE_OPEN_WEBUI=false; Open WebUI is then an
-# optional Library add-back rather than a missing core service.
+# optional Library add-back rather than a missing core service. A core
+# extension whose compose file the installer left disabled (Pixel Model Relay
+# on an install without Pixel) is likewise not part of the stack.
 _ods_cli_service_not_installed() {
-    [[ "$1" == "open-webui" && "${ENABLE_OPEN_WEBUI:-true}" == "false" ]]
+    local service_dir="${INSTALL_DIR}/extensions/services/$1"
+    [[ "$1" == "open-webui" && "${ENABLE_OPEN_WEBUI:-true}" == "false" ]] && return 0
+    [[ -f "$service_dir/compose.yaml.disabled" && ! -f "$service_dir/compose.yaml" ]] || return 1
+    shift
+    # Native Pixel intentionally selects disabled-named fragments. Use the
+    # same resolved stack as status instead of hiding an installed service.
+    local previous="" argument selected
+    for argument in "$@"; do
+        if [[ "$previous" == "-f" ]]; then
+            selected="$argument"
+            [[ "$selected" == /* ]] || selected="$INSTALL_DIR/$selected"
+            [[ "$selected" -ef "$service_dir/compose.yaml.disabled" ]] && return 1
+        fi
+        previous="$argument"
+    done
+    return 0
 }
 
 _ods_cli_service_health() {
@@ -1415,11 +1477,12 @@ cmd_status() {
     # Launch parallel health checks
     for sid in "${SERVICE_IDS[@]}"; do
         # Cloud and external-model installs intentionally do not start the
-        # managed model stack. Report the active LiteLLM gateway instead.
-        if [[ "$sid" == "llama-server" || "$sid" == "model-router" ]] && ods_preflight_uses_litellm; then
+        # managed model stack; a host-native llama-server (Windows Portal)
+        # keeps model-router. Report the active LiteLLM gateway instead.
+        if ods_status_skips_managed_inference "$sid"; then
             continue
         fi
-        _ods_cli_service_not_installed "$sid" && continue
+        _ods_cli_service_not_installed "$sid" "${flags[@]}" && continue
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
         local default_port="${SERVICE_PORTS[$sid]}"
@@ -1478,8 +1541,10 @@ cmd_status() {
 
     echo ""
 
-    # GPU status if available
-    if command -v nvidia-smi &> /dev/null; then
+    # Select GPU tooling by backend, not by installed vendor utilities.
+    if [[ "${GPU_BACKEND:-}" == "amd" || "${GPU_BACKEND:-}" == "apple" ]]; then
+        ( _gpu_status )
+    elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &> /dev/null; then
         echo -e "${BLUE}━━━ GPU Status ━━━${NC}"
         nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu --format=csv,noheader,nounits | \
             awk -F', ' '{printf "  %s: %s%% GPU | %sMB/%sMB VRAM | %s°C\n", $1, $2, $3, $4, $5}' \
@@ -1515,12 +1580,15 @@ cmd_status_json() {
     local -a flags
     read -ra flags <<< "$flags_str"
 
-    # Capture running services for optional-service checks (best-effort)
-    local running_services=""
-    if docker compose "${flags[@]}" ps --format "{{.Service}}" >/dev/null 2>&1; then
-        running_services=$(docker compose "${flags[@]}" ps --format "{{.Service}}")
+    # Keep one snapshot and its success separate: a stopped stack has valid,
+    # empty ps output. Only a failed read leaves container state unknown.
+    local running_services="" container_state_known="false"
+    if running_services=$(docker compose "${flags[@]}" ps --format "{{.Service}}" 2>/dev/null); then
+        container_state_known="true"
     elif command -v docker-compose >/dev/null 2>&1; then
-        running_services=$(docker-compose ps --services --filter "status=running" 2>/dev/null || true)
+        if running_services=$(docker-compose "${flags[@]}" ps --services --filter "status=running" 2>/dev/null); then
+            container_state_known="true"
+        fi
     fi
 
     # Temp file to accumulate per-service JSON objects
@@ -1529,10 +1597,10 @@ cmd_status_json() {
     trap 'rm -f "$tmp"' RETURN
 
     for sid in "${SERVICE_IDS[@]}"; do
-        if [[ "$sid" == "llama-server" || "$sid" == "model-router" ]] && ods_preflight_uses_litellm; then
+        if ods_status_skips_managed_inference "$sid"; then
             continue
         fi
-        _ods_cli_service_not_installed "$sid" && continue
+        _ods_cli_service_not_installed "$sid" "${flags[@]}" && continue
         local cat="${SERVICE_CATEGORIES[$sid]}"
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
@@ -1552,9 +1620,9 @@ cmd_status_json() {
         local container_status="unknown"
         local status="unknown"
 
-        # Determine container status (running/stopped) when we have ps output
-        if [[ -n "$running_services" ]]; then
-            if grep -qE "(^|[[:space:]])${sid}([[:space:]]|$)" <<<"$running_services"; then
+        # An empty successful snapshot still proves no service is running.
+        if [[ "$container_state_known" == "true" ]]; then
+            if grep -Fxq -- "$sid" <<<"$running_services"; then
                 container_status="running"
             else
                 container_status="stopped"
@@ -1599,7 +1667,7 @@ cmd_status_json() {
             --argjson unified_memory_gb "$_total_mem_gb" \
             --argjson gpu_cores "$([[ "$_gpu_cores" =~ ^[0-9]+$ ]] && printf '%s' "$_gpu_cores" || printf 'null')" \
             '{backend: $backend, chip: $chip, unified_memory_gb: $unified_memory_gb, gpu_cores: $gpu_cores}')
-    elif command -v nvidia-smi >/dev/null 2>&1; then
+    elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi >/dev/null 2>&1; then
         # Represent each GPU line as raw strings in an array
         gpu_summary_json=$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
             --format=csv,noheader,nounits 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))')
@@ -1678,6 +1746,36 @@ _ods_cli_wait_for_hermes_ready() {
     return 1
 }
 
+# `docker compose up -d` returns before LiteLLM serves, and its Docker
+# healthcheck runs every 30 s. Portal chat goes through LiteLLM, so a chat sent
+# right after a start or restart failed once (fleet F58: 6-16 s after the
+# Windows lifecycle restart returned). Probe its readiness endpoint directly.
+# A slow gateway only warns: the start itself succeeded.
+_ods_cli_wait_for_litellm_ready() {
+    local timeout interval attempts i
+    timeout="${ODS_LITELLM_READY_TIMEOUT:-90}"
+    interval="${ODS_LITELLM_READY_INTERVAL:-2}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=90
+    [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=2
+
+    # Not every stack runs LiteLLM.
+    docker inspect ods-litellm >/dev/null 2>&1 || return 0
+    log "Waiting for the model gateway (LiteLLM)..."
+
+    attempts=$(( (timeout + interval - 1) / interval ))
+    for (( i=1; i<=attempts; i++ )); do
+        if docker exec ods-litellm python3 -c \
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/readiness', timeout=5)" \
+            >/dev/null 2>&1; then
+            success "Model gateway — ready"
+            return 0
+        fi
+        (( i < attempts )) && sleep "$interval"
+    done
+    warn "The model gateway (LiteLLM) is still starting after ${timeout}s; chat can fail until it is ready. Check it with: ods status"
+    return 0
+}
+
 _ods_cli_wait_for_hermes_ready_with_retry() {
     local flags=("$@")
     local state
@@ -1719,6 +1817,11 @@ cmd_restart() {
             *) service="$1"; shift ;;
         esac
     done
+    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
+        && _ods_cli_macos_native_llama; then
+        _ods_cli_macos_llama restart
+        return 0
+    fi
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -1760,6 +1863,7 @@ cmd_restart() {
         read -ra flags <<< "$flags_str"
     fi
 
+    local restarted_mode="${ODS_MODE:-}"
     if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Restarting all services" \
             "${flags[@]}" up -d --force-recreate --no-build --pull never
@@ -1775,11 +1879,22 @@ cmd_restart() {
         _ods_cli_refresh_soul || true
     fi
 
+    if [[ -z "$resolved_service" || "$resolved_service" == "litellm" ]]; then
+        _ods_cli_wait_for_litellm_ready
+    fi
+
     # `docker compose up -d` only proves that container creation was accepted.
     # Do not tell users a full/Hermes restart is done while Dream Talk and the
     # default agent path can still return a startup error.
     if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
         _ods_cli_wait_for_hermes_ready_with_retry "${flags[@]}"
+    fi
+
+    # `ods mode` changes .env, while the native agent deliberately pins its
+    # startup mode. Refresh that process only after the complete stack has
+    # applied the new environment, never on an unrelated service restart.
+    if [[ -z "$resolved_service" && -f "$INSTALL_DIR/bin/ods-host-agent.py" ]]; then
+        cmd_agent refresh-mode "$restarted_mode" || return 1
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
@@ -1896,12 +2011,38 @@ _stop_owned_containers_for_recovery() {
     "$policy_python" "$helper" "${args[@]}"
 }
 
+# On macOS the model runs natively as the launchd job com.ods.llama-server, and
+# the Compose llama-server is a replicas-0 placeholder: Compose would report a
+# stop, start or restart without touching the running model. ods-macos.sh owns
+# that job.
+_ods_cli_macos_native_llama() {
+    [[ "$(uname -s)" == Darwin && "${GPU_BACKEND:-}" == apple ]]
+}
+
+_ods_cli_macos_llama() {
+    local action="$1" macos_cli="$INSTALL_DIR/ods-macos.sh"
+    if [[ ! -f "$macos_cli" ]]; then
+        echo -e "${RED}✗${NC} The macOS service CLI is missing ($macos_cli), so ODS cannot $action the model server on this Mac. Re-run the installer to restore it." >&2
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+        exit 1
+    fi
+    if ! INSTALL_DIR="$INSTALL_DIR" "${BASH:-bash}" "$macos_cli" "$action" llama-server; then
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+        exit 1
+    fi
+}
+
 cmd_stop() {
     check_install
     cd "$INSTALL_DIR"
     load_env
 
     local service="${1:-}"
+    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
+        && _ods_cli_macos_native_llama; then
+        _ods_cli_macos_llama stop
+        return 0
+    fi
     local flags_str
     if ! flags_str=$(get_compose_flags); then
         [[ -n "$service" ]] && service=$(resolve_service "$service")
@@ -1931,6 +2072,15 @@ _ods_cli_repair_rootless_ownership() {
     ods_fix_rootless_ownership "$INSTALL_DIR" "$service"
 }
 
+# The legacy OpenClaw extension was removed. Starts never remove orphan
+# containers, so an upgrade that stopped before its final stack start can leave
+# the old ods-openclaw container running; say how to remove it.
+_ods_cli_warn_legacy_openclaw_container() {
+    if docker container inspect ods-openclaw >/dev/null 2>&1; then
+        warn "The removed legacy OpenClaw container ods-openclaw still exists. Remove it with: docker rm -f ods-openclaw (see docs/MIGRATION-OPENCLAW-TO-HERMES.md)"
+    fi
+}
+
 cmd_start() {
     check_install
     cd "$INSTALL_DIR"
@@ -1954,6 +2104,11 @@ cmd_start() {
     done
     if [[ "$restart_wsl_agent" == false && -n "$service" ]]; then
         error "Deferred WSL agent restart requires a complete stack start."
+    fi
+    if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
+        && _ods_cli_macos_native_llama; then
+        _ods_cli_macos_llama start
+        return 0
     fi
 
     local flags_str
@@ -2016,6 +2171,7 @@ cmd_start() {
 
     if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Starting all services" "${flags[@]}" up -d
+        _ods_cli_warn_legacy_openclaw_container
     else
         _run_hook "$resolved_service" "pre_start"
         _compose_run_with_summary "Starting $resolved_service" "${flags[@]}" up -d "$resolved_service"
@@ -2024,6 +2180,10 @@ cmd_start() {
 
     if [[ "$refresh_soul" == "true" ]]; then
         _ods_cli_refresh_soul || true
+    fi
+
+    if [[ -z "$resolved_service" || "$resolved_service" == "litellm" ]]; then
+        _ods_cli_wait_for_litellm_ready
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
@@ -2062,8 +2222,9 @@ cmd_dry_run() {
         api_key=$(cat "$INSTALL_DIR/data/dashboard-api-key.txt" | tr -d '\r\n ' || true)
     fi
     if [[ -n "$api_key" ]]; then
+        # A header file keeps the key out of argv, which any local user can read.
         api_json=$(curl -sf --max-time 5 \
-            -H "Authorization: Bearer ${api_key}" \
+            -H @<(printf 'Authorization: Bearer %s\n' "$api_key") \
             "http://127.0.0.1:${dashboard_api_port}/api/update/dry-run" 2>/dev/null || true)
     fi
 
@@ -2203,21 +2364,6 @@ cmd_update() {
         return 0
     fi
 
-    ensure_llama_cpu_budget
-
-    # Upsert SHIELD_API_KEY when missing (pre-PR-#1069 upgrade path).
-    # Without it the dashboard Privacy Shield stats panel fails after
-    # update because dashboard-api can no longer authenticate its
-    # proxied /stats call. Mirrors the env-generator.sh upsert pattern.
-    if [[ -z "$(_env_get_raw "SHIELD_API_KEY")" ]]; then
-        _env_set "SHIELD_API_KEY" "$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | xxd -p | tr -d '\n')"
-    fi
-
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-
     # Version compatibility check — warn on major version jumps before touching anything
     if ! _check_version_compat "$force_flag"; then
         exit 0
@@ -2229,23 +2375,38 @@ cmd_update() {
         log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
     fi
 
-    # Pre-update snapshot — safety net before any images are pulled.
-    # Delegates to ods-update.sh (which writes to data/backups/ and includes
-    # extension configs) when available; falls back to ods-backup.sh.
+    # Require the configuration snapshot that `ods rollback` can restore,
+    # before changing configuration, Compose selection, images or containers.
     local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
-    if [[ -x "$INSTALL_DIR/ods-update.sh" ]]; then
-        log "Creating pre-update snapshot (${_snap_label})..."
-        if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
-            warn "Pre-update snapshot failed; proceeding without safety net."
-        fi
-    elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
-        log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" --type user-data --description "$_snap_label"; then
-            warn "Pre-update backup failed; proceeding without safety net."
-        fi
-    else
-        warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
+    if [[ ! -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        error "ods-update.sh is missing or not executable; restore it before updating so a rollback snapshot can be created."
     fi
+    log "Creating pre-update snapshot (${_snap_label})..."
+    if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
+        error "Pre-update snapshot failed. Resolve backup storage and retry; no update was applied."
+    fi
+
+    # Upsert SHIELD_API_KEY when missing (pre-PR-#1069 upgrade path).
+    # Without it the dashboard Privacy Shield stats panel fails after
+    # update because dashboard-api can no longer authenticate its
+    # proxied /stats call. Mirrors the env-generator.sh upsert pattern.
+    if [[ -z "$(_env_get_raw "SHIELD_API_KEY")" ]]; then
+        local shield_key
+        shield_key="$(openssl rand -hex 32 2>/dev/null)" || shield_key=""
+        if [[ ! "$shield_key" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            shield_key="$(od -An -N 32 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')" || shield_key=""
+        fi
+        [[ "$shield_key" =~ ^[0-9a-fA-F]{64}$ ]] \
+            || error "Could not generate SHIELD_API_KEY; existing configuration was preserved."
+        _env_set "SHIELD_API_KEY" "$shield_key"
+    fi
+
+    ensure_llama_cpu_budget
+
+    local flags_str
+    flags_str=$(get_compose_flags)
+    local -a flags
+    read -ra flags <<< "$flags_str"
 
     if ! _ods_cli_pull_external_images "${flags[@]}"; then
         error "Failed to pull latest images"
@@ -2258,6 +2419,11 @@ cmd_update() {
     read -ra flags <<< "$flags_str"
 
     [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
+
+    # Recreating everything recreates Open WebUI too.
+    if _ods_cli_network_access_enabled; then
+        _ods_cli_require_proxy_auth
+    fi
 
     if ! _compose_run_with_summary "Recreating containers with new images" "${flags[@]}" up -d --force-recreate; then
         error "Failed to recreate containers. Run 'ods rollback' to restore previous state."
@@ -2518,6 +2684,7 @@ cmd_config() {
                     success "Extension manifests validated"
                 else
                     warn "Extension manifest validation reported issues. See output above."
+                    return 1
                 fi
             else
                 warn "validate-manifests.sh not found at $INSTALL_DIR/scripts/validate-manifests.sh"
@@ -2637,17 +2804,32 @@ cmd_doctor() {
     fi
 
     # Run doctor script. If it fails to generate a report, show the script output
-    # to make failures actionable for operators.
-    local doctor_out
+    # to make failures actionable for operators. Each run writes a new private
+    # report and only that one is shown: a file already at $report_file (an
+    # earlier run, or another user's in the shared /tmp) must never stand in
+    # for this run (fleet: after a failed run, doctor showed an old install's
+    # model and runtime).
+    local doctor_out run_report
     doctor_out=$(mktemp)
-    "$INSTALL_DIR/scripts/ods-doctor.sh" "$report_file" >"$doctor_out" 2>&1 || true
+    run_report=$(mktemp)
+    "$INSTALL_DIR/scripts/ods-doctor.sh" "$run_report" >"$doctor_out" 2>&1 || true
 
-    if [[ ! -f "$report_file" ]]; then
+    if [[ ! -s "$run_report" ]]; then
         cat "$doctor_out" >&2
-        rm -f "$doctor_out"
-        error "Doctor report not generated at $report_file"
+        rm -f "$doctor_out" "$run_report"
+        echo -e "${RED}✗${NC} The doctor stopped before it finished its report; its output is above." >&2
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+        exit 1
     fi
     rm -f "$doctor_out"
+    # cp names its own failure (for example, another user's file at the
+    # default path); this run's report then stays where it is.
+    if cp -- "$run_report" "$report_file"; then
+        rm -f "$run_report"
+    else
+        warn "This run's report is at $run_report"
+        report_file="$run_report"
+    fi
 
     # JSON mode: just output the report
     if [[ "$json_mode" == "true" ]]; then
@@ -2694,8 +2876,12 @@ checks = [
     ('Docker Daemon', runtime.get('docker_daemon', False)),
     ('Docker Compose', runtime.get('compose_cli', False)),
     ('Dashboard HTTP', runtime.get('dashboard_http', False)),
-    ('WebUI HTTP', runtime.get('webui_http', False)),
 ]
+
+# Reports without an enablement field retain the legacy required check.
+webui_disabled = runtime.get('webui_enabled') is False
+if not webui_disabled:
+    checks.append(('WebUI HTTP', runtime.get('webui_http', False)))
 
 has_failures = False
 for name, status in checks:
@@ -2704,6 +2890,9 @@ for name, status in checks:
     else:
         print(f"  {RED}✗{NC} {name}")
         has_failures = True
+
+if webui_disabled:
+    print(f"  {CYAN}ℹ{NC} WebUI HTTP (not installed)")
 
 llm_backend = runtime.get('llm_backend', {})
 if llm_backend:
@@ -2738,9 +2927,9 @@ dgx_check = runtime.get('dgx_spark_cuda_arch_check', {})
 dgx_status = dgx_check.get('status')
 dgx_message = dgx_check.get('message', '')
 if dgx_status == 'pass':
-    print(f"  {GREEN}✓{NC} DGX Spark llama-server CUDA arch")
+    print(f"  {GREEN}✓{NC} DGX Spark / RTX Spark llama-server CUDA arch")
 elif dgx_status == 'warn':
-    print(f"  {YELLOW}⚠{NC} DGX Spark llama-server CUDA arch: {dgx_message}")
+    print(f"  {YELLOW}⚠{NC} DGX Spark / RTX Spark llama-server CUDA arch: {dgx_message}")
 
 amd_runtime = runtime.get('amd_runtime', {})
 if amd_runtime.get('available'):
@@ -2753,7 +2942,8 @@ if amd_runtime.get('available'):
     )
     for warning in amd_runtime.get('warnings', [])[:3]:
         print(f"    {YELLOW}⚠{NC} {warning}")
-elif amd_runtime.get('reason') and amd_runtime.get('reason') != 'not_amd':
+# API mode runs no local AMD runtime: its reason is not a warning (fleet, Strixy).
+elif amd_runtime.get('reason') and amd_runtime.get('reason') not in ('not_amd', 'api_mode'):
     print(f"  {YELLOW}⚠{NC} AMD runtime: {amd_runtime.get('reason')}")
 
 inference_contract = runtime.get('inference_contract') or {}
@@ -3186,7 +3376,11 @@ cmd_purge() {
 
     # Check if container is still running (disable may have failed to stop it)
     local _container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${_container}$"; then
+    local _running_containers
+    if ! _running_containers=$(docker ps --format '{{.Names}}'); then
+        error "Cannot verify whether $service_id is running. Restore Docker connectivity and retry; data was not deleted."
+    fi
+    if grep -Fxq -- "$_container" <<< "$_running_containers"; then
         error "$service_id container is still running. Run 'ods stop $service_id' first."
     fi
 
@@ -3296,6 +3490,82 @@ cmd_list() {
 # Preset Commands
 #=============================================================================
 PRESETS_DIR="${INSTALL_DIR}/presets"
+
+# Unlike mv, rename never nests a directory inside a competing destination.
+_ods_cli_rename_preset_dir() {
+    "$1" - "$2" "$3" <<'PY'
+import os
+import sys
+
+try:
+    if os.path.lexists(sys.argv[2]):
+        raise FileExistsError("preset destination already exists")
+    os.rename(sys.argv[1], sys.argv[2])
+except OSError as error:
+    print("Could not rename preset directory:", error, file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+# Keep a usable preset until its replacement is completely extracted and
+# validated. Staging beside the destination keeps publication on one filesystem.
+_ods_cli_publish_imported_preset() (
+    local archive="$1" name="$2"
+    local preset_python="${PYTHON_CMD:-python3}"
+    if ! "$preset_python" -c 'import os, sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then
+        warn "Safe preset import requires a working Python 3 runtime. Repair ODS's Python installation and retry; existing presets were retained."
+        return 1
+    fi
+    local stage previous="" published=false
+    stage=$(mktemp -d "$PRESETS_DIR/.import-XXXXXX") || return 1
+    _preset_import_cleanup() {
+        local status=$?
+        trap - EXIT
+        # Finish custody/cleanup decisions even if interrupted while unwinding.
+        trap 'status=130' INT
+        trap 'status=143' TERM
+        if [[ -n "$previous" && ( -e "$previous" || -L "$previous" ) && "$published" != true ]]; then
+            # A signal can land after rename but before published=true, or a
+            # different writer can create the destination. Never merge the
+            # recovery copy into that directory or discard it on ambiguity.
+            if [[ -e "$PRESETS_DIR/$name" || -L "$PRESETS_DIR/$name" ]]; then
+                warn "Preset destination exists. Recovery copy retained at: $previous"
+                exit 1
+            fi
+            if ! _ods_cli_rename_preset_dir "$preset_python" "$previous" "$PRESETS_DIR/$name"; then
+                warn "Could not restore the previous preset. Recovery copy retained at: $previous"
+                exit 1
+            fi
+        fi
+        # Cleanup failure cannot undo an already committed replacement. Keep
+        # its original status and identify any temporary recovery files left.
+        if ! rm -rf -- "$stage"; then
+            warn "Could not remove temporary preset import files. Retained at: $stage"
+        fi
+        exit "$status"
+    }
+    trap _preset_import_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    mkdir "$stage/payload" || return 1
+    tar xzf "$archive" -C "$stage/payload" 2>/dev/null || {
+        warn "Failed to extract archive; existing presets were retained."
+        return 1
+    }
+    [[ -f "$stage/payload/$name/meta.txt" ]] || { warn "Invalid preset: missing meta.txt"; return 1; }
+    [[ -f "$stage/payload/$name/extensions.list" ]] || { warn "Invalid preset: missing extensions.list"; return 1; }
+
+    if [[ -e "$PRESETS_DIR/$name" ]]; then
+        previous="$stage/previous"
+        _ods_cli_rename_preset_dir "$preset_python" "$PRESETS_DIR/$name" "$previous" || return 1
+    fi
+    _ods_cli_rename_preset_dir "$preset_python" "$stage/payload/$name" "$PRESETS_DIR/$name" || {
+        warn "Failed to publish imported preset; restoring the previous preset."
+        return 1
+    }
+    published=true
+)
 
 # Validate preset compatibility with current system
 validate_preset_compatibility() {
@@ -3572,29 +3842,17 @@ META
                 read -p "Overwrite? [y/N] " -n 1 -r || REPLY=""
                 echo ""
                 [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
-                rm -rf "${PRESETS_DIR}/${archive_name}"
             fi
 
-            # Extract archive
+            # Resolve before staging changes tar's extraction directory.
+            [[ "$archive" == /* ]] || archive="$(pwd)/$archive"
             mkdir -p "$PRESETS_DIR"
-            cd "$PRESETS_DIR"
-            if tar xzf "$archive" 2>/dev/null; then
-                # Validate extracted preset
-                if [[ ! -f "${archive_name}/meta.txt" ]]; then
-                    rm -rf "${archive_name}"
-                    error "Invalid preset: missing meta.txt"
-                fi
-                if [[ ! -f "${archive_name}/extensions.list" ]]; then
-                    rm -rf "${archive_name}"
-                    error "Invalid preset: missing extensions.list"
-                fi
-
+            if _ods_cli_publish_imported_preset "$archive" "$archive_name"; then
                 success "Preset '${archive_name}' imported successfully"
                 log "Use 'ods preset load ${archive_name}' to apply it"
             else
-                error "Failed to extract archive"
+                error "Preset import failed"
             fi
-            cd "$INSTALL_DIR"
             ;;
 
         diff|d)
@@ -3802,7 +4060,11 @@ cmd_mode() {
     local configured_backend
     configured_backend=$(grep -m1 "^LLM_BACKEND=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
     if [[ "${configured_backend,,}" == "external" ]]; then
-        error "External LLM routing is installer-managed. Run './install.sh --no-external-llm' first, then retry 'ods mode $mode'."
+        # Fleet row 4: "installer-managed" did not say what to do or where.
+        echo -e "${RED}✗${NC} ODS is in API mode, which only the installer turns on and off. Nothing was changed." >&2
+        echo "  Rerun the ODS installer with --no-external-llm (Windows: -NoExternalLlm), then run 'ods mode $mode' again." >&2
+        echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+        exit 1
     fi
 
     # Update .env
@@ -3985,8 +4247,52 @@ cmd_model() {
             trap - INT TERM HUP
             success "Model activated everywhere: $model (tier ${effective_tier:-$tier}, ctx=${effective_context:-$MAX_CONTEXT})."
             ;;
+        recover)
+            # The dashboard's "Recover model switch" for an interrupted Portal
+            # model switch. --release-unverified releases a switch that
+            # changed nothing when its previous model cannot be proven (fleet
+            # row 27); the agent refuses it for any other switch.
+            command -v curl >/dev/null 2>&1 || error "curl is required for 'ods model recover'"
+            command -v jq >/dev/null 2>&1 || error "jq is required for 'ods model recover'"
+            local body='{}' response_file payload_file http_code phase
+            case "${2:-}" in
+                "") ;;
+                --release-unverified) body='{"releaseUnverified":true}' ;;
+                *) error "Usage: ods model recover [--release-unverified]" ;;
+            esac
+            response_file="$(mktemp)"; payload_file="$(mktemp)"
+            printf '%s' "$body" > "$payload_file"
+            http_code="$(_remote_provider_request POST /api/models/recovery "$response_file" "$payload_file" 410)" || http_code=""
+            rm -f "$payload_file"
+            phase="$(jq -r '.phase // empty' "$response_file" 2>/dev/null || true)"
+            if [[ "$http_code" == 200 ]]; then
+                rm -f "$response_file"
+                if [[ "$phase" == idle ]]; then
+                    success "No model switch is waiting for recovery."
+                else
+                    success "The interrupted model switch was finished; Portal can change models again."
+                fi
+                return 0
+            fi
+            echo -e "${RED}✗${NC} $(
+                if [[ "$http_code" != 409 ]]; then
+                    echo "Recovery could not be confirmed${http_code:+ (HTTP $http_code)}. Run 'ods model recover' again in a minute."
+                elif jq -e '.reason == "model-recovery-proof-required" and .releasable == true' "$response_file" >/dev/null 2>&1; then
+                    echo "ODS could not confirm the model Portal used before this switch, so it cannot finish the switch the usual way."
+                else
+                    echo "The interrupted switch still needs repair. The saved state has been kept."
+                fi)" >&2
+            if [[ "$http_code" == 409 ]] \
+                && jq -e '.reason == "model-recovery-proof-required" and .releasable == true' "$response_file" >/dev/null 2>&1; then
+                echo "  The switch did not change anything. To release it and put Portal back on the model settings it had before, run:" >&2
+                echo "    ods model recover --release-unverified" >&2
+            fi
+            rm -f "$response_file"
+            echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+            exit 1
+            ;;
         *)
-            error "Usage: ods model <current|list|swap>"
+            error "Usage: ods model <current|list|swap|recover>"
             ;;
     esac
 }
@@ -4102,7 +4408,8 @@ Provider options for configure/test/plan configure/plan test:
   --base-url URL          OpenAI-compatible base URL, for example https://gpu.example/v1
   --model MODEL           Provider model id
   --context-length TOKENS Exact provider context window (default 32768)
-  --max-tokens TOKENS     Exact provider output limit (default 4096)
+  --max-tokens TOKENS     Exact provider output limit; Portal writes each file in one reply
+                          (default a quarter of the context window, at most 32768)
   --reasoning true|false  Whether the provider route supports reasoning (default false)
   --ssh-host HOST         SSH server host for ssh transport
   --ssh-user USER         SSH server user for ssh transport
@@ -4232,7 +4539,7 @@ _remote_provider_write_payload() {
     local action="$1" payload_file="$2"
     shift 2
     local transport="direct" base_url="" model="" json_mode="false"
-    local context_length="32768" max_tokens="4096" reasoning="false"
+    local context_length="32768" max_tokens="" max_tokens_explicit="false" reasoning="false"
     local api_key_env="REMOTE_LLM_API_KEY" api_key_env_explicit="false" api_key_file="" api_key_stdin="false"
     local ssh_host="" ssh_user="" ssh_port="22" ssh_inference_host="" ssh_inference_port=""
     local ssh_control_host="" ssh_control_port="" ssh_option_seen="false"
@@ -4261,7 +4568,7 @@ _remote_provider_write_payload() {
             --max-tokens)
                 [[ $# -ge 2 ]] || error "--max-tokens requires a value"
                 provider_option_seen="true"
-                max_tokens="${2:-}"; shift 2 ;;
+                max_tokens="${2:-}"; max_tokens_explicit="true"; shift 2 ;;
             --reasoning)
                 [[ $# -ge 2 ]] || error "--reasoning requires true or false"
                 provider_option_seen="true"
@@ -4356,6 +4663,11 @@ _remote_provider_write_payload() {
         error "--context-length must be an integer from 16384 to 10000000"
     (( context_length >= 16384 && context_length <= 10000000 )) || \
         error "--context-length must be an integer from 16384 to 10000000"
+    # Portal writes each file in one reply; a 4096 default cut off ordinary
+    # game files. Match bin/remote_provider/lifecycle.py.
+    if [[ "$max_tokens_explicit" == "false" ]]; then
+        max_tokens=$(( context_length / 4 < 32768 ? context_length / 4 : 32768 ))
+    fi
     [[ "$max_tokens" =~ ^[1-9][0-9]{0,7}$ ]] || \
         error "--max-tokens must be a positive integer within the context window"
     (( max_tokens <= context_length )) || \
@@ -4472,8 +4784,18 @@ _remote_provider_print_status() {
     local response_file="$1"
     jq -r '
         "Remote provider: \(.status // "unknown")",
+        (if .status == "ready" then
+            "Ready means set up and proven" +
+            (if (.routeState.status.lastProbe.verifiedAt // "") != "" then " at \(.routeState.status.lastProbe.verifiedAt)" else "" end) +
+            "; check that the API answers now with: ods remote-provider test"
+         else empty end),
+        (if .status == "paused" then
+            "An update or a mode change paused it; ODS uses the model on this computer. Use it again with: ods remote-provider enable"
+         else empty end),
         "Route: " + (if .routeState.enabled == true then "enabled" else "disabled" end),
-        "Saved route: " + (if .routeState.resumeAvailable == true then "available" else "none" end),
+        (if .routeState.enabled == true then empty else
+            "Saved route: " + (if .routeState.resumeAvailable == true then "available (resume it with: ods remote-provider enable)" else "none" end)
+         end),
         (if .routeState.enabled == true and .routeState.provider then
             "Provider: \(.routeState.provider.model // "unknown") via \(.routeState.provider.transport // "unknown") at \(.routeState.provider.baseUrl // "unknown")"
          else empty end),
@@ -4493,7 +4815,7 @@ _remote_provider_print_apply_result() {
             (if .applied == true then "applied" else "completed" end),
         "Mutated state: \(.mutated // false)",
         (if .probe then
-            "Probe: HTTP \(.probe.status // "unknown") at \(.probe.endpoint // "/v1/models")" +
+            "Probe: HTTP \(.probe.httpStatus // .probe.status // "unknown") at \(.probe.endpoint // "/v1/models")" +
             (if (.probe.modelCount // null) != null then " (\(.probe.modelCount) models)" else "" end)
          else empty end),
         (if .rollback.attempted == true then
@@ -4584,12 +4906,12 @@ _remote_provider_peer_call() {
     fi
     if [[ $curl_status -ne 0 ]]; then
         rm -f "$response_file"; trap - INT TERM HUP
-        error "Remote-provider peer model request failed before Dashboard API completed"
+        _remote_provider_fail "Remote-provider peer model request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
     fi
     if [[ "$http_code" != "200" ]]; then
         detail="$(_remote_provider_response_error "$response_file")"
         rm -f "$response_file"; trap - INT TERM HUP
-        error "Remote-provider peer model request failed (HTTP $http_code): $detail"
+        _remote_provider_fail "Remote-provider peer model request failed (HTTP $http_code): $detail"
     fi
     printf '%s' "$response_file"
     trap - INT TERM HUP
@@ -4660,20 +4982,36 @@ _remote_provider_probe_configured() {
     fi
     if [[ $curl_status -ne 0 ]]; then
         rm -f "$response_file"; trap - INT TERM HUP
-        error "Remote-provider test request failed before Dashboard API completed"
+        _remote_provider_fail "Remote-provider test request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
     fi
     if [[ "$http_code" != "200" ]]; then
         local detail
         detail="$(_remote_provider_response_error "$response_file")"
         rm -f "$response_file"; trap - INT TERM HUP
-        error "Remote-provider test failed (HTTP $http_code): $detail"
+        _remote_provider_fail "Remote-provider test failed (HTTP $http_code): $detail"
     fi
     if [[ "$json_mode" == "true" ]]; then
         jq . "$response_file"
     else
         _remote_provider_print_probe_result "$response_file"
     fi
+    local not_serving
+    not_serving="$(_remote_provider_not_serving_reason "$response_file")"
     rm -f "$response_file"; trap - INT TERM HUP
+    if [[ -n "$not_serving" ]]; then
+        _remote_provider_fail "The remote provider is not answering chats ($not_serving). ODS kept its settings. Check the provider, then run 'ods remote-provider test' again; meanwhile 'ods remote-provider disable' switches ODS to the model on this computer."
+    fi
+}
+
+# The provider listed its models, but the active route served no chat: the
+# provider's own answer (fleet 2026-10-18: an outage read "probe: ok").
+_remote_provider_not_serving_reason() {
+    # The provider wrote the message; _remote_provider_fail prints with echo -e,
+    # so no backslash may reach it.
+    jq -r 'if .routeProof.reason == "provider_not_serving" then
+            "HTTP \(.routeProof.providerStatus // "error")" +
+            (if (.routeProof.providerMessage // "") != "" then ": \(.routeProof.providerMessage | gsub("\\\\"; ""))" else "" end)
+        else empty end' "$1"
 }
 
 cmd_remote_provider_peer_models() {
@@ -4834,13 +5172,13 @@ cmd_remote_provider() {
             fi
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider status request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider status request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
                 detail="$(_remote_provider_response_error "$response_file")"
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider status failed (HTTP $http_code): $detail"
+                _remote_provider_fail "Remote-provider status failed (HTTP $http_code): $detail"
             fi
             if [[ "$json_mode" == "true" ]]; then
                 jq . "$response_file"
@@ -4873,13 +5211,13 @@ cmd_remote_provider() {
             rm -f "$payload_file"
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider plan request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider plan request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
                 detail="$(_remote_provider_response_error "$response_file")"
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider plan failed (HTTP $http_code): $detail"
+                _remote_provider_fail "Remote-provider plan failed (HTTP $http_code): $detail"
             fi
             jq . "$response_file"
             rm -f "$response_file"; trap - INT TERM HUP
@@ -4904,13 +5242,13 @@ cmd_remote_provider() {
             fi
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider enable request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider enable request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
                 detail="$(_remote_provider_response_error "$response_file")"
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider enable failed (HTTP $http_code): $detail"
+                _remote_provider_fail "Remote-provider enable failed (HTTP $http_code): $detail"
             fi
             if [[ "$json_mode" == "true" ]]; then
                 jq . "$response_file"
@@ -4968,13 +5306,13 @@ cmd_remote_provider() {
             rm -f "$payload_file"
             if [[ $curl_status -ne 0 ]]; then
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider $subcmd request failed before Dashboard API completed"
+                _remote_provider_fail "Remote-provider $subcmd request failed before Dashboard API completed ($(_remote_provider_transport_reason "$curl_status"))"
             fi
             if [[ "$http_code" != "200" ]]; then
                 local detail
                 detail="$(_remote_provider_response_error "$response_file")"
                 rm -f "$response_file"; trap - INT TERM HUP
-                error "Remote-provider $subcmd failed (HTTP $http_code): $detail"
+                _remote_provider_fail "Remote-provider $subcmd failed (HTTP $http_code): $detail"
             fi
             if [[ "${REMOTE_PROVIDER_JSON_MODE:-false}" == "true" ]]; then
                 jq . "$response_file"
@@ -5130,6 +5468,77 @@ cmd_rollback() {
     bash "$INSTALL_DIR/ods-update.sh" rollback ${target:+"$target"}
 }
 
+_agent_mode_snapshot() {
+    local key port host payload
+    key="$(_env_get_raw ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(_env_get_raw DASHBOARD_API_KEY)"
+    case "$key" in
+        \"*\") key="${key:1:${#key}-2}" ;;
+        \'*\') key="${key:1:${#key}-2}" ;;
+    esac
+    [[ -n "$key" && "$key" != *$'\n'* && "$key" != *$'\r'* ]] || return 1
+    port="$(_env_get_raw ODS_AGENT_PORT)"
+    port="${port#\"}"; port="${port%\"}"
+    port="${port#\'}"; port="${port%\'}"
+    [[ "$port" =~ ^[0-9]+$ ]] || port=7710
+    host="$(_agent_probe_host)"
+    # Keep credentials off argv and out of diagnostics, including on failure.
+    payload=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 3 --header @- \
+            "http://${host}:${port}/v1/model/config" 2>/dev/null) || return 1
+    printf '%s' "$payload" | jq -ers 'select(length == 1) | .[0] |
+        select(.configuredMode == "local" or .configuredMode == "cloud" or .configuredMode == "hybrid") |
+        select(.effectiveMode == "local" or .effectiveMode == "cloud" or .effectiveMode == "hybrid" or .effectiveMode == "unknown") |
+        [.effectiveMode, .configuredMode] | join(" ")' 2>/dev/null
+}
+
+_agent_refresh_mode() {
+    local snapshot effective configured expected attempt
+    expected="${1:-}"
+    expected="${expected#\"}"; expected="${expected%\"}"
+    expected="${expected#\'}"; expected="${expected%\'}"
+    expected="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
+    [[ "$expected" != lemonade ]] || expected=local
+    case "$expected" in
+        local|cloud|hybrid) ;;
+        *) log_error "The restarted stack's ODS mode is unknown. Check .env and run 'ods restart' before changing models."; return 1 ;;
+    esac
+    if ! snapshot="$(_agent_mode_snapshot)"; then
+        log_error "Services restarted, but the host-agent runtime mode could not be verified. Run 'ods agent restart', then 'ods restart' before changing models."
+        return 1
+    fi
+    read -r effective configured <<< "$snapshot"
+    if [[ "$configured" != "$expected" ]]; then
+        log_error "ODS mode changed during the stack restart. Run 'ods restart' to apply the current configuration."
+        return 1
+    fi
+    [[ "$effective" != "$configured" ]] || return 0
+    # Unknown startup mode means this process started without a valid mode.
+    # A fresh authenticated configured mode plus the completed stack restart
+    # authorizes restarting it; it does not authorize bypassing the swap gate.
+    log "Refreshing host agent for $configured mode (startup mode: $effective)..."
+    if ! cmd_agent restart; then
+        log_error "Services restarted, but the host agent did not restart. Run 'ods agent restart', then 'ods restart' before changing models."
+        return 1
+    fi
+    for attempt in {1..10}; do
+        if snapshot="$(_agent_mode_snapshot)"; then
+            read -r effective configured <<< "$snapshot"
+            if [[ "$configured" != "$expected" ]]; then
+                log_error "ODS mode changed again during restart. Run 'ods restart' to apply the current configuration."
+                return 1
+            fi
+            if [[ "$effective" == "$configured" ]]; then
+                success "Host agent is running in $configured mode"
+                return 0
+            fi
+        fi
+        sleep 0.5
+    done
+    log_error "The restarted host agent has not confirmed $expected mode. Check 'ods agent logs', then run 'ods restart' before changing models."
+    return 1
+}
+
 cmd_agent() {
     check_install
     load_env 2>/dev/null || true
@@ -5176,6 +5585,9 @@ cmd_agent() {
     fi
 
     case "$action" in
+        refresh-mode)
+            _agent_refresh_mode "${2:-}"
+            ;;
         status)
             if _agent_health_ready; then
                 success "ODS host agent: running (port ${port}, ${daemon_type})"
@@ -5191,8 +5603,12 @@ cmd_agent() {
                         success "Agent started (LaunchAgent)" || warn "Agent start failed"
                     ;;
                 systemd)
-                    sudo systemctl start ods-host-agent.service 2>/dev/null && \
-                        success "Agent started (systemd)" || warn "Agent start failed"
+                    if sudo systemctl start ods-host-agent.service 2>/dev/null; then
+                        success "Agent started (systemd)"
+                    else
+                        log_error "Agent start failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -5249,8 +5665,12 @@ cmd_agent() {
                         success "Agent stopped" || warn "Agent not running"
                     ;;
                 systemd)
-                    sudo systemctl stop ods-host-agent.service 2>/dev/null && \
-                        success "Agent stopped" || warn "Agent not running"
+                    if sudo systemctl stop ods-host-agent.service 2>/dev/null; then
+                        success "Agent stopped"
+                    else
+                        log_error "Agent stop failed"
+                        return 1
+                    fi
                     ;;
                 *)
                     if [[ -f "$pid_file" ]]; then
@@ -5302,8 +5722,18 @@ _gpu_status() {
         echo -e "${BLUE}━━━ GPU Status (1 integrated GPU) ━━━${NC}"
         echo ""
     else
-        local gpu_count
-        gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        local gpu_count=0
+        if [[ "${GPU_BACKEND:-}" == "amd" ]]; then
+            local card_dir vendor
+            for card_dir in /sys/class/drm/card*/device; do
+                [[ -r "$card_dir/vendor" ]] || continue
+                # A device may disappear during enumeration; skip unreadable vendors.
+                vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
+                [[ "$vendor" == "0x1002" ]] && gpu_count=$((gpu_count + 1))
+            done
+        elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi &>/dev/null; then
+            gpu_count=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ') || gpu_count=0
+        fi
         echo -e "${BLUE}━━━ GPU Status (${gpu_count} GPU$([ "$gpu_count" -ne 1 ] && echo s)) ━━━${NC}"
         echo ""
     fi
@@ -5392,7 +5822,7 @@ _gpu_status() {
         for card_dir in /sys/class/drm/card*/device; do
             [[ -f "$card_dir/vendor" ]] || continue
             local vendor
-            vendor=$(cat "$card_dir/vendor" 2>/dev/null)
+            vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
             [[ "$vendor" == "0x1002" ]] || continue
             local name vram_total vram_used busy temp_c pw_w
             name=$(cat "$card_dir/product_name" 2>/dev/null || echo "AMD Radeon")
@@ -5408,7 +5838,7 @@ _gpu_status() {
                 for label_file in "$hwmon_dir"/temp*_label; do
                     [[ -f "$label_file" ]] || continue
                     local label_val
-                    label_val=$(cat "$label_file" 2>/dev/null)
+                    label_val=$(cat "$label_file" 2>/dev/null) || continue
                     if [[ "$label_val" == "junction" || "$label_val" == "edge" ]]; then
                         local input_file="${label_file/_label/_input}"
                         if [[ -f "$input_file" ]]; then
@@ -5503,7 +5933,8 @@ _gpu_status() {
         _total_mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
         if command -v jq >/dev/null 2>&1; then
             _gpu_cores=$(system_profiler SPDisplaysDataType -json 2>/dev/null \
-                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null)
+                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null) || _gpu_cores="?"
+            [[ -n "$_gpu_cores" ]] || _gpu_cores="?"
         else
             _gpu_cores="?"
         fi
@@ -5841,12 +6272,18 @@ _gpu_reassign_update_amd_arch_env() {
         gfx_ver=""
     fi
 
-    if [[ "$gfx_ver" == "gfx1151" ]]; then
-        _env_set "HSA_OVERRIDE_GFX_VERSION" "11.5.1"
-        _env_set "LEMONADE_LLAMACPP_ROCM_BIN" "/opt/llama-custom/llama-server"
+    # ROCm image only, and only for a GPU it was not built for; the Vulkan
+    # image never reads it (installers/lib/amd-runtime.sh).
+    local hsa_override=""
+    if [[ -f "$INSTALL_DIR/installers/lib/amd-runtime.sh" ]]; then
+        # shellcheck source=installers/lib/amd-runtime.sh
+        . "$INSTALL_DIR/installers/lib/amd-runtime.sh"
+        hsa_override="$(ods_amd_hsa_override_for_target "${AMD_INFERENCE_BACKEND:-vulkan}" "$gfx_ver")"
+    fi
+    if [[ -n "$hsa_override" ]]; then
+        _env_set "HSA_OVERRIDE_GFX_VERSION" "$hsa_override"
     else
         _env_unset "HSA_OVERRIDE_GFX_VERSION"
-        _env_unset "LEMONADE_LLAMACPP_ROCM_BIN"
     fi
 }
 
@@ -5888,7 +6325,7 @@ _gpu_reassign() {
         topo_detect_fn="detect_nvidia_topo"
         if ! command -v nvidia-smi &>/dev/null; then
             warn "nvidia-smi not found — GPU reassignment unavailable"
-            return
+            return 1
         fi
     fi
 
@@ -5955,7 +6392,7 @@ _gpu_reassign() {
         unset WHISPER_GPU_UUID COMFYUI_GPU_UUID EMBEDDINGS_GPU_UUID
         unset WHISPER_GPU_INDEX COMFYUI_GPU_INDEX EMBEDDINGS_GPU_INDEX
         unset ROCR_VISIBLE_DEVICES HSA_OVERRIDE_GFX_VERSION
-        unset LEMONADE_LLAMACPP_ROCM_BIN VIDEO_GID RENDER_GID
+        unset VIDEO_GID RENDER_GID
         load_env
     }
 
@@ -5985,12 +6422,7 @@ _gpu_reassign() {
             || return 1
 
         local llm_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-11434}}"
-        local llm_base_path="${LLM_API_BASE_PATH:-}"
-        if [[ -z "$llm_base_path" ]]; then
-            [[ "${GPU_BACKEND:-nvidia}" == "amd" ]] \
-                && llm_base_path="/api/v1" \
-                || llm_base_path="/v1"
-        fi
+        local llm_base_path="${LLM_API_BASE_PATH:-/v1}"
         llm_base_path="/${llm_base_path#/}"
         llm_base_path="${llm_base_path%/}"
         local models_response model_id completion_payload completion_response
@@ -6193,13 +6625,10 @@ _gpu_reassign() {
             read -r _para
             case "${_para:-tensor}" in
                 tensor|hybrid)
-                    # NVIDIA: CUDA row split is not fleet-qualified and fails at
-                    # model load from llama.cpp b9890, so use layer split.
-                    if [[ "$backend" == "nvidia" ]]; then
-                        split_mode_m="layer"
-                    else
-                        split_mode_m="row"
-                    fi
+                    # Layer split on every GPU: CUDA row split fails at model
+                    # load from llama.cpp b9890, Vulkan has no row split, and
+                    # the HIP backend shares CUDA's split code.
+                    split_mode_m="layer"
                     parallelism_mode_m="tensor"
                     tensor_split_m=$(printf '1,%.0s' $(seq 1 "$llama_gpu_count"))
                     tensor_split_m="${tensor_split_m%,}"
@@ -6374,10 +6803,10 @@ _gpu_reassign() {
 
     local _para_mode
     _para_mode=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
-    # NVIDIA uses layer split for every multi-GPU mode (CUDA row split fails
-    # at model load from llama.cpp b9890). AMD keeps row for tensor/hybrid.
+    # Layer split for every multi-GPU mode: CUDA row split fails at model load
+    # from llama.cpp b9890, and Vulkan has no row split.
     case "$_para_mode" in
-        tensor|hybrid) if [[ "$backend" == "nvidia" ]]; then split_mode="layer"; else split_mode="row"; fi ;;
+        tensor|hybrid) split_mode="layer" ;;
         pipeline)      split_mode="layer" ;;
         *)             split_mode="none" ;;
     esac
@@ -6795,7 +7224,7 @@ ${CYAN}Commands:${NC}
   preset <action>     Save/load/list/delete/export/import presets
   mode [local|cloud|hybrid]
                       Switch between local/cloud/hybrid modes
-  model [current|list|swap]
+  model [current|list|swap|recover]
                       View or change the local LLM model tier
   remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]
                       Configure, test, disable, or inspect remote GPU provider routing
@@ -6847,6 +7276,7 @@ ${CYAN}Model Commands:${NC}
   model current       Show current model
   model list          List available tiers
   model swap <tier>   Switch to a different model tier
+  model recover       Finish an interrupted Portal model switch
 
 ${CYAN}Dashboard Sign-in:${NC}
   dashboard-login     Set up or recover your dashboard password with a one-time link

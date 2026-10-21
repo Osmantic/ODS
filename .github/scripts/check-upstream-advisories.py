@@ -29,8 +29,6 @@ PINS = [
      r'ghcr\.io/berriai/litellm:v([0-9][0-9.]*)', 'pip', 'litellm', 'BerriAI/litellm'),
     ('OpenClaw (Pixel runtime)', 'ods/vendor/pixel/OPENCLAW-COMPATIBILITY.json',
      r'"openclaw":\s*"([0-9][0-9.]*)"', 'npm', 'openclaw', 'openclaw/openclaw'),
-    ('OpenClaw (legacy opt-in extension)', 'ods/extensions/services/openclaw/compose.yaml',
-     r'ghcr\.io/openclaw/openclaw:([0-9][0-9.]*)@', 'npm', 'openclaw', 'openclaw/openclaw'),
     ('OpenCode (macOS install)', 'ods/installers/macos/lib/constants.sh',
      r'OPENCODE_VERSION="([0-9][0-9.]*)"', 'npm', 'opencode-ai', None),
 ]

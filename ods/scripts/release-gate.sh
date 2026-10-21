@@ -13,7 +13,10 @@ elif command -v python >/dev/null 2>&1; then
 fi
 
 echo "[gate] shell syntax"
-mapfile -t sh_files < <(git ls-files '*.sh')
+sh_files=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && sh_files+=("$f")
+done < <(git ls-files '*.sh')
 for f in "${sh_files[@]}"; do
   bash -n "$f"
 done

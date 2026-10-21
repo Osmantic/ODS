@@ -342,7 +342,8 @@ async def get_update_dry_run():
         if version["check_status"] == "current-unknown":
             version_check_error = "Installed version is unknown; automatic version comparison is unavailable."
     except (httpx.HTTPError, httpx.TimeoutException, OSError, json.JSONDecodeError, ValueError) as e:
-        version_check_error = f"Could not reach GitHub: {e}"
+        logger.warning("update dry-run version check failed: %s", e)
+        version_check_error = "Could not reach GitHub"
 
     # ── configured image tags from compose files ──────────────────────────────
     images: list[str] = []

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadArtifactBytes } from '../lib/pixelArtifacts'
 
-export default function PixelArtifactDownload({ preview, file }) {
+export default function PixelArtifactDownload({ preview, file, inline = false, children }) {
   const [state, setState] = useState('idle')
   const pending = useRef(null)
   useEffect(() => () => { pending.current?.abort(); pending.current = null }, [])
@@ -45,7 +45,7 @@ export default function PixelArtifactDownload({ preview, file }) {
     }
   }
   return <span>
-    <button type="button" onClick={download} disabled={state === 'loading'} aria-label={`Download ${file.path}`}>{state === 'loading' ? 'Verifying download…' : 'Download'}</button>
+    <button type="button" onClick={download} disabled={state === 'loading'} className={inline ? 'text-theme-accent-light underline' : undefined} aria-label={`Download ${inline ? 'verified ' : ''}${file.path}`}>{state === 'loading' ? 'Verifying download…' : children ?? 'Download'}</button>
     {state === 'saved' && <small role="status">Verified download started</small>}
     {state === 'error' && <small role="alert">Download could not be verified. Try again.</small>}
   </span>

@@ -28,6 +28,10 @@ def public_plan(value):
 
 
 def goal_prompt(row, agent, answer=''):
+    # Pixel's goal note points its language rule at the owner's words, and its
+    # stop synthesis reads them: the goal before "Continue this goal from the
+    # saved work." and the "Owner's answers:" (pixel-agent
+    # plugin/response-language.mjs).
     plan = agent.get('goal_plan')
     answers = agent.get('goal_answers', '')
     if answer:
@@ -47,7 +51,7 @@ def goal_prompt(row, agent, answer=''):
             "Continue this goal from the saved work. Do only unfinished work. "
             "Inspect uncertain effects before acting; never repeat a completed write or publication. "
             "Use pixel_ods_goal to record actual progress and completion; preserve existing step IDs and titles. "
-            "When everything is done, report completed through that tool and deliver the actual final answer in the owner's language. "
+            "When everything is done, report completed through that tool and deliver the actual final answer. "
             "Ask the owner with pixel_ods_ask_user when their input is necessary. "
             "All existing tool permissions still apply. Do not create other agents.\n"
             f"Conversation context (background only):\n{row['context'][:600]}\n"

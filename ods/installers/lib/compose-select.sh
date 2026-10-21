@@ -128,34 +128,40 @@ ods_gateway_assert_no_managed_inference() {
     return 0
 }
 
-# Check both installer selectors, including the accepted truthy marker values.
-ods_external_lemonade_requested() {
-    local external="${LEMONADE_EXTERNAL:-false}" runtime="${AMD_INFERENCE_RUNTIME:-}" managed="${AMD_INFERENCE_MANAGED:-}"
-    case "${external,,}" in true|1|yes|on) return 0 ;; esac
-    [[ "${runtime,,}" == lemonade && "${managed,,}" == false ]]
-}
-
-# An external Lemonade install may still run the ODS model-router for Pixel,
-# but it must never pull or launch the ODS-owned llama-server. Check the
-# effective service set because inherited profiles can override an overlay.
-ods_external_lemonade_assert_no_managed_llama() {
+# A host-native install (llama-server.exe on Windows, this stack in WSL) still
+# runs the ODS model-router for Pixel, but it must never pull or launch the
+# in-stack llama-server. Check the effective service set because inherited
+# profiles can override an overlay.
+ods_host_native_assert_no_managed_llama() {
     local services compose_root="${INSTALL_DIR:-$PWD}"
     services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
     if grep -qx 'llama-server' <<< "$services"; then
-        printf 'External Lemonade Compose includes ODS-managed llama-server. Check ODS_MODE and clear COMPOSE_PROFILES.\n' >&2
+        printf 'Host-native llama-server Compose also starts the in-stack llama-server. Clear COMPOSE_PROFILES and retry.\n' >&2
         return 1
     fi
     return 0
 }
 
+# Supply the early checks' placeholder GID to Compose. On a fresh install Phase
+# 05 selects "sudo docker compose" because the new docker group does not apply
+# to the running session yet, and sudo does not pass exported variables, so
+# hand the value to Compose explicitly. Call only inside a subshell function.
+_ods_compose_placeholder_pixel_gid() {
+    export PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID:-1}"
+    # An inherited real GID also needs forwarding when the initial .env still
+    # has no installed identity. Keep the command-string assignment numeric.
+    [[ "$PIXEL_INGRESS_GID" =~ ^[1-9][0-9]*$ ]] || return 1
+    if [[ "${DOCKER_COMPOSE_CMD:-}" == "sudo "* ]]; then
+        DOCKER_COMPOSE_CMD="sudo env PIXEL_INGRESS_GID=$PIXEL_INGRESS_GID ${DOCKER_COMPOSE_CMD#sudo }"
+    fi
+}
+
 # Before image pulls, Pixel's ingress group has not been created yet. Supply
 # an ephemeral numeric GID only for Compose's read-only service selection.
 # Phase 11 still validates the installed identity and uses the strict helper.
-ods_external_lemonade_assert_no_managed_llama_before_pixel_identity() (
-    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
-        export PIXEL_INGRESS_GID=1
-    fi
-    ods_external_lemonade_assert_no_managed_llama "$@"
+ods_host_native_assert_no_managed_llama_before_pixel_identity() (
+    _ods_compose_placeholder_pixel_gid || return 1
+    ods_host_native_assert_no_managed_llama "$@"
 )
 
 # A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
@@ -176,8 +182,6 @@ ods_compose_assert_no_webui() {
 # within this read-only early check. Phase 11 validates the real installed GID
 # before starting containers and repeats the no-WebUI check.
 ods_compose_assert_no_webui_before_pixel_identity() (
-    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
-        export PIXEL_INGRESS_GID=1
-    fi
+    _ods_compose_placeholder_pixel_gid || return 1
     ods_compose_assert_no_webui "$@"
 )

@@ -28,11 +28,16 @@ def check_platform(runner=_run, release=None):
     release = platform.release() if release is None else release
     if 'microsoft' not in release.lower():
         return False
-    if 'docker desktop' not in runner(
-        ['docker', 'info', '--format', '{{.OperatingSystem}}'], timeout=20
-    ).lower():
+    # A stopped engine, an absent CLI, or a socket this user cannot read is an
+    # ordinary WSL state, not an internal failure. Only a Docker Desktop engine
+    # reaches the managed NAT route; anything else stays unmanaged and leaves
+    # the environment untouched, so the caller reports the real reason instead
+    # of an opaque {'error': 'internal'}.
+    try:
+        os_name = runner(['docker', 'info', '--format', '{{.OperatingSystem}}'], timeout=20)
+    except (OSError, subprocess.SubprocessError):
         return False
-    return True
+    return 'docker desktop' in os_name.lower()
 
 
 def check_root(root, uid=None):
@@ -48,7 +53,13 @@ def check_root(root, uid=None):
 
 
 def detect_address(runner=_run):
-    records = json.loads(runner(['ip', '-j', '-4', 'address', 'show', 'dev', 'eth0'], timeout=10))
+    try:
+        records = json.loads(runner(['ip', '-j', '-4', 'address', 'show', 'dev', 'eth0'], timeout=10))
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # A missing iproute2, a failed query, or unparseable output all mean the
+        # same thing here: there is no trustworthy address to bind. 'internal'
+        # sent that to main()'s catch-all and told callers a bug had occurred.
+        raise HelperError('address') from None
     choices = [item['local'] for interface in records if 'UP' in interface['flags']
                for item in interface['addr_info'] if item['scope'] == 'global' and item.get('family') == 'inet']
     if len(choices) != 1 or not any(ipaddress.ip_address(choices[0]) in net for net in PRIVATE):
@@ -168,7 +179,14 @@ def run(root, uid=None, runner=_run, detect=None, release=None):
     bind, host, mode, explicit = parse_env(original)
     if explicit and not mode:
         return {'changed': False, 'mode': 'explicit', 'address': None}
-    network_mode = runner(['wslinfo', '--networking-mode'], timeout=10).strip()
+    try:
+        network_mode = runner(['wslinfo', '--networking-mode'], timeout=10).strip()
+    except (OSError, subprocess.SubprocessError):
+        # An absent or unusable probe is a networking condition, not an internal
+        # fault, so it must not reach main()'s catch-all. A failed probe cannot
+        # rule out mirroring, so the mode stays unknown and the caller fails
+        # loudly rather than guessing NAT and writing a bind it cannot justify.
+        raise HelperError('networking') from None
     if network_mode == 'mirrored' and not mode:
         return {'changed': False, 'mode': 'unmanaged', 'address': None}
     if network_mode != 'nat':

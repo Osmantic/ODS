@@ -56,7 +56,8 @@ async def test_status_starts_all_observations_before_waiting(monkeypatch, cancel
                 assert body['activation'] == activation
                 assert body['egress'] == egress
                 assert body['sshSupervisor'] == ssh
-                assert body['status'] == 'degraded'
+                # conftest's ODS_MODE=local: drift on a local install is a pause.
+                assert body['status'] == 'paused'
                 assert body['capabilities']['inference'] is False
         finally:
             release.set()

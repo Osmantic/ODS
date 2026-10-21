@@ -17,6 +17,8 @@ services:
       # auth.<name>.local, etc.). Falls back to "ods" if .env is missing
       # the value, so the proxy still comes up on a fresh box.
       - ODS_DEVICE_NAME=${ODS_DEVICE_NAME:-ods}
+      # Keep the bare-host redirect on the same published listener.
+      - ODS_PROXY_PORT=${ODS_PROXY_PORT:-80}
     volumes:
       - ./extensions/services/ods-proxy/Caddyfile:/etc/caddy/Caddyfile:ro,z
       # Caddy persists its own state (certs, ACME data) — empty for the
@@ -54,3 +56,9 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  # Open WebUI is reachable through this proxy wherever the proxy is published.
+  # Its start-up treats that like a published port: sign-in on, and no start
+  # while the built-in administrator keeps its default password.
+  open-webui:
+    environment:
+      ODS_WEBUI_PROXY_BIND: "${ODS_PROXY_BIND:-0.0.0.0}"

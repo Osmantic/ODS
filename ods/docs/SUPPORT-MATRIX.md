@@ -1,6 +1,6 @@
 # ODS Support Matrix
 
-Last updated: 2026-10-03
+Last updated: 2026-10-04
 
 ## What Works Today
 
@@ -16,9 +16,9 @@ classes, and any deferred or skipped phases.
 
 | Platform | Status | What you get today |
 |----------|--------|-------------------|
-| **Linux + AMD Strix Halo (ROCm)** | **Fully supported** | Complete install and runtime. Primary development platform. |
+| **Linux + AMD Strix Halo (llama.cpp, Vulkan)** | **Fully supported** | Complete install and runtime. Primary development platform. |
 | **Linux + NVIDIA (CUDA)** | **Supported** | Complete install and runtime. CI checks package-manager detection, prerequisite installation and installer syntax in 11 distro containers (not full installs); maintainers run full installs in a private distro lab, and GPU runtime is validated on real NVIDIA hardware. |
-| **Windows (Docker Desktop + WSL2)** | **Supported** | `.\install.ps1` prepares WSL2, Docker Desktop and Ubuntu, then runs the Linux installer inside Ubuntu with Portal (Pixel) and without Hermes. NVIDIA GPUs run in WSL; AMD GPUs run through Lemonade (Vulkan) on Windows. Count Windows as current release-fleet evidence only when the Windows target is enabled and produces artifacts for that candidate. |
+| **Windows (Docker Desktop + WSL2)** | **Supported** | `.\install.ps1` prepares WSL2, Docker Desktop and Ubuntu, then runs the Linux installer inside Ubuntu with Portal (Pixel) and without Hermes. NVIDIA GPUs run in WSL; AMD GPUs run through llama.cpp's `llama-server.exe` (Vulkan) on Windows. Count Windows as current release-fleet evidence only when the Windows target is enabled and produces artifacts for that candidate. |
 | **macOS (Apple Silicon)** | **Supported** | Complete install and runtime via `./install.sh`. Native Metal inference + Docker services. |
 | **Linux + Intel Arc (SYCL)** | **Experimental** | Hardware detection does not identify Arc yet: pass `--tier ARC` or `--tier ARC_LITE` to use `docker-compose.arc.yml`. Runtime validation on A770/A750 is still pending in this repo. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md). |
 | **Linux + AMD discrete GPU** | **Validation required** | Detected and routed to the AMD overlay; no validated tier/model results yet. |
@@ -39,7 +39,7 @@ Agent gating never changes whether the rest of ODS is supported.
 | Ubuntu 24.04/26.04 or Debian 12, PID1 systemd, model route through the authenticated ODS gateway | Pixel preferred; Hermes remains available |
 | WSL2 running a qualified distro with systemd, using the ODS Linux installer | Same Pixel host path as Linux; Docker Desktop alone does not install it |
 | Apple Silicon macOS, using the ODS macOS installer | Native Pixel enabled by default, with Docker ingress/sandbox services; Hermes disabled while Pixel is selected |
-| Qualified Pixel host using an external OpenAI-compatible or Lemonade endpoint | Pixel uses the selected upstream through the authenticated ODS LiteLLM gateway |
+| Qualified Pixel host using an external OpenAI-compatible endpoint (Lemonade Server included) | Pixel uses the selected upstream through the authenticated ODS LiteLLM gateway |
 | Other supported Linux distributions or WSL1 | Hermes fallback |
 | Legacy native Windows installer (`installers/windows/install-windows.ps1`, not used by `.\install.ps1`) | Hermes; Pixel edge/relay are disabled because no Pixel host runtime is installed |
 
@@ -53,9 +53,9 @@ the bundled [Pixel License for ODS](../vendor/pixel/LICENSE.md).
 | Platform | GPU Path | Installer Tier | Notes |
 |---|---|---|---|
 | Linux (Ubuntu/Debian family) | NVIDIA (llama-server/CUDA) | Tier B | Validated on real high-memory multi-GPU NVIDIA hardware; CI covers package-manager and syntax checks on 11 distros, and full distro installs run in a private lab |
-| Linux (Strix Halo / AMD unified memory) | AMD (Lemonade/ROCm) | Tier A | Primary managed path via `docker-compose.base.yml` + `docker-compose.amd.yml`; validated on real Strix Halo hardware |
+| Linux (Strix Halo / AMD unified memory) | AMD (llama-server, Vulkan; ROCm optional) | Tier A | Primary managed path via `docker-compose.base.yml` + `docker-compose.amd.yml`; validated on real Strix Halo hardware |
 | Linux (Intel Arc A770/A750) | Intel SYCL (llama-server/oneAPI) | **Tier C** | `docker-compose.arc.yml`; builds llama.cpp from `intel/oneapi-basekit`; see [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) |
-| Windows (Docker Desktop + WSL2) | NVIDIA via Docker Desktop; AMD via Lemonade (Vulkan) on Windows | Tier B | `.\install.ps1` runs the Linux installer inside Ubuntu on WSL2 (Portal, no Hermes); the runtime lives in `~/ods` inside Ubuntu. A Windows laptop fleet target tracks Docker Desktop/WSL2 evidence |
+| Windows (Docker Desktop + WSL2) | NVIDIA via Docker Desktop; AMD via `llama-server.exe` (Vulkan) on Windows | Tier B | `.\install.ps1` runs the Linux installer inside Ubuntu on WSL2 (Portal, no Hermes); the runtime lives in `~/ods` inside Ubuntu. A Windows laptop fleet target tracks Docker Desktop/WSL2 evidence |
 | macOS (Apple Silicon) | Metal (native llama-server) | Tier B | Standalone installer (`./install.sh`) with chip detection, native Metal inference, Docker services, and LaunchAgent auto-start; validated on constrained and high-memory Apple Silicon lab hosts |
 
 ## GPU Tier Map
@@ -68,8 +68,8 @@ below are the tier-map fallback, used when the catalog is unavailable.
 | Installer Tier | Hardware | Fallback model | VRAM | Backend |
 |---|---|---|---|---|
 | `NV_ULTRA` | NVIDIA 90 GB+ | Qwen3-Coder-Next (x86_64); Qwen3.6 35B-A3B (arm64) | ≥ 90 GB | CUDA |
-| `SH_LARGE` | AMD Strix Halo 90+ | Qwen3.6 35B-A3B | ≥ 90 GB (unified) | ROCm |
-| `SH_COMPACT` | AMD Strix Halo < 90 GB | Qwen3.6 35B-A3B | < 90 GB (unified) | ROCm |
+| `SH_LARGE` | AMD Strix Halo 90+ | Qwen3.6 35B-A3B | ≥ 90 GB (unified) | Vulkan |
+| `SH_COMPACT` | AMD Strix Halo < 90 GB | Qwen3.6 35B-A3B | < 90 GB (unified) | Vulkan |
 | `4` | NVIDIA 40 GB+ / multi-GPU | Qwen3.6 35B-A3B | ≥ 40 GB | CUDA |
 | `3` | NVIDIA 20 GB+ | Qwen3.5 27B | ≥ 20 GB | CUDA |
 | `ARC` | **Intel Arc ≥ 12 GB** (A770; B580 not yet validated) | Qwen3.5 9B | ≥ 12 GB | **SYCL** |
@@ -85,10 +85,10 @@ below are the tier-map fallback, used when the catalog is unavailable.
 - Pixel uses the native macOS path on Apple Silicon or the qualified Linux/WSL2
   systemd path above. Agent eligibility is distinct from overall ODS support.
 - Linux + NVIDIA is supported and validated on real high-memory NVIDIA hardware. CI checks package-manager detection, prerequisite installation and installer syntax in 11 distro containers (Ubuntu 26.04/24.04/22.04, Debian 12, Mint 21.3, Fedora 41, Rocky 9, Arch, Manjaro, CachyOS, openSUSE Tumbleweed); it does not run full installs.
-- Windows installs via `.\install.ps1`, which runs the Linux installer inside Ubuntu on WSL2 with Docker Desktop. AMD local inference runs in Lemonade (Vulkan) on Windows. Windows support is not inferred from Linux/macOS; treat it as release-current only when a Windows fleet target produces artifacts for that candidate.
+- Windows installs via `.\install.ps1`, which runs the Linux installer inside Ubuntu on WSL2 with Docker Desktop. AMD local inference runs in llama.cpp's `llama-server.exe` (Vulkan) on Windows. Windows support is not inferred from Linux/macOS; treat it as release-current only when a Windows fleet target produces artifacts for that candidate.
 - The legacy native Windows installer (`installers/windows/install-windows.ps1`) is no longer used by `.\install.ps1`.
 - macOS installs via `./install.sh`: native Metal inference, a native Pixel gateway and managed host helpers, plus Docker UI, ingress, sandbox and supporting services. Native Pixel does not require a separate Lima VM or Linux systemd.
-- AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether ODS manages the process. ODS supports its managed AMD Lemonade path and a Linux external Lemonade SDK wrapper path for existing Lemonade installs; see [LEMONADE-SDK-COMPAT.md](LEMONADE-SDK-COMPAT.md).
+- AMD runtime diagnostics are explicit: `.env` records runtime, location, selected backend, supported backends, and whether ODS manages the process. AMD GPUs run on llama.cpp's `llama-server`; a Lemonade Server you run yourself connects as an external OpenAI-compatible server. See [AMD GPUs now run on llama.cpp](MIGRATION-LEMONADE-TO-LLAMACPP.md).
 - AMD discrete GPUs beyond the documented Strix Halo path should be treated as validation-required until the repo has tier/model benchmarks for that hardware.
 - **Intel Arc (SYCL) is Tier C / experimental.** Hardware detection does not identify Arc yet; pass `--tier ARC` or `--tier ARC_LITE`, which selects the Arc compose overlay. ComfyUI and Whisper GPU acceleration are not yet available for Arc. See [INTEL-ARC-GUIDE.md](INTEL-ARC-GUIDE.md) for limitations.
 - Release-readiness claims should cite a matching version/tag, relevant distro-lab evidence, and a real-hardware fleet receipt from [VALIDATION-MATRIX.md](VALIDATION-MATRIX.md).

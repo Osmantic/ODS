@@ -31,6 +31,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
 . "$ODS_DIR/lib/backup-paths.sh"
+. "$SCRIPT_DIR/lib/dashboard-private-state.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -60,15 +61,20 @@ estimate_backup_bytes() {
 
     # user data volumes
     if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
-        local -a user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
-
-        for p in "${user_data_paths[@]}"; do
-            if [[ -d "$ODS_DIR/$p" ]]; then
+        local p
+        while IFS= read -r p; do
+            if [[ "$p" == data/pixel-images ]] && ods_private_images_selected; then
+                # Conservative bound includes SQLite pages/indexes. Do not
+                # estimate from a stale host shadow of the active volume.
+                total=$(( total + 512 * 1024 * 1024 ))
+                continue
+            fi
+            if [[ -e "$ODS_DIR/$p" ]]; then
                 local b
                 b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
                 total=$(( total + ${b:-0} ))
             fi
-        done
+        done < <(ods_backup_data_paths "$ODS_DIR")
     fi
 
     # config files/dir
@@ -297,7 +303,7 @@ create_manifest() {
 
     local user_data_paths_json
     user_data_paths_json=$(
-        printf '%s\n' "${ODS_USER_DATA_PATHS[@]}" \
+        ods_backup_data_paths "$ODS_DIR" \
             | jq -R -s 'split("\n") | map(select(length > 0))'
     )
 
@@ -342,11 +348,17 @@ backup_user_data() {
     local backup_dir="$1"
     log_info "Backing up user data volumes..."
 
-    local user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
-
-    for path in "${user_data_paths[@]}"; do
+    # Entries may be directories or single files; rsync -a keeps file modes,
+    # so a 0600 secret such as dashboard-password.json stays 0600.
+    local path
+    while IFS= read -r path; do
+        if [[ "$path" == data/pixel-images ]] && ods_private_images_selected; then
+            ods_private_images export --path "$backup_dir/$path" || return 1
+            log_success "Backed up: $path (private Docker volume)"
+            continue
+        fi
         local full_path="$ODS_DIR/$path"
-        if [[ -d "$full_path" ]]; then
+        if [[ -e "$full_path" && ! -L "$full_path" ]]; then
             local dest_dir="$backup_dir/$(dirname "$path")"
             mkdir -p "$dest_dir"
             rsync_with_progress "$full_path" "$dest_dir/" "Backing up $path"
@@ -354,7 +366,7 @@ backup_user_data() {
         else
             log_warn "Skipped (not found): $path"
         fi
-    done
+    done < <(ods_backup_data_paths "$ODS_DIR")
 }
 
 # Backup configuration
@@ -466,6 +478,7 @@ compress_backup() {
     backup_name=$(basename "$backup_dir")
     local parent_dir
     parent_dir=$(dirname "$backup_dir")
+    local archive="${2:-$parent_dir/$backup_name.tar.gz}"
 
     # macOS `tar` (bsdtar) embeds AppleDouble `._*` metadata companions when the
     # staged files carry extended attributes (e.g. com.apple.provenance, which the
@@ -474,13 +487,13 @@ compress_backup() {
     # not the backup id — so the whole archive is rejected and macOS users cannot
     # recover their own backups. COPYFILE_DISABLE tells bsdtar to omit that
     # metadata; GNU tar on Linux ignores the variable, so this is a no-op there.
-    COPYFILE_DISABLE=1 tar czf "$parent_dir/$backup_name.tar.gz" -C "$parent_dir" "$backup_name"
+    COPYFILE_DISABLE=1 tar czf "$archive" -C "$parent_dir" "$backup_name"
     # The archive bundles the raw .env (DASHBOARD_API_KEY, session secret, service
     # passwords). Restrict it to the owner rather than leaving it world-readable
     # at the umask default, matching the 0600 the .env itself carries.
-    chmod 600 "$parent_dir/$backup_name.tar.gz"
+    chmod 600 "$archive"
     local compressed_size
-    compressed_size=$(du -sh "$parent_dir/$backup_name.tar.gz" | cut -f1)
+    compressed_size=$(du -sh "$archive" | cut -f1)
 
     # Remove uncompressed version
     rm -rf "$backup_dir"
@@ -489,7 +502,7 @@ compress_backup() {
 }
 
 # Main backup function
-do_backup() {
+do_backup() (
     local backup_type="${1:-user-data}"
     local compress="${2:-false}"
     local description="${3:-}"
@@ -499,6 +512,11 @@ do_backup() {
         return 1
     fi
     [[ "$native_scope" == native-excluded ]] && native_excluded=true
+
+    case "$backup_type" in
+        full|user-data|config) ;;
+        *) log_error "Unknown backup type: $backup_type"; return 1 ;;
+    esac
 
     # Generate backup ID
     local backup_id
@@ -514,40 +532,56 @@ do_backup() {
     # Disk space preflight (best-effort)
     ensure_backup_space "$backup_type"
 
-    # Create backup directory
-    mkdir -p "$backup_dir"
+    # Keep copies, manifests and compression outside the discoverable backup
+    # namespace until all steps succeed. The private parent also protects raw
+    # configuration secrets while the snapshot and archive are being written.
+    local staging_root staged_backup
+    staging_root=$(mktemp -d "$BACKUP_ROOT/.partial-$backup_id.XXXXXX")
+    trap 'rm -rf -- "$staging_root"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    staged_backup="$staging_root/$backup_id"
+    mkdir "$staged_backup"
 
     # Create manifest
-    create_manifest "$backup_dir" "$backup_type" "$description" "$native_excluded"
+    create_manifest "$staged_backup" "$backup_type" "$description" "$native_excluded"
 
     # Perform backup based on type
     case "$backup_type" in
         full)
-            backup_user_data "$backup_dir"
-            backup_config "$backup_dir"
-            backup_cache "$backup_dir"
+            backup_user_data "$staged_backup"
+            backup_config "$staged_backup"
+            backup_cache "$staged_backup"
             ;;
         user-data)
-            backup_user_data "$backup_dir"
+            backup_user_data "$staged_backup"
             ;;
         config)
-            backup_config "$backup_dir"
-            ;;
-        *)
-            log_error "Unknown backup type: $backup_type"
-            rm -rf "$backup_dir"
-            exit 1
+            backup_config "$staged_backup"
             ;;
     esac
 
     # Generate checksums after files are copied into place
-    create_checksums "$backup_dir"
+    create_checksums "$staged_backup"
+    if [[ ! -f "$staged_backup/checksums.sha256" ]]; then
+        log_error "Cannot publish backup without checksums.sha256"
+        return 1
+    fi
 
     # Compress if requested
     if [[ "$compress" == "true" ]]; then
-        compress_backup "$backup_dir"
+        compress_backup "$staged_backup" "$staging_root/$backup_id.tar.gz"
+        staged_backup="$staging_root/$backup_id.tar.gz"
         backup_dir="$BACKUP_ROOT/$backup_id.tar.gz"
     fi
+
+    # Refuse to merge into or replace an existing recovery artifact. Staging is
+    # on the same filesystem, so the completed snapshot becomes visible at once.
+    if [[ -e "$backup_dir" || -L "$backup_dir" ]]; then
+        log_error "Backup destination already exists: $backup_dir"
+        return 1
+    fi
+    mv "$staged_backup" "$backup_dir"
 
     # Apply retention policy
     apply_retention
@@ -561,7 +595,7 @@ do_backup() {
         echo "To restore this backup, run:"
         echo "  ods-restore.sh $backup_id"
     fi
-}
+)
 
 # Verify checksums for an existing backup directory or archive
 verify_backup() {

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack
 from unittest.mock import patch
@@ -191,22 +192,82 @@ class ProjectControllerRuntimeTests(unittest.TestCase):
             def authorized(selected, action, binding):
                 return selected == "project" and action in {"snapshot", "execute", "import", "observe"}
             controller = ProjectController(root, root / "state", image, authorize=authorized)
+            original_run = subprocess.run
+            records = []
+            diagnostic_command = ['docker', 'info', '--format', '{{.MemTotal}}']
+
+            def byte_length(value):
+                if value is None:
+                    return 0
+                if isinstance(value, (bytes, bytearray)):
+                    return len(value)
+                if isinstance(value, str):
+                    return len(value.encode('utf-8', 'replace'))
+                try:
+                    return len(value)
+                except TypeError:
+                    return 0
+
+            def observer(args, *pargs, **kwargs):
+                if not (isinstance(args, (list, tuple)) and len(args) == len(diagnostic_command)
+                        and all(a == b for a, b in zip(args, diagnostic_command))):
+                    return original_run(args, *pargs, **kwargs)
+                started = time.monotonic()
+                record = {'cause': 'observed', 'elapsedSeconds': None, 'returnCode': None,
+                          'errno': None, 'timeout': None, 'stdoutBytes': 0, 'stderrBytes': 0}
+                try:
+                    result = original_run(args, *pargs, **kwargs)
+                except subprocess.TimeoutExpired as exc:
+                    record['cause'] = 'timeout'
+                    timeout = getattr(exc, 'timeout', None)
+                    if timeout is None:
+                        timeout = kwargs.get('timeout')
+                    record['timeout'] = timeout if isinstance(timeout, (int, float)) else None
+                    record['stdoutBytes'] = byte_length(getattr(exc, 'stdout', None))
+                    record['stderrBytes'] = byte_length(getattr(exc, 'stderr', None))
+                    raise
+                except subprocess.CalledProcessError as exc:
+                    record['cause'] = 'called-process-error'
+                    record['returnCode'] = exc.returncode if isinstance(exc.returncode, int) else None
+                    record['stdoutBytes'] = byte_length(getattr(exc, 'stdout', None))
+                    record['stderrBytes'] = byte_length(getattr(exc, 'stderr', None))
+                    raise
+                except OSError as exc:
+                    record['cause'] = 'oserror'
+                    errno = getattr(exc, 'errno', None)
+                    record['errno'] = errno if isinstance(errno, int) else None
+                    raise
+                finally:
+                    record['elapsedSeconds'] = round(time.monotonic() - started, 6)
+                    records.append(record)
+                record['returnCode'] = result.returncode if isinstance(getattr(result, 'returncode', None), int) else None
+                record['stdoutBytes'] = byte_length(getattr(result, 'stdout', None))
+                record['stderrBytes'] = byte_length(getattr(result, 'stderr', None))
+                return result
+
             try:
-                accepted = controller.submit("a" * 64, "project")
-            finally:
-                controller.close()
+                with patch("project_controller.subprocess.run", observer):
+                    try:
+                        accepted = controller.submit("a" * 64, "project")
+                    finally:
+                        controller.close()
+            except BaseException as exc:
+                if records:
+                    exc.add_note("memtotal-observer: " + json.dumps(records, sort_keys=True))
+                raise
             result = controller.observe(accepted["id"])
-            self.assertEqual(result["state"], "succeeded", result)
-            self.assertNotIn("cleanupWarnings", result["output"])
-            self.assertEqual([s["stage"] for s in result["steps"]], ["acquire", "test", "build"])
+            diagnostic = "memtotal-observer: " + json.dumps(records, sort_keys=True)
+            self.assertEqual(result["state"], "succeeded", {'result': result, 'engineInfo': records})
+            self.assertNotIn("cleanupWarnings", result["output"], diagnostic)
+            self.assertEqual([s["stage"] for s in result["steps"]], ["acquire", "test", "build"], diagnostic)
             destination = root / result["output"]["relativeDirectory"] / "index.html"
-            self.assertEqual(destination.read_bytes(), b"<h1>Controller built</h1>")
-            self.assertFalse((project / "out").exists())
+            self.assertEqual(destination.read_bytes(), b"<h1>Controller built</h1>", diagnostic)
+            self.assertFalse((project / "out").exists(), diagnostic)
             reopened = ProjectController(root, root / "state", image, authorize=authorized)
             try:
                 replay = reopened.submit("a" * 64, "project")
-                self.assertEqual(replay["id"], result["id"])
-                self.assertEqual(replay["state"], "succeeded")
-                self.assertFalse(reopened.futures)
+                self.assertEqual(replay["id"], result["id"], diagnostic)
+                self.assertEqual(replay["state"], "succeeded", diagnostic)
+                self.assertFalse(reopened.futures, diagnostic)
             finally:
                 reopened.close()

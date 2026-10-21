@@ -349,7 +349,7 @@ def test_every_setting_the_dialog_can_ask_for_declares_a_format_or_generator():
             if field['format'] is None:
                 unannotated.add(f"{service['id']}:{field['key']}")
     assert unannotated == FREE_FORM
-    assert asked >= 139 and generatable >= 116
+    assert asked >= 138 and generatable >= 116
 
 
 def test_hex_descriptions_match_their_declared_length_and_case():

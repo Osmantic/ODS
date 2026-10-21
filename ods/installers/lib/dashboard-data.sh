@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Dashboard API runs as 1000:1000 and persists passwords and chat receipts at
 # the shared data root. Preserve the install owner's UID; grant that runtime
-# group parent access and retain the API's private chat-result ownership.
+# group parent access and retain the API's private chat and image stores.
 
 # Use available privilege, or let ordinary filesystem permissions decide.
 # ods_sudo deliberately skips optional work when privilege is unavailable.
@@ -13,13 +13,26 @@ _ods_dashboard_mutate() {
     fi
 }
 
+_ods_dashboard_lock_helper_image() {
+    # Reuse the Dashboard API's pinned Python base. BusyBox has no Python.
+    ODS_DASHBOARD_LOCK_IMAGE='python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e'
+    docker_run image inspect "$ODS_DASHBOARD_LOCK_IMAGE" >/dev/null 2>&1 ||
+        docker_run pull "$ODS_DASHBOARD_LOCK_IMAGE"
+}
+
 ods_prepare_dashboard_data() {
-    local install_dir="$1" rootless="$2" target metadata group mode use_docker_repair=false
+    local install_dir="$1" rootless="$2" target private_store metadata group mode lock lock_helper use_docker_repair=false
+    lock_helper="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}/installers/lib/dashboard-lock.py"
     target="$install_dir/data"
     if [[ ! -d "$target" || -L "$target" ]]; then
         echo "[error] Dashboard data must be a real directory: $target" >&2
         return 1
     fi
+    # Create as the installer, without sudo. An existing unreadable lock can be
+    # inspected with O_PATH; neither creation nor repair follows a replacement
+    # symlink. Privileged repair below keeps the same flock inode.
+    lock="$target/.extensions-lock"
+    python3 "$lock_helper" prepare "$target" >/dev/null || return 1
     if [[ "$rootless" == true ]]; then
         use_docker_repair=true
     elif declare -f ods_sudo_available >/dev/null 2>&1 && ! ods_sudo_available; then
@@ -28,16 +41,23 @@ ods_prepare_dashboard_data() {
         # sufficient for this narrowly scoped bind-mount repair.
         metadata=$(stat -c '%g' "$target") || return 1
         [[ "$metadata" == 1000 ]] || use_docker_repair=true
-        if [[ -d "$target/pixel-chat-results" && ! -L "$target/pixel-chat-results" ]]; then
-            metadata=$(stat -c '%u:%g' "$target/pixel-chat-results") || return 1
-            [[ "$metadata" == 1000:1000 ]] || use_docker_repair=true
-        fi
+        metadata=$(stat -c '%g' "$lock") || return 1
+        [[ "$metadata" == 1000 ]] || use_docker_repair=true
+        metadata=$(stat -c '%u' "$lock") || return 1
+        [[ "$metadata" == "$(stat -c '%u' "$target")" && -r "$lock" ]] || use_docker_repair=true
+        for private_store in "$target/pixel-chat-results" "$target/pixel-images"; do
+            if [[ -d "$private_store" && ! -L "$private_store" ]]; then
+                metadata=$(stat -c '%u:%g' "$private_store") || return 1
+                [[ "$metadata" == 1000:1000 ]] || use_docker_repair=true
+            fi
+        done
     fi
     if "$use_docker_repair"; then
         # Host chgrp 1000 is not container GID 1000 in a rootless namespace.
         # The same pinned, offline helper also repairs rootful Docker when
         # the installer has Docker access but no passwordless sudo.
         _ods_rootless_ensure_helper_image || return 1
+        _ods_dashboard_lock_helper_image || return 1
         docker_run run --rm --network none --user 0:0 \
             --mount "type=bind,src=$target,dst=/data" \
             "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
@@ -46,14 +66,20 @@ ods_prepare_dashboard_data() {
                 test "$(stat -c %g /data)" = 1000
                 mode=$(stat -c %a /data)
                 test "$((0$mode & 070))" = 56
-                if test -e /data/pixel-chat-results || test -L /data/pixel-chat-results; then
-                    test -d /data/pixel-chat-results && test ! -L /data/pixel-chat-results || exit 1
-                    if test "$(stat -c %u:%g /data/pixel-chat-results)" != 1000:1000; then
-                        chown -h -R 1000:1000 /data/pixel-chat-results
+                for private_store in /data/pixel-chat-results /data/pixel-images; do
+                    if test -e "$private_store" || test -L "$private_store"; then
+                        test -d "$private_store" && test ! -L "$private_store" || exit 1
+                        if test "$(stat -c %u:%g "$private_store")" != 1000:1000; then
+                            chown -h -R 1000:1000 "$private_store"
+                        fi
+                        test "$(stat -c %u:%g "$private_store")" = 1000:1000
                     fi
-                    test "$(stat -c %u:%g /data/pixel-chat-results)" = 1000:1000
-                fi
-            '
+                done
+            ' || return 1
+        docker_run run --rm -i --network none --user 0:0 --read-only \
+            --security-opt no-new-privileges \
+            --mount "type=bind,src=$target,dst=/data" \
+            "$ODS_DASHBOARD_LOCK_IMAGE" python3 - repair /data < "$lock_helper"
         return $?
     fi
     metadata=$(stat -c '%g:%a' "$target") || return 1
@@ -67,16 +93,21 @@ ods_prepare_dashboard_data() {
     metadata=$(stat -c '%g:%a' "$target") || return 1
     IFS=: read -r group mode <<< "$metadata"
     [[ "$group" == 1000 ]] && (( (8#$mode & 8#070) == 8#070 )) || return 1
-    target="$target/pixel-chat-results"
-    if [[ -e "$target" || -L "$target" ]]; then
-        [[ -d "$target" && ! -L "$target" ]] || return 1
-        metadata=$(stat -c '%u:%g' "$target") || return 1
-        if [[ "$metadata" != 1000:1000 ]]; then
-            # Older generic reinstall repair transferred this private tree
-            # to the installing user. Restore it without following symlinks
-            # or changing modes, files, or other services' data.
-            _ods_dashboard_mutate chown -h -R 1000:1000 "$target" || return 1
+    for private_store in "$target/pixel-chat-results" "$target/pixel-images"; do
+        if [[ -e "$private_store" || -L "$private_store" ]]; then
+            [[ -d "$private_store" && ! -L "$private_store" ]] || return 1
+            metadata=$(stat -c '%u:%g' "$private_store") || return 1
+            if [[ "$metadata" != 1000:1000 ]]; then
+                # Older generic reinstall repair transferred these private
+                # trees to the installing user. Restore them without following
+                # symlinks or changing modes, files, or other services' data.
+                _ods_dashboard_mutate chown -h -R 1000:1000 "$private_store" || return 1
+            fi
+            [[ "$(stat -c '%u:%g' "$private_store")" == 1000:1000 ]] || return 1
         fi
-        [[ "$(stat -c '%u:%g' "$target")" == 1000:1000 ]] || return 1
-    fi
+    done
+    # Ready locks need no elevation; ordinary owner/group authority may also
+    # suffice. A failed repair must propagate if privileged repair is denied.
+    python3 "$lock_helper" repair "$target" >/dev/null 2>&1 ||
+        _ods_dashboard_mutate python3 "$lock_helper" repair "$target" >/dev/null
 }

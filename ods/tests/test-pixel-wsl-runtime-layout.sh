@@ -100,6 +100,17 @@ expect_layout 'Docker Desktop uses shared WSL bridge' \
     /mnt/wsl/ods-portal-runtime/ingress \
     /mnt/wsl/ods-portal-runtime/preview rshared
 
+export MOCK_DOCKER_OS='Docker Desktop (containerized)'
+expect_layout 'containerized Docker Desktop uses shared WSL bridge' \
+    /mnt/wsl/ods-portal-runtime/ingress \
+    /mnt/wsl/ods-portal-runtime/preview rshared
+export MOCK_PROPAGATION=private
+expect_rejection 'containerized Docker Desktop non-shared mount fails closed'
+export MOCK_DOCKER_OS='Docker Desktop alternative' MOCK_PROPAGATION=shared
+expect_layout 'unrecognized Desktop suffix does not select the shared bridge' \
+    /run/ods-pixel /run/ods-pixel-preview rprivate
+export MOCK_DOCKER_OS='Docker Desktop'
+
 DOCKER_CMD='sudo docker'
 export MOCK_DIRECT_DENY=true
 expect_layout 'Docker Desktop via resolved sudo command still uses shared bridge' \

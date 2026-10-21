@@ -27,7 +27,7 @@ const REVISION = '[ODS Pixel next step] Requested text is still missing from the
   'Add the exact text as requested (for example, as the card heading if the owner described it as a card title, ' +
   'or as the page title or h1 if the owner named them), republish with pixel_ods_workspace_preview, and keep everything else unchanged.';
 const NOTE = '[ODS Pixel next step] Requested text not found: "Midnight sold-out concert". Use the owner\'s exact wording, republish and re-inspect.';
-// What the owner received in round 067, byte for byte.
+// Historical requested-text failure, as delivered now (no preview storage note).
 const FAILURE = 'The published page does not contain text the owner requested: "Midnight sold-out concert". ' +
   'The preview is available, but that requirement is not met.\n\n' +
   'Browser inspection passed for the submitted show/hide checks only; this does not verify all requested behavior.\n\n' +

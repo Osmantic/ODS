@@ -145,7 +145,7 @@ chmod +x "$bin_dir/docker" "$bin_dir/sleep"
 : > "$docker_log"
 
 PATH="$bin_dir:$PATH" \
-ODS_HOME="$install_dir" \
+INSTALL_DIR="$install_dir" ODS_HOME="$install_dir" \
 NO_COLOR=1 \
 TEST_DOCKER_LOG="$docker_log" \
 TEST_DOCKER_PULL_COUNT="$pull_count_file" \
@@ -209,7 +209,7 @@ token_before="$(awk -F= '/^HERMES_DASHBOARD_SESSION_TOKEN=/{print $2}' "$install
 }
 
 PATH="$bin_dir:$PATH" \
-ODS_HOME="$install_dir" \
+INSTALL_DIR="$install_dir" ODS_HOME="$install_dir" \
 NO_COLOR=1 \
 TEST_DOCKER_LOG="$docker_log" \
     "$BASH" "$ods_cli" start dashboard > "$tmp_dir/start-after-update.out" 2>&1 || {

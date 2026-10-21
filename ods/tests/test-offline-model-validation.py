@@ -311,17 +311,20 @@ def main() -> int:
             output(result),
         )
 
-    for mode, backend in (("cloud", "litellm"), ("lemonade", "lemonade")):
+    # The Windows Portal's host-native llama-server keeps its GGUF on Windows.
+    for label, route in (
+        ("cloud", "ODS_MODE=cloud\nLLM_BACKEND=litellm\n"),
+        ("host-native", "ODS_MODE=local\nLLM_BACKEND=llama-server\nNATIVE_LLM_BASE_URL=http://localhost:8080\n"),
+    ):
         with temp_root() as root:
             (root / ".env").write_text(
-                f"ODS_MODE={mode}\nLLM_BACKEND={backend}\n"
-                "ENABLE_VOICE=false\nENABLE_EMBEDDINGS=false\nENABLE_RAG=false\n",
+                route + "ENABLE_VOICE=false\nENABLE_EMBEDDINGS=false\nENABLE_RAG=false\n",
                 encoding="utf-8",
             )
             result = run_validator(root)
-            assert_both(root, 0, f"skip host GGUF for {mode}")
+            assert_both(root, 0, f"skip host GGUF for {label}")
             check(
-                f"{mode} skip reason is explicit",
+                f"{label} skip reason is explicit",
                 "[SKIP" in output(result),
                 output(result),
             )

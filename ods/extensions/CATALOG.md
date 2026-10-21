@@ -12,7 +12,7 @@ For adding or authoring extensions, see [EXTENSIONS.md](../docs/EXTENSIONS.md) a
 | open-webui      | Open WebUI (Chat)        | core       | 3000        | amd, nvidia    | Chat UI; talks to llama-server or LiteLLM. |
 | dashboard       | Dashboard (Control Center) | core     | 3001        | amd, nvidia    | Operator control center, model management, service health, and setup UI. |
 | dashboard-api   | Dashboard API            | core       | 3002        | amd, nvidia    | FastAPI backend for dashboard, host-agent integration, setup, models, and health. |
-| litellm         | LiteLLM (API Gateway)   | recommended | 4000       | all            | Unified OpenAI-compatible API gateway for local/cloud/hybrid and Lemonade paths. |
+| litellm         | LiteLLM (API Gateway)   | recommended | 4000       | all            | Unified OpenAI-compatible API gateway for local/cloud/hybrid, host-native and external-server paths. |
 | searxng         | SearXNG (Web Search)     | recommended | 8888      | all            | Privacy-respecting metasearch for web research. |
 | token-spy       | Token Spy (Usage Monitor) | recommended | 3005     | all            | Token and usage monitoring for local/proxied traffic. |
 | hermes          | Hermes Agent             | recommended | internal 9119 | all          | Default generalist agent (Nous Research) with tools, memory, and skills. Not host-bound directly. |
@@ -24,7 +24,6 @@ For adding or authoring extensions, see [EXTENSIONS.md](../docs/EXTENSIONS.md) a
 | embeddings      | TEI (Embeddings)         | optional   | 8090        | all            | Text embeddings service for RAG. |
 | langfuse        | Langfuse (LLM Observability) | optional | 3006      | all            | LLM tracing, evaluations, and prompt management. |
 | n8n             | n8n (Workflows)          | optional   | 5678        | all            | Workflow automation. |
-| openclaw        | OpenClaw (Agents) **(deprecated)** | optional | 7860 | all | Legacy agent framework. **DEPRECATED** — removal planned in the next release. Use `hermes` instead. See [MIGRATION-OPENCLAW-TO-HERMES.md](../docs/MIGRATION-OPENCLAW-TO-HERMES.md). |
 | opencode        | OpenCode (IDE)           | optional   | 3003        | all            | Host-managed browser IDE / coding assistant wired to local inference. |
 | perplexica      | Perplexica (Deep Research) | optional | 3004        | all            | Deep research UI backed by SearXNG and local inference. |
 | privacy-shield  | Privacy Shield           | optional   | 8085        | all            | PII detection and protection proxy. |
@@ -37,7 +36,7 @@ For adding or authoring extensions, see [EXTENSIONS.md](../docs/EXTENSIONS.md) a
 
 - **core** — Always part of the base stack (llama-server, open-webui, dashboard, dashboard-api).
 - **recommended** — Enabled by default in the installer; can be disabled (litellm, searxng, token-spy, hermes, hermes-proxy).
-- **optional** — User opts in during install or later (APE, Brave Search, ComfyUI, ods-proxy, embeddings, Langfuse, n8n, OpenCode, Perplexica, Privacy Shield, Qdrant, Tailscale, TTS, Whisper). `openclaw` is also in this category but is **deprecated** as of 2026-05-12.
+- **optional** — User opts in during install or later (APE, Brave Search, ComfyUI, ods-proxy, embeddings, Langfuse, n8n, OpenCode, Perplexica, Privacy Shield, Qdrant, Tailscale, TTS, Whisper). The legacy `openclaw` extension was removed; see [MIGRATION-OPENCLAW-TO-HERMES.md](../docs/MIGRATION-OPENCLAW-TO-HERMES.md).
 
 ## Ports and .env
 
@@ -72,7 +71,6 @@ extensions/services/
   comfyui/manifest.yaml
   hermes/manifest.yaml
   hermes-proxy/manifest.yaml
-  openclaw/manifest.yaml      # deprecated; removal planned next release
   perplexica/manifest.yaml
   embeddings/manifest.yaml
   litellm/manifest.yaml

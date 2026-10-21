@@ -123,6 +123,27 @@ class SharingStore(ProviderStore):
             current['enabled'] = False
             return public_sharing(self._commit(directory_fd, current, revision))
 
+    def rebind_model(self, old_catalog_id, old_runtime_model_id, catalog_id, runtime_model_id):
+        """Move grants pinned to one model identity to that model's new identity.
+
+        Called only when the host agent replaces a route whose model it serves
+        under a new id (a retired Lemonade id becomes the GGUF alias), so the
+        owner's grants for the same model keep working. Returns how many moved.
+        """
+        if not all(_text(value) for value in (old_catalog_id, old_runtime_model_id, catalog_id, runtime_model_id)):
+            raise StoreError('invalid-request')
+        with self._locked(True) as directory_fd:
+            current = self._load(directory_fd)
+            moved = [item for item in current['devices']
+                     if item['catalogId'] == old_catalog_id and item['runtimeModelId'] == old_runtime_model_id]
+            if not moved or (old_catalog_id, old_runtime_model_id) == (catalog_id, runtime_model_id):
+                return 0
+            for item in moved:
+                item['catalogId'] = catalog_id
+                item['runtimeModelId'] = runtime_model_id
+            self._commit(directory_fd, current, current['revision'])
+            return len(moved)
+
     def revoke(self, device_id, *, expected_revision):
         def update(doc):
             device = next((item for item in doc['devices'] if item['id'] == device_id), None)

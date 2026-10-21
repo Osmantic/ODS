@@ -25,6 +25,14 @@
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1"
   },
+  "overrides": {
+    "postcss-nested": {
+      "postcss-selector-parser": "7.1.6"
+    },
+    "tailwindcss": {
+      "postcss-selector-parser": "7.1.6"
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@testing-library/jest-dom": "^6.9.1",

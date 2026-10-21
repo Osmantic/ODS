@@ -188,17 +188,19 @@ def update_selection_records(previous, activation, prepared, proof, install_dir)
         'activation': {**activation, **identities}}
 
 
-def compose_flags(install_dir, process_env):
+def compose_flags(install_dir, process_env, *, recovery=False):
     cache = install_dir / '.compose-flags'
-    if os.path.lexists(cache):
+    if not recovery and os.path.lexists(cache):
         raw = cache.read_text()
     else:
         # Extension changes invalidate this disposable cache. Resolve the saved
         # selection like ods-cli, without sourcing .env or publishing a new cache.
         environment = helper('pixel-native-env')
-        keys = {'TIER', 'GPU_BACKEND', 'GPU_COUNT', 'ODS_MODE',
+        # The resolver's selection inputs: the saved values replace any
+        # stale process environment.
+        keys = {'TIER', 'GPU_BACKEND', 'GPU_COUNT', 'ODS_MODE', 'ENABLE_OPEN_WEBUI',
             'ODS_SKIP_GPU_OVERLAYS', 'ODS_SKIP_GPU_OVERLAYS_FOR', 'WHISPER_ACCELERATION',
-            'LEMONADE_EXTERNAL', 'AMD_INFERENCE_RUNTIME', 'AMD_INFERENCE_MANAGED', 'EXTERNAL_LLM_URL'}
+            'NATIVE_LLM_BASE_URL', 'AMD_INFERENCE_BACKEND', 'EXTERNAL_LLM_URL'}
         saved = {}
         for line in environment.snapshot(install_dir / '.env')[0].decode('utf-8').splitlines():
             match = environment.ASSIGNMENT.fullmatch(line)
@@ -206,6 +208,11 @@ def compose_flags(install_dir, process_env):
                 if match[1] in saved:
                     raise ValueError('duplicate-compose-selection')
                 saved[match[1]] = environment.values.parse_env_value(match[2])
+        # Initial failure can precede the Compose cache; retain Core's no-WebUI
+        # choice instead of inheriting the recovery shell's stale selection.
+        saved['ENABLE_OPEN_WEBUI'] = saved.get('ENABLE_OPEN_WEBUI', 'true').strip().lower()
+        if saved['ENABLE_OPEN_WEBUI'] not in {'true', 'false'}:
+            raise ValueError('saved-compose-selection-required')
         backend = saved.get('GPU_BACKEND', '').strip().lower()
         tier = saved.get('TIER', '').strip() or '1'
         count = saved.get('GPU_COUNT', '').strip() or '1'
@@ -213,29 +220,48 @@ def compose_flags(install_dir, process_env):
         if (not re.fullmatch('[a-z][a-z0-9_-]*', backend)
                 or not re.fullmatch('[A-Za-z0-9_]+', tier)
                 or not re.fullmatch('[0-9]+', count)
-                or mode not in {'local', 'cloud', 'hybrid', 'lemonade'}):
+                or mode not in {'local', 'cloud', 'hybrid'}):
             raise ValueError('saved-compose-selection-required')
-        resolver = install_dir / 'scripts/resolve-compose-stack.sh'
+        # The retained installation can predate recovery support. Use the
+        # reviewed helper's resolver only for explicit recovery; do not modify
+        # installed source or trust a disposable cache from the failed attempt.
+        resolver_root = Path(__file__).resolve().parents[3] if recovery else install_dir
+        resolver = resolver_root / 'scripts/resolve-compose-stack.sh'
         if not resolver.is_file() or resolver.resolve(strict=True) != resolver:
             raise ValueError('installed-compose-resolver-required')
         resolver_env = {**process_env, **{key: saved.get(key, '') for key in keys}}
         raw = subprocess.run(['/bin/bash', str(resolver), '--script-dir', str(install_dir),
-            '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode],
+            '--tier', tier, '--gpu-backend', backend, '--gpu-count', count, '--ods-mode', mode,
+            *(['--native-recovery'] if recovery else [])],
             cwd=install_dir, env=resolver_env, capture_output=True, text=True,
             check=True, timeout=30).stdout
+    # Retained caches can predate the Mac private-store overlay. Include it
+    # before native lifecycle selection is frozen, preserving user overrides.
+    if (install_dir / 'installers/macos/dashboard-private-state.compose.yaml').is_file():
+        raw = helper('dashboard-private-state').selected_flags(install_dir, raw)
     tokens = shlex.split(raw)
     if not tokens or len(tokens) % 2 or any(token != '-f' for token in tokens[::2]):
         raise ValueError('resolved-compose-flags-required')
     return tokens
 
 
-def refresh_clients(install_dir):
+def refresh_clients(install_dir, *, ingress_selection_locked=False):
     """Recreate native consumers from the resolved stack, preserving volumes.
 
     The owner selection must already be published and protected activation
     verified. Failure leaves that selection intact for an explicit replay.
     """
     install_dir = Path(install_dir).resolve(strict=True)
+    selection = helper('pixel-native-stack').read_selection(install_dir / 'data/pixel-native/preparation')
+    key = hashlib.sha256(json.dumps({'selection': selection,
+        'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, sort_keys=True).encode()).hexdigest()
+    return helper('pixel-native-ingress-refresh').refresh_installed(install_dir,
+        selection_locked=ingress_selection_locked, operation_kind='finalize-clients', operation_key=key,
+        operation=lambda selection, record, checkpoint: _refresh_clients_held(install_dir))
+
+
+def _refresh_clients_held(install_dir):
+    """Called only inside the installed ingress admission transaction."""
     installer, stack = helper('pixel-macos-access-install'), helper('pixel-native-stack')
     owner = pwd.getpwuid(os.getuid())
     _, environment, _, _, _, _ = installer._source_gateway(
@@ -316,21 +342,36 @@ def finalize_update(preparation):
             '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,
             text=True, timeout=180, check=True)
         document = update_selection_records(previous, activation, prepared, json.loads(result.stdout), install_dir)
-        # One atomic record avoids a mismatched preparation/activation pair after a crash.
-        with tempfile.TemporaryDirectory(prefix='.selection-', dir=directory) as temporary:
-            staged = Path(temporary) / 'selection.json'
-            with staged.open('xb') as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write((json.dumps(document, sort_keys=True) + '\n').encode())
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(staged, directory / stack.UPDATE_SELECTION)
-            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(fd)
-            finally:
-                os.close(fd)
-        refresh_clients(install_dir)
+        def complete_held(selection, record, checkpoint):
+            # One atomic record avoids a mismatched preparation/activation pair after a crash.
+            with tempfile.TemporaryDirectory(prefix='.selection-', dir=directory) as temporary:
+                staged = Path(temporary) / 'selection.json'
+                with staged.open('xb') as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    stream.write((json.dumps(document, sort_keys=True) + '\n').encode())
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(staged, directory / stack.UPDATE_SELECTION)
+                fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            _refresh_clients_held(install_dir)
+            # Recheck protected authority after the actual client handover,
+            # while the same admission hold still excludes user requests.
+            checked = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(Path(__file__).resolve()),
+                '--verify-protected', '--owner', pwd.getpwuid(os.getuid()).pw_name,
+                '--runtime', prepared['runtimeDigest'], '--services', prepared['serviceDigest'],
+                '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,
+                text=True, timeout=180, check=True)
+            if json.loads(checked.stdout) != json.loads(result.stdout):
+                raise ValueError('native-update-protected-proof-changed')
+        operation_key = hashlib.sha256(json.dumps({'selection': document,
+            'source': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}, sort_keys=True).encode()).hexdigest()
+        helper('pixel-native-ingress-refresh').refresh_installed(install_dir,
+            selection_locked=True, operation=complete_held, operation_kind='finalize-clients',
+            operation_key=operation_key)
     finally:
         os.close(lock)
     return {'status': 'selection-ready', 'path': str(directory / stack.UPDATE_SELECTION)}

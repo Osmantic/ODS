@@ -3,10 +3,6 @@
 const configUrl = process.env.PERPLEXICA_CONFIG_URL || "http://127.0.0.1:3000/api/config";
 const mode = String(process.env.ODS_MODE || "").toLowerCase();
 const switchboardMode = String(process.env.ODS_MODEL_SWITCHBOARD || "").toLowerCase();
-const runtime = String(
-  process.env.AMD_INFERENCE_RUNTIME || process.env.LLM_BACKEND || mode,
-).toLowerCase();
-const lemonade = runtime === "lemonade" || mode === "lemonade";
 const ggufFile = String(process.env.GGUF_FILE || "").trim();
 const externalUrl = String(process.env.EXTERNAL_LLM_URL || "").trim();
 const externalModel = externalUrl
@@ -19,9 +15,8 @@ const model = String(
       ? externalModel
       : mode === "cloud"
         ? "default"
-        : lemonade
-          ? process.env.LEMONADE_MODEL || (ggufFile ? `extra.${ggufFile}` : "")
-          : ggufFile || process.env.LLM_MODEL || "",
+        // Every managed llama-server serves its model as --alias <GGUF_FILE>.
+        : ggufFile || process.env.LLM_MODEL || "",
 ).trim();
 function normalizeOpenAIBaseURL(value) {
   const trimmed = String(value || "").trim().replace(/\/+$/, "");

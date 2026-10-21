@@ -67,3 +67,20 @@ if ! sed -n "$((guard_line - 1))p" "$PHASE" | grep -qF 'if ods_is_wsl_host; then
 fi
 
 echo "PASS: old WSL NVIDIA driver stops with Windows instructions and no in-distro install"
+
+# A current Windows driver must never be diagnosed through Linux module
+# metadata. Likewise a missing GPU must not trigger Secure Boot/apt repair.
+(
+    source "$ODS_ROOT/installers/lib/detection.sh"
+    ods_is_wsl_host() { return 0; }
+    nvidia_blackwell_hardware_detected() { echo 'unexpected hardware probe' >&2; exit 91; }
+    ods_sudo() { echo 'unexpected privileged repair' >&2; exit 92; }
+    ai_warn() { printf '%s\n' "$*"; }
+    ai() { printf '%s\n' "$*"; }
+    validate_nvidia_blackwell_open_modules
+    if fix_nvidia_secure_boot; then
+        echo 'FAIL: unavailable WSL GPU was reported as repaired' >&2
+        exit 1
+    fi
+)
+echo 'PASS: current and unavailable WSL GPUs never use native driver repair'

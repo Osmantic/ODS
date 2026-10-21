@@ -487,7 +487,8 @@ def test_ods_proxy_readiness_reports_unreachable_active_stack(
 
     assert ready is False
     assert "configured but not reachable in the active stack" in reason
-    assert "Name or service not known" in reason
+    # The probe error goes to the log, not to the client.
+    assert "Name or service not known" not in reason
 
 
 def test_ods_proxy_service_refreshes_stale_manifest_cache(

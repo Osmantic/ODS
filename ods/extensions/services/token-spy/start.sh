@@ -34,24 +34,26 @@ export API_PROVIDER="${API_PROVIDER:-local}"
 # Define your agents below. Each agent gets its own proxy port.
 # Format: AGENT_NAME=<name> python3 -m uvicorn main:app --host 0.0.0.0 --port <port>
 #
-# Single agent (simplest setup — Strix Halo default):
-#   AGENT_NAME=openclaw python3 -m uvicorn main:app --host 0.0.0.0 --port 9110
+# Single agent (simplest setup):
+#   AGENT_NAME=my-agent python3 -m uvicorn main:app --host 0.0.0.0 --port 9110
 #
 # Multiple agents (one process per agent):
 #   AGENT_NAME=agent-1 python3 -m uvicorn main:app --host 0.0.0.0 --port 9110 &
 #   AGENT_NAME=agent-2 python3 -m uvicorn main:app --host 0.0.0.0 --port 9111 &
 #
 # Local model agent (routes to llama-server):
-#   AGENT_NAME=openclaw OPENAI_UPSTREAM=http://localhost:11434 API_PROVIDER=local \
+#   AGENT_NAME=my-agent OPENAI_UPSTREAM=http://localhost:11434 API_PROVIDER=local \
 #     python3 -m uvicorn main:app --host 0.0.0.0 --port 9110 &
 # ─────────────────────────────────────────────────────────────────────────────
 
-AGENT_NAME="${AGENT_NAME:-openclaw}"
+AGENT_NAME="${AGENT_NAME:-local-agent}"
 PORT="${PORT:-9110}"
 
-# Session management for OpenClaw (local inference, $0 cost)
-export AGENT_SESSION_DIRS="${AGENT_SESSION_DIRS:-'{\"openclaw\":\"~/ods/data/openclaw/home/agents/main/sessions\"}'}"
-export LOCAL_MODEL_AGENTS="${LOCAL_MODEL_AGENTS:-openclaw}"
+# File-based session management is opt-in: set AGENT_SESSION_DIRS to a JSON map
+# such as '{"my-agent":"/path/to/sessions"}'. The default agent runs on local
+# inference ($0 cost).
+export AGENT_SESSION_DIRS="${AGENT_SESSION_DIRS:-}"
+export LOCAL_MODEL_AGENTS="${LOCAL_MODEL_AGENTS:-$AGENT_NAME}"
 
 echo "Starting Token Spy — API Monitor..."
 echo "  Agent     → ${AGENT_NAME}"

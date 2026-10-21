@@ -30,7 +30,6 @@ from gpu import (
 )
 from models import GPUInfo, IndividualGPU, MultiGPUStatus
 from models import AmdRuntimeStatus
-from lemonade_client import LemonadeClient, LemonadeClientError, LemonadeSettings, normalize_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -103,15 +102,15 @@ def _env_int(name: str, default: int = 0) -> int:
 def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
     """Represent a healthy host-backed AMD runtime when container GPU sysfs is absent.
 
-    Windows Docker Desktop installs route inference through a host Lemonade or
+    Windows Docker Desktop installs route inference through a host
     llama-server process. In that mode dashboard-api cannot read AMD DRM sysfs
     from inside the Linux container, but the runtime is still configured and
     usable. Return a conservative capability/status object instead of 503.
     """
-    runtime = _clean_env("AMD_INFERENCE_RUNTIME").lower()
+    runtime = _amd_runtime_name(_clean_env("AMD_INFERENCE_RUNTIME"))
     location = _clean_env("AMD_INFERENCE_LOCATION").lower()
     runtime_mode = _clean_env("AMD_INFERENCE_RUNTIME_MODE").lower()
-    if runtime not in {"lemonade", "llama-server"} or location != "host":
+    if runtime != "llama-server" or location != "host":
         return None
     if not runtime_mode.startswith("windows"):
         return None
@@ -141,8 +140,7 @@ def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
 
     count = max(1, _env_int("GPU_COUNT", 1))
     backend = _clean_env("AMD_INFERENCE_BACKEND").lower() or "unknown"
-    runtime_label = "Lemonade" if runtime == "lemonade" else "llama-server"
-    name = f"AMD {runtime_label} host runtime"
+    name = "AMD llama-server host runtime"
     if backend not in {"", "unknown"}:
         name = f"{name} ({backend})"
 
@@ -169,6 +167,12 @@ def _amd_host_runtime_fallback_gpus() -> Optional[list[IndividualGPU]]:
 
 def _clean_env(name: str) -> str:
     return os.environ.get(name, "").strip()
+
+
+def _amd_runtime_name(value: str) -> str:
+    """Every managed AMD runtime is llama-server; ``lemonade`` reads as it for one release."""
+    runtime = value.strip().lower()
+    return "llama-server" if runtime == "lemonade" else runtime
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -214,49 +218,25 @@ def _env_bool(name: str) -> bool:
     return _clean_env(name).lower() in {"1", "true", "yes", "on"}
 
 
-def _external_lemonade_active() -> bool:
-    return (
-        _env_bool("LEMONADE_EXTERNAL")
-        or _clean_env("AMD_INFERENCE_RUNTIME_MODE").lower() == "external-lemonade"
-        or _clean_env("AMD_INFERENCE_MANAGED").lower() == "false"
-    )
-
-
-def _runtime_base_url(runtime: str, location: str, port: int) -> str:
-    if runtime == "lemonade" and _external_lemonade_active():
-        external_base = _clean_env("LEMONADE_CONTAINER_BASE_URL") or _clean_env("LEMONADE_BASE_URL")
-        if external_base:
-            external_base = external_base.rstrip("/")
-            for suffix in ("/api/v1", "/v1", "/api"):
-                if external_base.endswith(suffix):
-                    external_base = external_base[: -len(suffix)]
-                    break
-            return external_base
+def _runtime_base_url(location: str, port: int) -> str:
     if location == "host":
+        # The Windows-hosted server as containers reach it; the legacy key
+        # name is read for one release.
+        configured = _clean_env("NATIVE_LLM_CONTAINER_BASE_URL") or _clean_env("LEMONADE_CONTAINER_BASE_URL")
+        if configured:
+            configured = configured.rstrip("/")
+            for suffix in ("/api/v1", "/v1", "/api"):
+                if configured.endswith(suffix):
+                    return configured[: -len(suffix)]
+            return configured
         return f"http://host.docker.internal:{port}"
     if location == "container":
         return f"http://llama-server:{port}"
-    return (
-        _clean_env("OLLAMA_URL")
-        or _clean_env("LLM_URL")
-        or _clean_env("LLM_API_URL")
-        or "http://llama-server:8080"
-    )
-
-
-def _runtime_api_path(runtime: str) -> str:
-    configured = _clean_env("LLM_API_BASE_PATH")
-    if configured:
-        return configured
-    if runtime == "lemonade":
-        return "/api/v1"
-    return "/v1"
-
-
-def _runtime_health_path(runtime: str, api_path: str) -> str:
-    if runtime == "lemonade":
-        return _join_url(api_path, "health")
-    return "/health"
+    for key in ("OLLAMA_URL", "LLM_URL", "LLM_API_URL"):
+        value = _clean_env(key)
+        if value and "litellm" not in value.lower():
+            return value
+    return "http://llama-server:8080"
 
 
 def _probe_amd_health(health_url: str) -> tuple[str, str, Optional[str]]:
@@ -282,47 +262,6 @@ def _probe_amd_health(health_url: str) -> tuple[str, str, Optional[str]]:
     if 200 <= int(status) < 300:
         return "reachable", version, None
     return "unhealthy", version, f"health_http_{status}"
-
-
-def _external_lemonade_warning(prefix: str, exc: LemonadeClientError) -> str:
-    if exc.kind == "provider_unreachable":
-        return f"{prefix}_unreachable"
-    return f"{prefix}_{exc.kind}"
-
-
-def _loaded_model_from_health(payload: dict) -> Optional[str]:
-    for key in ("model_loaded", "loaded_model", "active_model", "model"):
-        value = payload.get(key)
-        if value:
-            return str(value)
-    return None
-
-
-async def _probe_external_lemonade(api_base: str, api_path: str) -> tuple[str, str, list[str], Optional[str], Optional[int]]:
-    settings = LemonadeSettings(
-        base_url=normalize_base_url(api_base, api_path),
-        api_base_path=api_path,
-        api_key=_clean_env("LEMONADE_API_KEY") or _clean_env("LITELLM_LEMONADE_API_KEY"),
-        timeout=2.0,
-    )
-    warnings: list[str] = []
-
-    async with LemonadeClient(settings=settings) as client:
-        try:
-            health_payload = await client.health()
-        except LemonadeClientError as exc:
-            status = "unreachable" if exc.kind in {"provider_unreachable", "timeout"} else "unhealthy"
-            return status, "unknown", [_external_lemonade_warning("health", exc)], None, None
-
-        version = str(health_payload.get("version") or "unknown")
-        loaded_model = _loaded_model_from_health(health_payload)
-        model_count: Optional[int] = None
-        try:
-            model_count = len(await client.models())
-        except LemonadeClientError as exc:
-            warnings.append(_external_lemonade_warning("models", exc))
-
-    return "reachable", version, warnings, loaded_model, model_count
 
 
 # ============================================================================
@@ -425,13 +364,14 @@ async def amd_runtime():
     if supported_warning:
         warnings.append(supported_warning)
 
+    runtime = _amd_runtime_name(runtime)
     if not runtime:
-        legacy_backend = _clean_env("LLM_BACKEND").lower()
-        if legacy_backend in {"lemonade", "llama-server"}:
+        legacy_backend = _amd_runtime_name(_clean_env("LLM_BACKEND"))
+        if legacy_backend == "llama-server":
             runtime = legacy_backend
             warnings.append("amd_runtime_env_missing")
     if not selected_backend:
-        selected_backend = _clean_env("LEMONADE_LLAMACPP_BACKEND").lower() or "unknown"
+        selected_backend = "unknown"
         warnings.append("amd_backend_env_missing")
     if not location:
         location = "unknown"
@@ -446,7 +386,7 @@ async def amd_runtime():
     elif selected_backend not in {"", "unknown", "none"} and selected_backend not in supported_backends:
         warnings.append("amd_selected_backend_not_supported")
 
-    if runtime not in {"lemonade", "llama-server"}:
+    if runtime != "llama-server":
         return AmdRuntimeStatus(
             available=False,
             reason="runtime_not_configured",
@@ -465,19 +405,15 @@ async def amd_runtime():
     if port_warning:
         warnings.append(port_warning)
 
-    api_path = _runtime_api_path(runtime)
-    base_url = _runtime_base_url(runtime, location, port)
-    api_base = _join_url(base_url, api_path)
-    health_url = _join_url(base_url, _runtime_health_path(runtime, api_path))
+    # Upstream llama-server: OpenAI routes under /v1, a public /health.
+    base_url = _runtime_base_url(location, port)
+    api_base = _join_url(base_url, "/v1")
+    health_url = _join_url(base_url, "/health")
     loaded_model: Optional[str] = None
     model_count: Optional[int] = None
-    if runtime == "lemonade" and _external_lemonade_active():
-        health, version, probe_warnings, loaded_model, model_count = await _probe_external_lemonade(api_base, api_path)
-        warnings.extend(probe_warnings)
-    else:
-        health, version, health_warning = await asyncio.to_thread(_probe_amd_health, health_url)
-        if health_warning:
-            warnings.append(health_warning)
+    health, version, health_warning = await asyncio.to_thread(_probe_amd_health, health_url)
+    if health_warning:
+        warnings.append(health_warning)
 
     return AmdRuntimeStatus(
         available=True,

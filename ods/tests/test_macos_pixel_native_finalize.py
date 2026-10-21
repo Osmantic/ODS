@@ -81,12 +81,24 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         return SimpleNamespace(stdout=json.dumps(proof))
     monkeypatch.setattr(module.subprocess, 'run', verify)
     refreshed = []
+    held = []
     def refresh(path):
         assert path == installed
+        assert held == [True]
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         refreshed.append(True)
         if fault == 'clients' and len(refreshed) == 1: raise OSError('client recreation failed')
-    monkeypatch.setattr(module, 'refresh_clients', refresh)
+    monkeypatch.setattr(module, '_refresh_clients_held', refresh)
+    original_helper = module.helper
+    def transaction(path, **kwargs):
+        assert path == installed and kwargs['selection_locked'] is True
+        held.append(True)
+        try:
+            return kwargs['operation']({}, {}, lambda value: None)
+        finally:
+            held.pop()
+    monkeypatch.setattr(module, 'helper', lambda name: SimpleNamespace(refresh_installed=transaction)
+        if name == 'pixel-native-ingress-refresh' else original_helper(name))
     if fault == 'replace':
         def fail(*args): raise OSError('fixture publication failure')
         monkeypatch.setattr(module.os, 'replace', fail)
@@ -109,7 +121,7 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         with pytest.raises(OSError): module.finalize_update(candidate)
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         assert module.finalize_update(candidate)['status'] == 'selection-ready'
-        assert len(calls) == 2
+        assert len(calls) == 3
     elif fault:
         with pytest.raises((ValueError, OSError)):
             module.finalize_update(candidate)
@@ -119,7 +131,7 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
         result = module.finalize_update(candidate)
         assert result['status'] == 'selection-ready'
         assert module.finalize_update(candidate) == result
-        assert len(calls) == 2
+        assert len(calls) == 4
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         assert (directory / stack.UPDATE_SELECTION).stat().st_mode & 0o777 == 0o600
     assert json.loads((directory / 'preparation.json').read_text()) == previous
@@ -158,12 +170,14 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
     def resolve(path, files):
         assert path == installed and files == ['base.yaml', 'legacy.yaml', fragment]
         return ['../outside.yaml'] if fault == 'escape' else ['base.yaml', 'native.yaml', fragment]
-    stack = SimpleNamespace(resolve_files=resolve)
+    stack = SimpleNamespace(resolve_files=resolve, read_selection=lambda path: ({'runtimeDigest': 'a' * 64}, {}))
     native_env = module.helper('pixel-native-env')
     native_compose = module.helper('pixel-native-compose')
     monkeypatch.setattr(module, 'helper', lambda name: {
         'pixel-macos-access-install': installer, 'pixel-native-stack': stack,
-        'pixel-native-env': native_env, 'pixel-native-compose': native_compose}[name])
+        'pixel-native-env': native_env, 'pixel-native-compose': native_compose,
+        'pixel-native-ingress-refresh': SimpleNamespace(refresh_installed=lambda *args, **kwargs:
+            kwargs['operation']({}, {}, lambda value: None))}[name])
     monkeypatch.setattr(module.Path, 'is_socket', lambda path: fault != 'socket')
     monkeypatch.setenv('DOCKER_CONTEXT', 'remote')
     monkeypatch.setenv('DOCKER_TLS_VERIFY', '1')
@@ -254,14 +268,16 @@ def test_missing_cache_resolves_saved_selection_fail_closed(tmp_path, monkeypatc
         assert kwargs['env']['WHISPER_ACCELERATION'] == 'cpu'
         for key in ('EXTERNAL_LLM_URL', 'ODS_SKIP_GPU_OVERLAYS', 'ODS_SKIP_GPU_OVERLAYS_FOR'):
             assert kwargs['env'][key] == values.get(key, '')
-        assert kwargs['env']['LEMONADE_EXTERNAL'] == ''
+        assert kwargs['env']['NATIVE_LLM_BASE_URL'] == ''
+        assert kwargs['env']['AMD_INFERENCE_BACKEND'] == ''
         assert 'UNRELATED' not in kwargs['env'] and 'BASH_ENV' not in kwargs['env']
         if fault == 'resolver-error': raise subprocess.CalledProcessError(1, command)
         if fault == 'resolver-timeout': raise subprocess.TimeoutExpired(command, 30)
         return SimpleNamespace(stdout='' if fault == 'empty' else
             '--bad' if fault == 'flags' else '-f base.yaml -f native.yaml')
     monkeypatch.setattr(module.subprocess, 'run', run)
-    process_env = {'GPU_BACKEND': 'nvidia', 'LEMONADE_EXTERNAL': 'true',
+    process_env = {'GPU_BACKEND': 'nvidia', 'NATIVE_LLM_BASE_URL': 'http://stale:8080',
+        'AMD_INFERENCE_BACKEND': 'rocm',
         'EXTERNAL_LLM_URL': 'http://stale:1234', 'ODS_SKIP_GPU_OVERLAYS': 'stale',
         'ODS_SKIP_GPU_OVERLAYS_FOR': 'stale'}
     successes = (None, 'none', 'arc', 'suppressed-env', 'legacy-skip')
@@ -275,6 +291,44 @@ def test_missing_cache_resolves_saved_selection_fail_closed(tmp_path, monkeypatc
     assert not marker.exists()
     assert module.os.path.lexists(cache) == (fault in ('corrupt-cache', 'dangling-cache'))
     if fault == 'corrupt-cache': assert cache.read_text() == '--bad'
+
+
+@pytest.mark.parametrize('saved,expected', [
+    ('false', 'false'), ('true', 'true'), ('"false"', 'false'),
+    (' FALSE ', 'false'), (None, 'true'), ('', None), ('maybe', None),
+    ('false\nENABLE_OPEN_WEBUI=true', None),
+])
+def test_uncached_selection_retains_webui_choice(tmp_path, monkeypatch, saved, expected):
+    env_file = tmp_path / '.env'
+    body = 'GPU_BACKEND=apple\nTIER=1\n'
+    if saved is not None:
+        body += 'ENABLE_OPEN_WEBUI=' + saved + '\n'
+    env_file.write_text(body)
+    env_file.chmod(0o600)
+    resolver = tmp_path / 'scripts/resolve-compose-stack.sh'
+    resolver.parent.mkdir()
+    resolver.write_text('# test resolver')
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert kwargs['env']['ENABLE_OPEN_WEBUI'] == expected
+        return SimpleNamespace(stdout='-f base.yaml' +
+            (' -f docker-compose.gateway-only.yml' if expected == 'false' else ''))
+
+    monkeypatch.setattr(module.subprocess, 'run', run)
+    # A stale caller must not reverse either the saved Core or Full selection.
+    process_env = {'ENABLE_OPEN_WEBUI': 'true' if expected == 'false' else 'false'}
+    if expected is None:
+        with pytest.raises(ValueError):
+            module.compose_flags(tmp_path, process_env)
+        assert not calls
+    else:
+        flags = module.compose_flags(tmp_path, process_env)
+        assert ('docker-compose.gateway-only.yml' in flags) == (expected == 'false')
+        assert len(calls) == 1
+    assert env_file.read_text() == body
+    assert not (tmp_path / '.compose-flags').exists()
 
 
 @pytest.mark.parametrize('fault', [None, 'runtime', 'services', 'storage', 'install', 'pending', 'inactive'])

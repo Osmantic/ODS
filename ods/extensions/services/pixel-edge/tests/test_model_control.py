@@ -97,6 +97,15 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.send(BEGIN),(409,{'error':'model-change-unconfirmed'}))
         self.assertEqual(len(self.calls),1)
 
+    async def test_rejection_relays_the_controller_reason_code(self):
+        # Fleet, Mac 2026-10-05: every refusal read model-change-unconfirmed,
+        # which hid the controller's own reason.
+        self.reply_status=409
+        self.reply={'error':'model-runtime-mismatch'}
+        self.assertEqual(await self.send({'operation': 'model-status'}),(409,{'error':'model-runtime-mismatch'}))
+        self.reply={'error':'Model-Runtime-Mismatch'}
+        self.assertEqual(await self.send({'operation': 'model-status'}),(409,{'error':'model-change-unconfirmed'}))
+
     async def test_inconsistent_contract_cannot_look_complete(self):
         for value in ({**STATE,'pending':False}, {**STATE,'contract':{**TARGET,'maxTokens':65536}},
                       {**STATE,'status':'completed'}, {**STATE,'transactionId':None}):

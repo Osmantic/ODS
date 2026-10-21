@@ -27,6 +27,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import CompactDashboard from '../components/CompactDashboard'
 import { serviceUrl } from '../lib/serviceUrls'
+import { openWithFreshSession, opensWithOdsSession } from '../lib/odsSession'
 import { getInferenceMode } from '../lib/inferenceMode'
 
 // Compute overall health from services (excludes not_deployed from counts)
@@ -103,6 +104,13 @@ function findHealthyService(services, serviceId) {
     service?.port &&
     serviceMatchesTarget(service, serviceId)
   )
+}
+
+// Features that launch a cookie-gated service (Hermes) refresh the ODS
+// session on click.
+function featureOpensWithOdsSession(feature) {
+  const launch = feature?.launch || FEATURE_LAUNCH_FALLBACKS[normalizeServiceKey(feature?.id)]
+  return launch?.type === 'service' && opensWithOdsSession(launch.service)
 }
 
 function pickFeatureLink(feature, services, portalChatAvailable = false) {
@@ -233,6 +241,13 @@ function normalizeServiceKey(value) {
     .replace(/\([^)]*\)/g, '')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
+}
+
+// The chat feature's text comes from the local llama-server manifest; in API
+// or cloud mode chat runs on the API's model instead (fleet row 33).
+function featureDescription(feature, remoteInference, model) {
+  if (!remoteInference || normalizeServiceKey(feature?.id) !== 'chat') return feature?.description
+  return model ? `Chat with ${model} through your model API` : 'Chat through your model API'
 }
 
 function getServiceDescription(id, name) {
@@ -910,7 +925,7 @@ export default function Dashboard({ status, loading, compact = false }) {
       <FeatureCard
         icon={MessageSquare}
         title={compactChatFeature.name}
-        description={compactChatFeature.description}
+        description={featureDescription(compactChatFeature, remoteInference, status?.currentModel)}
         href={compactChatHref}
         status={compactChatHref ? 'ready' : 'disabled'}
         hint={compactChatHref ? webuiHealthy ? 'Open WebUI chat' : 'Portal agent chat' : 'Chat unavailable'}
@@ -949,8 +964,9 @@ export default function Dashboard({ status, loading, compact = false }) {
               key={feature.id}
               icon={FEATURE_ICONS[feature.icon] || MessageSquare}
               title={feature.name}
-              description={feature.description}
+              description={featureDescription(feature, remoteInference, status?.currentModel)}
               href={pickFeatureLink(feature, status?.services, portalChatAvailable)}
+              onLaunch={featureOpensWithOdsSession(feature) ? openWithFreshSession : undefined}
               status={portalChat ? portalChatAvailable ? 'ready' : 'disabled' : normalizeFeatureStatus(feature.status)}
               hint={portalChat
                 ? portalChatAvailable ? 'Portal agent chat' : 'Portal agent unavailable'
@@ -1020,7 +1036,7 @@ export default function Dashboard({ status, loading, compact = false }) {
 }
 
 
-const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, status, hint }) {
+const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, href, onLaunch, status, hint }) {
   const isExternal = href?.startsWith('http')
   const isInteractive = status !== 'disabled' && status !== 'coming' && Boolean(href)
   const statusColors = {
@@ -1087,7 +1103,7 @@ const FeatureCard = memo(function FeatureCard({ icon: Icon, title, description, 
 
   if (isExternal) {
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" className="block h-full liquid-metal-sequence-slot">
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={onLaunch} className="block h-full liquid-metal-sequence-slot">
         {content}
       </a>
     )

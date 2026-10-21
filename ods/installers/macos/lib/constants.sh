@@ -12,6 +12,9 @@
 # ============================================================================
 
 ODS_VERSION="3.0.0"
+# The ODS community Discord, where a failed install points people. Keep in
+# sync with installers/lib/constants.sh (tests/test-help-links.sh checks).
+ODS_HELP_DISCORD_URL="https://discord.gg/4ntNp9MAwC"
 
 # Install location - use shared path resolution if available.
 # constants.sh lives at two different depths depending on layout:

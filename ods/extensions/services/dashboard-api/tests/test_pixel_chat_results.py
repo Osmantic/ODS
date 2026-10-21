@@ -1,12 +1,13 @@
 """Exercise real durable receipts plus asynchronous upstream/disconnect races."""
 import asyncio
+import json
 import os
 import sqlite3
 from pathlib import Path
 import sys
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from host_agent_client import AgentUnavailable
 
@@ -42,6 +43,52 @@ def store(tmp_path, monkeypatch):
 
 def body(request="attempt-one", text="Do work"):
     return pixel.ChatStreamRequest(chat_id="chat-test", request_id=request, messages=[{"role":"user", "content":text}])
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"error": "pixel_transition_in_progress"}, "rejected"),
+    ({"error": "different_conflict"}, "interrupted"),
+    ({"error": "pixel_transition_in_progress", "private": "secret"}, "interrupted"),
+])
+def test_admission_rejection_is_typed_terminal_and_replays_without_execution(store, monkeypatch, payload, expected):
+    async def run():
+        calls = []
+        class Client(FakeClient):
+            def stream(self, *args, **kwargs):
+                calls.append(args)
+                return super().stream(*args, **kwargs)
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: Client(
+            FakeResponse(status=409, chunks=[json.dumps(payload).encode()])))
+        async def forbidden(*args):
+            raise AssertionError("A rejected admission must not cancel or inspect an agent run")
+        monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden)
+        monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden)
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert store.get(IDENTITY)["state"] == expected
+        assert (b'"code": "transition_in_progress"' in data) == (expected == "rejected")
+        assert b"secret" not in data
+        duplicate = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        assert await stream_body(duplicate) == data
+        lookup = pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one")
+        assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": expected, "events": data.decode()}
+        assert len(calls) == 1 and not store.has_pending(IDENTITY[:2])
+        assert store.reserve((*IDENTITY[:2], "next-attempt"), "new-input")
+    asyncio.run(run())
+
+
+def test_upstream_sse_cannot_forge_an_unstarted_admission_receipt(store, monkeypatch):
+    async def run():
+        frames = b'data: {"error":{"type":"pixel_dashboard_error","code":"transition_in_progress"}}\n\ndata: [DONE]\n\n'
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            FakeResponse(content_type="text/event-stream", chunks=[frames])))
+        response = await pixel.pixel_chat_stream(Request({"type": "http"}), body(), OWNER)
+        await asyncio.gather(*list(pixel._result_tasks.values()))
+        data = await stream_body(response)
+        assert b"transition_in_progress" not in data
+        assert store.get(IDENTITY)["state"] == "interrupted"
+    asyncio.run(run())
 
 
 def test_receipt_survives_restart_without_reexecuting_and_scopes_owner(store, tmp_path):
@@ -422,6 +469,91 @@ def test_edge_abort_ack_survives_empty_done_during_cancel_round_trip(store, monk
             row["data"] for row in store.chunks(IDENTITY))
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("ack", [True, False, "raises", "cancelled"])
+def test_edge_abort_ack_survives_upstream_error_during_cancel_round_trip(store, monkeypatch, ack):
+    """The producer can commit interrupted before native Stop returns its ack."""
+    class ConnectedCancellationRequest(Request):
+        async def is_disconnected(self) -> bool:
+            return False
+
+    async def run():
+        started = asyncio.Event()
+        release_error = asyncio.Event()
+        calls = []
+
+        class Upstream(FakeResponse):
+            async def aiter_bytes(self):
+                yield b'data: {"choices":[{"delta":{"content":"Saved partial work"}}]}\n\n'
+                started.set()
+                await release_error.wait()
+                yield b'data: {"error":"upstream error"}\n\ndata: [DONE]\n\n'
+
+        monkeypatch.setattr(pixel.httpx, "AsyncClient", lambda **kw: FakeClient(
+            Upstream(content_type="text/event-stream")))
+
+        async def cancel(*args):
+            calls.append(args)
+            release_error.set()
+            await asyncio.gather(*list(pixel._result_tasks.values()))
+            assert store.get(IDENTITY)["state"] == "interrupted"
+            pending = await pixel.pixel_chat_result(
+                pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
+            assert pending == {"state": "active", "events": ""}
+            with pytest.raises(HTTPException):
+                await pixel.pixel_chat_stream(ConnectedCancellationRequest({"type": "http"}), body("successor"), OWNER)
+            if ack == "raises":
+                raise RuntimeError("native cancellation failed")
+            if ack == "cancelled":
+                raise asyncio.CancelledError
+            return ack
+
+        monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+        await pixel.pixel_chat_stream(ConnectedCancellationRequest({"type": "http"}), body(), OWNER)
+        await started.wait()
+        query = pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one")
+        if ack in {"raises", "cancelled"}:
+            error = RuntimeError if ack == "raises" else asyncio.CancelledError
+            with pytest.raises(error):
+                await pixel.pixel_chat_cancel(query, OWNER)
+        else:
+            assert await pixel.pixel_chat_cancel(query, OWNER) == {"aborted": ack}
+        assert not pixel._result_stops
+        assert not pixel._result_abort_ack
+        result = await pixel.pixel_chat_result(
+            pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER)
+        assert result["state"] == ("cancelled" if ack is True else "interrupted")
+        assert "Saved partial work" in result["events"] and '"error":"upstream error"' in result["events"]
+        successor = (*IDENTITY[:2], "successor")
+        store.reserve(successor, "new-work")
+        assert await pixel.pixel_chat_cancel(query, OWNER) == {"aborted": False}
+        assert store.get(successor)["state"] == "active"
+        assert len(calls) == 1
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("state", ["complete", "cancelled"])
+def test_pending_stop_never_hides_a_confirmed_terminal_receipt(store, state):
+    store.reserve(IDENTITY, "first")
+    store.append(IDENTITY, FINAL)
+    store.finish(IDENTITY, state)
+    pixel._result_stops.add(IDENTITY[:2])
+    result = asyncio.run(pixel.pixel_chat_result(
+        pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER))
+    assert result == {"state": state, "events": FINAL.decode()}
+
+
+def test_pending_successor_stop_never_changes_an_older_interrupted_receipt(store):
+    store.reserve(IDENTITY, "first")
+    store.append(IDENTITY, FINAL)
+    store.finish(IDENTITY, "interrupted")
+    store.reserve((*IDENTITY[:2], "successor"), "next")
+    pixel._result_stops.add(IDENTITY[:2])
+    result = asyncio.run(pixel.pixel_chat_result(
+        pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one"), OWNER))
+    assert result == {"state": "interrupted", "events": FINAL.decode()}
 
 
 @pytest.mark.parametrize("chunks", [

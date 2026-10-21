@@ -40,6 +40,30 @@ function embeddedRenderer(patched) {
 
 function checkCases(render) {
   const cited = (n, url = source[n - 1].metadata.url) => `<citation href="${url}">${n}</citation>`;
+  const many = Array.from({ length: 18 }, (_, i) => ({ metadata: { url: `https://example.test/s${i + 1}` } }));
+  const cm = (n) => `<citation href="https://example.test/s${n}">${n}</citation>`;
+  assert.equal(render("A [2][18] B [3][9].", many), `A ${cm(2)}${cm(18)} B ${cm(3)}${cm(9)}.`);
+  assert.equal(render("[1][2][3] [1,2][3,4]", many), `${cm(1)}${cm(2)}${cm(3)} ${cm(1)}${cm(2)}${cm(3)}${cm(4)}`);
+  assert.equal(render("[2][99] [99][2] [0][2]", many), `${cm(2)}[99] [99]${cm(2)} [0]${cm(2)}`);
+  assert.equal(render("[1][2]", []), "");
+  const defined = "See [2][18].\n\n[18]: https://x.test";
+  assert.equal(render(defined, many), defined);
+  const quoted = "> [18]: https://x.test\n\nSee [2][18].";
+  assert.equal(render(quoted, many), quoted);
+  assert.equal(render("[2][ref] ![2][18] \\[2][18]", many), "[2][ref] ![2][18] \\[2][18]");
+  assert.equal(render("[2][18](https://x.test)", many), `${cm(2)}[18](https://x.test)`);
+  for (const code of [
+    "```\n[18]: https://x.test\n```",
+    "~~~\n[18]: https://x.test\n~~~",
+    "- ```\n  [18]: https://x.test\n  ```",
+    "    [18]: https://x.test",
+    ">     [18]: https://x.test",
+    "`[18]: https://x.test`",
+    "Use ``code\n[18]: https://x.test\ncode``",
+  ]) {
+    assert.equal(render(code + "\nSee [2][18].", many), code + `\nSee ${cm(2)}${cm(18)}.`);
+  }
+  assert.equal(render("`[2][18]`\n```\n[2][18]\n```", many), "`[2][18]`\n```\n[2][18]\n```");
   assert.equal(render("See [1] and [1,2].", source), `See ${cited(1)} and ${cited(1)}${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
   assert.equal(render("See [1, 2].", source), `See ${cited(1)}${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
   assert.equal(render("```python\nx = [1,2]\n```\nSee [1].", source), `\`\`\`python\nx = [1,2]\n\`\`\`\nSee ${cited(1)}.`);
@@ -79,7 +103,7 @@ test("pinned Vane expression corrupts fenced code; patched embedded renderer pre
     assert.equal(spawnSync(process.execPath, ["--check", file]).status, 0);
     assert.equal(patchClientChunk(root, trusted).changed, false);
     assert.equal(fs.readFileSync(file, "utf8"), patched);
-    const previousPrelude = PRELUDE.replace("return prose(line, lineBase);", "return String(line);");
+    const previousPrelude = PRELUDE.replace("return walk(false);", "return String(message);");
     assert.notEqual(previousPrelude, PRELUDE);
     fs.writeFileSync(file, patched.replace(PRELUDE, previousPrelude));
     assert.equal(patchClientChunk(root, trusted).changed, true);

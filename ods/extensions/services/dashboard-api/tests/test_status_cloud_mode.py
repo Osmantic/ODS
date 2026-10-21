@@ -115,6 +115,32 @@ async def test_cloud_mode_suppresses_local_gpu_and_llama(monkeypatch, stable_env
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(("provider", "url", "remote"), [
+    ("openai-compatible", "https://api.example.test", True),
+    ("ollama", "http://host.docker.internal:11434", False),
+    ("openai-compatible", "http://host.docker.internal:8000", False),
+])
+async def test_installer_api_mode_is_remote_only_for_an_api_off_this_computer(
+        monkeypatch, stable_env, disk_usage, provider, url, remote):
+    # Fleet row 33: installer API mode reported inferenceMode "local", so the
+    # dashboard showed local GPU telemetry and "Chat with your local AI model".
+    gpu = GPUInfo(name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,
+                  memory_percent=8.3, utilization_percent=35, temperature_c=62, gpu_backend="nvidia")
+    _patch_common(monkeypatch, gpu=gpu, loaded_model=None,
+                  model_info=ModelInfo(name="deepseek-v4.1-flash", size_gb=0.0, context_length=65536),
+                  remote_runtime=None, cloud_mode=False, disk_usage=disk_usage)
+    env = {"ODS_MODE": "local", "LLM_BACKEND": "external", "EXTERNAL_LLM_PROVIDER": provider, "EXTERNAL_LLM_URL": url}
+    monkeypatch.setattr(main, "read_live_env_value", lambda key, default=None: env.get(key, default))
+
+    result = await _build_api_status()
+
+    assert result["inferenceMode"] == ("remote" if remote else "local")
+    assert result["inferenceSource"] == ("external-api" if remote else "local-runtime")
+    assert (result["gpu"] is None) is remote
+    assert result["currentModel"] == "deepseek-v4.1-flash"
+
+
+@pytest.mark.asyncio
 async def test_local_mode_preserves_gpu_and_llama(monkeypatch, stable_env, disk_usage):
     gpu = GPUInfo(
         name="RTX 4090", memory_used_mb=2048, memory_total_mb=24576,

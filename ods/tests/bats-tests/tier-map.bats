@@ -199,7 +199,7 @@ teardown() {
     assert_equal "$LLM_MODEL" "gemma-4-e4b-it"
     assert_equal "$GGUF_FILE" "gemma-4-E4B-it-Q4_K_M.gguf"
     assert_equal "$MAX_CONTEXT" "32768"
-    assert_equal "$LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
+    assert_equal "$LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
     assert_equal "$LLAMA_CPP_RELEASE_TAG_OVERRIDE" "b9014"
 }
 

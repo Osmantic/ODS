@@ -166,14 +166,14 @@
       }
     },
     {
-      "id": "windows-wsl2-amd-lemonade",
-      "label": "Windows WSL2 AMD Lemonade",
+      "id": "windows-wsl2-amd",
+      "label": "Windows WSL2 AMD (llama.cpp on Windows)",
       "status": "golden",
       "platform": "windows-wsl2",
       "architecture": "x86_64",
       "hardware": {
         "gpu_backend": "amd",
-        "accelerator": "lemonade",
+        "accelerator": "vulkan",
         "min_unified_memory_gb": 64
       },
       "installer": {
@@ -186,15 +186,14 @@
         ]
       },
       "expected": {
-        "ods_mode": "lemonade",
-        "llm_backend": "lemonade",
+        "ods_mode": "local",
+        "llm_backend": "llama-server",
         "llm_host_port": 8080,
         "llm_container_port": 4000,
-        "install_dir": "$env:USERPROFILE\\ods",
+        "install_dir": "~/ods",
         "compose_files": [
           "docker-compose.base.yml",
-          "installers/windows/docker-compose.windows-amd.yml",
-          "installers/windows/docker-compose.windows-amd.local.yml"
+          "docker-compose.host-native-llm.yml"
         ],
         "core_services": [
           "open-webui",
@@ -218,8 +217,8 @@
             "path": ".env"
           },
           {
-            "surface": "litellm-lemonade",
-            "path": "config/litellm/lemonade.yaml"
+            "surface": "litellm-local-native",
+            "path": "config/litellm/local.yaml"
           },
           {
             "surface": "opencode",
@@ -237,7 +236,7 @@
         "health_checks": [
           {
             "service": "litellm",
-            "url": "http://127.0.0.1:4000/health"
+            "url": "http://127.0.0.1:4000/health/readiness"
           },
           {
             "service": "dashboard-api",

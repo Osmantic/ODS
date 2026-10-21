@@ -1,6 +1,8 @@
 import { renderHook, waitFor, act } from '@testing-library/react'
 import { getMockModels, MOCK_MODES, useModels } from '../useModels'
 
+const UNMANAGED_HOST_RUNTIME = 'The model server on this computer is not managed by this ODS installation. Change the model in that server, or rerun the ODS installer to manage it here.'
+
 // Shadow jsdom's Document.prototype.hidden getter on the instance; deleting
 // the own property in afterEach restores the prototype behavior.
 const setDocumentHidden = (hidden) => {
@@ -165,7 +167,7 @@ describe('useModels', () => {
     const activationPosts = fetch.mock.calls.filter(([, options]) => options?.method === 'POST')
     expect(activationPosts).toHaveLength(0)
     expect(result.current.actionLoading).toBeNull()
-    expect(result.current.error).toBe('ODS is running in cloud mode. A local-mode installation is required to run downloaded models.')
+    expect(result.current.error).toBe('ODS is in cloud mode, so chat uses a model API. Downloaded models run only in local mode; if you connected that API in Settings > Remote model, switch back to the local model there.')
   })
 
   test('keeps browsing available but blocks local activation for an external backend', async () => {
@@ -187,39 +189,44 @@ describe('useModels', () => {
 
     const activationPosts = fetch.mock.calls.filter(([, options]) => options?.method === 'POST')
     expect(activationPosts).toHaveLength(0)
-    expect(result.current.error).toContain('model service outside ODS')
+    expect(result.current.error).toContain('ODS uses a model API')
+    expect(result.current.error).toContain('not used while API mode is on')
   })
 
-  test('externally managed Lemonade keeps browsing but routes switching through adoption', async () => {
+  test.each([
+    [{ managed: false, canActivate: false, canUnload: false, running: false }, false],
+    [{ managed: true, canActivate: true, canUnload: true, running: true }, true],
+  ])('a Windows-hosted server switches models only with its management proof (%j)', async (management, allowed) => {
     const target = 'downloaded-model'
     fetch.mockResolvedValue(modelsResponse(
       [{ id: target, status: 'downloaded' }],
-      { odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade', externalLemonade: true,
-        modelManagement: { managed: false, canActivate: false, canUnload: false, running: false } }
+      { odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
+        modelManagement: management }
     ))
 
     const { result } = renderHook(() => useModels())
-    await waitFor(() => expect(result.current.externalLemonade).toBe(true))
+    await waitFor(() => expect(result.current.hostRuntime).toBe(true))
 
     expect(result.current.models).toHaveLength(1)
-    expect(result.current.canActivateModels).toBe(false)
-    expect(result.current.activationModeError).toContain('Adopt loaded model')
+    expect(result.current.canActivateModels).toBe(allowed)
+    if (allowed) return
+    expect(result.current.activationModeError).toBe(UNMANAGED_HOST_RUNTIME)
 
     await act(async () => { await result.current.loadModel(target) })
 
     expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(0)
-    expect(result.current.error).toBe('Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Portal.')
+    expect(result.current.error).toBe(UNMANAGED_HOST_RUNTIME)
   })
 
-  test('ODS-managed Lemonade retains local model activation', async () => {
+  test('the retired Lemonade mode is never read as a local mode', async () => {
     fetch.mockResolvedValue(modelsResponse([], {
-      odsMode: 'lemonade', configuredMode: 'lemonade',
-      llmBackend: 'lemonade', externalLemonade: false,
+      odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'llama-server',
     }))
 
     const { result } = renderHook(() => useModels())
-    await waitFor(() => expect(result.current.odsMode).toBe('lemonade'))
-    expect(result.current.canActivateModels).toBe(true)
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.odsMode).toBe('unknown')
+    expect(result.current.canActivateModels).toBe(false)
   })
 
   test('does not activate when effective and configured modes differ', async () => {
@@ -1255,4 +1262,58 @@ describe('useModels', () => {
     expect(confirm).not.toHaveBeenCalled()
     expect(fetch.mock.calls.some(call => call[1]?.method === 'DELETE')).toBe(true)
   })
+  test.each([
+    ['model_delete_cleanup_pending', true, true],
+    ['model_delete_status_update_failed', true, true],
+    ['model_delete_status_update_failed', false, false],
+    ['model_delete_status_update_failed', 'true', false],
+    ['model_delete_recovery_required', false, false],
+    ['model_delete_recovery_required', true, false],
+    ['model_delete_cleanup_pending', false, false],
+    ['model_delete_cleanup_pending', 'true', false],
+    ['unrelated_failure', true, false],
+  ])('deletion %s with committed=%s refreshes only proven retirement', async (code, committed, refresh) => {
+    let retired = false
+    const message = 'Cleanup is incomplete in model store directory .ods-model-delete-receipt'
+    fetch.mockImplementation(async (_url, options = {}) => {
+      if (options.method === 'DELETE') {
+        retired = true
+        return { ok: false, status: 502, json: async () => ({ detail: {
+          error: message, code, deletionCommitted: committed,
+          recoveryDirectory: '.ods-model-delete-receipt',
+        } }) }
+      }
+      return modelsResponse([{ id: 'inactive', status: retired ? 'available' : 'downloaded' }])
+    })
+    const view = renderHook(() => useModels())
+    await waitFor(() => expect(view.result.current.loading).toBe(false))
+    setDocumentHidden(true) // Isolate immediate reconciliation from background polling.
+    expect(view.result.current.models[0].status).toBe('downloaded')
+    await act(async () => { await view.result.current.deleteModel('inactive') })
+    expect(view.result.current.error).toBe(message)
+    expect(view.result.current.models[0].status).toBe(refresh ? 'available' : 'downloaded')
+    expect(fetch.mock.calls.filter(([, options]) => options?.method !== 'DELETE')).toHaveLength(refresh ? 2 : 1)
+    expect(view.result.current.actionLoadingModels).toEqual([])
+    view.unmount()
+  })
+
+  test('successful deletion reconciles exactly once', async () => {
+    let retired = false
+    fetch.mockImplementation(async (_url, options = {}) => {
+      if (options.method === 'DELETE') {
+        retired = true
+        return { ok: true, json: async () => ({ status: 'deleted' }) }
+      }
+      return modelsResponse([{ id: 'inactive', status: retired ? 'available' : 'downloaded' }])
+    })
+    const view = renderHook(() => useModels())
+    await waitFor(() => expect(view.result.current.loading).toBe(false))
+    setDocumentHidden(true)
+    await act(async () => { await view.result.current.deleteModel('inactive') })
+    expect(view.result.current.models[0].status).toBe('available')
+    expect(view.result.current.error).toBeNull()
+    expect(fetch.mock.calls.filter(([, options]) => options?.method !== 'DELETE')).toHaveLength(2)
+    view.unmount()
+  })
+
 })

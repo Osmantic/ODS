@@ -82,17 +82,14 @@ existing binaries. The Custom menu offers the same separate choice.
 
 The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open the address it prints when it finishes: **http://localhost:3001** for the ODS Dashboard and Portal, or **http://localhost:3000** for Open WebUI on hosts that use it.
 
-On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.
+On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and the Windows AMD `llama-server.exe` use **http://localhost:8080** unless overridden; the Windows server requires its API key.
 
-On Linux AMD hosts already running Lemonade SDK, install ODS around it with
-`./install.sh --use-existing-lemonade` so ODS manages the app stack while
-Lemonade keeps owning inference and model storage. The installer auto-detects
-common Lemonade ports and the first served model, then verifies a real completion
-through LiteLLM before declaring success. See
-[docs/LEMONADE-SDK-COMPAT.md](docs/LEMONADE-SDK-COMPAT.md). Existing Lemonade
-mode only reuses Lemonade for LLM inference; Full Stack still enables
-ODS-managed Whisper, Kokoro, and ComfyUI unless you pass `--no-voice` and/or
-`--no-comfyui` or choose alternate ports where supported.
+To use a model server you already run, such as Ollama, LM Studio or Lemonade
+Server, install with `--external-llm-url` and the related options; see
+[Can ODS reuse a model already running in Ollama or LM Studio?](docs/FAQ.md#can-ods-reuse-a-model-already-running-in-ollama-or-lm-studio).
+Installs made with the retired `--use-existing-lemonade` option move to that
+route when the installer runs again; see
+[AMD GPUs now run on llama.cpp](docs/MIGRATION-LEMONADE-TO-LLAMACPP.md).
 
 ### Instant Start (Bootstrap Mode)
 
@@ -128,15 +125,19 @@ llama-server runs natively with Metal GPU acceleration; all other services run i
 > **Prerequisite:** Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend and make sure it is running before you start.
 
 ```powershell
-$ProgressPreference = "SilentlyContinue"
-$odsSrc = Join-Path $env:TEMP ("ods-install-" + [guid]::NewGuid().ToString("N"))
-$odsZip = Join-Path $odsSrc "ods-main.zip"
-New-Item -ItemType Directory -Path $odsSrc | Out-Null
-Invoke-WebRequest "https://github.com/Osmantic/ODS/archive/refs/heads/main.zip" -OutFile $odsZip
-Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc -Force
-cd (Get-ChildItem -LiteralPath $odsSrc -Directory | Select-Object -First 1).FullName
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1
+& {
+    $ErrorActionPreference = 'Stop'
+    $ProgressPreference = 'SilentlyContinue'
+    $odsSrc = Join-Path $env:TEMP ('ods-install-' + [guid]::NewGuid().ToString('N'))
+    $odsZip = Join-Path $odsSrc 'ods-main.zip'
+    New-Item -ItemType Directory -Path $odsSrc | Out-Null
+    Invoke-WebRequest -UseBasicParsing 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' -OutFile $odsZip
+    Expand-Archive -LiteralPath $odsZip -DestinationPath $odsSrc
+    $odsEntry = Join-Path $odsSrc 'ODS-main\install.ps1'
+    if (-not (Test-Path -LiteralPath $odsEntry -PathType Leaf)) { throw 'The downloaded archive does not contain the ODS installer.' }
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+    & $odsEntry
+}
 ```
 
 The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with
@@ -150,8 +151,9 @@ See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
 ### Fresh reinstall with cached models
 
 On Linux, WSL, or native macOS, `get-ods.sh --force --keep-models` replaces an
-existing ODS installation while retaining `data/models`. All other installation
-data, configuration, and runtime files are replaced. Without `--keep-models`,
+existing ODS installation while retaining `data/models` and the Hugging Face
+import records that describe those files (`data/model-imports.json`). All other
+installation data, configuration, and runtime files are replaced. Without `--keep-models`,
 `--force` keeps its normal full cleanup behavior. The option requires an
 identified existing installation and is consumed by the bootstrap, not `install.sh`.
 
@@ -180,11 +182,23 @@ cd $installDir
 ```
 
 Use `--keep-data` or `--keep-models` if you want to preserve local state.
-`--keep-data` keeps only the `data` folder inside the install directory. It
-still deletes `.env` (your settings and generated secrets) and `config/`, and
-on Linux and macOS the backups in `~/.ods`. If you plan to reinstall over the
-kept data, copy those somewhere safe first and put `.env` back before running
-the installer; without it, the installer generates new secrets.
+On Linux and macOS, `--keep-data` keeps the `data` folder, the backups in
+`.backups/`, the `presets/` folder, and the update snapshots in `~/.ods`.
+It still deletes `.env` (your settings and generated secrets) and `config/`.
+If you plan to reinstall over the kept data, copy those somewhere safe first
+and put `.env` back before running the installer; without it, the installer
+generates new secrets.
+
+On Linux and macOS, `--keep-models` moves models, and the Hugging Face import
+records that describe them (`model-imports.json`), to `<install>.models-backup`
+(for example `~/ods.models-backup`). A later install does not automatically
+restore a backup left by a standalone uninstall. After reinstalling, recover
+needed models into `data/models` (and `model-imports.json` into `data`) without
+overwriting existing files. Verify
+the recovered models before deleting the backup, or move the backup aside;
+the next `--keep-models` uninstall stops while it exists.
+This is separate from `get-ods.sh --force --keep-models`, which restores the
+backup it creates during that reinstall and refuses a pre-existing backup.
 
 If a
 Windows runtime is partial and `.\ods.ps1` is missing, run the cleanup from a
@@ -205,7 +219,6 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
 | **Portal** | Core conversational assistant in Dashboard; default chat on fresh qualified Linux installs | Private Unix socket; no host TCP port | Core feature on qualified hosts |
 | **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Optional |
-| **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
 | **Perplexica** | Deep research engine | 3004 | Optional |
@@ -242,7 +255,7 @@ The examples below are current catalog-selector outputs for common hardware enve
 
 Unified-memory hosts are routed away from qwen3-coder-next when that model would otherwise be selected, because current repo policy documents correctness issues on those backends. Bootstrap mode uses `qwen3.5-2b` for instant startup; the full model downloads in the background via GGUF from HuggingFace.
 
-**Inference backend:** selected by the platform installer and support matrix. Linux AMD paths use ROCm-capable containers; Windows Strix Halo uses the Windows-specific accelerated path.
+**Inference backend:** llama.cpp's `llama-server`, as on every platform. Linux AMD installs run its Vulkan container image by default (ROCm is optional); Windows AMD installs run `llama-server.exe` (Vulkan) on Windows.
 
 ### NVIDIA (Discrete GPU)
 
@@ -465,7 +478,6 @@ ods stop                       # Stop everything
 ods start                      # Start everything
 
 # Management scripts
-./scripts/session-cleanup.sh             # Clean up bloated agent sessions
 ./scripts/llm-cold-storage.sh --status   # Check model hot/cold storage
 ods mode                               # Show current mode
 ```
@@ -500,7 +512,7 @@ models, lifecycle commands (install, update, backup, uninstall), and an extensio
 
 **Open WebUI shows "Connection error"**
 - llama-server is still loading. On Linux Docker installs, wait for the host health check to pass: `curl localhost:11434/health`
-- On macOS native Metal and Windows native/Lemonade paths, use `curl localhost:8080/health`
+- On macOS native Metal and with the Windows AMD `llama-server.exe`, use `curl localhost:8080/health`
 - From another container on the ODS network, use `http://llama-server:8080/health`
 
 **Port already in use**
@@ -518,9 +530,9 @@ models, lifecycle commands (install, update, backup, uninstall), and an extensio
 
 **AMD Strix Halo: llama-server won't start**
 - Check GGUF model exists: `ls -lh data/models/*.gguf`
-- Watch logs: `docker compose -f docker-compose.base.yml -f docker-compose.amd.yml logs -f llama-server`
-- Verify GPU devices: `ls /dev/kfd /dev/dri/renderD128`
-- Ensure ROCm env: `HSA_OVERRIDE_GFX_VERSION=11.5.1` must be set
+- Watch logs: `ods logs llama-server`
+- Verify the GPU render node: `ls /dev/dri/renderD128`. The ROCm image (`AMD_INFERENCE_BACKEND=rocm`) also needs `/dev/kfd`
+- Leave `HSA_OVERRIDE_GFX_VERSION` unset unless the installer set it: the default Vulkan image ignores it, and the ROCm image is built for Strix Halo (gfx1151)
 
 **AMD: "missing tensor" errors**
 - Use upstream llama.cpp GGUF files (from `unsloth/` on HuggingFace)

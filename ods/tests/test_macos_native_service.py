@@ -134,6 +134,54 @@ esac
             self.assertFalse(pid_file.exists())
             subprocess.run(command[:6], env=env, check=True)
 
+    def test_start_survives_transient_launchctl_print_delay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            commands = root / "commands"
+            commands.mkdir()
+            launchctl = commands / "launchctl"
+            launchctl.write_text('''#!/bin/sh
+case "$1" in
+  print)
+    test -f "$TEST_STATE" || exit 1
+    if test -f "$TEST_STATE.kickstarted" && test ! -f "$TEST_STATE.retried"; then
+      touch "$TEST_STATE.retried"
+      exit 113
+    fi
+    printf '\\tpid = %s\\n' "$TEST_PID" ;;
+  bootstrap) touch "$TEST_STATE" ;;
+  bootout) rm -f "$TEST_STATE"; kill "$TEST_PID" 2>/dev/null ;;
+  kickstart) touch "$TEST_STATE.kickstarted" ;;
+  *) exit 2 ;;
+esac
+''')
+            launchctl.chmod(0o700)
+            (commands / "sleep").write_text("#!/bin/sh\nexit 0\n")
+            (commands / "sleep").chmod(0o700)
+            child = subprocess.Popen(["sleep", "120"])
+            self.addCleanup(lambda: child.poll() is None and child.terminate())
+            reaper = threading.Thread(target=child.wait, daemon=True)
+            reaper.start()
+            cur_path = os.environ.get("PATH", "")
+            env = dict(
+                os.environ,
+                HOME=str(root),
+                PATH=f"{commands}:{cur_path}",
+                TEST_STATE=str(root / "loaded"),
+                TEST_PID=str(child.pid),
+            )
+            install = root / "ods"
+            install.mkdir()
+            pid_file = install / "native.pid"
+            model = install / "model.gguf"
+            model.write_bytes(b"model")
+            arguments = ["--model", str(model), "--port", "18081"]
+            command = ["bash", str(SCRIPT), "start", str(install), "/bin/sleep", str(pid_file), *arguments]
+            result = subprocess.run(command, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, f"Failed with rc={result.returncode}: {result.stderr}")
+            self.assertEqual(pid_file.read_text().strip(), str(child.pid))
+            self.assertTrue((root / "loaded.retried").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

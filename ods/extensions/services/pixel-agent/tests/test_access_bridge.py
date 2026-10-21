@@ -863,6 +863,41 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(restored["effective_mode"], "sandboxed")
         self.assertNotIn("restart", self.runtime.log)
 
+    def test_interrupted_edge_without_host_journal_preserves_mode_but_requires_explicit_recovery(self):
+        verified = self.runtime.change(self.request("sandboxed"))
+        self.assertTrue(verified["runtime_verified"])
+        self.runtime.edge_phase = "interrupted"  # Edge restart after admitted chat.
+        self.runtime.log.clear()
+        interrupted = self.runtime.status()
+        self.assertTrue(interrupted["runtime_verified"])
+        self.assertEqual(interrupted["effective_mode"], "sandboxed")
+        self.assertFalse(interrupted["pending"])
+        self.assertEqual(interrupted["reason"], "chat-recovery-required")
+        self.assertIsNone(self.runtime.pending())
+        self.assertEqual(self.runtime.log, [])  # Status cannot release or probe.
+        recovered = self.runtime.change(self.request("sandboxed"))
+        self.assertEqual(recovered["effective_mode"], "sandboxed")
+        self.assertIsNone(recovered["reason"])
+        self.assertEqual(self.runtime.edge_phase, "idle")
+        self.assertIsNone(self.runtime.pending())
+        self.assertLess(self.runtime.log.index("edge-recover"), self.runtime.log.index("native-probe"))
+        self.assertLess(self.runtime.log.index("native-probe"), self.runtime.log.index("edge-release"))
+        self.assertNotIn("restart", self.runtime.log)
+
+    def test_interrupted_edge_does_not_fabricate_permission_proof_or_replace_owned_recovery(self):
+        self.runtime.edge_phase = "interrupted"
+        unverified = self.runtime.status()
+        self.assertEqual(unverified["reason"], "chat-recovery-required")
+        self.assertEqual(unverified["effective_mode"], "unknown")
+        self.assertFalse(unverified["runtime_verified"])
+        with self.runtime.locked():
+            bridge.atomic_json(self.runtime.state / "transition.json", {
+                "kind": "access", "phase": "error", "token": "d" * 64, "edge_revision": "b" * 64})
+        owned = self.runtime.status()
+        self.assertTrue(owned["pending"])
+        self.assertEqual(owned["reason"], "transition-recovery-required")
+        self.assertEqual(self.runtime.log, [])
+
     def test_slow_gateway_start_is_observed_without_restarting_again(self):
         original = self.runtime.native
         elapsed = [0.0]

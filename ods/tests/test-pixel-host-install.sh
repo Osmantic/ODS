@@ -75,26 +75,39 @@ else
 fi
 
 mkdir -p "$TEST_ROOT/group-bin"
+# Like util-linux sg (Ubuntu 26.04), each call replaces the primary group and
+# keeps no earlier one, so PIXEL_TEST_PRIMARY is the only group a command has.
 cat > "$TEST_ROOT/group-bin/sg" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "$2" == -c ]]
 [[ "${PIXEL_TEST_DENY_GROUP:-}" != "$1" ]] || exit 73
-export PIXEL_TEST_REFRESHED="${PIXEL_TEST_REFRESHED:-}${1} "
+export PIXEL_TEST_REFRESHED="${PIXEL_TEST_REFRESHED:-}${1} " PIXEL_TEST_PRIMARY="$1"
 exec bash -c "$3"
 SH
 chmod +x "$TEST_ROOT/group-bin/sg"
-for group_case in pixel both current unregistered denied denied_inner denied_outer; do
+for group_case in pixel docker both both_pixel_socket existing_pixel_socket current unregistered unsupported \
+    denied denied_inner denied_outer; do
     if (
-        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED=''
-        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel '
+        export PATH="$TEST_ROOT/group-bin:$PATH" PIXEL_TEST_REFRESHED='' PIXEL_TEST_PRIMARY=''
+        current='users docker'; account='users docker ods-pixel'; expected='ods-pixel docker |docker'
         case "$group_case" in
-            both) current=users; expected='docker ods-pixel ' ;;
-            current) current="$account"; expected='' ;;
-            unregistered) account="$current"; expected='' ;;
+            docker) current='users ods-pixel'; expected='docker |docker' ;;
+            both) current=users; expected='ods-pixel docker |docker' ;;
+            both_pixel_socket)
+                current=users; expected='docker ods-pixel |ods-pixel'
+                export ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel
+                ;;
+            existing_pixel_socket)
+                current='users ods-pixel'; expected='docker ods-pixel |ods-pixel'
+                export ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel
+                ;;
+            current) current="$account"; expected='|' ;;
+            unregistered) account="$current"; expected='|' ;;
+            unsupported) current=users; export ODS_PIXEL_OWNER_PRIMARY_GROUP=wheel ;;
             denied) export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
-            denied_inner) current=users; export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
-            denied_outer) current=users; export PIXEL_TEST_DENY_GROUP=docker ;;
+            denied_inner) current=users; export PIXEL_TEST_DENY_GROUP=docker ;;
+            denied_outer) current=users; export PIXEL_TEST_DENY_GROUP=ods-pixel ;;
         esac
         id() {
             if [[ "$1" == -un ]]; then command id -un
@@ -106,16 +119,37 @@ for group_case in pixel both current unregistered denied denied_inner denied_out
         tricky_arg="space ' \" ; touch $TEST_ROOT/UNEXPECTED"
         result=0
         actual="$(ods_pixel_run_as_owner "$owner" "$TEST_ROOT" python3 -c \
-            'import os,sys; print(os.environ["PIXEL_TEST_REFRESHED"] + "|" + sys.argv[1] + "|" + os.environ["HOME"])' \
+            'import os,sys; print(os.environ["PIXEL_TEST_REFRESHED"] + "|" + os.environ["PIXEL_TEST_PRIMARY"] + "|" + sys.argv[1] + "|" + os.environ["HOME"])' \
             "$tricky_arg")" || result=$?
         if [[ "$group_case" == denied* ]]; then
             [[ "$result" == 73 && -z "$actual" ]]
+        elif [[ "$group_case" == unsupported ]]; then
+            [[ "$result" == 1 && -z "$actual" ]]
         else
             [[ "$result" == 0 && "$actual" == "$expected|$tricky_arg|$TEST_ROOT" && ! -e "$TEST_ROOT/UNEXPECTED" ]]
         fi
     ); then pass "owner runtime group refresh: $group_case"
     else fail "owner runtime group refresh: $group_case"; fi
 done
+
+if (
+    inspection_calls="$TEST_ROOT/inspection-owner-calls"
+    INSTALL_DIR="$TEST_ROOT/inspection-install"
+    ods_pixel_run_as_owner() {
+        printf '%s %s\n' "${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}" "$5" >>"$inspection_calls"
+        [[ "$5" != build ]] || printf '%s\n' '{}'
+    }
+    ods_sudo() {
+        [[ "$*" != *" health" ]] \
+            || printf '%s\n' '{"schemaVersion":1,"kind":"ods-pixel-preview-inspection","status":"ready"}'
+    }
+    _ods_pixel_install_preview_inspection "$owner" "$TEST_ROOT" "$TEST_ROOT/inspection-source"
+    [[ "$(cat "$inspection_calls")" == $'docker build\nods-pixel wait-owner-socket' ]]
+); then
+    pass "preview inspection builds with Docker and probes its root:ods-pixel socket with ods-pixel"
+else
+    fail "preview inspection owner calls did not get the group each one needs"
+fi
 
 probe_program="$TEST_ROOT/manager-probe.py"
 probe_counter="$TEST_ROOT/manager-probe.count"
@@ -242,6 +276,14 @@ rm -f -- "$TEST_ROOT/attempt-logs"
 _ods_pixel_enable_chat_endpoint "$owner" "$home"
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True; assert v["preserve"]["value"] == 7' "$home/.openclaw/openclaw.json"
 check test "$(stat -c '%a' "$home/.openclaw/openclaw.json")" = 600
+# An already enabled endpoint leaves the file byte-for-byte alone, whatever its
+# serialization: a held source upgrade compares the exact bytes it recorded
+# before this step (Full Access writes the config unsorted).
+printf '%s\n' '{"preserve": {"value": 7}, "gateway": {"http": {"endpoints": {"chatCompletions": {"enabled": true}}}}}' \
+    > "$home/.openclaw/openclaw.json"
+chat_config_before="$(sha256sum "$home/.openclaw/openclaw.json")"
+_ods_pixel_enable_chat_endpoint "$owner" "$home"
+check test "$(sha256sum "$home/.openclaw/openclaw.json")" = "$chat_config_before"
 
 rm -f "$home/.openclaw/openclaw.json"
 printf '%s\n' '{}' > "$TEST_ROOT/symlink-target.json"
@@ -257,6 +299,32 @@ INSTALL_DIR="$TEST_ROOT/ods"
 PIXEL_SOURCE_REF="$(printf 'b%.0s' {1..40})"
 ODS_PIXEL_GATEWAY_UNIT_PATH="$TEST_ROOT/openclaw-gateway.service"
 export INSTALL_DIR PIXEL_SOURCE_REF ODS_PIXEL_GATEWAY_UNIT_PATH
+# The access coordinator rejects a ~/.config others can write
+# (model-marker-unsafe). Under Ubuntu's default umask 0002 the installer, which
+# runs as the owner, must neither create nor keep a group-writable ~/.config.
+coordinator_accepts_config() {
+    python3 - "$1" <<'PY'
+import os, stat, sys, pathlib
+marker = pathlib.Path(sys.argv[1]) / ".config/ods/pixel-managed.json"
+for directory, unsafe_bits in ((marker.parent.parent, 0o022), (marker.parent, 0o077)):
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & unsafe_bits:
+        raise SystemExit(f"model-marker-unsafe: {directory} {oct(stat.S_IMODE(info.st_mode))}")
+PY
+}
+for umask_case in fresh group-writable; do
+    umask_home="$TEST_ROOT/umask-$umask_case-home"
+    mkdir -p "$umask_home"
+    [[ "$umask_case" == group-writable ]] && install -d -m 0775 "$umask_home/.config"
+    if ( umask 0002; _ods_pixel_assert_managed_state "$owner" "$umask_home" ) >/dev/null 2>&1 \
+        && coordinator_accepts_config "$umask_home"; then
+        pass "umask 0002 leaves a $umask_case ~/.config the access coordinator accepts"
+    else
+        fail "umask 0002 leaves a $umask_case ~/.config the access coordinator rejects"
+    fi
+done
+check test "$(stat -c '%a' "$TEST_ROOT/umask-fresh-home/.config")" = 755
+
 _ods_pixel_assert_managed_state "$owner" "$home"
 marker="$home/.config/ods/pixel-managed.json"
 check test "$(stat -c '%a' "$marker")" = 600
@@ -450,6 +518,7 @@ if (
     COMPOSE_FLAGS_ARR=()
     LOG_FILE="$TEST_ROOT/repair-compose.log"
     ai_bad() { printf '%s\n' "$*" >> "$repair_messages"; }
+    ai_warn() { printf '%s\n' "$*" >> "$repair_messages"; }
     ods_pixel_owner_home() { printf '%s\n' "$repair_home"; }
     _ods_pixel_source_checkout() { printf '%s\n' "$repair_pixel"; }
     _ods_pixel_contract_sha256() { printf '%s\n' "$repair_contract"; }
@@ -471,7 +540,7 @@ PY
         _ods_pixel_write_operations_policy _ods_pixel_write_extension_manager_unit \
         _ods_pixel_write_artifact_promoter_unit _ods_pixel_write_workspace_preview_unit \
         _ods_pixel_write_onboarding _ods_pixel_harden_operations_state_profiles \
-        _ods_pixel_verify_operations_policy_custody; do
+        _ods_pixel_verify_operations_policy_custody _ods_pixel_sandbox_candidate_has_node; do
         eval "$stub() { :; }"
     done
     eval "_repair_run_as_owner() $(declare -f ods_pixel_run_as_owner | tail -n +2)"
@@ -535,6 +604,24 @@ inactive_home="$TEST_ROOT/inactive-conflict-home"
 inactive_pixel_root="$TEST_ROOT/inactive-conflict-source"
 inactive_release="$inactive_home/.local/share/pixel/releases/4.3.27"
 inactive_log="$TEST_ROOT/inactive-conflict-apply.log"
+for shared_error in \
+    'Shared live sandbox tag exists without an active Pixel release and is not valid for the reviewed candidate' \
+    'Shared live sandbox tag exists without an active Pixel release and does not match the reviewed candidate'; do
+    printf '[pixel] ERROR: %s\n' "$shared_error" >"$inactive_log"
+    check _ods_pixel_shared_sandbox_conflict "$owner" "$TEST_ROOT" "$inactive_log"
+done
+printf '%s\n' '[pixel] ERROR: Release already exists but is not byte-exact to the reviewed plan: /example' >"$inactive_log"
+if _ods_pixel_shared_sandbox_conflict "$owner" "$TEST_ROOT" "$inactive_log"; then
+    fail "inactive release directory was misclassified as a shared Docker tag conflict"
+else
+    pass "inactive release directory is distinct from retained Docker state"
+fi
+printf '%s\n' 'quoted [pixel] ERROR: Shared live sandbox tag exists without an active Pixel release and is not valid for the reviewed candidate' >"$inactive_log"
+if _ods_pixel_shared_sandbox_conflict "$owner" "$TEST_ROOT" "$inactive_log"; then
+    fail "non-exact shared tag diagnostic was accepted"
+else
+    pass "shared tag diagnostic requires the exact Pixel failure"
+fi
 mkdir -p "$inactive_home/.config/ods" "$inactive_release" "$inactive_pixel_root"
 chmod 0700 "$inactive_home/.config/ods" "$inactive_home/.local/share/pixel" \
     "$inactive_home/.local/share/pixel/releases"
@@ -772,6 +859,60 @@ if (
 else
     pass "Pixel sandbox recreation rejects a stale unregistered container"
 fi
+
+# Bootstrap's sandbox Node.js proof failure names the candidate to remove; only
+# this run's final error counts, and a malformed tag is never echoed.
+proof_log="$TEST_ROOT/pixel-proof.log"
+printf '%s\n' '[pixel] Building the pinned Pixel sandbox candidate image' \
+    '[pixel] ERROR: Sandbox runtime proof failed: pixel-sandbox-candidate:4.3.32-uid-1000 did not run the pinned Node.js 24.21.0 for this architecture without npm, npx or corepack. Remove it with docker image rm pixel-sandbox-candidate:4.3.32-uid-1000, then re-run with --apply.' \
+    > "$proof_log"
+check test "$(_ods_pixel_failed_sandbox_proof_candidate "$proof_log")" = pixel-sandbox-candidate:4.3.32-uid-1000
+for proof_tail in '[pixel] ERROR: Building the Pixel sandbox image failed.' \
+    '[pixel] ERROR: Sandbox runtime proof failed: pixel-sandbox-candidate:4.3.32-uid-1000;id did not run'; do
+    printf '%s\n' "$proof_tail" > "$proof_log"
+    if _ods_pixel_failed_sandbox_proof_candidate "$proof_log" >/dev/null; then
+        fail "sandbox proof failure parsed from: $proof_tail"
+    else
+        pass "no sandbox candidate parsed from: $proof_tail"
+    fi
+done
+{ printf '%s\n' '[pixel] ERROR: Sandbox runtime proof failed: pixel-sandbox-candidate:4.3.32-uid-1000 did not run'
+  printf '[pixel] later line %s\n' 1 2 3 4 5; } > "$proof_log"
+if _ods_pixel_failed_sandbox_proof_candidate "$proof_log" >/dev/null; then
+    fail "an earlier run's sandbox proof failure was treated as this run's"
+else
+    pass "only the final lines of the Pixel log name a failed sandbox proof"
+fi
+
+# A bootstrap that succeeds without the sandbox Node.js label (a developer
+# source older than 4.3.32) stops before apply.
+node_label_root="$TEST_ROOT/node-label-pixel"
+mkdir -p "$node_label_root"
+printf '4.3.32\n' > "$node_label_root/VERSION"
+for node_label in 24.21.0 '<no value>' ''; do
+    if (
+        ods_pixel_run_as_owner() {
+            shift 2
+            if [[ "$1" == docker ]]; then
+                [[ "$*" == "docker image inspect --format {{index .Config.Labels \"org.osmantic.pixel.sandbox-node\"}} pixel-sandbox-candidate:4.3.32-uid-$(id -u "$owner")" \
+                    && -n "$node_label" ]] || return 1
+                printf '%s\n' "$node_label"
+                return 0
+            fi
+            "$@"
+        }
+        _ods_pixel_sandbox_candidate_has_node "$owner" "$home" "$node_label_root"
+    ); then
+        node_label_result=accepted
+    else
+        node_label_result=refused
+    fi
+    if [[ "$node_label_result" == "$([[ "$node_label" == 24.21.0 ]] && echo accepted || echo refused)" ]]; then
+        pass "sandbox candidate with label '$node_label' $node_label_result"
+    else
+        fail "sandbox candidate with label '$node_label' $node_label_result"
+    fi
+done
 
 plugin_registry_bin="$TEST_ROOT/openclaw-plugin-registry"
 cat > "$plugin_registry_bin" <<SH
@@ -1097,6 +1238,7 @@ if (
     SCRIPT_DIR="$ROOT"
     ENABLE_PIXEL_RUNTIME=true
     ai() { :; }
+    _phase06_step() { :; }
     error() { :; return 1; }
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
@@ -1114,6 +1256,7 @@ if (
     SCRIPT_DIR="$ROOT"
     ENABLE_PIXEL_RUNTIME=true
     ai() { :; }
+    _phase06_step() { :; }
     error() { printf '%s\n' "$*" >&2; return 1; }
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
@@ -1175,6 +1318,7 @@ if (
     SCRIPT_DIR="$ROOT"
     ENABLE_PIXEL_RUNTIME=true
     ai() { :; }
+    _phase06_step() { :; }
     error() { :; return 1; }
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
@@ -1200,6 +1344,7 @@ if (
     ods_pixel_install_owner() { printf '%s\n' "$owner"; }
     ods_pixel_owner_home() { printf '%s\n' "$transition_home"; }
     ods_pixel_uninstall_managed() { : > "$transition_install/retired"; }
+    ods_sudo() { return 1; }
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
 ); then
@@ -1906,7 +2051,7 @@ cat > "$runtime_validator" <<'SH'
 set -euo pipefail
 [[ "$1 $2" == "config validate" ]]
 python3 - "$OPENCLAW_CONFIG_PATH" <<'PY'
-import json, pathlib, re, sys
+import json, os, pathlib, re, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert value["agents"]["defaults"]["timeoutSeconds"] == 1800
 assert value["agents"]["defaults"]["bootstrapMaxChars"] == 32000
@@ -1999,7 +2144,17 @@ assert value["agents"]["defaults"]["compaction"] == {
     "timeoutSeconds": 1800,
     "keepRecentTokens": max(512, min(20000, context_window // 16)),
 }
-if "qwen" in model["id"].lower() and model["reasoning"] is True:
+# A case that renders a measured thinking control names it here; the config
+# itself never carries it. Without one, the "qwen" name rule applies.
+thinking_control = os.environ.get("ODS_TEST_THINKING_CONTROL")
+enable_thinking_switch = ("qwen" in model["id"].lower() if thinking_control is None
+                          else thinking_control == "enable_thinking")
+if thinking_control in ("always", "none"):
+    assert model["reasoning"] is (thinking_control == "always")
+    assert "thinkingDefault" not in agent
+    assert "compat" not in model
+    assert "chat_template_kwargs" not in agent.get("params", {})
+elif enable_thinking_switch and model["reasoning"] is True:
     assert agent["thinkingDefault"] == "low"
     assert model["compat"] == {"thinkingFormat": "qwen-chat-template"}
     assert agent["params"]["chat_template_kwargs"]["enable_thinking"] is True
@@ -2007,7 +2162,7 @@ else:
     assert "thinkingDefault" not in agent
     assert model["reasoning"] is False
     assert "compat" not in model
-    if "qwen" in model["id"].lower():
+    if enable_thinking_switch:
         assert agent["params"]["chat_template_kwargs"]["enable_thinking"] is False
 if lean_prompt:
     params = agent["params"]
@@ -2405,6 +2560,57 @@ fi
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$reconcile_candidate" "$runtime_validator" "$reconcile_answers")" = changed
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is True and m["compat"] == {"thinkingFormat":"qwen-chat-template"} and a["thinkingDefault"] == "low" and a["params"]["chat_template_kwargs"]["enable_thinking"] is True' "$reconcile_candidate"
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" "$reconcile_candidate" "$reconcile_answers"
+# A measured thinking control in the answers replaces the "qwen" name rule for
+# the same route. The validator accepts exactly what the renderer writes for
+# each control and refuses a candidate rendered for another one.
+for thinking_control in enable_thinking always none; do
+    control_answers="$TEST_ROOT/thinking-$thinking_control-onboarding.json"
+    control_candidate="$TEST_ROOT/thinking-$thinking_control-candidate.json"
+    cp "$reconcile_answers" "$control_answers"
+    cp "$reconcile_candidate" "$control_candidate"
+    chmod 0600 "$control_answers" "$control_candidate"
+    check _ods_pixel_update_onboarding_model "$owner" "$reconcile_home" "$control_answers" \
+        qwen-new 65536 2048 true "" unknown "$thinking_control"
+    check python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["modelThinkingControl"] == sys.argv[2]' \
+        "$control_answers" "$thinking_control"
+    export ODS_TEST_THINKING_CONTROL="$thinking_control"
+    check test -n "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$control_candidate" "$runtime_validator" "$control_answers")"
+    unset ODS_TEST_THINKING_CONTROL
+    check python3 - "$control_candidate" "$thinking_control" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+agent = value["agents"]["list"][0]
+model = value["models"]["providers"]["ods-local"]["models"][0]
+thinking = (model["reasoning"], model.get("compat"), agent.get("thinkingDefault"),
+            agent.get("params", {}).get("chat_template_kwargs"))
+assert thinking == {
+    "enable_thinking": (True, {"thinkingFormat": "qwen-chat-template"}, "low", {"enable_thinking": True}),
+    "always": (True, None, None, None),
+    "none": (False, None, None, None),
+}[sys.argv[2]], thinking
+assert "modelThinkingControl" not in value["plugins"]["entries"]["pixel-ods"]["config"]
+PY
+    check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" "$control_candidate" "$control_answers"
+    if [[ "$thinking_control" != enable_thinking ]]; then
+        if _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+            "$control_candidate" "$reconcile_answers" >/dev/null 2>&1; then
+            fail "candidate rendered for thinking control $thinking_control rejected under the name rule"
+        else
+            pass "candidate rendered for thinking control $thinking_control rejected under the name rule"
+        fi
+    fi
+done
+# A model promoted without a measured control never keeps an earlier one.
+check _ods_pixel_update_onboarding_model "$owner" "$reconcile_home" "$control_answers" qwen-new 65536 2048 true
+check python3 -c 'import json,sys; assert "modelThinkingControl" not in json.load(open(sys.argv[1]))' "$control_answers"
+cp "$control_answers" "$TEST_ROOT/thinking-before-invalid.json"
+if _ods_pixel_update_onboarding_model "$owner" "$reconcile_home" "$control_answers" \
+    qwen-new 65536 2048 true "" unknown sometimes >/dev/null 2>&1; then
+    fail "invalid promoted Pixel thinking control rejected"
+else
+    pass "invalid promoted Pixel thinking control rejected"
+fi
+check cmp -s "$control_answers" "$TEST_ROOT/thinking-before-invalid.json"
 cp "$reconcile_config" "$TEST_ROOT/reconcile-config-with-control-bind.json"
 python3 - "$reconcile_config" <<'PY'
 import json, pathlib, sys
@@ -2720,19 +2926,22 @@ check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); assert v["mod
 check test "$(GGUF_FILE='My Custom Model (Q4_K_M).gguf' \
     LLM_MODEL='friendly-library-alias' GPU_BACKEND=nvidia \
     _ods_pixel_runtime_model_identity)" = 'My Custom Model (Q4_K_M).gguf'
+# AMD runs llama.cpp like every GPU: the served id is the GGUF file name
+# (--alias), with no Lemonade "extra." prefix.
 check test "$(GGUF_FILE='My Custom Model (Q4_K_M).gguf' \
-    LLM_MODEL='friendly-library-alias' GPU_BACKEND=amd LLM_BACKEND=lemonade \
-    AMD_INFERENCE_RUNTIME=lemonade \
-    LEMONADE_MODEL='extra.My Custom Model (Q4_K_M).gguf' \
-    _ods_pixel_runtime_model_identity)" = 'extra.My Custom Model (Q4_K_M).gguf'
-check test "$(GGUF_FILE='stale-local.gguf' GPU_BACKEND=cpu \
-    LEMONADE_EXTERNAL=true LEMONADE_MODEL='Qwen3.6-35B-A3B-GGUF' \
-    _ods_pixel_runtime_model_identity)" = 'Qwen3.6-35B-A3B-GGUF'
-if GGUF_FILE='stale-local.gguf' GPU_BACKEND=cpu LEMONADE_EXTERNAL=true \
-    LEMONADE_MODEL='' _ods_pixel_runtime_model_identity >/dev/null 2>&1; then
-    fail "external Lemonade runtime identity requires the served model"
+    LLM_MODEL='friendly-library-alias' GPU_BACKEND=amd LLM_BACKEND=llama-server \
+    AMD_INFERENCE_RUNTIME=llama-server \
+    _ods_pixel_runtime_model_identity)" = 'My Custom Model (Q4_K_M).gguf'
+# The Windows Portal's host-native llama-server serves the GGUF Windows chose,
+# which phase 02 records in GGUF_FILE.
+check test "$(GGUF_FILE='Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' GPU_BACKEND=cpu \
+    NATIVE_LLM_BASE_URL=http://localhost:8080 \
+    _ods_pixel_runtime_model_identity)" = 'Qwen3.6-35B-A3B-UD-Q4_K_M.gguf'
+if EXTERNAL_LLM_URL='http://10.0.2.2:18080' EXTERNAL_LLM_MODEL='' GGUF_FILE='stale-local.gguf' \
+    _ods_pixel_runtime_model_identity >/dev/null 2>&1; then
+    fail "external runtime identity requires the served model"
 else
-    pass "external Lemonade runtime identity requires the served model"
+    pass "external runtime identity requires the served model"
 fi
 check test "$(EXTERNAL_LLM_URL='http://10.0.2.2:18080' \
     EXTERNAL_LLM_MODEL='org/qwen+tools:remote' GGUF_FILE='stale-local.gguf' \
@@ -2982,6 +3191,21 @@ native_search_provision = installer.index("--base-dir \"$INSTALL_DIR/data/pixel/
 pixel_bootstrap = installer.index("\"$pixel_root/pixel\" bootstrap --apply")
 native_search_digest = installer.index("\"$pixel_root/pixel\" extension-hash \"$parallel_path\"")
 assert native_search_provision < pixel_bootstrap < native_search_digest
+# A bootstrap failure names the downloads it needs, the recovery and the help link.
+bootstrap_failure = installer[pixel_bootstrap:native_search_digest]
+assert "Node.js runtime from nodejs.org" in bootstrap_failure
+assert "then run the ODS install or update again" in bootstrap_failure
+assert "https://discord.gg/4ntNp9MAwC" in bootstrap_failure
+# A failed check of an existing candidate names that image and its removal
+# instead of blaming the network.
+stale = bootstrap_failure.index("stale_sandbox=\"$(_ods_pixel_failed_sandbox_proof_candidate \"$pixel_log\")\"")
+assert stale < bootstrap_failure.index("Remove it with docker image rm $stale_sandbox, then run the ODS install or update again") \
+    < bootstrap_failure.index("internet access and free disk space")
+assert bootstrap_failure.count("https://discord.gg/4ntNp9MAwC") == 3
+# A developer source without the sandbox Node.js runtime stops before apply.
+node_label = installer.index("if ! _ods_pixel_sandbox_candidate_has_node \"$owner\" \"$home\" \"$pixel_root\"")
+assert pixel_bootstrap < node_label < installer.index("\"$pixel_root/pixel\" apply --confirm")
+assert "leave PIXEL_SOURCE_URL and PIXEL_SOURCE_REF unset" in installer[node_label:native_search_digest]
 assert "Pixel configure failed. See $pixel_log" in text
 assert "Pixel plan failed. See $pixel_log" in text
 assert "Pixel configure or plan failed" not in text
@@ -3152,9 +3376,12 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 19
-assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "hook-provenance", "run-id-redaction"}.issubset(managed)
+assert len(set(managed)) == len(managed) == 21
+assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "subagent-admission", "hook-provenance", "run-id-redaction"}.issubset(managed)
 assert "command-attempt-warning" in managed
+assert "subagent-session" in managed
+assert "--subagent-session" in installer
+assert "host/openclaw-subagent-session.json" in installer
 assert "--command-attempt-warning" in installer
 assert "host/openclaw-command-attempt-warning.json" in installer
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")

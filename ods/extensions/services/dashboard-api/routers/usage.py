@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import logging
 import math
 import os
 import re
@@ -22,6 +23,8 @@ from usage_timeline import minute_timeline, MAX_EVENTS
 from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
 from helpers import check_service_health, get_cached_services
 from security import verify_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/usage", tags=["usage"])
 
@@ -375,13 +378,11 @@ async def _fetch_token_spy_report(start: str, end: str) -> dict[str, Any]:
         )
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        return _empty_report(
-            start,
-            end,
-            detail=f"Token Spy returned HTTP {exc.code}: {detail[:160]}",
-        )
+        logger.warning("Token Spy report returned HTTP %s: %s", exc.code, detail[:160])
+        return _empty_report(start, end, detail=f"Token Spy returned HTTP {int(exc.code)}")
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return _empty_report(start, end, detail=f"Token Spy unavailable: {exc}")
+        logger.warning("Token Spy report unavailable: %s", exc)
+        return _empty_report(start, end, detail="Token Spy unavailable")
 
 
 def _request_token_spy_report(start: str, end: str, headers: dict[str, str]) -> dict[str, Any]:

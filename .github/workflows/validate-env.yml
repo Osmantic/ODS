@@ -7,6 +7,9 @@ on:
       - main
       - master
 
+permissions:
+  contents: read
+
 jobs:
   env-schema:
     runs-on: ubuntu-latest
@@ -59,7 +62,6 @@ jobs:
           SEARXNG_SECRET=test-searxng-secret
           N8N_USER=admin@ods.local
           N8N_PASS=test-pass-changeme
-          OPENCLAW_TOKEN=sk-test-openclaw-token
           ODS_VERSION=2.1.0
           ODS_TIER=${{ matrix.tier }}
           GPU_BACKEND=cpu
@@ -86,9 +88,6 @@ jobs:
           EMBEDDINGS_PORT=8090
           SEARXNG_PORT=8888
           APE_PORT=7890
-          OPENCLAW_PORT=7860
-          OPENCLAW_CONFIG=prosumer.json
-          OPENCLAW_API_KEY=sk-test-openclaw
           PRIVACY_SHIELD_PORT=8085
           TOKEN_SPY_PORT=3005
           LIVEKIT_PORT=7880

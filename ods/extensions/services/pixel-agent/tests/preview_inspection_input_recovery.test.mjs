@@ -56,3 +56,89 @@ test('observed digest guessing gets actionable feedback without contacting the b
   assert.equal((await tool.execute('corrected',valid())).details.errorCode,'unavailable');
   assert.equal(calls,1);
 });
+
+test('empty accessible names identify every affected step before a corrected retry',async()=>{
+  const calls=[];
+  const tool=createWorkspacePreviewInspectTool({request:async params=>{calls.push(structuredClone(params));throw Error('offline fixture');}});
+  // Synthetic public-shaped reproduction, not a private browser transcript.
+  const params={...valid(),viewport:{width:375,height:667},steps:[
+    {action:'assert-visible',locator:{role:'heading',name:'Packing Checklist',exact:true}},
+    {action:'assert-visible',locator:{role:'textbox',name:'',exact:true}},
+    {action:'fill',locator:{role:'textbox',name:'',exact:true},value:'Passport'},
+    {action:'click',locator:{role:'button',name:'Add',exact:true}},
+    {action:'assert-text',locator:{selector:'#counter'},expectedText:'1 of 1'},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('invalid-empty-names',params);
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.isError,true);
+  assert.equal(calls.length,0);
+  assert.match(result.content[0].text,/Step 2 \(steps\[1\]\.locator\.name\)/);
+  assert.match(result.content[0].text,/Step 3 \(steps\[2\]\.locator\.name\)/);
+  assert.match(result.content[0].text,/non-empty accessible name/);
+  assert.match(result.content[0].text,/unnamed.*CSS selector/i);
+  assert.match(result.content[0].text,/Retain an interaction and its visible postcondition/);
+  assert.deepEqual(params,before,'invalid input is never corrected automatically');
+
+  const corrected=structuredClone(params);
+  corrected.steps[1].locator={selector:'#item-input'};
+  corrected.steps[2].locator={selector:'#item-input'};
+  assert.equal((await tool.execute('corrected',corrected)).details.errorCode,'unavailable');
+  assert.equal(calls.length,1,'an explicit corrected plan reaches transport');
+  assert.deepEqual(calls[0].steps,corrected.steps,'the inspector never changes the heading or counter expectation to make a test pass');
+  assert.equal(calls[0].steps[4].expectedText,'1 of 1','a potentially wrong postcondition stays the caller responsibility');
+});
+
+test('inspection tool schema excludes empty CSS selectors and accessible names',()=>{
+  const schema=createWorkspacePreviewInspectTool().parameters.properties.steps.items.properties.locator;
+  assert.equal(schema.oneOf[0].properties.selector.minLength,1);
+  assert.equal(schema.oneOf[1].properties.name.minLength,1);
+});
+
+test('bounded step diagnostics identify fields without reflecting untrusted argument text',async()=>{
+  const tool=createWorkspacePreviewInspectTool({request:async()=>assert.fail('invalid plan must not run')});
+  const marker='UNTRUSTED_ARGUMENT_DO_NOT_REPEAT';
+  const params={...valid(),steps:[
+    {action:'assert-visible',locator:{selector:''}},
+    {action:'click',locator:{role:marker,name:'Add',exact:true}},
+    {action:'click',locator:{role:'button',name:'Add',exact:false}},
+    {action:'assert-text',locator:{selector:'#counter'},expectedText:' invalid spacing '},
+    {action:'fill',locator:{selector:'#item-input'},value:marker+'\n'},
+    null,
+  ]};
+  const result=await tool.execute('invalid-fields',params);
+  for(const [index,field] of ['locator.selector','locator.role','locator.exact','expectedText','value',''].entries()) {
+    assert.ok(result.content[0].text.includes(`Step ${index+1} (steps[${index}]${field?'.'+field:''})`));
+  }
+  assert.doesNotMatch(result.content[0].text,new RegExp(marker));
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.isError,true);
+  const sparse={...valid(),steps:Array(1)};
+  assert.equal((await tool.execute('sparse',sparse)).details.errorCode,'invalid_request');
+});
+
+// A path on click/assert-visible attempted to navigate to a sibling test page.
+test('non-download paths explain navigation limits without transport or value disclosure',async()=>{
+  let calls=0;
+  const tool=createWorkspacePreviewInspectTool({request:async()=>{calls++;throw Error('must not execute');}});
+  const marker='PRIVATE_PATH_VALUE_DO_NOT_REPEAT';
+  const params={...valid(),steps:[
+    {action:'click',locator:{selector:'#go'},path:'sibling-test.html'},
+    {action:'assert-visible',locator:{selector:'#result'},path:marker},
+  ]};
+  const before=structuredClone(params);
+  const result=await tool.execute('unsupported-navigation',params);
+  assert.equal(result.isError,true);
+  assert.equal(result.details.errorCode,'invalid_request');
+  assert.equal(result.details.status,'failed');
+  assert.equal(result.details.receipt,undefined);
+  assert.equal(calls,0);
+  assert.match(result.content[0].text,/steps\[0\]\.path/);
+  assert.match(result.content[0].text,/steps\[1\]\.path/);
+  assert.match(result.content[0].text,/path is allowed only for a final download assertion/);
+  assert.match(result.content[0].text,/no navigation or reload action/);
+  assert.match(result.content[0].text,/cross-reload persistence as unverified/);
+  assert.ok(!result.content[0].text.includes(marker));
+  assert.ok(!result.content[0].text.includes('sibling-test.html'));
+  assert.deepEqual(params,before);
+});

@@ -27,12 +27,15 @@ test: ## Run unit and contract tests
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
 	@python3 tests/test-model-library-pinned-urls.py
+	@python3 tests/test-tier-map-catalog-pins.py
 	@bash tests/test-installer-context-parity.sh
+	@bash tests/test-embeddings-prefetch-service-cache.sh
 	@bash tests/test-hermes-context-floor.sh
 	@bash tests/test-install-menu-hermes-flag.sh
 	@bash tests/test-custom-menu-agent-flags.sh
-	@bash tests/test-lemonade-external-gpu.sh
+	@bash tests/test-native-llm-flags.sh
 	@bash tests/test-preflight-external-gpu.sh
+	@bash tests/test-wsl-whisper-port-reservation.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
@@ -86,13 +89,12 @@ test: ## Run unit and contract tests
 	@bash tests/test-macos-status-optional-opencode.sh
 	@python3 tests/test-cli-stt-env.py
 	@echo ""
-	@echo "=== AMD/Lemonade contracts ==="
-	@bash tests/contracts/test-amd-lemonade-contracts.sh
-	@bash tests/test-lemonade-host-transport.sh
+	@echo "=== AMD llama.cpp contracts ==="
+	@bash tests/contracts/test-amd-llamacpp-contracts.sh
 	@bash tests/test-wsl-agent-start.sh
-	@python3 tests/test-lemonade-container-transport.py
-	@python3 tests/test-wsl-lemonade-proof.py
-	@python3 tests/test-wsl-lemonade-control.py
+	@python3 tests/test-router-transport.py
+	@python3 tests/test-wsl-runtime-proof.py
+	@python3 tests/test-wsl-runtime-control.py
 	@python3 tests/test-configure-wsl-model-store.py
 	@python3 tests/test-retire-wsl-runtime.py
 	@bash tests/test-litellm-amd-auth-enforced.sh
@@ -189,9 +191,6 @@ test: ## Run unit and contract tests
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
 	@echo ""
-	@echo "=== bootstrap OpenClaw compose-guard regression ==="
-	@bash tests/test-bootstrap-openclaw-compose-guard.sh
-	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-backup-retention-labels.sh
 	@bash tests/test-update-script-backup.sh
@@ -251,7 +250,6 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== documented security suites (SECURITY_AUDIT.md) ==="
 	@bash tests/test-secret-security.sh
-	@bash tests/test-openclaw-device-auth-default.sh
 	@bash tests/contracts/test-security-suites-wired.sh
 	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
@@ -259,9 +257,6 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
-	@echo ""
-	@echo "=== session cleanup lifecycle ==="
-	@bash tests/test-session-cleanup.sh
 
 bats: ## Run BATS unit tests for shell libraries
 	@echo "=== BATS unit tests ==="

@@ -116,24 +116,46 @@ PY
 }
 
 ods_pixel_run_as_owner() {
-    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command
-    local -a refresh_groups=()
+    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command primary_group
+    local -a refresh_groups=() group_order=()
     shift 2
+    # The last group listed becomes the command's primary group (see below).
+    primary_group="${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}"
+    case "$primary_group" in
+        docker) group_order=(ods-pixel docker) ;;
+        ods-pixel) group_order=(docker ods-pixel) ;;
+        *)
+            printf '%s\n' 'error: unsupported Pixel owner primary group' >&2
+            return 1
+            ;;
+    esac
     # A redundant sudo -u of the already-current owner can allocate a fresh
     # pseudo-terminal (sudoers use_pty). Pixel's child installers then lose
     # the authenticated parent tty and prompt for sudo mid-install/update.
     if [[ "$(id -un)" == "$owner" ]]; then
         current_groups=" $(id -nG) "
         account_groups=" $(id -nG "$owner") "
-        for group in docker ods-pixel; do
+        for group in "${group_order[@]}"; do
             if [[ "$current_groups" != *" $group "* && "$account_groups" == *" $group "* ]]; then
                 refresh_groups+=("$group")
             fi
         done
         if (( ${#refresh_groups[@]} > 0 )); then
+            # A requested group already present as the primary group can be
+            # lost when sg refreshes another missing group. Reapply it last
+            # even when it did not itself need refreshing.
+            if [[ "$account_groups" == *" $primary_group "* \
+                && "${refresh_groups[${#refresh_groups[@]}-1]}" != "$primary_group" ]]; then
+                refresh_groups+=("$primary_group")
+            fi
             # A first install may have just granted Docker and Pixel socket
-            # access. sg adds only its requested group, so refresh each missing
-            # runtime group without creating another sudo pseudo-terminal.
+            # access. Refresh each missing runtime group with nested sg rather
+            # than another sudo pseudo-terminal. The innermost sg sets the
+            # primary group. shadow's sg also keeps the outer groups, but
+            # util-linux sg (Ubuntu 26.04) only replaces the primary group, so
+            # the innermost one is the only group sure to survive. Owner
+            # commands need Docker there; only the root-owned inspection socket
+            # needs ods-pixel, and its caller asks for it.
             # Caller arguments remain JSON in the environment, never shell code.
             if ! command -v sg >/dev/null 2>&1 \
                 || ! command -v python3 >/dev/null 2>&1; then
@@ -161,6 +183,32 @@ PY
         printf '%s\n' 'error: cannot enter the Pixel install owner identity' >&2
         return 1
     fi
+}
+
+ods_pixel_check_owner_docker() {
+    local owner home status
+    owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || {
+        ai_bad "Could not determine the Pixel install owner for the Docker check."
+        return 1
+    }
+    home="$(ods_pixel_owner_home "$owner")" || {
+        ai_bad "Could not resolve the home directory for Pixel owner '$owner'."
+        return 1
+    }
+    ai "Checking Docker access as Pixel owner '$owner'..."
+    # Pixel bootstrap uses plain Docker as this owner, even when the ODS core
+    # can proceed via sudo docker. Reuse its group refresh and environment.
+    # Discard info's potentially sensitive stdout, but keep the actual error
+    # visible rather than interpreting every failure as a socket permission.
+    if ods_pixel_run_as_owner "$owner" "$home" docker info >/dev/null; then
+        return 0
+    else
+        status=$?
+    fi
+    ai_bad "Pixel's Docker access check failed for '$owner' (exit $status); see the error above."
+    ai_warn "As '$owner', run 'docker info >/dev/null' without sudo and resolve the reported error before retrying with the same install options."
+    ai_warn "Recovery: https://github.com/Osmantic/ODS/blob/main/ods/docs/TROUBLESHOOTING.md#pixel-cannot-access-docker"
+    return "$status"
 }
 
 # Resolve Pixel search before phase 03 chooses Compose services. Use the same
@@ -242,6 +290,20 @@ _ods_pixel_assert_managed_state() {
     marker_dir="${marker%/*}"
     pixel_install="$home/.local/share/pixel"
     local gateway_unit="${ODS_PIXEL_GATEWAY_UNIT_PATH:-/etc/systemd/system/openclaw-gateway.service}"
+    local config_dir="${marker_dir%/*}"
+    # The access coordinator trusts the marker only when ~/.config is owned by
+    # the owner and not writable by others (model-marker-unsafe otherwise).
+    # The installer runs as the owner with Ubuntu's default umask 0002, which
+    # would create ~/.config as 0775, and other tools may have done the same.
+    if [[ -e "$config_dir" || -L "$config_dir" ]]; then
+        [[ -d "$config_dir" && ! -L "$config_dir" ]] || return 1
+        [[ "$(stat -c '%u' -- "$config_dir")" == "$(id -u "$owner")" ]] || return 1
+        if (( (8#$(stat -c '%a' -- "$config_dir") & 0022) != 0 )); then
+            ods_pixel_run_as_owner "$owner" "$home" chmod go-w -- "$config_dir" || return 1
+        fi
+    else
+        ods_pixel_run_as_owner "$owner" "$home" install -d -m 0755 -- "$config_dir" || return 1
+    fi
     if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
         [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
         [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
@@ -337,6 +399,21 @@ print(f"{state}|{source_ref}")
 PY
 }
 
+# An exact inert initial bootstrap has no deployed authority baseline to hold.
+# Recheck the same evidence before reconciling its ordinary source copy.
+_ods_pixel_initial_source_copy_allowed() {
+    local owner="$1" home="$2" requested_ref="$3" transition
+    transition="$(_ods_pixel_source_transition_state "$owner" "$home" "$requested_ref")" || return 1
+    [[ "$transition" == "installing|$requested_ref" \
+        && ! -e /var/lib/ods-pixel-access && ! -L /var/lib/ods-pixel-access \
+        && ! -e /etc/ods/pixel-access.json && ! -L /etc/ods/pixel-access.json \
+        && ! -e /usr/local/libexec/ods-pixel-access && ! -L /usr/local/libexec/ods-pixel-access \
+        && ! -e /etc/systemd/system/openclaw-gateway.service \
+        && ! -L /etc/systemd/system/openclaw-gateway.service ]] \
+        && PIXEL_SOURCE_REF="$requested_ref" _ods_pixel_initial_unconfigured_marker "$owner" "$home" \
+            "$INSTALL_DIR/data/pixel/source-$requested_ref"
+}
+
 # Return 0 when an exact ODS-managed Pixel deployment needs a held transaction
 # before the installer copies source over its installed ownership evidence.
 # Return 1 when no transition is needed, and 2 for unsafe or ambiguous state.
@@ -347,6 +424,13 @@ _ods_pixel_source_transition_required() {
     [[ "$state" =~ ^(ready|installing|deactivating)$ \
         && "$source_ref" =~ ^[0-9a-f]{40}$ ]] || return 2
     [[ "$state" == deactivating || "$source_ref" != "$requested_ref" ]] && return 0
+    # An interrupted bootstrap has not installed a release or access
+    # coordinator yet. There is no authority baseline to migrate. Keep the
+    # ordinary source-copy path only for the exact inert initial state.
+    if [[ "$state" == installing ]] \
+        && _ods_pixel_initial_source_copy_allowed "$owner" "$home" "$requested_ref"; then
+        return 1
+    fi
     # The Pixel pin alone does not identify the ODS host integration. Preserve
     # its installed source until cleanup can validate privileged mirrors, even
     # when an upgrade retains the same developer Pixel checkout.
@@ -375,8 +459,18 @@ _ods_pixel_source_transition_required() {
 _ods_pixel_source_upgrade() {
     local action="$1" owner="$2"
     shift 2
+    # These custody operations are mandatory. ods_sudo intentionally returns
+    # success when skipping optional privileged tasks; that is not a valid
+    # stage/status/hold response and must never authorize an upgrade step.
+    if [[ ${EUID:-$(id -u)} -ne 0 && "${ODS_SUDO_AVAILABLE:-true}" == false ]]; then
+        printf '%s\n' 'error: source-upgrade-sudo-required: Pixel source upgrade requires sudo. Preserve the existing installation and any pending upgrade state.' >&2
+        return 1
+    fi
     local helper="${SCRIPT_DIR:?}/bin/pixel_source_upgrade.py"
-    [[ -f "$helper" && ! -L "$helper" ]] || return 1
+    if [[ ! -f "$helper" || -L "$helper" ]]; then
+        printf '%s\n' 'error: source-upgrade-helper-unavailable: The reviewed Pixel source upgrade helper is missing or unsafe.' >&2
+        return 1
+    fi
     ods_sudo python3 -I "$helper" "$action" "${INSTALL_DIR:?}" "$owner" "$@"
 }
 
@@ -824,19 +918,23 @@ PY
 _ods_pixel_stable_alias_matches_promoted_model() {
     local owner="$1" home="$2" answers="$3" promoted_model="$4"
     local promoted_context="${5:-}" promoted_max_tokens="${6:-}" promoted_reasoning="${7:-}" config
-    local route_fingerprint="${8:-}" image_input="${9:-unknown}"
+    local route_fingerprint="${8:-}" image_input="${9:-unknown}" thinking_control="${10:-}"
     config="$home/.openclaw/openclaw.json"
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
         "$answers" "$config" "$promoted_model" "$promoted_context" \
-        "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" "$image_input" <<'PY'
+        "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" "$image_input" \
+        "$thinking_control" <<'PY'
 import json, os, pathlib, re, stat, sys
 
 answers_path, config_path = map(pathlib.Path, sys.argv[1:3])
 promoted_model, context_raw, max_tokens_raw, reasoning_raw = sys.argv[3:7]
 route_fingerprint = sys.argv[7] or None
 image_input = sys.argv[8]
+thinking_control = sys.argv[9] or None
 if image_input not in ("supported", "unsupported", "unknown"):
     raise SystemExit("invalid promoted Pixel image-input contract")
+if thinking_control not in (None, "enable_thinking", "always", "none"):
+    raise SystemExit("invalid promoted Pixel thinking-control contract")
 if route_fingerprint is not None and not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint):
     raise SystemExit(1)
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", promoted_model):
@@ -862,6 +960,9 @@ if (answers.get("modelImageInput", "unknown") != image_input
     raise SystemExit(1)
 if (answers.get("modelRouteFingerprint") != route_fingerprint
         or config.get("plugins", {}).get("entries", {}).get("pixel-ods", {}).get("config", {}).get("modelRouteFingerprint") != route_fingerprint):
+    raise SystemExit(1)
+# The config never names the control; the answers that rendered it do.
+if answers.get("modelThinkingControl") != thinking_control:
     raise SystemExit(1)
 if answers.get("modelProvider") != "ods-gateway" or answers.get("modelId") != "ods/current":
     raise SystemExit(1)
@@ -1222,6 +1323,12 @@ if (type(context_window) is not int or type(max_tokens) is not int or type(reaso
         or not 4096 <= context_window <= 10_000_000
         or not 1 <= max_tokens <= context_window):
     raise SystemExit("live Pixel model limits are outside the ODS model-only contract")
+# The rollback contract describes the live model. A measured thinking control
+# saved for another model (the answers can lag a native switch) is dropped.
+if contract.get("modelThinkingControl") not in (None, "enable_thinking", "always", "none"):
+    raise SystemExit("invalid Pixel thinking-control contract")
+if (contract.get("modelProvider"), contract.get("modelId"), contract.get("modelName")) != (provider, model_id, model_name):
+    contract.pop("modelThinkingControl", None)
 contract["modelProvider"] = provider
 contract["modelId"] = models[0]["id"]
 contract["modelName"] = models[0]["name"]
@@ -1260,9 +1367,10 @@ PY
 _ods_pixel_update_onboarding_model() {
     local owner="$1" home="$2" answers="$3" model="$4"
     local context="${5:-}" max_tokens="${6:-}" reasoning="${7:-}"
-    local route_fingerprint="${8:-}" image_input="${9:-unknown}"
+    local route_fingerprint="${8:-}" image_input="${9:-unknown}" thinking_control="${10:-}"
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
-        "$answers" "$model" "$context" "$max_tokens" "$reasoning" "$route_fingerprint" "$image_input" <<'PY'
+        "$answers" "$model" "$context" "$max_tokens" "$reasoning" "$route_fingerprint" "$image_input" \
+        "$thinking_control" <<'PY'
 import json, os, pathlib, re, stat, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
@@ -1270,8 +1378,11 @@ model = sys.argv[2]
 context_raw, max_tokens_raw, reasoning_raw = sys.argv[3:6]
 route_fingerprint = sys.argv[6] or None
 image_input = sys.argv[7]
+thinking_control = sys.argv[8] or None
 if image_input not in ("supported", "unsupported", "unknown"):
     raise SystemExit("invalid promoted Pixel image-input contract")
+if thinking_control not in (None, "enable_thinking", "always", "none"):
+    raise SystemExit("invalid promoted Pixel thinking-control contract")
 if route_fingerprint is not None and not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint):
     raise SystemExit("invalid promoted Pixel route identity")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", model):
@@ -1366,6 +1477,11 @@ if provider == "ods-gateway" and route_fingerprint is not None:
     value["modelRouteFingerprint"] = route_fingerprint
 else:
     value.pop("modelRouteFingerprint", None)
+# The promoted model's own control or none: never another model's.
+if thinking_control is None:
+    value.pop("modelThinkingControl", None)
+else:
+    value["modelThinkingControl"] = thinking_control
 payload = json.dumps(value, indent=2, sort_keys=True) + "\n"
 fd, temporary = tempfile.mkstemp(prefix=".pixel-onboarding.", dir=path.parent)
 try:
@@ -1475,12 +1591,18 @@ def validate_live_route(provider_id, provider_value, model, agent):
 live_provider_id, live_provider, live_model, live_agent = binding(live)
 candidate_provider_id, candidate_provider, candidate_model, candidate_agent = binding(candidate, provider)
 validate_live_route(live_provider_id, live_provider, live_model, live_agent)
+thinking_control = contract.get("modelThinkingControl")
+if thinking_control not in (None, "enable_thinking", "always", "none"):
+    raise SystemExit("invalid candidate Pixel thinking-control contract")
+# Same rule as pixel-runtime-budget.py: a measured "always" or "none" chat
+# template wins over the requested reasoning flag.
+model_reasoning = {"always": True, "none": False}.get(thinking_control, contract.get("modelReasoning"))
 expected_model = {
     "id": model_id,
     "name": model_name,
     "contextWindow": contract.get("modelContextWindow"),
     "maxTokens": contract.get("modelMaxTokens"),
-    "reasoning": contract.get("modelReasoning"),
+    "reasoning": model_reasoning,
 }
 image_input = contract.get("modelImageInput", "unknown")
 if image_input not in ("supported", "unsupported", "unknown"):
@@ -1518,7 +1640,7 @@ normalized_model["id"] = model_id
 normalized_model["name"] = model_name
 normalized_model["contextWindow"] = contract.get("modelContextWindow")
 normalized_model["maxTokens"] = contract.get("modelMaxTokens")
-normalized_model["reasoning"] = contract.get("modelReasoning")
+normalized_model["reasoning"] = model_reasoning
 normalized_model["input"] = expected_model["input"]
 normalized_agent["model"] = f"{provider}/{model_id}"
 normalized_defaults = normalized_agents.get("defaults") if isinstance(normalized_agents, dict) else None
@@ -1752,7 +1874,9 @@ for tools in (normalized_tools['alsoAllow'], normalized_sandbox_tools['allow']):
         tools.remove(project_tool)
 if project_enabled:
     normalized_agent_tools['deny'] = [tool for tool in normalized_agent_tools['deny'] if tool != project_tool]
-if "qwen" in model_label and contract.get("modelReasoning") is True:
+enable_thinking_switch = ("qwen" in model_label if thinking_control is None
+                          else thinking_control == "enable_thinking")
+if enable_thinking_switch and model_reasoning is True:
     normalized_model["compat"] = {"thinkingFormat": "qwen-chat-template"}
     normalized_agent["thinkingDefault"] = "low"
 else:
@@ -1761,11 +1885,11 @@ else:
 normalized_agent_params = normalized_agent.setdefault("params", {})
 if not isinstance(normalized_agent_params, dict):
     raise SystemExit("live Pixel agent parameters are outside the ODS contract")
-if "qwen" in model_label:
+if enable_thinking_switch:
     template_kwargs = normalized_agent_params.setdefault("chat_template_kwargs", {})
     if not isinstance(template_kwargs, dict):
         raise SystemExit("live Pixel chat-template parameters are outside the ODS contract")
-    template_kwargs["enable_thinking"] = contract.get("modelReasoning") is True
+    template_kwargs["enable_thinking"] = model_reasoning is True
 else:
     template_kwargs = normalized_agent_params.get("chat_template_kwargs")
     if isinstance(template_kwargs, dict):
@@ -2065,6 +2189,60 @@ _ods_pixel_install_exec_control() {
         && "$(_ods_pixel_exec_control_stat mode "$root/cancellable-exec.sh")" == 500 \
         && "$(_ods_pixel_exec_control_stat links "$root/sudo")" == 1 \
         && "$(_ods_pixel_exec_control_stat mode "$root/sudo")" == 500 ]]
+}
+
+# PIXEL_RESPONSE_LANGUAGE=en fixes Pixel's replies, questions and created
+# content to English. The plugin reads this owner file from the OpenClaw state
+# folder at start. A plugin config key would break a rollback to a release
+# whose config schema rejects it; an older plugin simply ignores this file.
+_ods_pixel_install_response_language() {
+    local owner="$1" home="$2" language="${PIXEL_RESPONSE_LANGUAGE:-}"
+    local parent="$home/.openclaw" target="$home/.openclaw/.ods-response-language"
+    case "$language" in
+        ""|en) ;;
+        *) return 1 ;;
+    esac
+    [[ -d "$parent" && ! -L "$parent" \
+        && "$(_ods_pixel_exec_control_stat owner "$parent")" == "$owner" ]] || return 1
+    if [[ -e "$target" || -L "$target" ]]; then
+        [[ -f "$target" && ! -L "$target" \
+            && "$(_ods_pixel_exec_control_stat owner "$target")" == "$owner" ]] || return 1
+    fi
+    if [[ -z "$language" ]]; then
+        ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$target"
+        return
+    fi
+    ods_pixel_run_as_owner "$owner" "$home" sh -c \
+        'umask 077 && printf "en\n" > "$1.new" && mv -f -- "$1.new" "$1"' sh "$target"
+}
+
+# Pixel bootstrap ends with this exact message when its sandbox candidate does
+# not run the pinned Node.js (vendor/pixel/scripts/bootstrap.sh). Print that
+# candidate's tag, so the owner is told which image to remove.
+_ods_pixel_failed_sandbox_proof_candidate() {
+    local log="$1" line
+    line="$(tail -n 5 -- "$log" | grep -F '[pixel] ERROR: Sandbox runtime proof failed: ' | tail -n 1)" || return 1
+    [[ "$line" =~ Sandbox\ runtime\ proof\ failed:\ (pixel-sandbox-candidate:[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}-uid-[1-9][0-9]*)\  ]] \
+        || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# Portal tells the agent its sandbox has node (pixel-agent prompt-contract.mjs).
+# The bundled Pixel bootstrap proves that before it succeeds; a developer
+# PIXEL_SOURCE_URL checkout older than Pixel 4.3.32 builds a sandbox without
+# node and has no such proof. Require the candidate bootstrap just prepared to
+# carry the Node.js label, as macOS preparation requires the pinned runtime.
+_ods_pixel_sandbox_candidate_has_node() {
+    local owner="$1" home="$2" pixel_root="$3" version uid label
+    [[ -f "$pixel_root/VERSION" && ! -L "$pixel_root/VERSION" ]] || return 1
+    version="$(ods_pixel_run_as_owner "$owner" "$home" sed -n '1p' "$pixel_root/VERSION")" || return 1
+    [[ "$version" =~ ^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || return 1
+    uid="$(id -u "$owner")" || return 1
+    [[ "$uid" =~ ^[1-9][0-9]*$ ]] || return 1
+    label="$(ods_pixel_run_as_owner "$owner" "$home" docker image inspect \
+        --format '{{index .Config.Labels "org.osmantic.pixel.sandbox-node"}}' \
+        "pixel-sandbox-candidate:$version-uid-$uid")" || return 1
+    [[ "$label" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]
 }
 
 _ods_pixel_recreate_agent_sandbox() {
@@ -2460,11 +2638,14 @@ ods_pixel_reconcile_promoted_model() {
     local owner="$1" home="$2" promoted_model="$3" final_state="${4:-ready}"
     local promoted_context="${5:-}" promoted_max_tokens="${6:-}" promoted_reasoning="${7:-}"
     local route_fingerprint="${8:-}" borrowed_transaction="${9:-}" image_input="${10:-unknown}"
+    # A measured thinking control for this model; empty keeps the name rule.
+    local thinking_control="${11:-}"
     local source_ref source_root source_url pixel_root answers candidate backup contract_sha256 openclaw_bin failed=false
     local model_transaction="" release_failed=false
     local stable_alias=false staged_alias_candidate=""
     local failure_phase="unknown"
     [[ "$final_state" == ready || "$final_state" == installing ]] || return 1
+    [[ -z "$thinking_control" || "$thinking_control" =~ ^(enable_thinking|always|none)$ ]] || return 1
     if [[ -n "$borrowed_transaction" ]]; then
         [[ "$borrowed_transaction" =~ ^[0-9a-f]{64}$ ]] || return 1
         local held_status
@@ -2493,7 +2674,7 @@ ods_pixel_reconcile_promoted_model() {
     if _ods_pixel_uses_stable_model_alias "$owner" "$home" "$answers"; then
         if _ods_pixel_stable_alias_matches_promoted_model "$owner" "$home" "$answers" \
             "$promoted_model" "$promoted_context" "$promoted_max_tokens" \
-            "$promoted_reasoning" "$route_fingerprint" "$image_input"; then
+            "$promoted_reasoning" "$route_fingerprint" "$image_input" "$thinking_control"; then
             contract_sha256="$(_ods_pixel_contract_sha256 "$owner" "$home" "$answers")" || return 1
             # This is a no-op model reconciliation only when the complete
             # ODS-managed contract is already active. A same-model installer
@@ -2537,7 +2718,8 @@ ods_pixel_reconcile_promoted_model() {
     fi
 
     if ! _ods_pixel_update_onboarding_model "$owner" "$home" "$answers" "$promoted_model" \
-        "$promoted_context" "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" "$image_input"; then
+        "$promoted_context" "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" "$image_input" \
+        "$thinking_control"; then
         failed=true
         failure_phase="onboarding-update"
     fi
@@ -2669,8 +2851,8 @@ _ods_pixel_initial_unconfigured_marker() {
     [[ -f "$home/.config/ods/pixel-managed.json" && ! -L "$home/.config/ods/pixel-managed.json" ]] || return 1
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
         "$home/.config/ods/pixel-managed.json" "$home/.openclaw/openclaw.json" \
-        "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" <<'PY'
-import json, os, pathlib, re, sys
+        "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" "${3:-}" <<'PY'
+import json, os, pathlib, re, stat, sys
 marker = json.load(open(sys.argv[1]))
 initial = (
     set(marker) == {"schema_version", "manager", "state", "initial_active_state",
@@ -2682,11 +2864,44 @@ initial = (
     and re.fullmatch(r"[0-9a-f]{40}", marker["pixel_source_ref"])
     and marker["pixel_source_ref"] == sys.argv[5]
 )
-raise SystemExit(0 if initial and not os.path.lexists(sys.argv[2]) and not any(
+if not initial or any(
     os.path.lexists(pathlib.Path(sys.argv[4]) / ".local/share/pixel" / name)
     for name in ("current", "runtime-attestation.json", ".ods-uninstall-current",
                  ".ods-uninstall-runtime-attestation")
-) else 1)
+):
+    raise SystemExit(1)
+config_path = pathlib.Path(sys.argv[2])
+if not os.path.lexists(config_path):
+    raise SystemExit(0)
+# A cancelled first bootstrap can leave only plugin-enable entries, before
+# configure/apply has created any gateway, agent, workspace or access mode.
+# Accept this exact inert shape, never an arbitrary partial configuration.
+fd = os.open(config_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+with os.fdopen(fd, 'rb') as handle:
+    info = os.fstat(handle.fileno())
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 65536):
+        raise SystemExit(1)
+    config = json.load(handle)
+if not sys.argv[6]:
+    raise SystemExit(1)
+manifest = json.loads((pathlib.Path(sys.argv[6]) / 'RELEASE-MANIFEST.json').read_text())
+plugins = config.get('plugins') if isinstance(config, dict) else None
+meta = config.get('meta') if isinstance(config, dict) else None
+if (set(config) != {'plugins', 'meta'} or not isinstance(plugins, dict)
+        or set(plugins) != {'entries'} or not isinstance(meta, dict)
+        or set(meta) != {'lastTouchedVersion', 'lastTouchedAt'}
+        or meta['lastTouchedVersion'] != manifest['openclaw']
+        or not isinstance(meta['lastTouchedAt'], str)
+        or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z', meta['lastTouchedAt'])):
+    raise SystemExit(1)
+entries = plugins['entries']
+if (not isinstance(entries, dict) or not entries
+        or not set(entries) <= {'discord', 'searxng', 'llama-cpp'}
+        or any(not isinstance(value, dict) or set(value) != {'enabled'}
+               or value['enabled'] is not True for value in entries.values())):
+    raise SystemExit(1)
+raise SystemExit(0)
 PY
 }
 
@@ -3061,6 +3276,17 @@ finally:
 PY
 }
 
+# Docker Desktop can retain this shared tag after its Ubuntu distribution was
+# removed. This is distinct from an inactive release directory on this host.
+# Never reinterpret another UID's image as our candidate or retire its tag.
+_ods_pixel_shared_sandbox_conflict() {
+    local owner="$1" home="$2" apply_log="$3"
+    ods_pixel_run_as_owner "$owner" "$home" grep -Fxq \
+        -e '[pixel] ERROR: Shared live sandbox tag exists without an active Pixel release and is not valid for the reviewed candidate' \
+        -e '[pixel] ERROR: Shared live sandbox tag exists without an active Pixel release and does not match the reviewed candidate' \
+        -- "$apply_log"
+}
+
 # Pixel deliberately preserves a release that was rolled back after live
 # mutation as audit evidence.  A later ODS retry can render a different plan
 # for the same Pixel version (for example after an ODS-managed route change),
@@ -3402,17 +3628,9 @@ _ods_pixel_runtime_model_identity() {
     if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
         model="${EXTERNAL_LLM_MODEL:-}"
         [[ -n "$model" ]] || return 1
-    elif [[ "${LEMONADE_EXTERNAL:-false}" == true ]]; then
-        # WSL can attach to a Windows-hosted Lemonade server while its Linux
-        # hardware detector correctly reports CPU. Bind Pixel to the served
-        # model, not the stale GGUF selected before the external route.
-        model="${LEMONADE_MODEL:-}"
-        [[ -n "$model" ]] || return 1
-    elif [[ "${GPU_BACKEND:-}" == amd \
-        && "${LLM_BACKEND:-}" == lemonade \
-        && "${AMD_INFERENCE_RUNTIME:-}" == lemonade ]]; then
-        model="${LEMONADE_MODEL:-}"
     fi
+    # llama-server serves the GGUF file name (its --alias) on every runtime,
+    # the Windows Portal's host-native server included.
     [[ -n "$model" ]] || model="${GGUF_FILE:-${LLM_MODEL:-default}}"
     printf '%s\n' "$model"
 }
@@ -3459,6 +3677,10 @@ if path.exists():
 gateway = value.setdefault("gateway", {})
 http = gateway.setdefault("http", {})
 endpoints = http.setdefault("endpoints", {})
+if endpoints.get("chatCompletions") == {"enabled": True}:
+    # Nothing to change. A rewrite would only reorder keys, and a held source
+    # upgrade compares the exact config bytes it recorded before this step.
+    raise SystemExit(0)
 endpoints["chatCompletions"] = {"enabled": True}
 fd, temporary = tempfile.mkstemp(prefix=".openclaw.", dir=path.parent)
 try:
@@ -3854,7 +4076,7 @@ _ods_pixel_write_operations_policy() {
     ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "${policy%/*}" || return 1
     ods_pixel_run_as_owner "$owner" "$home" python3 - "$policy" "$install_root" "$workspace" \
         "$system_observer_source" <<'PY'
-import json, os, pathlib, re, shutil, socket, stat, sys, tempfile
+import json, os, pathlib, re, shutil, socket, stat, subprocess, sys, tempfile
 
 out, install_root, workspace, system_observer_source_raw = sys.argv[1:]
 path = pathlib.Path(out)
@@ -3902,6 +4124,14 @@ def required_binary(name):
     return str(pathlib.Path(candidate).resolve(strict=True))
 
 python_binary = str(pathlib.Path("/usr/bin/python3").resolve(strict=True))
+if native_macos:
+    probe = "import ctypes,os; b=ctypes.create_string_buffer(4096); assert ctypes.CDLL(None).proc_pidpath(os.getpid(),b,len(b))>0; print(b.value.decode())"
+    res = subprocess.run(["/usr/bin/python3", "-I", "-B", "-c", probe], cwd="/", env={"PATH": "/usr/bin:/bin", "HOME": "/var/empty", "TMPDIR": "/private/tmp"}, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+    if not res.returncode and len(res.stdout.splitlines()) == 1:
+        cand = pathlib.Path(res.stdout.strip())
+        st = cand.lstat() if cand.exists() else None
+        if st and stat.S_ISREG(st.st_mode) and not stat.S_ISLNK(st.st_mode) and st.st_uid == 0 and not (st.st_mode & 0o022) and os.access(cand, os.X_OK):
+            python_binary = str(cand.resolve(strict=True))
 hostname_binary = required_binary("hostname")
 uname_binary = required_binary("uname")
 cat_binary = required_binary("cat")
@@ -4518,7 +4748,7 @@ PY
 _ods_pixel_write_onboarding() {
     local owner="$1" home="$2" answers="$3" openclaw_bin="$4" plugin_path="$5" plugin_digest="$6"
     local web_search_provider="${7:-searxng}" parallel_path="${8:-}" parallel_digest="${9:-}"
-    local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=false
+    local context="${MAX_CONTEXT:-16384}" max_tokens reasoning=default
     local gateway_alias gateway_label runtime_model model_gateway_port="${PIXEL_MODEL_RELAY_PORT:-4006}" pixel_gateway_port gateway_key="${PIXEL_MODEL_RELAY_KEY:-}"
     local gateway_key_file write_status=0
     if [[ "$context" =~ ^[0-9]+$ && "$context" -ge 4096 ]]; then
@@ -4531,13 +4761,6 @@ _ods_pixel_write_onboarding() {
         ai_bad "Pixel received an invalid model context budget."
         return 1
     }
-    # This field controls the active OpenClaw reasoning path, not merely the
-    # model family's theoretical capability. Keep the default no-think setting
-    # false even for reasoning-capable models; an explicit operator setting
-    # enables it and is reconciled transactionally on model swaps.
-    if [[ ! "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
-        reasoning=true
-    fi
     gateway_alias="$(_ods_pixel_gateway_model_alias)" || {
         ai_bad "Pixel received an unsupported ODS model Switchboard mode."
         return 1
@@ -4545,6 +4768,24 @@ _ods_pixel_write_onboarding() {
     gateway_label="Default"
     [[ "$gateway_alias" == "ods/current" ]] && gateway_label="Current"
     runtime_model="$(_ods_pixel_runtime_model_identity)" || return 1
+    # This field controls the active OpenClaw reasoning path, not merely the
+    # model family's theoretical capability. An explicit operator setting
+    # (including an empty value) always wins. When unset, the renderer decides:
+    # a local built-in Qwen3.5-2B bootstrap route defaults to reasoning on so
+    # the Portal can complete simple tasks without tool loops; every other
+    # route keeps the historical no-think default. The renderer preserves a
+    # previously validated reasoning preference for the same model route.
+    if [[ -n "${LLAMA_REASONING+x}" ]]; then
+        if [[ "${LLAMA_REASONING:-off}" =~ ^(off|none|false|0)$ ]]; then
+            reasoning=false
+        else
+            reasoning=true
+        fi
+    elif [[ -z "${EXTERNAL_LLM_URL:-}" ]]; then
+        case "$(printf '%s' "$runtime_model" | tr '[:upper:]' '[:lower:]')" in
+            qwen3.5-2b|qwen3.5-2b-q4_k_m.gguf) reasoning=bootstrap ;;
+        esac
+    fi
     if [[ ! "$model_gateway_port" =~ ^[0-9]+$ ]] || (( model_gateway_port < 1 || model_gateway_port > 65535 )); then
         ai_bad "Pixel requires a valid loopback model relay port."
         return 1
@@ -4917,19 +5158,12 @@ _ods_pixel_install_preview_inspection() {
     ods_sudo systemctl enable pixel-preview-inspection.service || return 1
     ods_sudo systemctl restart pixel-preview-inspection.service || return 1
     ods_sudo systemctl is-active --quiet pixel-preview-inspection.service || return 1
-    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - <<'PY' || return 1
-import socket, time
-for attempt in range(50):
-    try:
-        with socket.socket(socket.AF_UNIX) as client:
-            client.settimeout(1)
-            client.connect('/run/ods-pixel-inspection/control.sock')
-        break
-    except OSError:
-        if attempt == 49:
-            raise SystemExit('Pixel preview inspection socket is not ready for its owner')
-        time.sleep(.1)
-PY
+    # Type=simple becomes active before Python imports finish and the broker
+    # binds its socket. Slow WSL startup can exceed the former five-second wait.
+    # The socket directory is root:ods-pixel, so this probe needs that group.
+    ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel \
+        ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" wait-owner-socket \
+        || return 1
     ods_sudo /usr/bin/python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
@@ -5091,7 +5325,7 @@ ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
     local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
-    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false
+    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false stale_sandbox=""
     # The access coordinator's proof ceremony inspects Pixel Edge's durable
     # transition gate. Start the edge before the host ingress is installed;
     # its transition endpoint is independent of upstream chat readiness, and
@@ -5187,6 +5421,8 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-yield-usage.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
         && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
+        && -f "$plugin_root/host/openclaw-subagent-admission.json" \
+        && -f "$plugin_root/host/openclaw-subagent-session.json" \
         && -f "$plugin_root/host/openclaw-hook-provenance.json" \
         && -f "$plugin_root/host/openclaw-run-id-redaction.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
@@ -5199,6 +5435,15 @@ ods_pixel_install_default_agent() {
     if ! _ods_pixel_install_exec_control "$owner" "$home" \
         "$plugin_root/host/cancellable-exec.sh" "$plugin_root/host/noninteractive-sudo.sh"; then
         ai_bad "Could not install Pixel's owner-private cancellable execution control."
+        return 1
+    fi
+    if ! _ods_pixel_install_response_language "$owner" "$home"; then
+        case "${PIXEL_RESPONSE_LANGUAGE:-}" in
+            ""|en) ai_bad "Could not apply PIXEL_RESPONSE_LANGUAGE: $home/.openclaw/.ods-response-language must be a regular file owned by $owner, not a link, in a $home/.openclaw folder owned by $owner. Remove that file, then rerun the installer." ;;
+            *) ai_bad "PIXEL_RESPONSE_LANGUAGE=${PIXEL_RESPONSE_LANGUAGE} in .env is not supported. Set it to en, or remove the line to match the owner's language, then rerun the installer." ;;
+        esac
+        # Phase 11 stops with exit 1 here, which the installer's ERR trap does not see.
+        ai_bad "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
         return 1
     fi
     gateway_alias="$(_ods_pixel_gateway_model_alias)" || {
@@ -5270,19 +5515,27 @@ ods_pixel_install_default_agent() {
             return 1
         fi
     fi
-    # Only a proven first install may reprove before bootstrap creates its
-    # initial config. Retained and partial releases must resume their durable
+    # Only a proven first bootstrap (empty or plugin-only) has no access mode
+    # to reprove. Retained and partial releases must resume their durable
     # transition below before access-mode reproof, as they did previously.
     if [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]] \
-        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" >>"$pixel_log" 2>&1; then
-        if ! _ods_pixel_reprove_access_marker_if_needed "$owner" "$home" "" >>"$pixel_log" 2>&1; then
-            ai_bad "Pixel's initial access marker could not be verified before bootstrap. See $pixel_log."
-            return 1
-        fi
+        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
         initial_access_reproved=true
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
-        ai_bad "Pixel bootstrap failed. See $pixel_log for the exact Pixel error."
+        # Phase 11 can stop here without reaching the installer's help trap,
+        # so these messages carry the cause, recovery and help link themselves.
+        # A failed check of an existing candidate is not a download problem.
+        stale_sandbox="$(_ods_pixel_failed_sandbox_proof_candidate "$pixel_log")" || stale_sandbox=""
+        if [[ -n "$stale_sandbox" ]]; then
+            ai_bad "Pixel stopped before applying its new release: the agent sandbox image $stale_sandbox did not pass the offline check for the pinned Node.js runtime without npm, npx or corepack. The image holds no projects or settings. Remove it with docker image rm $stale_sandbox, then run the ODS install or update again so Pixel rebuilds it. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        else
+            ai_bad "Pixel could not finish preparing its runtime and agent sandbox. It downloads pinned packages, including Debian packages from deb.debian.org and the sandbox's Node.js runtime from nodejs.org. Check this machine's internet access and free disk space, then run the ODS install or update again. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        fi
+        return 1
+    fi
+    if ! _ods_pixel_sandbox_candidate_has_node "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
+        ai_bad "The selected Pixel source builds an agent sandbox without the Node.js runtime that Portal's agent is told it has, so ODS stopped before applying it. Use the Pixel source bundled with ODS (leave PIXEL_SOURCE_URL and PIXEL_SOURCE_REF unset), then run the ODS install or update again. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
         return 1
     fi
     openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")"
@@ -5482,13 +5735,14 @@ ods_pixel_install_default_agent() {
                 if ! ods_pixel_reconcile_promoted_model "$owner" "$home" \
                     "$(_ods_pixel_runtime_model_identity)" installing "" "" "" \
                     "$(jq -r '.modelRouteFingerprint // ""' "$answers")" "${ODS_PIXEL_SOURCE_TRANSACTION:-}" \
-                    "$(jq -r '.modelImageInput // "unknown"' "$answers")" >>"$pixel_log" 2>&1; then
+                    "$(jq -r '.modelImageInput // "unknown"' "$answers")" \
+                    "$(jq -r '.modelThinkingControl // ""' "$answers")" >>"$pixel_log" 2>&1; then
                     ai_bad "The ODS-managed Pixel model route could not be reconciled safely. See $pixel_log."
                     return 1
                 fi
             fi
         else
-            local release_transaction=''
+            local release_transaction='' prove_after_apply=true
             local -a release_arguments=()
             release_transaction="$(_ods_pixel_begin_release_transition "$owner" "$home")" || {
                 ai_bad "Could not acquire the existing Pixel access state for release update; resolve any pending transaction before retrying."
@@ -5498,7 +5752,14 @@ ods_pixel_install_default_agent() {
                 release_arguments=(--ods-release-transaction "$release_transaction")
                 if [[ "$release_transaction" == "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]] \
                     && _ods_pixel_source_upgrade status "$owner" | jq -e '.mode == "sandboxed"' >/dev/null; then
-                    release_arguments=(--ods-model-transaction "$release_transaction")
+                    # Pixel's raw candidate lacks the ODS runtime overlay, including
+                    # the exec-control bind the access proof runs through, so a proof
+                    # here always fails. Apply it under Pixel's strict Sandbox
+                    # verifier, as a first install does. The held source transaction
+                    # is proved after the overlay (_ods_pixel_restart_gateway_and_verify)
+                    # and again before release (_ods_pixel_source_upgrade finish).
+                    release_arguments=()
+                    prove_after_apply=false
                 fi
             fi
             apply_attempt="$(ods_pixel_run_as_owner "$owner" "$home" \
@@ -5508,11 +5769,18 @@ ods_pixel_install_default_agent() {
                 ods_pixel_run_as_owner "$owner" "$home" env \
                     PATH="$home/.openclaw/.ods-exec-control:$PATH" \
                     "$pixel_root/pixel" apply --confirm "${release_arguments[@]}" </dev/null &&
-                _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$release_transaction"
+                { [[ "$prove_after_apply" == false ]] \
+                    || _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$release_transaction"; }
             } >"$apply_attempt" 2>&1; then
                 ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
             else
                 ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
+                if _ods_pixel_shared_sandbox_conflict "$owner" "$home" "$apply_attempt"; then
+                    ai_bad "Pixel found a shared Docker sandbox image that does not match this installation. Recreating Ubuntu does not clear Docker Desktop images; the Linux UID may have changed."
+                    ai "No shared image tag was changed. Check the exact image and every installation using this Docker engine before recovery."
+                    ai "After retiring the old installation, run in Ubuntu: bash \"$INSTALL_DIR/scripts/recover-retired-pixel-sandbox.sh\". It preserves the old image and requires your confirmation. Apply evidence: $apply_attempt"
+                    return 1
+                fi
                 if _ods_pixel_retire_inactive_conflicting_release \
                     "$owner" "$home" "$pixel_root" "$apply_attempt" >>"$pixel_log" 2>&1; then
                     ai "Archived an exact, inactive ODS-owned Pixel release that conflicted with the current reviewed plan; retrying once..."
@@ -5521,7 +5789,8 @@ ods_pixel_install_default_agent() {
                         ods_pixel_run_as_owner "$owner" "$home" env \
                             PATH="$home/.openclaw/.ods-exec-control:$PATH" \
                             "$pixel_root/pixel" apply --confirm "${release_arguments[@]}" </dev/null &&
-                        _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$release_transaction"
+                        { [[ "$prove_after_apply" == false ]] \
+                            || _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$release_transaction"; }
                     } >"$apply_attempt" 2>&1; then
                         ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || true
                         ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || true
@@ -5586,7 +5855,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning compaction-budget context-usage yield-usage compaction-empty compaction-no-work subagent-admission subagent-session hook-provenance run-id-redaction sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -5726,6 +5995,24 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/run-id-redaction" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's run identity redaction repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Child announcements must enter admission even while an owner turn is active.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --subagent-admission \
+        --state-dir "$home/.openclaw/ods-runtime-patches/subagent-admission" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's subagent admission repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Native child completion keeps its owner session across automatic expiration.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --subagent-session \
+        --state-dir "$home/.openclaw/ods-runtime-patches/subagent-session" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's subagent session repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Preserve trusted inter-session provenance in native prompt-hook contexts.

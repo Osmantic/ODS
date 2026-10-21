@@ -249,6 +249,9 @@ _EMPTY_REPLY = (
     "I couldn't produce a useful response to that request. Please try again or "
     "tell me what you'd like me to do differently."
 )
+# A final reply that only repeats the owner's message is compared, and held
+# while streaming, only when both texts are at most this many characters.
+_MAX_ECHO_CHARS = 8192
 _INTERACTIVE_DELIVERY_CONTRACT = (
     "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. "
     "If it asks for exact text, copy that full exact text. Do not answer with a "
@@ -485,10 +488,14 @@ def _workspace_mutation_positions(text: str) -> set[int]:
             return " " + value[1:-1] + " "
         return "".join("\n" if char == "\n" else " " for char in value)
 
+    # A backslash escapes any character, a line break included, and an open
+    # quote may end in one. Every quote can then match to the end of the
+    # text, which keeps the scan linear (a failed match per quote made it
+    # quadratic in the length of the owner text).
     instructions = re.sub(
         r"```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)|(?m:^\s*>[^\n]*)|"
-        r"`[^`\n]*`|\"(?:\\.|[^\"\\])*(?:\"|$)|"
-        r"(?<!\w)'(?:\\.|[^'\\])*(?:'|$)|"
+        r"`[^`\n]*`|\"(?:\\[\s\S]|[^\"\\])*(?:\"|\\?\Z)|"
+        r"(?<!\w)'(?:\\[\s\S]|[^'\\])*(?:'|\\?\Z)|"
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
         mask_content, text,
     )
@@ -671,15 +678,53 @@ def _with_interactive_delivery_contract(data: dict) -> dict:
     return data
 
 
-def _reserved_reply(value) -> bool:
-    return isinstance(value, str) and (
-        not value.strip() or value.strip() in _RESERVED_ASSISTANT_REPLIES
+def _echo_form(text: str) -> str | None:
+    """Text as compared with the owner's message, or None when it is too long.
+
+    Line breaks and spacing collapse; letter case is kept. A model that copies
+    the request copies it verbatim, while a reply that differs only in case
+    can be a requested transformation. The length bound keeps this check and
+    the streaming hold small; a copied request is short.
+    """
+    text = text.strip()
+    return " ".join(text.split()) if len(text) <= _MAX_ECHO_CHARS else None
+
+
+def _replaceable_reply(value, owner_echo: str = "") -> bool:
+    """A reserved/empty final reply, or one that only copies the owner's message.
+
+    ``owner_echo`` is the owner's latest message in ``_echo_form``, taken
+    before the delivery contract and routes are appended ("" disables the
+    copy check). A reply that quotes part of the message, such as "X" for
+    "Reply with exactly: X", is a different text and is never replaced.
+    """
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    return (not normalized or normalized in _RESERVED_ASSISTANT_REPLIES
+            or (bool(owner_echo) and _echo_form(value) == owner_echo))
+
+
+def _reserved_prefix(text: str) -> bool:
+    """Streamed text that can still become an empty or reserved reply."""
+    normalized = text.strip()
+    return not normalized or any(
+        reserved.startswith(normalized) for reserved in _RESERVED_ASSISTANT_REPLIES
     )
 
 
+def _replaceable_prefix(text: str, owner_echo: str = "") -> bool:
+    """Streamed text that can still become a replaceable final reply."""
+    if _reserved_prefix(text):
+        return True
+    form = _echo_form(text) if owner_echo else None
+    return form is not None and owner_echo.startswith(form)
+
+
 def _rewrite_json_response(raw: bytes, fallback: str,
-                           response_model: str = _LEGACY_MODEL) -> bytes:
-    """Rewrite model identity and replace only an exact reserved/empty final reply."""
+                           response_model: str = _LEGACY_MODEL,
+                           owner_echo: str = "") -> bytes:
+    """Rewrite model identity and replace only an exact reserved/empty or copied final reply."""
     try:
         parsed = json.loads(_rewrite_json_model(raw, response_model))
     except (json.JSONDecodeError, ValueError):
@@ -690,7 +735,7 @@ def _rewrite_json_response(raw: bytes, fallback: str,
             if not isinstance(choice, dict):
                 continue
             message = choice.get("message")
-            if isinstance(message, dict) and _reserved_reply(message.get("content")):
+            if isinstance(message, dict) and _replaceable_reply(message.get("content"), owner_echo):
                 message["content"] = fallback
     return json.dumps(parsed).encode("utf-8")
 
@@ -824,6 +869,98 @@ async def handle_runtime_identity(request: web.Request):
                 result = project_runtime_identity(strict_json(bytes(raw)))
     except (ValueError, TypeError, OSError, asyncio.TimeoutError, ClientError, RecursionError):
         result = unknown_runtime_identity()
+    return web.json_response(result, headers={"Cache-Control": "no-store"})
+
+
+_EXAMPLE_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_EXAMPLE_PREVIEW_KEYS = frozenset(("bytes", "entrySha256", "files", "kind", "port", "relativeDirectory",
+                                   "schemaVersion", "sha256", "siteId", "url"))
+_SHA256 = re.compile(r"[a-f0-9]{64}")
+_EXAMPLE_REFUSALS = {404: "example-project-unavailable", 409: "example-project-not-previewable",
+                     422: "example-project-not-playable"}
+
+
+def _example_projects(value) -> dict:
+    """The shipped example projects present in the owner's workspace."""
+    projects = value.get("projects") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "projects"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(projects, list) or len(projects) > 8
+            or any(not isinstance(name, str) or not _EXAMPLE_PROJECT_NAME.fullmatch(name) for name in projects)
+            or len(set(projects)) != len(projects)):
+        raise ValueError("invalid example projects")
+    return {"schemaVersion": 1, "projects": list(projects)}
+
+
+def _example_preview(value, name: str) -> dict:
+    """One verified receipt for Playground/<name>, exactly as a model run delivers it."""
+    preview = value.get("preview") if isinstance(value, dict) else None
+
+    def integer(key, low, high):
+        return type(preview.get(key)) is int and low <= preview[key] <= high
+
+    if (not isinstance(value, dict) or set(value) != {"schemaVersion", "preview"}
+            or type(value["schemaVersion"]) is not int or value["schemaVersion"] != 1
+            or not isinstance(preview, dict) or set(preview) != _EXAMPLE_PREVIEW_KEYS
+            or type(preview["schemaVersion"]) is not int or preview["schemaVersion"] != 1
+            or preview["kind"] != "ods-pixel-workspace-preview"
+            or preview["relativeDirectory"] != f"Playground/{name}"
+            or not isinstance(preview["sha256"], str) or not _SHA256.fullmatch(preview["sha256"])
+            or not isinstance(preview["entrySha256"], str) or not _SHA256.fullmatch(preview["entrySha256"])
+            or preview["siteId"] != f"site-{preview['sha256'][:24]}"
+            or not integer("port", 1, 65535) or not integer("files", 1, 128) or not integer("bytes", 1, 16 * 1024 * 1024)
+            or preview["url"] != f"http://{preview['siteId']}.localhost:{preview['port']}/{preview['siteId']}/"):
+        raise ValueError("invalid example preview")
+    return {"schemaVersion": 1, "preview": {key: preview[key] for key in sorted(_EXAMPLE_PREVIEW_KEYS)}}
+
+
+async def handle_example_projects(request: web.Request):
+    """List the shipped example projects, or open one with no model run.
+
+    Portal's sidebar shows Playground/elf-of-doom like any other project while
+    its folder exists. Opening it asks the host to publish that existing
+    folder through the create-only preview service; nothing is written to the
+    workspace and no model runs.
+    """
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.query_string:
+        return web.json_response({"error": "invalid request"}, status=400)
+    opening = request.method == "POST"
+    name = None
+    if opening:
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+        try:
+            data = strict_json(await _read_bounded(request.content, _MAX_CANCEL_BODY))
+            if (not isinstance(data, dict) or set(data) != {"name"} or not isinstance(data["name"], str)
+                    or not _EXAMPLE_PROJECT_NAME.fullmatch(data["name"])):
+                raise ValueError("invalid example project request")
+            name = data["name"]
+        except (ValueError, TypeError, UnicodeError, RecursionError):
+            return web.json_response({"error": "invalid example project request"}, status=400)
+    try:
+        timeout = ClientTimeout(total=38 if opening else 4, sock_connect=2)
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=timeout) as session:
+            upstream_request = (session.post("http://pixel-upstream/v1/example-projects", json={"name": name},
+                                             headers={"Accept": "application/json"}, allow_redirects=False)
+                                if opening else
+                                session.get("http://pixel-upstream/v1/example-projects",
+                                            headers={"Accept": "application/json"}, allow_redirects=False))
+            async with upstream_request as upstream:
+                # 404: the folder is gone. 409: the host refused files in it.
+                # 422: a folder of that name is there but cannot open as the example.
+                if opening and upstream.status in _EXAMPLE_REFUSALS:
+                    return web.json_response({"error": _EXAMPLE_REFUSALS[upstream.status]}, status=upstream.status,
+                                             headers={"Cache-Control": "no-store"})
+                if upstream.status != 200 or upstream.content_type != "application/json":
+                    raise ValueError("unavailable")
+                value = strict_json(await _read_bounded(upstream.content, 8192))
+        result = _example_preview(value, name) if opening else _example_projects(value)
+    except (ValueError, TypeError, UnicodeError, RecursionError, OSError, asyncio.TimeoutError, ClientError):
+        error = "example-project-preview-unavailable" if opening else "example-projects-unavailable"
+        return web.json_response({"error": error}, status=503, headers={"Cache-Control": "no-store"})
     return web.json_response(result, headers={"Cache-Control": "no-store"})
 
 
@@ -1068,6 +1205,23 @@ async def handle_access_mode(request: web.Request):
         return web.json_response({'error':'access-service-unavailable'}, status=503)
 
 
+_CONTROLLER_REASON = re.compile(r'[a-z0-9][a-z0-9-]{0,63}')
+
+
+def _controller_reason(raw: bytes) -> str | None:
+    """The controller's own refusal code, when it is a plain token.
+
+    A code such as model-runtime-mismatch tells the owner what to fix; free
+    text (which could carry a path or credential) is never relayed.
+    """
+    try:
+        value = strict_json(raw)
+    except (ValueError, RecursionError):
+        return None
+    code = value.get('error') if isinstance(value, dict) else None
+    return code if isinstance(code, str) and _CONTROLLER_REASON.fullmatch(code) else None
+
+
 async def handle_model_control(request: web.Request):
     """Private model lifecycle control; ordinary chat callers cannot mutate it."""
     fail = _check_preview_auth(request)
@@ -1094,7 +1248,8 @@ async def handle_model_control(request: web.Request):
                 raw = await _read_bounded(response.content, 65536)
                 if response.status != 200:
                     status = response.status if response.status in (400, 403, 409, 503) else 503
-                    return web.json_response({'error': 'model-change-unconfirmed'}, status=status)
+                    return web.json_response({'error': _controller_reason(raw) or 'model-change-unconfirmed'},
+                                             status=status)
                 value = public_model_control(strict_json(raw))
         return web.json_response(value, headers={'Cache-Control': 'no-store'})
     except Exception:
@@ -1320,6 +1475,9 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
     if req_model not in _ALLOWED_MODELS:
         return web.json_response({"error": "model not allowed"}, status=400)
     empty_reply_fallback = _empty_reply_fallback(data)
+    # The owner's own words, before the delivery contract is appended. A final
+    # reply that only repeats them answers nothing and gets the fallback too.
+    owner_echo = _echo_form(_latest_user_text(data)) or ""
     upstream_data = _with_interactive_delivery_contract(data)
     # Let the selected model's runtime/profile supply omitted sampling values.
     # A universal greedy override can defeat the model's recommended settings
@@ -1373,7 +1531,7 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                 if "text/event-stream" in ctype:
                     return await _stream_upstream(
                         request, resp, empty_reply_fallback, cancel_event, activity,
-                        response_model=req_model
+                        response_model=req_model, owner_echo=owner_echo
                     )
 
                 if "application/json" not in ctype:
@@ -1387,7 +1545,8 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                         return web.json_response({"error": "upstream response too large"},
                                                  status=502)
 
-                rewritten = _rewrite_json_response(bytes(resp_body), empty_reply_fallback, req_model)
+                rewritten = _rewrite_json_response(bytes(resp_body), empty_reply_fallback, req_model,
+                                                   owner_echo)
                 activity["terminal"] = True
                 return web.Response(status=resp.status, body=rewritten,
                                     content_type="application/json")
@@ -1475,8 +1634,14 @@ async def _stream_upstream(
     cancel_event: asyncio.Event | None = None,
     activity: dict | None = None,
     response_model: str = _LEGACY_MODEL,
+    owner_echo: str = "",
 ):
-    """Stream bounded SSE while replacing only a reserved/empty final reply."""
+    """Stream bounded SSE while replacing only a reserved/empty or copied final reply.
+
+    Answer text is withheld only while it can still become such a reply: empty,
+    a prefix of a reserved reply, or a prefix of the owner's own message
+    (``owner_echo``). It is flushed as soon as it diverges.
+    """
     response = web.StreamResponse(
         status=resp.status,
         headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
@@ -1488,13 +1653,21 @@ async def _stream_upstream(
     pending_text = ""
     passthrough = False
 
-    def queue_pending(line, event, content, finish_reason):
-        nonlocal pending_bytes
+    async def queue_pending(line, event, content, finish_reason):
+        nonlocal pending_bytes, passthrough
         # The line cap alone does not bound many small reasoning/empty frames.
         size = len(line) + 1
         if (pending_bytes + size > _MAX_SSE_PENDING_BYTES
                 or len(pending) >= _MAX_SSE_PENDING_LINES):
-            raise ValueError("SSE prelude exceeded limit")
+            if _reserved_prefix(pending_text):
+                raise ValueError("SSE prelude exceeded limit")
+            # Only a possible copy of the owner's message is withheld. That
+            # check is best effort: release the text unchanged at the existing
+            # bound instead of failing the answer.
+            await flush_pending()
+            await response.write(line + b"\n")
+            passthrough = True
+            return
         pending.append((line, event, content, finish_reason))
         pending_bytes += size
 
@@ -1548,8 +1721,7 @@ async def _stream_upstream(
                     continue
 
                 if line == b"data: [DONE]":
-                    normalized = pending_text.strip()
-                    if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
+                    if _replaceable_reply(pending_text, owner_echo):
                         template = next(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                             {"model": response_model},
@@ -1572,8 +1744,7 @@ async def _stream_upstream(
                     passthrough = True
                     continue
                 if finish_reason is not None:
-                    normalized = pending_text.strip()
-                    if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
+                    if _replaceable_reply(pending_text, owner_echo):
                         template = event if isinstance(event, dict) else next(
                             (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                             {"model": response_model},
@@ -1585,14 +1756,10 @@ async def _stream_upstream(
                     passthrough = True
                     continue
 
-                queue_pending(line, event, content, finish_reason)
-                if content is not None:
+                await queue_pending(line, event, content, finish_reason)
+                if content is not None and not passthrough:
                     pending_text += content
-                    normalized = pending_text.strip()
-                    if normalized and not any(
-                        reserved.startswith(normalized)
-                        for reserved in _RESERVED_ASSISTANT_REPLIES
-                    ):
+                    if not _replaceable_prefix(pending_text, owner_echo):
                         await flush_pending()
                         passthrough = True
         if cancel_event is not None and cancel_event.is_set():
@@ -1611,12 +1778,11 @@ async def _stream_upstream(
                 await response.write(line)
             else:
                 event, content, finish_reason = _sse_event(line)
-                queue_pending(line, event, content, finish_reason)
-                if content is not None:
+                await queue_pending(line, event, content, finish_reason)
+                if content is not None and not passthrough:
                     pending_text += content
         if not passthrough and pending:
-            normalized = pending_text.strip()
-            if not normalized or normalized in _RESERVED_ASSISTANT_REPLIES:
+            if _replaceable_reply(pending_text, owner_echo):
                 template = next(
                     (item[1] for item in reversed(pending) if isinstance(item[1], dict)),
                     {"model": response_model},
@@ -1793,6 +1959,8 @@ def create_app() -> web.Application:
     app.router.add_get("/preview/{site_id}/{tail:.*}", handle_preview)
     app.router.add_get("/v1/models", handle_models)
     app.router.add_get("/v1/runtime-identity", handle_runtime_identity, allow_head=False)
+    app.router.add_get("/v1/example-projects", handle_example_projects, allow_head=False)
+    app.router.add_post("/v1/example-projects", handle_example_projects)
     app.router.add_get("/v1/activity", handle_activity)
     app.router.add_get('/v1/access-mode', handle_access_mode, allow_head=False)
     app.router.add_post('/v1/access-mode', handle_access_mode)

@@ -12,7 +12,6 @@
 # get` only emits `via <gw>` when the route has a gateway; on an on-link
 # default route (WSL2, point-to-point and VPN links, some cloud VMs) the two
 # fields are absent and the column that held the address holds `uid` instead.
-# Same parse as installers/phases/06-directories.sh's HOST_LAN_IP detection.
 _ods_lan_ip() {
     local lan_ip=""
     if command -v ip >/dev/null 2>&1; then

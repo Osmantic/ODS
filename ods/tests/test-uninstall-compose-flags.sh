@@ -45,10 +45,22 @@ emit_filtered() {
 if [[ "${1:-}" == "ps" ]]; then
     if [[ " $* " == *" label=com.docker.compose.project="* ||
           " $* " == *" label=com.docker.compose.project "* ]]; then
-        [[ -z "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]] || printf '%s\n' "$DOCKER_RESIDUAL_CONTAINER_ID"
-        if [[ -n "${DOCKER_PROFILE_STATE_FILE:-}" && -s "$DOCKER_PROFILE_STATE_FILE" ]]; then
-            cat "$DOCKER_PROFILE_STATE_FILE"
-        fi
+        # Docker's path-list scan uses formatted metadata, while the full
+        # ownership inspection still requests only immutable container IDs.
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] || continue
+            if [[ " $* " == *" --format "* ]]; then
+                printf '{"Id":"%s","workingDir":"%s","configFiles":"%s/docker-compose.base.yml"}\n' \
+                    "$container_id" "$INSTALL_DIR" "$INSTALL_DIR"
+            else
+                printf '%s\n' "$container_id"
+            fi
+        done < <(
+            [[ -z "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]] || printf '%s\n' "$DOCKER_RESIDUAL_CONTAINER_ID"
+            if [[ -n "${DOCKER_PROFILE_STATE_FILE:-}" && -s "$DOCKER_PROFILE_STATE_FILE" ]]; then
+                cat "$DOCKER_PROFILE_STATE_FILE"
+            fi
+        )
         exit 0
     fi
     NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
@@ -66,6 +78,11 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
     NAMES="ods_perplexica-data ods-legacy-cache ods_download_test_data ods-download-test-volume k3s_pods methods_cache"
     emit_filtered "$@"
     exit 0
+fi
+if [[ "${1:-}" == "compose" && -n "${DOCKER_REQUIRE_ENV:-}" && ! -f "$INSTALL_DIR/.env" ]]; then
+    # Real Compose cannot render the base stack without the secrets in .env.
+    printf 'required variable WEBUI_SECRET is missing a value\n' >&2
+    exit 1
 fi
 if [[ "${1:-}" == "compose" && -n "${DOCKER_GID_EXPECTED:-}" ]]; then
     [[ "${PIXEL_INGRESS_GID:-}" == "$DOCKER_GID_EXPECTED" ]] || {
@@ -182,6 +199,7 @@ run_uninstall() {
     DOCKER_PROFILE_STATE_FILE="${DOCKER_PROFILE_STATE_FILE:-}" \
     DOCKER_GID_EXPECTED="${DOCKER_GID_EXPECTED:-}" \
     DOCKER_GID_ENV_COPY="${DOCKER_GID_ENV_COPY:-}" \
+    DOCKER_REQUIRE_ENV="${DOCKER_REQUIRE_ENV:-}" \
     PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID-}" \
     ID_PRIMARY_GROUP="${ID_PRIMARY_GROUP-1000}" \
     ID_PRIMARY_EXIT="${ID_PRIMARY_EXIT-0}" \
@@ -269,6 +287,41 @@ EOF
         || fail "missing Compose flags must explain the refusal"
     pass "missing Compose flags are refused before uninstall mutation"
 
+    # An install that stopped before phase 06 has no .env, so its Compose stack
+    # cannot render. With nothing in the ods Compose project there is nothing
+    # to stop or purge, and the uninstall must still complete.
+    local unconfigured_install="$TMP_DIR/unconfigured-install" unconfigured_home="$TMP_DIR/unconfigured-home"
+    local unconfigured_docker="$TMP_DIR/unconfigured-docker.log"
+    make_install "$unconfigured_install"
+    mkdir -p "$unconfigured_home"
+    rm "$unconfigured_install/.env"
+    DOCKER_LOG="$unconfigured_docker" SUDO_LOG="$TMP_DIR/unconfigured-sudo.log" DOCKER_REQUIRE_ENV=1 \
+        run_uninstall "$unconfigured_install" "$unconfigured_home" "$stub_dir" 2>"$TMP_DIR/unconfigured-error" \
+        || fail "an install without .env and without ODS Docker resources must uninstall: $(cat "$TMP_DIR/unconfigured-error")"
+    [[ ! -e "$unconfigured_install" ]] || fail "unconfigured install directory must be removed"
+    if grep -q '^compose ' "$unconfigured_docker"; then
+        fail "an unconfigured install must not render or run its Compose stack"
+    fi
+    assert_no_name_cleanup "$unconfigured_docker"
+    pass "an install that stopped before .env uninstalls when Docker holds nothing for it"
+
+    # The same install with a container in the ods project keeps the full
+    # ownership checks, which refuse because the stack cannot render.
+    local residual_install="$TMP_DIR/unconfigured-residual" residual_home="$TMP_DIR/unconfigured-residual-home"
+    make_install "$residual_install"
+    mkdir -p "$residual_home"
+    rm "$residual_install/.env"
+    printf 'retain owner data\n' > "$residual_install/data/owner.txt"
+    if DOCKER_LOG="$TMP_DIR/unconfigured-residual-docker.log" SUDO_LOG="$TMP_DIR/unconfigured-sudo.log" \
+        DOCKER_REQUIRE_ENV=1 DOCKER_RESIDUAL_CONTAINER_ID="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" \
+        run_uninstall "$residual_install" "$residual_home" "$stub_dir" 2>"$TMP_DIR/unconfigured-residual-error"; then
+        fail "an unconfigured install with ODS Docker resources must not skip ownership checks"
+    fi
+    [[ -f "$residual_install/data/owner.txt" ]] || fail "refused unconfigured install must keep its data"
+    grep -qF 'Docker ownership could not be proven' "$TMP_DIR/unconfigured-residual-error" \
+        || fail "unconfigured install with ODS resources must report the ownership refusal"
+    pass "an install without .env keeps ownership checks while ODS Docker resources exist"
+
     if [[ "$(uname -s)" == "Linux" ]]; then
         local changed_install="$TMP_DIR/changed-install" changed_home="$TMP_DIR/changed-home"
         local changed_docker="$TMP_DIR/changed-docker.log"
@@ -339,7 +392,20 @@ EOF
     make_install "$install_keep"
     mkdir -p "$home_keep/.local/bin"
     ln -s "$install_keep/ods-cli" "$home_keep/.local/bin/ods"
+    # The owner's backups (ods-backup.sh writes to .backups/ by default),
+    # presets and update snapshots are user data too.
+    mkdir -p "$install_keep/.backups/backup-1" "$install_keep/presets/work" "$home_keep/.ods/backups/pre-update-1"
+    printf '{}\n' > "$install_keep/.backups/backup-1/manifest.json"
+    printf 'name=work\n' > "$install_keep/presets/work/meta.txt"
+    printf 'snapshot\n' > "$home_keep/.ods/backups/pre-update-1/.env"
+    printf 'chats\n' > "$install_keep/data/owner.txt"
     DOCKER_LOG="$log_keep" SUDO_LOG="$sudo_log" run_uninstall "$install_keep" "$home_keep" "$stub_dir" --keep-data
+    [[ -f "$install_keep/data/owner.txt" ]] || fail "--keep-data must keep data/"
+    [[ -f "$install_keep/.backups/backup-1/manifest.json" ]] || fail "--keep-data must keep the owner's backups in .backups/"
+    [[ -f "$install_keep/presets/work/meta.txt" ]] || fail "--keep-data must keep saved presets"
+    [[ -f "$home_keep/.ods/backups/pre-update-1/.env" ]] || fail "--keep-data must keep update snapshots in ~/.ods"
+    [[ ! -e "$install_keep/ods-cli" ]] || fail "--keep-data must still remove the installation files"
+    pass "--keep-data keeps data/, backups, presets and update snapshots"
 
     grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_keep" \
         || fail "uninstall must use saved .compose-flags for docker compose down"
@@ -347,6 +413,21 @@ EOF
         fail "--keep-data must not remove compose volumes with -v"
     fi
     pass "uninstall uses saved compose flags and preserves volumes with --keep-data"
+
+    local install_full="$TMP_DIR/install-full" home_full="$TMP_DIR/home-full"
+    make_install "$install_full"
+    mkdir -p "$install_full/.backups/backup-1" "$home_full/.ods/backups/pre-update-1"
+    printf '{}\n' > "$install_full/.backups/backup-1/manifest.json"
+    printf 'snapshot\n' > "$home_full/.ods/backups/pre-update-1/.env"
+    HOME="$home_full" INSTALL_DIR="$install_full" PATH="$stub_dir:$PATH" \
+        DOCKER_LOG="$TMP_DIR/docker-full.log" SUDO_LOG="$sudo_log" \
+        ODS_UNINSTALL_SYSTEMD_DIR="$install_full/systemd" \
+        bash "$install_full/ods-uninstall.sh" --force > "$TMP_DIR/full.out" 2>&1
+    [[ ! -e "$install_full/.backups" && ! -e "$home_full/.ods" ]] \
+        || fail "a full uninstall removes backups and update snapshots"
+    grep -qF 'This also deletes 2 backup(s)' "$TMP_DIR/full.out" \
+        || fail "a full uninstall must say it deletes the owner's backups"
+    pass "a full uninstall names the backups it deletes"
     assert_no_name_cleanup "$log_keep"
     [[ ! -L "$home_keep/.local/bin/ods" ]] \
         || fail "uninstall must remove the user-level ods CLI symlink"

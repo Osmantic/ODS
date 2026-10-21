@@ -23,7 +23,7 @@ service:
     Lightweight policy engine that intercepts and audits agent tool calls
     before execution. Enforces configurable allow/deny rules (command
     allowlists, path guards, rate limits) and maintains a tamper-evident
-    audit log of every decision. Drop-in governance layer for OpenClaw
+    audit log of every decision. Drop-in governance layer for Hermes
     and any OpenAI-compatible agent framework.
 
 features:

@@ -249,8 +249,36 @@ def configure_legacy_environment(*, preparation, docker, project):
     return {'environment': 'configured', 'changed': written is not None, 'servicesChanged': False}
 
 
+def protected_migration_check(arguments, *, expected, prompt_for_sudo=False):
+    """Only explicit read-only installer operations cross the sudo boundary."""
+    if not arguments or arguments[0] not in ('verify-migration-source', 'migrate-native'):
+        raise ValueError('native-migration-read-only-operation-required')
+    if '--activate' in arguments or arguments[0] == 'migrate-native' and '--verify-preparation' not in arguments:
+        raise ValueError('native-migration-read-only-operation-required')
+    interactive = prompt_for_sudo and helper('install').controlling_terminal()
+    print('Verifying the protected native Pixel runtime (read-only sudo check).', file=sys.stderr)
+    try:
+        result = subprocess.run(['/usr/bin/sudo', *([] if interactive else ['-n']),
+            '/usr/bin/python3', '-I', '-B', str(Path(__file__).with_name('pixel-macos-access-install.py')),
+            *arguments], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=None if interactive else subprocess.PIPE, timeout=180, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError('native-migration-proof-unavailable') from error
+    if result.returncode:
+        raise ValueError('native-migration-proof-or-authorization-failed')
+    try:
+        if len(result.stdout) > 4096:
+            raise ValueError('proof-too-large')
+        proof = json.loads(result.stdout)
+    except (ValueError, TypeError) as error:
+        raise ValueError('native-migration-proof-invalid') from error
+    if proof != expected:
+        raise ValueError('native-migration-source-changed-during-preparation')
+    return proof
+
+
 def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install_dir,
-                      destination, gateway_port=18789, access_port=18790):
+                      destination, gateway_port=18789, access_port=18790, prompt_for_sudo=False):
     """Stage a legacy migration without changing credentials, state or services."""
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
@@ -265,7 +293,6 @@ def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install
             or entrypoint != active_node.parent / 'runtime/openclaw.mjs'
             or document.get('UserName') != owner.pw_name):
         raise ValueError('active-protected-native-gateway-required')
-    installer._bundle.verify(active_node.parent, expected_digest=current)
     previous = Path(env['OPENCLAW_CONFIG_PATH'])
     parent = installer.RUNTIME_CONFIG_ROOT / str(owner.pw_uid)
     if not installer._source_runtime_config(previous, parent, current):
@@ -273,6 +300,14 @@ def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install
     previous_snapshot = environment.snapshot(previous)
     source_definition = installer._launchd.GATEWAY_PLIST.read_bytes()
     if plistlib.loads(source_definition) != document:
+        raise ValueError('native-migration-source-changed-during-preparation')
+    source_proof = {'currentBundleDigest': current,
+        'sourceDefinitionSha256': hashlib.sha256(source_definition).hexdigest(),
+        'sourceConfigSha256': hashlib.sha256(previous_snapshot[0]).hexdigest()}
+    protected_migration_check(['verify-migration-source', '--owner', owner.pw_name,
+        '--current-bundle-digest', current, '--gateway-port', str(gateway_port)],
+        expected=source_proof, prompt_for_sudo=prompt_for_sudo)
+    if environment.snapshot(previous) != previous_snapshot or installer._launchd.GATEWAY_PLIST.read_bytes() != source_definition:
         raise ValueError('native-migration-source-changed-during-preparation')
     install_dir = Path(install_dir).resolve(strict=True)
     env_snapshot = environment.snapshot(install_dir / '.env')
@@ -318,14 +353,20 @@ def prepare_migration(*, source, ref, node, runtime, docker, ods_source, install
             node=node, runtime=runtime, destination=destination / 'runtime', services_digest=record['serviceDigest'],
             services_bundle=destination / 'services', ods_source=ods_source)
         checkpoint('joint-plan')
-        plan = installer.make_migration_plan(install_dir=install_dir, owner_name=owner.pw_name,
-            openclaw_bin=installer.GATEWAY_LAUNCHER, gateway_port=gateway_port, access_port=access_port,
-            candidate=candidate, runtime_bundle=destination / 'runtime', bundle_digest=record['runtimeDigest'],
-            current_digest=current, services_bundle=destination / 'services',
-            services_digest=record['serviceDigest'], source_ref=ref)
+        expected = dict(source_proof, operation='native-migration', status='planned',
+            runtimeBundleDigest=record['runtimeDigest'], serviceBundleDigest=record['serviceDigest'])
+        arguments = ['migrate-native', '--verify-preparation']
+        for name, value in (('install-dir', install_dir), ('source', ods_source), ('owner', owner.pw_name),
+                ('openclaw-bin', installer.GATEWAY_LAUNCHER), ('gateway-port', gateway_port),
+                ('access-port', access_port), ('candidate', candidate), ('runtime-bundle', destination / 'runtime'),
+                ('bundle-digest', record['runtimeDigest']), ('current-bundle-digest', current),
+                ('services-bundle', destination / 'services'), ('services-digest', record['serviceDigest']),
+                ('pixel-source-ref', ref)):
+            arguments.extend(['--' + name, str(value)])
+        protected_migration_check(arguments, expected=expected, prompt_for_sudo=prompt_for_sudo)
         if (environment.snapshot(previous) != previous_snapshot
                 or environment.snapshot(install_dir / '.env') != env_snapshot
-                or plan['source_bytes'] != source_definition):
+                or installer._launchd.GATEWAY_PLIST.read_bytes() != source_definition):
             raise ValueError('native-migration-source-changed-during-preparation')
         record.update(status='prepared', gatewayPort=gateway_port, accessPort=access_port)
         checkpoint('awaiting-joint-activation')

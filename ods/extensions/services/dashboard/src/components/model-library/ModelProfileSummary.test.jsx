@@ -1,0 +1,412 @@
+import {act, fireEvent, render, screen, waitFor} from '@testing-library/react'
+import {MemoryRouter} from 'react-router-dom'
+import {afterEach, beforeEach, expect, test, vi} from 'vitest'
+import ModelProfileSummary from './ModelProfileSummary'
+import ModelActivationNotice from '../ModelActivationNotice'
+
+function profile(summary, extra = {}) {
+  return {
+    modelId: 'qwen3.5-9b',
+    recordedAt: '2026-10-09T20:00:00Z',
+    result: {status: 'complete', facts: {buildInfo: 'b11429-d81235049'}, summary},
+    ...extra,
+  }
+}
+
+const capable = {
+  chat: true, tools: true, toolsStreamed: true,
+  thinking: {control: 'enable_thinking', separated: true, works: true},
+  vision: null, tokensPerSecond: 75.3,
+}
+
+let profileBody
+let recheckResponse
+let templateResponse
+beforeEach(() => {
+  profileBody = {mode: 'observe', modelId: 'qwen3.5-9b', profile: profile(capable)}
+  recheckResponse = {ok: true, status: 200, body: {status: 'recorded'}}
+  templateResponse = {ok: true, status: 200, body: {status: 'activated', chatTemplateOverride: 'qwen-tools-fix'}}
+  vi.stubGlobal('fetch', vi.fn(async (url, options) => {
+    if (url.endsWith('/profile/recheck') && options?.method === 'POST') {
+      return {ok: recheckResponse.ok, status: recheckResponse.status, json: async () => recheckResponse.body}
+    }
+    if (url.endsWith('/chat-template') && options?.method === 'POST') {
+      return {ok: templateResponse.ok, status: templateResponse.status, json: async () => templateResponse.body}
+    }
+    return {ok: true, status: 200, json: async () => profileBody}
+  }))
+})
+
+const offer = {id: 'qwen-tools-fix', reason: 'Its own template drops tool calls.', active: false, supported: true}
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
+
+async function show() {
+  await act(async () => { render(<ModelProfileSummary modelId="qwen3.5-9b"/>) })
+}
+
+test('shows what the running model was measured to do, and on which runtime', async () => {
+  await show()
+  const region = screen.getByRole('region', {name: 'What this model can do'})
+  expect(region).toHaveTextContent('Answers chat')
+  expect(region).toHaveTextContent('Tool-call check passed')
+  expect(region).toHaveTextContent('Streaming tool check passed')
+  expect(region).not.toHaveTextContent('Calls tools (Pixel and agents)')
+  expect(region).toHaveTextContent('Thinking can be turned off')
+  expect(region).toHaveTextContent('About 75 tokens/s')
+  expect(region).toHaveTextContent('on llama.cpp b11429')
+  expect(screen.queryByRole('link', {name: 'Get help on Discord'})).toBeNull()
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile', {cache: 'no-store', signal: expect.any(AbortSignal)})
+})
+
+test('a failed direct tool check reports the measurement and links to help', async () => {
+  profileBody.profile = profile({...capable, tools: false, thinking: {control: 'always', works: true}})
+  await show()
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+  expect(screen.getByText('Streaming tool check passed')).toBeVisible()
+  expect(screen.queryByText('No working tool calls: chat only for agents')).toBeNull()
+  expect(screen.getByText('Always thinks before it answers')).toBeVisible()
+  expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+})
+
+test('observe mode separates a passed direct tool check from a failed streamed check', async () => {
+  profileBody = {mode: 'observe', modelId: 'qwen3.5-9b',
+    profile: profile({...capable, tools: true, toolsStreamed: false})}
+  await show()
+  const region = screen.getByRole('region', {name: 'What this model can do'})
+  expect(region).toHaveTextContent('Tool-call check passed')
+  expect(region).toHaveTextContent('Streaming tool check did not pass')
+  expect(region).not.toHaveTextContent('Calls tools (Pixel and agents)')
+  expect(screen.queryByText('Streaming tool check passed')).toBeNull()
+  expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(fetch.mock.calls[0][1].method).toBeUndefined()
+})
+
+test.each([null, undefined])('observe mode keeps an unknown streamed tool check neutral (%s)', async toolsStreamed => {
+  const summary = {...capable, toolsStreamed}
+  if (toolsStreamed === undefined) delete summary.toolsStreamed
+  profileBody = {mode: 'observe', modelId: 'qwen3.5-9b', profile: profile(summary)}
+  await show()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByText('Streaming tool check not verified')).toBeVisible()
+  expect(screen.queryByText('Streaming tool check passed')).toBeNull()
+  expect(screen.queryByText('Streaming tool check did not pass')).toBeNull()
+  expect(screen.queryByText('Calls tools (Pixel and agents)')).toBeNull()
+  expect(screen.queryByRole('link', {name: 'Get help on Discord'})).toBeNull()
+})
+
+test.each(['always', 'enable_thinking', 'none'])('a failed thinking check does not claim the template capability (%s)', async control => {
+  profileBody.profile = profile({...capable, thinking: {control, works: false, separated: false}})
+  await show()
+  expect(screen.getByText('Thinking check did not pass')).toBeVisible()
+  expect(screen.queryByText('Always thinks before it answers')).toBeNull()
+  expect(screen.queryByText('Thinking can be turned off')).toBeNull()
+  expect(screen.queryByText('Answers without a thinking step')).toBeNull()
+  expect(screen.getByText('Answers chat')).toBeVisible()
+})
+
+test.each([null, undefined])('an unknown thinking check is not presented as measured (%s)', async works => {
+  profileBody.profile = profile({...capable, thinking: {control: 'always', works}})
+  await show()
+  expect(screen.getByText('Thinking not verified')).toBeVisible()
+  expect(screen.queryByText('Always thinks before it answers')).toBeNull()
+})
+
+test('a missing saved check explains how to run one', async () => {
+  profileBody.profile = null
+  await show()
+  expect(screen.getByText('No saved capability check is available for this model on this machine. Choose Check again to run one.')).toBeVisible()
+})
+
+test('a running model never checked can be checked from its card', async () => {
+  // The Portal advisory for a model ODS has not checked points here.
+  profileBody.profile = null
+  await show()
+  profileBody.profile = profile(capable)
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST', signal: expect.any(AbortSignal)})
+  await waitFor(() => expect(screen.getByRole('region', {name: 'What this model can do'}))
+    .toHaveTextContent('Tool-call check passed'))
+})
+
+test('a refused first check is shown in words', async () => {
+  profileBody.profile = null
+  recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Only the running model can be checked; run it first'}}}
+  await show()
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only the running model can be checked'))
+  expect(screen.getByText(/No saved capability check/)).toBeVisible()
+})
+
+test('nothing shows when profiles are off or the check is unavailable', async () => {
+  profileBody = {mode: 'off', modelId: 'qwen3.5-9b', profile: profile(capable)}
+  const {container} = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  expect(container).toBeEmptyDOMElement()
+  fetch.mockImplementationOnce(async () => ({ok: false, status: 503, json: async () => ({detail: 'down'})}))
+  const second = render(<ModelProfileSummary modelId="other"/>)
+  await act(async () => {})
+  expect(second.container).toBeEmptyDOMElement()
+})
+
+test('Check again re-measures, and a refusal is shown in words', async () => {
+  await show()
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST', signal: expect.any(AbortSignal)})
+  recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Only the running model can be checked; run it first'}}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only the running model can be checked'))
+})
+
+test('no fixed-template action shows without an exact match from the server', async () => {
+  profileBody.profile = profile({...capable, chat: false})
+  await show()
+  expect(screen.queryByRole('button', {name: 'Try a fixed template'})).toBeNull()
+  expect(screen.queryByText(/fixed chat template/)).toBeNull()
+})
+
+test('an exact match offers a fixed template, and trying it restarts the model with it', async () => {
+  profileBody.profile = profile({...capable, chat: false})
+  profileBody.templateOverride = offer
+  await show()
+  expect(screen.getByText('A fixed chat template is available for this model. Its own template drops tool calls.')).toBeVisible()
+  expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+
+  profileBody.templateOverride = {...offer, active: true}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Try a fixed template'})) })
+
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/chat-template', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({override: 'qwen-tools-fix'}),
+  })
+  await waitFor(() => expect(screen.getByText('Uses a fixed chat template')).toBeVisible())
+  expect(screen.queryByRole('button', {name: 'Try a fixed template'})).toBeNull()
+})
+
+test('a refused fixed template is explained in words', async () => {
+  profileBody.templateOverride = offer
+  templateResponse = {ok: false, status: 409, body: {detail: {
+    code: 'chat_template_override_not_matched',
+    error: 'This fixed chat template is not for this model. Nothing was changed.',
+  }}}
+  await show()
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Try a fixed template'})) })
+  await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('This fixed chat template is not for this model.'))
+})
+
+test('a runtime that cannot use the fixed template says so, with help and no action', async () => {
+  profileBody.templateOverride = {...offer, supported: false}
+  await show()
+  expect(screen.getByText(/cannot use it yet/)).toBeVisible()
+  expect(screen.queryByRole('button', {name: 'Try a fixed template'})).toBeNull()
+  expect(screen.getByRole('link', {name: 'Get help on Discord'})).toBeVisible()
+})
+
+test('the activation notice names the first-time check', () => {
+  render(<MemoryRouter><ModelActivationNotice value={{active: true, phase: 'profiling', failureCode: null}}/></MemoryRouter>)
+  expect(screen.getByText('Checking what this model can do (first time only)')).toBeVisible()
+})
+
+test('refreshes a delayed first profile after the model lifecycle settles without rechecking', async () => {
+  profileBody.profile = null
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText(/No saved capability check/)).toBeVisible()
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={true}/>)
+  await act(async () => {})
+  expect(fetch).toHaveBeenCalledTimes(1)
+  profileBody.profile = profile(capable)
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(2)
+  expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+})
+
+test('a replaced model ignores a late previous profile response', async () => {
+  let resolveOld
+  fetch.mockImplementationOnce(() => new Promise(resolve => { resolveOld = resolve }))
+  const view = render(<ModelProfileSummary modelId="old-model"/>)
+  profileBody = {mode: 'observe', modelId: 'new-model', profile: profile({...capable, tools: false}, {modelId: 'new-model'})}
+  view.rerender(<ModelProfileSummary modelId="new-model"/>)
+  await act(async () => {})
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+  await act(async () => { resolveOld({ok: true, json: async () => ({mode: 'observe', modelId: 'old-model', profile: profile(capable, {modelId: 'old-model'})})}) })
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+  expect(screen.queryByText('Tool-call check passed')).toBeNull()
+})
+
+test('an initial active lifecycle defers its read and an unchanged idle card does not poll', async () => {
+  vi.useFakeTimers()
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => { await vi.advanceTimersByTimeAsync(20000) })
+  expect(fetch).not.toHaveBeenCalled()
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(fetch).toHaveBeenCalledTimes(1)
+  await act(async () => { await vi.advanceTimersByTimeAsync(300000) })
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+test('a stalled profile body reaches its read deadline and ignores a late result', async () => {
+  vi.useFakeTimers()
+  let resolveBody
+  fetch.mockResolvedValueOnce({ok: true, json: () => new Promise(resolve => { resolveBody = resolve })})
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  const signal = fetch.mock.calls[0][1].signal
+  await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+  expect(signal.aborted).toBe(true)
+  await act(async () => { resolveBody(profileBody) })
+  expect(view.container).toBeEmptyDOMElement()
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
+test('a late recheck of an unmounted model does not launch another read or change the replacement', async () => {
+  await show()
+  let resolveRecheck
+  fetch.mockImplementationOnce(() => new Promise(resolve => { resolveRecheck = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  // Unmount the old surface while its owner-requested POST is pending.
+  const {cleanup} = await import('@testing-library/react')
+  cleanup()
+  profileBody = {mode: 'observe', modelId: 'new-model', profile: profile({...capable, tools: false}, {modelId: 'new-model'})}
+  render(<ModelProfileSummary modelId="new-model"/>)
+  await act(async () => {})
+  expect(fetch).toHaveBeenCalledTimes(3)
+  await act(async () => { resolveRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+})
+
+test('a lost recheck response explains uncertainty, refreshes saved results and allows manual recovery', async () => {
+  await show()
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+  recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Another model operation is active; wait for it to finish.'}}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(2)
+  expect(screen.getByRole('status')).toHaveTextContent('Another model operation is active')
+  recheckResponse = {ok: true, status: 200, body: {status: 'recorded'}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(3)
+  expect(screen.queryByRole('status')).toBeNull()
+})
+
+test('failed recovery reads preserve the last visible capability check', async () => {
+  await show()
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  fetch.mockRejectedValueOnce(new TypeError('Still offline'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+})
+
+test.each(['headers', 'body'])('a stalled recheck %s reaches its deadline and ignores a late response', async stage => {
+  vi.useFakeTimers()
+  await show()
+  let settle
+  fetch.mockImplementationOnce(() => stage === 'headers'
+    ? new Promise(resolve => { settle = resolve })
+    : Promise.resolve({ok: true, json: () => new Promise(resolve => { settle = resolve })}))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  await act(async () => {})
+  const signal = fetch.mock.calls[1][1].signal
+  await act(async () => { await vi.advanceTimersByTimeAsync(194999) })
+  expect(screen.getByRole('button', {name: 'Checking…'})).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(signal.aborted).toBe(true)
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(3)
+  await act(async () => { settle(stage === 'headers'
+    ? {ok: false, json: async () => ({detail: 'late refusal'})}
+    : {status: 'error'}) })
+  expect(screen.getByRole('status')).not.toHaveTextContent('late refusal')
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+test('a successful recheck with an unavailable saved result preserves the previous card', async () => {
+  await show()
+  fetch.mockResolvedValueOnce({ok: true, json: async () => ({status: 'recorded'})})
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('status')).toHaveTextContent(/could not refresh/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+})
+
+test('a recheck response during the active lifecycle defers its read without reporting a failure', async () => {
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  let finishRecheck
+  fetch.mockImplementationOnce(() => new Promise(resolve => { finishRecheck = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => { finishRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(2)
+  profileBody.profile = profile({...capable, tokensPerSecond: 39})
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText('About 39 tokens/s')).toBeVisible()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test.each(['abort', 'late response'])('a superseded recheck read (%s) does not warn after the settled lifecycle reads the saved check', async outcome => {
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  fetch.mockResolvedValueOnce({ok: true, json: async () => ({status: 'recorded'})})
+  let finishRead
+  fetch.mockImplementationOnce((url, {signal}) => new Promise((resolve, reject) => {
+    finishRead = () => resolve({ok: true, json: async () => profileBody})
+    if (outcome === 'abort') signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {once: true})
+  }))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch).toHaveBeenCalledTimes(3)
+  const signal = fetch.mock.calls[2][1].signal
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => {})
+  expect(signal.aborted).toBe(true)
+  profileBody.profile = profile({...capable, tokensPerSecond: 39})
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  // A fetch implementation may still deliver a response after abort; the
+  // completed lifecycle's newer read owns the visible measurements.
+  await act(async () => { finishRead() })
+  expect(screen.getByText('About 39 tokens/s')).toBeVisible()
+  expect(screen.getByText('Streaming tool check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(fetch).toHaveBeenCalledTimes(4)
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test('unmount aborts the local recheck request and removes its deadline without launching another probe', async () => {
+  vi.useFakeTimers()
+  let settle
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  fetch.mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  const signal = fetch.mock.calls[1][1].signal
+  view.unmount()
+  expect(signal.aborted).toBe(true)
+  expect(vi.getTimerCount()).toBe(0)
+  await act(async () => { settle({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(2)
+})

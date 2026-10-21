@@ -12,21 +12,22 @@ Set via env vars in `docker-compose.base.yml`. These flow into Open WebUI's runt
 | `WEBUI_URL` | empty | Optional public URL Open WebUI uses for share links, OAuth callbacks, and PWA install metadata. Leave empty for traditional localhost usage. Headless/proxy installs should set it to `http://chat.${ODS_DEVICE_NAME}.local` after ods-proxy + mDNS are enabled; tunnels should use their public URL. |
 | `ODS_DEVICE_NAME` | `ods` | The mDNS hostname segment. Drives `${...}.local` and is reused by future remote-access integrations. |
 
-ODS passes `WEBUI_NAME=ODS` to the pinned Open WebUI v0.7.2 image. That
-version's [name handling](https://github.com/open-webui/open-webui/blob/v0.7.2/backend/open_webui/env.py#L82-L84)
+ODS passes `WEBUI_NAME=ODS` to the pinned Open WebUI v0.11.4 image. That
+version's [name handling](https://github.com/open-webui/open-webui/blob/v0.11.4/backend/open_webui/env.py#L951-L953)
 appends ` (Open WebUI)` to a custom name, so the expected default is
 `ODS (Open WebUI)`. Verify the actual page and PWA on the installed version;
 this setting does not promise that all upstream branding disappears.
 
 ## License boundary
 
-The pinned [Open WebUI license](https://github.com/open-webui/open-webui/blob/v0.7.2/LICENSE)
-contains a branding restriction and specific exceptions, including deployments
-or distributions with no more than 50 end users within a rolling 30-day period,
-and certain written-permission or enterprise-license cases. ODS does not grant
-an exception. Retain upstream branding unless the applicable exception or
-written permission has been established. This is especially relevant when
-redistributing an appliance or making a service available to others.
+The pinned [Open WebUI license](https://github.com/open-webui/open-webui/blob/v0.11.4/LICENSE)
+contains a branding restriction and specific exceptions: deployments or
+distributions with no more than 50 end users within a rolling 30-day period,
+specific prior written permission from the copyright holder, or a duly executed
+enterprise license. ODS does not grant an exception. Retain upstream branding
+unless the applicable exception or written permission has been established.
+This is especially relevant when redistributing an appliance or making a
+service available to others.
 
 ## What's not branded yet (follow-up work)
 

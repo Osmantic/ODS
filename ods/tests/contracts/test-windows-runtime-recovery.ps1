@@ -124,21 +124,25 @@ try {
         return @{ Limit = "4.0"; Reservation = "1.0"; Available = "4.0" }
     }
     $script:ODS_VERSION = "test"
-    $script:LEMONADE_PORT = 8080
-    $script:LEMONADE_HEALTH_URL = "http://127.0.0.1:8080/api/v1/health"
+    $script:NATIVE_LLM_PORT = 8080
 
-    $endpoint = Get-WindowsLocalLlmEndpoint -GpuBackend "amd" -NativeBackend "llama-server" -EnvMap @{
-        GPU_BACKEND = "amd"
-        LLM_BACKEND = "llama-server"
-        AMD_INFERENCE_RUNTIME = "llama-server"
-        AMD_INFERENCE_LOCATION = "host"
-        AMD_INFERENCE_RUNTIME_MODE = "windows-llama-server-fallback"
-        AMD_INFERENCE_PORT = "18080"
-    }
-    if ($endpoint.Port -ne "18080" -or
-        $endpoint.HealthUrl -ne "http://localhost:18080/health" -or
-        $endpoint.ChatCompletionsUrl -ne "http://localhost:18080/v1/chat/completions") {
-        throw "Native llama-server endpoint ignored AMD_INFERENCE_PORT"
+    $nativeKey = "ab" * 32
+    foreach ($mode in @("windows-native-llama-server", "windows-llama-server-fallback")) {
+        $endpoint = Get-WindowsLocalLlmEndpoint -GpuBackend "amd" -NativeBackend "llama-server" -EnvMap @{
+            GPU_BACKEND = "amd"
+            LLM_BACKEND = "llama-server"
+            AMD_INFERENCE_RUNTIME = "llama-server"
+            AMD_INFERENCE_LOCATION = "host"
+            AMD_INFERENCE_RUNTIME_MODE = $mode
+            AMD_INFERENCE_PORT = "18080"
+            LLAMA_SERVER_API_KEY = $nativeKey
+        }
+        if ($endpoint.Port -ne "18080" -or
+            $endpoint.HealthUrl -ne "http://localhost:18080/health" -or
+            $endpoint.ChatCompletionsUrl -ne "http://localhost:18080/v1/chat/completions" -or
+            $endpoint.ApiKey -ne $nativeKey) {
+            throw "Native llama-server endpoint ($mode) ignored AMD_INFERENCE_PORT or LLAMA_SERVER_API_KEY"
+        }
     }
     $invalidPortEndpoint = Get-WindowsLocalLlmEndpoint `
         -GpuBackend "amd" -NativeBackend "llama-server" -EnvMap @{
@@ -146,7 +150,7 @@ try {
             LLM_BACKEND = "llama-server"
             AMD_INFERENCE_RUNTIME = "llama-server"
             AMD_INFERENCE_LOCATION = "host"
-            AMD_INFERENCE_RUNTIME_MODE = "windows-llama-server-fallback"
+            AMD_INFERENCE_RUNTIME_MODE = "windows-native-llama-server"
             AMD_INFERENCE_PORT = "70000"
         }
     if ($invalidPortEndpoint.Port -ne "8080" -or
@@ -154,6 +158,7 @@ try {
         throw "Invalid native port did not fall back to the backend default"
     }
 
+    # Windows AMD: phase 06 renders the native llama-server values directly.
     $generatedInstall = Join-Path $testRoot "generated-install"
     $tier = @{
         TierName = "Test"
@@ -162,24 +167,53 @@ try {
         MaxContext = 4096
     }
     $null = New-ODSEnv -InstallDir $generatedInstall -TierConfig $tier -Tier "test" `
-        -GpuBackend "amd" -AmdInferenceRuntime "lemonade" `
-        -AmdInferenceLocation "host" -AmdInferencePort "18080"
+        -GpuBackend "amd" -AmdInferenceRuntime "llama-server" -AmdInferenceBackend "vulkan" `
+        -AmdInferenceLocation "host" -AmdInferencePort "18080" -AmdInferenceSupportedBackends "vulkan" `
+        -AmdInferenceRuntimeMode "windows-native-llama-server" -AmdInferenceManaged "true"
     $generatedEnv = Get-Content -LiteralPath (Join-Path $generatedInstall ".env") -Raw
     foreach ($assignment in @(
+        "ODS_MODE=local",
+        "LLM_BACKEND=llama-server",
+        "LLM_API_BASE_PATH=/v1",
         "LLM_API_URL=http://host.docker.internal:18080",
-        "AMD_INFERENCE_PORT=18080"
+        "AMD_INFERENCE_RUNTIME=llama-server",
+        "AMD_INFERENCE_BACKEND=vulkan",
+        "AMD_INFERENCE_LOCATION=host",
+        "AMD_INFERENCE_PORT=18080",
+        "AMD_INFERENCE_RUNTIME_MODE=windows-native-llama-server",
+        "ODS_HOST_LLM_TRANSPORT=direct",
+        "NATIVE_LLM_BASE_URL=http://127.0.0.1:18080",
+        "NATIVE_LLM_CONTAINER_BASE_URL=http://host.docker.internal:18080"
     )) {
-        if (-not $generatedEnv.Contains($assignment)) {
-            throw "Generated Windows env missed custom native port assignment: $assignment"
+        if ($generatedEnv -notmatch ("(?m)^" + [regex]::Escape($assignment) + "\r?$")) {
+            throw "Generated Windows AMD env missed: $assignment"
         }
     }
-    $lemonadeConfig = Get-Content -LiteralPath (Join-Path $generatedInstall "config/litellm/lemonade.yaml") -Raw
-    if (-not $lemonadeConfig.Contains("api_base: http://host.docker.internal:18080/api/v1")) {
-        throw "LiteLLM Lemonade config ignored AMD_INFERENCE_PORT"
+    $keyMatch = [regex]::Match($generatedEnv, "(?m)^LLAMA_SERVER_API_KEY=([0-9a-f]{64})\r?$")
+    if (-not $keyMatch.Success) { throw "Windows AMD env has no 64-hex LLAMA_SERVER_API_KEY" }
+    if ($generatedEnv -match "(?m)^(LEMONADE_[A-Z_]*|LITELLM_LEMONADE_API_KEY)=") {
+        throw "Windows AMD env still writes retired Lemonade keys"
     }
-    $routerConfig = Get-Content -LiteralPath (Join-Path $generatedInstall "config/model-router/endpoints.json") -Raw
-    if (-not $routerConfig.Contains("http://host.docker.internal:18080/api")) {
-        throw "Model router config ignored AMD_INFERENCE_PORT"
+    $localConfig = Get-Content -LiteralPath (Join-Path $generatedInstall "config/litellm/local.yaml") -Raw
+    if (-not $localConfig.Contains("api_base: http://host.docker.internal:18080/v1") -or
+        -not $localConfig.Contains("api_key: os.environ/LLAMA_SERVER_API_KEY") -or
+        $localConfig.Contains($keyMatch.Groups[1].Value)) {
+        throw "LiteLLM local config must reach the native port and read the key from its environment"
+    }
+    if (Test-Path -LiteralPath (Join-Path $generatedInstall "config/litellm/lemonade.yaml")) {
+        throw "Windows AMD still renders lemonade.yaml"
+    }
+    $routerConfig = Get-Content -LiteralPath (Join-Path $generatedInstall "config/model-router/endpoints.json") -Raw | ConvertFrom-Json
+    if (@($routerConfig.endpoints).Count -ne 1 -or $routerConfig.endpoints[0].id -ne "llama-server-default" -or
+        $routerConfig.endpoints[0].baseUrl -ne "http://host.docker.internal:18080") {
+        throw "Model router must name the native llama-server origin (the router appends /v1)"
+    }
+    $null = New-ODSEnv -InstallDir $generatedInstall -TierConfig $tier -Tier "test" `
+        -GpuBackend "amd" -AmdInferenceRuntime "llama-server" -AmdInferenceBackend "vulkan" `
+        -AmdInferenceLocation "host" -AmdInferencePort "18080" -AmdInferenceSupportedBackends "vulkan" `
+        -AmdInferenceRuntimeMode "windows-native-llama-server" -AmdInferenceManaged "true"
+    if ((Get-Content -LiteralPath (Join-Path $generatedInstall ".env") -Raw) -notmatch ("(?m)^LLAMA_SERVER_API_KEY=" + $keyMatch.Groups[1].Value + "\r?$")) {
+        throw "A rerun rotated LLAMA_SERVER_API_KEY; LiteLLM, the router and the host agent would lose access"
     }
 
     $tokens = $null
@@ -191,12 +225,12 @@ try {
 
     $functionNames = @(
         "Write-ODSUtf8NoBomFile",
+        "Sync-ODSNativeInferenceConfig",
         "Test-ODSNativeProcessExecutable",
         "Get-ODSNativeInferencePortOwnerProcessId",
-        "Get-ODSManagedLemonadeTaskProcessId",
         "Test-ODSNativeInferenceHealth",
         "Get-NativeInferenceStatus",
-        "Stop-ODSLemonadeRuntime"
+        "Stop-NativeInferenceServer"
     )
     foreach ($functionName in $functionNames) {
         $functionAst = $ast.Find(
@@ -238,20 +272,22 @@ try {
         throw "Host Agent startup launcher content did not round-trip"
     }
 
+    # The persisted AMD_INFERENCE_PORT drives every native probe.
+    function Read-ODSEnv { return @{ AMD_INFERENCE_PORT = "18080" } }
+    Sync-ODSNativeInferenceConfig
+    if ($script:NATIVE_LLM_PORT -ne 18080) { throw "ods.ps1 ignored the persisted AMD_INFERENCE_PORT" }
+    function Read-ODSEnv { return @{ AMD_INFERENCE_PORT = "not-a-port" } }
+    Sync-ODSNativeInferenceConfig
+    if ($script:NATIVE_LLM_PORT -ne 18080) { throw "An invalid AMD_INFERENCE_PORT replaced the configured port" }
+
     $script:INFERENCE_PID_FILE = Join-Path $testRoot "data/llama-server.pid"
-    $script:LEMONADE_EXE = Join-Path $testRoot "LemonadeServer.exe"
     $script:LLAMA_SERVER_EXE = Join-Path $testRoot "llama-server.exe"
-    $script:LEMONADE_PORT = 18080
-    $script:LEMONADE_HEALTH_URL = "http://127.0.0.1:18080/api/v1/health"
-    $script:LEMONADE_TASK_NAME = "ODSLemonadeRuntime"
-    $script:MockBackend = "lemonade"
+    $script:MockBackend = "llama-server"
     $script:MockHealth = $false
     $script:MockProcesses = @{}
     $script:MockListeners = @()
-    $script:UnfilteredCimQueries = 0
     $script:StoppedProcessIds = @()
     $script:LastHealthUrl = $null
-    $script:MockTaskRunning = $false
     $global:InstallDir = $testRoot
     New-Item -ItemType Directory -Path (Split-Path $script:INFERENCE_PID_FILE) -Force | Out-Null
 
@@ -275,22 +311,17 @@ try {
             $id = [int]$Matches[1]
             return $script:MockProcesses[$id]
         }
-        $script:UnfilteredCimQueries += 1
-        return @($script:MockProcesses.Values)
+        throw "native status must query single processes only"
     }
-    function Stop-ScheduledTask { param($TaskName, $ErrorAction) }
-    function Unregister-ScheduledTask { param($TaskName, [switch]$Confirm, $ErrorAction) }
-    function Get-ScheduledTask {
-        param($TaskName, $ErrorAction)
-        if (-not $script:MockTaskRunning -or $TaskName -ne "ODSLemonadeRuntime") {
-            throw "mock task unavailable"
-        }
-        return [pscustomobject]@{ State = "Running" }
-    }
+    function Get-ScheduledTask { throw "native status must not inspect scheduled tasks" }
     function Stop-ODSNativeProcessId {
         param([int]$ProcessId)
         $script:StoppedProcessIds += $ProcessId
+        $script:MockProcesses.Remove($ProcessId)
     }
+    function Get-Process { param($Id, $ErrorAction) if ($script:MockProcesses.ContainsKey([int]$Id)) { return [pscustomobject]@{ Id = $Id } } }
+    function Write-AI { param([string]$Message) }
+    function Write-AISuccess { param([string]$Message) }
 
     # Disabled native inference must not probe or adopt host state.
     $script:MockBackend = "none"
@@ -305,79 +336,25 @@ try {
 
     # Missing/stale state is repaired only from a healthy listener owned by
     # the exact configured executable.
-    $script:MockBackend = "lemonade"
-    $script:MockHealth = $true
-    $script:MockProcesses[220] = [pscustomobject]@{
-        ProcessId = 220
-        ExecutablePath = $script:LEMONADE_EXE
-        CommandLine = ""
+    $script:MockBackend = "llama-server"
+    $script:MockProcesses[550] = [pscustomobject]@{ ProcessId = 550; ExecutablePath = $script:LLAMA_SERVER_EXE; CommandLine = "" }
+    $script:MockListeners = @([pscustomobject]@{ LocalPort = 18080; OwningProcess = 550 })
+    $llama = Get-NativeInferenceStatus
+    if (-not $llama.Running -or -not $llama.Recovered -or $llama.Pid -ne 550 -or
+        $script:LastHealthUrl -ne "http://127.0.0.1:18080/health") {
+        throw "A healthy llama-server on the configured native port was not reconciled"
     }
-    $script:MockListeners = @([pscustomobject]@{ LocalPort = 18080; OwningProcess = 220 })
-    $recovered = Get-NativeInferenceStatus
-    if (-not $recovered.Running -or -not $recovered.Healthy -or
-        -not $recovered.Recovered -or $recovered.Pid -ne 220) {
-        throw "Healthy Lemonade listener was not reconciled"
+    if ((Get-Content -LiteralPath $script:INFERENCE_PID_FILE -Raw).Trim() -ne "550") {
+        throw "The reconciled llama-server PID was not persisted"
     }
-    $persistedPid = (Get-Content -LiteralPath $script:INFERENCE_PID_FILE -Raw).Trim()
-    if ($persistedPid -ne "220") {
-        throw "Reconciled Lemonade PID was not persisted (actual='$persistedPid')"
+    Stop-NativeInferenceServer
+    if (($script:StoppedProcessIds -join ",") -ne "550" -or (Test-Path -LiteralPath $script:INFERENCE_PID_FILE)) {
+        throw "Stop did not stop the proven llama-server and clear its PID record"
     }
-
-    # Lemonade versions may put the listener in a child process. The exact
-    # managed task plus one matching parent executable is still recoverable.
-    Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force
-    $script:MockTaskRunning = $true
-    $script:MockProcesses = @{
-        221 = [pscustomobject]@{
-            ProcessId = 221
-            ParentProcessId = 1
-            ExecutablePath = $script:LEMONADE_EXE
-            CommandLine = ""
-        }
-        222 = [pscustomobject]@{
-            ProcessId = 222
-            ParentProcessId = 221
-            ExecutablePath = (Join-Path $testRoot "lemonade-child.exe")
-            CommandLine = "child --port 18080"
-        }
-    }
-    $script:MockListeners = @([pscustomobject]@{ LocalPort = 18080; OwningProcess = 222 })
-    $taskRecovered = Get-NativeInferenceStatus
-    if (-not $taskRecovered.Recovered -or $taskRecovered.Pid -ne 221) {
-        throw "Running managed Lemonade task was not reconciled through its parent executable"
-    }
-    if ($script:UnfilteredCimQueries -ne 1) {
-        throw "Managed task reconciliation repeated the full process query"
-    }
-    $script:MockTaskRunning = $false
-
-    # A running task and a healthy unrelated listener are not sufficient:
-    # the listener must belong to the exact Lemonade process tree.
-    Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force
-    $script:MockTaskRunning = $true
-    $script:MockProcesses = @{
-        223 = [pscustomobject]@{
-            ProcessId = 223
-            ParentProcessId = 1
-            ExecutablePath = $script:LEMONADE_EXE
-            CommandLine = ""
-        }
-        224 = [pscustomobject]@{
-            ProcessId = 224
-            ParentProcessId = 1
-            ExecutablePath = (Join-Path $testRoot "unrelated-health-server.exe")
-            CommandLine = "unrelated --port 18080"
-        }
-    }
-    $script:MockListeners = @([pscustomobject]@{ LocalPort = 18080; OwningProcess = 224 })
-    $unrelatedHealthy = Get-NativeInferenceStatus
-    if ($unrelatedHealthy.Running -or (Test-Path -LiteralPath $script:INFERENCE_PID_FILE)) {
-        throw "Managed task recovery adopted Lemonade without proving listener ancestry"
-    }
-    $script:MockTaskRunning = $false
 
     # A reused PID or unrelated process on the configured port must never be
     # adopted or stopped by ODS.
+    $script:StoppedProcessIds = @()
     Set-Content -LiteralPath $script:INFERENCE_PID_FILE -Value "330"
     $script:MockProcesses = @{
         330 = [pscustomobject]@{
@@ -391,19 +368,15 @@ try {
     if ($unrelated.Running -or (Test-Path -LiteralPath $script:INFERENCE_PID_FILE)) {
         throw "Unrelated listener was adopted as the native inference runtime"
     }
-    Stop-ODSLemonadeRuntime
+    Stop-NativeInferenceServer
     if ($script:StoppedProcessIds.Count -ne 0) {
-        throw "Lemonade cleanup stopped an unrelated process"
+        throw "Native stop stopped an unrelated process"
     }
 
-    # A matching saved process remains running while its endpoint is loading.
+    # A matching saved process remains running while its model loads (503).
     $script:MockHealth = $false
     $script:MockProcesses = @{
-        440 = [pscustomobject]@{
-            ProcessId = 440
-            ExecutablePath = $script:LEMONADE_EXE
-            CommandLine = ""
-        }
+        440 = [pscustomobject]@{ ProcessId = 440; ExecutablePath = $script:LLAMA_SERVER_EXE; CommandLine = "" }
     }
     $script:MockListeners = @()
     Set-Content -LiteralPath $script:INFERENCE_PID_FILE -Value "440"
@@ -412,24 +385,7 @@ try {
         throw "Matching loading process was not preserved"
     }
 
-    # llama-server fallback uses the same configured native port contract.
-    Remove-Item -LiteralPath $script:INFERENCE_PID_FILE -Force
-    $script:MockBackend = "llama-server"
-    $script:MockHealth = $true
-    $script:MockProcesses = @{
-        550 = [pscustomobject]@{
-            ProcessId = 550
-            ExecutablePath = $script:LLAMA_SERVER_EXE
-            CommandLine = ""
-        }
-    }
-    $script:MockListeners = @([pscustomobject]@{ LocalPort = 18080; OwningProcess = 550 })
-    $llama = Get-NativeInferenceStatus
-    if (-not $llama.Running -or $script:LastHealthUrl -ne "http://127.0.0.1:18080/health") {
-        throw "llama-server recovery ignored the configured native port"
-    }
-
-    Write-Host "[PASS] Windows Compose plugin and native runtime recovery contracts"
+    Write-Host "[PASS] Windows Compose plugin and native llama-server runtime recovery contracts"
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

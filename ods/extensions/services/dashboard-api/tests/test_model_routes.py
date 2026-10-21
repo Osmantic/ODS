@@ -73,7 +73,8 @@ def test_route_evidence_proxies_with_internal_key_and_sanitizes(
         "path": "/v1/chat/completions",
         "status": 200,
         "responseModel": "Qwen.gguf",
-        "lemonadeRoute": "",
+        # A router from before round F still sends this; it is never projected.
+        "lemonadeRoute": "extra.Qwen.gguf",
         "prompt": "do not expose me",
         "storedAt": 123.456,
     }
@@ -96,7 +97,6 @@ def test_route_evidence_proxies_with_internal_key_and_sanitizes(
         "path": "/v1/chat/completions",
         "status": 200,
         "responseModel": "Qwen.gguf",
-        "lemonadeRoute": "",
     }
     assert calls[1] == (
         "get",

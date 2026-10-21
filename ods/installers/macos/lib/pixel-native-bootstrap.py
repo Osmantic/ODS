@@ -6,6 +6,7 @@ supply the selected Pixel ref.
 import argparse
 import base64
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 import uuid
 
@@ -75,8 +77,8 @@ def selected_release(source, ref):
     return value
 
 
-ODS_BUNDLED_REF = '9f3b6ecd25db3ab51bef4091473d88ee5824bc3b'
-ODS_BUNDLED_SHA256 = 'b499ac4fe2f183caaafc8c3ccefd4824bb6e491a589e07ba0e2495b8b37e7d68'
+ODS_BUNDLED_REF = '3d2acd8f22a53d28b36b7e6ee017bb3143dc428b'
+ODS_BUNDLED_SHA256 = 'f136282398bdcabe5590af360e5bdce6e0e89ae28e29e8376d3bd7f8a05266e9'
 ODS_BUNDLED_SOURCE = Path(__file__).resolve().parents[3] / 'vendor/pixel.bundle'
 
 
@@ -141,20 +143,37 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def download(package, destination):
     opener = urllib.request.build_opener(NoRedirect())
-    digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
-    with opener.open(package['url'], timeout=60) as response, destination.open('xb') as output:
-        for block in iter(lambda: response.read(1024 * 1024), b''):
-            count += len(block)
-            if count > 64 * 1024 * 1024:
-                raise BootstrapError('pinned-package-too-large')
-            digest.update(block)
-            integrity.update(block)
-            output.write(block)
-        output.flush()
-        os.fsync(output.fileno())
-    if (digest.hexdigest() != package['sha256']
-            or 'sha512-' + base64.b64encode(integrity.digest()).decode() != package['integrity']):
-        raise BootstrapError('pinned-package-checksum-mismatch')
+    for attempt in range(3):
+        digest, integrity, count = hashlib.sha256(), hashlib.sha512(), 0
+        created = False
+        try:
+            with destination.open('xb') as output:
+                created = True
+                with opener.open(package['url'], timeout=60) as response:
+                    for block in iter(lambda: response.read(1024 * 1024), b''):
+                        count += len(block)
+                        if count > 64 * 1024 * 1024:
+                            raise BootstrapError('pinned-package-too-large')
+                        digest.update(block)
+                        integrity.update(block)
+                        output.write(block)
+                output.flush()
+                os.fsync(output.fileno())
+            if (digest.hexdigest() != package['sha256']
+                    or 'sha512-' + base64.b64encode(integrity.digest()).decode() != package['integrity']):
+                raise BootstrapError('pinned-package-checksum-mismatch')
+            return
+        except BootstrapError:
+            if created:
+                destination.unlink(missing_ok=True)
+            raise
+        except (OSError, urllib.request.URLError, http.client.HTTPException) as error:
+            if not created:
+                raise
+            destination.unlink(missing_ok=True)
+            if attempt == 2:
+                raise BootstrapError('pinned-package-download-failed') from error
+            time.sleep(attempt + 1)
 
 
 def probe_plugins(node, runtime, plugins, temporary, env, *, entrypoint='node_modules/openclaw/openclaw.mjs'):
@@ -265,6 +284,39 @@ def stage(*, source, ref, destination, node, npm):
         shutil.rmtree(temporary)
 
 
+# The sandbox execution proof prepare_sandbox runs in a new image, also run by
+# tests/test_pixel_sandbox_image.py against the image CI builds. node must be
+# the pinned version for this architecture; npm, npx and corepack must be
+# absent so nothing can be installed in the sandbox.
+SANDBOX_PROOF_PROGRAM = (
+    'import json,os,pathlib,shutil,subprocess; '
+    'p=pathlib.Path("/workspace/ods-proof.txt"); p.write_text("ods-sandbox-proof"); '
+    'n=shutil.which("node"); '
+    'r=subprocess.run([n,"-p","JSON.stringify([process.version,process.arch])"],'
+    'capture_output=True,text=True,timeout=30) if n else None; '
+    'print(json.dumps({"uid":os.getuid(),"readback":p.read_text(),'
+    '"tools":all(shutil.which(x) for x in '
+    '["bash","curl","git","jq","python3","rg","rsync"]),'
+    '"node":json.loads(r.stdout) if r and r.returncode==0 else None,'
+    '"packageManagers":[x for x in ["npm","npx","corepack"] if shutil.which(x)]}))')
+
+
+def sandbox_proof_expected(uid, node_version, arch='arm64'):
+    """The proof's output for an image owned by uid; native macOS is arm64."""
+    return {'uid': uid, 'readback': 'ods-sandbox-proof', 'tools': True,
+            'node': ['v' + node_version, arch], 'packageManagers': []}
+
+
+def sandbox_proof_run_args(*, name, workspace, image_id):
+    """docker arguments for the proof: offline, read-only, bounded, one workspace."""
+    return ['run', '--rm', '--name', name,
+            '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+            '--security-opt', 'no-new-privileges:true', '--pids-limit', '128',
+            '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
+            '--mount', 'type=bind,source=' + workspace + ',target=/workspace',
+            '--entrypoint', '/usr/bin/python3', image_id, '-c', SANDBOX_PROOF_PROGRAM]
+
+
 def prepare_sandbox(*, source, ref, docker):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise BootstrapError('native-macos-owner-required')
@@ -272,6 +324,10 @@ def prepare_sandbox(*, source, ref, docker):
     version, uid = release['pixel'], os.getuid()
     if not re.fullmatch(r'\d{1,6}\.\d{1,6}\.\d{1,6}', version) or uid <= 0:
         raise BootstrapError('invalid-sandbox-owner-or-version')
+    # The agent's prompt says the sandbox has node; the image must prove it.
+    node_version = (release.get('sandboxNodeRuntime') or {}).get('version')
+    if not isinstance(node_version, str) or not re.fullmatch(r'\d{1,4}\.\d{1,4}\.\d{1,4}', node_version):
+        raise BootstrapError('invalid-sandbox-node-runtime')
     docker = str(Path(docker).resolve(strict=True))
     source = Path(source).resolve(strict=True)
     context = source / 'deploy/sandbox'
@@ -281,11 +337,15 @@ def prepare_sandbox(*, source, ref, docker):
     images = json.loads(command([docker, 'image', 'ls', '--no-trunc', '--format', 'json',
                                  '--filter', 'reference=' + tag], cwd=source) or 'null')
     if images is None:
-        command([docker, 'build', '--platform', 'linux/arm64',
-                 '--build-arg', 'PIXEL_SANDBOX_UID=' + str(uid),
-                 '--label', 'org.osmantic.pixel.sandbox-version=' + version,
-                 '--label', 'org.osmantic.pixel.source-ref=' + ref,
-                 '-t', tag, str(context)], cwd=source, timeout=1800)
+        try:
+            command([docker, 'build', '--platform', 'linux/arm64',
+                     '--build-arg', 'PIXEL_SANDBOX_UID=' + str(uid),
+                     '--label', 'org.osmantic.pixel.sandbox-version=' + version,
+                     '--label', 'org.osmantic.pixel.source-ref=' + ref,
+                     '-t', tag, str(context)], cwd=source, timeout=1800)
+        except BootstrapError as error:
+            # The build downloads Debian packages and the pinned Node.js runtime.
+            raise BootstrapError('native-sandbox-build-failed') from error
     if selected_release(source, ref) != release:
         raise BootstrapError('sandbox-build-source-changed')
     def inspect():
@@ -304,28 +364,22 @@ def prepare_sandbox(*, source, ref, docker):
         return value['Id']
     image_id = inspect()
     name = 'ods-pixel-sandbox-proof-' + uuid.uuid4().hex
-    program = ('import json,os,pathlib,shutil; '
-               'p=pathlib.Path("/workspace/ods-proof.txt"); p.write_text("ods-sandbox-proof"); '
-               'print(json.dumps({"uid":os.getuid(),"readback":p.read_text(),'
-               '"tools":all(shutil.which(x) for x in '
-               '["bash","curl","git","jq","python3","rg","rsync"])}))')
+    expected = sandbox_proof_expected(uid, node_version)
     # Colima does not share macOS's per-user TMPDIR (/var/folders) with its VM.
     # The selected source is staged beside the installed ODS data, a filesystem
     # already shared with Docker, and the proof must not dirty the Git checkout.
     with tempfile.TemporaryDirectory(prefix='ods-sandbox-workspace-', dir=source.parent) as workspace:
         try:
-            result = json.loads(command([docker, 'run', '--rm', '--name', name,
-                '--network', 'none', '--read-only', '--cap-drop', 'ALL',
-                '--security-opt', 'no-new-privileges:true', '--pids-limit', '128',
-                '--memory', '512m', '--cpus', '1', '--tmpfs', '/tmp:rw,nosuid,nodev,size=16m',
-                '--mount', 'type=bind,source=' + workspace + ',target=/workspace',
-                '--entrypoint', '/usr/bin/python3', image_id, '-c', program], cwd=source, timeout=60))
+            result = json.loads(command([docker, *sandbox_proof_run_args(
+                name=name, workspace=workspace, image_id=image_id)], cwd=source, timeout=60))
             host_readback = (Path(workspace) / 'ods-proof.txt').read_text()
+        except BootstrapError as error:
+            raise BootstrapError('native-sandbox-execution-proof-failed') from error
         finally:
             # A timed-out Docker client does not necessarily stop its container.
             subprocess.run([docker, 'rm', '-f', name], cwd=source, stdin=subprocess.DEVNULL,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
-    if (result != {'uid': uid, 'readback': 'ods-sandbox-proof', 'tools': True}
+    if (result != expected
             or host_readback != 'ods-sandbox-proof' or inspect() != image_id):
         raise BootstrapError('native-sandbox-execution-proof-failed')
     return {'image': tag, 'imageId': image_id, 'ownerUid': uid, 'pixelSourceRef': ref}

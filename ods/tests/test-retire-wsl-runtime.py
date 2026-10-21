@@ -9,7 +9,9 @@ import unittest
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1]
-ENV = {'LEMONADE_HOST_TRANSPORT': 'model-router', 'ODS_WINDOWS_SYSTEM_DIRECTORY': r'C:\Windows\System32'}
+# The bridge gets the round-F key and its Lemonade-era alias (one release).
+ENV = {'LEMONADE_HOST_TRANSPORT': 'model-router', 'ODS_HOST_LLM_TRANSPORT': 'model-router',
+       'ODS_WINDOWS_SYSTEM_DIRECTORY': r'C:\Windows\System32'}
 spec = importlib.util.spec_from_file_location('retire_wsl_runtime', SOURCE / 'scripts/retire-wsl-runtime.py')
 helper = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(helper)
@@ -73,6 +75,19 @@ class RetirementTests(unittest.TestCase):
         self.assertEqual(operations, ['status', 'check', 'disable', 'stop'])
         self.stop.assert_called_once_with(self.root, ENV, 'a' * 64)
 
+    def test_migrated_environment_reaches_the_bridge_under_both_names(self):
+        (self.root / '.env').write_text('ODS_HOST_LLM_TRANSPORT=model-router\n'
+                                      'NATIVE_LLM_BASE_URL=http://localhost:8080\n'
+                                      'NATIVE_LLM_CONTAINER_BASE_URL=http://host.docker.internal:8080\n'
+                                      'ODS_WINDOWS_SYSTEM_DIRECTORY="C:\\Windows\\System32"\n')
+        helper.retire(self.root, validate_only=True)
+        self.status.assert_called_once_with(self.root, {
+            'ODS_HOST_LLM_TRANSPORT': 'model-router', 'LEMONADE_HOST_TRANSPORT': 'model-router',
+            'NATIVE_LLM_BASE_URL': 'http://localhost:8080', 'LEMONADE_BASE_URL': 'http://localhost:8080',
+            'NATIVE_LLM_CONTAINER_BASE_URL': 'http://host.docker.internal:8080',
+            'LEMONADE_CONTAINER_BASE_URL': 'http://host.docker.internal:8080',
+            'ODS_WINDOWS_SYSTEM_DIRECTORY': r'C:\Windows\System32'})
+
     def test_owner_failure_precedes_any_windows_probe(self):
         self._owner.side_effect = ValueError('wrong Linux owner')
         with self.assertRaises(ValueError):
@@ -123,12 +138,42 @@ class RetirementTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.assertEqual(self.disable_startup.call_count, 2)
 
-    def test_registered_runtime_cannot_be_hidden_by_a_changed_transport(self):
+    def test_registered_runtime_is_verified_after_routing_changes(self):
+        # An API or cloud route leaves the owned Windows task registered.
+        # Custody is proven from the task with a control-only environment;
+        # startup checks still get the installation's own values.
         (self.root / 'data').mkdir()
         (self.root / 'data/wsl-lemonade-runtime.json').write_text('{}')
         self.candidate.return_value = False
-        with self.assertRaises(ValueError):
-            helper.retire(self.root, validate_only=True)
+        for key in ('ODS_HOST_LLM_TRANSPORT', 'LEMONADE_HOST_TRANSPORT'):
+            for transport in ('direct', 'cloud', ''):
+                content = (key + '=' + transport + '\n'
+                           'ODS_WINDOWS_SYSTEM_DIRECTORY="C:\\Windows\\System32"\n'
+                           'NATIVE_LLM_BASE_URL=\nNATIVE_LLM_CONTAINER_BASE_URL=https://example.com/api\n'
+                           'AMD_INFERENCE_PORT=\n')
+                (self.root / '.env').write_text(content)
+                with self.subTest(key=key, transport=transport):
+                    self.assertEqual(helper.retire(self.root, validate_only=True)['state'], 'validated')
+                    self.status.assert_called_with(self.root, ENV)
+                    self.stop.assert_not_called()
+                    self.assertEqual(helper.retire(self.root)['state'], 'retired')
+                    self.stop.assert_called_once_with(self.root, ENV, 'a' * 64)
+                    self.assertEqual(self.disable_startup.call_args.args[1][key], transport)
+                    self.assertEqual((self.root / '.env').read_text(), content)
+                    self.stop.reset_mock()
+
+    def test_changed_routing_does_not_allow_unowned_registered_runtime(self):
+        (self.root / 'data').mkdir()
+        (self.root / 'data/wsl-lemonade-runtime.json').write_text('{}')
+        (self.root / '.env').write_text('ODS_HOST_LLM_TRANSPORT=direct\n')
+        self.candidate.return_value = False
+        for result in ({'managed': False}, OSError('foreign Windows task')):
+            self.status.side_effect = result if isinstance(result, Exception) else None
+            self.status.return_value = result
+            with self.subTest(result=result), self.assertRaises((ValueError, OSError)):
+                helper.retire(self.root)
+        self.status.assert_called_with(self.root, {'ODS_HOST_LLM_TRANSPORT': 'model-router',
+                                                   'LEMONADE_HOST_TRANSPORT': 'model-router'})
         self.disable_startup.assert_not_called()
         self.stop.assert_not_called()
 
@@ -214,9 +259,15 @@ class HookOrderTests(unittest.TestCase):
     def test_windows_precheck_and_apply_precede_pixel_then_host_agent_removal(self):
         script = (SOURCE / 'ods-uninstall.sh').read_text(encoding='utf-8')
         precheck = script.index('! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR" --validate-only')
+        pixel_check = script.index('if ! ODS_PIXEL_UNINSTALL_VALIDATE_ONLY=true ods_pixel_uninstall_managed')
+        upgrade_stop = script.index("# Stop this installation's background full-model upgrade")
         pixel = script.index('if ! ods_pixel_uninstall_managed')
         apply = script.index('if ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR";')
         host = script.index('if ! ods_uninstall_system_units')
+        # A Pixel refusal must come before anything changes, Windows startup included.
+        self.assertLess(precheck, pixel_check)
+        self.assertLess(pixel_check, upgrade_stop)
+        self.assertLess(pixel_check, apply)
         self.assertLess(precheck, apply)
         self.assertLess(apply, pixel)
         self.assertLess(pixel, host)

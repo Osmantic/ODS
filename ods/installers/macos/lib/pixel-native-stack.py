@@ -46,13 +46,39 @@ def read_selection(preparation):
     return read_record(preparation / 'preparation.json'), read_record(preparation / 'activation.json')
 
 
-def resolve_files(install_dir, files):
+def retained_recovery_selection(install_dir):
+    """Read original private failure receipts without publishing readiness."""
+    preparation = install_dir / 'data/pixel-native/preparation'
+    info = preparation.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077 or preparation.resolve(strict=True) != preparation):
+        raise ValueError('private-native-preparation-required')
+    def load(name):
+        spec = importlib.util.spec_from_file_location('native_stack_' + name,
+            Path(__file__).with_name(name + '.py'))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    config = load('pixel-native-config')
+    prepared = config.private_json(preparation / 'preparation.json')
+    record = config.private_json(preparation / 'activation.json')
+    expected = load('pixel-native-recover').selection(prepared, record)
+    if prepared.get('home') != str(install_dir / 'data/pixel-native/home'):
+        raise ValueError('retained-native-home-mismatch')
+    updated = preparation / UPDATE_SELECTION
+    if os.path.lexists(updated) and config.private_json(updated) != expected:
+        raise ValueError('native-recovery-selection-changed')
+    return prepared, record
+
+
+def resolve_files(install_dir, files, *, recovery=False):
     install_dir = Path(install_dir).resolve(strict=True)
     preparation = install_dir / 'data/pixel-native/preparation'
     activation = preparation / 'activation.json'
-    if not os.path.lexists(activation) and not os.path.lexists(preparation / UPDATE_SELECTION):
+    if not recovery and not os.path.lexists(activation) and not os.path.lexists(preparation / UPDATE_SELECTION):
         return list(files)
-    prepared, record = read_selection(preparation)
+    prepared, record = (retained_recovery_selection(install_dir) if recovery
+                        else read_selection(preparation))
     migration = prepared.get('kind') == 'legacy-native'
     if migration:
         selection_valid = (prepared.get('phase') == 'awaiting-joint-activation'
@@ -61,7 +87,7 @@ def resolve_files(install_dir, files):
     else:
         selection_valid = (prepared.get('phase') == 'awaiting-protected-activation'
             and prepared.get('home') == str(install_dir / 'data/pixel-native/home'))
-    if (record.get('status') != 'ready' or record.get('phase') != 'services-ready'
+    if not recovery and (record.get('status') != 'ready' or record.get('phase') != 'services-ready'
             or prepared.get('status') != 'prepared'
             or not selection_valid
             or any(not record.get(key) or record.get(key) != prepared.get(key)

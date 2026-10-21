@@ -6,7 +6,8 @@
 # Purpose: Install Docker, Docker Compose, and NVIDIA Container Toolkit
 #
 # Expects: SKIP_DOCKER, DRY_RUN, INTERACTIVE, GPU_COUNT, GPU_BACKEND,
-#           LOG_FILE, MIN_DRIVER_VERSION, PKG_MANAGER,
+#           LOG_FILE, MIN_DRIVER_VERSION, PKG_MANAGER, ENABLE_PIXEL_RUNTIME,
+#           ods_pixel_check_owner_docker(),
 #           show_phase(), ai(), ai_ok(), ai_warn(), log(), warn(), error(),
 #           detect_pkg_manager(), pkg_install(), pkg_update(), pkg_resolve()
 # Provides: DOCKER_CMD, DOCKER_COMPOSE_CMD
@@ -467,6 +468,27 @@ _docker_nvidia_runtime_available() {
     [[ "$runtimes" =~ \"nvidia\"[[:space:]]*: ]]
 }
 
+# Docker Desktop runs the engine in its own VM and reports itself as
+# "Docker Desktop" (on Windows on Arm, "Docker Desktop (containerized)").
+# A toolkit installed in this distro and a `systemctl restart docker` never
+# reach that engine.
+_docker_is_desktop_engine() {
+    local os=""
+    # An engine that does not answer is not Docker Desktop's for this check;
+    # the toolkit path below reports its own errors.
+    os=$(docker_run info --format '{{.OperatingSystem}}' 2>/dev/null || true)
+    [[ "$os" == "Docker Desktop"* ]]
+}
+
+_docker_desktop_nvidia_refusal() {
+    local help="Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+    if _docker_is_wsl_host; then
+        printf '%s' "Docker Desktop is not giving this Ubuntu its NVIDIA runtime, and ODS never installs a second NVIDIA container toolkit under Docker Desktop (it would rewrite Docker's settings and restart a Docker service that Docker Desktop does not use). Setup stopped here; it installed no NVIDIA software and did not restart Docker. Update Docker Desktop, keep \"Use the WSL 2 based engine\" turned on in its settings, restart Docker Desktop, then rerun the ODS installer. To install now without the GPU (slower), rerun it with GPU_BACKEND=cpu set. ${help}"
+    else
+        printf '%s' "Docker here is Docker Desktop, whose engine runs in its own virtual machine without an NVIDIA runtime, and ODS never installs an NVIDIA container toolkit under Docker Desktop. Setup stopped here; it installed no NVIDIA software and did not restart Docker. To use the GPU, install Docker Engine and switch to it (docker context use default), then rerun the ODS installer. To install now without the GPU (slower), rerun it with GPU_BACKEND=cpu set. ${help}"
+    fi
+}
+
 _ensure_podman_dockerhub_search() {
     _runtime_is_podman || return 0
     ods_podman_ensure_dockerhub_search
@@ -539,6 +561,8 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
         if command -v nvidia-ctk &>/dev/null && ! $DRY_RUN; then
             ods_sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml 2>>"$LOG_FILE" || true
         fi
+    elif _docker_is_desktop_engine; then
+        error "$(_docker_desktop_nvidia_refusal)"
     else
         ai "Installing NVIDIA Container Toolkit..."
         if ! $DRY_RUN; then
@@ -640,4 +664,11 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
             $DRY_RUN && ai_ok "[DRY RUN] Would install NVIDIA Container Toolkit" || error "NVIDIA Container Toolkit installation failed — nvidia-container-cli not found after install."
         fi
     fi
+fi
+
+# Check after runtime/toolkit setup (which may restart Docker), but before
+# phase 06 writes configuration and phase 08 downloads/builds the images.
+# A successful sudo Docker probe does not establish Pixel owner's access.
+if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true && "$DRY_RUN" != true ]]; then
+    ods_pixel_check_owner_docker || return 1
 fi

@@ -9,6 +9,23 @@ $fixture=Join-Path $PSScriptRoot ('.wsl-lifetime-test-'+[guid]::NewGuid().ToStri
 $ownedProcess=$null
 try {
     Check ($Distro -ceq 'Ubuntu-Scope-Test') 'dot-sourcing preserves the selected distribution'
+    foreach ($case in @(
+        @{name='networking';json='{"error":"networking"}';reason='networking'},
+        @{name='address';json='{"error":"address"}';reason='address'},
+        @{name='hyphenated';json='{"error":"docker-probe"}';reason='docker-probe'},
+        @{name='malformed';json='{broken';reason='unknown'},
+        @{name='missing';json='{"mode":"unmanaged"}';reason='unknown'},
+        @{name='empty';json='';reason='unknown'},
+        @{name='non-object';json='[ {"error":"address"} ]';reason='unknown'},
+        @{name='non-string';json='{"error":42}';reason='unknown'},
+        @{name='uppercase';json='{"error":"Address"}';reason='unknown'},
+        @{name='private-output';json='{"error":"/home/private/sentinel"}';reason='unknown'},
+        @{name='newline';json='{"error":"address\n"}';reason='unknown'},
+        @{name='long-code';json=('{"error":"'+('a'*33)+'"}');reason='unknown'},
+        @{name='oversized';json=(' ' * 2048 + '{"error":"address"}');reason='unknown'}
+    )) {
+        Check ((Get-ODSWslAgentAddressFailureReason $case.json) -ceq $case.reason) "address diagnostics validate $($case.name) without exposing raw helper output"
+    }
     $parseTokens=$null;$parseErrors=$null
     $installerAst=[Management.Automation.Language.Parser]::ParseFile((Resolve-Path (Join-Path $PSScriptRoot '../../installers/windows.ps1')),[ref]$parseTokens,[ref]$parseErrors)
     $previewAssignment=$installerAst.Find({param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -eq '$lifetimeRequired'},$true)

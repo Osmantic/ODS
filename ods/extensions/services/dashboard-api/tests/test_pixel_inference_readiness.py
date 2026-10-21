@@ -8,10 +8,11 @@ from test_pixel import FakeClient, FakeResponse, pixel, pixel_env as pixel_env
 pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
 
 
-@pytest.fixture(autouse=True)
-def host_runtime(monkeypatch):
+@pytest.fixture(autouse=True, params=['llama-server', 'lemonade'])
+def host_runtime(monkeypatch, request):
+    # A llama-server on the Windows host; an unmigrated .env still names Lemonade.
     monkeypatch.setattr(pixel, 'read_live_env_value', lambda key: {
-        'LLM_BACKEND': 'lemonade', 'AMD_INFERENCE_LOCATION': 'host',
+        'LLM_BACKEND': request.param, 'AMD_INFERENCE_LOCATION': 'host',
     }.get(key, ''))
 
 

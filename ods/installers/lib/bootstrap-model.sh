@@ -32,6 +32,7 @@ BOOTSTRAP_MAX_CONTEXT=65536
 #   3. --no-bootstrap flag was NOT set
 #   4. Not in offline mode (can't download anything)
 #   5. Not in cloud mode (no local model needed)
+#   6. No host-native llama-server (it serves the model chosen on Windows)
 #
 bootstrap_needed() {
     local tier_rank
@@ -51,7 +52,7 @@ bootstrap_needed() {
 
     # Cloud mode — no local model needed
     [[ "${ODS_MODE:-local}" == "cloud" ]] && return 1
-    [[ "${LEMONADE_EXTERNAL:-false}" == "true" ]] && return 1
+    [[ -n "${NATIVE_LLM_BASE_URL:-}" ]] && return 1
 
     return 0
 }

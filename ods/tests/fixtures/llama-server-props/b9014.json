@@ -1,0 +1,41 @@
+{
+  "capturedFrom": "llama-b9014-bin-macos-arm64 on the Mac mini M4, GET /props, 2026-10-09; key names only",
+  "build_info": "b9014-d4b0c22f9",
+  "keys": [
+    "bos_token",
+    "build_info",
+    "chat_template",
+    "chat_template_caps",
+    "default_generation_settings",
+    "endpoint_metrics",
+    "endpoint_props",
+    "endpoint_slots",
+    "eos_token",
+    "is_sleeping",
+    "media_marker",
+    "modalities",
+    "model_alias",
+    "model_path",
+    "total_slots",
+    "webui",
+    "webui_settings"
+  ],
+  "chat_template_caps": [
+    "supports_object_arguments",
+    "supports_parallel_tool_calls",
+    "supports_preserve_reasoning",
+    "supports_string_content",
+    "supports_system_role",
+    "supports_tool_calls",
+    "supports_tools",
+    "supports_typed_content"
+  ],
+  "modalities": [
+    "audio",
+    "vision"
+  ],
+  "default_generation_settings": [
+    "n_ctx",
+    "params"
+  ]
+}

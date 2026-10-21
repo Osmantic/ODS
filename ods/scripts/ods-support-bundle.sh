@@ -2,7 +2,7 @@
 set -euo pipefail
 
 TOOL_VERSION="1"
-REDACTION_VERSION="2"
+REDACTION_VERSION="3"
 DEFAULT_LOG_TAIL=200
 MAX_LOG_CONTAINERS=25
 COMMAND_TIMEOUT="${ODS_SUPPORT_COMMAND_TIMEOUT:-60}"
@@ -196,6 +196,9 @@ for value in sorted(known_secrets, key=len, reverse=True):
     text = text.replace(value, "[REDACTED]")
 
 patterns = [
+    # A LiteLLM proxy's refusal echoes the end of the key and the key's hash.
+    (re.compile(r"(?i)(Received API Key\s*=\s*)[^,\s\"]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(Key Hash \(Token\)\s*=\s*)[0-9a-f]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)((?:authorization|x-api-key|api-key|apikey)\s*[:=]\s*)([\"']?)[^\"'\s,}]+"), r"\1\2[REDACTED]"),
     # Database and broker connection strings carry credentials too (including
@@ -467,7 +470,8 @@ collect_compose_validation() {
     local tier
     local gpu_count
     local ods_mode
-    local lemonade_external
+    local native_llm_url
+    local amd_backend
     local amd_runtime
     local amd_managed
     local flags_file="$BUNDLE_DIR/validation/compose-flags.txt"
@@ -479,7 +483,8 @@ collect_compose_validation() {
     tier="$(read_env_value TIER 1)"
     gpu_count="$(read_env_value GPU_COUNT 1)"
     ods_mode="$(read_env_value ODS_MODE local)"
-    lemonade_external="$(read_env_value LEMONADE_EXTERNAL false)"
+    native_llm_url="$(read_env_value NATIVE_LLM_BASE_URL "")"
+    amd_backend="$(read_env_value AMD_INFERENCE_BACKEND "")"
     amd_runtime="$(read_env_value AMD_INFERENCE_RUNTIME "")"
     amd_managed="$(read_env_value AMD_INFERENCE_MANAGED "")"
 
@@ -492,9 +497,8 @@ collect_compose_validation() {
     set +e
     flags="$(
         cd "$ROOT_DIR" && \
-        LEMONADE_EXTERNAL="$lemonade_external" \
-        AMD_INFERENCE_RUNTIME="$amd_runtime" \
-        AMD_INFERENCE_MANAGED="$amd_managed" \
+        NATIVE_LLM_BASE_URL="$native_llm_url" \
+        AMD_INFERENCE_BACKEND="$amd_backend" \
         run_bounded "$BASH_CMD" scripts/resolve-compose-stack.sh \
             --script-dir "$ROOT_DIR" \
             --tier "$tier" \
@@ -512,7 +516,8 @@ collect_compose_validation() {
         printf 'TIER=%s\n' "$tier"
         printf 'GPU_COUNT=%s\n' "$gpu_count"
         printf 'ODS_MODE=%s\n' "$ods_mode"
-        printf 'LEMONADE_EXTERNAL=%s\n' "$lemonade_external"
+        printf 'NATIVE_LLM_BASE_URL=%s\n' "$native_llm_url"
+        printf 'AMD_INFERENCE_BACKEND=%s\n' "$amd_backend"
         printf 'AMD_INFERENCE_RUNTIME=%s\n' "$amd_runtime"
         printf 'AMD_INFERENCE_MANAGED=%s\n' "$amd_managed"
         printf 'COMPOSE_FLAGS=%s\n' "$flags"
@@ -790,7 +795,7 @@ config_hash_targets = [
     "config/ports.json",
     "config/golden-paths.json",
     "config/generated-config-contracts.json",
-    "config/litellm/lemonade.yaml",
+    "config/litellm/local.yaml",
     "extensions/services/hermes/cli-config.yaml.template",
 ]
 

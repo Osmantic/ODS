@@ -19,7 +19,7 @@ Within `ods/`:
 - **`installers/lib/`** — pure function libraries (constants, logging, UI, GPU detection, tier mapping, packaging, compose selection)
 - **`installers/phases/`** — 14 sequential phase files (`01-preflight` through `13-summary`, plus `02b-external-services`), each sourced by install-core
 - **`installers/macos/`**, **`installers/windows/`** — platform-specific installer variants
-- **`extensions/services/`** — 32 bundled services, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
+- **`extensions/services/`** — 31 bundled services, each a directory with `manifest.yaml` + optional `compose.yaml` and GPU overlays
 - **`extensions/library/`** — optional extension catalog, templates, workflows, and manifest schema used by the dashboard Extensions page
 - **`docker-compose.base.yml`** — core service definitions; `docker-compose.{amd,nvidia,apple}.yml` are GPU overlays
 - **`ods-cli`** — main Bash CLI for managing the stack; keep changes narrow and follow `docs/ODS_CLI_DECOMPOSITION.md` for behavior-preserving split work

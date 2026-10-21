@@ -9,6 +9,17 @@ from .connection import connection_url, normalize_connection, normalize_probe
 from .store import MAX_BYTES, StoreError, decode_document
 
 
+def tls_context():
+    """A certificate- and hostname-verifying client context, TLS 1.2 or newer.
+
+    Python 3.10 and later already refuse older protocols by default; the host
+    side also runs on Python 3.9, so the floor is set explicitly.
+    """
+    context = ssl.create_default_context()
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 def _target(parts):
     port = parts.port or (443 if parts.scheme == 'https' else 80)
     candidates = socket.getaddrinfo(parts.hostname, port, type=socket.SOCK_STREAM)
@@ -37,7 +48,7 @@ def probe_connection(connection, *, confirmed_endpoint):
         # hostname verification. HTTPConnection's automatic resolver is unused.
         sock = socket.create_connection((address,port), timeout=5)
         if parts.scheme == 'https':
-            sock = ssl.create_default_context().wrap_socket(sock, server_hostname=parts.hostname)
+            sock = tls_context().wrap_socket(sock, server_hostname=parts.hostname)
         sock.settimeout(10)
         client = http.client.HTTPConnection(parts.hostname, port, timeout=10)
         client.sock = sock

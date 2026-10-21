@@ -55,10 +55,7 @@ sudo install -o root -g root -m 0644 "$ROOT/.generated/pixel-ops-broker.service"
 sudo systemctl daemon-reload
 sudo systemctl enable "$PIXEL_OPS_BROKER_UNIT"
 sudo systemctl restart "$PIXEL_OPS_BROKER_UNIT"
-for _ in {1..40}; do
-  sudo systemctl is-active --quiet "$PIXEL_OPS_BROKER_UNIT" && sudo test -f "$PIXEL_OPS_INVENTORY_PATH" && break
-  sleep 0.25
-done
+pixel_wait_ops_inventory || pixel_die "Operations Broker did not publish its inventory before the startup deadline. Inspect the broker service journal; keep its state intact."
 sudo systemctl is-active --quiet "$PIXEL_OPS_BROKER_UNIT" || pixel_die "Operations Broker service failed to start"
 pixel_apply_ops_reader_acls
 pixel_user_can_access "$PIXEL_OPS_READER_USER" r "$PIXEL_OPS_INVENTORY_PATH" || pixel_die "Gateway owner cannot read the Operations inventory projection"

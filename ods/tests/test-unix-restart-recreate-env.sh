@@ -13,8 +13,10 @@ docker_log="$tmp_dir/docker.log"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data" "$bin_dir"
+install_dir="$(cd "$install_dir" && pwd -P)"
 cp "$root_dir/docker-compose.base.yml" "$install_dir/docker-compose.base.yml"
 printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
+python3 "$root_dir/tests/fixtures/macos-private-store-cli.py" "$install_dir"
 printf '%s\n' \
     'ODS_VERSION=2.6.0' \
     'ODS_MODE=local' \
@@ -59,7 +61,7 @@ run_restart_contract() {
             sed -n '1,200p' "$output" >&2
             return 1
         }
-    grep -Eq 'compose .*docker-compose.base.yml up -d --force-recreate --no-build --pull never dashboard$' "$docker_log" || {
+    grep -Eq 'compose .*docker-compose.base.yml .*up -d --force-recreate --no-build --pull never dashboard$' "$docker_log" || {
         sed -n '1,200p' "$docker_log" >&2
         printf '[FAIL] %s single-service restart did not replace the container from its pinned image\n' "$platform" >&2
         return 1
@@ -74,7 +76,7 @@ run_restart_contract() {
             sed -n '1,200p' "$output" >&2
             return 1
         }
-    grep -Eq 'compose .*docker-compose.base.yml up -d --force-recreate --no-build --pull never$' "$docker_log" || {
+    grep -Eq 'compose .*docker-compose.base.yml .*up -d --force-recreate --no-build --pull never$' "$docker_log" || {
         sed -n '1,200p' "$docker_log" >&2
         printf '[FAIL] %s all-service restart did not replace containers from pinned images\n' "$platform" >&2
         return 1

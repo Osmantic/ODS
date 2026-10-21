@@ -21,17 +21,19 @@ def model_runtime(monkeypatch, tmp_path):
     install = tmp_path / "ods"
     data = install / "data"
     data.mkdir(parents=True)
-    (install / ".env").write_text("ODS_MODE=lemonade\n", encoding="utf-8")
+    # A migrated WSL Portal: llama-server.exe on Windows, behind the bridge.
+    (install / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
     monkeypatch.setattr(router, "INSTALL_DIR", str(install))
     monkeypatch.setattr(router, "DATA_DIR", str(data))
     monkeypatch.setattr(router, "_ENV_PATH", install / ".env")
     monkeypatch.setattr(router, "_LIBRARY_PATH", install / "config" / "model-library.json")
     monkeypatch.setattr(router, "_MODELS_DIR", data / "models")
     monkeypatch.setattr(helpers, "_PERF_FILE", data / "performance.json")
-    monkeypatch.setattr(router, "ODS_MODE_EFFECTIVE", "lemonade")
-    monkeypatch.setattr(router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(router, "ODS_MODE_EFFECTIVE", "local")
+    monkeypatch.setattr(router, "LLM_BACKEND", "llama-server")
     monkeypatch.setattr(router, "read_live_env_values", lambda _keys: {
-        "LLM_BACKEND": "lemonade", "LEMONADE_EXTERNAL": "true",
+        "LLM_BACKEND": "llama-server", "ODS_HOST_LLM_TRANSPORT": "model-router",
+        "AMD_INFERENCE_RUNTIME_MODE": "windows-portal-llama-server",
     })
     monkeypatch.setattr(router, "get_gpu_info", lambda: None)
     monkeypatch.setattr(router, "get_loaded_model", AsyncMock(return_value=None))
@@ -67,7 +69,8 @@ def test_catalog_exposes_verified_management(test_client, model_runtime, monkeyp
     response = test_client.get("/api/models", headers=test_client.auth_headers)
 
     assert response.status_code == 200
-    assert response.json()["externalLemonade"] is True
+    assert response.json()["hostRuntime"] is True
+    assert "externalLemonade" not in response.json()
     assert response.json()["modelManagement"] == capability
     assert calls == [("GET", "/v1/model/management", {"timeout": 20})]
 
@@ -80,6 +83,24 @@ def test_management_fails_closed_on_malformed_evidence(model_runtime, monkeypatc
     monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, **_kwargs: invalid)
     capability = model_runtime._model_management()
     assert capability == UNVERIFIED
+
+
+def test_management_carries_the_launchers_error_and_start_refusal(model_runtime, monkeypatch):
+    stopped = {**MANAGED, "running": False, "canActivate": False}
+    refused = {**stopped, "runtimeError": "The model was not started: Windows can lend it only 1.0 GiB right now.",
+               "startRefusal": "memory_refused"}
+    monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, **_kwargs: refused)
+    assert model_runtime._model_management() == refused
+    long_text = {**stopped, "runtimeError": "x" * 5000, "startRefusal": "out_of_memory"}
+    monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, **_kwargs: long_text)
+    assert model_runtime._model_management() == {**stopped, "runtimeError": "x" * 1024}
+    for value in ({**MANAGED, "runtimeError": "running models carry no error"},
+                  {**UNMANAGED, "runtimeError": "not ours", "startRefusal": "memory_refused"},
+                  {**stopped, "runtimeError": 7, "startRefusal": "memory_refused"},
+                  {**stopped, "runtimeError": "  "}):
+        monkeypatch.setattr(model_runtime, "request_agent_json", lambda *_args, value=value, **_kwargs: value)
+        capability = model_runtime._model_management()
+        assert "runtimeError" not in capability and "startRefusal" not in capability
 
 
 def test_management_fails_closed_when_agent_unavailable(model_runtime, monkeypatch):
@@ -128,10 +149,10 @@ def test_management_preserves_safe_reason_and_omits_agent_internals(model_runtim
 
 
 def test_nonexternal_catalog_never_requests_management(test_client, model_runtime, monkeypatch):
-    monkeypatch.setattr(model_runtime, "_external_lemonade_runtime", lambda: False)
+    monkeypatch.setattr(model_runtime, "_windows_hosted_runtime", lambda: False)
     response = test_client.get("/api/models", headers=test_client.auth_headers)
     assert response.status_code == 200
-    assert response.json()["externalLemonade"] is False
+    assert response.json()["hostRuntime"] is False
     assert response.json().get("modelManagement") is None
     assert model_runtime._model_management() == UNMANAGED
 

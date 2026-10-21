@@ -1,13 +1,15 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'installers/windows/lib/backend-contract.ps1')
+. (Join-Path $root 'installers/windows/lib/native-llama-runtime.ps1')
+. (Join-Path $root 'installers/windows/lib/native-llama-args.ps1')
+. (Join-Path $root 'installers/windows/lib/native-llama-legacy.ps1')
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'installers/windows/ods.ps1'), [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
 $definitions = @{}
-foreach ($name in @('Get-ODSNativeModelSelection','Get-ODSConfiguredNativeExecutable','ConvertTo-ODSNativeArgumentString',
-    'Get-NativeInferenceBackend','Start-NativeInferenceServer','Start-ODSLemonadeRuntime','Wait-ODSLemonadeConfiguredModel',
-    'Test-ODSLemonadeLoadedModelMatches','Stop-ODSLemonadeRuntime')) {
+foreach ($name in @('Get-ODSNativeModelSelection','Get-ODSConfiguredNativeExecutable','Get-NativeInferenceBackend','Start-NativeInferenceServer',
+    'Get-ODSNativeLlamaStartPlan','Start-ODSNativeLlamaFromPlan')) {
     $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
     if (-not $function) { throw "Missing function $name" }
     $definitions[$name] = $function.Extent.Text
@@ -21,6 +23,7 @@ function Assert-Throws {
 }
 $script:Assertions = 0
 $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('ods-model-stores-' + [Guid]::NewGuid().ToString('N'))
+$previousLocalAppData = $env:LOCALAPPDATA
 $InstallDir = Join-Path $fixtureRoot 'install with spaces'
 $ssd = Join-Path $fixtureRoot 'SSD modelos'
 $runtime = Join-Path $fixtureRoot "runtime's folder/llama-server.exe"
@@ -101,116 +104,85 @@ def run(command, **kwargs):
     [IO.File]::WriteAllText($runtime, 'fixture runtime; never execute')
 
     $script:LLAMA_SERVER_EXE = Join-Path $fixtureRoot 'missing-default.exe'
-    $script:LEMONADE_EXE = Join-Path $fixtureRoot 'Lemonade/LemonadeServer.exe'
-    $script:LEMONADE_PORT = 13305
-    $script:LEMONADE_HEALTH_URL = 'http://127.0.0.1:13305/api/v1/health'
+    $script:LLAMA_SERVER_DIR = $fixtureRoot
     $script:INFERENCE_PID_FILE = Join-Path $InstallDir 'data/llama-server.pid'
-    $script:LEMONADE_TASK_NAME = 'ODSFixtureOnly'
+    $script:NATIVE_LLM_PORT = 18080
     Assert-True ((Get-NativeInferenceBackend) -eq 'llama-server') 'Custom executable was ignored when bundled executable is absent'
     Move-Item -LiteralPath $runtime -Destination "$runtime.offline"
     Assert-True ((Get-NativeInferenceBackend) -eq 'llama-server') 'Missing external executable erased the identity needed for Stop'
     Move-Item -LiteralPath "$runtime.offline" -Destination $runtime
+
+    # Start launches through native-llama-legacy.ps1: the registered profile
+    # keeps its qualified runtime and arguments and gains the Round F
+    # loopback listener, --alias and --api-key-file. Process start and the
+    # HTTP proof are replaced at Start-ODSNativeLlamaLegacyProcess.
+    $env:LOCALAPPDATA = Join-Path $fixtureRoot 'LocalAppData'
+    $null = Write-ODSNativeLlamaLegacyOptions -Runtime ([pscustomobject]@{ ReleaseTag = 'b9014'; ZipSha256 = ('c' * 64) }) `
+        -Device ([pscustomobject]@{ Name = 'Vulkan0' })
+    $script:EnvMap.LLAMA_SERVER_API_KEY = 'ab' * 32
     $script:Started = @()
-    function Start-Process {
-        param($FilePath, $ArgumentList, $WindowStyle, [switch]$PassThru, $WorkingDirectory, $RedirectStandardOutput, $RedirectStandardError)
-        $script:Started += @{ executable = $FilePath; arguments = [string]$ArgumentList; cwd = $WorkingDirectory;
-            runtime = $env:LEMONADE_LLAMACPP_VULKAN_BIN; window = $WindowStyle }
-        return [pscustomobject]@{ Id = 19001 }
+    function Start-ODSNativeLlamaLegacyProcess {
+        param($Launch, $Port, $ApiKey, $PidFile, $TimeoutSeconds)
+        $script:Started += [pscustomobject]@{ Launch = $Launch; Port = $Port; ApiKey = $ApiKey; PidFile = $PidFile }
+        return [pscustomobject]@{ ProcessId = 19001; Proof = [pscustomobject]@{ ModelId = $Launch.GgufFile; ContextLength = $Launch.ContextSize } }
     }
+    function Get-ODSNativeReasoningArgs { param($Executable, $Mode, $FallbackFormat) return @('--reasoning', $Mode) }
+    function Get-ODSNativeCheckpointIntervalArgs { param($Executable, $Value) return [pscustomobject]@{ Arguments = @(); Warning = '' } }
     Start-NativeInferenceServer
-    Assert-True ($script:Started[-1].executable -eq $runtime) 'Native start used the bundled runtime instead of qualified executable'
-    Assert-True ($script:Started[-1].arguments.Contains('"' + $modelFile + '"')) 'Native model path with spaces was not quoted'
-    Assert-True ($script:Started[-1].arguments.Contains('"--spec-type" "draft-mtp"')) 'Native MTP args missing'
-    Assert-True ($script:Started[-1].arguments.Contains('"--ctx-size" "8192"')) 'Native persisted context missing'
-    Assert-True ($script:Started[-1].window -eq 'Hidden') 'Native launch was not hidden'
+    $launch = $script:Started[-1].Launch
+    $joined = ConvertTo-ODSNativeLlamaArgumentString $launch.Arguments
+    Assert-True ($launch.ExecutablePath -eq $runtime -and -not $launch.Pinned) 'Native start used the bundled runtime instead of qualified executable'
+    Assert-True ($joined.Contains('"' + $modelFile + '"')) 'Native model path with spaces was not quoted'
+    Assert-True ($joined.Contains('"--spec-type" "draft-mtp"')) 'Native MTP args missing'
+    Assert-True ($joined.Contains('"--ctx-size" "8192"')) 'Native persisted context missing'
+    Assert-True ($joined.Contains('"--alias" "model.gguf"') -and $joined.Contains('"--host" "127.0.0.1"') -and $joined.Contains('"--no-webui"') -and
+        $joined.Contains('"--api-key-file"') -and -not $joined.Contains('ab' * 32)) 'Native start lost the loopback listener, alias or key file, or put the key on argv'
+    Assert-True ($script:Started[-1].Port -eq 18080 -and $script:Started[-1].ApiKey -eq ('ab' * 32) -and
+        $script:Started[-1].PidFile -eq $script:INFERENCE_PID_FILE) 'Native start used the wrong port, key or PID record'
+    Assert-True (-not $joined.Contains('stale-mtp')) 'A registered profile received the global .env MTP setting'
     $script:Registry.stores[0].profiles['model.gguf'].mtp = $false
     Write-FixtureRegistry
     Start-NativeInferenceServer
-    Assert-True (-not $script:Started[-1].arguments.Contains('spec-type')) 'Stale global MTP was applied to a baseline model'
+    Assert-True (-not (ConvertTo-ODSNativeLlamaArgumentString $script:Started[-1].Launch.Arguments).Contains('spec-type')) 'Stale global MTP was applied to a baseline model'
     $script:Registry.stores[0].profiles['model.gguf'].mtp = $true
     Write-FixtureRegistry
 
-    # Lemonade receives the actual per-model load options, without persisting a
-    # speculative change; a failed load cannot be mistaken for an old healthy model.
-    $script:Loads = @(); $script:LoadFails = $false
-    function Resolve-ODSLemonadeModelId { param($Port, $GgufFile) return 'model' }
-    function Get-ODSLemonadeAdminApiKey { param($EnvPath) return 'fixture-key' }
-    function Invoke-RestMethod {
-        param($Method, $Uri, $Headers, $ContentType, $Body, $TimeoutSec, $ErrorAction)
-        if ($Uri.EndsWith('/load')) {
-            $script:Loads += ($Body | ConvertFrom-Json)
-            if ($script:LoadFails) { throw 'fixture load failed' }
-            return @{ status = 'success' }
-        }
-        if ($Uri.EndsWith('/health')) { return @{ model_loaded = 'model' } }
-        throw 'Unexpected request in fixture'
-    }
-    Wait-ODSLemonadeConfiguredModel -EnvVars $script:EnvMap
-    Assert-True ($script:Loads[-1].llamacpp_args.Contains('--spec-type draft-mtp')) 'Lemonade MTP options were not applied'
-    Assert-True ($script:Loads[-1].ctx_size -eq 8192 -and $script:Loads[-1].save_options -eq $false) 'Lemonade load persisted speculative settings or wrong context'
-    $script:LoadFails = $true
-    Assert-Throws { Wait-ODSLemonadeConfiguredModel -EnvVars $script:EnvMap } 'fixture load failed'
-    $script:LoadFails = $false
+    # The default store runs the pinned runtime, verified against pin.json
+    # before every start.
+    $pinned = Join-Path $fixtureRoot 'published llama-server'
+    $null = New-Item -ItemType Directory -Path $pinned -Force
+    foreach ($name in @('llama-server.exe', 'ggml-vulkan.dll')) { [IO.File]::WriteAllText((Join-Path $pinned $name), "fixture $name; never execute") }
+    $pinRecord = [ordered]@{ schemaVersion = 1; releaseTag = 'b9014'; asset = 'llama-b9014-bin-win-vulkan-x64.zip'; zipSha256 = ('c' * 64)
+        zipSize = 1; source = 'fixture'; files = @(Get-ODSNativeLlamaFileManifest $pinned) }
+    [IO.File]::WriteAllText((Join-Path $pinned 'pin.json'), ($pinRecord | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    $script:LLAMA_SERVER_DIR = $pinned
+    $script:LLAMA_SERVER_EXE = Join-Path $pinned 'llama-server.exe'
+    [IO.File]::WriteAllText((Join-Path $InstallDir 'data/models/model.gguf'), 'fixture checkpoint')
+    $script:EnvMap.ODS_ACTIVE_MODEL_STORE = 'default'
+    Write-FixtureEnv
+    Start-NativeInferenceServer
+    $joined = ConvertTo-ODSNativeLlamaArgumentString $script:Started[-1].Launch.Arguments
+    Assert-True ($script:Started[-1].Launch.Pinned -and $script:Started[-1].Launch.ExecutablePath -eq $script:LLAMA_SERVER_EXE) 'The default store did not use the pinned runtime'
+    Assert-True ($joined.Contains('"--parallel" "1"') -and $joined.Contains('"--device" "Vulkan0"') -and $joined.Contains('"--metrics"') -and
+        $joined.Contains('"--reasoning" "off"') -and $joined.Contains('"--spec-type" "stale-mtp"')) 'The pinned runtime lost the one-slot, device, metrics, reasoning or .env tuning arguments'
+    $startsBefore = $script:Started.Count
+    [IO.File]::AppendAllText((Join-Path $pinned 'ggml-vulkan.dll'), 'quarantined')
+    Assert-Throws { Start-NativeInferenceServer } 'no longer matches its pinned SHA-256'
+    Assert-True ($script:Started.Count -eq $startsBefore) 'A tampered runtime was started'
+    $script:EnvMap.ODS_ACTIVE_MODEL_STORE = 'ssd'
+    Write-FixtureEnv
 
-    # Both task-scheduler and direct-process paths carry the selected binary.
-    $contract = Get-ODSLemonadeLaunchContract -ExecutablePath $script:LEMONADE_EXE -Port 13305 -ModelsDir $ssd `
-        -ContextSize 8192 -VersionOverride '10.7.0' -RuntimeEnvironment @{ LEMONADE_LLAMACPP_VULKAN_BIN = $runtime }
-    function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory) return @{ Execute = $Execute; Argument = $Argument } }
-    $logPath = Join-Path $InstallDir 'logs/test-launch.log'
-    $null = New-ODSLemonadeScheduledTaskAction -Contract $contract -EnvPath (Join-Path $InstallDir '.env') -DiagnosticLogPath $logPath
-    $wrapperPath = [IO.Path]::ChangeExtension($logPath, '.task.ps1')
-    $wrapper = [IO.File]::ReadAllText($wrapperPath)
-    Assert-True ($wrapper.Contains("'LEMONADE_LLAMACPP_VULKAN_BIN'")) 'Scheduled task omitted runtime environment'
-    Assert-True ($wrapper.Contains($runtime.Replace("'", "''"))) 'Scheduled task did not escape qualified executable path'
-    [void][Management.Automation.Language.Parser]::ParseFile($wrapperPath, [ref]$tokens, [ref]$errors)
-    Assert-True ($errors.Count -eq 0) 'Generated task wrapper is invalid PowerShell'
-    $priorRuntime = $env:LEMONADE_LLAMACPP_VULKAN_BIN
-    try {
-        $env:LEMONADE_LLAMACPP_VULKAN_BIN = 'old-owner-value'
-        $null = Start-ODSLemonadeDirectProcess -Contract $contract -DiagnosticLogPath $logPath
-        Assert-True ($script:Started[-1].runtime -eq $runtime) 'Direct launch omitted qualified executable'
-        Assert-True ($env:LEMONADE_LLAMACPP_VULKAN_BIN -eq 'old-owner-value') 'Direct launch leaked profile into subsequent models'
-    } finally { $env:LEMONADE_LLAMACPP_VULKAN_BIN = $priorRuntime }
-    Assert-Throws { Get-ODSLemonadeLaunchContract -ExecutablePath $script:LEMONADE_EXE -Port 13305 -ModelsDir $ssd -VersionOverride '10.7.0' -RuntimeEnvironment @{ PATH = $runtime } } 'Invalid registered'
-
-    # Start performs strict resolution before its first destructive stop.
-    $script:StopCalls = 0
-    function Stop-ODSLemonadeRuntime { $script:StopCalls++ }
-    Move-Item -LiteralPath $modelFile -Destination "$modelFile.offline"
-    Assert-Throws { Start-ODSLemonadeRuntime } 'missing|unavailable'
-    Assert-True ($script:StopCalls -eq 0) 'Missing SSD stopped the working runtime'
-    Move-Item -LiteralPath "$modelFile.offline" -Destination $modelFile
-
-    function Get-ODSLemonadeExecutableVersion { param($ExecutablePath, $VersionOverride) return [Version]'10.7.0' }
-    function New-ScheduledTaskTrigger { param([switch]$Once, $At) return @{} }
-    function New-ScheduledTaskSettingsSet { param([switch]$AllowStartIfOnBatteries, [switch]$DontStopIfGoingOnBatteries, $ExecutionTimeLimit) return @{} }
-    function New-ODSInteractiveScheduledTaskPrincipal { param($RunLevel) return @{} }
-    function Register-ScheduledTask { param($TaskName, $Action, $Trigger, $Settings, $Principal, [switch]$Force, $ErrorAction) }
-    function Start-ScheduledTask { param($TaskName, $ErrorAction) }
-    function Get-CimInstance { param($ClassName, $ErrorAction) return [pscustomobject]@{ ProcessId = 19100; ExecutablePath = $script:LEMONADE_EXE } }
-    $script:ConfiguredDirectory = $null
-    function Set-ODSLemonadeModernRuntimeConfig { param($Port, $ModelsDir, $AdminApiKey, $ContextSize) $script:ConfiguredDirectory = $ModelsDir }
-    $null = Start-ODSLemonadeRuntime
-    Assert-True ($script:ConfiguredDirectory -eq $ssd) 'Normal Windows start reverted Lemonade extra_models_dir to the default'
-
-    # Stop owns the custom child by ancestry, not its filename. An unrelated
-    # process using the same qualified executable must survive.
-    . ([scriptblock]::Create($definitions['Stop-ODSLemonadeRuntime']))
-    $script:Processes = @(
-        [pscustomobject]@{ ProcessId = 19100; ParentProcessId = 1; ExecutablePath = $script:LEMONADE_EXE; CommandLine = '' },
-        [pscustomobject]@{ ProcessId = 19101; ParentProcessId = 19100; ExecutablePath = $runtime; CommandLine = '' },
-        [pscustomobject]@{ ProcessId = 19102; ParentProcessId = 1; ExecutablePath = $runtime; CommandLine = '' })
-    function Get-CimInstance { param($ClassName, $ErrorAction) return $script:Processes }
-    function Stop-ScheduledTask { param($TaskName, $ErrorAction) }
-    function Unregister-ScheduledTask { param($TaskName, [switch]$Confirm, $ErrorAction) }
-    function Get-NetTCPConnection { param($LocalPort, $State, $ErrorAction) return @() }
-    function Test-ODSNativeProcessExecutable { param($ProcessId, $ExpectedExecutable) return @($script:Processes | Where-Object { $_.ProcessId -eq $ProcessId -and $_.ExecutablePath -eq $ExpectedExecutable }).Count -eq 1 }
-    $script:Stopped = @()
-    function Stop-ODSNativeProcessId { param($ProcessId) $script:Stopped += $ProcessId }
-    Move-Item -LiteralPath $modelFile -Destination "$modelFile.offline"
-    Stop-ODSLemonadeRuntime
-    Assert-True ($script:Stopped -contains 19101) 'Owned qualified child survived Stop after SSD disappearance'
-    Assert-True ($script:Stopped -notcontains 19102) 'Stop killed an unrelated user of the same executable'
+    # A restart prepares and validates the whole launch (selection, options,
+    # pin.json, key, arguments) before it stops the running model; the
+    # behaviour is covered by contracts/test-windows-native-llama-legacy.ps1.
+    $restart = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Restart-ODSNativeLlamaServer' }, $true).Extent.Text
+    $planAt = $restart.IndexOf('Get-ODSNativeLlamaStartPlan')
+    $stopAt = $restart.IndexOf('Stop-ODSNativeLlamaLegacyProcess')
+    Assert-True ($planAt -ge 0 -and $stopAt -gt $planAt) 'native-llm-restart stops the running model before validating the new launch'
+    $plan = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-ODSNativeLlamaStartPlan' }, $true).Extent.Text
+    $planChecks = @('Get-ODSNativeModelSelection -VerifyArtifacts', 'Read-ODSNativeLlamaLegacyOptions', 'Test-ODSNativeLlamaInstall',
+        'Sync-ODSNativeLlamaLegacyApiKey', 'New-ODSNativeLlamaLegacyLaunch')
+    Assert-True (@($planChecks | Where-Object { -not $plan.Contains($_) }).Count -eq 0) 'the launch plan skips a check'
 
     . (Join-Path $root 'installers/windows/lib/env-generator.ps1')
     function Get-LlamaCpuBudget { return @{ Limit = '4.0'; Reservation = '1.0'; Available = '4.0' } }
@@ -222,6 +194,7 @@ def run(command, **kwargs):
     Assert-True (([IO.File]::ReadAllText((Join-Path $InstallDir '.env'))) -match '(?m)^ODS_ACTIVE_MODEL_STORE=default\r?$') 'New tier model inherited the previous model store'
     Write-Host "[PASS] $script:Assertions Windows model-store and runtime checks"
 } finally {
+    $env:LOCALAPPDATA = $previousLocalAppData
     $resolved = [IO.Path]::GetFullPath($fixtureRoot)
     $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
     if ($resolved.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved).StartsWith('ods-model-stores-')) {

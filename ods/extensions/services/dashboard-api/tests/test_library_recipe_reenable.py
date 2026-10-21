@@ -7,27 +7,74 @@ the same evidence: the installed files still match the library recipe. An
 imported recipe, or a curated one whose files changed after install, must
 still get the untrusted checks.
 
-The recipes are the real curated gaia (local build + host-gateway),
-mapshaper (local build) and ollama (image only) recipes, installed through
-the real library install path into a temporary root.
+The recipes are the real curated mapshaper (local build) and ollama (image
+only) recipes, and gateway-app (local build + host-gateway), which this test
+builds from mapshaper's files and the parts the removed GAIA recipe added.
+Each is installed through the real library install path into a temporary
+root.
 """
 
 import json
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from routers import extensions as ext_mod
-from test_curated_library_recipes import _resolve
+from test_curated_library_recipes import _resolve, _resolver_scan
 from test_extension_installed_recipe import installed_recipe  # noqa: F401 (fixture)
 from test_extensions import _patch_mutation_config
 
 
 ODS = Path(__file__).resolve().parents[4]
 LIBRARY = ODS / "extensions/library/services"
+
+# GAIA was the only library recipe that had a local build, the host-gateway
+# route and a declared install hook, and its Dockerfile copied an entrypoint
+# script from the recipe. It left the library, so gateway-app adds those
+# parts to mapshaper's files. Like GAIA, it has no upstream.json.
+GATEWAY = "gateway-app"
+_GATEWAY_HOOK = f"""#!/usr/bin/env bash
+# Prepare the extension's data folder before its first start.
+set -euo pipefail
+mkdir -p "$1/data/{GATEWAY}"
+"""
+_GATEWAY_ENTRYPOINT = """#!/usr/bin/env bash
+set -euo pipefail
+exec nginx -g 'daemon off;'
+"""
+
+
+def _gateway_recipe(library):
+    """Write gateway-app into the test library: mapshaper plus GAIA's parts."""
+    recipe = library / GATEWAY
+    shutil.copytree(LIBRARY / "mapshaper", recipe)
+    (recipe / "upstream.json").unlink()
+    for name in ("manifest.yaml", "compose.yaml"):
+        path = recipe / name
+        text = path.read_text(encoding="utf-8")
+        path.write_text(text.replace("mapshaper", GATEWAY).replace("MAPSHAPER", "GATEWAY_APP"),
+                        encoding="utf-8")
+    manifest = yaml.safe_load((recipe / "manifest.yaml").read_text(encoding="utf-8"))
+    manifest["service"]["name"] = "Gateway app"
+    # GAIA's manifest declared its install hook here.
+    manifest["service"]["setup_hook"] = "hooks/post_install.sh"
+    (recipe / "manifest.yaml").write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    compose = yaml.safe_load((recipe / "compose.yaml").read_text(encoding="utf-8"))
+    compose["services"][GATEWAY]["extra_hosts"] = ["host.docker.internal:host-gateway"]
+    (recipe / "compose.yaml").write_text(yaml.safe_dump(compose, sort_keys=False), encoding="utf-8")
+    dockerfile = re.sub(r" upstream\.json\b", "", (recipe / "Dockerfile").read_text(encoding="utf-8"))
+    dockerfile += f"COPY docker-entrypoint.sh /usr/local/bin/ods-{GATEWAY}-entrypoint\n"
+    (recipe / "Dockerfile").write_text(dockerfile, encoding="utf-8", newline="\n")
+    (recipe / "docker-entrypoint.sh").write_text(_GATEWAY_ENTRYPOINT, encoding="utf-8", newline="\n")
+    hook = recipe / "hooks/post_install.sh"
+    hook.parent.mkdir()
+    hook.write_text(_GATEWAY_HOOK, encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
 
 
 @pytest.fixture()
@@ -55,7 +102,10 @@ def roots(test_client, monkeypatch, tmp_path):
 
 def _install(roots, recipe):
     library, user = roots
-    shutil.copytree(LIBRARY / recipe, library / recipe)
+    if recipe == GATEWAY:
+        _gateway_recipe(library)
+    else:
+        shutil.copytree(LIBRARY / recipe, library / recipe)
     with ext_mod._extensions_lock():
         ext_mod._install_from_library(recipe)
     return user / recipe
@@ -81,7 +131,32 @@ def _mark_imported(directory):
     path.write_text(json.dumps({**upstream, "origin": "github-proposal"}), encoding="utf-8")
 
 
-@pytest.mark.parametrize("recipe", ["gaia", "mapshaper", "ollama"])
+def test_gateway_recipe_takes_the_curated_install_path(roots, tmp_path):
+    """gateway-app stands in for GAIA only while install treats it as curated
+    and both of its privileges depend on that: each validator refuses its
+    local build and, on its own, its host-gateway route without the trust."""
+    library, user = roots
+    installed = _install(roots, GATEWAY)
+    compose = installed / "compose.yaml"
+    assert ext_mod._compose_policy_library_origin(library / GATEWAY) == "curated"
+    assert ext_mod._installed_library_recipe_trust(GATEWAY, installed, compose) == (True, None)
+    with pytest.raises(ext_mod.HTTPException, match="local build"):
+        ext_mod._scan_compose_content(compose, trusted=False, extension_id=GATEWAY)
+    image_only = yaml.safe_load(compose.read_text(encoding="utf-8"))
+    del image_only["services"][GATEWAY]["build"]
+    (tmp_path / "image-only.yaml").write_text(yaml.safe_dump(image_only), encoding="utf-8")
+    with pytest.raises(ext_mod.HTTPException, match="extra_hosts"):
+        ext_mod._scan_compose_content(tmp_path / "image-only.yaml", trusted=False,
+                                      extension_id=GATEWAY)
+
+    scan, trusted = _resolver_scan(user.parent.parent)
+    assert trusted(installed) is True
+    assert scan(compose, True, extension_id=GATEWAY) == (True, [])
+    ok, warnings = scan(compose, False, extension_id=GATEWAY)
+    assert not ok and f"service '{GATEWAY}' declares extra_hosts" in warnings, warnings
+
+
+@pytest.mark.parametrize("recipe", [GATEWAY, "mapshaper", "ollama"])
 def test_disable_then_enable_curated_recipe(test_client, roots, recipe):
     installed = _install(roots, recipe)
 
@@ -105,7 +180,7 @@ def test_disable_then_enable_curated_recipe(test_client, roots, recipe):
 def test_reenabled_recipes_stay_in_the_resolved_stack(test_client, roots):
     """After disable and enable, the real compose resolver keeps both recipes."""
     _library, user = roots
-    for recipe in ("gaia", "mapshaper"):
+    for recipe in (GATEWAY, "mapshaper"):
         _install(roots, recipe)
         assert _post(test_client, recipe, "disable").status_code == 200
         assert _post(test_client, recipe, "enable").status_code == 200
@@ -113,13 +188,13 @@ def test_reenabled_recipes_stay_in_the_resolved_stack(test_client, roots):
     for backend in ("nvidia", "amd", "cpu"):
         files, stderr = _resolve(user.parent.parent, backend)
 
-        for recipe in ("gaia", "mapshaper"):
+        for recipe in (GATEWAY, "mapshaper"):
             assert f"data/user-extensions/{recipe}/compose.yaml" in files, stderr
         # Neither refused (compose policy) nor skipped (dependency cascade).
         assert not [line for line in stderr.splitlines() if line.startswith("WARNING")], stderr
 
 
-@pytest.mark.parametrize("recipe", ["gaia", "mapshaper"])
+@pytest.mark.parametrize("recipe", [GATEWAY, "mapshaper"])
 def test_start_after_stop_keeps_curated_trust(test_client, roots, recipe):
     """Enable on an enabled, stopped extension scans compose.yaml the same way."""
     installed = _install(roots, recipe)
@@ -130,7 +205,7 @@ def test_start_after_stop_keeps_curated_trust(test_client, roots, recipe):
     assert (installed / "compose.yaml").is_file()
 
 
-@pytest.mark.parametrize("recipe", ["gaia", "mapshaper"])
+@pytest.mark.parametrize("recipe", [GATEWAY, "mapshaper"])
 def test_same_compose_as_imported_recipe_is_rejected(test_client, roots, recipe):
     """Matching the library byte for byte is not enough: install's trust
     decision must also hold, and an imported recipe never gets it."""
@@ -161,7 +236,7 @@ def test_unchanged_imported_recipe_is_not_trusted_as_curated(installed_recipe): 
         "humanize", directory, directory / "compose.yaml") == (False, None)
 
 
-@pytest.mark.parametrize("recipe", ["gaia", "mapshaper"])
+@pytest.mark.parametrize("recipe", [GATEWAY, "mapshaper"])
 def test_same_compose_without_library_recipe_is_rejected(test_client, roots, recipe):
     """The extension's name alone never grants curated privileges."""
     library, _user = roots
@@ -183,13 +258,13 @@ def _append(path, text):
 
 
 TAMPERING = {
-    "gaia-dockerfile": ("gaia", "Dockerfile", lambda d: _append(d / "Dockerfile", "RUN id\n")),
-    "gaia-compose": ("gaia", "compose.yaml.disabled",
-                     lambda d: _append(d / "compose.yaml.disabled", "# edited\n")),
-    "gaia-hook": ("gaia", "hooks/post_install.sh",
-                  lambda d: _append(d / "hooks/post_install.sh", "id\n")),
-    "gaia-entrypoint-removed": ("gaia", "docker-entrypoint.sh",
-                                lambda d: (d / "docker-entrypoint.sh").unlink()),
+    f"{GATEWAY}-dockerfile": (GATEWAY, "Dockerfile", lambda d: _append(d / "Dockerfile", "RUN id\n")),
+    f"{GATEWAY}-compose": (GATEWAY, "compose.yaml.disabled",
+                           lambda d: _append(d / "compose.yaml.disabled", "# edited\n")),
+    f"{GATEWAY}-hook": (GATEWAY, "hooks/post_install.sh",
+                        lambda d: _append(d / "hooks/post_install.sh", "id\n")),
+    f"{GATEWAY}-entrypoint-removed": (GATEWAY, "docker-entrypoint.sh",
+                                      lambda d: (d / "docker-entrypoint.sh").unlink()),
     "mapshaper-dockerfile": ("mapshaper", "Dockerfile", lambda d: _append(d / "Dockerfile", "RUN id\n")),
     "mapshaper-nginx-conf": ("mapshaper", "nginx.conf", lambda d: _append(d / "nginx.conf", "# edited\n")),
     "mapshaper-manifest": ("mapshaper", "manifest.yaml",
@@ -223,28 +298,28 @@ def test_curated_recipe_edited_after_install_is_rejected(test_client, roots, cas
 
 
 def test_stopped_curated_recipe_edited_after_install_is_rejected(test_client, roots):
-    installed = _install(roots, "gaia")
+    installed = _install(roots, GATEWAY)
     _append(installed / "Dockerfile", "RUN id\n")
 
-    response = _post(test_client, "gaia", "enable")
+    response = _post(test_client, GATEWAY, "enable")
 
     assert response.status_code == 400
     assert "local build" in response.json()["detail"]
-    _assert_says_edited(response, "gaia", "Dockerfile")
+    _assert_says_edited(response, GATEWAY, "Dockerfile")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="needs POSIX file modes")
 def test_installed_hook_mode_change_is_rejected(test_client, roots):
-    installed = _install(roots, "gaia")
+    installed = _install(roots, GATEWAY)
     hook = installed / "hooks/post_install.sh"
     assert hook.stat().st_mode & 0o111
-    assert _post(test_client, "gaia", "disable").status_code == 200
+    assert _post(test_client, GATEWAY, "disable").status_code == 200
     hook.chmod(0o644)
 
-    response = _post(test_client, "gaia", "enable")
+    response = _post(test_client, GATEWAY, "enable")
 
     assert response.status_code == 400
-    _assert_says_edited(response, "gaia", "hooks/post_install.sh")
+    _assert_says_edited(response, GATEWAY, "hooks/post_install.sh")
 
 
 def test_linked_installed_file_is_rejected(test_client, roots, tmp_path):
@@ -268,41 +343,41 @@ def test_library_change_after_install_needs_an_update_first(test_client, roots, 
     """The install cannot be vouched for against a library recipe that changed
     since; updating from the library restores the curated decision."""
     library, _user = roots
-    installed = _install(roots, "gaia")
-    assert _post(test_client, "gaia", "disable").status_code == 200
-    _append(library / "gaia" / "README.md", "\nA newer release.\n")
+    installed = _install(roots, GATEWAY)
+    assert _post(test_client, GATEWAY, "disable").status_code == 200
+    _append(library / GATEWAY / "README.md", "\nA newer release.\n")
 
     with caplog.at_level(logging.WARNING, logger=ext_mod.logger.name):
-        refused = _post(test_client, "gaia", "enable")
+        refused = _post(test_client, GATEWAY, "enable")
     assert refused.status_code == 400
     assert "no longer matches its curated library recipe" in caplog.text
     # The 400 names the library change as the cause, not a local edit.
     lost = _lost_privileges(refused)
-    assert lost.startswith("Extension 'gaia' no longer has its curated-library privileges because "
-                           "the library recipe changed since install"), lost
+    assert lost.startswith(f"Extension '{GATEWAY}' no longer has its curated-library privileges "
+                           f"because the library recipe changed since install"), lost
     assert "(first difference: README.md)" in lost
     assert "Update it from the library to restore them." in lost
     assert "edited" not in lost
     assert refused.json()["detail"].endswith("uses a local build without a verified source recipe")
 
-    monkeypatch.setattr(ext_mod, "EXTENSION_CATALOG", [{"id": "gaia", "name": "AMD GAIA", "port": 4200}])
-    updated = _post(test_client, "gaia", "update")
+    monkeypatch.setattr(ext_mod, "EXTENSION_CATALOG", [{"id": GATEWAY, "name": "Gateway app", "port": 8080}])
+    updated = _post(test_client, GATEWAY, "update")
     assert updated.status_code == 200, updated.text
     assert (installed / "compose.yaml.disabled").is_file()
 
-    enabled = _post(test_client, "gaia", "enable")
+    enabled = _post(test_client, GATEWAY, "enable")
     assert enabled.status_code == 200, enabled.text
     assert (installed / "compose.yaml").is_file()
 
 
 def test_library_change_and_local_edit_are_both_named(test_client, roots):
     library, _user = roots
-    installed = _install(roots, "gaia")
-    assert _post(test_client, "gaia", "disable").status_code == 200
-    _append(library / "gaia" / "README.md", "\nA newer release.\n")
+    installed = _install(roots, GATEWAY)
+    assert _post(test_client, GATEWAY, "disable").status_code == 200
+    _append(library / GATEWAY / "README.md", "\nA newer release.\n")
     _append(installed / "Dockerfile", "RUN id\n")
 
-    response = _post(test_client, "gaia", "enable")
+    response = _post(test_client, GATEWAY, "enable")
 
     assert response.status_code == 400
     lost = _lost_privileges(response)
@@ -332,7 +407,7 @@ def test_curated_recipe_that_still_matches_passes_no_bind_namespace(roots, monke
     the enable re-scan of a matching curated recipe is trusted and passes no
     extension_id; an imported recipe's re-scan is untrusted and passes it."""
     library, _user = roots
-    installed = _install(roots, "gaia")
+    installed = _install(roots, GATEWAY)
     compose = installed / "compose.yaml"
     calls = []
     scan = ext_mod._scan_compose_content
@@ -344,11 +419,11 @@ def test_curated_recipe_that_still_matches_passes_no_bind_namespace(roots, monke
 
     monkeypatch.setattr(ext_mod, "_scan_compose_content", record)
 
-    ext_mod._scan_installed_compose("gaia", installed, compose, is_builtin=False)
-    _mark_imported(library / "gaia")
+    ext_mod._scan_installed_compose(GATEWAY, installed, compose, is_builtin=False)
+    _mark_imported(library / GATEWAY)
     _mark_imported(installed)
     with pytest.raises(ext_mod.HTTPException) as refused:
-        ext_mod._scan_installed_compose("gaia", installed, compose, is_builtin=False)
+        ext_mod._scan_installed_compose(GATEWAY, installed, compose, is_builtin=False)
 
-    assert [(call["trusted"], call["extension_id"]) for call in calls] == [(True, None), (False, "gaia")]
+    assert [(call["trusted"], call["extension_id"]) for call in calls] == [(True, None), (False, GATEWAY)]
     assert "local build" in refused.value.detail

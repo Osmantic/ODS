@@ -58,7 +58,7 @@ The release harness normally combines these layers:
 | CI | Fast syntax, contract, dashboard, shell, Python, and PowerShell checks | Catches cheap regressions before hardware time is spent. |
 | Zero-prereq bootstrap | Clean Ubuntu, Debian, Fedora, Rocky, Arch, and openSUSE containers | Proves the public `curl` path does not assume a developer workstation. |
 | Distro lab | 10 Linux container lanes plus systemd-capable Incus VM lanes | Exercises package-manager, systemd, Docker daemon, and Compose behavior across distro families. |
-| Real hardware fleet | Linux NVIDIA, Linux AMD/ROCm-Lemonade, ARM Linux NVIDIA, and Apple Silicon hardware classes | Proves accelerator/runtime behavior and the installed product on actual machines. |
+| Real hardware fleet | Linux NVIDIA, Linux AMD (llama.cpp), ARM Linux NVIDIA, and Apple Silicon hardware classes | Proves accelerator/runtime behavior and the installed product on actual machines. |
 
 The latest release-grade fleet run for the current candidate should be cited in
 release notes with its commit, date, enabled hardware classes, and any skipped

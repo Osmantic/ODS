@@ -5,8 +5,8 @@ All OS/runtime boundaries are fixture-owned; no interop, tasks or services run.
 import copy
 import hashlib
 import json
-from pathlib import Path
 import threading
+from typing import Any
 
 import pytest
 import test_model_activate as fixtures
@@ -16,9 +16,7 @@ host = fixtures._mod
 
 @pytest.fixture
 def managed(tmp_path, monkeypatch):
-    install, env_path, _, *_ = fixtures._write_model_activation_fixture(
-        tmp_path, gpu_backend="cpu", lemonade=True,
-    )
+    install, env_path, _, *_ = fixtures._write_model_activation_fixture(tmp_path, gpu_backend="cpu")
     models = tmp_path / "windows-models"
     models.mkdir()
     (install / "data/models/new-model.gguf").rename(models / "new-model.gguf")
@@ -26,11 +24,12 @@ def managed(tmp_path, monkeypatch):
     env_path.write_text(
         env_path.read_text().replace("CTX_SIZE=2048", "CTX_SIZE=65536")
         + "MAX_CONTEXT=65536\nPIXEL_OPENWEBUI_KEY=configured\n"
-        "ODS_MODE=lemonade\nLLM_BACKEND=lemonade\nLEMONADE_EXTERNAL=true\n"
-        "AMD_INFERENCE_RUNTIME=lemonade\nAMD_INFERENCE_LOCATION=host\n"
-        "LEMONADE_HOST_TRANSPORT=model-router\nLEMONADE_BASE_URL=http://localhost:13305\n"
-        "LEMONADE_CONTAINER_BASE_URL=http://host.docker.internal:13305\n"
-        "LEMONADE_MODEL=old-model\nODS_ACTIVE_MODEL_STORE=windows-lemonade\n",
+        "ODS_MODE=local\nLLM_BACKEND=llama-server\n"
+        "AMD_INFERENCE_RUNTIME=llama-server\nAMD_INFERENCE_LOCATION=host\n"
+        "AMD_INFERENCE_RUNTIME_MODE=windows-portal-llama-server\n"
+        "ODS_HOST_LLM_TRANSPORT=model-router\nNATIVE_LLM_BASE_URL=http://localhost:13305\n"
+        "NATIVE_LLM_CONTAINER_BASE_URL=http://host.docker.internal:13305\n"
+        "ODS_ACTIVE_MODEL_STORE=windows-lemonade\n",
         encoding="utf-8",
     )
     registry = {"schemaVersion": 1, "stores": [{
@@ -41,7 +40,7 @@ def managed(tmp_path, monkeypatch):
     plan_path = tmp_path / "windows-runtime/portal-runtime/runtime.json"
     plan_path.parent.mkdir(parents=True)
     plan = {
-        "ExecutablePath": r"C:\fixture\LemonadeServer.exe", "Port": 13305,
+        "ExecutablePath": r"C:\fixture\llama.cpp\b9014-win-vulkan-x64\llama-server.exe", "Port": 13305,
         "ModelsDir": r"C:\fixture\models", "ContextSize": 65536,
         "GgufFile": "old-model.gguf", "WslDistro": "Ubuntu-24.04", "WslInstallDir": str(install),
     }
@@ -49,11 +48,12 @@ def managed(tmp_path, monkeypatch):
     registration.write_text(json.dumps({"schemaVersion": 1, "planPath": str(plan_path),
                                         "modelStoreId": "windows-lemonade"}))
     registration.chmod(0o600)
-    previous = {"model": "old-model", "contextLength": 65536,
+    previous = {"model": "old-model.gguf", "contextLength": 65536,
                 "maxTokens": 3072, "reasoning": True, "routeFingerprint": "d" * 64}
     pixel = dict(schemaVersion=1, status="ready", revision="a" * 64,
                  contract=copy.deepcopy(previous), pending=False, transactionId=None, outcome=None)
-    runtime = {"plan": copy.deepcopy(plan), "running": True, "managed": True, "failure": None}
+    runtime: dict[str, Any] = {"plan": copy.deepcopy(plan), "running": True, "managed": True, "failure": None,
+                               "features": []}
     events = []
 
     def persist():
@@ -64,25 +64,29 @@ def managed(tmp_path, monkeypatch):
             "ok": True, "managed": runtime["managed"], "running": runtime["running"],
             "plan": copy.deepcopy(runtime["plan"]), "planDigest": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
             "modelStoreWindowsPath": plan["ModelsDir"], "planPathWindows": r"C:\fixture\portal-runtime\runtime.json",
-            "observation": {"status": "verified", "modelId": Path(runtime["plan"]["GgufFile"]).stem,
+            "observation": {"status": "verified", "modelId": runtime["plan"]["GgufFile"],
                             "contextLength": runtime["plan"]["ContextSize"]} if runtime["running"] else None,
+            "planFeatures": list(runtime["features"]),
         }
 
     persist()
 
-    def activate(_install, _env, gguf, context, digest):
+    def activate(_install, _env, gguf, context, digest, mmproj=None):
         assert pixel["pending"] is True, "Portal must hold before Windows process mutation"
         assert digest == status()["planDigest"]
         events.append("windows-activate")
         if runtime["failure"] == "stopped-before-write":
             runtime["running"] = False
-            raise host._wsl_lemonade.BridgeError("fixture stopped before plan publication")
+            raise host._wsl_runtime.BridgeError("fixture stopped before plan publication")
         runtime["plan"].update(GgufFile=gguf, ContextSize=context)
+        runtime["plan"].pop("MmprojFile", None)
+        if mmproj is not None:
+            runtime["plan"]["MmprojFile"] = mmproj
         persist()
         if runtime["failure"] in {"load", "unknown"}:
             runtime["running"] = False
             response = {"newPlanDigest": status()["planDigest"]} if runtime["failure"] == "load" else {}
-            raise host._wsl_lemonade.BridgeError("fixture model load failed", response=response)
+            raise host._wsl_runtime.BridgeError("fixture model load failed", response=response)
         runtime["running"] = True
         return status()
 
@@ -126,26 +130,28 @@ def managed(tmp_path, monkeypatch):
         if not runtime["running"] or kwargs.get("gguf_file") != runtime["plan"]["GgufFile"]:
             return False
         if kwargs.get("return_proof"):
-            return {"identity": Path(runtime["plan"]["GgufFile"]).stem, "contextLength": 65536,
+            return {"identity": runtime["plan"]["GgufFile"], "contextLength": 65536,
                     "contextVerified": True, "verifiedAt": "2026-09-26T00:00:00+00:00"}
         if kwargs.get("return_identity"):
-            return Path(runtime["plan"]["GgufFile"]).stem
+            return runtime["plan"]["GgufFile"]
         return True
 
     monkeypatch.setattr(host, "INSTALL_DIR", install)
     monkeypatch.setattr(host, "AGENT_API_KEY", "test-agent-key")
     monkeypatch.setattr(host, "_switchboard_initial_verify_cancel", threading.Event())
     monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
-    monkeypatch.setattr(host._wsl_lemonade, "candidate", lambda env: env.get("LEMONADE_HOST_TRANSPORT") == "model-router")
+    # The real transport-key read (with its one-release legacy name); only
+    # the WSL kernel check is the fixture's.
+    monkeypatch.setattr(host._wsl_runtime, "candidate", lambda env: host._wsl_runtime.env_value(
+        env, host._wsl_runtime.TRANSPORT_KEY)[1] == "model-router")
     for name, function in {"status": status, "activate": activate, "restore": restore, "stop": stop, "start": start}.items():
-        monkeypatch.setattr(host._wsl_lemonade, name, function)
-    monkeypatch.setattr(host._wsl_lemonade, "model_store", lambda *_args: models)
-    monkeypatch.setattr(host._wsl_lemonade, "plan_path", lambda *_args: plan_path)
+        monkeypatch.setattr(host._wsl_runtime, name, function)
+    monkeypatch.setattr(host._wsl_runtime, "model_store", lambda *_args: models)
+    monkeypatch.setattr(host._wsl_runtime, "plan_path", lambda *_args: plan_path)
     monkeypatch.setattr(host, "_runtime_model_control", control)
     monkeypatch.setattr(host, "_wait_for_model_readiness", readiness)
     monkeypatch.setattr(host, "_prove_pixel_model_contract", lambda _env, contract:
-                        runtime["running"] and contract["model"] == Path(runtime["plan"]["GgufFile"]).stem)
-    monkeypatch.setattr(host, "_resolve_lemonade_model_id", lambda _env, gguf, **_kwargs: Path(gguf).stem)
+                        runtime["running"] and contract["model"] == runtime["plan"]["GgufFile"])
     monkeypatch.setattr(host, "_container_exists", lambda _name: False)
     monkeypatch.setattr(host, "_container_running", lambda _name: False)
     monkeypatch.setattr(host, "_capture_container_state", lambda _name: {"exists": False, "running": False})
@@ -157,7 +163,7 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(host.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(host, "_compose_restart_llama_server", lambda *_args: pytest.fail("WSL Windows runtime cannot restart a Linux inference service"))
     monkeypatch.setattr(host, "_recreate_llama_server", lambda *_args, **_kwargs: pytest.fail("WSL Windows runtime cannot recreate Linux inference"))
-    monkeypatch.setattr(host, "_restart_windows_lemonade", lambda *_args: pytest.fail("WSL cannot use native Windows host dispatch"))
+    monkeypatch.setattr(host, "_restart_windows_native_llama_server", lambda *_args: pytest.fail("WSL cannot use native Windows host dispatch"))
     monkeypatch.setattr(host, "_reconcile_ods_managed_pixel_model", lambda *_args, **_kwargs: pytest.fail("must use held Pixel transaction"))
     return dict(install=install, env=env_path, original=env_path.read_bytes(), plan_path=plan_path,
                 runtime=runtime, pixel=pixel, events=events, status=status, models=models, registration=registration)
@@ -171,11 +177,34 @@ def test_managed_activation_persists_windows_plan_without_linux_runtime_restart(
     assert managed["pixel"]["outcome"] == "commit"
     assert managed["events"].index("model-begin") < managed["events"].index("windows-activate") < managed["events"].index("model-apply")
     persisted = host.load_env(managed["env"])
-    assert persisted["LEMONADE_HOST_TRANSPORT"] == "model-router"
-    assert persisted["LEMONADE_MODEL"] == "new-model"
+    assert persisted["ODS_HOST_LLM_TRANSPORT"] == "model-router"
+    assert persisted["GGUF_FILE"] == "new-model.gguf"
+    assert "LEMONADE_MODEL" not in persisted
+    assert managed["pixel"]["contract"]["model"] == "new-model.gguf"
     journal = host._read_pixel_model_journal()
     assert journal["phase"] == "completed"
     assert journal["after"]["windows-runtime-plan"] == managed["status"]()["planDigest"]
+
+
+def test_unmigrated_portal_env_keeps_driving_the_bridge_for_one_release(managed):
+    # Before the installer's .env migration runs, the Portal names its
+    # transport and origins with the pre-round-F keys (compatibility reads).
+    text = managed["env"].read_text()
+    for current, legacy in (("ODS_HOST_LLM_TRANSPORT", "LEMONADE_HOST_TRANSPORT"),
+                            ("NATIVE_LLM_BASE_URL", "LEMONADE_BASE_URL"),
+                            ("NATIVE_LLM_CONTAINER_BASE_URL", "LEMONADE_CONTAINER_BASE_URL")):
+        text = text.replace(current + "=", legacy + "=")
+    managed["env"].write_text(text.replace("ODS_MODE=local", "ODS_MODE=lemonade"))
+    assert host._model_download_directory() == managed["models"]
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert "windows-activate" in managed["events"]
+    persisted = host.load_env(managed["env"])
+    # The agent does not rename keys; the installer migration owns .env.
+    assert persisted["LEMONADE_HOST_TRANSPORT"] == "model-router"
+    assert persisted["GGUF_FILE"] == "new-model.gguf"
 
 
 def test_failed_windows_load_restores_previous_plan_with_returned_cas(managed):
@@ -274,6 +303,32 @@ def test_start_without_pending_journal_cannot_claim_success_for_another_startup_
     assert "windows-start" not in managed["events"] or managed["pixel"]["pending"] is True
 
 
+def test_resume_of_a_memory_refused_model_starts_it_anyway(managed, monkeypatch):
+    # Sign-in left the saved plan refused for memory: intent running, the
+    # model not running, the launcher's refusal in status. The Models page's
+    # Resume ("Start anyway") is the ordinary start; the Windows controller
+    # turns it into the override for that plan.
+    managed["runtime"]["running"] = False
+    fixture_status = host._wsl_runtime.status
+    refusal = {"runtimeError": "The model was not started: Windows can lend it only 1.0 GiB right now.",
+               "runtimeErrorSource": "launcher", "startRefusal": "memory_refused"}
+    monkeypatch.setattr(host._wsl_runtime, "status", lambda *args: {
+        **fixture_status(*args), **({} if managed["runtime"]["running"] else refusal)})
+    monkeypatch.setattr(host, "_model_management_cache", None)
+    monkeypatch.setattr(host, "_model_management_lock", threading.Lock())
+    code, shown = host._model_management_snapshot()
+    assert code == 200 and shown["startRefusal"] == "memory_refused" and shown["canUnload"] is True
+    assert shown["running"] is False and shown["runtimeError"].startswith("The model was not started")
+    handler = fixtures._ResponseHandler(request_body={})
+    host.AgentHandler._handle_model_runtime(handler, "start")
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["events"].count("windows-start") == 1
+    assert managed["runtime"]["running"] is True
+    monkeypatch.setattr(host, "_model_management_cache", None)
+    code, shown = host._model_management_snapshot()
+    assert code == 200 and shown["running"] is True and "runtimeError" not in shown and "startRefusal" not in shown
+
+
 def test_start_after_external_exit_holds_and_recovers_portal_before_success(managed):
     managed["runtime"]["running"] = False
     handler = fixtures._ResponseHandler(request_body={})
@@ -298,7 +353,7 @@ def test_start_without_pixel_still_requires_inference_route_proof(managed, monke
     handler = fixtures._ResponseHandler(request_body={})
     host.AgentHandler._handle_model_runtime(handler, "start")
     assert handler.response_code == (200 if proved else 409), handler.parse_response()
-    assert proofs == [{"model": "old-model", "contextLength": 65536}]
+    assert proofs == [{"model": "old-model.gguf", "contextLength": 65536}]
     assert "model-begin" not in managed["events"]
 
 
@@ -365,3 +420,73 @@ def test_missing_runtime_registration_never_implicitly_adopts_model_store(manage
     with pytest.raises(RuntimeError, match="register its managed model store"):
         host._model_download_directory()
     assert managed["events"] == []
+
+
+def _vision_target(managed, projector="mmproj-new.gguf"):
+    """Make target-model a vision import whose projector sits in the Windows store."""
+    (managed["models"] / projector).write_bytes(b"projector")
+    path = managed["install"] / "config/model-library.json"
+    library = json.loads(path.read_text(encoding="utf-8"))
+    library["models"][0].update(mmproj_file=projector, mmproj_url=f"https://example.test/{projector}",
+                                mmproj_sha256=hashlib.sha256(b"projector").hexdigest())
+    path.write_text(json.dumps(library), encoding="utf-8")
+
+
+def test_vision_import_plans_its_projector_on_a_launcher_that_declares_it(managed):
+    _vision_target(managed)
+    managed["runtime"]["features"] = ["MmprojFile"]
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert managed["runtime"]["plan"]["MmprojFile"] == "mmproj-new.gguf"
+    # The Windows launcher takes it as --mmproj; the Linux container key stays unset.
+    assert "LLAMA_ARG_MMPROJ" not in host.load_env(managed["env"])
+
+
+def test_an_older_windows_launcher_runs_a_vision_model_without_its_projector(managed):
+    _vision_target(managed)
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert "MmprojFile" not in managed["runtime"]["plan"]
+
+
+def test_a_failed_vision_switch_restores_the_previous_projector(managed):
+    managed["runtime"]["plan"]["MmprojFile"] = "mmproj-old.gguf"
+    (managed["models"] / "mmproj-old.gguf").write_bytes(b"old projector")
+    managed["runtime"]["features"] = ["MmprojFile"]
+    managed["runtime"]["failure"] = "load"
+    _vision_target(managed)
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 500, handler.parse_response()
+    assert managed["runtime"]["plan"]["GgufFile"] == "old-model.gguf"
+    assert managed["runtime"]["plan"]["MmprojFile"] == "mmproj-old.gguf"
+
+
+def test_delete_keeps_the_projector_the_windows_plan_loads(managed, monkeypatch):
+    _vision_target(managed, projector="mmproj-old.gguf")
+    managed["runtime"]["plan"]["MmprojFile"] = "mmproj-old.gguf"
+    monkeypatch.setattr(host, "_live_runtime_has_model", lambda *_args: False)
+    handler = fixtures._ResponseHandler(request_body={"gguf_file": "new-model.gguf"})
+    host.AgentHandler._handle_model_delete(handler)
+    assert handler.response_code == 409, handler.parse_response()
+    assert (managed["models"] / "new-model.gguf").exists()
+    assert (managed["models"] / "mmproj-old.gguf").exists()
+
+
+@pytest.mark.parametrize("control", ["enable_thinking", "always", "none", None])
+def test_measured_thinking_control_reaches_the_held_model_transaction(managed, monkeypatch, control):
+    monkeypatch.setattr(host, "_profile_traits", lambda *_args: {"control": control, "tools": True, "vision": False} if control else None)
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code == 200, handler.parse_response()
+    contract = managed["pixel"]["contract"]
+    if control is None:
+        assert "thinkingControl" not in contract
+    else:
+        assert contract["thinkingControl"] == control
+    assert managed["pixel"]["pending"] is False
+    assert host._read_pixel_model_journal()["phase"] == "completed"
