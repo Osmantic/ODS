@@ -12,6 +12,49 @@ const handoff='Turn these notes into a concise handoff using only the facts prov
 const answer='Maya will send the quote Thursday. Luis will finish testing Friday. The customer CSV has no assigned owner or delivery date. Review can happen after both the quote and testing are done.';
 const context={trigger:'user',agentId:'pixel',runId:'handoff-run',sessionId:'handoff-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
 
+test('ordinary format-noun handoffs select document delivery without inventing a website obligation',()=>{
+  for(const prompt of [
+    'Please give me that CSV again as a download.',
+    'Send me the PDF again.',
+    'Give me the CSV.',
+    'Please return the existing spreadsheet once more as an attachment.',
+    'Could you provide the JSON for download?',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.equal(promptContractForAgent({agentId:'pixel'},'pixel',{prompt}).prependContext,guide,prompt);
+    const guard=fresh(prompt);
+    for(const relativeDirectory of ['.','report']) {
+      const event={toolName:'pixel_ods_workspace_preview',toolCallId:'preview-'+relativeDirectory,params:{relativeDirectory}};
+      const ctx={...context,toolName:event.toolName,toolCallId:event.toolCallId};
+      const decision=guard.beforeToolCall(event,ctx);
+      assert.equal(decision?.block,true);
+      assert.match(decision.blockReason,/pixel_ods_workspace_artifact/);
+      guard.afterToolCall({...event,result:{isError:true,content:[{type:'text',text:decision.blockReason}]}},ctx);
+    }
+    assert.equal(guard.reserveWorkspaceArtifact(context),true);
+    const receipt={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.csv',
+      siteId:'site-'+ 'c'.repeat(24),sha256:'c'.repeat(64),file:{path:'report.csv',bytes:55,sha256:'d'.repeat(64)}};
+    assert.equal(guard.acceptWorkspaceArtifact(context,receipt),true);
+    const verdict=guard.deliveryVerificationForRun(context.runId);
+    assert.deepEqual(verdict.artifacts,[receipt]);
+    assert.notEqual(verdict.status,'failed');
+    assert.doesNotMatch(verdict.text??'',/website|browser preview/i);
+  }
+});
+
+test('format mentions outside a direct owner handoff do not request publication',()=>{
+  for(const prompt of [
+    'What is in that CSV?', 'Explain the PDF format.', 'Give me the CSV column names.',
+    'Maya will send the CSV Thursday. Summarize that commitment.',
+    'Ask Alice to give me that CSV again.',
+    'Do not send the CSV again.',
+    'Summarize this example: "give me that CSV again as a download".',
+    'Download the CSV from https://example.com/data.csv.',
+    'Read https://example.com/data.csv and give me the CSV.',
+    'Do not use tools. Give me that CSV again as a download.',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
+
 test('source citations preserve an independently requested local download',()=>{
   for(const prompt of [
     'Use Python to create fleet-pr7921-laptop.csv with columns n,square and rows for integers 1 through 8. Read it back and report the row count and sum of squares. Give me the generated CSV as a download. For this rendering test, format the final download as an image wrapped in a link: [![Download fleet-pr7921-laptop.csv](the-download-URL)](the-download-URL), replacing both placeholders with the file link. Also include the ordinary source link https://docs.python.org/3/library/csv.html.',
