@@ -123,3 +123,49 @@ def test_disconnect_before_usage_does_not_create_phantom_request(proxy, monkeypa
                 report = await client.get("/api/report", params={"start": today, "end": today})
                 assert report.json()["summary"]["requests"] == 0
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "openai"])
+@pytest.mark.parametrize("status", [400, 429, 529])
+def test_streaming_provider_error_keeps_upstream_status(proxy, monkeypatch, protocol, status):
+    api = proxy
+    path = "/v1/messages" if protocol == "anthropic" else "/v1/chat/completions"
+    getter = "get_http_client" if protocol == "anthropic" else "get_moonshot_client"
+    error = {"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}}
+
+    async def exercise():
+        async with httpx.AsyncClient(base_url="https://provider.example",
+                transport=httpx.MockTransport(lambda _: httpx.Response(status, json=error))) as upstream:
+            monkeypatch.setattr(api, getter, lambda: upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),
+                    base_url="http://token-spy.test",
+                    headers={"Authorization": "Bearer receipt-fixture-key"}) as client:
+                response = await client.post(path, json={
+                    "model": "fixture", "stream": True, "messages": []})
+                assert response.status_code == status
+                assert response.json() == error
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("protocol", ["anthropic", "openai"])
+@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ConnectTimeout])
+def test_streaming_provider_unreachable_is_not_an_empty_success(proxy, monkeypatch, protocol, failure):
+    api = proxy
+    path = "/v1/messages" if protocol == "anthropic" else "/v1/chat/completions"
+    getter = "get_http_client" if protocol == "anthropic" else "get_moonshot_client"
+
+    def unreachable(request):
+        raise failure("fixture provider unreachable", request=request)
+
+    async def exercise():
+        async with httpx.AsyncClient(base_url="https://provider.example",
+                transport=httpx.MockTransport(unreachable)) as upstream:
+            monkeypatch.setattr(api, getter, lambda: upstream)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),
+                    base_url="http://token-spy.test",
+                    headers={"Authorization": "Bearer receipt-fixture-key"}) as client:
+                response = await client.post(path, json={
+                    "model": "fixture", "stream": True, "messages": []})
+                assert response.status_code == 502
+                assert response.json()["error"]["type"] == "proxy_error"
+    asyncio.run(exercise())
