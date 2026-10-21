@@ -4701,6 +4701,35 @@ function currentOwnerIntentText(messages, prompt = undefined) {
     : currentText;
 }
 
+// Ordinary owner file handoff is independent of the words download/attach.
+// Match a direct request and its object together; filenames mentioned in an
+// explanation, a list-of-files request or another person's instruction do not
+// select delivery. This is guidance only, never publication authority.
+function ownerRequestsFileHandoff(lane) {
+  const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
+  // An unqualified later refusal overrides an earlier ordinary handoff. A
+  // refusal naming old.zip still leaves a separate current.zip request intact.
+  if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those|all(?:\s+the)?)\s+(?:(?:existing|requested|generated|completed|updated)\s+)?(?:(?:project|source)\s+)?(?:files?|documents?|archives?|attachments?)|them)(?:\s+at\s+all)?(?:\s*,?\s*please)?\s*$/i.test(clause))) return false;
+  const filename = String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx|py|[cm]?[jt]sx?|css|sh|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|pl|dart)["'\x60]?`;
+  const namedFiles = `${filename}(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)${filename})*`;
+  const object = new RegExp(`^(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
+    `(?:(?:existing|requested|generated|completed|updated)\\s+)?(?:(?:project|source)\\s+)?(?:files?|documents?|archives?)|` +
+    `(?:project(?:\\s+source(?:\\s+code)?)?|source\\s+code)|${namedFiles}|(?:file|document|archive)\\s+(?:named|called)\\s+${filename})` +
+    `(?:\\s+with\\s+(?:(?:their|the)\\s+)?original\\s+filenames)?(?:\\s+to\\s+(?:me|us))?(?:\\s+please)?$`, 'i');
+  return clauses.some(raw => {
+    const clause = raw.trim();
+    if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\b/i.test(clause)) return false;
+    const parts = clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:give|provide|send|return)\b)/i);
+    // A coordinated request must itself begin as an owner work directive,
+    // rather than "Ask Alice to ... and give me ..." or a quoted example.
+    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|give|provide|send|return)\b/i.test(parts[0])) return false;
+    return parts.some(part => {
+      const request = part.trim().match(/^(?:(?:please|also|then)\s+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:I|we)\s+(?:want|need)\s+you\s+to\s+)?(?:give|provide|send|return)\s+(?:(?:me|us)\s+(?:with\s+)?)?(.+)$/i);
+      return Boolean(request && object.test(request[1]));
+    });
+  });
+}
+
 // This selects prompt guidance only; it grants no tool or publication authority.
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
@@ -4714,6 +4743,7 @@ export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = 
   // The noun delivery (for example, a file's delivery date) is not itself
   // a publication request. Preserve the existing download/attachment phrases
   // and deliver verb without combining a schedule with a file mention.
+  if (ownerRequestsFileHandoff(lane)) return true;
   return /\b(?:download(?:able)?|attach(?:ment)?|deliver)\b/i.test(positive) &&
     (/\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)\b/i.test(positive) ||
       (/\b(?:documents?|files?|archives?|projects?|source\s+(?:code|filenames?))\b/i.test(positive) &&
