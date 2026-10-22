@@ -29,27 +29,21 @@ const PROGRESS_KEY = 'ods-firstboot-progress'
 const STACK_OPTIONS = [
   {
     id: 'chat',
-    title: 'Chat only',
     titleKey: 'firstBoot.stack.chat.title',
-    blurb: 'Just the chat surface. This is what runs out of the box.',
     blurbKey: 'firstBoot.stack.chat.blurb',
     templateId: null,
     Icon: MessageSquare,
   },
   {
     id: 'chat-agents',
-    title: 'Chat + Agents',
     titleKey: 'firstBoot.stack.agents.title',
-    blurb: 'Adds Hermes, web search, usage monitoring, and n8n workflows.',
     blurbKey: 'firstBoot.stack.agents.blurb',
     templateId: 'onboarding-agents',
     Icon: Workflow,
   },
   {
     id: 'everything',
-    title: 'Full ODS Stack',
     titleKey: 'firstBoot.stack.everything.title',
-    blurb: 'Adds agents, voice, RAG, research, privacy, and observability (~16GB). Image generation installs separately from Extensions.',
     blurbKey: 'firstBoot.stack.everything.blurb',
     templateId: 'onboarding-full-stack',
     Icon: Boxes,
