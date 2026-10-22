@@ -27,7 +27,7 @@ static class DesktopTests
     { using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant(); }
     static ModelPin Pin(byte[] bytes)
     { return new ModelPin { File = "fixture.gguf", Name = "fixture", Size = bytes.Length, Sha256 = Hash(bytes), Url = "https://huggingface.co/fixture" }; }
-    sealed class DownloadServer : IDisposable
+    internal sealed class DownloadServer : IDisposable
     {
         public byte[] Bytes;
         public int Calls;
@@ -241,6 +241,25 @@ static class DesktopTests
                 await Fails(() => runtime.StartAsync(Path.Combine(corrupt, "runtime"), corruptBundle, Path.Combine(corrupt, bundle.Model.File), root,
                     CancellationToken.None), "modified runtime is refused before launch");
 
+            string tamperedModel = Path.Combine(corrupt, corruptBundle.Model.File);
+            File.Copy(Path.Combine(package, "runtime", "llama-server.exe"), Path.Combine(corrupt, "runtime", "llama-server.exe"), true);
+            File.WriteAllText(tamperedModel, "xxxxxxx");
+            using (var runtime = new LocalRuntime())
+            {
+                bool refused = false;
+                try { await runtime.StartAsync(Path.Combine(corrupt, "runtime"), corruptBundle, tamperedModel, root, CancellationToken.None); }
+                catch (ModelIntegrityException) { refused = true; }
+                Check(refused && !runtime.IsRunning && runtime.SessionDirectory == null,
+                    "mandatory launch hash rejects a same-size corrupt model before creating a child or session key");
+            }
+            File.WriteAllText(Path.Combine(corrupt, "runtime", "foreign.dll"), "foreign");
+            using (var runtime = new LocalRuntime())
+            {
+                await Fails(() => runtime.StartAsync(Path.Combine(corrupt, "runtime"), corruptBundle, tamperedModel, root, CancellationToken.None),
+                    "every direct runtime launch refuses an unlisted DLL before model repair");
+                Check(!runtime.IsRunning && runtime.SessionDirectory == null, "runtime census refusal creates no child or session key");
+            }
+
             string wrong = Path.Combine(root, "wrong-identity");
             var wrongBundle = FixtureBundle(wrong, "wrong-identity");
             using (var runtime = new LocalRuntime())
@@ -315,6 +334,10 @@ static class DesktopTests
             else if (headers.StartsWith("GET /v1/models"))
                 result = Json.Serialize(new { data = new[] { new { id = File.ReadAllText(model) == "wrong-identity" ? "foreign" : LocalRuntime.Alias } } });
             else if (headers.StartsWith("GET /slots")) result = "[{\"is_processing\":false}]";
+            else if (headers.StartsWith("POST /apply-template"))
+                result = Json.Serialize(new { prompt = Json.Serialize(((Dictionary<string, object>)Json.DeserializeObject(body))["messages"]) });
+            else if (headers.StartsWith("POST /tokenize"))
+                result = Json.Serialize(new { tokens = new[] { 1, 2, 3 } });
             else
             {
                 var request = (Dictionary<string, object>)Json.DeserializeObject(body);
@@ -379,6 +402,9 @@ static class DesktopTests
                 else
                 {
                     Downloads(root).GetAwaiter().GetResult(); RuntimeDownloads(root).GetAwaiter().GetResult(); Processes(root).GetAwaiter().GetResult();
+                    checks += PortalStateReviewTests.Run(root);
+                    checks += NativeContextBudgetTests.Run().GetAwaiter().GetResult();
+                    checks += ModelDownloadReviewTests.Run(root).GetAwaiter().GetResult();
                     checks += NativePortalTests.Run(root).GetAwaiter().GetResult();
                     checks += WindowTests.Run(root, FixtureBundle);
                     string package = Path.Combine(root, "entrypoint-fixture");

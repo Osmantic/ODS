@@ -109,6 +109,11 @@ namespace OdsDesktop
                 if (path == "/api/pixel/chat/cancel") return await CancelAsync(chat, body.ContainsKey("request_id") ? Identity(body, "request_id") : null);
                 return Reply(404, new { detail = "This capability is not available in the native text-chat preview." });
             }
+            catch (PortalCapacityException error)
+            {
+                return method == "DELETE" ? Reply(507, new { detail = error.Message })
+                    : Reply(507, new { detail = new { code = "native_storage_full", message = error.Message } });
+            }
             catch (ArgumentException) { return Reply(422, new { detail = "Invalid native conversation request. No new response was started." }); }
         }
         async Task<PortalReply> BeginAsync(string content)
@@ -167,6 +172,10 @@ namespace OdsDesktop
                 if (token.IsCancellationRequested) { terminal = "cancelled"; events = ""; }
             }
             catch (HttpRequestException) { events = FailureEvents; }
+            catch (NativeContextLimitException error)
+            {
+                events = "data: " + json.Serialize(new { error = new { type = "native_context_error", code = "native_context_limit", message = error.Message } }) + "\n\ndata: [DONE]\n\n";
+            }
             catch (InvalidOperationException) { events = FailureEvents; }
             catch (InvalidDataException) { events = FailureEvents; }
             catch (Exception error) { unexpected = error; } // Record worker failure, then rethrow below.

@@ -13,6 +13,26 @@ using Microsoft.Web.WebView2.Wpf;
 
 namespace OdsDesktop
 {
+    public static class WebView2Runtime
+    {
+        // Full API compatibility for the pinned Microsoft.Web.WebView2 1.0.4258.31 SDK:
+        // https://learn.microsoft.com/microsoft-edge/webview2/release-notes/sdk/1-0-4258-31
+        public const string MinimumVersion = "154.0.4258.31";
+        public static bool Supports(string browserVersion)
+        {
+            if (browserVersion == null || !System.Text.RegularExpressions.Regex.IsMatch(browserVersion,
+                "\\A[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5}(?: (?:beta|dev|canary))?\\z")) return false;
+            Version actual;
+            if (!Version.TryParse(browserVersion.Split(' ')[0], out actual) ||
+                actual.Major > 65535 || actual.Minor > 65535 || actual.Build > 65535 || actual.Revision > 65535) return false;
+            return actual >= new Version(MinimumVersion);
+        }
+        public static string PrerequisiteFor(string browserVersion)
+        {
+            return Supports(browserVersion) ? null : "Install or update Microsoft's WebView2 Runtime to " + MinimumVersion +
+                " or later, then click Start again.";
+        }
+    }
     public sealed class PortalWindow : Window
     {
         readonly WebView2 view = new WebView2();
@@ -23,8 +43,8 @@ namespace OdsDesktop
         public bool RestartRequested { get; private set; }
         public static string RuntimePrerequisite()
         {
-            try { CoreWebView2Environment.GetAvailableBrowserVersionString(); return null; }
-            catch (WebView2RuntimeNotFoundException) { return "Install Microsoft's WebView2 Runtime, then click Start again. Your AI files have not been downloaded."; }
+            try { return WebView2Runtime.PrerequisiteFor(CoreWebView2Environment.GetAvailableBrowserVersionString()); }
+            catch (WebView2RuntimeNotFoundException) { return WebView2Runtime.PrerequisiteFor(null); }
         }
         public PortalWindow(IPortalModel model, string package, string state, string modelName)
         {
@@ -52,8 +72,11 @@ namespace OdsDesktop
             {
                 var options = new CoreWebView2EnvironmentOptions();
                 options.ExclusiveUserDataFolderAccess = true;
+                options.TargetCompatibleBrowserVersion = WebView2Runtime.MinimumVersion;
                 var environment = await CoreWebView2Environment.CreateAsync(null, profile, options);
                 if (closed) return;
+                string prerequisite = WebView2Runtime.PrerequisiteFor(environment.BrowserVersionString);
+                if (prerequisite != null) throw new InvalidOperationException(prerequisite);
                 await view.EnsureCoreWebView2Async(environment);
                 var core = view.CoreWebView2;
                 core.Settings.AreHostObjectsAllowed = false;

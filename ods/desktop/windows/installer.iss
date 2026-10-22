@@ -10,6 +10,9 @@
   #define PreviewVersion "0.1.0.0"
 #endif
 
+#define MinimumWebViewVersion "154.0.4258.31"
+; Same full-SDK compatibility floor as PortalHost.cs; see Microsoft SDK release notes.
+
 [Setup]
 AppId={#AppGuid}
 AppName={#AppTitle}
@@ -55,7 +58,8 @@ Name: "{autoprograms}\{#AppTitle}"; Filename: "{app}\ODS Windows Preview.exe"; W
 Filename: "{app}\ODS Windows Preview.exe"; Description: "Open {#AppTitle}"; Flags: nowait postinstall skipifsilent
 
 [Code]
-const WebViewKey = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
+const MinimumWebViewVersion = '{#MinimumWebViewVersion}';
+      WebViewKey = 'Software\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
 
 type TNativeFindData = record
   Attributes: LongWord;
@@ -144,8 +148,8 @@ end;
 function WebViewInstalled: Boolean;
 var MachineVersion, UserVersion: String;
 begin
-  Result := (RegQueryStringValue(HKLM32, WebViewKey, 'pv', MachineVersion) and (NextVersionPart(MachineVersion) >= 155)) or
-            (RegQueryStringValue(HKCU, WebViewKey, 'pv', UserVersion) and (NextVersionPart(UserVersion) >= 155));
+  Result := (RegQueryStringValue(HKLM32, WebViewKey, 'pv', MachineVersion) and not Downgrade(MinimumWebViewVersion, MachineVersion)) or
+            (RegQueryStringValue(HKCU, WebViewKey, 'pv', UserVersion) and not Downgrade(MinimumWebViewVersion, UserVersion));
 end;
 
 function AppIdle(Executable: String): Boolean;
@@ -169,7 +173,7 @@ begin
   ExtractTemporaryFile('ODS Windows Preview.exe');
   if not AppIdle(ExpandConstant('{tmp}\ODS Windows Preview.exe')) then begin Result := 'Close ODS Windows Preview, then retry. Setup will not stop your running AI or discard its conversation.'; exit; end;
   if not WebViewInstalled then begin
-    if WizardSilent then begin Result := 'Microsoft WebView2 Runtime 155 or newer is required. Run this installer interactively to install it.'; exit; end;
+    if WizardSilent then begin Result := 'Microsoft WebView2 Runtime {#MinimumWebViewVersion} or newer is required. Run this installer interactively to install it.'; exit; end;
     if MsgBox('ODS needs Microsoft WebView2 to display Portal. Install this Microsoft component now?', mbConfirmation, MB_YESNO) <> IDYES then begin Result := 'WebView2 installation was cancelled. ODS has not been installed. Run Setup again when ready.'; exit; end;
     ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
     WizardForm.StatusLabel.Caption := 'Installing Microsoft WebView2. This can take a few minutes...';
@@ -187,6 +191,12 @@ begin
   Executable := AddBackslash(Target) + 'ODS Windows Preview.exe';
   Result := not FileExists(Executable) or AppIdle(Executable);
   if not Result then SuppressibleMsgBox('Close ODS Windows Preview before uninstalling. Your AI and saved conversations were kept.', mbError, MB_OK, IDOK);
+  if Result and not UninstallSilent then
+    Result := MsgBox('Remove ODS Windows Preview?' + #13#10 + #13#10 +
+      'Your saved conversations, private browser profile and downloaded AI model (about 1.28 GB) will be kept in:' + #13#10 +
+      ExpandConstant('{localappdata}\ODS Desktop Preview') + #13#10 + #13#10 +
+      'Back up conversations before removing this separate data folder after closing ODS. Shared Microsoft WebView2 will also be kept.',
+      mbConfirmation, MB_YESNO) = IDYES;
 end;
 
 procedure InitializeWizard;

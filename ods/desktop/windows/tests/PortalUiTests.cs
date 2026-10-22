@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Exercise the production-built Portal inside the actual Windows WebView2 control.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -153,6 +154,25 @@ static class PortalUiTests
             await Send(window, "What is 2+2? Answer with the number only."); await ClickSend(window);
             await Until(() => Test(window, "[...document.querySelectorAll('[data-pixel-message-index] .portal-streaming-text')].at(-1)?.innerText.trim() === '4'"), 180000, "Real model did not recover after Stop.");
             Check(true, "real Portal conversation continues after stopping actual inference");
+            var longHistory = new List<Dictionary<string, string>>();
+            for (int turn = 0; turn < 12; turn++)
+            {
+                longHistory.Add(new Dictionary<string, string> { { "role", "user" }, { "content", String.Concat(Enumerable.Repeat("Earlier question. ", 100)) } });
+                longHistory.Add(new Dictionary<string, string> { { "role", "assistant" }, { "content", String.Concat(Enumerable.Repeat("Earlier answer. ", 100)) } });
+            }
+            longHistory.Add(new Dictionary<string, string> { { "role", "user" }, { "content", "What is 2+2? Answer with the number only." } });
+            string longAnswer = await runtime.CompleteAsync(longHistory, CancellationToken.None);
+            Check(longAnswer.Trim() == "4" && longHistory.Count == 25 && longHistory[0]["content"].Length == 1800,
+                "real pinned template/tokenizer fits an over-context conversation and answers without mutating its full history");
+            bool oversizedRefused = false;
+            try { await runtime.CompleteAsync(new List<Dictionary<string, string>> { new Dictionary<string, string> {
+                { "role", "user" }, { "content", String.Concat(Enumerable.Repeat("x ", 5000)) } } }, CancellationToken.None); }
+            catch (NativeContextLimitException) { oversizedRefused = true; }
+            Check(oversizedRefused && !await runtime.IsProcessingAsync(CancellationToken.None),
+                "real tokenizer refuses an oversized latest message before inference and leaves the slot idle");
+            string afterRefusal = await runtime.CompleteAsync(new List<Dictionary<string, string>> { new Dictionary<string, string> {
+                { "role", "user" }, { "content", "What is 2+2? Answer with the number only." } } }, CancellationToken.None);
+            Check(afterRefusal.Trim() == "4", "real model accepts a normal next request after context refusal");
             if (!String.IsNullOrEmpty(screenshot))
                 using (var image = File.Create(screenshot)) await View(window).CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, image);
             var foreign = new TcpListener(IPAddress.Loopback, 0); foreign.Start();

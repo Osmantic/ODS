@@ -12,6 +12,10 @@ using System.Web.Script.Serialization;
 
 namespace OdsDesktop
 {
+    public sealed class PortalCapacityException : IOException
+    {
+        public PortalCapacityException(string message) : base(message) { }
+    }
     public sealed class PortalReceipt
     {
         public int SchemaVersion = 1;
@@ -19,6 +23,10 @@ namespace OdsDesktop
     }
     public sealed class PortalState
     {
+        public const int MaximumReceipts = 4096;
+        public const long MaximumRetainedBytes = 64L * 1024 * 1024;
+        public const int MaximumDeletedConversations = 4096;
+        const int MaximumReceiptBytes = 2 * 1024 * 1024;
         readonly string directory;
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
         public static string Digest(string text)
@@ -53,7 +61,8 @@ namespace OdsDesktop
         {
             this.directory = PrivateDirectory(directory);
             var files = Directory.GetFiles(directory);
-            if (files.Length > 256) throw new IOException("The preview's saved-result limit was reached. Export your conversations before clearing its separate Portal data.");
+            // Capacity only prevents a new admission. Existing answers and
+            // deletion must remain reachable, including older oversized stores.
             foreach (string path in files)
             {
                 // Unknown or partial files are retained, never normalized/deleted.
@@ -69,7 +78,7 @@ namespace OdsDesktop
         string PathFor(string chat, string request) { return Path.Combine(directory, Digest(chat + "\0" + request) + ".json"); }
         PortalReceipt Read(string path)
         {
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 || new FileInfo(path).Length > 2 * 1024 * 1024)
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 || new FileInfo(path).Length > MaximumReceiptBytes)
                 throw new InvalidDataException("A saved Portal result is invalid. It has been preserved for recovery.");
             string text = File.ReadAllText(path);
             var raw = json.DeserializeObject(text) as Dictionary<string, object>;
@@ -91,12 +100,18 @@ namespace OdsDesktop
         public void Save(PortalReceipt receipt)
         {
             string path = PathFor(receipt.Chat, receipt.Request);
-            if (!File.Exists(path) && Directory.GetFiles(directory).Length >= 256)
-                throw new IOException("The preview's saved-result limit was reached. No new response was started.");
+            byte[] bytes = Encoding.UTF8.GetBytes(json.Serialize(receipt));
+            if (bytes.Length > MaximumReceiptBytes)
+                throw new InvalidDataException("The saved Portal result exceeds the supported size. Existing saved results have been preserved.");
+            if (!File.Exists(path))
+            {
+                var receipts = Directory.GetFiles(directory, "*.json");
+                if (receipts.Length >= MaximumReceipts || receipts.Sum(saved => new FileInfo(saved).Length) + bytes.LongLength > MaximumRetainedBytes)
+                    throw new PortalCapacityException("Saved-result storage is full. Export conversations you want to keep, then delete a conversation in Portal before sending again. Restarting local AI does not free this space. No new response was started.");
+            }
             string temporary = Path.Combine(directory, Guid.NewGuid().ToString("N") + ".partial");
             try
             {
-                byte[] bytes = Encoding.UTF8.GetBytes(json.Serialize(receipt));
                 using (var file = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { file.Write(bytes, 0, bytes.Length); file.Flush(true); }
                 if (File.Exists(path)) File.Replace(temporary, path, null);
@@ -109,6 +124,11 @@ namespace OdsDesktop
             string marker = Path.Combine(directory, Digest(chat) + ".deleted");
             if (!File.Exists(marker))
             {
+                // Tombstones cannot expire: an old browser writer could then
+                // resurrect a deleted chat. Bound new markers independently of
+                // live results, and never evict an existing identity.
+                if (Directory.GetFiles(directory, "*.deleted").Length >= MaximumDeletedConversations)
+                    throw new PortalCapacityException("The saved deletion-safety limit is full. Your history is unchanged. Export your conversations, close ODS, and back up or reset its separate Portal data before deleting more conversations.");
                 using (var file = new FileStream(marker, FileMode.CreateNew, FileAccess.Write, FileShare.None))
                 { byte[] bytes = Encoding.UTF8.GetBytes(chat); file.Write(bytes, 0, bytes.Length); file.Flush(true); }
             }

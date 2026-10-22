@@ -10,15 +10,31 @@ namespace OdsDesktop
 {
     public static class RuntimeDownload
     {
-        public static async Task<string> BundledAsync(Bundle bundle, string package, CancellationToken token)
+        // Location and ownership inspection only. Every launch still hashes
+        // all pins in LocalRuntime.StartAsync, including cached launches.
+        public static string BundledCandidate(Bundle bundle, string package)
         {
             if (!bundle.RuntimeBundled) throw new InvalidOperationException("This package uses checked upstream runtime acquisition.");
             string directory = Path.Combine(package, "runtime");
-            if (!Directory.Exists(directory) || (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException("The native runtime package is incomplete. Reinstall ODS Windows Preview.");
+            ValidateForLaunch(directory, bundle);
+            return directory;
+        }
+        internal static void ValidateForLaunch(string directory, Bundle bundle)
+        {
+            if (!ModelDownload.InspectPath(directory, true))
+                throw new InvalidDataException("The native runtime package is incomplete. Reinstall ODS Windows Preview; saved conversations are kept.");
             foreach (var pin in bundle.Files)
-                if ((File.GetAttributes(Path.Combine(directory, pin.Name)) & FileAttributes.ReparsePoint) != 0)
-                    throw new IOException("Native runtime package files must not be links.");
+            {
+                Bundle.SafeName(pin.Name);
+                if (!ModelDownload.InspectPath(Path.Combine(directory, pin.Name), false))
+                    throw new InvalidDataException("The native runtime package is incomplete. Reinstall ODS Windows Preview; saved conversations are kept.");
+            }
+            if (Directory.GetFileSystemEntries(directory).Length != bundle.Files.Length)
+                throw new InvalidDataException("The native runtime contains unexpected files. Reinstall ODS Windows Preview; saved conversations are kept.");
+        }
+        public static async Task<string> BundledAsync(Bundle bundle, string package, CancellationToken token)
+        {
+            string directory = BundledCandidate(bundle, package);
             if (!await MatchesAsync(directory, bundle, token))
                 throw new InvalidDataException("The packaged native runtime failed verification. Reinstall ODS Windows Preview; saved conversations are kept.");
             return directory;

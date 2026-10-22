@@ -86,8 +86,68 @@ static class WindowTests
             input.Text = "again"; Click(send); Until(() => input.IsEnabled, 10000);
             Click(Button(window, "New chat"));
             Check(viewer.Document.Blocks.Count == 0, "GUI New chat clears the visible transcript");
+            typeof(ChatWindow).GetMethod("HandleFailure", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(window,
+                new object[] { new TargetInvocationException(new TargetInvocationException(new IOException("Saved Portal history needs attention."))), "cancelled", true });
+            Check(Find<TextBlock>(window, block => block.Text == "Saved Portal history needs attention.") != null,
+                "GUI unwraps nested reflection failures into the actionable Portal error");
+            typeof(ChatWindow).GetMethod("HandleFailure", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(window,
+                new object[] { new OperationCanceledException(), "cancelled", true });
+            Check(Find<TextBlock>(window, block => block.Text.StartsWith("Setup timed out.") && !block.Text.Contains("shorter message")) != null,
+                "GUI setup timeout gives download recovery guidance instead of chat advice");
         }
         finally { window.Close(); }
+        using (var server = new DesktopTests.DownloadServer(System.Text.Encoding.UTF8.GetBytes("fixture")))
+        {
+            bundle.Model.Url = server.Url;
+            File.WriteAllText(Path.Combine(package, "models", bundle.Model.File), "xxxxxxx");
+            File.WriteAllText(Path.Combine(state, "models", bundle.Model.File), "old cache");
+            window = Open(package, state, bundle);
+            try
+            {
+                var send = Button(window, "Send"); var start = Button(window, "Start local AI");
+                Click(start); Until(() => send.IsEnabled || start.IsEnabled, 20000);
+                Check(send.IsEnabled && server.Calls == 1, "GUI repairs a same-size corrupt model exactly once before starting inference");
+                Check(File.ReadAllText(Path.Combine(package, "models", bundle.Model.File)) == "xxxxxxx" &&
+                    File.ReadAllText(Path.Combine(state, "models", bundle.Model.File)) == "fixture",
+                    "GUI model repair preserves the installed seed and publishes only a verified private cache");
+            }
+            finally { window.Close(); }
+            window = Open(package, state, bundle);
+            try
+            {
+                var send = Button(window, "Send"); var start = Button(window, "Start local AI");
+                Click(start); Until(() => send.IsEnabled || start.IsEnabled, 20000);
+                Check(send.IsEnabled && server.Calls == 1,
+                    "GUI second launch uses the repaired cache offline despite the preserved damaged seed");
+            }
+            finally { window.Close(); }
+            server.Stall = true;
+            File.WriteAllText(Path.Combine(state, "models", bundle.Model.File), "old cache");
+            window = Open(package, state, bundle);
+            try
+            {
+                var start = Button(window, "Start local AI");
+                Click(start); Until(() => server.Calls == 2 || start.IsEnabled, 10000);
+                Click(Button(window, "Cancel")); Until(() => start.IsEnabled, 10000);
+                Check(!Button(window, "Send").IsEnabled && File.ReadAllText(Path.Combine(state, "models", bundle.Model.File)) == "old cache" &&
+                    Directory.GetFiles(Path.Combine(state, "models"), "*.partial-*").Length == 0,
+                    "GUI cancellation during model repair keeps the old cache and leaves no usable runtime or partial model");
+            }
+            finally { window.Close(); }
+            // Runtime corruption is never mistaken for permission to download a model.
+            File.AppendAllText(Path.Combine(native, "llama-server.exe"), "damaged");
+            bundle.RuntimeBundled = true;
+            File.AppendAllText(Path.Combine(package, "runtime", "llama-server.exe"), "damaged");
+            window = Open(package, state, bundle);
+            try
+            {
+                var start = Button(window, "Start local AI");
+                Click(start); Until(() => start.IsEnabled, 10000);
+                Check(server.Calls == 2 && !Button(window, "Send").IsEnabled,
+                    "GUI runtime integrity failure never triggers model repair or inference");
+            }
+            finally { window.Close(); }
+        }
         return checks;
     }
     public static int Live(string package, string state, string screenshot)

@@ -158,16 +158,43 @@ namespace OdsDesktop
                         });
                     detail.Text = bundle.RuntimeBundled ? "Checking the included CPU runtime and downloading your model from Hugging Face. You can cancel at any time."
                         : "Downloading the checked runtime from GitHub and model from Hugging Face. You can cancel at any time.";
-                    string native = bundle.RuntimeBundled ? await RuntimeDownload.BundledAsync(bundle, directory, operation.Token)
+                    string native = bundle.RuntimeBundled ? RuntimeDownload.BundledCandidate(bundle, directory)
                         : await RuntimeDownload.EnsureAsync(bundle, state, feedback, operation.Token);
                     string bundled = Path.Combine(directory, "models", bundle.Model.File);
-                    string model = await ModelDownload.MatchesAsync(bundled, bundle.Model.Size, bundle.Model.Sha256, operation.Token)
-                        ? bundled : await ModelDownload.EnsureAsync(bundle.Model, Path.Combine(state, "models"), feedback, operation.Token);
+                    string cached = Path.Combine(state, "models", bundle.Model.File);
+                    bool hasSeed = ModelDownload.InspectPath(bundled, false) && new FileInfo(bundled).Length == bundle.Model.Size;
+                    // Prefer a repaired private cache on later launches, so an
+                    // intentionally preserved damaged seed cannot force a loop.
+                    string model = ModelDownload.InspectPath(cached, false) && new FileInfo(cached).Length == bundle.Model.Size
+                        ? cached : hasSeed ? bundled
+                        : await ModelDownload.CandidateForLaunchAsync(bundle.Model, Path.Combine(state, "models"), feedback, operation.Token);
                     status.Text = "Starting your local AI…";
                     detail.Text = "Verifying the model and loading it into memory. This can take a few minutes.";
                     progress.IsIndeterminate = true;
                     runtime = new LocalRuntime();
-                    await runtime.StartAsync(native, bundle, model, state, operation.Token);
+                    bool repairModel = false;
+                    try { await runtime.StartAsync(native, bundle, model, state, operation.Token); }
+                    catch (ModelIntegrityException) { repairModel = true; }
+                    if (repairModel && model != bundled && hasSeed)
+                    {
+                        // A valid included seed remains an offline recovery path
+                        // for a damaged cache. It passes the same launch gate.
+                        repairModel = false;
+                        try { await runtime.StartAsync(native, bundle, bundled, state, operation.Token); }
+                        catch (ModelIntegrityException) { repairModel = true; }
+                    }
+                    if (repairModel)
+                    {
+                        // One repair retry, only for an ordinary bad model.
+                        // Never rewrite the installed seed or repair unsafe paths,
+                        // runtime corruption, access failures or failed inference.
+                        operation.Token.ThrowIfCancellationRequested();
+                        status.Text = "Repairing your model download…";
+                        model = await ModelDownload.DownloadReplacementAsync(bundle.Model, Path.Combine(state, "models"), feedback, operation.Token);
+                        progress.IsIndeterminate = true;
+                        status.Text = "Starting your local AI…";
+                        await runtime.StartAsync(native, bundle, model, state, operation.Token);
+                    }
                     status.Text = "Ready · " + bundle.Model.Name + " · running locally on CPU";
                     detail.Text = "You're offline-ready. Type a message below to begin.";
                     start.Content = "Start local AI";
@@ -219,6 +246,7 @@ namespace OdsDesktop
         }
         void HandleFailure(Exception error, string cancelledMessage, bool setup)
         {
+            while (error is TargetInvocationException && error.InnerException != null) error = error.InnerException;
             bool cancelled = operation != null && operation.IsCancellationRequested;
             if (runtime != null && (setup || cancelled || !runtime.IsRunning))
             { runtime.Dispose(); runtime = null; transcript.Blocks.Clear(); }
@@ -227,7 +255,9 @@ namespace OdsDesktop
             // leave the owner's unsent message available for recovery.
             status.Text = cancelled ? cancelledMessage : "Something needs your attention";
             detail.Text = cancelled ? "Your unsent message and completed download are kept. The earlier chat was cleared."
-                : (error is OperationCanceledException ? "The operation timed out. Check your connection or try a shorter message." : error.Message);
+                : (error is OperationCanceledException ? (setup
+                    ? "Setup timed out. Check your connection and start again. Completed downloads are kept."
+                    : "The response timed out. Try a shorter message or start a new chat.") : error.Message);
         }
         void EndOperation()
         {

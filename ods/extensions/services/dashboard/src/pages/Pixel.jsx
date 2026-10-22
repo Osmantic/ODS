@@ -135,6 +135,16 @@ const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
 const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
+const NATIVE_CONTEXT_LIMIT_MESSAGE = 'This message is too large for the local AI context. Shorten the message or start a new chat. Your saved conversation was kept.'
+const NATIVE_STORAGE_FULL_MESSAGE = 'Saved-result storage is full. Export conversations you want to keep, then delete a conversation in Portal before sending again. Restarting local AI does not free this space. No new response was started. Your draft is preserved.'
+
+function nativeContextFailure(error, nativeChat) {
+  // Only this native-owned public code selects fixed guidance. Provider text
+  // and arbitrary error messages must never become rendered reply content.
+  return nativeChat && error?.type === 'native_context_error' && error?.code === 'native_context_limit'
+    ? NATIVE_CONTEXT_LIMIT_MESSAGE : null
+}
+
 const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
 const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
 const CLEAN_CONTEXT_RECOVERY_NOTICE = 'The first attempt did not reach the Operations Broker, and the host verified that no work was submitted. Retrying once with a clean context…'
@@ -467,7 +477,7 @@ function messageOutcome(message) {
     ? {status:message.status} : {}
 }
 
-function retainedResult(events) {
+function retainedResult(events, nativeChat = false) {
   let content = ''
   let preview = null
   let artifacts = null
@@ -489,6 +499,7 @@ function retainedResult(events) {
         // Only a known public code changes the recovered text; any other
         // failure keeps the wording it had before.
         admissionRejected = isAdmissionRejected(frame.error)
+        failureMessage = nativeContextFailure(frame.error, nativeChat) || failureMessage
         if (isProviderRateLimit(frame.error) || admissionRejected) failureMessage = portalResponseFailure(frame.error)
         continue
       }
@@ -807,7 +818,7 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
               }
               let chat = loadStoredChat(readConversations().find(item => item.chatId === chatId))
               if (!chat || chat.chatId !== chatId) throw new Error('Saved conversation is unavailable')
-              const recovered = retainedResult(result.events)
+              const recovered = retainedResult(result.events, nativeChat)
               const successful = result.state === 'complete' && recovered.done && !recovered.failed
               if (chat.requestId === requestId && chat.interrupted) {
                 const source = chat.persistenceSnapshot
@@ -1197,6 +1208,15 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
           signal: controller.signal,
         })
         if (!isCurrentTurn()) return { kind: 'obsolete' }
+        if (nativeChat && response.status === 507) {
+          let payload
+          try { payload = await response.json() } catch { /* Unknown responses remain uncertain. */ }
+          if (!isCurrentTurn()) return {kind:'obsolete'}
+          if (payload?.detail?.code === 'native_storage_full') {
+            requestIdRef.current = null
+            return {kind:'native-storage-full'}
+          }
+        }
         if (response.status === 410) {
           // Only this API admission receipt proves the request never started.
           // Provider text, SSE errors and unrecognized 410 bodies stay uncertain.
@@ -1273,7 +1293,7 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
               if (frame?.error) {
                 receivedError = true
                 admissionRejected = !assistantText && isAdmissionRejected(frame.error)
-                const failureMessage = portalResponseFailure(frame.error)
+                const failureMessage = nativeContextFailure(frame.error, nativeChat) || portalResponseFailure(frame.error)
                 setMessages(previous => replaceLastAssistant(previous, {
                   content: assistantText ? `${assistantText}\n\n_${failureMessage}_` : failureMessage,
                   status: 'error',
@@ -1370,6 +1390,14 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
     try {
       let attempt = await streamAttempt(chatIdRef.current, conversation, fullHistory)
       if (!isCurrentTurn()) return
+      if (attempt.kind === 'native-storage-full') {
+        setInput(current => current || exactDraft)
+        contextStartRef.current = originalContextStart
+        setInterrupted(false)
+        updateRestoredActivity('idle')
+        setMessages(previous => replaceLastAssistant(previous, {content:NATIVE_STORAGE_FULL_MESSAGE,status:'error'}))
+        return
+      }
       if (attempt.kind === 'deleted') {
         setInput(current => current || exactDraft)
         contextStartRef.current = originalContextStart
@@ -1878,7 +1906,7 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
         </div>
       </header>
       {status === 'available' && !nativeChat && <PortalReadiness readiness={runtimeReadiness} />}
-      {nativeChat && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">Local CPU chat · Conversations are saved on this Windows account. Agent tools, voice, images and extensions are not available in this preview.</p>}
+      {nativeChat && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">Local CPU chat · Context uses the recent messages that fit; full conversation history stays saved on this Windows account. Agent tools, voice, images and extensions are not available in this preview.</p>}
       <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'held' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail}</p>}
       {status === 'recovery' && <p role="alert" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail} <Link to="/settings?section=access" className="underline">Portal permissions</Link></p>}

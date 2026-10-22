@@ -16,8 +16,8 @@ See [validation](VALIDATION.md) for executed checks and release gates.
 
 ## Install and use
 
-Download **ods-windows-native-preview-<run id>** from the PR's **Lint
-PowerShell** workflow Artifacts section (GitHub sign-in required). Check
+Download **ods-windows-native-preview-<run id>** from the PR's **Windows native
+preview** workflow Artifacts section (GitHub sign-in required). Check
 `SHA256SUMS.txt` against the downloaded files. `INSTALLER-BUILD-INFO.json`
 identifies installer/application/runtime hashes; the portable ZIP's
 `BUILD-INFO.json` records the checkout and PR head separately.
@@ -26,7 +26,7 @@ identifies installer/application/runtime hashes; the portable ZIP's
 2. Follow the wizard. Its default destination is
    `%LOCALAPPDATA%\Programs\ODS Windows Preview`. It creates a Start Menu entry
    and a current-user Apps & features uninstall entry.
-3. If Microsoft WebView2 Runtime 155 or newer is missing, Setup asks before
+3. If Microsoft WebView2 Runtime 154.0.4258.31 or newer is missing, Setup asks before
    running the pinned, Microsoft-signed Evergreen bootstrapper. An Internet
    connection is needed. Cancelling or failed prerequisite setup stops ODS setup.
 4. Choose **Open ODS Windows Preview** on Finish, then **Download & start
@@ -60,6 +60,9 @@ Remove **ODS Windows Preview** in Apps & features. The uninstaller removes its
 logged binaries, shortcut and registration. It preserves foreign files and all
 saved conversations/model files, which live outside the installation folder.
 It refuses a running app or uninspectable/substituted installation tree.
+The confirmation identifies `%LOCALAPPDATA%\ODS Desktop Preview` as retained
+data, including the 1.28 GB model. Back up conversations before removing that
+separate folder after closing ODS. Shared Microsoft WebView2 is retained.
 
 The optional `ODS-Windows-Native-Preview.zip` is a portable build of the same
 application: extract all files together and open **ODS Windows Preview.exe**.
@@ -71,6 +74,9 @@ The installer includes a checked native CPU engine. The application downloads
 the catalog model from Hugging Face/CDNs on the owner's request and verifies
 its size and SHA-256 before launch. After the model and Windows prerequisites
 are available, inference works offline.
+Progressing model downloads have no total-duration limit. A 30-second network
+inactivity limit and Cancel bound stalled headers/body reads. A failed or
+cancelled replacement preserves the old cache; partial downloads are removed.
 
 Portal uses an in-process WebView2 request adapter at
 `https://ods-desktop.local`, with no Portal TCP listener. The model has a
@@ -89,7 +95,11 @@ application and existing ODS stacks:
   remain recoverable; deletion markers reject stale writers.
 
 There is one model request at a time, a 4096-token context and a 512-token
-answer limit. The native adapter consumes authenticated model SSE internally;
+answer limit. Before inference, the pinned server renders and tokenizes the
+prompt. ODS removes whole older turns until the recent context fits, reserving
+512 answer tokens; the full saved conversation is unchanged. A current message
+that cannot fit is refused with shorten/new-chat guidance before inference.
+The native adapter consumes authenticated model SSE internally;
 Portal receives the bounded completed response, without incremental frontend
 tokens. Stop disconnects active inference and verifies the actual model slot
 before acknowledgement. If idle inspection fails, recovery stops only the owned
@@ -97,8 +107,12 @@ model. **Restart local AI** keeps saved history. Cancelling model acquisition
 does not replace a verified cache. Damaged bundled runtime files refuse launch
 and ask for repair rather than deleting or silently replacing them.
 
-Result storage is limited to 256 files; completed results are not silently
-evicted. Export important conversations before manually clearing state. Invalid
+New saved results have a 4096-receipt/64 MiB admission budget; deletion markers
+and partial files do not consume receipt slots. Existing results remain readable,
+recoverable and deletable even in older oversized stores. Full storage explains
+how to export/delete conversations and refuses the new request before inference.
+Up to 4096 durable deletion markers independently protect against stale writers.
+Completed results are not silently evicted. Invalid
 receipts refuse startup and preserve their bytes. Back up `portal/` before
 removing it, because it contains both conversation history and results.
 

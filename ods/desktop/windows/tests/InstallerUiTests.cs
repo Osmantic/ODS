@@ -48,7 +48,8 @@ static class InstallerUiTests
         DateTime started = DateTime.Now;
         bool cancel = Array.IndexOf(args, "--cancel") >= 0;
         bool prerequisite = Array.IndexOf(args, "--allow-prerequisite") >= 0;
-        var info = new ProcessStartInfo(args[0], "/SP- /DIR=\"" + args[1] + "\" /LOG=\"" + args[2] + "\"") { UseShellExecute = false };
+        bool retentionCancel = Array.IndexOf(args, "--uninstall-retention-cancel") >= 0;
+        var info = new ProcessStartInfo(args[0], (retentionCancel ? "/NORESTART" : "/SP- /DIR=\"" + args[1] + "\"") + " /LOG=\"" + args[2] + "\"") { UseShellExecute = false };
         using (var installer = Process.Start(info))
         {
             try
@@ -63,6 +64,19 @@ static class InstallerUiTests
                     foreach (AutomationElement window in windows)
                     {
                         if (!owned.Contains(window.Current.ProcessId)) continue;
+                        if (retentionCancel)
+                        {
+                            var notice = Control(window, ControlType.Text, "will be kept in:");
+                            if (notice != null)
+                            {
+                                string data = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ODS Desktop Preview");
+                                if (!notice.Current.Name.Contains(data) || !notice.Current.Name.Contains("1.28 GB"))
+                                    throw new Exception("Uninstall did not identify the retained data folder and model size.");
+                                var no = Control(window, ControlType.Button, "No");
+                                if (no != null) { Press(no); cancelled = true; }
+                            }
+                            continue;
+                        }
                         if (cancel)
                         {
                             var stop = Control(window, ControlType.Button, cancelled ? "Yes" : "Cancel");
@@ -85,6 +99,12 @@ static class InstallerUiTests
                     Thread.Sleep(300);
                 }
                 if (!installer.HasExited) throw new TimeoutException("The actual installer wizard did not finish. Check its private log.");
+                if (retentionCancel)
+                {
+                    if (!cancelled || !File.Exists(Path.Combine(args[1], "ODS Windows Preview.exe")))
+                        throw new Exception("Uninstall retention cancellation did not preserve the installed application.");
+                    Console.WriteLine("CANCELLED retention notice with exact data path and model size"); return 0;
+                }
                 if (cancel)
                 {
                     if (!cancelled || installer.ExitCode != 2) throw new Exception("Setup did not acknowledge ordinary pre-install cancellation.");

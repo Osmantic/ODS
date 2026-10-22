@@ -13,7 +13,7 @@ static class NativePortalTests
     public sealed class Model : IPortalModel
     {
         public bool IsRunning { get; private set; }
-        public bool Hold, FailIdle;
+        public bool Hold, FailIdle, ContextLimit;
         public int Calls, Inspections, Stops;
         public List<Dictionary<string, string>> Last;
         public TaskCompletionSource<string> Pending = new TaskCompletionSource<string>();
@@ -22,6 +22,7 @@ static class NativePortalTests
         public Task<string> CompleteAsync(List<Dictionary<string, string>> messages, CancellationToken token)
         {
             Calls++; Last = messages; Started.TrySetResult(true);
+            if (ContextLimit) throw new NativeContextLimitException();
             if (!Hold) return Task.FromResult("Answer: " + messages.Last()["content"]);
             token.Register(() => Pending.TrySetCanceled()); return Pending.Task;
         }
@@ -41,6 +42,7 @@ static class NativePortalTests
     }
     public static async Task<int> Run(string root)
     {
+        await ErrorContracts(root);
         await Packages(root);
         await BundledRuntime(root);
         string directory = Path.Combine(root, "native-portal-state");
@@ -130,6 +132,31 @@ static class NativePortalTests
         try { new NativePortalSession(recoveryModel, abrupt, "fixture"); } catch (InvalidDataException) { refused = true; }
         Check(refused && File.ReadAllText(saved) == unsupported, "unsupported retained-result schema refuses startup while preserving exact recovery bytes");
         return checks;
+    }
+    public static async Task<int> ErrorContracts(string root)
+    {
+        int before = checks;
+        string contextDirectory = Path.Combine(root, "native-context-limit");
+        var limited = new Model { ContextLimit = true };
+        string expected;
+        using (var session = new NativePortalSession(limited, contextDirectory, "fixture"))
+        {
+            var reply = await Call(session, "chat/stream", Turn("context-chat", "context-request", "large prompt"));
+            expected = reply.Content;
+            Check(reply.Status == 200 && expected.Contains("native_context_error") && expected.Contains("native_context_limit") && expected.Contains("Shorten") && expected.Contains("new chat") && limited.Inspections == 1,
+                "native context limit emits typed actionable SSE and verifies the owned model is idle");
+            reply = await Call(session, "chat/stream", Turn("context-chat", "context-request", "large prompt"));
+            Check(reply.Content == expected && limited.Calls == 1, "repeating a context-limited identity returns its exact saved failure without replay");
+        }
+        var recoveredModel = new Model();
+        using (var session = new NativePortalSession(recoveredModel, contextDirectory, "fixture"))
+        {
+            var reply = await Call(session, "chat/result", new { chat_id = "context-chat", request_id = "context-request" });
+            var retained = new JavaScriptSerializer().DeserializeObject(reply.Content) as Dictionary<string, object>;
+            Check(reply.Status == 200 && retained != null && Equals(retained["state"], "interrupted") && Equals(retained["events"], expected) && recoveredModel.Calls == 0,
+                "context guidance survives restart as an interrupted result without inventing completion or model work");
+        }
+        return checks - before;
     }
     static async Task Packages(string root)
     {

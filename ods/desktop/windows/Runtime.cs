@@ -82,106 +82,6 @@ namespace OdsDesktop
             return true;
         }
     }
-    public static class ModelDownload
-    {
-        public static async Task<bool> MatchesAsync(string path, long size, string sha, CancellationToken token)
-        {
-            if (!System.IO.File.Exists(path) || new FileInfo(path).Length != size) return false;
-            using (var hash = SHA256.Create())
-            using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1048576, true))
-            {
-                var buffer = new byte[1048576];
-                int read;
-                while ((read = await input.ReadAsync(buffer, 0, buffer.Length, token)) > 0)
-                {
-                    token.ThrowIfCancellationRequested();
-                    hash.TransformBlock(buffer, 0, read, buffer, 0);
-                }
-                hash.TransformFinalBlock(new byte[0], 0, 0);
-                return String.Equals(BitConverter.ToString(hash.Hash).Replace("-", ""), sha, StringComparison.OrdinalIgnoreCase);
-            }
-        }
-
-        public static async Task<string> EnsureAsync(ModelPin pin, string directory,
-            IProgress<double> progress, CancellationToken token)
-        {
-            Bundle.SafeName(pin.File);
-            Directory.CreateDirectory(directory);
-            string destination = Path.Combine(directory, pin.File);
-            if (await MatchesAsync(destination, pin.Size, pin.Sha256, token)) return destination;
-            string partial = destination + ".partial-" + Guid.NewGuid().ToString("N");
-            try
-            {
-                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
-                {
-                    deadline.CancelAfter(TimeSpan.FromMinutes(30));
-                    var request = (HttpWebRequest)WebRequest.Create(pin.Url);
-                    request.Timeout = 30000;
-                    request.ReadWriteTimeout = 30000;
-                    // Framework HTTP streams cannot reliably cancel an in-flight
-                    // ReadAsync with its token. Abort the owning request instead,
-                    // including after response headers have arrived.
-                    using (deadline.Token.Register(request.Abort))
-                    using (var response = (HttpWebResponse)await OpenAsync(request, deadline.Token))
-                    {
-                        if (response.ContentLength >= 0 && response.ContentLength != pin.Size)
-                            throw new InvalidDataException("The download size does not match the pinned model. Please try again later.");
-                        using (var input = response.GetResponseStream())
-                        using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1048576, true))
-                        {
-                            var buffer = new byte[1048576];
-                            long total = 0;
-                            while (true)
-                            {
-                                int read;
-                                using (var stall = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token))
-                                {
-                                    stall.CancelAfter(TimeSpan.FromSeconds(30));
-                                    using (stall.Token.Register(request.Abort))
-                                    {
-                                        try { read = await input.ReadAsync(buffer, 0, buffer.Length, stall.Token); }
-                                        catch (IOException error)
-                                        {
-                                            if (stall.IsCancellationRequested) throw new OperationCanceledException("Model download stopped or timed out.", error, stall.Token);
-                                            throw;
-                                        }
-                                        catch (WebException error)
-                                        {
-                                            if (stall.IsCancellationRequested) throw new OperationCanceledException("Model download stopped or timed out.", error, stall.Token);
-                                            throw;
-                                        }
-                                    }
-                                }
-                                if (read == 0) break;
-                                total += read;
-                                if (total > pin.Size) throw new InvalidDataException("The model download exceeded its pinned size.");
-                                await output.WriteAsync(buffer, 0, read, deadline.Token);
-                                if (progress != null) progress.Report((double)total / pin.Size);
-                            }
-                        }
-                    }
-                    if (!await MatchesAsync(partial, pin.Size, pin.Sha256, deadline.Token))
-                        throw new InvalidDataException("The model download failed its checksum check. Please download again.");
-                    deadline.Token.ThrowIfCancellationRequested();
-                    // Keep an earlier cache intact until the replacement is completely verified.
-                    if (System.IO.File.Exists(destination)) System.IO.File.Replace(partial, destination, null);
-                    else System.IO.File.Move(partial, destination);
-                    return destination;
-                }
-            }
-            finally { if (System.IO.File.Exists(partial)) System.IO.File.Delete(partial); }
-        }
-        static async Task<WebResponse> OpenAsync(HttpWebRequest request, CancellationToken token)
-        {
-            try { return await request.GetResponseAsync(); }
-            catch (WebException error)
-            {
-                if (token.IsCancellationRequested) throw new OperationCanceledException("Model download stopped or timed out.", error, token);
-                throw;
-            }
-        }
-    }
-
     // A retained Windows Job handle owns exactly the child we create. Closing the
     // handle also cleans up after an application crash; no process-name/PID search.
     public sealed class ChildJob : IDisposable
@@ -290,6 +190,10 @@ namespace OdsDesktop
         Task<string> CompleteAsync(List<Dictionary<string, string>> messages, CancellationToken token);
         Task VerifyIdleAsync();
     }
+    public sealed class ModelIntegrityException : IOException
+    {
+        public ModelIntegrityException() : base("The selected model failed verification. Download it again.") { }
+    }
     public sealed class LocalRuntime : IPortalModel
     {
         public const string Alias = "ods-desktop-preview";
@@ -321,6 +225,7 @@ namespace OdsDesktop
         public async Task StartAsync(string runtimeDirectory, Bundle bundle, string modelPath, string stateDirectory, CancellationToken token)
         {
             if (child != null) throw new InvalidOperationException("The local model is already running.");
+            RuntimeDownload.ValidateForLaunch(runtimeDirectory, bundle);
             foreach (var pin in bundle.Files)
             {
                 Bundle.SafeName(pin.Name);
@@ -329,7 +234,7 @@ namespace OdsDesktop
                     throw new InvalidDataException("The application runtime failed verification. Extract the complete ZIP again.");
             }
             if (!await ModelDownload.MatchesAsync(modelPath, bundle.Model.Size, bundle.Model.Sha256, token))
-                throw new InvalidDataException("The selected model failed verification. Download it again.");
+                throw new ModelIntegrityException();
             token.ThrowIfCancellationRequested();
             try
             {
@@ -421,6 +326,7 @@ namespace OdsDesktop
         public async Task<string> CompleteAsync(List<Dictionary<string, string>> messages, CancellationToken token)
         {
             if (!IsRunning || client == null) throw new InvalidOperationException("Start local AI before sending a message.");
+            messages = await NativeContextBudget.FitAsync(client, messages, token);
             byte[] body = Encoding.UTF8.GetBytes(json.Serialize(new { model = Alias, messages, stream = true, max_tokens = 512,
                 temperature = 0.7, chat_template_kwargs = new { enable_thinking = false } }));
             var request = (HttpWebRequest)WebRequest.Create(new Uri(client.BaseAddress, "v1/chat/completions"));

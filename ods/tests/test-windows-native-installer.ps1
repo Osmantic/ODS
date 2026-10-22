@@ -76,6 +76,9 @@ try {
     Assert-Installer ((Invoke-Setup (Join-Path $target 'unins000.exe') (Join-Path $fixture 'busy-uninstall.log') $true) -ne 0 -and -not $app.HasExited) 'uninstall refuses a running ODS application without terminating it'
     if(-not $app.CloseMainWindow() -or -not $app.WaitForExit(10000)){throw 'Installed application did not close normally.'}
     $app.Dispose();$app=$null
+    & $runner (Join-Path $target 'unins000.exe') $target (Join-Path $fixture 'retention-cancel.log') --uninstall-retention-cancel
+    Assert-Installer ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $registry) -and (Test-Path -LiteralPath $shortcut) -and
+        (Get-FileHash (Join-Path $target 'ODS Windows Preview.exe')).Hash -eq $before) 'interactive uninstall names retained data and model size; cancellation keeps installed bytes, shortcut and registration'
     & (Join-Path $PSScriptRoot 'test-windows-native-portal.ps1') -Bundle $target -FixtureState $data
     if($LASTEXITCODE -ne 0){throw 'The installed Portal did not create its actual saved-history fixture.'}
     $savedResults=@(Get-ChildItem -LiteralPath (Join-Path $data 'portal/results') -File | Get-FileHash -Algorithm SHA256 | Select-Object -ExpandProperty Hash)
