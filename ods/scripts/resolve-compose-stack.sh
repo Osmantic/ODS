@@ -112,7 +112,9 @@ script_dir = pathlib.Path(sys.argv[1])
 # The source tree of this resolver; --script-dir may name another directory.
 resolver_root = pathlib.Path(sys.argv[10])
 native_recovery = sys.argv[11] == 'true'
-selection_json = sys.argv[12] == 'true'
+# Windows retained-extension validation executes this shared Python body
+# with the original argument list; it must keep the normal projection mode.
+selection_json = len(sys.argv) > 12 and sys.argv[12] == 'true'
 tier = (sys.argv[2] or "1").upper()
 gpu_backend = (sys.argv[3] or "nvidia").lower()
 profile_overlays = [x.strip() for x in (sys.argv[4] or "").split(",") if x.strip()]
