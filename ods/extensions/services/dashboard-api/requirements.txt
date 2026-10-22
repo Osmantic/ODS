@@ -1,20 +1,20 @@
 # ODS Dashboard API Dependencies
-fastapi==0.141.1
+fastapi==0.146.0
 # Security floor includes form limits and URL/Host parsing fixes (2026 audit).
 starlette==1.7.0
-uvicorn[standard]>=0.27.0,<0.30.0
-aiohttp==3.14.4
-httpx>=0.27.0,<0.29.0
-pydantic>=2.5.0,<3.0.0
-python-multipart>=0.0.9,<1.0.0
-PyYAML>=6.0,<7.0.0
-jsonschema>=4.21.0,<5.0.0
+uvicorn[standard]>=0.54.0,<0.55.0
+aiohttp==3.14.5
+httpx>=0.28.1,<0.29.0
+pydantic>=2.14.1,<3.0.0
+python-multipart>=0.0.32,<1.0.0
+PyYAML>=6.0.3,<7.0.0
+jsonschema>=4.26.0,<5.0.0
 # Image decoding requires Python 3.11+, matching the production API image.
 # Pillow 13 fixes the 2026 image-decoder and encoder security advisories.
 Pillow==13.0.0
 # QR code generation for magic-link invites.
-qrcode[pil]>=7.4.0,<9.0.0
-async-timeout>=4.0.3,<6; python_version < '3.11'
+qrcode[pil]>=8.2,<9.0.0
+async-timeout>=5.0.1,<6; python_version < '3.11'
 
 # Remove the compromised emSign CA from the bundled TLS trust store.
 certifi>=2026.10.19
