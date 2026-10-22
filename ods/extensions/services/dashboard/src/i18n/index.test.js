@@ -3,8 +3,9 @@ import i18n, { LANGUAGE_KEY, persistLanguage, readSavedLanguage } from './index'
 
 describe('i18next configuration', () => {
   beforeEach(async () => {
-    localStorage.clear()
     await i18n.changeLanguage('en')
+    // changeLanguage persists the locale; clear after it to isolate each test.
+    localStorage.clear()
   })
 
   it('uses English when the saved locale is missing or unsupported', () => {
