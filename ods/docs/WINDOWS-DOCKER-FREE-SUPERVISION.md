@@ -1,14 +1,14 @@
 # Architecture Design Note: Docker-Free Windows Stack Supervision Options
 
-**Target Repository**: Osmantic/ODS (fork branch `experiment/windows-supervisor-clean`)  
-**Scope**: Supervision, lifecycle management, and failure recovery for a Docker-free, native Windows desktop stack (`llama-server.exe` + `dashboard-api`).  
-**Status**: Experimental Design Evaluation & Comparative Audit  
+**Target Repository**: Osmantic/ODS (fork branch `experiment/windows-supervisor-clean`)
+**Scope**: Supervision, lifecycle management, and failure recovery for a Docker-free, native Windows desktop stack (`llama-server.exe` + `dashboard-api`).
+**Status**: Experimental Design Evaluation & Comparative Audit
 
 ---
 
 ## 1. Context & Architectural Objective
 
-The maintainer's stated objective is running ODS natively on Windows without Docker or WSL2, delivering a consumer-grade, downloadable desktop-app experience for non-technical users. 
+The maintainer's stated objective is running ODS natively on Windows without Docker or WSL2, delivering a consumer-grade, downloadable desktop-app experience for non-technical users.
 
 In a Docker-free Windows stack, the system orchestrates two decoupled processes:
 1. `llama-server.exe`: A native C++ inference server managing GPU/CPU compute, loading large GGUF model weights into system memory or VRAM.
