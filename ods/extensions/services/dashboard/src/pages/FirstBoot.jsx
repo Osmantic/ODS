@@ -372,10 +372,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
           spellCheck={false}
         />
         <span className="text-xs text-theme-text-muted mt-2 block">
-          This label is recorded on the first owner card only. It does not rename the host yet;
-          change <code className="text-theme-accent">ODS_DEVICE_NAME</code> in Settings before expecting
-          <code className="text-theme-accent"> {deviceName.trim() || 'ods'}.local</code> to resolve.
-          Letters, numbers, and dashes only.
+          {t('firstBoot.setupLabelHelp', { name: deviceName.trim() || 'ods' })}
         </span>
       </label>
 
@@ -384,7 +381,7 @@ function WelcomeStep({ deviceName, setDeviceName, onNext }) {
         disabled={!valid}
         className="w-full flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
       >
-        Continue
+        {t('common.continue')}
         <ChevronRight size={18} />
       </button>
     </div>
@@ -430,7 +427,7 @@ function UserStep({ username, setUsername, onNext, onBack }) {
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t('common.back')}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl"
         >
           <ChevronLeft size={18} />
@@ -440,7 +437,7 @@ function UserStep({ username, setUsername, onNext, onBack }) {
           disabled={!valid}
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 disabled:opacity-50 transition-opacity"
         >
-          Continue
+          {t('common.continue')}
           <ChevronRight size={18} />
         </button>
       </div>
@@ -498,7 +495,7 @@ function StackStep({ stack, setStack, onNext, onBack }) {
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t('common.back')}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl"
         >
           <ChevronLeft size={18} />
@@ -507,7 +504,7 @@ function StackStep({ stack, setStack, onNext, onBack }) {
           onClick={onNext}
           className="flex-1 flex items-center justify-center gap-2 bg-theme-accent text-white py-4 rounded-xl text-base font-medium hover:opacity-90 transition-opacity"
         >
-          Continue
+          {t('common.continue')}
           <ChevronRight size={18} />
         </button>
       </div>
@@ -582,7 +579,7 @@ function ConfirmStep({
       <div className="flex gap-3">
         <button
           onClick={onBack}
-          aria-label="Back"
+          aria-label={t('common.back')}
           disabled={finishing || Boolean(pendingInvite)}
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl disabled:opacity-50"
         >
@@ -630,7 +627,7 @@ function DoneScreen({ invite, onDone }) {
           `/api/auth/magic-link/qr?url=${encodeURIComponent(invite.url)}`,
         )
         if (!resp.ok) {
-          if (!cancelled) setQrError('QR generation unavailable on the server.')
+          if (!cancelled) setQrError(t('firstBoot.done.qrUnavailable'))
           return
         }
         const data = await resp.json()
