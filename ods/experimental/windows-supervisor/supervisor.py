@@ -242,6 +242,22 @@ class WindowsNativeSupervisor:
             raise
         return proc
 
+    def _close_log_handles(self):
+        if self.llama_log_file and not self.llama_log_file.closed:
+            try:
+                self.llama_log_file.flush()
+                self.llama_log_file.close()
+            except Exception:
+                pass
+            self.llama_log_file = None
+        if self.dashboard_log_file and not self.dashboard_log_file.closed:
+            try:
+                self.dashboard_log_file.flush()
+                self.dashboard_log_file.close()
+            except Exception:
+                pass
+            self.dashboard_log_file = None
+
     def _terminate_spawned_children(self):
         for proc in [self.llama_proc, self.dashboard_proc]:
             if proc and proc.poll() is None:
@@ -251,6 +267,7 @@ class WindowsNativeSupervisor:
                 except Exception:
                     pass
         self.job.close()
+        self._close_log_handles()
 
     def _tail_log(self, path: Path, max_lines: int = 25) -> str:
         if not path.exists():
@@ -608,18 +625,7 @@ class WindowsNativeSupervisor:
         self.job.close()
 
         # Flush and close child log file handles
-        if self.llama_log_file and not self.llama_log_file.closed:
-            try:
-                self.llama_log_file.flush()
-                self.llama_log_file.close()
-            except Exception:
-                pass
-        if self.dashboard_log_file and not self.dashboard_log_file.closed:
-            try:
-                self.dashboard_log_file.flush()
-                self.dashboard_log_file.close()
-            except Exception:
-                pass
+        self._close_log_handles()
 
         if forced_termination:
             print("Stop mode: FORCED (cooperative timeout expired, terminated forcefully).")

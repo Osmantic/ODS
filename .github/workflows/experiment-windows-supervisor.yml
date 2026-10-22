@@ -126,34 +126,63 @@ jobs:
           assert ready, 'llama-server did not become healthy'
           print('llama-server is ready on loopback.')
 
-          unauth_rejected = False
+          # Test 1: Probe /v1/chat/completions (the actual inference endpoint dashboard-api calls)
+          chat_url = f'http://127.0.0.1:{port}/v1/chat/completions'
+          chat_payload = json.dumps({'messages': [{'role': 'user', 'content': 'hi'}]}).encode('utf-8')
+
+          # 1a. Unauthenticated request to /v1/chat/completions must be rejected with 401
+          unauth_chat_rejected = False
+          try:
+              req = urllib.request.Request(chat_url, data=chat_payload, headers={'Content-Type': 'application/json'})
+              with urllib.request.urlopen(req, timeout=5.0) as r:
+                  print('Unexpected response on unauthenticated chat request:', r.status)
+          except urllib.error.HTTPError as e:
+              print(f'Unauthenticated chat request rejected with HTTP {e.code} (expected 401)')
+              if e.code == 401:
+                  unauth_chat_rejected = True
+
+          # 1b. Authenticated request to /v1/chat/completions with Bearer token must succeed (200)
+          auth_chat_ok = False
+          try:
+              req = urllib.request.Request(
+                  chat_url,
+                  data=chat_payload,
+                  headers={'Authorization': f'Bearer {secret_key}', 'Content-Type': 'application/json'}
+              )
+              with urllib.request.urlopen(req, timeout=15.0) as r:
+                  print(f'Authenticated chat request returned HTTP {r.status} (expected 200)')
+                  resp_data = json.loads(r.read().decode('utf-8'))
+                  print('Chat completion choice snippet:', resp_data.get('choices', [{}])[0].get('message', {}).get('content', '')[:60])
+                  if r.status == 200:
+                      auth_chat_ok = True
+          except Exception as e:
+              print('Authenticated chat request failed:', e)
+
+          # Test 2: Probe /v1/models endpoint behavior
+          # Note: In llama-server b9014, /v1/models is public by design for client model discovery
+          models_url = f'http://127.0.0.1:{port}/v1/models'
           try:
               req = urllib.request.Request(models_url)
               with urllib.request.urlopen(req, timeout=2.0) as r:
-                  print('Unexpected 200 on unauthenticated request!')
-          except urllib.error.HTTPError as e:
-              print(f'Unauthenticated request rejected with HTTP {e.code} (expected 401)')
-              if e.code == 401:
-                  unauth_rejected = True
+                  print(f'Unauthenticated /v1/models returned HTTP {r.status} (public discovery route in llama-server)')
+          except Exception as e:
+              print('Unauthenticated /v1/models result:', e)
 
-          auth_ok = False
           try:
               req = urllib.request.Request(models_url, headers={'Authorization': f'Bearer {secret_key}'})
               with urllib.request.urlopen(req, timeout=2.0) as r:
-                  print(f'Authenticated request returned HTTP {r.status} (expected 200)')
+                  print(f'Authenticated /v1/models returned HTTP {r.status}')
                   data = json.loads(r.read().decode('utf-8'))
-                  print('Models list response:', data)
-                  if r.status == 200:
-                      auth_ok = True
+                  print('Models list response id:', [m.get('id') for m in data.get('data', [])])
           except Exception as e:
-              print('Authenticated request failed:', e)
+              print('Authenticated /v1/models failed:', e)
 
           srv.kill()
           srv.wait()
 
-          assert unauth_rejected, 'Unauthenticated request was NOT rejected with 401!'
-          assert auth_ok, 'Authenticated request did NOT return 200!'
-          print('SUCCESS: Loopback authentication verified: unauthenticated 401 rejected, authenticated 200 accepted.')
+          assert unauth_chat_rejected, 'Unauthenticated chat request was NOT rejected with 401!'
+          assert auth_chat_ok, 'Authenticated chat request did NOT return 200!'
+          print('SUCCESS: Loopback authentication verified: unauthenticated /v1/chat/completions rejected with 401, authenticated /v1/chat/completions accepted with 200.')
           " 2>&1 | tee ci-logs/probe_real_llama.log
 
       - name: Upload Logs

@@ -334,6 +334,8 @@ def run_test_job_assignment_failure_compensation():
         except RuntimeError as e:
             raised = True
             print(f"Caught expected assignment exception: {e}")
+        finally:
+            sup._terminate_spawned_children()
 
         assert raised, "Expected RuntimeError from patched assign_process"
 
@@ -369,41 +371,42 @@ def run_test_secret_file_permissions_and_pids_json():
             api_key=test_key,
             stub_children=True
         )
-        sup.start()
+        try:
+            sup.start()
 
-        # 1. Verify pids.json contains NO secrets
-        pids_file = Path(tmpdir) / "pids.json"
-        assert pids_file.exists(), "pids.json was not created"
-        pids_data = json.loads(pids_file.read_text(encoding="utf-8"))
-        assert "api_key" not in pids_data, f"SECURITY DEFECT: api_key found in pids.json! Content: {pids_data}"
-        assert "llama_key" not in pids_data, f"SECURITY DEFECT: llama_key found in pids.json! Content: {pids_data}"
-        print("pids.json contains zero secret keys:", list(pids_data.keys()))
+            # 1. Verify pids.json contains NO secrets
+            pids_file = Path(tmpdir) / "pids.json"
+            assert pids_file.exists(), "pids.json was not created"
+            pids_data = json.loads(pids_file.read_text(encoding="utf-8"))
+            assert "api_key" not in pids_data, f"SECURITY DEFECT: api_key found in pids.json! Content: {pids_data}"
+            assert "llama_key" not in pids_data, f"SECURITY DEFECT: llama_key found in pids.json! Content: {pids_data}"
+            print("pids.json contains zero secret keys:", list(pids_data.keys()))
 
-        # 2. Verify key files exist and check permissions
-        key_file = Path(tmpdir) / "api_key.txt"
-        llama_key_file = Path(tmpdir) / "llama_key.txt"
-        assert key_file.exists(), "api_key.txt missing"
-        assert llama_key_file.exists(), "llama_key.txt missing"
-        assert key_file.read_text(encoding="utf-8").strip() == test_key
-        assert len(llama_key_file.read_text(encoding="utf-8").strip()) == 64
+            # 2. Verify key files exist and check permissions
+            key_file = Path(tmpdir) / "api_key.txt"
+            llama_key_file = Path(tmpdir) / "llama_key.txt"
+            assert key_file.exists(), "api_key.txt missing"
+            assert llama_key_file.exists(), "llama_key.txt missing"
+            assert key_file.read_text(encoding="utf-8").strip() == test_key
+            assert len(llama_key_file.read_text(encoding="utf-8").strip()) == 64
 
-        if sys.platform == "win32":
-            # Run icacls to verify owner-only permissions
-            for f in [key_file, llama_key_file]:
-                res = subprocess.run(["icacls.exe", str(f)], capture_output=True, text=True, check=True)
-                icacls_out = res.stdout
-                print(f"icacls output for {f.name}:\n{icacls_out.strip()}")
-                assert "(F)" in icacls_out, f"Expected (F) full control for owner in {icacls_out}"
-                assert "(I)" not in icacls_out, f"Expected no inherited permissions (I) in {icacls_out}"
-                assert "BUILTIN\\Users" not in icacls_out, f"Public BUILTIN\\Users grant detected in {icacls_out}"
-        else:
-            # On POSIX: verify mode is 0600
-            for f in [key_file, llama_key_file]:
-                mode = oct(f.stat().st_mode & 0o777)
-                print(f"POSIX mode for {f.name}: {mode}")
-                assert mode == "0o600", f"Expected mode 0600, got {mode}"
-
-        sup.stop()
+            if sys.platform == "win32":
+                # Run icacls to verify owner-only permissions
+                for f in [key_file, llama_key_file]:
+                    res = subprocess.run(["icacls.exe", str(f)], capture_output=True, text=True, check=True)
+                    icacls_out = res.stdout
+                    print(f"icacls output for {f.name}:\n{icacls_out.strip()}")
+                    assert "(F)" in icacls_out, f"Expected (F) full control for owner in {icacls_out}"
+                    assert "(I)" not in icacls_out, f"Expected no inherited permissions (I) in {icacls_out}"
+                    assert "BUILTIN\\Users" not in icacls_out, f"Public BUILTIN\\Users grant detected in {icacls_out}"
+            else:
+                # On POSIX: verify mode is 0600
+                for f in [key_file, llama_key_file]:
+                    mode = oct(f.stat().st_mode & 0o777)
+                    print(f"POSIX mode for {f.name}: {mode}")
+                    assert mode == "0o600", f"Expected mode 0600, got {mode}"
+        finally:
+            sup.stop()
         print("PASS: Secret files restricted owner-only (icacls / chmod 600) and pids.json contains zero credentials.")
 
 def main():
