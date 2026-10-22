@@ -5,18 +5,18 @@ Supervises llama-server.exe and dashboard-api inside a single Win32 Job Object
 with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, ensuring zero orphaned processes.
 """
 
-import os
-import sys
-import time
+import hashlib
 import json
+import os
+import secrets
 import signal
 import socket
-import secrets
-import hashlib
-import zipfile
-import urllib.request
-import urllib.error
 import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import zipfile
 from pathlib import Path
 
 try:
@@ -342,7 +342,7 @@ class WindowsNativeSupervisor:
             llama_cmd = [sys.executable, "-c", stub_clean]
             api_cmd = [sys.executable, "-c", dash_stub]
 
-            print(f"Starting stub llama child (clean)...")
+            print("Starting stub llama child (clean)...")
             self.llama_proc = subprocess.Popen(
                 llama_cmd, stdout=self.llama_log_file, stderr=subprocess.STDOUT,
                 creationflags=creationflags

@@ -42,7 +42,7 @@ This document evaluates three supervision options across nine operational dimens
 ## 3. In-Depth Technical Analysis
 
 ### Option 1: Win32 Job Object Supervisor
-*Implementation Reference: [`ods/experimental/windows-supervisor/supervisor.py`](file:///Users/macbookair/dream-server/scratch/fresh_upstream_ods/ods/experimental/windows-supervisor/supervisor.py)*
+*Implementation Reference: [`ods/experimental/windows-supervisor/supervisor.py`](../experimental/windows-supervisor/supervisor.py)*
 
 - **Mechanism & Process Lifetime** `[Verified repository behavior]`:
   The supervisor utilizes Win32 kernel Job Objects (`CreateJobObjectW`, `SetInformationJobObject`) via Python `ctypes`.
@@ -62,10 +62,10 @@ This document evaluates three supervision options across nine operational dimens
 
 ### Option 2: Host-Agent Scheduled-Task Approach
 *Implementation References in Existing Codebase:*
-- [`ods/installers/windows/ods.ps1:2921-2967`](file:///Users/macbookair/dream-server/scratch/fresh_upstream_ods/ods/installers/windows/ods.ps1#L2921-L2967): `Register-ScheduledTask`, `New-ScheduledTaskTrigger -AtLogOn`, and Start Menu Startup folder fallback.
-- [`ods/installers/windows/lib/host-agent-process.ps1:3-41`](file:///Users/macbookair/dream-server/scratch/fresh_upstream_ods/ods/installers/windows/lib/host-agent-process.ps1#L3-L41): `Stop-ODSHostAgentProcess` CIM `Win32_Process` query and regex command-line validation.
-- [`ods/installers/windows/lib/native-llama-runtime.ps1:1197-1209, 1642-1668`](file:///Users/macbookair/dream-server/scratch/fresh_upstream_ods/ods/installers/windows/lib/native-llama-runtime.ps1#L1642-L1668): `Stop-ODSPortalOwnedProcesses` with `$process.Kill()` and `WaitForExit(60000)`.
-- [`ods/bin/ods-host-agent.py:21942-21943`](file:///Users/macbookair/dream-server/scratch/fresh_upstream_ods/ods/bin/ods-host-agent.py#L21942-L21943): `signal.signal(signal.SIGTERM)` and `signal.signal(signal.SIGINT)` registration.
+- [`ods/installers/windows/ods.ps1:2921-2967`](../installers/windows/ods.ps1): `Register-ScheduledTask`, `New-ScheduledTaskTrigger -AtLogOn`, and Start Menu Startup folder fallback.
+- [`ods/installers/windows/lib/host-agent-process.ps1:3-41`](../installers/windows/lib/host-agent-process.ps1): `Stop-ODSHostAgentProcess` CIM `Win32_Process` query and regex command-line validation.
+- [`ods/installers/windows/lib/native-llama-runtime.ps1:1197-1209, 1642-1668`](../installers/windows/lib/native-llama-runtime.ps1): `Stop-ODSPortalOwnedProcesses` with `$process.Kill()` and `WaitForExit(60000)`.
+- [`ods/bin/ods-host-agent.py:21942-21943`](../bin/ods-host-agent.py): `signal.signal(signal.SIGTERM)` and `signal.signal(signal.SIGINT)` registration.
 
 - **Mechanism & Process Lifetime** `[Verified repository behavior]`:
   `ods.ps1:2921-2936` registers a Windows Scheduled Task named `ODS Host Agent` using trigger `-AtLogOn` and principal `New-ODSInteractiveScheduledTaskPrincipal -RunLevel Limited`. If registration fails (e.g. corporate group policy restriction), lines 2949-2960 fall back to writing a VBScript launcher (`ods-host-agent.vbs`) into the user's Start Menu Startup folder (`shell:startup`).

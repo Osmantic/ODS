@@ -7,12 +7,10 @@ Exercises heavy network asset acquisition, cryptographic pinning, and live chat 
   3. Persistent hash mismatch rejection via test server URL override
 """
 
-import os
-import sys
-import time
-import json
 import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 PYTHON = sys.executable

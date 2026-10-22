@@ -10,13 +10,13 @@ Exercises process management and failure recovery using stub child processes (no
   6. Forced stop path fallback (timeout expires, triggers forced kill, zero orphans)
 """
 
-import os
-import sys
-import time
 import json
+import os
 import signal
 import socket
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 PYTHON = sys.executable

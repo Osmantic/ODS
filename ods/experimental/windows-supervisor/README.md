@@ -67,8 +67,9 @@ Demonstrates direct MSVCRT exit code 3, standard Uvicorn lifespan behavior, and 
 - **Experimental Scope**: This directory is an isolated proof-of-concept prototype. It is **not** currently integrated into the production installer (`ods/installers/windows/ods.ps1`), process management helpers (`ods/installers/windows/lib/host-agent-process.ps1`, `native-llama-runtime.ps1`), or host-agent daemon (`ods/bin/ods-host-agent.py`).
 - **Zero Production Changes**: Upstream production code, Docker Compose templates, Linux runtime configurations, and authentication modules (`hermes_auth.py`) remain completely untouched.
 - **Review Decision Record**: For maintainer evaluation, architectural trade-offs, and staged adoption gates, see:
-  - Architecture Design Note: [`ods/docs/WINDOWS-DOCKER-FREE-SUPERVISION.md`](../docs/WINDOWS-DOCKER-FREE-SUPERVISION.md)
-  - Maintainer Review Decision Record: [`ods/docs/WINDOWS-SUPERVISOR-REVIEW.md`](../docs/WINDOWS-SUPERVISOR-REVIEW.md)
+  - Architecture Design Note: [`ods/docs/WINDOWS-DOCKER-FREE-SUPERVISION.md`](../../docs/WINDOWS-DOCKER-FREE-SUPERVISION.md)
+  - Maintainer Review Decision Record: [`ods/docs/WINDOWS-SUPERVISOR-REVIEW.md`](../../docs/WINDOWS-SUPERVISOR-REVIEW.md)
+
 
 ---
 

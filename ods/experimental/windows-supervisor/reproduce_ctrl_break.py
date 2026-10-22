@@ -10,14 +10,14 @@ Demonstrates:
   4. Stub child process with SIGBREAK handler exits cleanly with code 0 on CTRL_BREAK_EVENT.
 """
 
-import sys
-import os
-import time
-import signal
-import subprocess
 import json
+import signal
 import socket
+import subprocess
+import sys
+import time
 from pathlib import Path
+
 
 def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:

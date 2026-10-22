@@ -1,12 +1,12 @@
 # Maintainer Decision Record: Windows Native Supervisor Architecture
 
-**Document ID**: `ODS-MDR-2026-WIN01`  
-**Status**: Experimental Proposal / Pending Maintainer Review  
-**Author**: Antigravity (AI Contributor for `vaibhavsrv`)  
-**Target Upstream Repository**: `Osmantic/ODS`  
-**Branch**: `experiment/windows-supervisor-clean`  
-**Verified Code Commit**: `0ef5cc0afe69403a49af3aa89c258a91a27e8577` (`0ef5cc0af`)  
-**Verified CI Telemetry**: [Run 39751880189](https://github.com/vaibhavsrv/DreamServer/actions/runs/39751880189) (Offline Suite) & [Run 39750717938](https://github.com/vaibhavsrv/DreamServer/actions/runs/39750717938) (Manual Heavy Suite)  
+**Document ID**: `ODS-MDR-2026-WIN01`
+**Status**: Experimental Proposal / Pending Maintainer Review
+**Author**: Antigravity (AI Contributor for `vaibhavsrv`)
+**Target Upstream Repository**: `Osmantic/ODS`
+**Branch**: `experiment/windows-supervisor-clean`
+**Verified Code Commit**: `0ef5cc0afe69403a49af3aa89c258a91a27e8577` (`0ef5cc0af`)
+**Verified CI Telemetry**: Offline Run 39751880189 & Manual Heavy Run 39750717938
 
 ---
 
@@ -112,7 +112,7 @@ All automated PR verification runs against an offline stub test suite that requi
 
 | Metric | Offline Suite Run | Heavy Real-Download Run |
 |---|---|---|
-| **Run Link** | [Run 39751880189](https://github.com/vaibhavsrv/DreamServer/actions/runs/39751880189) | [Run 39750717938](https://github.com/vaibhavsrv/DreamServer/actions/runs/39750717938) |
+| **Run Link** | Offline Run 39751880189 | Manual Run 39750717938 |
 | **Tested Commit** | `0ef5cc0afe69403a49af3aa89c258a91a27e8577` | `3a215fd7066914594c965e6488d0113f972bfe9a` |
 | **Windows Job** | `test-offline-windows`: **Passed** (23s) | `test-real-downloads`: **Passed** (1m 8s) |
 | **Ubuntu Job** | `test-offline-ubuntu`: **Passed** (16s) | N/A (Linux control runs offline suite) |
