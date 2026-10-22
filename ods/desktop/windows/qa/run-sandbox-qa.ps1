@@ -11,7 +11,7 @@ $principal=[Security.Principal.WindowsPrincipal]::new($identity)
 $os=Get-CimInstance Win32_OperatingSystem
 $record=@{schemaVersion=1;status='running';started_utc=[DateTime]::UtcNow.ToString('o');os=$os.Caption;build=$os.BuildNumber;
     architecture=$os.OSArchitecture;account=$identity.Name;elevated=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator);
-    developer_commands=@{};optional_features=@();scope='Clean Sandbox install and real Portal CPU inference; actual guest token recorded, not assumed standard-user'}
+    developer_commands=@{};optional_features=@();scope='Clean Sandbox install, real Portal CPU chat and document save; actual guest token recorded, not assumed standard-user'}
 foreach($name in @('git','node','python','docker','wsl')){$record.developer_commands[$name]=[bool](Get-Command $name -ErrorAction SilentlyContinue)}
 $record.optional_features=@(Get-CimInstance Win32_OptionalFeature | Where-Object Name -Match 'Subsystem-Linux|VirtualMachinePlatform|Hyper-V' | Select-Object Name,InstallState)
 Start-Transcript -Path (Join-Path $output 'guest.log') -NoClobber
@@ -39,6 +39,10 @@ try {
     $app.Dispose();$app=$null
     & (Join-Path $PSScriptRoot 'ods/tests/test-windows-native-portal.ps1') -Bundle $installed -LiveState (Join-Path $env:LOCALAPPDATA 'ODS Guest QA') -Screenshot (Join-Path $output 'native-portal.png')
     if($LASTEXITCODE -ne 0){throw 'Real model/Portal qualification failed in the guest.'}
+    $record.text_model='passed'
+    & (Join-Path $PSScriptRoot 'ods/tests/test-windows-native-portal.ps1') -Bundle $installed -LiveState (Join-Path $env:LOCALAPPDATA 'ODS Guest QA') -DocumentLive -Screenshot (Join-Path $output 'native-document.png')
+    if($LASTEXITCODE -ne 0){throw 'Real model/document/save qualification failed in the guest.'}
+    $record.document_model='passed'
     $record.status='passed'
 } catch {
     $record.status='failed';$record.error=$_.Exception.ToString()

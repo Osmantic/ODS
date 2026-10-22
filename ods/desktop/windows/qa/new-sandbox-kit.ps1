@@ -15,7 +15,7 @@ $null=New-Item -ItemType Directory -Path $inputFolder,$results
 Copy-Item -LiteralPath $setup,(Join-Path $installer 'INSTALLER-BUILD-INFO.json') -Destination $inputFolder
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'run-sandbox-qa.ps1') -Destination $inputFolder
 $root=Join-Path $PSScriptRoot '../../..'
-foreach($relative in @('desktop/windows/tests/InstallerUiTests.cs','desktop/windows/tests/PortalUiTests.cs','desktop/windows/tests/NativePortalTests.cs','tests/test-windows-native-portal.ps1')){
+foreach($relative in @('desktop/windows/tests/InstallerUiTests.cs','desktop/windows/tests/PortalUiTests.cs','desktop/windows/tests/NativePortalTests.cs','desktop/windows/tests/DocumentSaveDialogTests.cs','tests/test-windows-native-portal.ps1')){
     $destination=Join-Path $inputFolder ('ods/'+$relative)
     $null=New-Item -ItemType Directory -Path (Split-Path $destination) -Force
     Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $destination

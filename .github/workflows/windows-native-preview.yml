@@ -74,7 +74,6 @@ jobs:
           ./desktop/windows/build.ps1 -OutputDirectory $package -NativeRuntimeDirectory $runtime -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview
           ./tests/test-windows-desktop-preview.ps1 -PackageBundle $package
           ./tests/test-windows-native-portal.ps1 -Bundle $package
-          ./tests/test-windows-native-portal.ps1 -Bundle $package -DocumentFixture
           ./tests/test-windows-native-installer.ps1 -Package $package -ToolsCache $tools -ReceiptDirectory (Join-Path $review 'installer-tests')
           $files = @(Get-ChildItem -LiteralPath $package -Recurse -File)
           $allowedDlls = @('OdsPortal.dll','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Wpf.dll','WebView2Loader.dll')
@@ -93,6 +92,10 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $package 'BUILD-INFO.json'), ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
           ./desktop/windows/build-installer.ps1 -PackageDirectory $package -OutputDirectory (Join-Path $review 'installer') -ToolsCache $tools
           ./desktop/windows/qa/new-sandbox-kit.ps1 -InstallerDirectory (Join-Path $review 'installer') -OutputDirectory (Join-Path $review 'sandbox-qa')
+          # Exercise the actual handoff copies so a missing C# helper cannot
+          # leave a generated kit that only fails later in a clean guest.
+          & (Join-Path $review 'sandbox-qa/input/ods/tests/test-windows-native-portal.ps1') -Bundle $package -DocumentFixture
+          if ($LASTEXITCODE -ne 0) { throw 'Copied clean-Windows handoff driver failed.' }
           $zip = Join-Path $review 'ODS-Windows-Native-Preview.zip'
           Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip
           $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()

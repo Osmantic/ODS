@@ -235,6 +235,16 @@ process-ownership and overall-timeout boundaries.
 
 ## CI and reproduction
 
+The ownership follow-up passed **268 native checks** locally. The generated
+Sandbox handoff is also exercised through its actual copied driver: **31
+document/JSON/save checks passed** against the packaged app. The previous kit
+omitted `DocumentSaveDialogTests.cs`; regenerating it from the earlier source
+reproduced a compiler failure before UI launch. The corrected copy list and
+copied-driver CI execution prevent that dependency gap. The guest driver now
+runs real chat and document/save qualification against the same model cache,
+recording both phases separately. These host-side handoff checks do not claim
+that a fresh Sandbox guest has run.
+
 [Build and test commands](README.md#build-from-source) are in the preview README.
 Windows CI builds the pinned engine from source, builds the frontend and .NET
 app, executes native/entrypoint/WebView2/installer tests, checks the binary
