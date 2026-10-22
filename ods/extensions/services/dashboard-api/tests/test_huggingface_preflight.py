@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -15,7 +16,7 @@ POLICY = {
     "backendBuilds": {"nvidia": "b11429", "cpu": "b9014", "amd": "b9014"},
     "builds": {
         "b9014": {"commit": "1" * 40, "architectures": ["llama", "qwen3"], "tensorTypes": _TYPES_B9014,
-                  "nextnLoader": False},
+                  "nextnLoader": False, "nextnArchitectures": []},
         "b11429": {"commit": "2" * 40, "architectures": ["llama", "nanbeige", "qwen3"],
                    "tensorTypes": {**_TYPES_B9014, "Q2_0": 42}, "nextnLoader": True},
     },
@@ -228,6 +229,34 @@ def test_import_refuses_a_nextn_file_this_build_cannot_load_unless_acknowledged(
     assert len(dispatched) == 1
     registry = json.loads((models_router.Path(models_router.DATA_DIR) / "model-imports.json").read_text(encoding="utf-8"))
     assert registry["models"][0]["runtime_override"]["code"] == "runtime_nextn_unsupported"
+
+
+@pytest.mark.parametrize('architecture, supported', [
+    ('glm4', True), ('glm4moe', True), ('glm-dsa', True),
+    ('exaone-moe', True), ('bailingmoe2', True), ('qwen35', False),
+])
+def test_nextn_gate_matches_the_shipped_build_policy(test_client, preflight_env, monkeypatch, architecture, supported):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, 'GPU_BACKEND', 'cpu')
+    policy = Path(__file__).resolve().parents[4] / 'config/llama-cpp-architectures.json'
+    monkeypatch.setattr(models_router, '_ARCHITECTURES_PATH', policy)
+    state['details'] = _details(ggufArchitecture=architecture)
+    state['header'] = _dense_header(architecture, {f'{architecture}.nextn_predict_layers': 1})
+    result = _preflight(test_client).json()
+    assert result['runtime']['build'] == 'b9014'
+    assert result['runtime']['architectureSupported'] is True
+    if supported:
+        assert result['refusal'] is None
+    else:
+        assert result['refusal']['code'] == 'runtime_nextn_unsupported'
+
+
+def test_nextn_gate_ignores_metadata_for_another_architecture(test_client, preflight_env, monkeypatch):
+    models_router, state = preflight_env
+    monkeypatch.setattr(models_router, 'GPU_BACKEND', 'cpu')
+    state['details'] = _details(ggufArchitecture='qwen3')
+    state['header'] = _dense_header('qwen3', {'other.nextn_predict_layers': 1, 'qwen3.nextn_predict_layers': 0})
+    assert _preflight(test_client).json()['refusal'] is None
 
 
 def test_preflight_names_a_reranker_from_its_header(test_client, preflight_env):

@@ -1288,7 +1288,7 @@ async def _hf_preflight_gate(
     )
     refusal = model_preflight.refusal(kind, supported, architecture, build, gated=gated)
     if (refusal is None and kind == "chat" and model_preflight.nextn_layers(header)
-            and model_preflight.nextn_supported(policy, build) is False):
+            and model_preflight.nextn_supported(policy, build, architecture) is False):
         refusal = model_preflight.nextn_refusal(build)
     return {
         "artifact": _hf_artifact_binding(details, artifact),

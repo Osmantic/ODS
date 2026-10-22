@@ -90,14 +90,14 @@ def test_build_entry_reads_every_local_source(tmp_path, monkeypatch):
     ggml = tmp_path / "ggml.h"
     ggml.write_text(GGML_H, encoding="utf-8")
     model = tmp_path / "llama-model.cpp"
-    model.write_text("void llama_model::load_hparams() { hparams.n_layer_nextn = 0; }\n", encoding="utf-8")
+    model.write_text(GENERIC_NEXTN, encoding="utf-8")
     monkeypatch.setattr(generator, "_fetch", lambda url: b'{"sha": "' + b"a" * 40 + b'"}')
 
     entry = generator.build_entry("b1", arch, ggml, model)
 
     assert entry == {"commit": "a" * 40, "architectures": ["llama"],
                      "tensorTypes": {"F32": 0, "F16": 1, "Q4_0": 2, "Q8_0": 8, "Q4_K": 12, "Q2_0": 42},
-                     "nextnLoader": True}
+                     "nextnLoader": True, "nextnArchitectures": []}
 
 
 GENERIC_NEXTN = """
@@ -126,6 +126,48 @@ def test_nextn_loader_rejects_an_unrelated_file():
         generator.nextn_loader("int main() {}")
 
 
+def test_nextn_loader_ignores_comments_and_declarations():
+    text = '''void llama_model::load_hparams() {
+      // ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.n_layer_nextn, false);
+      hparams.n_layer_nextn = 0;
+    }'''
+    assert generator.nextn_loader(text) is False
+    with pytest.raises(ValueError, match='coverage'):
+        generator.nextn_architectures(text, '')
+
+
+def test_legacy_nextn_capabilities_use_the_builds_actual_architecture_names():
+    names = 'LLM_ARCH_NAMES = {\n {LLM_ARCH_GLM4_MOE, "glm4moe"},\n {LLM_ARCH_OTHER, "other-name"},\n};\n'
+    assert generator.nextn_architectures(PER_ARCH_NEXTN, names) == ['glm4moe']
+    shared = PER_ARCH_NEXTN.replace('case LLM_ARCH_GLM4_MOE:', 'case LLM_ARCH_OTHER: case LLM_ARCH_GLM4_MOE:')
+    assert generator.nextn_architectures(shared, names) == ['glm4moe', 'other-name']
+    with pytest.raises(ValueError, match='Unknown NextN'):
+        generator.nextn_architectures(PER_ARCH_NEXTN, names.replace('LLM_ARCH_GLM4_MOE', 'LLM_ARCH_UNRELATED'))
+
+
 def test_committed_document_records_nextn_loading_for_every_build():
     document = json.loads((ROOT / "config" / "llama-cpp-architectures.json").read_text(encoding="utf-8"))
     assert all(isinstance(entry["nextnLoader"], bool) for entry in document["builds"].values())
+
+
+@pytest.mark.parametrize('outside', ['after-switch', 'default'])
+def test_nextn_reader_outside_an_architecture_case_is_not_attributed(outside):
+    read = 'ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);'
+    body = 'switch (arch) { case LLM_ARCH_LLAMA: break; '
+    body += ('} ' + read) if outside == 'after-switch' else ('default: ' + read + ' }')
+    model = 'void llama_model::load_hparams() {' + body + '}'
+    assert generator.nextn_architectures(model, SOURCE) == []
+
+
+def test_default_and_nested_switch_do_not_hide_later_architecture_cases():
+    model = '''void llama_model::load_hparams() {
+      switch (arch) {
+        default: break;
+        case LLM_ARCH_LLAMA: {
+          switch (n) { case 0: break; default: break; }
+          ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS, hparams.nextn_predict_layers, false);
+          break;
+        }
+      }
+    }'''
+    assert generator.nextn_architectures(model, SOURCE) == ['llama']

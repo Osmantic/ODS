@@ -282,13 +282,15 @@ def test_the_committed_policy_lists_tensor_types_for_every_build():
     ({}, 0),
 ])
 def test_nextn_layers_reads_only_a_positive_integer(metadata, layers):
-    assert preflight.nextn_layers({"metadata": metadata}) == layers
+    assert preflight.nextn_layers({"metadata": {"general.architecture": "qwen35", **metadata}}) == layers
     assert preflight.nextn_layers(None) == 0
 
 
 def test_nextn_support_is_known_only_from_the_policy():
-    policy = {"builds": {"b9014": {"nextnLoader": False}, "b11429": {"nextnLoader": True}, "b1": {}}}
-    assert preflight.nextn_supported(policy, "b9014") is False
+    policy = {"builds": {"b9014": {"nextnLoader": False, "nextnArchitectures": ["glm4moe"]}, "b11429": {"nextnLoader": True}, "b1": {"nextnLoader": False}}}
+    assert preflight.nextn_supported(policy, "b9014", "qwen35") is False
+    assert preflight.nextn_supported(policy, "b9014", "glm4moe") is True
+    assert preflight.nextn_supported(policy, "b9014") is None
     assert preflight.nextn_supported(policy, "b11429") is True
     assert preflight.nextn_supported(policy, "b1") is None
     assert preflight.nextn_supported(policy, None) is None
@@ -303,6 +305,7 @@ def test_the_shipped_policy_knows_which_builds_load_nextn():
     assert all(isinstance(entry.get("nextnLoader"), bool) for entry in policy["builds"].values())
     assert policy["builds"]["b9014"]["nextnLoader"] is False
     assert policy["builds"]["b11429"]["nextnLoader"] is True
+    assert policy['builds']['b9014']['nextnArchitectures'] == ['bailingmoe2', 'exaone-moe', 'glm-dsa', 'glm4', 'glm4moe']
 
 
 def test_nextn_refusal_is_overridable_and_names_the_build():

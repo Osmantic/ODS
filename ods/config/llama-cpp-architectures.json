@@ -177,7 +177,14 @@
         "NVFP4": 40,
         "Q1_0": 41
       },
-      "nextnLoader": false
+      "nextnLoader": false,
+      "nextnArchitectures": [
+        "bailingmoe2",
+        "exaone-moe",
+        "glm-dsa",
+        "glm4",
+        "glm4moe"
+      ]
     },
     "b11429": {
       "commit": "d81235049384534c167caea52b85a694f6103d14",
@@ -374,7 +381,8 @@
         "Q1_0": 41,
         "Q2_0": 42
       },
-      "nextnLoader": true
+      "nextnLoader": true,
+      "nextnArchitectures": []
     }
   }
 }

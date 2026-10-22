@@ -247,15 +247,23 @@ def refusal(
 
 def nextn_layers(header: dict[str, Any] | None) -> int:
     """``<arch>.nextn_predict_layers`` from the GGUF header, 0 when absent."""
-    value = _first_suffix(_metadata(header), ".nextn_predict_layers")
+    metadata = _metadata(header)
+    architecture = metadata.get('general.architecture') or (header or {}).get('architecture')
+    value = metadata.get(f'{architecture}.nextn_predict_layers') if isinstance(architecture, str) else None
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
 
-def nextn_supported(policy: dict[str, Any] | None, build: str | None) -> bool | None:
-    """Whether the build loads NextN blocks for every architecture, if known."""
+def nextn_supported(policy: dict[str, Any] | None, build: str | None,
+                    architecture: str | None = None) -> bool | None:
+    """Whether this build has generic or architecture-specific NextN loading."""
     entry = (policy or {}).get("builds", {}).get(build) if build else None
     value = entry.get("nextnLoader") if isinstance(entry, dict) else None
-    return value if isinstance(value, bool) else None
+    if value is True:
+        return True
+    specific = entry.get('nextnArchitectures') if isinstance(entry, dict) else None
+    if value is False and architecture and isinstance(specific, list) and all(isinstance(item, str) for item in specific):
+        return architecture in specific
+    return None
 
 
 def nextn_refusal(build: str | None) -> dict[str, Any]:

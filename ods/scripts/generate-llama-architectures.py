@@ -11,6 +11,8 @@ for every architecture (src/llama-model.cpp's generic `hparams.n_layer_nextn`).
 Older builds read it only for a few architectures and load another
 architecture's NextN/MTP block as an ordinary layer, so such a file fails to
 start (#7914); the Models page refuses it before the download.
+`nextnArchitectures` records those older architecture-specific readers, so
+absence of the generic reader does not falsely reject their supported files.
 
 `backendBuilds` (which build each backend runs) is the release policy. It is
 edited by hand together with the image and archive pins, and
@@ -81,15 +83,84 @@ def tensor_types(source: str) -> dict[str, int]:
     return dict(sorted(types.items(), key=lambda item: item[1]))
 
 
+def _hparams_body(source: str) -> str:
+    # Ignore comments and string/character literals before counting C++ braces.
+    clean = re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*.*?\*/|//[^\n]*',
+                   ' ', source, flags=re.S)
+    match = re.search(r'\b(?:llm_load_hparams|load_hparams)\s*\([^)]*\)\s*\{', clean)
+    if match is None:
+        raise ValueError('load_hparams not found in llama-model.cpp')
+    depth = 1
+    for index in range(match.end(), len(clean)):
+        depth += (clean[index] == '{') - (clean[index] == '}')
+        if depth == 0:
+            return clean[match.end():index]
+    raise ValueError('load_hparams body is not terminated')
+
+
 def nextn_loader(source: str) -> bool:
     """Does llama-model.cpp read NextN layers for every architecture?
 
     The generic loader keeps them in ``hparams.n_layer_nextn``; builds before
     it read ``nextn_predict_layers`` only inside a few architectures' cases.
     """
-    if "llm_load_hparams" not in source and "load_hparams" not in source:
-        raise ValueError("load_hparams not found in llama-model.cpp")
-    return "hparams.n_layer_nextn" in source
+    body = _hparams_body(source)
+    before_cases = re.split(r'\bswitch\s*\(\s*arch\s*\)', body, maxsplit=1)[0]
+    return bool(re.search(r'\bml\.get_key\s*\(\s*LLM_KV_NEXTN_PREDICT_LAYERS\s*,\s*hparams\.n_layer_nextn\s*,', before_cases))
+
+
+def _architecture_cases(body: str) -> list[tuple[str | None, str]]:
+    """Read top-level labels in the pinned sources' first switch (arch)."""
+    match = re.search(r'\bswitch\s*\(\s*arch\s*\)\s*\{', body)
+    if match is None:
+        raise ValueError('No generic or architecture-specific loader coverage')
+    depth = 1
+    labels = []
+    # Comments and quoted literals were removed by _hparams_body.
+    tokens = re.finditer(r'[{}]|\bcase\s+(LLM_ARCH_[A-Z0-9_]+)\s*:|\bdefault\s*:', body)
+    for token in tokens:
+        if token.start() < match.end():
+            continue
+        if token[0] == '{':
+            depth += 1
+        elif token[0] == '}':
+            depth -= 1
+            if depth == 0:
+                end = token.start()
+                break
+        elif depth == 1:
+            labels.append(token)
+    else:
+        raise ValueError('switch (arch) body is not terminated')
+    if not any(label[1] is not None for label in labels):
+        raise ValueError('No architecture-specific loader coverage')
+    return [(label[1], body[label.end():labels[index + 1].start() if index + 1 < len(labels) else end])
+            for index, label in enumerate(labels)]
+
+
+def nextn_architectures(model: str, architecture_source: str) -> list[str]:
+    if nextn_loader(model):
+        return []  # The generic reader covers every known architecture.
+    cases = _architecture_cases(_hparams_body(model))
+    start = architecture_source.index('LLM_ARCH_NAMES = {')
+    end = architecture_source.index('\n};', start)
+    names = dict(re.findall(r'\{\s*(LLM_ARCH_[A-Z0-9_]+)\s*,\s*"([^"]+)"\s*\}', architecture_source[start:end]))
+    supported = []
+    pending = []
+    for label, case_body in cases:
+        if label is None:
+            pending = []
+            continue
+        pending.append(label)
+        if not case_body.strip():
+            continue  # Consecutive case labels share the following body.
+        if re.search(r'\bml\.get_key\s*\(\s*LLM_KV_NEXTN_PREDICT_LAYERS\s*,\s*hparams\.nextn_predict_layers\s*,', case_body):
+            for name in pending:
+                if name not in names:
+                    raise ValueError(f'Unknown NextN architecture label: {name}')
+                supported.append(names[name])
+        pending = []
+    return sorted(set(supported))
 
 
 def _fetch(url: str) -> bytes:
@@ -116,7 +187,7 @@ def build_entry(tag: str, source_path: Path | None, ggml_path: Path | None = Non
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError(f"{tag}: unexpected commit {commit!r}")
     return {"commit": commit, "architectures": architecture_names(source), "tensorTypes": tensor_types(ggml),
-            "nextnLoader": nextn_loader(model)}
+            "nextnLoader": nextn_loader(model), "nextnArchitectures": nextn_architectures(model, source)}
 
 
 def render(document: dict) -> str:
