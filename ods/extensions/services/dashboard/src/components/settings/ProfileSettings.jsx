@@ -5,11 +5,11 @@ import {prepareProfilePhoto, saveProfile, useLocalProfile} from '../../lib/local
 import UserAvatar from '../UserAvatar'
 import MetalMetricIcon from '../MetalMetricIcon'
 import {usePortalIdentity} from '../../contexts/PortalIdentityContext'
-import {useI18n} from '../../i18n'
+import { useTranslation } from 'react-i18next'
 import LanguageSelector from '../../i18n/LanguageSelector'
 
 export default function ProfileSettings() {
-  const {t} = useI18n()
+  const { t } = useTranslation()
   const {session, changePassword, signOut} = useDashboardSession()
   const {displayName} = usePortalIdentity()
   const saved = useLocalProfile()
@@ -49,7 +49,7 @@ export default function ProfileSettings() {
     catch {setError(t('profile.saveError'));setNotice('')}
   }
   return <form className="profile-settings" aria-label={t('profile.aria')} onSubmit={submit}>
-    <h2>{t('profile.identity')}</h2><p>{t('profile.identityBody', {displayName})}</p>
+    <h2>{t('profile.identity')}</h2><p>{t('profile.identityBody', { displayName })}</p>
     <LanguageSelector />
     <div className="profile-photo-editor"><UserAvatar profile={draft}/><div>
       <input ref={input} type="file" accept="image/jpeg,image/png,image/webp" aria-label={t('profile.photo')} onChange={upload} hidden/>
