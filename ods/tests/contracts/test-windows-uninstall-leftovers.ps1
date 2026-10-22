@@ -34,6 +34,8 @@ function Stop-ODSOpenCodeRuntime { }
 function Remove-ODSOpenCodeStartupFallback { param($InstallDir) }
 function Get-NativeInferenceBackend { return 'none' }
 function Stop-NativeInferenceServer { }
+function Write-ODSHostAgentSupervisorIntent { param($InstallDir, $State) $script:lastAgentIntent = $State }
+function Get-ODSHostAgentTaskName { param($InstallDir) return 'ODSHostAgent-scoped-fixture' }
 $script:ODS_AGENT_TASK_NAME = 'ODSHostAgent'; $script:ODS_MODEL_UPGRADE_TASK_NAME = 'ODSModelUpgrade'
 $script:LEMONADE_TASK_NAME = 'ODSLemonadeRuntime'; $script:OPENCODE_TASK_NAME = 'ODSOpenCodeWeb'; $script:NATIVE_LLAMA_TASK_NAME = 'ODSNativeLlamaRuntime'
 function Get-ScheduledTask { param($TaskName, $ErrorAction) if ($script:tasks.ContainsKey($TaskName)) { return [pscustomobject]@{ TaskName = $TaskName; State = $script:tasks[$TaskName]; Actions = @([pscustomobject]@{Execute='python.exe'; Arguments=('"{0}/scripts/ods-host-agent.py"' -f $script:taskRoot); WorkingDirectory=$script:taskRoot}) } } }
@@ -170,6 +172,15 @@ try {
     Check (Test-ODSUninstallTaskOwned ([pscustomobject]@{Actions=@([pscustomobject]@{Execute='powershell.exe';Arguments="-NoProfile -EncodedCommand $encoded"})})) 'the generated array and py launcher is recognized without evaluation'
     $vbs = "' ODS Host Agent login startup launcher`r`nSet WshShell = CreateObject(`"WScript.Shell`")`r`nWshShell.Run `"powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $encoded`", 0, False`r`n"
     Check (Test-ODSUninstallStartupLauncherOwned $vbs) 'the generated commented Startup launcher is owned by this install'
+    $supervisor = Join-Path $InstallDir 'installers/windows/lib/host-agent-supervisor.ps1'
+    $plan = Join-Path $InstallDir 'data/host-agent-supervisor/supervisor-plan.json'
+    $supervisorArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $supervisor + '" -Run -PlanPath "' + $plan + '"'
+    Check (Test-ODSUninstallTaskOwned ([pscustomobject]@{Actions=@([pscustomobject]@{
+        Execute='powershell.exe';Arguments=$supervisorArguments;WorkingDirectory=$InstallDir
+    })})) 'the scoped supervisor task is identified through its exact installed script'
+    $supervisorVbsArguments = $supervisorArguments.Replace('"', '""')
+    $supervisorVbs = "' ODS Host Agent supervisor login startup launcher`r`nSet WshShell = CreateObject(`"WScript.Shell`")`r`nWshShell.Run `"powershell.exe $supervisorVbsArguments`", 0, False`r`n"
+    Check (Test-ODSUninstallStartupLauncherOwned $supervisorVbs) 'the supervisor Startup fallback is identified without broad VBS ownership'
     Check (Test-ODSUninstallStartupLauncherOwned ($vbs -replace "^' ODS Host Agent login startup launcher`r`n", '')) 'an older uncommented Startup launcher remains recognized'
     $foreignEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes("Start-Process python.exe -ArgumentList @('C:/Foreign/agent.py')"))
     $foreignVbs=$vbs.Replace($encoded, $foreignEncoded)

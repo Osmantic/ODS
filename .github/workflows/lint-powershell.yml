@@ -336,6 +336,26 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-host-agent-stale-pid.ps1
 
+      - name: Windows Native Process Job Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-native-process-job.ps1
+
+      - name: Windows Native Process Job Contracts (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-native-process-job.ps1
+
+      - name: Windows Host Agent Supervisor Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-host-agent-supervisor.ps1
+
+      - name: Windows Host Agent Supervisor Contracts (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-host-agent-supervisor.ps1
+
       - name: Windows Install Model Proof
         shell: pwsh
         run: ./tests/contracts/test-windows-install-model-proof.ps1

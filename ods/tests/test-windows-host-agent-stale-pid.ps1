@@ -9,6 +9,8 @@ $cliPath = Join-Path $windowsDir 'ods.ps1'
 $phasePath = Join-Path $windowsDir 'phases/07-devtools.ps1'
 $helperPath = Join-Path $windowsDir 'lib/host-agent-process.ps1'
 if (Test-Path -LiteralPath $helperPath) { . $helperPath }
+$supervisorHelperPath = Join-Path $windowsDir 'lib/host-agent-supervisor.ps1'
+if (Test-Path -LiteralPath $supervisorHelperPath) { . $supervisorHelperPath }
 
 function Get-TestAst {
     param([string]$Path)
@@ -34,8 +36,8 @@ $InstallDir = Join-Path $testRoot 'owned install'
 $foreignDir = Join-Path $testRoot 'other install'
 $agentScript = Join-Path (Join-Path $InstallDir 'bin') 'ods-host-agent.py'
 $foreignScript = Join-Path (Join-Path $foreignDir 'bin') 'ods-host-agent.py'
-$script:ODS_AGENT_PID_FILE = Join-Path $testRoot 'agent.pid'
-$script:ODS_AGENT_LOG_FILE = Join-Path $testRoot 'agent.log'
+$script:ODS_AGENT_PID_FILE = Join-Path (Join-Path $InstallDir 'data') 'agent.pid'
+$script:ODS_AGENT_LOG_FILE = Join-Path (Join-Path $InstallDir 'data') 'agent.log'
 $script:ODS_AGENT_PORT = 3003
 $script:ODS_AGENT_HEALTH_URL = 'http://127.0.0.1:3003/health'
 $script:ODS_AGENT_TASK_NAME = 'ODSHostAgentFixture'
@@ -79,14 +81,18 @@ function Write-AI { param($Message) }
 function Write-AISuccess { param($Message) }
 function Write-AIWarn { param($Message) }
 function Write-AIError { param($Message) throw $Message }
-function Start-Sleep { param($Seconds) }
+function Start-Sleep { param($Seconds, $Milliseconds) }
 function Invoke-WebRequest {
     param($Uri, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction)
     if (-not $script:healthy) { throw 'Fixture agent offline' }
-    return [pscustomobject]@{StatusCode=200}
+    return [pscustomobject]@{StatusCode=200;Content='{"status":"ok","version":"fixture"}'}
 }
 function Resolve-ODSHostAgentPython { return [pscustomobject]@{FilePath=$script:python;PrefixArgs=@()} }
-function Stop-ScheduledTask { param($TaskName, $ErrorAction) }
+function Get-ScheduledTask {
+    param($TaskName, $TaskPath, $ErrorAction)
+    return @($script:scheduledTasks)
+}
+function Stop-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) }
 function New-ScheduledTaskAction { param($Execute, $Argument, $WorkingDirectory) return @{} }
 function New-ScheduledTaskTrigger { param([switch]$AtLogOn) return @{} }
 function New-ScheduledTaskSettingsSet {
@@ -98,7 +104,7 @@ function Register-ScheduledTask {
     param($TaskName, $Action, $Trigger, $Settings, $Principal, $Description, [switch]$Force, $ErrorAction)
     $script:registrations++
 }
-function Start-ScheduledTask { param($TaskName) $script:healthy = $true }
+function Start-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:healthy = $true }
 function Get-NetTCPConnection { param($LocalPort, $State, $ErrorAction) return $script:listeners }
 function Test-Path {
     param($Path, $LiteralPath, $PathType, $ErrorAction)
@@ -108,11 +114,12 @@ function Test-Path {
 }
 
 try {
-    New-Item -ItemType Directory -Path (Split-Path $agentScript), (Split-Path $foreignScript) -Force | Out-Null
+    New-Item -ItemType Directory -Path (Split-Path $agentScript), (Split-Path $foreignScript), `
+        (Split-Path $script:ODS_AGENT_PID_FILE) -Force | Out-Null
     Set-Content -LiteralPath $agentScript -Value 'import time; time.sleep(120)' -Encoding ascii
     Set-Content -LiteralPath $foreignScript -Value 'import time; time.sleep(120)' -Encoding ascii
     $foreign = New-AgentFixture $foreignScript
-    $script:healthy = $false; $script:registrations = 0; $script:listeners = @()
+    $script:healthy = $false; $script:registrations = 0; $script:listeners = @(); $script:scheduledTasks = @()
 
     Set-Content -LiteralPath $script:ODS_AGENT_PID_FILE -Value $foreign.Id
     Invoke-Agent stop
@@ -147,7 +154,7 @@ try {
     $ownedListener = New-AgentFixture $agentScript
     $script:listeners = @([pscustomobject]@{OwningProcess=$ownedListener.Id})
     Invoke-Agent stop
-    Assert-Test (-not (Test-FixtureAlive $ownedListener)) 'stop still terminates an owned listener without a PID receipt'
+    Assert-Test (Test-FixtureAlive $ownedListener) 'stop preserves even a matching listener when no owned PID receipt exists'
     $script:listeners = @()
 
     $lookalike = New-AgentFixture $agentScript -CommandString
@@ -183,6 +190,23 @@ try {
     Invoke-Agent start
     Assert-Test (Test-FixtureAlive $foreign) 'failed ownership inspection preserves the process'
     Assert-Test ($script:registrations -eq 1) 'failed ownership inspection still permits stale-receipt recovery'
+
+    # An existing task with a modified action is foreign control-plane state.
+    # Refuse it before reaching compatibility PID termination.
+    Remove-Item Function:\Get-CimInstance -ErrorAction SilentlyContinue
+    $modifiedTarget = New-AgentFixture $agentScript
+    Set-Content -LiteralPath $script:ODS_AGENT_PID_FILE -Value $modifiedTarget.Id
+    $current = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $script:scheduledTasks = @([pscustomobject]@{
+        TaskPath = '\'
+        Principal = [pscustomobject]@{UserId=$current.Name}
+        Actions = @([pscustomobject]@{
+            Execute='powershell.exe';Arguments='-NoProfile -File foreign.ps1';WorkingDirectory=$InstallDir
+        })
+    })
+    Invoke-Agent stop
+    Assert-Test (Test-FixtureAlive $modifiedTarget) 'a modified task action is refused before process termination'
+    Assert-Test (Test-Path $script:ODS_AGENT_PID_FILE) 'refusal preserves the PID receipt for diagnosis'
 
     Write-Host "[PASS] $script:passes native Windows host-agent stale PID checks"
 } finally {

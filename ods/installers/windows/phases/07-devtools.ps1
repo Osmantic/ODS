@@ -24,6 +24,7 @@
 Write-Phase -Phase 7 -Total 13 -Name "DEVELOPER TOOLS" -Estimate "~2-5 minutes"
 
 . (Join-Path $PSScriptRoot '../lib/host-agent-process.ps1')
+. (Join-Path $PSScriptRoot '../lib/host-agent-supervisor.ps1')
 
 if ($dryRun) {
     Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
@@ -426,7 +427,8 @@ if (Test-Path $_agentScript) {
             }
         }
 
-        # Kill existing agent on reinstall (matches Linux force-restart pattern)
+        # Retire an existing direct-Python agent before publishing the new
+        # supervisor plan. Exact script identity is verified before stopping.
         if (Test-Path $script:ODS_AGENT_PID_FILE) {
             $_oldPid = $null
             try {
@@ -436,39 +438,45 @@ if (Test-Path $_agentScript) {
             Remove-Item $script:ODS_AGENT_PID_FILE -Force -ErrorAction SilentlyContinue
         }
 
-        # Ensure data directory exists for PID and log files
+        # Ensure data directory exists for PID, log and private supervisor files.
         $pidDir = Split-Path $script:ODS_AGENT_PID_FILE
         New-Item -ItemType Directory -Path $pidDir -Force -ErrorAction SilentlyContinue | Out-Null
 
-        # Run the agent through Task Scheduler immediately so SSH-launched
-        # installs keep the host agent alive after the session exits. Prepend
-        # Docker to PATH so the agent can find docker.exe (Docker Desktop may
-        # not be in the system PATH yet after fresh install).
+        # Task Scheduler owns one foreground supervisor scoped to this user and
+        # installation. The supervisor owns Python through a kill-on-close job,
+        # verifies health and applies bounded crash restart.
         $_dockerBin = "C:\Program Files\Docker\Docker\resources\bin"
-        $_psQuote = {
-            param([string]$Value)
-            "'" + ($Value -replace "'", "''") + "'"
+        $_supervisorPaths = Write-ODSHostAgentSupervisorPlan -PythonPath $_python3.FilePath `
+            -PythonPrefixArgs @($_python3.PrefixArgs) -AgentScript $_agentScript `
+            -InstallDir $installDir -Port $script:ODS_AGENT_PORT `
+            -PidFile $script:ODS_AGENT_PID_FILE -LogFile $script:ODS_AGENT_LOG_FILE `
+            -DockerBin $_dockerBin
+        Write-ODSHostAgentSupervisorIntent -InstallDir $installDir -State running
+        $_agentTaskName = Get-ODSHostAgentTaskName $installDir
+        $_supervisorArguments = Get-ODSHostAgentSupervisorArguments $_supervisorPaths.Plan
+
+        # Retire only the legacy task shape this installation previously wrote.
+        if ($script:ODS_AGENT_TASK_NAME -cne $_agentTaskName) {
+            $_legacyTasks = @(Get-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -TaskPath '\' -ErrorAction SilentlyContinue)
+            if ($_legacyTasks.Count -eq 1 -and @($_legacyTasks[0].Actions).Count -eq 1) {
+                $_legacyAction = $_legacyTasks[0].Actions[0]
+                $_legacyDescription = [string]$_legacyTasks[0].Description
+                if ([IO.Path]::GetFileName([string]$_legacyAction.Execute) -ieq 'powershell.exe' -and
+                    [string]$_legacyAction.Arguments -match '^-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand ' -and
+                    [IO.Path]::GetFullPath([string]$_legacyAction.WorkingDirectory).Equals(
+                        [IO.Path]::GetFullPath($installDir), [StringComparison]::OrdinalIgnoreCase) -and
+                    $_legacyDescription -ceq 'ODS Host Agent -- manages extensions and bridges dashboard to host') {
+                    Stop-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -TaskPath '\' -ErrorAction SilentlyContinue
+                    Unregister-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -TaskPath '\' -Confirm:$false -ErrorAction Stop
+                }
+            }
         }
-        $_dockerPathLiteral = & $_psQuote "$_dockerBin;"
-        $_pythonLiteral = & $_psQuote $_python3.FilePath
-        $_pythonPrefixArgsLiteral = "@(" + (($_python3.PrefixArgs | ForEach-Object { & $_psQuote $_ }) -join ", ") + ")"
-        $_agentScriptLiteral = & $_psQuote $_agentScript
-        $_pidFileLiteral = & $_psQuote $script:ODS_AGENT_PID_FILE
-        $_installDirLiteral = & $_psQuote $installDir
-        $_logFileLiteral = & $_psQuote $script:ODS_AGENT_LOG_FILE
-        $_agentCommand = @"
-`$env:PATH = $_dockerPathLiteral + `$env:PATH
-`$agentArgs = $_pythonPrefixArgsLiteral + @($_agentScriptLiteral, '--port', '$($script:ODS_AGENT_PORT)', '--pid-file', $_pidFileLiteral, '--install-dir', $_installDirLiteral)
-Set-Location $_installDirLiteral
-Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirectory $_installDirLiteral -WindowStyle Hidden -RedirectStandardError $_logFileLiteral -Wait
-"@
-        $_encodedAgentCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_agentCommand))
 
         # Register Windows Scheduled Task for login persistence
-        try { Stop-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME -ErrorAction SilentlyContinue } catch { }
+        try { Stop-ScheduledTask -TaskName $_agentTaskName -ErrorAction SilentlyContinue } catch { }
 
         $taskAction = New-ScheduledTaskAction -Execute "powershell.exe" `
-            -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand" `
+            -Argument $_supervisorArguments `
             -WorkingDirectory $installDir
         $taskTrigger  = New-ScheduledTaskTrigger -AtLogOn
         $taskSettings = New-ScheduledTaskSettingsSet `
@@ -478,18 +486,18 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
 
         $taskError = $null
         try {
-            Register-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME `
+            Register-ScheduledTask -TaskName $_agentTaskName `
                 -Action $taskAction -Trigger $taskTrigger -Settings $taskSettings -Principal $taskPrincipal `
-                -Description "ODS Host Agent -- manages extensions and bridges dashboard to host" `
+                -Description "ODS Host Agent supervisor for $installDir" `
                 -Force -ErrorAction Stop | Out-Null
-            Start-ScheduledTask -TaskName $script:ODS_AGENT_TASK_NAME
+            Start-ScheduledTask -TaskName $_agentTaskName
             # Cleanup any legacy VBScript startup launcher if scheduled task succeeded
             $startupFolder = [Environment]::GetFolderPath("Startup")
             $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
             if (Test-Path $vbsFile) {
                 Remove-Item $vbsFile -Force -ErrorAction SilentlyContinue
             }
-            Write-AISuccess "Host agent scheduled and started (Task: $($script:ODS_AGENT_TASK_NAME))"
+            Write-AISuccess "Host agent supervisor scheduled and started (Task: $_agentTaskName)"
 
             Start-Sleep -Seconds 3
             try {
@@ -510,20 +518,22 @@ Start-Process -FilePath $_pythonLiteral -ArgumentList `$agentArgs -WorkingDirect
 
             $startupFolder = [Environment]::GetFolderPath("Startup")
             $vbsFile = Join-Path $startupFolder "ods-host-agent.vbs"
+            $_vbsArguments = $_supervisorArguments.Replace('"', '""')
             $vbsContent = @"
-' ODS Host Agent login startup launcher
+' ODS Host Agent supervisor login launcher
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand $_encodedAgentCommand", 0, False
+WshShell.Run "powershell.exe $_vbsArguments", 0, False
 "@
             try {
                 Write-Utf8NoBom -Path $vbsFile -Content $vbsContent
                 Write-AISuccess "Startup persistence configured via Start Menu Startup folder: $vbsFile"
-                # Start the agent now using the startup script
+                # Start the same supervisor now using the startup script.
                 Start-Process wscript.exe -ArgumentList ('"{0}"' -f $vbsFile) -NoNewWindow
             } catch {
                 Write-AIError "Failed to set up alternative startup persistence: $_"
-                Write-AIWarn "Starting host agent directly for this session..."
-                Start-Process -FilePath $_python3.FilePath -ArgumentList @($_agentScript, '--port', "$($script:ODS_AGENT_PORT)", '--pid-file', $script:ODS_AGENT_PID_FILE, '--install-dir', $installDir) -WorkingDirectory $installDir -WindowStyle Hidden -RedirectStandardError $script:ODS_AGENT_LOG_FILE
+                Write-AIWarn "Starting the host agent supervisor directly for this session..."
+                Start-Process -FilePath powershell.exe -ArgumentList $_supervisorArguments `
+                    -WorkingDirectory $installDir -WindowStyle Hidden
             }
         }
     } else {
