@@ -184,6 +184,11 @@ patch adds the missing `<algorithm>` include in `common/ngram-mod.cpp`.
 The PE import gate permits only Windows system DLLs. HTTPS acquisition uses
 .NET; the model server remains authenticated loopback-only.
 
+Generation and prompt processing use explicit matching thread budgets, capped
+at eight, while retaining b9014's lower-core MinGW default. This prevents the
+scalar preview from oversubscribing large Windows hosts. It is a conservative
+default, not per-machine tuning or a universal performance guarantee.
+
 The package retains engine, toolchain, frontend and SDK notices. Keep them with
 the binaries. `native-runtime.json`, `portal.json` and `bundle.json` record
 provenance and runtime asset hashes. `-IncludeModel -ModelPath <GGUF>`

@@ -188,13 +188,21 @@ static class DesktopTests
     }
     static async Task Processes(string root)
     {
+        foreach (var boundary in new[] { new[] { 1, 1 }, new[] { 2, 2 }, new[] { 4, 4 }, new[] { 6, 3 },
+            new[] { 8, 4 }, new[] { 16, 8 }, new[] { 36, 8 }, new[] { 72, 8 } })
+            Check(LocalRuntime.PreviewCpuThreads(boundary[0]) == boundary[1],
+                "native CPU thread policy preserves low-core defaults and caps logical count " + boundary[0]);
         string package = Path.Combine(root, "package with spaces and Unicode đ");
         Bundle bundle = FixtureBundle(package, "fixture");
         var foreign = new TcpListener(IPAddress.Loopback, 0); foreign.Start();
         try
         {
             string inherited = Environment.GetEnvironmentVariable("LLAMA_ARG_TOOLS");
+            string inheritedThreads = Environment.GetEnvironmentVariable("LLAMA_ARG_THREADS");
+            string inheritedBatch = Environment.GetEnvironmentVariable("LLAMA_ARG_THREADS_BATCH");
             Environment.SetEnvironmentVariable("LLAMA_ARG_TOOLS", "all");
+            Environment.SetEnvironmentVariable("LLAMA_ARG_THREADS", "999");
+            Environment.SetEnvironmentVariable("LLAMA_ARG_THREADS_BATCH", "999");
             int pid;
             string session;
             try
@@ -203,6 +211,9 @@ static class DesktopTests
                 {
                     await runtime.StartAsync(Path.Combine(package, "runtime"), bundle, Path.Combine(package, bundle.Model.File), root, CancellationToken.None);
                     pid = runtime.ProcessId; session = runtime.SessionDirectory;
+                    string selectedThreads = LocalRuntime.PreviewCpuThreads(Environment.ProcessorCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    Check(File.ReadAllText(Path.Combine(package, "native-thread-arguments.txt")) == selectedThreads + "," + selectedThreads,
+                        "the actual child receives matching bounded generation/batch threads despite poisoned inherited defaults");
                     Check(runtime.IsRunning, "real fixture child starts with poisoned LLAMA environment removed");
                     Check(new DirectoryInfo(session).GetAccessControl().AreAccessRulesProtected, "API-key directory has protected Windows ACLs");
                     using (var unauth = new HttpClient(new HttpClientHandler { UseProxy = false }))
@@ -253,7 +264,12 @@ static class DesktopTests
                         await Fails(() => runtime.ChatAsync("wait", cancellation.Token), "in-flight chat cancellation reaches the HTTP request");
                 }
             }
-            finally { Environment.SetEnvironmentVariable("LLAMA_ARG_TOOLS", inherited); }
+            finally
+            {
+                Environment.SetEnvironmentVariable("LLAMA_ARG_TOOLS", inherited);
+                Environment.SetEnvironmentVariable("LLAMA_ARG_THREADS", inheritedThreads);
+                Environment.SetEnvironmentVariable("LLAMA_ARG_THREADS_BATCH", inheritedBatch);
+            }
             Check(Gone(pid), "normal disposal stops the exact owned child");
             Check(!Directory.Exists(session), "normal disposal removes the session key");
             Check(foreign.Server.IsBound, "normal shutdown leaves a foreign listener alone");
@@ -330,8 +346,13 @@ static class DesktopTests
     static void Fixture(string[] args)
     {
         string model = args[Array.IndexOf(args, "--model") + 1];
+        int threads = FixtureThreads(args, "--threads"), batch = FixtureThreads(args, "--threads-batch");
+        if (threads != batch) throw new InvalidDataException("Mismatched native thread budgets.");
+        File.WriteAllText(Path.Combine(Path.GetDirectoryName(model), "native-thread-arguments.txt"), threads + "," + batch);
         string key = File.ReadAllText(args[Array.IndexOf(args, "--api-key-file") + 1]).Trim();
-        if (Environment.GetEnvironmentVariable("LLAMA_ARG_TOOLS") != null) Environment.Exit(2);
+        if (Environment.GetEnvironmentVariable("LLAMA_ARG_TOOLS") != null ||
+            Environment.GetEnvironmentVariable("LLAMA_ARG_THREADS") != null ||
+            Environment.GetEnvironmentVariable("LLAMA_ARG_THREADS_BATCH") != null) Environment.Exit(2);
         var server = new TcpListener(IPAddress.Loopback, Int32.Parse(args[Array.IndexOf(args, "--port") + 1]));
         server.Start();
         while (true)
@@ -408,6 +429,14 @@ static class DesktopTests
             byte[] prefix = Encoding.ASCII.GetBytes("HTTP/1.1 " + code + " Result\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + payload.Length + "\r\n\r\n");
             stream.Write(prefix, 0, prefix.Length); stream.Write(payload, 0, payload.Length);
         }
+    }
+    static int FixtureThreads(string[] args, string flag)
+    {
+        int index = Array.IndexOf(args, flag), value;
+        if (args.Count(argument => argument == flag) != 1 || index < 0 || index + 1 >= args.Length ||
+            !Int32.TryParse(args[index + 1], out value) || value < 1 || value > 8)
+            throw new InvalidDataException("Missing, duplicate or unbounded native thread argument.");
+        return value;
     }
     const string FixtureDocumentText = "# Native document\n\nVerified UTF-8: ch\u00e0o b\u1ea1n.\n";
     static string DocumentFixture(Dictionary<string, object> request, object[] messages, string prompt, bool final)

@@ -208,6 +208,13 @@ namespace OdsDesktop
         public int TurnCount { get { return history.Count / 2; } }
         public bool IsRunning { get { return child != null && !child.HasExited; } }
         public string SessionDirectory { get { return session; } }
+        internal static int PreviewCpuThreads(int logicalProcessors)
+        {
+            // Keep b9014's MinGW lower-core default, but avoid oversubscribing
+            // scalar inference across large Windows processor groups/sockets.
+            int fallback = logicalProcessors <= 4 ? logicalProcessors : logicalProcessors / 2;
+            return Math.Max(1, Math.Min(8, fallback));
+        }
         static string Argument(string text)
         {
             var result = new StringBuilder("\"");
@@ -257,9 +264,11 @@ namespace OdsDesktop
                 listener.Stop();
                 job = new ChildJob();
                 var start = new ProcessStartInfo(Path.Combine(runtimeDirectory, "llama-server.exe"));
+                string threads = PreviewCpuThreads(Environment.ProcessorCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 start.Arguments = String.Join(" ", new[] { "--model", modelPath, "--alias", Alias, "--host", "127.0.0.1",
                     "--port", Port.ToString(), "--ctx-size", "4096", "--parallel", "1", "--device", "none",
-                    "--n-gpu-layers", "0", "--fit", "off", "--jinja", "--no-webui", "--api-key-file", keyPath }.Select(Argument));
+                    "--n-gpu-layers", "0", "--threads", threads, "--threads-batch", threads,
+                    "--fit", "off", "--jinja", "--no-webui", "--api-key-file", keyPath }.Select(Argument));
                 start.UseShellExecute = false;
                 start.CreateNoWindow = true;
                 start.WorkingDirectory = runtimeDirectory;

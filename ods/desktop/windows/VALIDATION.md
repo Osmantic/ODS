@@ -176,6 +176,42 @@ matched the already exercised package byte-for-byte.
 
 ## Regression and review evidence
 
+### Scalar CPU thread budget
+
+Qualification of downloaded artifact `39833793883` exposed a real document
+timeout on this dual-socket host. Setup/Finish and all 11 EXE checks passed,
+but the document card never completed. An isolated exact-payload model probe
+then confirmed the first tool request reached its unchanged five-minute
+deadline: only 41 tokens had decoded after about 260 seconds. A UI timeout
+receipt alone did not establish the failing phase; phase-timed HTTP evidence
+did. The previous failed run and its normal owned uninstall are retained.
+
+Pinned b9014's MinGW build falls back to logical CPU counts for its default
+worker budget. This host reports 72 logical CPUs system-wide and 36 to .NET
+Framework. Excess workers hurt the scalar profile here. With the same checked
+CI engine/model and prompt, explicit eight-thread generation/batch budgets
+completed both tool rounds in **76.99 seconds**, including startup. The first
+request took 49.67 seconds (138 output tokens), and the final reply took 14.56
+seconds (19 output tokens). The resulting document was 503 bytes. Sampling is
+not fixed, so these observations are not a controlled speed ratio or a universal
+benchmark.
+
+The launcher now explicitly caps matching generation/batch budgets at eight,
+preserving the existing lower-core selection. Context, output budgets, the
+five-minute deadline, authentication, integrity and Job ownership are unchanged.
+Boundary checks cover low-core and large logical counts; the actual fixture
+child rejects missing, duplicate, mismatched or unbounded flags and records its
+received budget. Poisoned inherited thread defaults must still be stripped.
+The policy/argv/environment delta received independent static review.
+
+The corrected source passed **277 native checks** locally and the full **11-check
+real-model document WebView flow**, including actual Cancel/Save, exact bytes and
+hash, idle confirmation and exact-child closure. That UI run produced a 547-byte
+document. A private negative control removing only the two thread arguments
+failed at the actual fixture child's startup; the unchanged policy boundaries
+passed first. No timeout, output limit or safety check was relaxed to make the
+qualification pass.
+
 A separate static review found an installer safety gap: failed filesystem
 enumeration could be treated as an empty/link-free tree. The corrected path
 uses direct Win32 enumeration with retained last-error codes; only expected
