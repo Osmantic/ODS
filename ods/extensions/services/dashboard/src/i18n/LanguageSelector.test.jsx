@@ -1,19 +1,20 @@
-import {fireEvent,render,screen} from '@testing-library/react'
-import {beforeEach,describe,expect,it} from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it } from 'vitest'
 import LanguageSelector from './LanguageSelector'
-import {LANGUAGE_KEY} from './index'
+import i18n, { LANGUAGE_KEY } from './index'
 
 describe('LanguageSelector', () => {
-  beforeEach(() => localStorage.clear())
+  beforeEach(async () => {
+    localStorage.clear()
+    await i18n.changeLanguage('en')
+  })
 
-  it('changes and persists the selected language', () => {
+  it('changes language and persists the selection', async () => {
     render(<LanguageSelector />)
-    const select = screen.getByRole('combobox', {name: 'Language'})
+    fireEvent.change(screen.getByRole('combobox', { name: 'Language' }), { target: { value: 'es' } })
 
-    fireEvent.change(select, {target: {value: 'es'}})
-
-    expect(select).toHaveValue('es')
+    await waitFor(() => expect(screen.getByText('Idioma')).toBeInTheDocument())
     expect(localStorage.getItem(LANGUAGE_KEY)).toBe('es')
-    expect(screen.getByText('Idioma')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'Idioma' })).toHaveValue('es')
   })
 })
