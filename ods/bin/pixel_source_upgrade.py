@@ -1661,6 +1661,16 @@ def _failure_message(error):
         "source-ready-baseline-required": "The existing Pixel installation has no ready source-upgrade baseline.",
     }.get(str(error)) if isinstance(error, UpgradeError) else None
     if reason:
+        if str(error) == "source-controller-state-missing":
+            return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
+                    "installation state. If you choose to retire this installation instead, run "
+                    "'bash ./ods-uninstall.sh --keep-models --keep-data' from the installed ODS directory "
+                    "and confirm its uninstall prompt. If uninstall refuses, preserve its state and stop; "
+                    "do not delete files manually. After successful uninstall, rerun 'bash ./install.sh' "
+                    "from the new source checkout with your install options. Keep the model-backup "
+                    "location printed by the uninstaller: a later install does not automatically restore "
+                    "that backup. Docker images and build cache are retained, so check free disk space "
+                    "before reinstalling. Do not recreate protected state or discard any existing admission hold.")
         return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
                 "installation state, or use an owner-authorized clean install. "
                 "Do not recreate protected state or discard any existing admission hold.")
