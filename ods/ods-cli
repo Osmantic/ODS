@@ -1804,7 +1804,6 @@ cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
     load_env
-    ensure_llama_cpu_budget
 
     # Parse flags vs positional service name
     local rebuild_images="false"
@@ -1817,6 +1816,13 @@ cmd_restart() {
             *) service="$1"; shift ;;
         esac
     done
+    # A full restart or a llama-server restart under a model switch leaves the
+    # switch half-applied, as an update would. Refuse before changing CPU
+    # budgets in .env or dispatching to the native Mac llama helper.
+    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
+        _ods_cli_refuse_under_model_lifecycle restart
+    fi
+    ensure_llama_cpu_budget
     if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama restart
@@ -2374,6 +2380,10 @@ cmd_update() {
           && "$_COMPAT_INSTALLED_VER" != "$_COMPAT_TARGET_VER" ]]; then
         log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
     fi
+
+    # Never restart the agent or recreate the stack under a model switch or a
+    # Portal access check: either would be left half-applied.
+    _ods_cli_refuse_under_model_lifecycle update
 
     # Require the configuration snapshot that `ods rollback` can restore,
     # before changing configuration, Compose selection, images or containers.
@@ -5484,6 +5494,61 @@ _agent_mode_snapshot() {
         select(.configuredMode == "local" or .configuredMode == "cloud" or .configuredMode == "hybrid") |
         select(.effectiveMode == "local" or .effectiveMode == "cloud" or .effectiveMode == "hybrid" or .effectiveMode == "unknown") |
         [.effectiveMode, .configuredMode] | join(" ")' 2>/dev/null
+}
+
+# Print what is holding the host agent's model lifecycle, or nothing when it is
+# idle. `ods update` recreates the stack and restarts the agent, which cuts a
+# model switch or Portal access check off half-done (the dashboard's update
+# already claims this boundary). Fails when the agent cannot be asked.
+_agent_model_lifecycle_busy() {
+    local key port host status recovery
+    key="$(_env_get_raw ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(_env_get_raw DASHBOARD_API_KEY)"
+    case "$key" in
+        \"*\") key="${key:1:${#key}-2}" ;;
+        \'*\') key="${key:1:${#key}-2}" ;;
+    esac
+    [[ -n "$key" && "$key" != *$'\n'* && "$key" != *$'\r'* ]] || return 1
+    port="$(_env_get_raw ODS_AGENT_PORT)"
+    port="${port#\"}"; port="${port%\"}"
+    port="${port#\'}"; port="${port%\'}"
+    [[ "$port" =~ ^[0-9]+$ ]] || port=7710
+    host="$(_agent_probe_host)"
+    # Keep credentials off argv and out of diagnostics, including on failure.
+    status=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 5 --header @- \
+            "http://${host}:${port}/v1/model/status" 2>/dev/null) || return 1
+    # A known active operation is enough to refuse, whatever recovery would
+    # say; a switch in progress also reports its recovery as pending.
+    if printf '%s' "$status" | jq -e '.lifecycleActive == true' >/dev/null; then
+        printf '%s' "$status" | jq -r '"\(.activeOperation // "a model operation")\(if .activeTarget then " for \(.activeTarget)" else "" end) is in progress"'
+        return
+    fi
+    recovery=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 5 --header @- \
+            "http://${host}:${port}/v1/model/recovery" 2>/dev/null) || return 1
+    printf '%s' "$recovery" | jq -er 'if .pending == true then
+        "an interrupted model switch is waiting for recovery (ods model recover)" else "" end' || return 1
+}
+
+# Refuse $1 (a CLI action that recreates the stack or restarts the agent or
+# llama-server) while the agent's model lifecycle is busy; warn and continue
+# when the agent cannot be asked.
+_ods_cli_refuse_under_model_lifecycle() {
+    local action="$1" label lifecycle_busy=""
+    case "$action" in
+        update) label="Update" ;;
+        restart) label="Restart" ;;
+        *) label="ods $action" ;;
+    esac
+    if lifecycle_busy="$(_agent_model_lifecycle_busy)"; then
+        lifecycle_busy="$(printf '%s\n' "$lifecycle_busy" | sed '/^$/d' | paste -sd ';' -)"
+        if [[ -n "$lifecycle_busy" ]]; then
+            error "$label not started: ${lifecycle_busy//;/; }. Let it finish (or recover it), then run ods ${action} again."
+        fi
+    else
+        warn "Could not ask the host agent whether a model change is in progress; continuing."
+    fi
 }
 
 _agent_refresh_mode() {
