@@ -3,9 +3,13 @@
 param([Parameter(Mandatory=$true)][string]$PackageDirectory,
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [Parameter(Mandatory=$true)][string]$ToolsCache,
-    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')][string]$Version='0.1.0.0')
+    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')][string]$Version='0.2.0.0')
 $ErrorActionPreference='Stop'
 if(@($Version.Split('.') | Where-Object {[int64]$_ -gt 65535}).Count){throw 'Installer version parts must be between 0 and 65535.'}
+# Schema 2 documents cannot be opened by the published 0.1 text-only reader.
+# Keep the existing installer's numeric downgrade guard effective; reject an
+# older label before reading a package, acquiring tools or creating output.
+if([version]$Version -lt [version]'0.2.0.0'){throw 'Saved document support requires preview installer version 0.2.0.0 or newer.'}
 $package=[IO.Path]::GetFullPath($PackageDirectory)
 $output=[IO.Path]::GetFullPath($OutputDirectory)
 if(Test-Path -LiteralPath $output){throw 'Use a new installer output directory to preserve prior packages.'}

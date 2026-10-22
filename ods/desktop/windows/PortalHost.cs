@@ -10,6 +10,7 @@ using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
+using Microsoft.Win32;
 
 namespace OdsDesktop
 {
@@ -39,6 +40,7 @@ namespace OdsDesktop
         readonly NativePortalSession session;
         readonly string assets, profile;
         readonly HashSet<string> allowedAssets;
+        readonly TextBlock downloadStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(12, 0, 0, 0) };
         bool closed;
         public bool RestartRequested { get; private set; }
         public static string RuntimePrerequisite()
@@ -62,6 +64,7 @@ namespace OdsDesktop
             restart.Click += (sender, args) => { RestartRequested = true; Close(); };
             toolbar.Children.Add(restart);
             toolbar.Children.Add(new TextBlock { Text = "  Native Windows · local CPU · saved conversations", VerticalAlignment = VerticalAlignment.Center });
+            toolbar.Children.Add(downloadStatus);
             DockPanel.SetDock(toolbar, Dock.Top); dock.Children.Add(toolbar); dock.Children.Add(view); Content = dock;
             Loaded += async (sender, args) => await InitializeAsync();
             Closed += (sender, args) => { closed = true; try { session.Dispose(); } finally { view.Dispose(); } };
@@ -86,6 +89,7 @@ namespace OdsDesktop
                 core.Settings.IsGeneralAutofillEnabled = false;
                 core.Settings.AreDefaultContextMenusEnabled = false;
                 core.PermissionRequested += (sender, args) => { args.State = CoreWebView2PermissionState.Deny; args.Handled = true; };
+                core.DownloadStarting += (sender, args) => SaveDocument(args);
                 core.NavigationStarting += (sender, args) =>
                 {
                     Uri target;
@@ -107,6 +111,91 @@ namespace OdsDesktop
             {
                 if (!closed) Content = new TextBlock { Text = "Portal could not open. Your saved conversations are kept.\n" + error.Message,
                     TextWrapping = TextWrapping.Wrap, Margin = new Thickness(30) };
+            }
+        }
+        public static bool CanSaveDocument(string documentUri, string downloadUri, ulong? bytes)
+        {
+            Uri document;
+            return Uri.TryCreate(documentUri, UriKind.Absolute, out document) && document.UserInfo.Length == 0 &&
+                document.GetLeftPart(UriPartial.Authority) == NativePortalSession.Origin && downloadUri != null &&
+                downloadUri.StartsWith("blob:" + NativePortalSession.Origin + "/", StringComparison.Ordinal) &&
+                (!bytes.HasValue || bytes.Value > 0 && bytes.Value <= NativeDocument.MaximumBytes);
+        }
+        public static string DownloadFileName(string documentUri, string downloadUri, string mimeType, string suggestedPath, ulong? bytes)
+        {
+            Uri document;
+            if (!Uri.TryCreate(documentUri, UriKind.Absolute, out document) || document.UserInfo.Length != 0 ||
+                document.GetLeftPart(UriPartial.Authority) != NativePortalSession.Origin || downloadUri == null ||
+                !downloadUri.StartsWith("blob:" + NativePortalSession.Origin + "/", StringComparison.Ordinal) || bytes == 0) return null;
+            string filename;
+            try { filename = Path.GetFileName(suggestedPath ?? ""); }
+            catch (ArgumentException) { return null; }
+            if (mimeType == "application/octet-stream" && filename == NativeDocument.FileName && CanSaveDocument(documentUri, downloadUri, bytes))
+                return NativeDocument.FileName;
+            // Existing Portal export is also a private Blob download. Preserve
+            // its JSON name and complete history, including exports >64 KiB.
+            if (mimeType == "application/json" && System.Text.RegularExpressions.Regex.IsMatch(filename, "\\Aods-portal-[A-Za-z0-9_-]{1,128}\\.json\\z"))
+                return filename;
+            return null;
+        }
+        void SaveDocument(CoreWebView2DownloadStartingEventArgs args)
+        {
+            // File creation is an owner choice, never a model path or a silent
+            // browser write. Generated Markdown is downloaded, never executed.
+            args.Handled = true; args.Cancel = true;
+            if (closed) return;
+            string filename = DownloadFileName(view.CoreWebView2.Source, args.DownloadOperation.Uri, args.DownloadOperation.MimeType,
+                args.ResultFilePath, args.DownloadOperation.TotalBytesToReceive);
+            if (filename == null) return;
+            // Microsoft forbids nested modal loops within WebView2 callbacks.
+            // Retain the download decision and return from DownloadStarting
+            // before opening the owner's native picker on the WPF dispatcher.
+            // https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2.downloadstarting
+            var deferred = args.GetDeferral();
+            try
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try { using (deferred) { if (!closed) ChooseDownload(args, filename); } }
+                    catch (Exception)
+                    {
+                        if (!closed) downloadStatus.Text = "The download could not start. Your saved content is kept; try Download or Export again.";
+                    }
+                }));
+            }
+            catch (Exception)
+            {
+                deferred.Dispose();
+                if (!closed) downloadStatus.Text = "The download could not start. Your saved content is kept; try Download or Export again.";
+            }
+        }
+        void ChooseDownload(CoreWebView2DownloadStartingEventArgs args, string filename)
+        {
+            bool markdown = filename == NativeDocument.FileName;
+            try
+            {
+                var dialog = new SaveFileDialog { Title = markdown ? "Save document" : "Save conversation", FileName = filename,
+                    Filter = markdown ? "Markdown document (*.md)|*.md" : "ODS conversation (*.json)|*.json", DefaultExt = markdown ? ".md" : ".json", AddExtension = true,
+                    OverwritePrompt = true, CheckPathExists = true, ValidateNames = true };
+                if (dialog.ShowDialog(this) != true) { downloadStatus.Text = "Download cancelled. No file was saved."; return; }
+                args.ResultFilePath = dialog.FileName; args.Cancel = false;
+                downloadStatus.Text = "Saving file…";
+                var operation = args.DownloadOperation;
+                EventHandler<object> completed = null;
+                completed = (sender, eventArgs) =>
+                {
+                    if (operation.State == CoreWebView2DownloadState.InProgress) return;
+                    operation.StateChanged -= completed;
+                    if (!closed) downloadStatus.Text = operation.State == CoreWebView2DownloadState.Completed
+                        ? "File saved to your chosen folder." : "The file could not be saved. Try Download or Export again.";
+                };
+                operation.StateChanged += completed;
+            }
+            catch (Exception)
+            {
+                // Native UI boundary; a failed picker never authorizes a write.
+                args.Cancel = true;
+                if (!closed) downloadStatus.Text = "The download could not start. Your saved content is kept; try Download or Export again.";
             }
         }
         async Task ResourceAsync(CoreWebView2Environment environment, CoreWebView2WebResourceRequestedEventArgs args)
@@ -143,6 +232,16 @@ namespace OdsDesktop
                         { Respond(environment, args, 415, "text/plain", "JSON request required."); return; }
                         var reply = await session.HandleAsync(documentOrigin, origin, args.Request.Method, uri.AbsolutePath, content);
                         Respond(environment, args, reply.Status, reply.Type, reply.Content);
+                    }
+                    else if (uri.AbsolutePath.StartsWith("/pixel-preview/", StringComparison.Ordinal))
+                    {
+                        Uri page;
+                        string documentOrigin = Uri.TryCreate(view.CoreWebView2.Source, UriKind.Absolute, out page) ? page.GetLeftPart(UriPartial.Authority) : "";
+                        string origin = args.Request.Headers.Contains("Origin") ? args.Request.Headers.GetHeader("Origin") : documentOrigin;
+                        var document = session.ReadDocument(documentOrigin, origin, args.Request.Method, uri.AbsolutePath);
+                        if (document == null) { Respond(environment, args, 404, "text/plain", "Document unavailable."); return; }
+                        args.Response = environment.CreateWebResourceResponse(new MemoryStream(document.ReadBytes()), 200, "OK",
+                            Headers("application/octet-stream") + "Content-Disposition: attachment; filename=\"document.md\"\r\n");
                     }
                     else
                     {

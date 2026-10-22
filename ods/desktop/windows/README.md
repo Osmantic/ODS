@@ -1,13 +1,15 @@
 # ODS Windows native Portal preview
 
-Install a Windows application, open ODS Portal, and talk to a local CPU model.
+Install a Windows application, open ODS Portal, and talk to a local CPU model
+or create a short Markdown document.
 The preview reuses Portal's composer, message rendering, conversation library,
 saved history and Stop flow inside a native WPF/WebView2 window. Running it
 requires no Docker, WSL, Git, Node, Python, terminal or administrator account.
 
 **Supported flow:** install → launch → download the checked model → Portal →
-local text answer → another turn → Stop → continue → reopen saved history.
-OpenClaw/Pixel agents, host tools, workspace artifacts, voice, images,
+local answer → explicit Create document → verified Download → Windows save
+dialog → reopen saved history. Stop and another turn remain available.
+Full OpenClaw/Pixel agents, host tools, workspace editing, voice, images,
 extensions and GPU routing remain outside this preview. Their controls are
 hidden and the native API refuses unsupported operations. Existing ODS
 installations and the supported `install.ps1` path are separate.
@@ -34,6 +36,10 @@ identifies installer/application/runtime hashes; the portable ZIP's
    and press Enter. Later launches use **Start local AI** when the model is cached.
 5. Use **New chat**, select a saved conversation, or press **Stop** during a
    response. Once Stop is acknowledged, another turn can continue.
+6. To request a short file, select **Create document**, describe it and send.
+   A completed result shows **Download document.md**. Download verifies the
+   saved bytes, then Windows asks where to save them. Cancelling saves nothing.
+   Chat is the default again when you reopen or select another conversation.
 
 This is an **unsigned development preview**, not an official website release.
 Signing, SmartScreen reputation and public website distribution remain release
@@ -48,6 +54,12 @@ does not promise exclusive per-user ownership of that component and never
 uninstalls it. See [Microsoft's distribution contract](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
 
 ## Repair, upgrades and removal
+
+Version 0.2 adds saved Markdown documents and reads existing text histories.
+Earlier previews cannot open histories containing documents. Back up `portal/`
+before changing versions and use 0.2 or newer. Setup refuses an older version
+over an existing 0.2 installation. This guard cannot cover old portable EXEs or
+reinstallation after uninstall: retained document histories still require 0.2+.
 
 Close ODS, then rerun the same installer to repair its owned files, or a newer
 installer to upgrade. Setup refuses downgrades, unrecognized installation
@@ -92,10 +104,26 @@ application and existing ODS stacks:
 - `portal/browser/`: private WebView2 profile holding Portal's conversation library.
 - `portal/results/`: owner-private atomic results keyed by chat/request. Reopening
   retrieves a retained result without replaying inference. Interrupted requests
-  remain recoverable; deletion markers reject stale writers.
+  remain recoverable; deletion markers reject stale writers. Completed document
+  results include their immutable Markdown snapshot in the same saved receipt.
+
+Create document enables one bounded local `create_markdown` tool, with the fixed
+name `document.md` and at most 64 KiB of strict UTF-8 text. It cannot read host
+files, choose host paths, run commands, fetch URLs or edit a workspace. The model
+receives the validated tool result before its final reply. Only durable completed
+results grant download access: stopped, incomplete or failed turns publish no
+file. Download verifies length and SHA-256; it does not verify the model's claims
+or the document's factual accuracy. Short generation limits can refuse a longer
+document request; ask for a shorter document and try again.
+
+Documents reopen with their saved conversation. Deleting a conversation removes
+its document access; an identical document retained by another conversation
+remains available. Deletion never removes a copy you saved to another folder.
+**Export** keeps the complete conversation as JSON, including larger histories,
+and uses its own Windows save dialog.
 
 There is one model request at a time, a 4096-token context and a 512-token
-answer limit. Before inference, the pinned server renders and tokenizes the
+answer limit for Chat. Before inference, the pinned server renders and tokenizes the
 prompt. ODS removes whole older turns until the recent context fits, reserving
 512 answer tokens; the full saved conversation is unchanged. A current message
 that cannot fit is refused with shorten/new-chat guidance before inference.
@@ -106,6 +134,10 @@ before acknowledgement. If idle inspection fails, recovery stops only the owned
 model. **Restart local AI** keeps saved history. Cancelling model acquisition
 does not replace a verified cache. Damaged bundled runtime files refuse launch
 and ask for repair rather than deleting or silently replacing them.
+Document creation budgets the actual tool schema and tool result in both model
+rounds, with up to 1024 tokens for the tool call, a 384-token tool-result reserve
+and up to 128 tokens for the final summary. Older complete turns may be removed
+from inference context; full saved history stays unchanged.
 
 New saved results have a 4096-receipt/64 MiB admission budget; deletion markers
 and partial files do not consume receipt slots. Existing results remain readable,
@@ -136,7 +168,7 @@ Pop-Location
   -PortalAssets .\extensions\services\dashboard\dist\native `
   -WebViewArchive C:\downloads\microsoft.web.webview2.1.0.4258.31.nupkg
 .\desktop\windows\build-installer.ps1 -PackageDirectory C:\temp\ods-preview `
-  -OutputDirectory C:\temp\ods-setup -ToolsCache C:\temp\ods-build-tools -Version 0.1.0.0
+  -OutputDirectory C:\temp\ods-setup -ToolsCache C:\temp\ods-build-tools -Version 0.2.0.0
 ```
 
 Obtain [WebView2 SDK 1.0.4258.31](https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4258.31)
@@ -168,14 +200,18 @@ Omitting `-PortalAssets` builds the standalone WPF fixture/profile.
 .\tests\test-windows-desktop-preview.ps1
 .\tests\test-windows-desktop-preview.ps1 -PackageBundle C:\temp\ods-preview
 .\tests\test-windows-native-portal.ps1 -Bundle C:\temp\ods-preview
+.\tests\test-windows-native-portal.ps1 -Bundle C:\temp\ods-preview -DocumentFixture
 .\tests\test-windows-native-installer.ps1 -Package C:\temp\ods-preview -ToolsCache C:\temp\ods-build-tools
 .\tests\test-windows-native-portal.ps1 -Bundle C:\temp\ods-preview `
   -LiveState C:\temp\ods-model-qa -Screenshot C:\temp\portal.png
+.\tests\test-windows-native-portal.ps1 -Bundle C:\temp\ods-preview `
+  -DocumentLive -LiveState C:\temp\ods-document-qa -Screenshot C:\temp\document.png
 .\desktop\windows\qa\new-sandbox-kit.ps1 -InstallerDirectory C:\temp\ods-setup -OutputDirectory C:\temp\ods-clean-qa
 ```
 
 CI executes native regressions, actual EXE, real WebView2 fixture and real
-graphical installer lifecycle. The optional live probe uses the real catalog
+graphical installer lifecycle, verified document delivery and actual save/cancel
+dialogs for Markdown and conversation JSON. The optional live probe uses the real catalog
 model. The Sandbox kit maps only reviewed input read-only and a dedicated
 results directory writable; Internet is enabled for Microsoft/model acquisition.
 After moving/downloading a kit, regenerate it so its absolute host mappings are

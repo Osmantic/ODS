@@ -44,7 +44,7 @@ function Build-Fixture([string]$Version){
     return Join-Path $directory 'ODS-Windows-Preview-Setup.exe'
 }
 try {
-    $v1=Build-Fixture '0.1.0.1';$v2=Build-Fixture '0.1.0.2'
+    $v1=Build-Fixture '0.2.0.1';$v2=Build-Fixture '0.2.0.2'
     $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     $wpf=Join-Path (Split-Path $compiler) 'WPF'
     $runner=Join-Path $fixture 'InstallerUiTests.exe'
@@ -87,7 +87,7 @@ try {
     Assert-Installer ((Invoke-Setup $v1 (Join-Path $fixture 'repair.log')) -eq 0) 'same-version repair completes without a terminal or global runtime installation'
     Assert-Installer ((Get-FileHash (Join-Path $target 'ODS Windows Preview.exe')).Hash -eq $before) 'repair restores the exact packaged application'
     Assert-Installer ((Invoke-Setup $v2 (Join-Path $fixture 'upgrade.log')) -eq 0) 'newer installer upgrades the same owned installation'
-    Assert-Installer ((Get-Content -Raw (Join-Path $target '.ods-preview-install')).Contains('Version=0.1.0.2')) 'upgrade records the new version in the installation receipt'
+    Assert-Installer ((Get-Content -Raw (Join-Path $target '.ods-preview-install')).Contains('Version=0.2.0.2')) 'upgrade records the new version in the installation receipt'
     Assert-Installer ((Invoke-Setup $v1 (Join-Path $fixture 'downgrade.log')) -ne 0) 'older installer refuses a downgrade and preserves the newer installation'
     $denied=Join-Path $target 'uninspectable-child'
     $null=New-Item -ItemType Directory -Path $denied

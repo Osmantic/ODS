@@ -223,6 +223,30 @@ static class DesktopTests
                         await runtime.VerifyIdleAsync();
                         Check(runtime.IsRunning, "native stream cancellation releases the inspected slot without stopping its model child");
                     }
+                    var documentMessages = new List<Dictionary<string, string>> { new Dictionary<string, string> { { "role", "user" }, { "content", "native-document" } } };
+                    string originalDocumentMessages = Json.Serialize(documentMessages);
+                    int turnsBeforeDocument = runtime.TurnCount;
+                    NativeDocumentReply document = await runtime.CreateDocumentAsync(documentMessages, CancellationToken.None);
+                    Check(document.Document.Content == FixtureDocumentText && document.Summary == "Use the verified document download card.",
+                        "native document crosses authenticated tool-call, staged receipt and final-reply HTTP boundaries");
+                    Check(Json.Serialize(documentMessages) == originalDocumentMessages && runtime.TurnCount == turnsBeforeDocument,
+                        "document fitting preserves caller history and standalone chat context");
+                    foreach (string invalid in new[] { "wrong-name", "wrong-path", "extra-argument", "two-tools", "truncated-tool", "truncated-final", "second-tool" })
+                    {
+                        string documentPrompt = "native-document-" + invalid;
+                        await Fails(() => runtime.CreateDocumentAsync(new List<Dictionary<string, string>> { new Dictionary<string, string> { { "role", "user" }, { "content", documentPrompt } } }, CancellationToken.None),
+                            "authenticated native tool rejects " + invalid + " without returning a publishable document");
+                        await runtime.VerifyIdleAsync();
+                    }
+                    foreach (string stage in new[] { "first-wait", "final-wait" })
+                    using (var stop = new CancellationTokenSource(500))
+                    {
+                        string documentPrompt = "native-document-" + stage;
+                        await Fails(() => runtime.CreateDocumentAsync(new List<Dictionary<string, string>> { new Dictionary<string, string> { { "role", "user" }, { "content", documentPrompt } } }, stop.Token),
+                            "document cancellation aborts the actual HTTP wait at " + stage);
+                        await runtime.VerifyIdleAsync();
+                        Check(runtime.IsRunning, "cancelled document HTTP stage leaves only the inspected owned model reusable");
+                    }
                     runtime.NewChat();
                     Check(runtime.TurnCount == 0, "new chat clears model context");
                     using (var cancellation = new CancellationTokenSource(250))
@@ -343,6 +367,22 @@ static class DesktopTests
                 var request = (Dictionary<string, object>)Json.DeserializeObject(body);
                 var messages = (object[])request["messages"];
                 string prompt = (string)((Dictionary<string, object>)messages.Last())["content"];
+                if (request.ContainsKey("tools"))
+                {
+                    string documentPrompt = (string)messages.Cast<Dictionary<string, object>>().Last(message => Equals(message["role"], "user"))["content"];
+                    bool finalDocument = Equals(request["tool_choice"], "none");
+                    if (documentPrompt == "native-document-first-wait" && !finalDocument || documentPrompt == "native-document-final-wait" && finalDocument)
+                    {
+                        byte[] waitingHeaders = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
+                        stream.Write(waitingHeaders, 0, waitingHeaders.Length);
+                        try { while (stream.ReadByte() >= 0) { } }
+                        catch (IOException) { /* Cancellation closes this real HTTP body wait. */ }
+                        continue;
+                    }
+                    result = DocumentFixture(request, messages, documentPrompt, finalDocument);
+                }
+                else
+                {
                 if ((bool)request["stream"])
                 {
                     byte[] streamHeaders = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
@@ -362,11 +402,43 @@ static class DesktopTests
                 { code = 422; result = "{}"; }
                 else result = Json.Serialize(new { choices = new[] { new { message = new { content = prompt == "empty" ? "" : "Answer: " + prompt },
                     finish_reason = prompt == "truncate" ? "length" : "stop" } } });
+                }
             }
             byte[] payload = Encoding.UTF8.GetBytes(result);
             byte[] prefix = Encoding.ASCII.GetBytes("HTTP/1.1 " + code + " Result\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: " + payload.Length + "\r\n\r\n");
             stream.Write(prefix, 0, prefix.Length); stream.Write(payload, 0, payload.Length);
         }
+    }
+    const string FixtureDocumentText = "# Native document\n\nVerified UTF-8: ch\u00e0o b\u1ea1n.\n";
+    static string DocumentFixture(Dictionary<string, object> request, object[] messages, string prompt, bool final)
+    {
+        if (!Equals(request["model"], LocalRuntime.Alias) || !Equals(request["stream"], false) || !Equals(request["parallel_tool_calls"], false) ||
+            !Equals(((Dictionary<string, object>)request["chat_template_kwargs"])["enable_thinking"], false)) throw new Exception("Unexpected document inference contract.");
+        var tool = (Dictionary<string, object>)((object[])request["tools"])[0];
+        var function = (Dictionary<string, object>)tool["function"];
+        if (!Equals(function["name"], "create_markdown")) throw new Exception("Unexpected document tool schema.");
+        if (final)
+        {
+            var assistant = (Dictionary<string, object>)messages[messages.Length - 2];
+            var call = (Dictionary<string, object>)((object[])assistant["tool_calls"])[0];
+            var reply = (Dictionary<string, object>)messages.Last();
+            var receipt = (Dictionary<string, object>)Json.DeserializeObject((string)reply["content"]);
+            if (!Equals(assistant["role"], "assistant") || !Equals(reply["role"], "tool") || !Equals(reply["tool_call_id"], call["id"]) ||
+                !Equals(receipt["status"], "staged") || !Equals(receipt["filename"], NativeDocument.FileName) ||
+                !Equals(receipt["sha256"], Hash(Encoding.UTF8.GetBytes(FixtureDocumentText))) || !Equals(receipt["bytes"], Encoding.UTF8.GetByteCount(FixtureDocumentText)))
+                throw new Exception("Final inference did not receive the real host tool result.");
+            var answer = new Dictionary<string, object> { { "role", "assistant" }, { "content", "Use the verified document download card." } };
+            if (prompt.EndsWith("second-tool", StringComparison.Ordinal)) answer.Add("tool_calls", new object[] { new { id = "call_again" } });
+            return Json.Serialize(new { choices = new[] { new { message = answer, finish_reason = prompt.EndsWith("truncated-final", StringComparison.Ordinal) ? "length" : "stop" } } });
+        }
+        var choice = (Dictionary<string, object>)request["tool_choice"];
+        if (!Equals(choice["type"], "function") || !Equals(((Dictionary<string, object>)choice["function"])["name"], "create_markdown")) throw new Exception("Document call was not explicitly forced.");
+        var arguments = new Dictionary<string, object> { { "filename", prompt.EndsWith("wrong-path", StringComparison.Ordinal) ? "../private.md" : NativeDocument.FileName }, { "markdown", FixtureDocumentText } };
+        if (prompt.EndsWith("extra-argument", StringComparison.Ordinal)) arguments.Add("command", "unsupported");
+        object callValue = new { id = "call_fixture", type = "function", function = new { name = prompt.EndsWith("wrong-name", StringComparison.Ordinal) ? "run_shell" : "create_markdown", arguments = Json.Serialize(arguments) } };
+        object[] calls = prompt.EndsWith("two-tools", StringComparison.Ordinal) ? new[] { callValue, callValue } : new[] { callValue };
+        return Json.Serialize(new { choices = new[] { new { message = new { role = "assistant", content = (string)null, tool_calls = calls },
+            finish_reason = prompt.EndsWith("truncated-tool", StringComparison.Ordinal) ? "length" : "tool_calls" } } });
     }
     [STAThread]
     static int Main(string[] args)
@@ -405,6 +477,9 @@ static class DesktopTests
                     checks += PortalStateReviewTests.Run(root);
                     checks += NativeContextBudgetTests.Run().GetAwaiter().GetResult();
                     checks += ModelDownloadReviewTests.Run(root).GetAwaiter().GetResult();
+                    checks += NativeDocumentTests.Run(root);
+                    checks += NativeDocumentBudgetTests.Run().GetAwaiter().GetResult();
+                    checks += NativeDocumentFlowTests.Run(root).GetAwaiter().GetResult();
                     checks += NativePortalTests.Run(root).GetAwaiter().GetResult();
                     checks += WindowTests.Run(root, FixtureBundle);
                     string package = Path.Combine(root, "entrypoint-fixture");
@@ -414,7 +489,18 @@ static class DesktopTests
                 }
                 Console.WriteLine("PASS " + checks + " Windows native desktop checks"); return 0;
             }
-            finally { Directory.Delete(root, true); }
+            finally
+            {
+                // The retained Job closes its child on disposal; Windows can
+                // briefly retain the executable handle while that exit settles.
+                var cleanup = Stopwatch.StartNew();
+                while (Directory.Exists(root))
+                {
+                    try { Directory.Delete(root, true); }
+                    catch (IOException) { if (cleanup.ElapsedMilliseconds >= 5000) throw; Thread.Sleep(50); }
+                    catch (UnauthorizedAccessException) { if (cleanup.ElapsedMilliseconds >= 5000) throw; Thread.Sleep(50); }
+                }
+            }
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
     }

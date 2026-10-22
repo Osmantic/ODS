@@ -1,9 +1,10 @@
 # Windows native Portal installer: validation
 
 The demonstrated scope is **graphical install → native setup → existing Portal
-text UI → CPU model answer → saved conversation → Stop → continue → reopen**.
-OpenClaw/Pixel agents, host tools, workspace artifacts and the full ODS harness
-remain outside this preview.
+→ CPU chat or explicit Create document → verified Download → Windows save
+dialog → saved conversation → Stop/continue → reopen**. Full OpenClaw/Pixel
+agents, host tools, workspace editing and the full ODS harness remain outside
+this preview. The document capability is one bounded native Markdown tool.
 
 ![Actual native Portal after a Vietnamese response, Stop and another CPU-model answer](docs/native-portal.png)
 
@@ -37,10 +38,12 @@ remain outside this preview.
 
 | Boundary | Result | What it establishes |
 | --- | --- | --- |
-| Native regression suite | **163 passed** | Acquisition/cancellation, real Windows children, Job cleanup, storage capacity/recovery/API errors, exact-token context selection, cached repair/reopen, reflection errors, model/auth identity, Portal history/result/Stop and runtime refusal |
+| Native regression suite | **264 passed** | Acquisition/cancellation, real Windows children, Job cleanup, storage capacity/recovery/API errors, exact-token context selection, cached repair/reopen, reflection errors, model/auth identity, Portal history/result/Stop, document publication/ownership/HTTP tool calls and runtime refusal |
 | Actual EXE | **11 passed**, repeated on package | Real Main entrypoint, Unicode path, duplicate instance, incomplete-package recovery, reopen and side-effect-free idle/busy installation probe |
 | Graphical installer lifecycle | **23 passed** | Real wizard cancellation/install/Finish launch; HKCU and Start Menu target; busy upgrade/uninstall refusal; data-retention notice/cancellation; repair; upgrade; downgrade refusal; failed directory inspection; descendant junction refusal; removal; foreign/saved-data preservation |
 | Installed Portal UI | **11 passed** | Actual production frontend in WebView2, multi-turn text, history, New chat/select, Stop/recovery, external navigation/CSP refusal |
+| Native document WebView flow | **31 passed** | Explicit mode, completed host receipt, real Markdown save/cancel, exact bytes/hash/path, small and >64 KiB JSON export, delayed owner choice, reopening without replay and default-path preservation |
+| Real model document through Portal | **11 passed** | Genuine allowlisted model call, validated tool result and final answer, durable artifact/card, real cancel/save, exact document bytes/hash, idle slot and owned process shutdown |
 | History after repair/upgrade/uninstall | **2 passed** | Actual saved Portal history remains readable, exact result bytes retained, no inference replay |
 | Real included engine/model through Portal | **9 passed** | Math/Vietnamese; Stop/continue; over-context history fits without mutation; oversized latest prompt refuses before inference; next request succeeds; owned child closes and foreign listener remains |
 | Real-model context negative control | **3 passed** | Prior unbounded request receives HTTP 400/context refusal; exact overflowing history fits without modification; corrected request answers 4 |
@@ -66,6 +69,75 @@ harness's read-only active-slot observation under concurrent setup work.
 Only that observer now treats its two-second cancellation as unavailable and
 continues the existing bounded wait for a real `is_processing=true`. The product
 Stop/idle guard was not weakened. The subsequent six-check live run passed.
+
+## Native Markdown follow-up (2026-10-23)
+
+![Actual native Portal after the pinned model created and saved a Markdown document](docs/native-document.png)
+
+Chat stays the default. Explicit Create document admits one `create_markdown`
+call with fixed `document.md`, strict UTF-8 and a 64 KiB bound. The actual tool
+schema, requested output and tool result take part in both rendered-prompt
+token budgets. The model receives the host's staged byte count/hash before its
+final summary. No shell, host paths, file reads or network tools are exposed.
+
+Only an atomic completed v2 receipt publishes a document; Markdown is inline in
+that receipt, avoiding separate blob-file/orphan transactions. Reads revalidate
+private file handles, ACLs, hashes and durable tombstones. The owner index selects
+only relevant receipts, without treating cached bytes as authority. Shared
+content remains available while another completed chat owns it. Stop, close,
+provider failure and quota exhaustion after admission publish no document.
+Existing v1 text results remain readable and are not rewritten or evicted.
+
+Within the **264-check native suite**, document coverage includes **37** store
+and path/ACL controls, **24** exact tool-budget controls, **27** admitted API,
+quota, cancellation, restart and deletion controls, and **13** real authenticated
+HTTP tool-round/history/refusal/cancellation checks. These are included in the
+suite total. Four budget mutants were rejected, including loss of the tool-result
+reserve, incorrect tokenizer flags, partial-turn trimming and dropped schemas.
+
+The real model produced **452 bytes**, SHA-256
+`cebf8f84fd67bb2fe662b9a84a00732fda13553deb2e0bc78f38606632cb79b3`,
+containing the requested title and three practical notes. Actual WebView Download
+verified and saved those bytes through the production Windows picker. The fixture
+also exported complete **1,552-byte** and **74,173-byte** conversations as JSON.
+Accepted Markdown/JSON choices were held for two seconds, beyond the frontend's
+one-second Blob-URL revocation timer, and still completed with exact bytes.
+Content integrity is not a claim about model factual quality or speed.
+
+Independent static review caught the first download handler applying the Markdown
+name/size cap to existing conversation exports. MIME/filename classification now
+preserves JSON export and its Windows picker. Actual UI qualification then exposed
+synchronous modal UI inside WebView2's download callback. The corrected handler
+uses the pinned SDK's [deferred-post pattern](https://learn.microsoft.com/dotnet/api/microsoft.web.webview2.core.corewebview2.downloadstarting?view=webview2-dotnet-1.0.4258.31);
+Cancel remains the default until explicit owner acceptance. That safety delta
+was independently reviewed before the passing fixture/live-model runs.
+
+Intermediate harness failures were retained: UIAutomation's root tree missed an
+owned modal; script-only clicks lacked browser activation; a filename value echoed
+without committing Shell edit notifications; and object marshalling reordered
+expected JSON keys. The final driver binds controls to its exact PID/Portal owner,
+uses native edit notifications and private-WebView input, compares raw saved
+producer input to exported bytes, and runs from a private working directory with
+an unchanged default-path sentinel. One 76-byte fixture output from the earlier
+filename test was verified and preserved separately; no overwrite confirmation
+was accepted. A protocol fixture initially asserted the wrong prior turn count,
+and cleanup masked that assertion during child-handle release; the corrected
+count and bounded cleanup pass in the final native run. These were failed
+attempts, not additional passing results.
+
+Installer version **0.2.0.0** separates this schema-capable build from the earlier
+0.1 preview. Both PowerShell versions pass **8** numeric version/default/refusal
+checks before package reads, downloads or output changes. The builder refuses
+older labels. Setup's existing numeric downgrade guard protects an existing 0.2
+installation; old portable EXEs and reinstalls after uninstall are outside that
+guard. Earlier readers refuse document histories while preserving their bytes;
+keep a backup and use 0.2 or newer to reopen them.
+
+The full frontend run passed **3,035 tests across 253 files** on Windows, with
+native and normal builds passing. ESLint reported **zero errors / 897 existing
+warnings**. The new graphical fixture is executed explicitly in the path-filtered
+native workflow; catalog-model execution remains a separately recorded local
+gate, with no model download added to CI.
 
 ## Regression and review evidence
 
@@ -155,7 +227,7 @@ toolchain, frontend, SDK and installer-engine notices are retained.
   delivery/rollback and fleet acceptance. Current repair/manual-upgrade/removal
   tests do not qualify automatic updates. The application's idle probe is
   advisory, not an atomic update lock.
-- Full OpenClaw/Pixel agent, tools, workspace/artifact delivery, voice, images,
+- Full OpenClaw/Pixel agents, host tools, workspace editing/delivery, voice, images,
   extensions, GPU routing and model switching. Unsupported controls/API routes
   remain refused rather than presenting incomplete services as ready.
 

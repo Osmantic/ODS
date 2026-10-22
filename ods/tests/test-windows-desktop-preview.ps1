@@ -5,8 +5,8 @@ $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'This suite must execute on native Windows.' }
 $source = Join-Path $PSScriptRoot '../desktop/windows'
 $portalSources = @('PortalPackage.cs','PortalState.cs','NativePortalSession.cs') | ForEach-Object { Join-Path $source $_ }
-$supportSources = @('ModelDownload.cs','NativeContextBudget.cs') | ForEach-Object { Join-Path $source $_ }
-$reviewTests = @('PortalStateReviewTests.cs','NativeContextBudgetTests.cs','ModelDownloadReviewTests.cs') | ForEach-Object { Join-Path $source "tests/$_" }
+$supportSources = @('ModelDownload.cs','NativeContextBudget.cs','NativeDocument.cs','NativeDocumentModel.cs') | ForEach-Object { Join-Path $source $_ }
+$reviewTests = @('PortalStateReviewTests.cs','NativeContextBudgetTests.cs','ModelDownloadReviewTests.cs','NativeDocumentTests.cs','NativeDocumentBudgetTests.cs','NativeDocumentFlowTests.cs') | ForEach-Object { Join-Path $source "tests/$_" }
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 $wpf = Join-Path (Split-Path $compiler) 'WPF'
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-desktop-build-' + [guid]::NewGuid().ToString('N'))

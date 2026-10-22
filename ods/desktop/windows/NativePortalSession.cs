@@ -23,6 +23,8 @@ namespace OdsDesktop
     {
         public const string Origin = "https://ods-desktop.local";
         public const string FailureEvents = "data: {\"error\":{\"type\":\"native_model_error\",\"code\":\"response_incomplete\"}}\n\ndata: [DONE]\n\n";
+        public const string DocumentFailureEvents = "data: {\"error\":{\"type\":\"native_document_error\",\"code\":\"document_incomplete\"}}\n\ndata: [DONE]\n\n";
+        public const string DocumentStorageEvents = "data: {\"error\":{\"type\":\"native_document_error\",\"code\":\"document_storage_full\"}}\n\ndata: [DONE]\n\n";
         readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
         readonly IPortalModel model;
         readonly string modelName;
@@ -118,7 +120,9 @@ namespace OdsDesktop
         }
         async Task<PortalReply> BeginAsync(string content)
         {
-            var body = Body(content, "chat_id", "request_id", "messages", "history_snapshot");
+            var body = Body(content, "chat_id", "request_id", "messages", "history_snapshot", "create_document");
+            bool document = body.ContainsKey("create_document");
+            if (document && !Equals(body["create_document"], true)) throw new ArgumentException("Explicit document creation required.");
             string chat = Identity(body, "chat_id"), request = Identity(body, "request_id");
             object raw;
             if (!body.TryGetValue("messages", out raw)) throw new ArgumentException("Messages required.");
@@ -146,24 +150,36 @@ namespace OdsDesktop
                 }
                 if (active != null) return Reply(409, new { detail = "Another local response is active. Stop it or wait before sending." });
                 if (!model.IsRunning) return Reply(503, new { detail = "Use Restart local AI before sending." });
+                if (document && !(model is INativeDocumentModel)) return Reply(503, new { detail = "This native runtime cannot create a document. Your draft was kept." });
                 active = new PortalReceipt { Chat = chat, Request = request, Fingerprint = fingerprint, State = "active", Events = "" };
                 try { state.Save(active); } catch { active = null; throw; }
                 cancellation = new CancellationTokenSource();
-                operation = running = RunAsync(active, messages, cancellation.Token);
+                operation = running = RunAsync(active, messages, document, cancellation.Token);
             }
             return await operation;
         }
-        async Task<PortalReply> RunAsync(PortalReceipt receipt, List<Dictionary<string, string>> messages, CancellationToken token)
+        async Task<PortalReply> RunAsync(PortalReceipt receipt, List<Dictionary<string, string>> messages, bool createDocument, CancellationToken token)
         {
             // Yield before model work so admission publishes its exact task handle.
             await Task.Yield();
-            string events = FailureEvents, terminal = "interrupted";
+            string failure = createDocument ? DocumentFailureEvents : FailureEvents;
+            string events = failure, terminal = "interrupted";
+            NativeDocument document = null;
             Exception unexpected = null;
             try
             {
-                string answer = await model.CompleteAsync(messages, token);
+                string answer;
+                if (createDocument)
+                {
+                    var result = await ((INativeDocumentModel)model).CreateDocumentAsync(messages, token);
+                    if (result == null || result.Document == null) throw new InvalidDataException("Document tool did not produce a bounded result.");
+                    answer = result.Summary; document = result.Document;
+                }
+                else answer = await model.CompleteAsync(messages, token);
                 token.ThrowIfCancellationRequested();
-                events = "data: " + json.Serialize(new { choices = new[] { new { delta = new { content = answer }, finish_reason = "stop" } } }) + "\n\ndata: [DONE]\n\n";
+                var frame = new Dictionary<string, object> { { "choices", new[] { new { delta = new { content = answer }, finish_reason = "stop" } } } };
+                if (document != null) frame.Add("pixel_artifacts", new { schemaVersion = 1, artifacts = new[] { document.Receipt() } });
+                events = "data: " + json.Serialize(frame) + "\n\ndata: [DONE]\n\n";
                 terminal = "complete";
             }
             catch (OperationCanceledException)
@@ -171,13 +187,13 @@ namespace OdsDesktop
                 // A request timeout is distinct from an owner cancellation.
                 if (token.IsCancellationRequested) { terminal = "cancelled"; events = ""; }
             }
-            catch (HttpRequestException) { events = FailureEvents; }
+            catch (HttpRequestException) { events = failure; }
             catch (NativeContextLimitException error)
             {
                 events = "data: " + json.Serialize(new { error = new { type = "native_context_error", code = "native_context_limit", message = error.Message } }) + "\n\ndata: [DONE]\n\n";
             }
-            catch (InvalidOperationException) { events = FailureEvents; }
-            catch (InvalidDataException) { events = FailureEvents; }
+            catch (InvalidOperationException) { events = failure; }
+            catch (InvalidDataException) { events = failure; }
             catch (Exception error) { unexpected = error; } // Record worker failure, then rethrow below.
             if (terminal != "complete")
             {
@@ -200,8 +216,24 @@ namespace OdsDesktop
                 {
                     if (receipt.State == "active")
                     {
-                        receipt.State = terminal; receipt.Events = events;
-                        state.Save(receipt);
+                        // Cancellation may arrive after the model task settles
+                        // but before durable publication. Never expose a staged
+                        // document from that cancelled turn.
+                        if (token.IsCancellationRequested) { terminal = "cancelled"; events = ""; }
+                        var saved = new PortalReceipt { Chat = receipt.Chat, Request = receipt.Request,
+                            Fingerprint = receipt.Fingerprint, State = terminal, Events = events,
+                            Document = terminal == "complete" ? document : null };
+                        try { state.Save(saved); }
+                        catch (PortalCapacityException)
+                        {
+                            if (saved.Document == null) throw;
+                            saved = new PortalReceipt { Chat = receipt.Chat, Request = receipt.Request,
+                                Fingerprint = receipt.Fingerprint, State = "interrupted", Events = DocumentStorageEvents };
+                            state.Save(saved);
+                        }
+                        // Memory follows the atomic receipt commit. Late Stop
+                        // must preserve a successfully published answer/document.
+                        receipt.State = saved.State; receipt.Events = saved.Events; receipt.Document = saved.Document;
                     }
                 }
             }
@@ -211,6 +243,14 @@ namespace OdsDesktop
             }
             if (unexpected != null) ExceptionDispatchInfo.Capture(unexpected).Throw();
             return Events(receipt.Events);
+        }
+
+        public NativeDocument ReadDocument(string documentOrigin, string requestOrigin, string method, string path)
+        {
+            if (documentOrigin != Origin || requestOrigin != Origin || method != "GET" || disposed) return null;
+            var match = Regex.Match(path ?? "", "\\A/pixel-preview/(site-[a-f0-9]{24})/document\\.md\\z");
+            if (!match.Success) return null;
+            lock (gate) return disposed ? null : state.ReadDocument(match.Groups[1].Value);
         }
         async Task<PortalReply> CancelAsync(string chat, string request)
         {
@@ -239,7 +279,13 @@ namespace OdsDesktop
                 disposed = true;
                 try
                 {
-                    if (active != null) { active.State = "interrupted"; active.Events = FailureEvents; state.Save(active); }
+                    if (active != null && active.State == "active")
+                    {
+                        var interrupted = new PortalReceipt { Chat = active.Chat, Request = active.Request,
+                            Fingerprint = active.Fingerprint, State = "interrupted", Events = FailureEvents };
+                        state.Save(interrupted);
+                        active.State = interrupted.State; active.Events = interrupted.Events;
+                    }
                 }
                 finally { if (cancellation != null) cancellation.Cancel(); }
             }

@@ -98,7 +98,7 @@ $icon = Join-Path $repoRoot 'extensions/services/dashboard/public/osmantic-os.ic
     /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Xaml.dll `
     /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "/reference:$wpf/WindowsBase.dll" `
     "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
-    (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'ModelDownload.cs') (Join-Path $PSScriptRoot 'NativeContextBudget.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs') `
+    (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'ModelDownload.cs') (Join-Path $PSScriptRoot 'NativeContextBudget.cs') (Join-Path $PSScriptRoot 'NativeDocument.cs') (Join-Path $PSScriptRoot 'NativeDocumentModel.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs') `
     (Join-Path $PSScriptRoot 'PortalPackage.cs') (Join-Path $PSScriptRoot 'PortalState.cs') (Join-Path $PSScriptRoot 'NativePortalSession.cs')
 if ($LASTEXITCODE -ne 0) { throw 'The desktop application did not compile.' }
 if ($PortalAssets) {

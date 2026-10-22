@@ -30,10 +30,10 @@ function contextEvents(code='native_context_limit') {
   return 'data: '+JSON.stringify({error:{type:'native_context_error',code,message:'private-provider-secret [unsafe link](https://invalid.example)'}})+'\n\ndata: [DONE]\n\n'
 }
 
-it('uses the existing Portal send/history path and exposes only native text capabilities', async () => {
+it('uses the existing ordinary chat request shape without enabling native document creation', async () => {
   const view=render(<Pixel nativeChat />)
   await screen.findByText('Available')
-  expect(screen.getByText('Windows native text chat')).toBeInTheDocument()
+  expect(screen.getByText('Windows native chat and documents')).toBeInTheDocument()
   expect(screen.getByText(/Context uses the recent messages that fit; full conversation history stays saved/)).toBeInTheDocument()
   expect(screen.queryByText('Permissions')).not.toBeInTheDocument()
   expect(screen.queryByRole('button',{name:'Workspace'})).not.toBeInTheDocument()
@@ -45,6 +45,7 @@ it('uses the existing Portal send/history path and exposes only native text capa
   await waitFor(()=>expect(readConversations()[0]?.messages.at(-1)?.status).toBe('done'))
   const request=fetch.mock.calls.find(([url])=>url==='/api/pixel/chat/stream')
   const body=JSON.parse(request[1].body)
+  expect(Object.keys(body).sort()).toEqual(['chat_id','history_snapshot','messages','request_id'])
   expect(body.messages).toEqual([{role:'user',content:'Keep this conversation'}])
   expect(body.history_snapshot).toEqual({schemaVersion:1,messages:body.messages})
   expect(fetch.mock.calls.every(([url])=>['/api/pixel/status','/api/pixel/chat/context','/api/pixel/chat/stream'].includes(url))).toBe(true)

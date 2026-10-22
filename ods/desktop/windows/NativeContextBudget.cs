@@ -101,7 +101,60 @@ namespace OdsDesktop
             return result;
         }
 
-        static async Task<Dictionary<string, object>> PostAsync(HttpClient client, string path, object body,
+        // Native tool turns use the same producer payload for rendering and
+        // inference, including tools, tool_choice and the actual output limit.
+        internal static async Task<Dictionary<string, object>> FitRequestAsync(HttpClient client,
+            Dictionary<string, object> request, int tailReserve, CancellationToken token)
+        {
+            if (client == null || request == null) throw new ArgumentNullException();
+            object maximum;
+            if (!request.TryGetValue("max_tokens", out maximum) || !(maximum is int) || (int)maximum < 1 ||
+                (int)maximum > 2048 || tailReserve < 0 || tailReserve > 1024) throw new ArgumentException("Invalid native output budget.");
+            var json = new JavaScriptSerializer { MaxJsonLength = MaximumResponseBytes, RecursionLimit = 64 };
+            // These requests are native-owned. Clone before fitting so neither
+            // the saved conversation nor a previous tool turn can be rewritten.
+            var fitted = json.DeserializeObject(json.Serialize(request)) as Dictionary<string, object>;
+            object raw;
+            var rows = fitted != null && fitted.TryGetValue("messages", out raw) ? raw as object[] : null;
+            if (rows == null || rows.Length == 0 || rows.Length > 52) throw new ArgumentException("Invalid native tool history.");
+            var messages = new List<object>(rows);
+            Func<object, string> role = row =>
+            {
+                var message = row as Dictionary<string, object>;
+                object value;
+                if (message == null || !message.TryGetValue("role", out value) || !(value is string) ||
+                    !new[] { "user", "assistant", "tool" }.Contains((string)value)) throw new ArgumentException("Invalid native tool role.");
+                return (string)value;
+            };
+            foreach (var message in messages) role(message);
+            if (role(messages[0]) != "user") throw new ArgumentException("Native tool history must start with its owner request.");
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                deadline.CancelAfter(TimeSpan.FromSeconds(30));
+                while (true)
+                {
+                    deadline.Token.ThrowIfCancellationRequested();
+                    fitted["messages"] = messages.ToArray();
+                    var template = new Dictionary<string, object>(fitted) { { "add_generation_prompt", true } };
+                    var rendered = await PostAsync(client, "apply-template", template, json, deadline.Token).ConfigureAwait(false);
+                    if (rendered.Count != 1 || !rendered.TryGetValue("prompt", out raw) || !(raw is string) || String.IsNullOrEmpty((string)raw))
+                        throw new InvalidDataException("The local model returned an invalid tool prompt. No document was published.");
+                    var counted = await PostAsync(client, "tokenize", new { content = (string)raw, add_special = true, parse_special = true, with_pieces = false }, json, deadline.Token).ConfigureAwait(false);
+                    if (counted.Count != 1 || !counted.TryGetValue("tokens", out raw) || !(raw is object[]))
+                        throw new InvalidDataException("The local model returned an invalid tool token count.");
+                    var ids = (object[])raw;
+                    if (ids.Length == 0 || ids.Any(id => !(id is int) || (int)id < 0)) throw new InvalidDataException("Invalid native tool token identities.");
+                    if (ids.Length <= ContextTokens - (int)maximum - tailReserve) return fitted;
+                    int nextUser = messages.FindIndex(1, message => role(message) == "user");
+                    if (nextUser < 0) throw new NativeContextLimitException();
+                    // Keep the current owner request, its tool call and result
+                    // together. Only complete earlier user-led groups leave.
+                    messages.RemoveRange(0, nextUser);
+                }
+            }
+        }
+
+        internal static async Task<Dictionary<string, object>> PostAsync(HttpClient client, string path, object body,
             JavaScriptSerializer json, CancellationToken token)
         {
             using (var request = new HttpRequestMessage(HttpMethod.Post, path))

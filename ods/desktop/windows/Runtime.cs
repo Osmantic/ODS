@@ -194,7 +194,7 @@ namespace OdsDesktop
     {
         public ModelIntegrityException() : base("The selected model failed verification. Download it again.") { }
     }
-    public sealed class LocalRuntime : IPortalModel
+    public sealed partial class LocalRuntime : IPortalModel
     {
         public const string Alias = "ods-desktop-preview";
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
