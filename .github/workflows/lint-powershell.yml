@@ -95,11 +95,6 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
-      - name: Windows STT trigger native timeout contract (Windows PowerShell)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: ./tests/contracts/test-windows-stt-trigger.ps1
-
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell
@@ -450,6 +445,11 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Windows' }}
         shell: powershell
         run: ./tests/test-windows-network-signin.ps1
+
+      - name: Windows STT trigger native timeout contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-stt-trigger.ps1
 
       - name: Windows Whisper Port Conflict
         if: ${{ !cancelled() && runner.os == 'Windows' }}
