@@ -1109,15 +1109,17 @@ def _switched_off_status(service_id: str, config: dict):
 
 # Last time each service's own probe succeeded (monotonic seconds).
 _last_probe_success: dict[str, float] = {}
+# First completed observation bounds startup grace even if no probe succeeds.
+_first_probe_seen: dict[str, float] = {}
 _probe_clock = time.monotonic
 _TIMEOUT_OVERRIDE_GRACE_S = 60.0
 
 
 def _timeout_override_allowed(service_id: str, now: float) -> bool:
-    """A passing Docker healthcheck may mask a probe timeout only before the
-    first successful probe (startup) or shortly after the last one."""
+    """Bound Docker-only health to startup or a recent application success."""
     last_ok = _last_probe_success.get(service_id)
-    return last_ok is None or now - last_ok <= _TIMEOUT_OVERRIDE_GRACE_S
+    anchor = last_ok if last_ok is not None else _first_probe_seen.get(service_id)
+    return anchor is not None and now - anchor <= _TIMEOUT_OVERRIDE_GRACE_S
 
 
 async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
@@ -1164,6 +1166,7 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
             statuses.append(result)
     now = _probe_clock()
     for status in statuses:
+        _first_probe_seen.setdefault(status.id, now)
         if status.status == "healthy":
             _last_probe_success[status.id] = now
     if not any(status.status in {"degraded", "down", "unhealthy"} for status in statuses):

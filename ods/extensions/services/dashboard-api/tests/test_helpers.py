@@ -1783,6 +1783,56 @@ def test_valid_sample_repairs_a_polluted_existing_average(data_dir):
 
 class TestServiceHealthReconciliation:
 
+    @pytest.fixture(autouse=True)
+    def reset_probe_history(self, monkeypatch):
+        import helpers
+        monkeypatch.setattr(helpers, "_last_probe_success", {})
+        monkeypatch.setattr(helpers, "_first_probe_seen", {}, raising=False)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("started_at", [0.0, 1000.0])
+    async def test_startup_timeout_grace_expires_without_a_success(self, monkeypatch, started_at):
+        import helpers
+
+        services = {"dashboard": {
+            "name": "Dashboard", "port": 3001, "external_port": 3001,
+            "type": "docker", "container_name": "ods-dashboard",
+        }}
+        monkeypatch.setattr(helpers, "SERVICES", services)
+        clock = {"now": started_at}
+        monkeypatch.setattr(helpers, "_probe_clock", lambda: clock["now"])
+        probe_status = {"value": "degraded"}
+
+        async def probe(service_id, config):
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config["external_port"], status=probe_status["value"],
+            )
+
+        monkeypatch.setattr(helpers, "check_service_health", probe)
+        monkeypatch.setattr(helpers, "request_agent_json", AsyncMock(return_value={
+            "schema_version": "ods.host-service-health.v1",
+            "containers": [{"service_id": "dashboard", "container_name": "ods-dashboard",
+                            "state": "running", "health": "healthy"}],
+        }))
+
+        # Repeated Docker-only successes must not extend the startup window.
+        for elapsed in (0.0, 30.0, helpers._TIMEOUT_OVERRIDE_GRACE_S):
+            clock["now"] = started_at + elapsed
+            assert (await helpers.get_all_services())[0].status == "healthy"
+        for elapsed in (helpers._TIMEOUT_OVERRIDE_GRACE_S + 0.001, 3600.0):
+            clock["now"] = started_at + elapsed
+            assert (await helpers.get_all_services())[0].status == "degraded"
+
+        # A genuine application recovery starts a new, bounded transient grace.
+        probe_status["value"] = "healthy"
+        assert (await helpers.get_all_services())[0].status == "healthy"
+        probe_status["value"] = "degraded"
+        clock["now"] += 10.0
+        assert (await helpers.get_all_services())[0].status == "healthy"
+        clock["now"] += helpers._TIMEOUT_OVERRIDE_GRACE_S
+        assert (await helpers.get_all_services())[0].status == "degraded"
+
     @pytest.mark.asyncio
     async def test_docker_health_repairs_only_transient_timeout(self, monkeypatch):
         import helpers
