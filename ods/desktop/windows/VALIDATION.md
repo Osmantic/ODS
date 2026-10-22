@@ -37,12 +37,13 @@ remain outside this preview.
 
 | Boundary | Result | What it establishes |
 | --- | --- | --- |
-| Native regression suite | **89 passed** | Acquisition/cancellation, real Windows children, Job cleanup on parent crash, model/auth identity, Portal request/history/result/Stop behavior, bundled engine tamper and unexpected-file refusal |
+| Native regression suite | **163 passed** | Acquisition/cancellation, real Windows children, Job cleanup, storage capacity/recovery/API errors, exact-token context selection, cached repair/reopen, reflection errors, model/auth identity, Portal history/result/Stop and runtime refusal |
 | Actual EXE | **11 passed**, repeated on package | Real Main entrypoint, Unicode path, duplicate instance, incomplete-package recovery, reopen and side-effect-free idle/busy installation probe |
-| Graphical installer lifecycle | **22 passed** | Real wizard cancellation/install/Finish launch; HKCU and Start Menu target; busy upgrade/uninstall refusal; repair; upgrade; downgrade refusal; failed directory inspection; descendant junction refusal; removal; foreign/saved-data preservation |
+| Graphical installer lifecycle | **23 passed** | Real wizard cancellation/install/Finish launch; HKCU and Start Menu target; busy upgrade/uninstall refusal; data-retention notice/cancellation; repair; upgrade; downgrade refusal; failed directory inspection; descendant junction refusal; removal; foreign/saved-data preservation |
 | Installed Portal UI | **11 passed** | Actual production frontend in WebView2, multi-turn text, history, New chat/select, Stop/recovery, external navigation/CSP refusal |
 | History after repair/upgrade/uninstall | **2 passed** | Actual saved Portal history remains readable, exact result bytes retained, no inference replay |
-| Real included engine/model through Portal | **6 passed** | Math answered 4; Vietnamese answer; Stop during confirmed active inference; continued answer 4; exact child stopped at close; unrelated listener preserved |
+| Real included engine/model through Portal | **9 passed** | Math/Vietnamese; Stop/continue; over-context history fits without mutation; oversized latest prompt refuses before inference; next request succeeds; owned child closes and foreign listener remains |
+| Real-model context negative control | **3 passed** | Prior unbounded request receives HTTP 400/context refusal; exact overflowing history fits without modification; corrected request answers 4 |
 | Build and analysis | Passed | Source-built engine with PE dependency gate, .NET application, Inno compiler, pinned compiler/bootstrapper acquisition and PowerShell analysis |
 
 Installer tests use a unique application ID, private install/data paths and
@@ -53,9 +54,11 @@ user profiles. Failed and completed fixture/log directories are retained for
 inspection after owned uninstallation.
 
 The model probe pressed the production WPF setup's real Start button and drove
-Portal's actual DOM through WebView2. Verified-cache startup took **76.2 seconds**
-on this host. The Vietnamese response was “Chào mừng bạn đến với cuộc trò chuyện
-của chúng ta!” This is automated framework-driven execution, not independent
+Portal's actual DOM through WebView2. Verified-cache startup took **23.1 seconds**
+on this host in the review follow-up (the earlier installer milestone took
+76.2 seconds). The Vietnamese response was “Chào bạn! Rất vui được làm bạn.”
+These single observations are not a controlled speed comparison. This is
+automated framework-driven execution, not independent
 human UX acceptance or a broader performance benchmark.
 
 A first new-runtime live run passed two model turns but timed out in the
@@ -82,9 +85,46 @@ frontend tokens.
 
 The previously published Portal head `841854214` passed 74/74 hosted checks,
 including **3,014 frontend tests across 252 files** on Linux, macOS and Windows.
-The installer update changes no React frontend source. Its hosted results and
-artifact custody are reported against its own head on the PR; prior green
-checks are not substituted for current-head validation.
+Those are historical results. The review follow-up at `dfa6c744d` changes native
+React behavior and passed **3,021 tests across 252 files locally on Windows**,
+both native and standard frontend builds, and ESLint with zero errors (897
+existing warnings). Hosted results are reported against the actual head on the
+PR; prior green checks are not substituted for current-head validation.
+
+### Community review follow-up
+
+[IronicRayquaza's review](https://github.com/Osmantic/ODS/pull/7938#issuecomment-6345076519)
+identified lifetime storage exhaustion, over-context conversations, slow-download
+failure, duplicate startup hashing and wrapped constructor errors. The follow-up
+keeps existing results accessible above the admission budget, preserves drafts
+on typed HTTP 507 refusal, and handles deletion's separate error consumer.
+Exact server template/tokenizer calls select complete recent turns while keeping
+saved history unchanged and reserving 512 output tokens.
+
+Real loopback regressions cover progressive downloads lasting multiple scaled
+inactivity windows, stalled headers/body, cancellation and preservation of an
+older cache. Cached source-built launches select an unverified candidate without
+reading its bytes, then pass one mandatory CNG SHA-256 gate before creating a
+child or session key. A corrupt installed seed repairs into private cache; a
+second launch makes no extra download. Unsafe paths and runtime corruption never
+authorize model repair. WPF tests cover nested reflection errors and distinct
+setup timeout guidance. The two WebView2 version boundaries now share the pinned
+SDK's **154.0.4258.31** minimum (14 boundary checks on PowerShell 5.1 and 7).
+
+Independent static review checked the combined launch/repair paths and the
+template/tokenizer contract against the shipped b9014 source. It caught and
+resolved a repeated corrupt-seed download loop and loss of actionable DELETE
+capacity guidance. New native tests run in the path-filtered **Windows native
+preview** workflow; heavy build/model-free package/lifecycle tests are removed
+from unrelated PRs' PowerShell lint job. The CI test inventory passes: 1,317
+executed tests, 19 explicitly recorded live/platform exclusions.
+
+An intermediate combined run exposed an asynchronous fixture-server teardown
+failure. Its dedicated server thread now shuts down independently of blocked
+thread-pool continuations; the final 163-check run passed. A separate installer
+automation attempt saw an enumerated window disappear during inspection; its
+harness now retries only `ElementNotAvailableException` within the existing
+process-ownership and overall-timeout boundaries.
 
 ## CI and reproduction
 
@@ -106,9 +146,9 @@ toolchain, frontend, SDK and installer-engine notices are retained.
   prerequisite cancellation/failure and offline/proxy recovery. The prepared
   Sandbox kit records OS/token/tool availability, installer hash, real model
   results and screenshot; generating it is not successful guest execution.
-  This host has Sandbox/Hyper-V management disabled and no prepared Windows VM.
-  No host feature or reboot was triggered. A guest token is recorded rather
-  than assumed non-elevated.
+  The local Sandbox feature was enabled with `-NoRestart`; Windows reports a
+  required reboot, which has not been performed. No clean guest execution is
+  claimed. A guest token is recorded rather than assumed non-elevated.
 - Windows 11 and wider hardware qualification, accessibility and independent
   human review. A single non-elevated development host does not establish these.
 - Signed public website release, SmartScreen reputation, authenticated update

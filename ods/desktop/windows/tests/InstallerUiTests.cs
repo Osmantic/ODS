@@ -63,6 +63,8 @@ static class InstallerUiTests
                     var windows = AutomationElement.RootElement.FindAll(TreeScope.Children, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Window));
                     foreach (AutomationElement window in windows)
                     {
+                        try
+                        {
                         if (!owned.Contains(window.Current.ProcessId)) continue;
                         if (retentionCancel)
                         {
@@ -95,6 +97,13 @@ static class InstallerUiTests
                         if (button != null) { Press(button); finished = true; break; }
                         button = Control(window, ControlType.Button, "Install") ?? Control(window, ControlType.Button, "Next");
                         if (button != null) Press(button);
+                        }
+                        catch (ElementNotAvailableException)
+                        {
+                            // An enumerated window/control may close between
+                            // polling and inspection. Retry the next snapshot;
+                            // ownership and the overall deadline still apply.
+                        }
                     }
                     Thread.Sleep(300);
                 }
