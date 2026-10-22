@@ -148,7 +148,8 @@ class WindowsNativeSupervisor:
     """Supervises llama-server and dashboard-api native execution."""
     def __init__(self, data_dir: Path, llama_port: int = 8080, dashboard_port: int = 3002,
                  api_key: str = None, stop_timeout: float = 5.0,
-                 llama_url: str = None, model_url: str = None):
+                 llama_url: str = None, model_url: str = None,
+                 stub_children: bool = False, stub_behavior: str = "clean"):
         self.data_dir = data_dir.resolve()
         self.llama_port = llama_port
         self.dashboard_port = dashboard_port
@@ -156,6 +157,8 @@ class WindowsNativeSupervisor:
         self.stop_timeout = stop_timeout
         self.llama_url = llama_url or LLAMA_SERVER_PIN["url"]
         self.model_url = model_url or MODEL_PIN["url"]
+        self.stub_children = stub_children
+        self.stub_behavior = stub_behavior
         self.job = Win32JobManager()
         self.llama_proc = None
         self.dashboard_proc = None
@@ -278,7 +281,7 @@ class WindowsNativeSupervisor:
         print("SUCCESS: Runtime and Model verified with matching cryptographic hashes.")
         return llama_exe, model_path
 
-    def start(self, llama_exe: Path, model_path: Path):
+    def start(self, llama_exe: Path = None, model_path: Path = None):
         # 1. Pre-flight port checks
         if not verify_port_available(self.llama_port):
             print(f"ERROR: Port {self.llama_port} is already in use by another process.", file=sys.stderr)
@@ -292,6 +295,74 @@ class WindowsNativeSupervisor:
         # Open log files for child redirection
         self.llama_log_file = open(self.llama_log_path, "a", encoding="utf-8")
         self.dashboard_log_file = open(self.dashboard_log_path, "a", encoding="utf-8")
+
+        if self.stub_children:
+            stub_clean = (
+                "import time, sys, signal\n"
+                "def _exit(s, f): sys.exit(0)\n"
+                "signal.signal(signal.SIGINT, _exit)\n"
+                "if hasattr(signal, 'SIGBREAK'):\n"
+                "    signal.signal(signal.SIGBREAK, _exit)\n"
+                "while True:\n"
+                "    try:\n"
+                "        time.sleep(1)\n"
+                "    except BaseException:\n"
+                "        sys.exit(0)\n"
+            )
+            stub_abnormal = (
+                "import time, sys, signal\n"
+                "def _exit(s, f): sys.exit(3)\n"
+                "signal.signal(signal.SIGINT, _exit)\n"
+                "if hasattr(signal, 'SIGBREAK'):\n"
+                "    signal.signal(signal.SIGBREAK, _exit)\n"
+                "while True:\n"
+                "    try:\n"
+                "        time.sleep(1)\n"
+                "    except BaseException:\n"
+                "        sys.exit(3)\n"
+            )
+            stub_hang = (
+                "import time, signal\n"
+                "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+                "if hasattr(signal, 'SIGBREAK'):\n"
+                "    signal.signal(signal.SIGBREAK, signal.SIG_IGN)\n"
+                "while True:\n"
+                "    try:\n"
+                "        time.sleep(1)\n"
+                "    except BaseException:\n"
+                "        pass\n"
+            )
+
+            dash_stub = stub_clean
+            if self.stub_behavior == "abnormal":
+                dash_stub = stub_abnormal
+            elif self.stub_behavior == "hang":
+                dash_stub = stub_hang
+
+            llama_cmd = [sys.executable, "-c", stub_clean]
+            api_cmd = [sys.executable, "-c", dash_stub]
+
+            print(f"Starting stub llama child (clean)...")
+            self.llama_proc = subprocess.Popen(
+                llama_cmd, stdout=self.llama_log_file, stderr=subprocess.STDOUT,
+                creationflags=creationflags
+            )
+            self.job.assign_process(self.llama_proc.pid)
+
+            print(f"Starting stub dashboard child ({self.stub_behavior})...")
+            self.dashboard_proc = subprocess.Popen(
+                api_cmd, stdout=self.dashboard_log_file, stderr=subprocess.STDOUT,
+                creationflags=creationflags
+            )
+            self.job.assign_process(self.dashboard_proc.pid)
+
+            # Give stub children a moment to initialize signal handlers
+            time.sleep(0.3)
+
+            self._write_pids(ready=True)
+            self.running = True
+            print("SUCCESS: Both stub child processes spawned and marked ready.")
+            return
 
         # 2. Launch llama-server.exe
         llama_cmd = [
@@ -315,7 +386,7 @@ class WindowsNativeSupervisor:
         self.job.assign_process(self.llama_proc.pid)
         print(f"Assigned llama-server (PID {self.llama_proc.pid}) to Win32 Job Object.")
 
-        # 3. Launch dashboard-api via Uvicorn
+        # 3. Launch dashboard-api via Uvicorn with clean SIGBREAK handler pre-registered
         repo_root = Path(__file__).resolve().parents[3]
         api_dir = repo_root / "ods" / "extensions" / "services" / "dashboard-api"
         env = os.environ.copy()
@@ -331,12 +402,14 @@ class WindowsNativeSupervisor:
         env["AMD_INFERENCE_LOCATION"] = ""
         (self.data_dir / "ods_data").mkdir(parents=True, exist_ok=True)
 
+        runner_code = (
+            "import sys, signal, uvicorn; "
+            "signal.signal(getattr(signal, 'SIGBREAK', signal.SIGINT), lambda s, f: sys.exit(0)); "
+            "import main; "
+            "uvicorn.run(main.app, host='127.0.0.1', port=int(sys.argv[1]), log_level='warning')"
+        )
         api_cmd = [
-            sys.executable, "-m", "uvicorn", "main:app",
-            "--app-dir", str(api_dir),
-            "--host", "127.0.0.1",
-            "--port", str(self.dashboard_port),
-            "--log-level", "warning"
+            sys.executable, "-c", runner_code, str(self.dashboard_port)
         ]
         print(f"Starting dashboard-api on port {self.dashboard_port} (logs: {self.dashboard_log_path.name})...")
         self.dashboard_proc = subprocess.Popen(
@@ -428,7 +501,7 @@ class WindowsNativeSupervisor:
             self.stop()
             sys.exit(0)
 
-    def stop(self, timeout: float = None):
+    def stop(self, timeout: float = None) -> bool:
         if timeout is None:
             timeout = self.stop_timeout
         self.running = False
@@ -448,23 +521,26 @@ class WindowsNativeSupervisor:
         # Step 2: Await cooperative exit up to timeout
         t0 = time.perf_counter()
         forced_termination = False
+        abnormal_exit = False
         for name, proc in [("dashboard-api", self.dashboard_proc), ("llama-server", self.llama_proc)]:
-            if proc and proc.poll() is None:
-                remaining = max(0.001, timeout - (time.perf_counter() - t0))
-                try:
-                    proc.wait(timeout=remaining)
-                    if proc.returncode == 0:
-                        print(f"{name} exited cleanly with code 0.")
-                    else:
-                        print(f"{name} exited with code {proc.returncode}.")
-                except subprocess.TimeoutExpired:
-                    forced_termination = True
-                    print(f"Warning: {name} did not exit within {timeout}s; terminating forcefully.", file=sys.stderr)
+            if proc:
+                if proc.poll() is None:
+                    remaining = max(0.001, timeout - (time.perf_counter() - t0))
                     try:
-                        proc.kill()
-                        proc.wait(timeout=2.0)
-                    except Exception:
-                        pass
+                        proc.wait(timeout=remaining)
+                    except subprocess.TimeoutExpired:
+                        forced_termination = True
+                        print(f"Warning: {name} did not exit within {timeout}s; terminating forcefully.", file=sys.stderr)
+                        try:
+                            proc.kill()
+                            proc.wait(timeout=2.0)
+                        except Exception:
+                            pass
+                if proc.returncode == 0:
+                    print(f"{name} exited with code 0.")
+                else:
+                    abnormal_exit = True
+                    print(f"{name} exited with code {proc.returncode}.")
 
         # Step 3: Final Win32 Job Object close (guarantees zero orphaned child processes)
         self.job.close()
@@ -485,9 +561,16 @@ class WindowsNativeSupervisor:
 
         if forced_termination:
             print("Stop mode: FORCED (cooperative timeout expired, terminated forcefully).")
+            print("Win32 Job Object closed; child processes terminated.")
+            return False
+        elif abnormal_exit:
+            print("Stop mode: ABNORMAL (one or more processes exited with non-zero code).")
+            print("Win32 Job Object closed; child processes terminated.")
+            return False
         else:
-            print("Stop mode: GRACEFUL (all processes exited cooperatively before timeout).")
-        print("Win32 Job Object closed; child processes terminated.")
+            print("Stop mode: GRACEFUL (all processes exited cooperatively with code 0).")
+            print("Win32 Job Object closed; child processes terminated.")
+            return True
 
 def main():
     import argparse
@@ -499,9 +582,18 @@ def main():
     parser.add_argument("--stop-timeout", type=float, default=5.0, help="Graceful stop timeout in seconds")
     parser.add_argument("--llama-url", default=None, help="Override download URL for llama-server runtime archive")
     parser.add_argument("--model-url", default=None, help="Override download URL for GGUF model")
+    parser.add_argument("--stub-children", action="store_true", help="Run with lightweight stub children (no network, no downloads)")
+    parser.add_argument("--stub-abnormal", action="store_true", help="Configure stub child to exit with code 3 on break (for abnormal stop test)")
+    parser.add_argument("--stub-hang", action="store_true", help="Configure stub child to ignore break signal (for forced timeout test)")
     parser.add_argument("--run-probe", action="store_true", help="Start, verify health & chat, then stop")
     parser.add_argument("--stop-after-ready", action="store_true", help="Start, verify health, then execute stop() and exit 0")
     args = parser.parse_args()
+
+    stub_behavior = "clean"
+    if args.stub_abnormal:
+        stub_behavior = "abnormal"
+    elif args.stub_hang:
+        stub_behavior = "hang"
 
     sup = WindowsNativeSupervisor(
         Path(args.data_dir),
@@ -510,7 +602,9 @@ def main():
         api_key=args.api_key,
         stop_timeout=args.stop_timeout,
         llama_url=args.llama_url,
-        model_url=args.model_url
+        model_url=args.model_url,
+        stub_children=args.stub_children,
+        stub_behavior=stub_behavior
     )
 
     # Register signal handlers
@@ -531,12 +625,18 @@ def main():
         print(f"ERROR: Port {args.dashboard_port} is already in use by another process.", file=sys.stderr)
         sys.exit(3)
 
-    llama_exe, model_path = sup.download_and_verify()
-    sup.start(llama_exe, model_path)
+    if args.stub_children:
+        sup.start()
+    else:
+        llama_exe, model_path = sup.download_and_verify()
+        sup.start(llama_exe, model_path)
 
     if args.stop_after_ready:
         print("Executing stop path verification after health check...")
-        sup.stop()
+        success = sup.stop()
+        if not success:
+            print("ERROR: Stop path experienced forced termination or abnormal child exit.", file=sys.stderr)
+            sys.exit(7)
         print("SUCCESS: Stop path execution completed.")
         sys.exit(0)
     elif args.run_probe:

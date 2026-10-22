@@ -17,48 +17,65 @@ Unlike containerized installations or external service wrappers, this supervisor
    - Downloads write atomically to temporary `.part` files and rename only on complete download.
    - On cached hash mismatch, attempts a single automatic re-download; if persistent, refuses startup with exit code 2.
 
-3. **Stop Mechanism (CTRL_BREAK, wait, then kill)**:
+3. **Stop Mechanism (CTRL_BREAK, Lifespan Shutdown, Honest Relabeling)**:
    - Supervised child processes are spawned in new process groups (`CREATE_NEW_PROCESS_GROUP`).
    - On shutdown or `--stop-after-ready`, the supervisor sends `CTRL_BREAK_EVENT` to the child process groups.
-   - Awaits cooperative termination up to `--stop-timeout` (default 5.0s).
-   - If children do not exit before timeout, the supervisor terminates them forcefully and closes the NT Job Object to ensure complete process tree cleanup.
+   - **Exit Code 3 Root Cause & Fix**: Standard Uvicorn captures `SIGBREAK`, runs full lifespan shutdown, restores the pre-existing handler (`signal.SIG_DFL`), and re-raises `SIGBREAK`. Under MSVCRT, unhandled `SIGBREAK` terminates with exit code 3. The supervisor fixes this by pre-registering a `SIGBREAK` handler (`lambda s, f: sys.exit(0)`) prior to `uvicorn.run()`. When Uvicorn re-raises `SIGBREAK` after lifespan shutdown, the restored custom handler exits cleanly with code 0.
+   - **Honest Status Relabeling**: The supervisor reports stop mode truthfully:
+     - `GRACEFUL`: All processes exited cooperatively with code 0 before timeout.
+     - `ABNORMAL`: One or more processes exited with a non-zero return code (supervisor exits with code 7 on `--stop-after-ready`).
+     - `FORCED`: Child did not exit before `--stop-timeout` and required forceful kill (supervisor exits with code 7 on `--stop-after-ready`).
 
 4. **Failure Safeguards & Exit Codes**:
-   - **Exit code 0**: Successful execution, probe completion, or cooperative stop.
+   - **Exit code 0**: Successful execution, probe completion, or clean graceful stop.
    - **Exit code 2**: SHA-256 hash mismatch on runtime archive, extracted executable, or GGUF model file.
    - **Exit code 3**: Port collision on loopback interface (pre-flight check).
    - **Exit code 5**: Child health probe timeout during startup.
    - **Exit code 6**: Supervised child process died unexpectedly mid-run.
+   - **Exit code 7**: Stop path experienced abnormal child exit code or forced timeout termination.
 
-## Test Suite (`test_supervisor.py`)
+---
 
-The suite exercises 7 end-to-end integration and failure tests on Windows:
-1. **Happy Path Probe**: Starts supervisor with dynamically allocated free ports and per-run API key, verifies health probe and `/api/chat` through dashboard-api, then stops (exit code 0).
-2. **Port Collision Rejection**: Binds a blocking socket on loopback, verifies supervisor pre-flight detects collision and rejects startup (exit code 3).
-3. **Cached Hash Healing**: Pre-populates a corrupted cached archive, verifies supervisor detects hash mismatch, re-downloads cleanly to `.part`, and recovers (exit code 0).
-4. **Persistent Hash Rejection**: Spins up a local test HTTP server serving corrupted bytes via `--llama-url` override, verifies persistent mismatch is rejected without test hooks (exit code 2).
-5. **Mid-Run Child Death Detection**: Kills child `llama-server.exe` strictly by spawned PID, verifies supervisor detects death and exits with code 6.
-6. **Supervisor Forced Kill (Zero Orphans)**: Force-kills the supervisor process strictly by PID, verifies Win32 Job Object kernel cleanup terminates both children and releases ports.
-7. **Stop Path Verification**:
-   - **Subtest 7A**: Cooperative stop path with `CTRL_BREAK_EVENT` and wait within timeout (exit code 0).
-   - **Subtest 7B**: Forced stop path where timeout expires and fallback termination triggers (exit code 0).
+## Test Suites
+
+The test harness is cleanly split between fast offline tests and heavy network tests:
+
+### 1. Offline Stub Test Suite (`test_supervisor.py`)
+Runs against lightweight stub child processes (`python -c ...`) with zero network access and completes in under 8 seconds. Exercises:
+1. **Port Collision Rejection** (Exit Code 3): Binds a blocking socket and asserts immediate pre-flight rejection.
+2. **Mid-Run Child Death Detection** (Exit Code 6): Kills child strictly by spawned PID and asserts supervisor exits with strictly code 6.
+3. **Supervisor Killed / Zero Orphans**: Forcefully kills supervisor by PID and verifies all child PIDs are terminated by kernel Job Object.
+4. **Graceful Stop Path (Clean Exit 0)**: Asserts all processes exit cooperatively with return code 0.
+5. **Abnormal Child Exit on Stop Path (Assert Exit 7)**: Configures stub child to return code 3 on break, asserting supervisor detects abnormal stop and exits 7.
+6. **Forced Stop Path (Timeout Fallback, Exit 7)**: Configures stub child to ignore break signal, asserting supervisor triggers timeout, forceful kill, and exits 7.
+
+### 2. Real Download & Live Chat Suite (`test_real_downloads.py`)
+Executed via manual `workflow_dispatch` job in CI:
+1. **Live Happy Path Probe**: Downloads pinned llama-server and SmolLM2 GGUF, launches real services, probes `/health` and live `/api/chat` through dashboard-api.
+2. **Cached Hash Healing**: Pre-populates corrupted cached archive, verifies automatic re-download healing to `.part`.
+3. **Persistent Hash Rejection**: Spins up local HTTP server serving bad bytes via URL override, asserts startup refusal (Exit Code 2).
+
+### 3. Win32 CTRL_BREAK Reproduction (`reproduce_ctrl_break.py`)
+Demonstrates direct MSVCRT exit code 3, standard Uvicorn lifespan behavior, and pre-registered handler clean exit code 0.
+
+---
+
+## Architectural Comparison Note
+
+For a detailed analysis comparing this Job Object supervisor against the maintainer's existing Scheduled Task implementation (`installers/windows/ods.ps1`) and Windows Services (NSSM/pywin32), see:
+[`ods/docs/WINDOWS-DOCKER-FREE-SUPERVISION.md`](../docs/WINDOWS-DOCKER-FREE-SUPERVISION.md).
+
+---
 
 ## Running
 
 ```bash
-# Run probe mode (starts, verifies health & chat completion through dashboard-api, then stops):
-python ods/experimental/windows-supervisor/supervisor.py --run-probe
-
-# Run persistent supervision:
-python ods/experimental/windows-supervisor/supervisor.py
-
-# Run test suite:
+# Run fast offline stub tests (zero network, ~8s):
 python ods/experimental/windows-supervisor/test_supervisor.py
+
+# Run real download suite (requires internet, ~35s):
+python ods/experimental/windows-supervisor/test_real_downloads.py
+
+# Run Win32 CTRL_BREAK reproduction script:
+python ods/experimental/windows-supervisor/reproduce_ctrl_break.py
 ```
-
-## Known Limitations
-
-- **Host Python Required**: Tested and qualified under Python 3.12 on Windows runners (`windows-latest`).
-- **CPU Inference Only**: Pinned to CPU backend (`llama-b9014-bin-win-cpu-x64.zip`). Physical GPU acceleration (Vulkan, DirectML, CUDA) requires physical hardware qualification.
-- **Single-Machine Loopback**: Binds strictly to `127.0.0.1`.
-- **Experimental Boundary**: Operates strictly in isolation under `ods/experimental/windows-supervisor/` without altering default ODS production installer or Compose flows.

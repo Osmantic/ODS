@@ -2,17 +2,84 @@ name: Windows Native Supervisor Integration
 
 on:
   workflow_dispatch:
+    inputs:
+      run_real_downloads:
+        description: 'Run heavy asset download tests'
+        type: boolean
+        default: true
   pull_request:
     paths:
       - 'ods/experimental/windows-supervisor/**'
       - '.github/workflows/experiment-windows-supervisor.yml'
+      - 'ods/docs/WINDOWS-DOCKER-FREE-SUPERVISION.md'
 
 permissions:
   contents: read
 
 jobs:
-  test-supervisor:
-    name: Windows Native Supervisor Test Suite
+  reproduce-ctrl-break:
+    name: Win32 CTRL_BREAK Exit Code 3 Reproduction
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install fastapi uvicorn
+
+      - name: Run Win32 CTRL_BREAK Reproduction
+        shell: bash
+        run: |
+          mkdir -p scratch/evidence
+          python ods/experimental/windows-supervisor/reproduce_ctrl_break.py 2>&1 | tee scratch/evidence/reproduce_ctrl_break.log
+
+      - name: Upload Reproduction Evidence
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ctrl-break-reproduction-evidence
+          path: scratch/evidence/
+
+  test-stub-supervisor:
+    name: Offline Stub Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Offline Stub Test Suite
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          python ods/experimental/windows-supervisor/test_supervisor.py 2>&1 | tee ci-logs/test_supervisor_${{ matrix.os }}.log
+
+      - name: Upload Stub Test Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stub-test-results-${{ matrix.os }}
+          path: ci-logs/
+
+  test-real-downloads:
+    name: Real Downloads & Live Chat Probe
+    if: github.event_name == 'workflow_dispatch' && (inputs.run_real_downloads == true || inputs.run_real_downloads == 'true')
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -38,15 +105,15 @@ jobs:
           restore-keys: |
             windows-supervisor-assets-b9014-smollm2-
 
-      - name: Run Windows Native Supervisor Test Suite
+      - name: Run Real Downloads and Live Chat Probe
         shell: bash
         run: |
           mkdir -p ci-logs
-          python ods/experimental/windows-supervisor/test_supervisor.py 2>&1 | tee ci-logs/test_supervisor.log
+          python ods/experimental/windows-supervisor/test_real_downloads.py 2>&1 | tee ci-logs/test_real_downloads.log
 
-      - name: Upload Test Logs and Artifacts
+      - name: Upload Real Download Logs
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: supervisor-test-results-windows
+          name: real-download-test-results-windows
           path: ci-logs/
