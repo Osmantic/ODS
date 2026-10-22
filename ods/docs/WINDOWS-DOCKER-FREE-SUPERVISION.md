@@ -121,3 +121,5 @@ Automated CI on GitHub Actions `windows-latest` executes inside virtualized Azur
    - Use the Scheduled Task (`ods.ps1:2921`) or Start Menu Startup folder solely to launch the supervisor upon user login, delegating all child process orchestration to the Job Object.
 3. **Reject Windows Services for Consumer Distribution**:
    - Session 0 driver limitations on consumer GPUs and mandatory UAC elevation make NT Services unsuitable for consumer desktop LLM workloads.
+4. **Maintainer Review Decision Record**:
+   - For the complete evaluation, staged adoption gates, and required maintainer decisions, see [`ods/docs/WINDOWS-SUPERVISOR-REVIEW.md`](WINDOWS-SUPERVISOR-REVIEW.md).

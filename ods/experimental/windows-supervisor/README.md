@@ -55,15 +55,60 @@ Executed via manual `workflow_dispatch` job in CI:
 2. **Cached Hash Healing**: Pre-populates corrupted cached archive, verifies automatic re-download healing to `.part`.
 3. **Persistent Hash Rejection**: Spins up local HTTP server serving bad bytes via URL override, asserts startup refusal (Exit Code 2).
 
+**CI Opt-in Behavior**: In GitHub Actions (`experiment-windows-supervisor.yml`), `test-real-downloads` is gated behind `inputs.run_real_downloads` with `default: false`. Ordinary pull requests and default workflow dispatches execute only the offline stub suites and skip real downloads entirely.
+
 ### 3. Win32 CTRL_BREAK Reproduction (`reproduce_ctrl_break.py`)
 Demonstrates direct MSVCRT exit code 3, standard Uvicorn lifespan behavior, and pre-registered handler clean exit code 0.
 
 ---
 
-## Architectural Comparison Note
+## Production Integration Boundary & Experimental Status
 
-For a detailed analysis comparing this Job Object supervisor against the maintainer's existing Scheduled Task implementation (`installers/windows/ods.ps1`) and Windows Services (NSSM/pywin32), see:
-[`ods/docs/WINDOWS-DOCKER-FREE-SUPERVISION.md`](../docs/WINDOWS-DOCKER-FREE-SUPERVISION.md).
+- **Experimental Scope**: This directory is an isolated proof-of-concept prototype. It is **not** currently integrated into the production installer (`ods/installers/windows/ods.ps1`), process management helpers (`ods/installers/windows/lib/host-agent-process.ps1`, `native-llama-runtime.ps1`), or host-agent daemon (`ods/bin/ods-host-agent.py`).
+- **Zero Production Changes**: Upstream production code, Docker Compose templates, Linux runtime configurations, and authentication modules (`hermes_auth.py`) remain completely untouched.
+- **Review Decision Record**: For maintainer evaluation, architectural trade-offs, and staged adoption gates, see:
+  - Architecture Design Note: [`ods/docs/WINDOWS-DOCKER-FREE-SUPERVISION.md`](../docs/WINDOWS-DOCKER-FREE-SUPERVISION.md)
+  - Maintainer Review Decision Record: [`ods/docs/WINDOWS-SUPERVISOR-REVIEW.md`](../docs/WINDOWS-SUPERVISOR-REVIEW.md)
+
+---
+
+## Safe Teardown & Temporary Artifact Cleanup
+
+### Stopping a Running Supervisor
+- **Interactive Console**: Send `Ctrl+Break` or `Ctrl+C` into the console window. The supervisor intercepts the signal, prompts child processes to exit, and terminates cleanly.
+- **Forceful Kill**:
+  ```cmd
+  taskkill /F /PID <supervisor_pid> /T
+  ```
+  Because both `llama-server.exe` and `dashboard-api` are bound to the Win32 Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, killing the supervisor automatically and immediately terminates all child processes.
+- **Verification**:
+  ```cmd
+  tasklist | findstr /i "llama-server python uvicorn"
+  ```
+
+### Cleaning Temporary Test Artifacts
+The test suites generate local state inside git-ignored directories:
+- `test_data/`: Temporary models, runtime extracts, and test logs.
+- `supervisor_data/`: Default working directory for local runs.
+
+To clean up:
+```bash
+# Windows (cmd):
+rmdir /s /q test_data supervisor_data
+
+# Windows (PowerShell) / Unix:
+rm -rf test_data supervisor_data
+```
+
+---
+
+## Outstanding Physical Hardware Validation
+
+The following hardware-dependent questions cannot be validated in virtualized CI and require verification on real Windows 11 hardware prior to production release:
+1. **Consumer GPU WDDM Driver Contexts in Session 0 vs Session 1**: Consumer GeForce/Radeon drivers require interactive desktop sessions to allocate compute contexts.
+2. **Microsoft Defender Real-Time Scanning Latency**: Real-time inspection of 2GB model weights may hold file locks or introduce token latency.
+3. **Modern Standby (S3 / S0ix) Sleep/Resume**: Verifying whether CUDA/DirectML contexts recover cleanly or require supervisor restarts upon system wake.
+4. **Windows 11 EcoQoS Power Throttling**: Verifying whether background child processes are throttled to Efficiency cores without visible windows.
 
 ---
 
