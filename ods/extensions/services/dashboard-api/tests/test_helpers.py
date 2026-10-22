@@ -1798,6 +1798,7 @@ class TestServiceHealthReconciliation:
             },
         }
         monkeypatch.setattr(helpers, "SERVICES", services)
+        monkeypatch.setattr(helpers, "_last_probe_success", {})
 
         async def probe(service_id, config):
             return ServiceStatus(
@@ -1819,6 +1820,42 @@ class TestServiceHealthReconciliation:
         statuses = {status.id: status.status for status in await helpers.get_all_services()}
 
         assert statuses == {"dashboard": "healthy", "open-webui": "unhealthy"}
+
+    @pytest.mark.asyncio
+    async def test_persistent_probe_timeout_is_not_masked_by_docker_healthcheck(self, monkeypatch):
+        import helpers
+
+        services = {"llama-server": {
+            "name": "LLM", "port": 8080, "external_port": 8080,
+            "type": "docker", "container_name": "ods-llama-server",
+        }}
+        monkeypatch.setattr(helpers, "SERVICES", services)
+        monkeypatch.setattr(helpers, "_last_probe_success", {})
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "llama")
+        monkeypatch.setattr(helpers, "_host_native_llm", lambda: False)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(helpers, "_probe_clock", lambda: clock["now"])
+        probe_status = {"value": "healthy"}
+
+        async def probe(service_id, config):
+            return ServiceStatus(
+                id=service_id, name=config["name"], port=config["port"],
+                external_port=config["external_port"], status=probe_status["value"],
+            )
+
+        monkeypatch.setattr(helpers, "check_service_health", probe)
+        monkeypatch.setattr(helpers, "request_agent_json", AsyncMock(return_value={
+            "schema_version": "ods.host-service-health.v1",
+            "containers": [{"service_id": "llama-server", "container_name": "ods-llama-server",
+                            "state": "running", "health": "healthy"}],
+        }))
+
+        assert (await helpers.get_all_services())[0].status == "healthy"
+        probe_status["value"] = "degraded"
+        clock["now"] += 10
+        assert (await helpers.get_all_services())[0].status == "healthy"
+        clock["now"] += helpers._TIMEOUT_OVERRIDE_GRACE_S
+        assert (await helpers.get_all_services())[0].status == "degraded"
 
     @pytest.mark.asyncio
     async def test_all_healthy_path_does_not_call_host_agent(self, monkeypatch):
