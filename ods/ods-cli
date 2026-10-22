@@ -2375,6 +2375,18 @@ cmd_update() {
         log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
     fi
 
+    # Never restart the agent or recreate the stack under a model switch or a
+    # Portal access check: either would be left half-applied.
+    local lifecycle_busy=""
+    if lifecycle_busy="$(_agent_model_lifecycle_busy)"; then
+        lifecycle_busy="$(printf '%s\n' "$lifecycle_busy" | sed '/^$/d' | paste -sd ';' -)"
+        if [[ -n "$lifecycle_busy" ]]; then
+            error "Update not started: ${lifecycle_busy//;/; }. Let it finish (or recover it), then run ods update again."
+        fi
+    else
+        warn "Could not ask the host agent whether a model change is in progress; continuing."
+    fi
+
     # Require the configuration snapshot that `ods rollback` can restore,
     # before changing configuration, Compose selection, images or containers.
     local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
@@ -5484,6 +5496,38 @@ _agent_mode_snapshot() {
         select(.configuredMode == "local" or .configuredMode == "cloud" or .configuredMode == "hybrid") |
         select(.effectiveMode == "local" or .effectiveMode == "cloud" or .effectiveMode == "hybrid" or .effectiveMode == "unknown") |
         [.effectiveMode, .configuredMode] | join(" ")' 2>/dev/null
+}
+
+# Print what is holding the host agent's model lifecycle, or nothing when it is
+# idle. `ods update` recreates the stack and restarts the agent, which cuts a
+# model switch or Portal access check off half-done (the dashboard's update
+# already claims this boundary). Fails when the agent cannot be asked.
+_agent_model_lifecycle_busy() {
+    local key port host status recovery
+    key="$(_env_get_raw ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(_env_get_raw DASHBOARD_API_KEY)"
+    case "$key" in
+        \"*\") key="${key:1:${#key}-2}" ;;
+        \'*\') key="${key:1:${#key}-2}" ;;
+    esac
+    [[ -n "$key" && "$key" != *$'\n'* && "$key" != *$'\r'* ]] || return 1
+    port="$(_env_get_raw ODS_AGENT_PORT)"
+    port="${port#\"}"; port="${port%\"}"
+    port="${port#\'}"; port="${port%\'}"
+    [[ "$port" =~ ^[0-9]+$ ]] || port=7710
+    host="$(_agent_probe_host)"
+    # Keep credentials off argv and out of diagnostics, including on failure.
+    status=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 5 --header @- \
+            "http://${host}:${port}/v1/model/status" 2>/dev/null) || return 1
+    recovery=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 5 --header @- \
+            "http://${host}:${port}/v1/model/recovery" 2>/dev/null) || return 1
+    printf '%s' "$status" | jq -er 'if .lifecycleActive == true then
+        "\(.activeOperation // "a model operation")\(if .activeTarget then " for \(.activeTarget)" else "" end) is in progress"
+        else "" end' || return 1
+    printf '%s' "$recovery" | jq -er 'if .pending == true then
+        "an interrupted model switch is waiting for recovery (ods model recover)" else "" end' || return 1
 }
 
 _agent_refresh_mode() {

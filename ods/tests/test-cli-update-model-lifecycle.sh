@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# `ods update` restarts the host agent and recreates the stack. It must not
+# start while the agent's model lifecycle is busy (a model switch or a Portal
+# access check) or an interrupted switch awaits recovery: either would be left
+# half-applied. Exercises the real cmd_update with a stubbed agent; nothing
+# past the pre-update snapshot runs.
+set -euo pipefail
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TARGET="${ODS_CLI_UNDER_TEST:-$ROOT_DIR/ods-cli}"
+FIXTURE="$(mktemp -d)"
+trap 'rm -rf "$FIXTURE"' EXIT
+
+extract() {
+    awk -v name="$1" '$0 ~ "^" name "\\(\\) \\{" {copy=1} copy{print} copy && /^}$/{exit}' "$TARGET"
+}
+
+# $1 = /v1/model/status body ("" = agent unreachable), $2 = /v1/model/recovery body
+run_update() {
+    local status="$1" recovery="$2" dir="$FIXTURE/run"
+    rm -rf "$dir"; mkdir -p "$dir"
+    printf 'ODS_VERSION=1.0.0\nODS_AGENT_KEY=test-only\n' > "$dir/.env"
+    printf '#!/bin/sh\nexit 0\n' > "$dir/ods-update.sh"
+    chmod +x "$dir/ods-update.sh"
+    (
+        set -euo pipefail
+        INSTALL_DIR="$dir"
+        RED="" GREEN="" YELLOW="" BLUE="" CYAN="" NC=""
+        check_install() { :; }
+        load_env() { :; }
+        log() { printf '%s\n' "$*"; }
+        log_error() { printf 'ERROR: %s\n' "$*"; }
+        warn() { printf 'WARN: %s\n' "$*"; }
+        error() { log_error "$*"; exit 1; }
+        _check_version_compat() { return 0; }
+        _env_get_raw() { sed -n "s/^$1=//p" "$INSTALL_DIR/.env"; }
+        _agent_probe_host() { printf '127.0.0.1'; }
+        curl() {
+            cat >/dev/null
+            [[ -n "$STATUS_BODY" ]] || return 7
+            case "${!#}" in
+                */v1/model/status) printf '%s' "$STATUS_BODY" ;;
+                */v1/model/recovery) printf '%s' "$RECOVERY_BODY" ;;
+                *) return 22 ;;
+            esac
+        }
+        # The pre-update snapshot is the first change; stop there.
+        bash() { echo "UPDATE-PROCEEDED"; exit 99; }
+        STATUS_BODY="$status" RECOVERY_BODY="$recovery"
+        eval "$(extract _agent_model_lifecycle_busy)"
+        eval "$(extract cmd_update)"
+        cmd_update </dev/null
+    )
+}
+
+expect() {
+    local want="$1" label="$2" pattern="$3"; shift 3
+    local rc=0 output
+    output=$(run_update "$@" 2>&1) || rc=$?
+    if [[ "$rc" != "$want" || "$output" != *"$pattern"* ]]; then
+        echo "[FAIL] $label: expected exit $want with '$pattern', got exit $rc" >&2
+        printf '%s\n' "$output" >&2
+        exit 1
+    fi
+    echo "[PASS] $label"
+}
+
+idle='{"pending":false,"phase":"idle"}'
+expect 1 "a model switch in progress blocks the update" "model_activation for qwen2.5-0.5b-instruct-q4 is in progress" \
+    '{"status":"idle","lifecycleActive":true,"activeOperation":"model_activation","activeTarget":"qwen2.5-0.5b-instruct-q4"}' "$idle"
+expect 1 "a Portal access check in progress blocks the update" "pixel_startup_reproof is in progress" \
+    '{"status":"idle","lifecycleActive":true,"activeOperation":"pixel_startup_reproof","activeTarget":null}' "$idle"
+expect 1 "an interrupted switch awaiting recovery blocks the update" "waiting for recovery (ods model recover)" \
+    '{"status":"idle"}' '{"pending":true,"phase":"held","transactionId":"abc"}'
+expect 99 "an idle lifecycle lets the update continue" "UPDATE-PROCEEDED" '{"status":"idle"}' "$idle"
+expect 99 "an unreachable agent warns and continues" "Could not ask the host agent" "" ""
