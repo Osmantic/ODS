@@ -38,6 +38,7 @@ test('visual download wording does not override owner intent boundaries',()=>{
     'Show the webpage and give me a download of the project from https://example.com/project.zip.',
     'Show the webpage and give me a download of the project. Do not send anything.',
     'Show the webpage and give me a download of the project. Do not give me a download of the project.',
+    'Show the webpage and give me a download of the project. Do not give me a download of the source.',
     'Show the webpage and give me a download of the source files. Never send us a download of the source files.',
     'Show the webpage and do not give me a download of the project.',
     'Do not use tools. Show the webpage and give me a download of the project.',

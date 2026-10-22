@@ -4709,7 +4709,7 @@ function ownerRequestsFileHandoff(lane) {
   const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
   // The newly recognized generic handoff can also be withdrawn. A refusal
   // naming a different file must not cancel a separate requested download.
-  const downloadRefusal = /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:give|provide|send|return|attach|deliver)\s+(?:(?:me|us)\s+(?:with\s+)?)?(?:(?:a|the)\s+)?download\s+of\s+(?:(?:the|this|that|my|our)\s+)?(?:project|(?:project|source)\s+files?|source\s+code|files?|documents?|archives?)(?:\s*,?\s*please)?\s*$/i;
+  const downloadRefusal = /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:give|provide|send|return|attach|deliver)\s+(?:(?:me|us)\s+(?:with\s+)?)?(?:(?:a|the)\s+)?download\s+of\s+(?:(?:the|this|that|my|our)\s+)?(?:project|(?:project|source)\s+files?|source(?:\s+code)?|files?|documents?|archives?)(?:\s*,?\s*please)?\s*$/i;
   if (clauses.some(clause => downloadRefusal.test(clause))) return false;
   // An unqualified later refusal overrides an earlier ordinary handoff. A
   // refusal naming old.zip still leaves a separate current.zip request intact.
