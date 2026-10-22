@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
-# health-check.sh must not report CRITICAL for a healthy base stack.
-#
-# The core loop probed every core manifest over host HTTP, including services
-# with no host port (Pixel host agent, Pixel edge, remote-provider sidecars),
-# the container-health model router, and Pixel fragments that ship disabled.
-# Each became a failed core check, so every healthy install exited 2.
+# health-check.sh must not report CRITICAL for a healthy base stack, and must
+# still catch real failures (router unhealthy, selected relay missing, docker
+# daemon down, resolver failure/malformed output).
 #
 # Run from repo root:  bash ods/tests/test-health-check-core-services.sh
 # Or from ods:         bash tests/test-health-check-core-services.sh
@@ -25,7 +22,7 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-HC="$ROOT_DIR/scripts/health-check.sh"
+HC_SRC="${HC_SOURCE_OVERRIDE:-$ROOT_DIR/scripts/health-check.sh}"
 
 PASS=0
 FAIL=0
@@ -33,35 +30,83 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 
 command -v python3 >/dev/null 2>&1 || { echo "python3 required"; exit 1; }
-[[ -f "$HC" ]] || { echo "health-check.sh not found"; exit 1; }
+[[ -f "$HC_SRC" ]] || { echo "health-check.sh not found at $HC_SRC"; exit 1; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/install" "$TMP/bin"
+
+# ── Fixture layout ──────────────────────────────────────────────────────────
+# TMP/source/scripts/health-check.sh   (copy of the real script)
+# TMP/source/scripts/resolve-compose-stack.sh  (fake resolver)
+# TMP/source/lib -> ROOT_DIR/lib       (real registry + safe-env)
+# TMP/source/extensions -> ROOT_DIR/extensions  (real registry data)
+# TMP/install/.env                     (controlled)
+# TMP/install/extensions -> ROOT_DIR/extensions (real relay .disabled files)
+# TMP/bin/{docker,curl}                (stubs)
+mkdir -p "$TMP/source/scripts" "$TMP/install" "$TMP/bin"
+cp "$HC_SRC" "$TMP/source/scripts/health-check.sh"
+chmod +x "$TMP/source/scripts/health-check.sh"
+ln -s "$ROOT_DIR/lib" "$TMP/source/lib"
+ln -s "$ROOT_DIR/extensions" "$TMP/source/extensions"
+ln -s "$ROOT_DIR/extensions" "$TMP/install/extensions"
 : > "$TMP/install/.env"
 
-# docker stub: the base stack is running; the router's own healthcheck reports
-# ROUTER_HEALTH; RELAY_STATE, when set, gives the Pixel relay a container.
+# Fake resolver: emits a JSON selection. RESOLVER_MODE controls behavior.
+cat > "$TMP/source/scripts/resolve-compose-stack.sh" <<'STUB'
+#!/usr/bin/env bash
+set -u
+mode="${RESOLVER_MODE:-ok}"
+case "$mode" in
+    fail)
+        echo "resolver: simulated failure" >&2
+        exit 1
+        ;;
+    malformed)
+        echo 'not-json{'
+        exit 0
+        ;;
+esac
+frags=("docker-compose.base.yml")
+if [[ "${SELECT_RELAY:-0}" == "1" ]]; then
+    frags+=("extensions/services/pixel-model-relay/compose.yaml.disabled")
+fi
+python3 - "${frags[@]}" <<'PY'
+import json, sys
+print(json.dumps({"fragments": list(sys.argv[1:])}))
+PY
+STUB
+chmod +x "$TMP/source/scripts/resolve-compose-stack.sh"
+
+# docker stub: returns State.Status, or State.Status + Health when the format
+# string asks for it. Never mutates anything. DOCKER_MODE=down simulates a
+# missing daemon (all inspect calls fail).
 cat > "$TMP/bin/docker" <<'STUB'
 #!/bin/sh
+if [ "${DOCKER_MODE:-up}" = "down" ]; then
+    echo "Cannot connect to the Docker daemon" >&2
+    exit 1
+fi
 name=""
 for arg in "$@"; do name="$arg"; done
 case "$name" in
-    ods-llama-server|ods-webui|ods-dashboard|ods-dashboard-api) state=running ;;
-    ods-model-router) state=running; health="$ROUTER_HEALTH" ;;
-    ods-pixel-model-relay) state="${RELAY_STATE:-}" ;;
-    *) state="" ;;
+    ods-llama-server|ods-webui|ods-dashboard|ods-dashboard-api) state=running; health=none ;;
+    ods-model-router) state="${ROUTER_STATE:-running}"; health="${ROUTER_HEALTH:-healthy}" ;;
+    ods-pixel-model-relay) state="${RELAY_STATE:-}"; health=none ;;
+    *) state=""; health=none ;;
 esac
 if [ -z "$state" ]; then
     echo "Error: No such object: $name" >&2
     exit 1
 fi
 case "$*" in
-    *Health*) echo "${health:-}" ;;
+    *State.Status*Health*) echo "$state $health" ;;
+    *Health*) echo "$health" ;;
     *) echo "$state" ;;
 esac
 STUB
-# curl stub: inference and the base stack's host ports answer.
+
+# curl stub: inference + base stack ports + relay port 4006 answer; all else
+# fails. RELAY_HTTP=down makes 4006 fail even when the container is running.
 cat > "$TMP/bin/curl" <<'STUB'
 #!/bin/sh
 url=""
@@ -71,58 +116,146 @@ done
 case "$url" in
     */v1/completions) echo '{"choices":[{"text":"Hi"}]}' ;;
     http://127.0.0.1:3000/*|http://127.0.0.1:3001/*|http://127.0.0.1:3002/*) echo ok ;;
+    http://127.0.0.1:4006/*)
+        if [ "${RELAY_HTTP:-up}" = "down" ]; then exit 7; fi
+        echo ok
+        ;;
     *) exit 7 ;;
 esac
 STUB
 chmod +x "$TMP/bin/docker" "$TMP/bin/curl"
 
+# ── Runner ──────────────────────────────────────────────────────────────────
+# Runs the copied health-check.sh under the fixture. Captures the exit code
+# despite set -e in the script (we run it in a subshell and record $?).
 run_hc() {
-    env ROUTER_HEALTH="$1" RELAY_STATE="$2" LLM_PORT=11434 INSTALL_DIR="$TMP/install" \
-        TIMEOUT=1 PATH="$TMP/bin:$PATH" "$BASH" "$HC" --json > "$TMP/out.json" 2> "$TMP/err.txt"
+    local out="$TMP/out.json" err="$TMP/err.txt"
+    : > "$out"; : > "$err"
+    (
+        set +e
+        env \
+            INSTALL_DIR="$TMP/install" \
+            LLM_PORT=11434 \
+            TIMEOUT=1 \
+            PATH="$TMP/bin:$PATH" \
+            RESOLVER_MODE="${RESOLVER_MODE:-ok}" \
+            SELECT_RELAY="${SELECT_RELAY:-0}" \
+            DOCKER_MODE="${DOCKER_MODE:-up}" \
+            ROUTER_STATE="${ROUTER_STATE:-running}" \
+            ROUTER_HEALTH="${ROUTER_HEALTH:-healthy}" \
+            RELAY_STATE="${RELAY_STATE:-}" \
+            RELAY_HTTP="${RELAY_HTTP:-up}" \
+            ENABLE_OPEN_WEBUI="${ENABLE_OPEN_WEBUI:-true}" \
+            "$BASH" "$TMP/source/scripts/health-check.sh" --json > "$out" 2> "$err"
+        echo $? > "$TMP/rc"
+    )
+    RESULT="$(cat "$TMP/rc")"
 }
 
-# Print "<status> <service>=<result> ..." for the requested service ids.
-summary() {
-    python3 - "$TMP/out.json" "$@" <<'PY'
+# Assert JSON status + exit code + per-service results.
+# Usage: assert_hc <label> <expected_status> <expected_rc> <sid=val>...
+assert_hc() {
+    local label="$1" want_status="$2" want_rc="$3"; shift 3
+    local got
+    got="$(python3 - "$TMP/out.json" "$RESULT" "$want_status" "$want_rc" "$@" <<'PY'
 import json, sys
-doc = json.load(open(sys.argv[1]))
-services = doc["services"]
-print(doc["status"], " ".join(f"{sid}={services.get(sid, 'absent')}" for sid in sys.argv[2:]))
+path, rc, want_status, want_rc = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+pairs = sys.argv[5:]
+try:
+    doc = json.load(open(path))
+except Exception as e:
+    print(f"BADJSON:{e}")
+    raise SystemExit(0)
+services = doc.get("services", {})
+problems = []
+if (doc.get("status") == "critical" if want_status == "not-critical" else doc.get("status") != want_status):
+    problems.append(f"status={doc.get('status')!r} want {want_status!r}")
+if (rc not in ("0", "1") if want_rc == "noncritical" else rc != want_rc):
+    problems.append(f"rc={rc} want {want_rc}")
+for p in pairs:
+    sid, _, want = p.partition("=")
+    got = services.get(sid, "absent")
+    if got != want:
+        problems.append(f"{sid}={got!r} want {want!r}")
+if problems:
+    print("MISMATCH: " + "; ".join(problems))
+else:
+    print("OK")
 PY
+)"
+    if [[ "$got" == "OK" ]]; then
+        pass "$label"
+    else
+        fail "$label ($got)"
+    fi
 }
 
-echo "Test 1: a healthy base stack is not CRITICAL"
-run_hc healthy ""
-got="$(summary dashboard dashboard-api open-webui model-router)"
-if [[ "$got" != critical* && "$got" == *" dashboard=ok dashboard-api=ok open-webui=ok model-router=ok" ]]; then
-    pass "base stack healthy: $got"
-else
-    fail "healthy base stack reported: $got"
-fi
-got="$(summary pixel-agent pixel-edge pixel-model-relay remote-provider-egress remote-provider-ssh-tunnel)"
-if [[ "$got" == *" pixel-agent=absent pixel-edge=absent pixel-model-relay=absent remote-provider-egress=absent remote-provider-ssh-tunnel=absent" ]]; then
-    pass "services without a host probe or install are not reported failed"
-else
-    fail "unprobeable core services still reported: $got"
-fi
+# ── Tests ───────────────────────────────────────────────────────────────────
 
-echo "Test 2: an unhealthy model router is still CRITICAL"
-run_hc unhealthy ""
-got="$(summary model-router)"
-if [[ "$got" == "critical model-router=fail" ]]; then
-    pass "router container health is enforced"
-else
-    fail "unhealthy router reported: $got"
-fi
+echo "Test 1: default healthy stack (Open WebUI enabled) is HEALTHY"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=up ROUTER_HEALTH=healthy \
+    RELAY_STATE="" RELAY_HTTP=up ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "default healthy stack" not-critical noncritical \
+    dashboard=ok dashboard-api=ok open-webui=ok model-router=ok \
+    pixel-model-relay=absent pixel-agent=absent pixel-edge=absent
 
-echo "Test 3: an installed but stopped Pixel relay is still CRITICAL"
-run_hc healthy exited
-got="$(summary pixel-model-relay)"
-if [[ "$got" == "critical pixel-model-relay=fail" ]]; then
-    pass "a relay container that exists is still checked"
-else
-    fail "stopped relay reported: $got"
-fi
+echo "Test 2: ENABLE_OPEN_WEBUI=false skips the open-webui probe"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=up ROUTER_HEALTH=healthy \
+    RELAY_STATE="" RELAY_HTTP=up ENABLE_OPEN_WEBUI=false run_hc
+assert_hc "open-webui disabled is skipped" not-critical noncritical \
+    open-webui=absent dashboard=ok model-router=ok
+
+echo "Test 3: selected relay missing => CRITICAL"
+RESOLVER_MODE=ok SELECT_RELAY=1 DOCKER_MODE=up ROUTER_HEALTH=healthy \
+    RELAY_STATE="" RELAY_HTTP=up ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "selected relay missing is critical" critical 2 \
+    pixel-model-relay=fail
+
+echo "Test 4: selected relay running on 4006 => HEALTHY"
+RESOLVER_MODE=ok SELECT_RELAY=1 DOCKER_MODE=up ROUTER_HEALTH=healthy \
+    RELAY_STATE=running RELAY_HTTP=up ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "selected relay running is healthy" not-critical noncritical \
+    pixel-model-relay=ok
+
+echo "Test 5: unselected relay missing is not reported"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=up ROUTER_HEALTH=healthy \
+    RELAY_STATE="" RELAY_HTTP=up ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "unselected relay absent" not-critical noncritical \
+    pixel-model-relay=absent
+
+echo "Test 6: router running+healthy => ok"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=up ROUTER_HEALTH=healthy \
+    RELAY_STATE="" RELAY_HTTP=up ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "router healthy" not-critical noncritical model-router=ok
+
+echo "Test 7: router running+unhealthy => CRITICAL"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=up ROUTER_HEALTH=unhealthy \
+    RELAY_STATE="" RELAY_HTTP=up ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "router unhealthy is critical" critical 2 model-router=fail
+
+echo "Test 8: router exited+healthy => CRITICAL"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=up ROUTER_STATE=exited \
+    ROUTER_HEALTH=healthy RELAY_STATE="" RELAY_HTTP=up \
+    ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "router exited is critical" critical 2 model-router=fail
+
+echo "Test 9: docker daemon unavailable => CRITICAL (no false healthy)"
+RESOLVER_MODE=ok SELECT_RELAY=0 DOCKER_MODE=down ROUTER_STATE=running \
+    ROUTER_HEALTH=healthy RELAY_STATE="" RELAY_HTTP=up \
+    ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "docker daemon down is critical" critical 2 model-router=fail
+
+echo "Test 10: resolver failure => stack_selection fail, CRITICAL"
+RESOLVER_MODE=fail SELECT_RELAY=0 DOCKER_MODE=up ROUTER_STATE=running \
+    ROUTER_HEALTH=healthy RELAY_STATE="" RELAY_HTTP=up \
+    ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "resolver failure is critical" critical 2 stack_selection=fail
+
+echo "Test 11: resolver malformed JSON => stack_selection fail, CRITICAL"
+RESOLVER_MODE=malformed SELECT_RELAY=0 DOCKER_MODE=up ROUTER_STATE=running \
+    ROUTER_HEALTH=healthy RELAY_STATE="" RELAY_HTTP=up \
+    ENABLE_OPEN_WEBUI=true run_hc
+assert_hc "resolver malformed is critical" critical 2 stack_selection=fail
 
 echo ""
 echo "Result: $PASS passed, $FAIL failed"

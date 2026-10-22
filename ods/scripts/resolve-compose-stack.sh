@@ -14,6 +14,7 @@ ODS_MODE="${ODS_MODE:-local}"
 SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
 ASSUME_ENABLED=""
 NATIVE_RECOVERY="false"
+SELECTION_JSON="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,6 +60,12 @@ while [[ $# -gt 0 ]]; do
             ASSUME_ENABLED="${2:-}"
             shift 2
             ;;
+        --selection-json)
+            # Read-only selected fragments for diagnostics. This omits build
+            # projections and is not a recipe for launching Compose.
+            SELECTION_JSON="true"
+            shift
+            ;;
         --native-recovery)
             # Read-only recipe resolution for a validated retained initial
             # failure; protected proof still precedes recovery publication.
@@ -71,6 +78,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$SELECTION_JSON" == "true" ]]; then
+    export PYTHONDONTWRITEBYTECODE=1
+fi
 
 ROOT_DIR="$SCRIPT_DIR"
 PYTHON_CMD="python3"
@@ -90,7 +101,7 @@ if ! "$PYTHON_CMD" -c 'import yaml' >/dev/null 2>&1; then
 fi
 
 ODS_RESOLVE_ASSUME_ENABLED="$ASSUME_ENABLED" \
-"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" "$NATIVE_RECOVERY" <<'PY'
+"$PYTHON_CMD" - "$SCRIPT_DIR" "$TIER" "$GPU_BACKEND" "$PROFILE_OVERLAYS" "$ENV_MODE" "$SKIP_BROKEN" "$GPU_COUNT" "$ODS_MODE" "$SKIP_GPU_OVERLAYS" "$RESOLVER_ROOT" "$NATIVE_RECOVERY" "$SELECTION_JSON" <<'PY'
 import os
 import pathlib
 import platform
@@ -101,6 +112,7 @@ script_dir = pathlib.Path(sys.argv[1])
 # The source tree of this resolver; --script-dir may name another directory.
 resolver_root = pathlib.Path(sys.argv[10])
 native_recovery = sys.argv[11] == 'true'
+selection_json = sys.argv[12] == 'true'
 tier = (sys.argv[2] or "1").upper()
 gpu_backend = (sys.argv[3] or "nvidia").lower()
 profile_overlays = [x.strip() for x in (sys.argv[4] or "").split(",") if x.strip()]
@@ -1804,6 +1816,12 @@ if selected_stack is not None:
     # Check canonical recipe ownership before writing any build projection.
     _validate_selected(resolved)
 import tempfile
+if selection_json:
+    # All selection and policy checks above still apply. Diagnostics must
+    # not rewrite owner-private extension build projections merely to read
+    # which fragments are selected, and this output cannot launch Compose.
+    print(json.dumps({"fragments": resolved}))
+    sys.exit(0)
 projected = []
 for fragment in resolved:
     projected.append(fragment)
