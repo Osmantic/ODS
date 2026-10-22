@@ -10,6 +10,19 @@ namespace OdsDesktop
 {
     public static class RuntimeDownload
     {
+        public static async Task<string> BundledAsync(Bundle bundle, string package, CancellationToken token)
+        {
+            if (!bundle.RuntimeBundled) throw new InvalidOperationException("This package uses checked upstream runtime acquisition.");
+            string directory = Path.Combine(package, "runtime");
+            if (!Directory.Exists(directory) || (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                throw new IOException("The native runtime package is incomplete. Reinstall ODS Windows Preview.");
+            foreach (var pin in bundle.Files)
+                if ((File.GetAttributes(Path.Combine(directory, pin.Name)) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("Native runtime package files must not be links.");
+            if (!await MatchesAsync(directory, bundle, token))
+                throw new InvalidDataException("The packaged native runtime failed verification. Reinstall ODS Windows Preview; saved conversations are kept.");
+            return directory;
+        }
         public static async Task<bool> MatchesAsync(string directory, Bundle bundle, CancellationToken token)
         {
             foreach (var pin in bundle.Files)

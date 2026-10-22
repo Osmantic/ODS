@@ -32,6 +32,11 @@ static class PortalUiTests
     static Task<bool> Has(PortalWindow window, string text)
     { return Test(window, "document.body.innerText.includes(" + new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(text) + ")"); }
     static async Task<bool> Test(PortalWindow window, string expression) { return await Script(window, expression) == "true"; }
+    static async Task<bool> InspectActive(LocalRuntime runtime)
+    {
+        try { return await runtime.IsProcessingAsync(CancellationToken.None); }
+        catch (OperationCanceledException) { return false; } // Unknown; bounded Until still requires a real active-slot response.
+    }
     static async Task Ready(PortalWindow window)
     {
         await Until(() => Task.FromResult(View(window).CoreWebView2 != null), 30000, "WebView2 did not initialize.");
@@ -105,6 +110,18 @@ static class PortalUiTests
         { var child = item as DependencyObject; if (child != null) { var found = Find(child, test); if (found != null) return found; } }
         return null;
     }
+    static async Task VerifySaved(string package, string state)
+    {
+        var model = new NativePortalTests.Model();
+        var window = new PortalWindow(model, package, state, "Native fixture model"); window.Show();
+        try
+        {
+            await Ready(window);
+            Check(await Has(window, "Answer: after stop"), "actual Portal history remains readable after installer lifecycle operations");
+            Check(model.Calls == 0, "restoring saved Portal history after uninstall does not replay inference");
+        }
+        finally { window.Close(); }
+    }
     static async Task Live(string package, string state, string screenshot)
     {
         var setup = new ChatWindow(package, state, Bundle.Read(package)); setup.Show();
@@ -129,7 +146,7 @@ static class PortalUiTests
             Console.WriteLine("LIVE Portal transcript: " + await Script(window, "[...document.querySelectorAll('[data-pixel-message-index]')].map(row=>row.innerText).join('\\n')"));
             Check(true, "real local-model Portal conversation completes a second UTF-8 turn");
             await Send(window, "Write a very long story with at least 100 numbered paragraphs about the ocean. Keep writing until the response limit."); await ClickSend(window);
-            await Until(() => runtime.IsProcessingAsync(CancellationToken.None), 30000, "The real cancellable inference did not become active.");
+            await Until(() => InspectActive(runtime), 30000, "The real cancellable inference did not become active.");
             await Script(window, "document.querySelector('button[title=\"Stop\"]').click()");
             await Until(() => Test(window, "[...document.querySelectorAll('[data-pixel-message-index]')].at(-1)?.innerText.includes('Stopped by you.') === true && !document.querySelector('button[title=\"Stop\"]')"), 30000, "Real model Stop did not reach the exact current Portal turn.");
             Check(runtime.IsRunning, "real model Stop inspects an idle owned slot and keeps the model available");
@@ -163,6 +180,8 @@ static class PortalUiTests
             {
                 string package = AppDomain.CurrentDomain.BaseDirectory;
                 if (args.Length > 0 && args[0] == "--live") await Live(package, args[1], args.Length > 2 ? args[2] : "");
+                else if (args.Length > 0 && args[0] == "--saved-state") await Fixture(package, args[1]);
+                else if (args.Length > 0 && args[0] == "--verify-state") await VerifySaved(package, args[1]);
                 else await Fixture(package, Path.Combine(package, "qa-state"));
                 Console.WriteLine("PASS " + checks + " Windows Portal WebView checks"); result = 0;
             }

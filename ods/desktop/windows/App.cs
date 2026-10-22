@@ -37,6 +37,7 @@ namespace OdsDesktop
         public ChatWindow(string directory, string state, Bundle bundle)
         {
             this.directory = directory; this.state = state; this.bundle = bundle;
+            if (bundle.RuntimeBundled) start.Content = "Download & start (1.28 GB)";
             Title = "ODS — Windows Preview";
             Width = 940; Height = 740; MinWidth = 640; MinHeight = 520;
             WindowStartupLocation = WindowStartupLocation.CenterScreen;
@@ -118,7 +119,7 @@ namespace OdsDesktop
         {
             if (operation != null) return;
             prerequisiteHelp = NativePrerequisites.HelpUrl;
-            if (!NativePrerequisites.Available(Environment.SystemDirectory))
+            if (!bundle.RuntimeBundled && !NativePrerequisites.Available(Environment.SystemDirectory))
             {
                 status.Text = "One Windows component is needed first";
                 detail.Text = "Install Microsoft's latest Visual C++ v14 x64 runtime, then click Start again. Windows may ask for administrator permission to install it.";
@@ -155,8 +156,10 @@ namespace OdsDesktop
                             progress.IsIndeterminate = false; progress.Value = value * 100;
                             status.Text = "Downloading local AI files — " + Math.Floor(value * 100) + "%";
                         });
-                    detail.Text = "Downloading the checked runtime from GitHub and model from Hugging Face. You can cancel at any time.";
-                    string native = await RuntimeDownload.EnsureAsync(bundle, state, feedback, operation.Token);
+                    detail.Text = bundle.RuntimeBundled ? "Checking the included CPU runtime and downloading your model from Hugging Face. You can cancel at any time."
+                        : "Downloading the checked runtime from GitHub and model from Hugging Face. You can cancel at any time.";
+                    string native = bundle.RuntimeBundled ? await RuntimeDownload.BundledAsync(bundle, directory, operation.Token)
+                        : await RuntimeDownload.EnsureAsync(bundle, state, feedback, operation.Token);
                     string bundled = Path.Combine(directory, "models", bundle.Model.File);
                     string model = await ModelDownload.MatchesAsync(bundled, bundle.Model.Size, bundle.Model.Sha256, operation.Token)
                         ? bundled : await ModelDownload.EnsureAsync(bundle.Model, Path.Combine(state, "models"), feedback, operation.Token);
@@ -245,12 +248,25 @@ namespace OdsDesktop
     static class Program
     {
         [STAThread]
-        static void Main()
+        static int Main(string[] args)
         {
-            bool first;
-            using (var singleton = new Mutex(true, "Local\\ODSDesktopPreview-" + WindowsIdentity.GetCurrent().User.Value, out first))
+            string mutexName = "Local\\ODSDesktopPreview-" + WindowsIdentity.GetCurrent().User.Value;
+            // Installer-only probe: never loads a package, opens a window,
+            // writes state or starts inference. The setup UI remains graphical.
+            if (args.Length == 1 && args[0] == "--installation-check")
             {
-                if (!first) { MessageBox.Show("ODS Windows Preview is already open.", "ODS"); return; }
+                try
+                {
+                    Mutex existing;
+                    if (!Mutex.TryOpenExisting(mutexName, out existing)) return 0;
+                    existing.Dispose(); return 23;
+                }
+                catch (UnauthorizedAccessException) { return 24; }
+            }
+            bool first;
+            using (var singleton = new Mutex(true, mutexName, out first))
+            {
+                if (!first) { MessageBox.Show("ODS Windows Preview is already open.", "ODS"); return 0; }
                 try
                 {
                     ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -262,6 +278,7 @@ namespace OdsDesktop
                 catch (Exception error) { MessageBox.Show(error.Message, "ODS could not open", MessageBoxButton.OK, MessageBoxImage.Error); }
                 finally { singleton.ReleaseMutex(); }
             }
+            return 0;
         }
     }
 }

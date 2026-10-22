@@ -4,7 +4,8 @@
 
 Developers exploring a Docker-free native desktop can try the opt-in
 [Windows native Portal preview](../desktop/windows/README.md). It runs the
-existing Portal text-chat interface with a native CPU backend and saved history.
+existing Portal text-chat interface with a bundled native CPU backend, saved
+history and an unsigned per-user graphical installer.
 The full agent/Portal installation below remains a separate path.
 
 ## Start in Windows PowerShell

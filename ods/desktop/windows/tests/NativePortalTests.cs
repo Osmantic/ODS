@@ -42,6 +42,7 @@ static class NativePortalTests
     public static async Task<int> Run(string root)
     {
         await Packages(root);
+        await BundledRuntime(root);
         string directory = Path.Combine(root, "native-portal-state");
         var model = new Model();
         using (var session = new NativePortalSession(model, directory, "fixture"))
@@ -149,5 +150,29 @@ static class NativePortalTests
         File.AppendAllText(manifest, " "); refused = false;
         try { await PortalPackage.VerifyAsync(package, PortalState.Digest(text), CancellationToken.None); } catch (InvalidDataException) { refused = true; }
         Check(refused, "a modified Portal manifest cannot substitute a different trusted package");
+    }
+    static async Task BundledRuntime(string root)
+    {
+        string package = Path.Combine(root, "native-bundled-package");
+        Directory.CreateDirectory(Path.Combine(package, "runtime"));
+        string binary = Path.Combine(package, "runtime", "llama-server.exe");
+        File.WriteAllText(binary, "fixture", new System.Text.UTF8Encoding(false));
+        string hash = PortalState.Digest("fixture");
+        var bundle = new Bundle { RuntimeBundled = true,
+            Runtime = new ModelPin { Name = "fixture", File = "llama-server.exe", Sha256 = hash, Size = 7 },
+            Model = new ModelPin { Name = "fixture", File = "model.gguf", Url = "https://huggingface.co/fixture", Sha256 = hash, Size = 7 },
+            Files = new[] { new FilePin { Name = "llama-server.exe", Sha256 = hash } } };
+        File.WriteAllText(Path.Combine(package, "bundle.json"), Json.Serialize(bundle));
+        var loaded = Bundle.Read(package);
+        Check(loaded.RuntimeBundled && loaded.Runtime.Url == null, "packaged CPU profile needs no runtime download URL or global MSVC prerequisite");
+        Check(await RuntimeDownload.BundledAsync(loaded, package, CancellationToken.None) == Path.Combine(package, "runtime"), "packaged runtime files are SHA-256 checked before native launch");
+        File.AppendAllText(binary, "changed");
+        bool refused = false;
+        try { await RuntimeDownload.BundledAsync(loaded, package, CancellationToken.None); } catch (InvalidDataException) { refused = true; }
+        Check(refused && File.ReadAllText(binary) == "fixturechanged", "damaged packaged runtime refuses launch and preserves its bytes instead of downloading unchecked replacements");
+        File.WriteAllText(binary, "fixture", new System.Text.UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(package, "runtime", "foreign.dll"), "keep"); refused = false;
+        try { await RuntimeDownload.BundledAsync(loaded, package, CancellationToken.None); } catch (InvalidDataException) { refused = true; }
+        Check(refused && File.Exists(Path.Combine(package, "runtime", "foreign.dll")), "unexpected packaged runtime files are refused without deleting foreign data");
     }
 }

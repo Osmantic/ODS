@@ -48,6 +48,10 @@ jobs:
         run: |
           $scripts = @()
           $scripts += Get-ChildItem -Path installers -Filter *.ps1 -Recurse
+          $scripts += Get-ChildItem -Path desktop/windows -Filter *.ps1
+          $scripts += Get-ChildItem -Path desktop/windows/qa -Filter *.ps1
+          $scripts += Get-ChildItem -Path tests -Filter 'test-windows-*desktop*.ps1'
+          $scripts += Get-ChildItem -Path tests -Filter 'test-windows-native-*.ps1'
 
           # Also lint repo-root Windows entrypoint (outside ods/).
           $rootInstaller = Join-Path ".." "install.ps1"
@@ -88,7 +92,7 @@ jobs:
 
       - name: Build and launch Windows native review package
         if: runner.os == 'Windows'
-        shell: powershell
+        shell: pwsh
         env:
           ODS_DESKTOP_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -96,8 +100,9 @@ jobs:
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $review = Join-Path $env:RUNNER_TEMP 'ods-windows-review'
           $null = New-Item -ItemType Directory -Path $review
-          $archive = Join-Path $review 'llama-b9014-bin-win-cpu-x64.zip'
-          Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-win-cpu-x64.zip' -OutFile $archive
+          $tools = Join-Path $review 'tools'
+          $runtime = Join-Path $review 'native-runtime'
+          ./desktop/windows/build-native-runtime.ps1 -OutputDirectory $runtime -ToolsCache $tools
           $webview = Join-Path $review 'microsoft.web.webview2.1.0.4258.31.nupkg'
           Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg' -OutFile $webview
           Push-Location extensions/services/dashboard
@@ -108,27 +113,33 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Native Portal frontend did not build.' }
           } finally { Pop-Location }
           $package = Join-Path $review 'package'
-          ./desktop/windows/build.ps1 -OutputDirectory $package -RuntimeArchive $archive -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview
+          ./desktop/windows/build.ps1 -OutputDirectory $package -NativeRuntimeDirectory $runtime -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview
           ./tests/test-windows-desktop-preview.ps1 -PackageBundle $package
           ./tests/test-windows-native-portal.ps1 -Bundle $package
+          ./tests/test-windows-native-installer.ps1 -Package $package -ToolsCache $tools -ReceiptDirectory (Join-Path $review 'installer-tests')
           $files = @(Get-ChildItem -LiteralPath $package -Recurse -File)
           $allowedDlls = @('OdsPortal.dll','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Wpf.dll','WebView2Loader.dll')
           $dlls = @($files | Where-Object Extension -EQ '.dll')
-          if ($dlls.Count -ne 4 -or @($dlls | Where-Object Name -NotIn $allowedDlls).Count -ne 0 -or @($files | Where-Object Extension -EQ '.exe').Count -ne 1) {
-            throw 'The review package may contain only the ODS EXE and its exact Portal/WebView2 DLLs; no llama runtime binary.'
+          $exes = @($files | Where-Object Extension -EQ '.exe')
+          if ($dlls.Count -ne 4 -or @($dlls | Where-Object Name -NotIn $allowedDlls).Count -ne 0 -or $exes.Count -ne 2 -or @($exes | Where-Object Name -NotIn 'ODS Windows Preview.exe','llama-server.exe').Count) {
+            throw 'The review package may contain only the ODS EXE, checked static CPU engine and exact Portal/WebView2 DLLs.'
           }
           git diff --quiet HEAD
           if ($LASTEXITCODE -ne 0) { throw 'The tested source changed after checkout.' }
           $source = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Could not identify the tested checkout.' }
           $receipt = @{ checkout_sha = $source; pr_head_sha = $env:ODS_DESKTOP_PR_HEAD; workflow_run = $env:GITHUB_RUN_ID
-            scope = 'Unsigned native Portal text-chat review; WebView2 SDK included, installed WebView2 Runtime required; llama runtime/model acquired on first use'
+            scope = 'Unsigned per-user native Portal CPU installer; static llama runtime included; checked model acquired on first use'
             executable_sha256 = (Get-FileHash -LiteralPath (Join-Path $package 'ODS Windows Preview.exe') -Algorithm SHA256).Hash.ToLowerInvariant() }
           [IO.File]::WriteAllText((Join-Path $package 'BUILD-INFO.json'), ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+          ./desktop/windows/build-installer.ps1 -PackageDirectory $package -OutputDirectory (Join-Path $review 'installer') -ToolsCache $tools
+          ./desktop/windows/qa/new-sandbox-kit.ps1 -InstallerDirectory (Join-Path $review 'installer') -OutputDirectory (Join-Path $review 'sandbox-qa')
           $zip = Join-Path $review 'ODS-Windows-Native-Preview.zip'
           Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip
           $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           [IO.File]::WriteAllText((Join-Path $review 'SHA256SUMS.txt'), "$digest  ODS-Windows-Native-Preview.zip`n", [Text.UTF8Encoding]::new($false))
+          $setupDigest = (Get-FileHash (Join-Path $review 'installer/ODS-Windows-Preview-Setup.exe')).Hash.ToLowerInvariant()
+          Add-Content -Encoding utf8 (Join-Path $review 'SHA256SUMS.txt') "$setupDigest  installer/ODS-Windows-Preview-Setup.exe"
 
       - name: Upload Windows native review preview
         if: runner.os == 'Windows'
@@ -138,6 +149,11 @@ jobs:
           path: |
             ${{ runner.temp }}/ods-windows-review/ODS-Windows-Native-Preview.zip
             ${{ runner.temp }}/ods-windows-review/SHA256SUMS.txt
+            ${{ runner.temp }}/ods-windows-review/installer/ODS-Windows-Preview-Setup.exe
+            ${{ runner.temp }}/ods-windows-review/installer/INSTALLER-BUILD-INFO.json
+            ${{ runner.temp }}/ods-windows-review/installer/LICENSE-INNO-SETUP.txt
+            ${{ runner.temp }}/ods-windows-review/installer-tests/*.log
+            ${{ runner.temp }}/ods-windows-review/sandbox-qa/
           if-no-files-found: error
           retention-days: 14
 

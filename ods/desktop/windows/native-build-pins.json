@@ -1,0 +1,62 @@
+{
+  "source": {
+    "name": "llama.cpp b9014",
+    "commit": "d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4",
+    "file": "llama-source.zip",
+    "url": "https://codeload.github.com/ggml-org/llama.cpp/zip/d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4",
+    "size": 35390445,
+    "sha256": "e9241a3996916e03bfe42f8470419ee605ab9149db47f68b8bd7b0df89961d90",
+    "directory": "llama.cpp-d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4"
+  },
+  "portability_patch": {
+    "file": "common/ngram-mod.cpp",
+    "original_sha256": "0f90b7d85ddc7a69365e2b1b8d46000783d0e5a697a92144bd219189f97af15c",
+    "description": "Explicitly include the standard algorithm header for std::fill with libc++."
+  },
+  "llvm": {
+    "name": "LLVM-MinGW UCRT 20261020",
+    "file": "llvm-mingw.zip",
+    "url": "https://github.com/mstorsjo/llvm-mingw/releases/download/20261020/llvm-mingw-20261020-ucrt-x86_64.zip",
+    "size": 190612575,
+    "sha256": "fd5462b7f5d93b2ff981fcd3f9c7e427e47f3203c64ea91c27bcc444eebd74cd",
+    "directory": "llvm-mingw-20261020-ucrt-x86_64"
+  },
+  "cmake": {
+    "name": "CMake 4.4.4",
+    "file": "cmake.zip",
+    "url": "https://github.com/Kitware/CMake/releases/download/v4.4.4/cmake-4.4.4-windows-x86_64.zip",
+    "size": 54400562,
+    "sha256": "bace36e94b31c68ab6fa295f26dfa11219e0701cf7c94b0284a7d1cb13dac536",
+    "directory": "cmake-4.4.4-windows-x86_64"
+  },
+  "ninja": {
+    "name": "Ninja 1.13.2",
+    "file": "ninja.zip",
+    "url": "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-win.zip",
+    "size": 291570,
+    "sha256": "07fc8261b42b20e71d1720b39068c2e14ffcee6396b76fb7a795fb460b78dc65",
+    "directory": "."
+  },
+  "inno": {
+    "name": "Inno Setup 7.1.0 x64",
+    "file": "innosetup.exe",
+    "url": "https://github.com/jrsoftware/issrc/releases/download/is-7_1_0/innosetup-7.1.0-x64.exe",
+    "size": 14304168,
+    "sha256": "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
+  },
+  "webview": {
+    "name": "Microsoft WebView2 Evergreen bootstrapper (2026-10-22)",
+    "file": "MicrosoftEdgeWebview2Setup.exe",
+    "url": "https://go.microsoft.com/fwlink/p/?LinkId=2124703",
+    "size": 1876736,
+    "sha256": "f414de01c4680f0bb0694d1ea7803c6968f3a81bf6bad01b89bfc65dce14c2a2"
+  },
+  "unpacker": {
+    "name": "Inno Unpacker 2.71.2",
+    "file": "innounp.zip",
+    "url": "https://github.com/jrathlev/InnoUnpacker-Windows-GUI/releases/download/ui_2_2_13/innounp-2.zip",
+    "size": 618221,
+    "sha256": "10fce27b6344b7674d5625cc34afca1c88c12183d957c6d93e401097fa2556cd",
+    "directory": "."
+  }
+}

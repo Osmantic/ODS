@@ -34,6 +34,7 @@ namespace OdsDesktop
         public ModelPin Runtime;
         public FilePin[] Files;
         public string PortalSha256;
+        public bool RuntimeBundled;
         public static Bundle Read(string directory)
         {
             var bundle = new JavaScriptSerializer().Deserialize<Bundle>(
@@ -45,10 +46,15 @@ namespace OdsDesktop
             SafeName(bundle.Model.File);
             SafeName(bundle.Runtime.File);
             var url = new Uri(bundle.Model.Url);
-            var runtimeUrl = new Uri(bundle.Runtime.Url);
-            if (url.Scheme != "https" || url.Host != "huggingface.co" || bundle.Model.Size <= 0 ||
-                runtimeUrl.Scheme != "https" || runtimeUrl.Host != "github.com" || bundle.Runtime.Size <= 0)
+            if (url.Scheme != "https" || url.Host != "huggingface.co" || bundle.Model.Size <= 0 || bundle.Runtime.Size <= 0)
                 throw new InvalidDataException("The model download pin is invalid.");
+            if (!bundle.RuntimeBundled)
+            {
+                var runtimeUrl = new Uri(bundle.Runtime.Url);
+                if (runtimeUrl.Scheme != "https" || runtimeUrl.Host != "github.com") throw new InvalidDataException("The runtime download pin is invalid.");
+            }
+            else if (bundle.Files.Length != 1 || bundle.Runtime.File != "llama-server.exe" || bundle.Files[0].Sha256 != bundle.Runtime.Sha256)
+                throw new InvalidDataException("The packaged native CPU runtime manifest is invalid.");
             return bundle;
         }
         public static void SafeName(string name)

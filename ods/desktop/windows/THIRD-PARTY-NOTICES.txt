@@ -8,7 +8,9 @@ Package: https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4258.31
 SHA-256: 56f7f4b8bf9aee4b8efefbbdd4f67d5f74ebd1b100ed0806da71bf76af481aa9
 The three SDK DLLs are distributed with the complete package licence text
 in LICENSE-WEBVIEW2.txt. The installed WebView2 Runtime is a prerequisite,
-not redistributed in this package.
+not included as an installed runtime. The installer embeds the checked,
+Microsoft-signed Evergreen bootstrapper from Microsoft's distribution endpoint.
+WebView2 Runtime distribution: https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
 
 ODS Portal frontend
 Existing ODS React components are built from the same source tree.
@@ -18,15 +20,25 @@ it also includes build/test packages and does not imply all are bundled.
 
 llama.cpp b9014 CPU x64
 Source: https://github.com/ggml-org/llama.cpp/tree/b9014
-Binary: llama-b9014-bin-win-cpu-x64.zip, official ggml-org release.
-SHA-256: 3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2
-Runtime binaries are NOT redistributed in this preview package. They are
-downloaded directly from the upstream publisher on the owner's request.
-The exact executable's embedded dependency notices (cpp-httplib, BoringSSL,
-jsonhpp and llama.cpp) are exported as LICENSE-LLAMA-DEPENDENCIES.txt.
-The upstream ZIP also contains Microsoft's libomp140.x86_64.dll. This
-preview does not establish rights to redistribute that DLL. See README.md's
-runtime distribution gate before creating an all-in-one/offline installer.
+Installer profile: source-built windows-x64-ucrt-static-cpu engine.
+Exact source: d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4, with one recorded
+portability patch adding the standard algorithm header in common/ngram-mod.cpp.
+LLVM-MinGW UCRT statically links the CPU engine; OpenMP and server TLS are off.
+Complete runtime dependency notices are exported from the actual executable
+to LICENSE-LLAMA-DEPENDENCIES.txt. LLVM and MinGW notices accompany it in
+LICENSE-NATIVE-TOOLCHAIN.txt; exact tool/source pins and imports are recorded
+in native-runtime.json. No MSVC or libomp DLL is included in this profile.
+
+Legacy -RuntimeArchive profile: official llama-b9014-bin-win-cpu-x64.zip,
+SHA-256 3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2.
+That profile downloads the archive directly on the owner's request and does
+not redistribute its runtime binaries, including libomp140.x86_64.dll.
+
+Inno Setup 7.1.0 (installer engine)
+Copyright (C) 1997-2026 Jordan Russell. https://jrsoftware.org/
+Installer engine copyright/website notices remain in the generated installer.
+The builder retains its complete licence as LICENSE-INNO-SETUP.txt alongside
+the installer. Compiler/unpacker tools are build-only and not in the app.
 
 MIT License
 

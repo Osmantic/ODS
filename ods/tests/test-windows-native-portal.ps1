@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 [CmdletBinding()]
-param([Parameter(Mandatory=$true)][string]$Bundle, [string]$LiveState, [string]$Screenshot)
+param([Parameter(Mandatory=$true)][string]$Bundle, [string]$LiveState, [string]$Screenshot,
+    [string]$FixtureState, [switch]$VerifySaved)
 $ErrorActionPreference='Stop'
 $source=Join-Path $PSScriptRoot '../desktop/windows'
 $fixture=Join-Path ([IO.Path]::GetTempPath()) ('ods-portal-ui-'+[guid]::NewGuid().ToString('N'))
@@ -17,7 +18,9 @@ try {
         "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
         (Join-Path $source 'tests/PortalUiTests.cs') (Join-Path $source 'tests/NativePortalTests.cs')
     if ($LASTEXITCODE -ne 0) { throw 'Native Portal UI tests did not compile.' }
-    if ($LiveState) { & $runner --live ([IO.Path]::GetFullPath($LiveState)) $Screenshot } else { & $runner }
+    if ($LiveState) { & $runner --live ([IO.Path]::GetFullPath($LiveState)) $Screenshot }
+    elseif ($FixtureState) { & $runner $(if($VerifySaved){'--verify-state'}else{'--saved-state'}) ([IO.Path]::GetFullPath($FixtureState)) }
+    else { & $runner }
     if ($LASTEXITCODE -ne 0) { throw 'Native Portal UI tests failed.' }
 } finally {
     if ((Split-Path $fixture -Parent) -ne [IO.Path]::GetTempPath().TrimEnd('\')) { throw 'Unexpected UI fixture path.' }

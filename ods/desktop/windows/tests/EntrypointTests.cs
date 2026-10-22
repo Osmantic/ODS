@@ -43,6 +43,14 @@ static class EntrypointTests
         return Process.Start(new ProcessStartInfo(executable) { UseShellExecute = false,
             WorkingDirectory = Path.GetDirectoryName(executable) });
     }
+    static int Probe(string executable)
+    {
+        using (var probe = Process.Start(new ProcessStartInfo(executable, "--installation-check") { UseShellExecute = false, CreateNoWindow = true }))
+        {
+            if (!probe.WaitForExit(10000)) { Cleanup(probe); throw new TimeoutException("The installer probe opened UI or did not settle."); }
+            return probe.ExitCode;
+        }
+    }
     static void Close(Process process)
     {
         if (process.HasExited) return;
@@ -68,12 +76,16 @@ static class EntrypointTests
         Directory.CreateDirectory(package);
         string app = Path.Combine(package, "ODS Windows Preview.exe"), pin = Path.Combine(package, "bundle.json");
         File.Copy(executable, app); File.Copy(manifest, pin);
+        File.Move(pin, pin + ".held");
+        Check(Probe(app) == 0, "installer probe confirms idle without a package, UI, downloads or state mutation");
+        File.Move(pin + ".held", pin);
         using (var first = Open(app))
         {
             try
             {
                 WaitForWindow(first, "ODS \u2014 Windows Preview");
                 Check(true, "real EXE entrypoint opens from a Unicode path without inference or downloads");
+                Check(Probe(app) == 23 && !first.HasExited, "installer probe refuses a running exact-SID application without stopping it");
                 using (var second = Open(app))
                 {
                     try
