@@ -1758,9 +1758,9 @@ async def api_storage(api_key: str = Depends(verify_api_key)):
             "disk": {"used_gb": disk_info.used_gb, "total_gb": disk_info.total_gb, "percent": disk_info.percent}
         }
 
-    result = await asyncio.to_thread(_compute_storage)
-    _cache.set("storage", result, _STORAGE_CACHE_TTL)
-    return result
+    # Settings times out after 12s. Keep one collector and publish its result
+    # even if every browser disconnects, so retries do not launch more walks.
+    return await resources._resource_snapshot("storage", _compute_storage, _STORAGE_CACHE_TTL)
 
 
 @app.get("/api/settings/summary")

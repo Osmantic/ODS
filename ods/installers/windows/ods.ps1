@@ -475,7 +475,7 @@ function Assert-ODSInstallDirSafeForRemoval {
     }
     $envPath = Join-Path $fullPath ".env"
     if (Test-Path -LiteralPath $envPath -PathType Leaf) {
-        $envText = Get-Content -LiteralPath $envPath -Raw -ErrorAction SilentlyContinue
+        $envText = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
         if (
             $envText -match '(?m)^WEBUI_SECRET=' -and
             $envText -match '(?m)^DASHBOARD_API_KEY='
@@ -1305,7 +1305,7 @@ function Set-ODSEnvValue {
     $lines = New-Object 'System.Collections.Generic.List[string]'
     $escapedKey = [regex]::Escape($Key)
     $updated = $false
-    foreach ($line in @(Get-Content $envFile)) {
+    foreach ($line in @(Get-Content -LiteralPath $envFile -Encoding UTF8)) {
         if ($line -match "^${escapedKey}=") {
             if (-not $updated) {
                 [void]$lines.Add("${Key}=${Value}")
@@ -2498,7 +2498,7 @@ function Invoke-ConfigShow {
         return
     }
 
-    Get-Content $envFile | ForEach-Object {
+    Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         if ($line -match "^#" -or $line -eq "") { return }
         # Redact any key whose NAME contains a sensitive keyword, mirroring the
