@@ -210,9 +210,16 @@ if __name__ == "__main__":
     # Test 4: Stub Child Process with SIGBREAK Handler
     # -------------------------------------------------------------
     print("\n--- Test 4: Stub Child Process on CTRL_BREAK_EVENT ---")
+    stub_code = (
+        "import time, sys, signal\n"
+        "def _exit(s, f): sys.exit(0)\n"
+        "signal.signal(signal.SIGBREAK, _exit)\n"
+        "while True:\n"
+        "    try: time.sleep(0.2)\n"
+        "    except BaseException: sys.exit(0)\n"
+    )
     proc4 = subprocess.Popen(
-        [sys.executable, "-c",
-         "import time, sys, signal; signal.signal(signal.SIGBREAK, lambda s,f: sys.exit(0)); time.sleep(60)"],
+        [sys.executable, "-c", stub_code],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
     )

@@ -536,8 +536,18 @@ class WindowsNativeSupervisor:
                             proc.wait(timeout=2.0)
                         except Exception:
                             pass
-                if proc.returncode == 0:
-                    print(f"{name} exited with code 0.")
+                # On Windows, native console applications (such as llama-server.exe)
+                # exit with NTSTATUS 0xC000013A (STATUS_CONTROL_C_EXIT: 3221225786 unsigned,
+                # -1073741510 signed) when responding to CTRL_BREAK_EVENT.
+                is_clean = (
+                    proc.returncode == 0 or
+                    (sys.platform == "win32" and proc.returncode in (3221225786, -1073741510))
+                )
+                if is_clean:
+                    if proc.returncode == 0:
+                        print(f"{name} exited with code 0.")
+                    else:
+                        print(f"{name} exited with code {proc.returncode} (STATUS_CONTROL_C_EXIT).")
                 else:
                     abnormal_exit = True
                     print(f"{name} exited with code {proc.returncode}.")
