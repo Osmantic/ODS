@@ -187,6 +187,7 @@ fi
 
 DOCKER_CLI="false"
 DOCKER_DAEMON="false"
+DOCKER_ACCESS_DENIED="false"
 COMPOSE_CLI="false"
 DASHBOARD_HTTP="false"
 WEBUI_HTTP="false"
@@ -204,8 +205,12 @@ EXT_DIAGNOSTICS="[]"
 
 if command -v docker >/dev/null 2>&1; then
     DOCKER_CLI="true"
-    if docker info >/dev/null 2>&1; then
+    if docker_info_error="$(docker info 2>&1 >/dev/null)"; then
         DOCKER_DAEMON="true"
+    elif [[ "$docker_info_error" == *"permission denied"* ]]; then
+        # A running daemon this account cannot use yet, as right after the
+        # installer adds it to the docker group, is not a stopped daemon.
+        DOCKER_ACCESS_DENIED="true"
     fi
     if docker compose version >/dev/null 2>&1 || command -v docker-compose >/dev/null 2>&1; then
         COMPOSE_CLI="true"
@@ -772,7 +777,7 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$WEBUI_ENABLED" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$WEBUI_ENABLED" "$DOCKER_ACCESS_DENIED" <<'PY'
 import json
 import os
 import pathlib
@@ -782,7 +787,7 @@ import sys
 from datetime import datetime, timezone
 from urllib import error, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled, docker_access_denied = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
@@ -1667,6 +1672,7 @@ report = {
     "runtime": {
         "docker_cli": docker_cli == "true",
         "docker_daemon": docker_daemon == "true",
+        "docker_access_denied": docker_access_denied == "true",
         "compose_cli": compose_cli == "true",
         "dashboard_http": dashboard_http == "true",
         "webui_enabled": webui_enabled == "true",
@@ -1746,7 +1752,11 @@ for check in pre.get("checks", []):
 runtime = report["runtime"]
 if not runtime["docker_cli"]:
     fix_hints.append("Install Docker CLI/Docker Desktop and reopen your terminal.")
-if runtime["docker_cli"] and not runtime["docker_daemon"]:
+if runtime["docker_cli"] and runtime["docker_access_denied"]:
+    fix_hints.append("Docker is running, but this account cannot use it yet. Log out and back in "
+                     "(or run 'newgrp docker') so the docker group membership applies, then run "
+                     "ods doctor again.")
+elif runtime["docker_cli"] and not runtime["docker_daemon"]:
     fix_hints.append("Start Docker daemon/Desktop before launching ODS.")
 if not runtime["compose_cli"]:
     fix_hints.append("Install Docker Compose v2 plugin (or docker-compose).")
@@ -1871,6 +1881,9 @@ echo "ODS Doctor report: $REPORT_FILE"
 echo "  Preflight blockers: ${PREFLIGHT_BLOCKERS:-0}"
 echo "  Preflight warnings: ${PREFLIGHT_WARNINGS:-0}"
 echo "  Docker daemon: $DOCKER_DAEMON"
+if [[ "$DOCKER_ACCESS_DENIED" == "true" ]]; then
+    echo "  Docker access: permission denied for $(id -un); log out and back in (or run 'newgrp docker')"
+fi
 echo "  Compose CLI:   $COMPOSE_CLI"
 "$PYTHON_CMD" - "$REPORT_FILE" <<'PY'
 import json

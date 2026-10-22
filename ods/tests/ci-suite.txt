@@ -157,6 +157,7 @@ tests/test-external-llm-key-env.sh
 tests/test-external-probe-hints.sh
 tests/test-external-llm-failure-hints.sh
 tests/test-ods-doctor-rootless-subid.sh
+tests/test-ods-doctor-docker-access.sh
 tests/test-ods-list-json-escaping.sh
 tests/test-ods-test-complete-run.sh
 tests/test-ods-test-http-code.sh
