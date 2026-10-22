@@ -9,7 +9,8 @@ workspace tools or the complete ODS service stack.
 
 ## Source and environment
 
-- Based on upstream main `bd2a119bb` (2026-10-22). The PR workflow's
+- Initial Portal integration source: `07d032980`, based on upstream main
+  `bd2a119bb` (2026-10-22). The PR workflow's
   `BUILD-INFO.json` records the exact tested checkout SHA and PR head separately;
   a pull-request checkout can be a synthetic merge commit.
 - Windows 10 Pro x64 `10.0.19045`, dual Xeon E5-2686 v4, 80 GiB RAM;
@@ -58,6 +59,12 @@ receipts. The fix preserves completion both before and while awaiting Stop,
 and the cancellation delta was re-reviewed. Review was agent-assisted static
 analysis; it is separate from maintainer acceptance.
 
+The first full hosted frontend run passed 3,008 tests and failed the repository's
+English UI source check because the native guard duplicated an existing input
+alias. The follow-up reuses the existing command parsers and adds five more
+native refusal cases. All ten focused native/language tests pass; final full-suite
+and artifact readbacks are tracked on the PR. The normal-mode default is unchanged.
+
 ## Reproduce and inspect the package
 
 From `ods/`, follow the [source build instructions](README.md#build-from-source),
@@ -75,8 +82,8 @@ The screenshot and live results use a compiled package with EXE SHA-256
 `944551e67072be79f1fc13c210f54c844c4493a4cc52384f5be649f5d28f47bb`
 and Portal DLL SHA-256
 `aff11b9b7e32e96cb7626a9f26cc63e41df1423075340f610c92506e3bd98dd8`.
-Subsequent documentation/test-only edits do not change those tested application
-sources. Hosted builds have their own hashes and custody in `BUILD-INFO.json`
+These hashes identify the initial integration package; the command-parser
+follow-up changes the native frontend guard. Hosted builds have their own hashes and custody in `BUILD-INFO.json`
 and `portal.json`; compare the artifact's `SHA256SUMS.txt` before transferring it.
 
 The Windows workflow builds the frontend and pinned SDK package, repeats actual

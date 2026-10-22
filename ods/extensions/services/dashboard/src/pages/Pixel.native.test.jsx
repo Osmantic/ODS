@@ -42,13 +42,13 @@ it('uses the existing Portal send/history path and exposes only native text capa
   expect(screen.getByText('Keep this conversation')).toBeInTheDocument()
 })
 
-it('refuses unsupported agent commands without clearing the draft or starting a task', async () => {
+it.each(['/agents change my computer','/agentes change my computer','/goal change my computer','/compact','/extensions','/extension'])('refuses unsupported command %s without clearing the draft or starting a task', async command => {
   render(<Pixel nativeChat />)
   await screen.findByText('Available')
   const input=screen.getByPlaceholderText('Message Portal...')
-  fireEvent.change(input,{target:{value:'/agents change my computer'}})
+  fireEvent.change(input,{target:{value:command}})
   fireEvent.keyDown(input,{key:'Enter'})
   await screen.findByText('Agent commands are not available in this native text-chat preview. Your draft is preserved.')
-  expect(input).toHaveValue('/agents change my computer')
+  expect(input).toHaveValue(command)
   expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream' || url.includes('/agents/'))).toBe(false)
 })

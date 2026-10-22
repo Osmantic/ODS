@@ -1086,7 +1086,7 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
     if (conversationDeleted) return
     const exactDraft = typeof answerOverride === 'string' ? answerOverride : input
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
-    if(nativeChat && /^\/(?:agents|agentes|goal|compact|extensions)(?:\s|$)/i.test(trimmed)) {
+    if(nativeChat && (agentCommand(trimmed) || goalCommand(trimmed) || compactCommand(trimmed) || /^\/extensions?(?:\s|$)/i.test(trimmed))) {
       setStopError('Agent commands are not available in this native text-chat preview. Your draft is preserved.')
       return
     }
