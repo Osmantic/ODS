@@ -6,7 +6,7 @@ on:
       run_real_downloads:
         description: 'Run heavy asset download tests'
         type: boolean
-        default: true
+        default: false
   pull_request:
     paths:
       - 'ods/experimental/windows-supervisor/**'
