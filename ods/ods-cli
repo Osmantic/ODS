@@ -1804,7 +1804,6 @@ cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
     load_env
-    ensure_llama_cpu_budget
 
     # Parse flags vs positional service name
     local rebuild_images="false"
@@ -1817,15 +1816,17 @@ cmd_restart() {
             *) service="$1"; shift ;;
         esac
     done
+    # A full restart or a llama-server restart under a model switch leaves the
+    # switch half-applied, as an update would. Refuse before changing CPU
+    # budgets in .env or dispatching to the native Mac llama helper.
+    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
+        _ods_cli_refuse_under_model_lifecycle restart
+    fi
+    ensure_llama_cpu_budget
     if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama restart
         return 0
-    fi
-    # A full restart or a llama-server restart under a model switch leaves the
-    # switch half-applied, as an update would.
-    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
-        _ods_cli_refuse_under_model_lifecycle restart
     fi
 
     local flags_str

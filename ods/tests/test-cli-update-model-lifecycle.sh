@@ -52,13 +52,15 @@ run_update() {
         eval "$(extract cmd_update)"
         eval "$(extract cmd_restart)"
         if [[ "${COMMAND:-update}" == restart ]]; then
-            ensure_llama_cpu_budget() { :; }
+            ensure_llama_cpu_budget() {
+                printf 'BUDGET_TOUCHED=true\n' >> "$INSTALL_DIR/.env"
+            }
             resolve_service() { printf '%s' "$1"; }
-            _ods_cli_macos_native_llama() { return 1; }
+            _ods_cli_macos_native_llama() { [[ "${NATIVE_LLAMA:-false}" == true ]]; }
+            _ods_cli_macos_llama() { echo "NATIVE-LLAMA-$1"; }
             get_compose_flags() { printf -- '-f docker-compose.base.yml'; }
             _ods_cli_network_access_enabled() { return 1; }
-            # Repairing bind-mount ownership is the first change after the
-            # guard; stop there.
+            # Stop before Compose or real service ownership changes.
             _ods_cli_repair_rootless_ownership() { echo "RESTART-PROCEEDED"; exit 99; }
             cmd_restart "${RESTART_ARGS[@]}" </dev/null
         else
@@ -74,6 +76,11 @@ expect() {
     if [[ "$rc" != "$want" || "$output" != *"$pattern"* ]]; then
         echo "[FAIL] $label: expected exit $want with '$pattern', got exit $rc" >&2
         printf '%s\n' "$output" >&2
+        exit 1
+    fi
+    if [[ "${COMMAND:-update}" == restart && "$want" == 1 ]] &&
+        grep -q '^BUDGET_TOUCHED=' "$FIXTURE/run/.env"; then
+        echo "[FAIL] $label: a refused restart changed configuration" >&2
         exit 1
     fi
     echo "[PASS] $label"
@@ -102,3 +109,11 @@ RESTART_ARGS=(searxng)
 expect 99 "restarting an unrelated service is not blocked" "RESTART-PROCEEDED" "$busy" "$idle"
 RESTART_ARGS=()
 expect 99 "a full restart with an idle lifecycle continues" "RESTART-PROCEEDED" '{"status":"idle"}' "$idle"
+
+NATIVE_LLAMA=true RESTART_ARGS=(llama-server)
+expect 1 "a native Mac llama restart under a model switch is refused" "Restart not started" "$busy" "$idle"
+expect 1 "a native Mac llama restart awaiting recovery is refused" "waiting for recovery (ods model recover)" \
+    '{"status":"idle"}' '{"pending":true,"phase":"held","transactionId":"abc"}'
+expect 0 "an idle native Mac llama restart reaches the native helper" "NATIVE-LLAMA-restart" '{"status":"idle"}' "$idle"
+RESTART_ARGS=(searxng)
+expect 99 "an unrelated service restart on Mac is not blocked" "RESTART-PROCEEDED" "$busy" "$idle"
