@@ -14,6 +14,14 @@ for the exact source/environment, executed checks and remaining product work.
 
 ## Open the preview
 
+Reviewers can download **ods-windows-native-preview-<run id>** from the
+Artifacts section of the PR's **Lint PowerShell** workflow run (GitHub sign-in
+is required). Extract that artifact, then extract its
+`ODS-Windows-Native-Preview.zip`. Compare the ZIP with `SHA256SUMS.txt` when
+checking a transferred copy; `BUILD-INFO.json` records the tested checkout,
+PR head and executable hash. This unsigned review build is not a general
+release or a website installer.
+
 1. Extract the complete preview ZIP to a normal folder.
 2. Double-click **ODS Windows Preview.exe**.
 3. Choose **Download & start (1.30 GB)**. After the checked runtime and model
@@ -75,6 +83,8 @@ ZIP the complete output directory, retaining all licence files.
 
 ```powershell
 .\tests\test-windows-desktop-preview.ps1
+# Launch the actual built EXE: first open, duplicate, damaged package and reopen.
+.\tests\test-windows-desktop-preview.ps1 -PackageBundle C:\temp\ods-preview
 # Optional real llama.cpp / catalog-model probe (no fake server):
 .\tests\test-windows-desktop-preview.ps1 -LiveBundle C:\temp\ods-preview `
   -ModelPath C:\models\Qwen3.5-2B-Q4_K_M.gguf
@@ -87,6 +97,13 @@ The default suite runs on Windows CI without downloads. It launches real Windows
 fixture processes and tests checked downloads, cancellation, auth/model identity,
 UTF-8 answers, empty answers, cache recovery, WPF button/input recovery, normal
 shutdown and parent-crash cleanup while an unrelated listener remains alive.
+It also opens the real EXE through `Main()` from a path with spaces and Unicode,
+checks duplicate-instance and incomplete-package dialogs, closes each owned
+process normally and reopens after recovery, without starting inference. Close
+an existing preview before running these entrypoint tests. A separate Windows
+CI step downloads the pinned 16 MB runtime archive for build metadata/notices,
+builds the complete package, repeats the entrypoint checks on that EXE and
+uploads the review ZIP. It does not download model weights or bundle the runtime.
 The optional live probes test the checked CPU binary, catalog model and actual
 WPF first-run/chat path. Neither substitutes for
 independent human UX review, a clean Windows machine, the ODS Portal/model harness

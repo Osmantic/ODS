@@ -11,9 +11,11 @@ establish full modern ODS or Portal support on native Windows.
 
 - Product-source commit: `2de9c9cf12ee8ffeeb602492f7cb4271719f3d23`, based on
   upstream `c99f52822f2c37813fd880004f964ca83dfc5a35`.
-- The follow-up documentation commit adds this receipt, the screenshot,
+- The initial documentation commit (`5c824ecb`) adds this receipt, the screenshot,
   the quickstart link and their build-copy steps; application/runtime/test
   sources are unchanged.
+- The review-package follow-up expands entrypoint tests, CI packaging and
+  reviewer instructions; application/runtime sources remain unchanged.
 - Windows 10 Pro x64, build `10.0.19045`, dual Xeon E5-2686 v4, 80 GiB RAM;
   .NET Framework release `533325`, Microsoft native runtime `14.51.36247.0`.
 - Checked official llama.cpp b9014 CPU x64 archive and the ODS catalog's
@@ -32,10 +34,15 @@ establish full modern ODS or Portal support on native Windows.
 | WPF user flow | Actual buttons/dispatcher: setup, UTF-8 answer, empty-answer recovery, cancellation, restart, new chat and damaged seed/cache fallback | Automated framework interaction, not independent human UX acceptance |
 | Model inference | Actual pinned CPU model answered the exact-token `2+2` probe with `4`, followed by a Vietnamese answer | Two smoke prompts; not a model-quality, performance or tool-use evaluation |
 | First use from empty state | The GUI downloaded both upstream runtime and model; setup ready after **119.1 s**, then two real chat turns | Pre-final first-run source; final adds prerequisite guidance |
-| Exact final package | Test harness loaded the compiled EXE's real WPF window with `Assembly.LoadFrom`; setup using verified caches after **72.5 s**, then `4` and `Chào bạn!` | The Program entrypoint/single-instance dialog is not automated by that harness |
+| Exact inference package | Test harness loaded the compiled EXE's real WPF window with `Assembly.LoadFrom`; setup using verified caches after **72.5 s**, then `4` and `Chào bạn!` | These inference probes use the loaded window; the separate entrypoint checks below start the actual EXE without inference |
+| Executable entrypoint and packaging | Separate-process EXE launch from a Unicode path, duplicate-instance dialog with the original left running, incomplete-package recovery dialog, normal exit and reopen; repeated against the full build output | No setup/chat interaction through an external desktop driver; clean-machine qualification remains open |
 
-The native suite passes **46 checks**, including normal/refusal/recovery
-controls. PowerShell analysis, whitespace and the commit-identity gate pass.
+The expanded native suite passes **55 checks**, including normal/refusal/recovery
+controls and nine executable-entrypoint checks. Those nine also pass against
+the complete build output. A deliberately broken EXE that exits before opening
+the window fails the new entrypoint suite. The follow-up changes tests,
+packaging and documentation; application/runtime sources remain unchanged.
+PowerShell analysis, whitespace and the commit-identity gate pass.
 The CI execution inventory includes the new Windows workflow invocation.
 Hosted checks are tracked separately on the PR head; local results do not
 assert hosted CI or maintainer acceptance.
@@ -55,6 +62,14 @@ documentation/notices. It contains no upstream runtime executable or DLL.
 The demonstrated EXE's SHA-256 is
 `3b9670ced4fd553d2ee4aeb5dea671d09657457af43c5e5f8392c1222c05558d`.
 The screenshot comes from that package. Build outputs are not committed.
+
+The review-package lane exports an unsigned ZIP from the Windows workflow.
+`BUILD-INFO.json` identifies both the actual checkout SHA (a synthetic merge
+commit on PR runs) and the PR head, plus the executable hash; `SHA256SUMS.txt`
+identifies the ZIP. The default regression suite uses no downloads. The separate
+package build acquires only the checked upstream archive to generate its manifest
+and notices, excludes upstream binaries and launches the real built EXE before
+upload. See the [README](README.md#open-the-preview) for reviewer download steps.
 
 ## Next integration boundary
 
@@ -82,9 +97,10 @@ and the catalog model's existing qualification limits remain open.
 
 ## Provenance
 
-tang-vu supplied project direction, scope and the Windows environment.
-Codex collaborated on implementation, analysis, test execution and static
-review. Recorded commands were agent-executed. Additional personal human
-verification is not inferred. A separate static review's cancellation,
-seed-recovery and process-assignment findings were corrected and re-reviewed;
-that review is distinct from human/maintainer release approval.
+This preview was developed collaboratively by tang-vu and Codex. tang-vu led
+the contribution, defined its goals, scope and quality requirements, and provided
+the development and validation environment. Codex assisted with implementation,
+analysis, automated testing and static review. Command execution is recorded in
+the validation evidence. A separate static review's cancellation, seed-recovery
+and process-assignment findings were corrected and re-reviewed. The remaining
+release gates are listed above.

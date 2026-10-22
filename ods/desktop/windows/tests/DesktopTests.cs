@@ -351,10 +351,16 @@ static class DesktopTests
                 }
                 if (args.Length > 0 && args[0] == "--live") Live(args[1], args[2], root).GetAwaiter().GetResult();
                 else if (args.Length > 0 && args[0] == "--ui-live") checks += WindowTests.Live(args[1], args[2], args[3]);
+                else if (args.Length > 0 && args[0] == "--package") checks += EntrypointTests.Run(root,
+                    Path.Combine(args[1], "ODS Windows Preview.exe"), Path.Combine(args[1], "bundle.json"));
                 else
                 {
                     Downloads(root).GetAwaiter().GetResult(); RuntimeDownloads(root).GetAwaiter().GetResult(); Processes(root).GetAwaiter().GetResult();
                     checks += WindowTests.Run(root, FixtureBundle);
+                    string package = Path.Combine(root, "entrypoint-fixture");
+                    FixtureBundle(package, "fixture");
+                    checks += EntrypointTests.Run(root, Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ODS Windows Preview.exe"),
+                        Path.Combine(package, "bundle.json"));
                 }
                 Console.WriteLine("PASS " + checks + " Windows native desktop checks"); return 0;
             }

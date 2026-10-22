@@ -80,6 +80,49 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-desktop-preview.ps1
 
+      - name: Build and launch Windows native review package
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          ODS_DESKTOP_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $review = Join-Path $env:RUNNER_TEMP 'ods-windows-review'
+          $null = New-Item -ItemType Directory -Path $review
+          $archive = Join-Path $review 'llama-b9014-bin-win-cpu-x64.zip'
+          Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-win-cpu-x64.zip' -OutFile $archive
+          $package = Join-Path $review 'package'
+          ./desktop/windows/build.ps1 -OutputDirectory $package -RuntimeArchive $archive
+          ./tests/test-windows-desktop-preview.ps1 -PackageBundle $package
+          $files = @(Get-ChildItem -LiteralPath $package -Recurse -File)
+          if (@($files | Where-Object Extension -EQ '.dll').Count -ne 0 -or @($files | Where-Object Extension -EQ '.exe').Count -ne 1) {
+            throw 'The review package must contain only the ODS executable, with no upstream executable or DLL.'
+          }
+          git diff --quiet HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'The tested source changed after checkout.' }
+          $source = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Could not identify the tested checkout.' }
+          $receipt = @{ checkout_sha = $source; pr_head_sha = $env:ODS_DESKTOP_PR_HEAD; workflow_run = $env:GITHUB_RUN_ID
+            scope = 'Unsigned CPU chat review preview; runtime/model acquired on first use; no release acceptance'
+            executable_sha256 = (Get-FileHash -LiteralPath (Join-Path $package 'ODS Windows Preview.exe') -Algorithm SHA256).Hash.ToLowerInvariant() }
+          [IO.File]::WriteAllText((Join-Path $package 'BUILD-INFO.json'), ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+          $zip = Join-Path $review 'ODS-Windows-Native-Preview.zip'
+          Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip
+          $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $review 'SHA256SUMS.txt'), "$digest  ODS-Windows-Native-Preview.zip`n", [Text.UTF8Encoding]::new($false))
+
+      - name: Upload Windows native review preview
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ods-windows-native-preview-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ods-windows-review/ODS-Windows-Native-Preview.zip
+            ${{ runner.temp }}/ods-windows-review/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Standalone Windows ComfyUI data isolation
         if: runner.os == 'Windows'
         shell: powershell
