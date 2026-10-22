@@ -187,7 +187,8 @@ fi
 
 DOCKER_CLI="false"
 DOCKER_DAEMON="false"
-DOCKER_ACCESS_DENIED="false"
+# Exported for the report writer below, keeping its argument list unchanged.
+export DOCKER_ACCESS_DENIED="false"
 COMPOSE_CLI="false"
 DASHBOARD_HTTP="false"
 WEBUI_HTTP="false"
@@ -777,7 +778,7 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$WEBUI_ENABLED" "$DOCKER_ACCESS_DENIED" <<'PY'
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$WEBUI_ENABLED" <<'PY'
 import json
 import os
 import pathlib
@@ -787,7 +788,9 @@ import sys
 from datetime import datetime, timezone
 from urllib import error, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled, docker_access_denied = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, webui_enabled = sys.argv[1:]
+# Passed in the environment so callers of this block keep its argument list.
+docker_access_denied = os.environ.get("DOCKER_ACCESS_DENIED", "false")
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
