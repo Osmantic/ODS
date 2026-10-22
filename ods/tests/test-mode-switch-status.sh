@@ -122,6 +122,18 @@ check_eq "switching back to local repoints LLM_API_URL" "LLM_API_URL=http://llam
 check_eq "local switchboard routes Hermes through model-router" "HERMES_LLM_BASE_URL=http://model-router:9099/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
 check_eq "local switchboard gives Hermes the local router key" "HERMES_LLM_API_KEY=no-key" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
 
+# Host-native llama-server (Windows Portal) keeps the in-stack llama-server
+# off; local mode must keep routing through LiteLLM, as the installer does.
+ROOT="$(new_root)"
+printf 'ODS_MODE=cloud
+NATIVE_LLM_BASE_URL=http://127.0.0.1:8080
+LITELLM_KEY=sk-ods-abc
+' > "$ROOT/.env"
+run_mode "$ROOT" local > /dev/null
+check_eq "native local keeps LLM_API_URL on LiteLLM" "LLM_API_URL=http://litellm:4000" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
+check_eq "native local keeps Hermes on LiteLLM" "HERMES_LLM_BASE_URL=http://litellm:4000/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
+check_eq "native local gives Hermes the LiteLLM key" "HERMES_LLM_API_KEY=sk-ods-abc" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
+
 # ── 6. External topology cannot be partially overwritten ─────────────────
 
 ROOT="$(new_root)"

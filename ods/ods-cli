@@ -4066,13 +4066,25 @@ cmd_mode() {
 
     local api_url
     if [[ "$mode" == "local" ]]; then
-        api_url="http://llama-server:8080"
-        _env_set "LLM_API_URL" "$api_url"
-        local switchboard_mode
+        local switchboard_mode native_llm
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        native_llm=$(grep -m1 "^NATIVE_LLM_BASE_URL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        # A host-native llama-server install keeps the in-stack llama-server
+        # off; LiteLLM is what reaches the native server (06-directories.sh).
+        if [[ -n "$native_llm" ]]; then
+            api_url="http://litellm:4000"
+        else
+            api_url="http://llama-server:8080"
+        fi
+        _env_set "LLM_API_URL" "$api_url"
         if [[ "${switchboard_mode,,}" == "enabled" ]]; then
             _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
             _env_set "HERMES_LLM_API_KEY" "no-key"
+        elif [[ -n "$native_llm" ]]; then
+            _env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+            if [[ -n "${LITELLM_KEY:-}" ]]; then
+                _env_set "HERMES_LLM_API_KEY" "$LITELLM_KEY"
+            fi
         else
             _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
             _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
