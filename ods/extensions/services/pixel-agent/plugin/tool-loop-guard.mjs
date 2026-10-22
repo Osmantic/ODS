@@ -4707,22 +4707,28 @@ function currentOwnerIntentText(messages, prompt = undefined) {
 // select delivery. This is guidance only, never publication authority.
 function ownerRequestsFileHandoff(lane) {
   const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
+  // The newly recognized generic handoff can also be withdrawn. A refusal
+  // naming a different file must not cancel a separate requested download.
+  const downloadRefusal = /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:give|provide|send|return|attach|deliver)\s+(?:(?:me|us)\s+(?:with\s+)?)?(?:(?:a|the)\s+)?download\s+of\s+(?:(?:the|this|that|my|our)\s+)?(?:project|(?:project|source)\s+files?|source(?:\s+code)?|files?|documents?|archives?)(?:\s*,?\s*please)?\s*$/i;
+  if (clauses.some(clause => downloadRefusal.test(clause))) return false;
   // An unqualified later refusal overrides an earlier ordinary handoff. A
   // refusal naming old.zip still leaves a separate current.zip request intact.
   if (clauses.some(clause => /^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:send|attach|deliver|publish|give|provide|return)\s+(?:(?:me|us)\s+)?(?:anything|(?:any|the|these|those|all(?:\s+the)?)\s+(?:(?:existing|requested|generated|completed|updated)\s+)?(?:(?:project|source)\s+)?(?:files?|documents?|archives?|attachments?)|them)(?:\s+at\s+all)?(?:\s*,?\s*please)?\s*$/i.test(clause))) return false;
   const filename = String.raw`["'\x60]?(?:[A-Za-z0-9_.-]+[/\\])*[A-Za-z0-9_.-]+\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx|py|[cm]?[jt]sx?|css|sh|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|php|lua|pl|dart)["'\x60]?`;
   const namedFiles = `${filename}(?:\\s*(?:,\\s*(?:and\\s+)?|and\\s+)${filename})*`;
-  const object = new RegExp(`^(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
-    `(?:(?:existing|requested|generated|completed|updated)\\s+)?(?:(?:project|source)\\s+)?(?:files?|documents?|archives?)|` +
+  // A visual project may also require a downloadable copy. Match that
+  // explicit handoff without treating a page's download button as delivery.
+  const object = new RegExp(`^(?:(?:(?:a|the)\\s+)?download\\s+of\\s+)?(?:(?:the|my|our|these|those|this|that|a|an|all(?:\\s+the)?)\\s+)?(?:` +
+    `(?:(?:existing|requested|generated|completed|updated)\\s+)?(?:(?:project|source)\\s+)?(?:files?|documents?|archives?|spreadsheets?|workbooks?|(?:csv|tsv|json|pdf|markdown|txt|docx|xlsx|pptx|zip|rar)(?:\\s+(?:files?|documents?))?)|` +
     `(?:project(?:\\s+source(?:\\s+code)?)?|source\\s+code)|${namedFiles}|(?:file|document|archive)\\s+(?:named|called)\\s+${filename})` +
-    `(?:\\s+with\\s+(?:(?:their|the)\\s+)?original\\s+filenames)?(?:\\s+to\\s+(?:me|us))?(?:\\s+please)?$`, 'i');
+    `(?:\\s+with\\s+(?:(?:their|the)\\s+)?original\\s+filenames)?(?:\\s+to\\s+(?:me|us))?(?:\\s+(?:again|once\\s+more))?(?:\\s+(?:as\\s+(?:a\\s+download|an?\\s+attachment)|for\\s+download))?(?:\\s+please)?$`, 'i');
   return clauses.some(raw => {
     const clause = raw.trim();
     if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\b/i.test(clause)) return false;
     const parts = clause.split(/\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:give|provide|send|return)\b)/i);
     // A coordinated request must itself begin as an owner work directive,
     // rather than "Ask Alice to ... and give me ..." or a quoted example.
-    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|give|provide|send|return)\b/i.test(parts[0])) return false;
+    if (parts.length > 1 && !/^(?:please\s+)?(?:create|build|make|write|run|test|verify|check|report|finish|complete|prepare|fix|read|open|inspect|show|display|preview|render|give|provide|send|return)\b/i.test(parts[0])) return false;
     return parts.some(part => {
       const request = part.trim().match(/^(?:(?:please|also|then)\s+)*(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?|(?:I|we)\s+(?:want|need)\s+you\s+to\s+)?(?:give|provide|send|return)\s+(?:(?:me|us)\s+(?:with\s+)?)?(.+)$/i);
       return Boolean(request && object.test(request[1]));
@@ -4734,9 +4740,35 @@ function ownerRequestsFileHandoff(lane) {
 export function userMessageRequestsWorkspaceDocumentDelivery(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text || ownerForbidsTools(text)) return false;
-  const lane = ownerLaneText(text);
-  if (/\b(?:https?:\/\/|www\.)/i.test(lane)) return false;
+  let lane = ownerLaneText(text);
   if (/^\s*(?:please\s+)?(?:how\b|what\b|why\b|where\b|when\b|explain\b|describe\b|tell\s+me\s+(?:how|about)\b|is\b|are\b|does\b)/i.test(lane)) return false;
+  if (/\b(?:https?:\/\/|www\.)/i.test(lane)) {
+    // Source citations do not cancel an independent local file handoff.
+    // Exclude external acquisition clauses: a filename inside a URL is not
+    // an owner request to publish a file from the Pixel workspace.
+    const hasUrl = value => /\b(?:https?:\/\/|www\.)/i.test(value);
+    const url = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+    lane = lane.split(/[!?;\n]+|\.(?=\s|$)/).map(raw => {
+      const clause = raw.trim();
+      if (!hasUrl(clause)) return clause;
+      if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\b/i.test(clause)) return '';
+      // An explicitly labelled citation is auxiliary to the local request.
+      const cited = clause.replace(/\s+with\s+(?:a\s+)?(?:citation|source\s+link|reference)\s+(?:to\s+)?(?:https?:\/\/|www\.)[^\s<>"'`]+\s*$/i, '');
+      if (!hasUrl(cited)) return cited;
+      if (!/^(?:please\s+)?(?:use|read|open|inspect|fetch|download|create|build|make|write|generate|prepare|give|provide|send|return)\b/i.test(clause)) return '';
+      const parts = clause.split(/(?:,\s*)?\s+(?:and(?:\s+then)?|then)\s+(?=(?:please\s+)?(?:create|build|make|write|generate|prepare|give|provide|send|return|attach|deliver)\b)/i);
+      const namedOutput = /\b(?:create|write|generate|prepare)\b[\s\S]*\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|docx|xlsx|pptx)\b/i;
+      const localCreation = parts.some(part => (!hasUrl(part) || /^(?:please\s+)?(?:use|read)\b/i.test(part)) && namedOutput.test(part.replace(url, 'the source')));
+      return parts.map((part,index) => {
+        if (!hasUrl(part)) return index === 0 || localCreation || /\.[a-z0-9]{1,8}\b|\b(?:project|source\s+code)\b/i.test(part) ? part : '';
+        const local = part.replace(url, 'the source');
+        // Retain a named local output requested using a source, so a later
+        // "attach it" still has its creation context. No URL becomes a path.
+        return /^(?:please\s+)?(?:use|read)\b/i.test(part) && namedOutput.test(local)
+          ? local.slice(local.search(/\b(?:create|write|generate|prepare)\b/i)) : '';
+      }).filter(Boolean).join(' and ');
+    }).filter(Boolean).join('. ');
+  }
   const positive = lane.split(/[!?;\n]+|\.(?=\s|$)/).filter(clause =>
     !/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:download|deliver|attach|publish)\b/i.test(clause)
   ).join(' ');
@@ -13317,6 +13349,22 @@ export function createToolLoopGuard({
       trustedOperationsContinuation(state, runId) ??
       (workspaceStopped ? undefined : trustedWorkspacePreviewContinuation(state));
     if (!continuation) {
+      // A repeat download can finish with a model-written link and no tools.
+      // Give that owner turn one chance to obtain a fresh broker receipt. The
+      // pinned harness still refuses revisions after side effects; never run
+      // the broker here or treat the answer's URL as publication evidence.
+      if (state?.workspaceDocumentDeliveryRequested && !state.ownerNoTools &&
+          !workspaceStopped && !state.extensionCompletionGate?.active &&
+          !state.workspaceArtifacts?.length && !(state.artifactAttempts ?? 0) &&
+          !state.workspaceDocumentDeliveryRetried && (!event?.runId || event.runId === runId) &&
+          !workspaceArtifactUnavailableReason({...context, runId})) {
+        state.workspaceDocumentDeliveryRetried = true;
+        return {action:'revise', reason:'The requested download has no verified publication receipt for this response.', retry:{
+          instruction:'The owner requested a download, including delivery of an existing file again. ' +
+            WORKSPACE_ARTIFACT_DELIVERY_GUIDANCE + ' Do not repeat already completed creation or checks. ' +
+            'Do not substitute a raw path, Markdown link or image for publication.',
+          idempotencyKey:'pixel-ods-workspace-document-delivery', maxAttempts:1}};
+      }
       const decision = state?.extensionCompletionGate?.active && !extensionStopped
         ? state.extensionCompletionGate.finalize()
         // Generic promise recovery cannot distinguish the suspended portion

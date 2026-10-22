@@ -7,6 +7,7 @@ import {useMemo,useLayoutEffect} from 'react'
 import {useResponseReveal} from '../lib/useResponseReveal'
 import {EMBED_NOTES} from '../lib/embedDisplay'
 import {parseDeliveredArtifacts} from '../lib/pixelDeliveredArtifacts'
+import {suppressDeliveredMediaLines} from '../lib/deliveredMediaDisplay'
 
 // Portal's own note, in its own paragraph where an embed it can't display
 // was, reads as a muted aside rather than as the model's words.
@@ -106,10 +107,13 @@ export default function PortalStreamingText({children, active=false, animate=act
   const delivered=!active && Boolean(parseDeliveredArtifacts(artifacts)?.length)
   const source=useResponseReveal(fullSource,{animate,instant:instant || delivered})
   const revealing=source!==fullSource
+  const plugins=useMemo(()=>delivered && !revealing
+    ? [rehypeHighlight,muteEmbedNotes,markDocumentDownloads,[suppressDeliveredMediaLines,{source,artifacts}],revealNewText]
+    : PLUGINS,[delivered,revealing,source,artifacts])
   useLayoutEffect(()=>{onReveal?.()},[source,onReveal])
   const renderers=useMemo(()=>({...components,a:props=><PortalInlineCitation {...props} artifacts={artifacts}/>,span:StreamSpan}),[components,artifacts])
   return <div className={`portal-streaming-text ${active || revealing?'is-streaming':''}`} aria-busy={active || revealing}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={PLUGINS} components={renderers}>{source}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={plugins} components={renderers}>{source}</ReactMarkdown>
     {(active || revealing) && <span className="portal-stream-cursor" aria-hidden="true"/>}
   </div>
 }
