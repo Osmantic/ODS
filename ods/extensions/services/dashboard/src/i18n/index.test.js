@@ -24,6 +24,7 @@ describe('i18next configuration', () => {
   })
 
   it('ignores unsupported languages when persisting', () => {
+    localStorage.removeItem(LANGUAGE_KEY)
     expect(() => persistLanguage('fr')).not.toThrow()
     expect(localStorage.getItem(LANGUAGE_KEY)).toBeNull()
   })

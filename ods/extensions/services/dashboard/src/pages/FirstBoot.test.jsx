@@ -122,7 +122,7 @@ describe('FirstBoot', () => {
     })
     expect(JSON.parse(generateCall[1].body)).not.toHaveProperty('expires_in')
     expect(fetchMock).toHaveBeenCalledWith('/api/setup/complete', { method: 'POST' })
-    expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
+    expect(await screen.findByAltText('QR code for the owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
 
     fireEvent.click(screen.getByRole('button', { name: /open dashboard/i }))
     expect(onComplete).toHaveBeenCalledTimes(1)
@@ -167,7 +167,7 @@ describe('FirstBoot', () => {
       url_mode: 'public',
       note: 'First-boot owner card (spark)',
     })
-    expect(await screen.findByAltText('QR code for owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
+    expect(await screen.findByAltText('QR code for the owner card')).toHaveAttribute('src', 'data:image/png;base64,qrpayload')
   })
 
   test('applies the selected agent stack before creating credentials or completing setup', async () => {
@@ -398,7 +398,7 @@ describe('FirstBoot', () => {
     fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
     fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
 
-    expect(await screen.findByText(/owner cards require ods-proxy/i)).toBeInTheDocument()
+    expect(await screen.findByText(/Enable ODS proxy before generating owner cards/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
 
     await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1))

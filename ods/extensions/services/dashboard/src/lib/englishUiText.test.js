@@ -28,7 +28,11 @@ function sources(dir, out = []) {
   for (const name of readdirSync(dir)) {
     const path = join(dir, name)
     if (statSync(path).isDirectory()) sources(path, out)
-    else if (/\.jsx?$/.test(name) && !/\.test\.jsx?$/.test(name)) out.push(path)
+    else if (
+      /\.jsx?$/.test(name) &&
+      !/\.test\.jsx?$/.test(name) &&
+      !/^i18n\/(?:es|zh-CN)\.js$/.test(path.slice(src.length + 1).replaceAll('\\', '/'))
+    ) out.push(path)
   }
   return out
 }
