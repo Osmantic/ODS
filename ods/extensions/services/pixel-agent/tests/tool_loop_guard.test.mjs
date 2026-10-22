@@ -13973,6 +13973,77 @@ test('host evidence recognizes read/get and curly-apostrophe exclusions', () => 
   assert.equal(userMessageOperationsRequirements([], prompt).required, false, prompt);
 });
 
+test("relative cd verification binds the actual completed fleet result", () => {
+  for (const wrapped of [false, true]) for (const workdir of [undefined, "/workspace", "/workspace/parent"]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+      prompt: "Run the unit tests and report their actual result in chat.",
+    });
+    const args = { command: "cd fleet-tower3-20261022 && python3 -m unittest test_slugify -v", ...(workdir ? { workdir } : {}) };
+    const toolName = wrapped ? "tool_call" : "exec";
+    const params = wrapped ? { id: "exec", args } : args;
+    const before = call(guard, toolName, { event: { params, toolCallId: "fleet-test" } });
+    assert.notEqual(before?.block, true);
+    const executed = wrapped ? before?.params ?? params : { ...params, ...before?.params };
+    assert.equal(wrapped ? executed.args.command : executed.command, args.command);
+    const output = "test_spaces (test_slugify.TestSlugify.test_spaces) ... ok\n\nRan 7 tests in 0.000s\n\nOK";
+    const result = { content: [{ type: "text", text: output }], details: { status: "completed", exitCode: 0, aggregated: output } };
+    afterCall(guard, toolName, { event: { params: executed, toolCallId: "fleet-test", result: wrapped ? wrappedCoreResult("exec", result) : result } });
+    assert.equal(guard.verificationForRun("run-1").status, "passed");
+    assert.equal(reply(guard), undefined);
+  }
+});
+
+test("relative cd verification retains failed, empty and pending outcomes", () => {
+  const command = "cd project && python3 -m unittest -v";
+  for (const [details, expected] of [
+    [{ status: "completed", exitCode: 1, aggregated: "Ran 1 test\nFAILED (failures=1)" }, "failed"],
+    [{ status: "completed", exitCode: 0, aggregated: "Ran 0 tests\nOK" }, "failed"],
+    [{ status: "running", sessionId: "relative-check" }, "pending"],
+  ]) {
+    const guard = createToolLoopGuard();
+    const params = { command };
+    const before = call(guard, "exec", { event: { params } });
+    assert.notEqual(before?.block, true);
+    afterCall(guard, "exec", { event: { params: { ...params, ...before?.params }, result: { details } } });
+    assert.equal(guard.verificationForRun("run-1").status, expected);
+  }
+});
+
+test("relative cd verification fingerprints the runner cwd after cd", () => {
+  const source = readFileSync(new URL("../plugin/tool-loop-guard.mjs", import.meta.url), "utf8");
+  const scope = { path };
+  vm.runInNewContext(
+    source.slice(source.indexOf("function normalizeExecWorkdir("), source.indexOf("function normalizeApplyPatchInput(")) +
+    source.slice(source.indexOf("function verificationCommand("), source.indexOf("function canonicalRequestedUnittestParams(")), scope);
+  for (const [command, workdir, resolved] of [
+    ["cd project && python3 -m unittest -v", undefined, "/workspace/project"],
+    ["cd project && python3 -m unittest -v", "/workspace/parent", "/workspace/parent/project"],
+    ["cd /workspace/project && python3 -m unittest -v", "/workspace/parent", "/workspace/project"],
+  ]) {
+    const params = { command, ...(workdir ? { workdir } : {}) };
+    assert.equal(scope.verificationExecFingerprint(params), JSON.stringify(["python3 -m unittest -v", resolved]));
+  }
+});
+
+test("relative cd verification refuses masked output before execution", () => {
+  for (const suffix of [" | tee output.txt", " > output.txt", " 2>&1 | tee output.txt", " 2>/dev/null", "; echo done", " && echo done", " || true"]) {
+    const guard = createToolLoopGuard();
+    const params = { command: "cd project && python3 -m unittest -v" + suffix };
+    assert.equal(call(guard, "exec", { event: { params } })?.blockReason, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON);
+  }
+});
+
+test("relative cd verification does not credit ambiguous paths or setup chains", () => {
+  for (const prefix of ["cd ../other", "cd .", "cd -P", "cd project/*", "cd a//b", "cd project/", "cd $(echo project)", 'cd "$DIR"', "cd project && echo setup"]) {
+    const guard = createToolLoopGuard();
+    call(guard, "read");
+    afterCall(guard, "exec", { event: { params: { command: "python3 -m unittest -v" }, result: { details: { exitCode: 1 } } } });
+    afterCall(guard, "exec", { event: { params: { command: prefix + " && python3 -m unittest -v" }, result: { details: { exitCode: 0, aggregated: "Ran 7 tests\nOK" } } } });
+    assert.equal(guard.verificationForRun("run-1").status, "failed", prefix);
+  }
+});
+
 test("AND-chain completed verification clears the previous failed direct test", () => {
   for (const toolName of ["exec", "tool_call"]) {
     for (const command of [

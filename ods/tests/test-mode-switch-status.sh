@@ -159,6 +159,46 @@ check_contains "unknown mode explains itself" "Unknown mode" "$(run_mode "$ROOT"
 ROOT="$(new_root)"
 check_eq "switching without .env exits 1" "1" "$(run_rc "$ROOT" cloud)"
 
+# ── 8. Case-insensitive backend and switchboard values ──────────────────
+
+ROOT="$(new_root)"
+cat > "$ROOT/.env" <<'EOF'
+ODS_MODE=local
+LLM_BACKEND=EXTERNAL
+LLM_API_URL=http://host.docker.internal:11434
+EXTERNAL_LLM_URL=http://127.0.0.1:11434
+EOF
+BEFORE="$(cat "$ROOT/.env")"
+OUT="$(run_mode "$ROOT" cloud)"
+check_eq "uppercase EXTERNAL backend rejects direct mode switch" "1" "$(run_rc "$ROOT" cloud)"
+check_contains "uppercase EXTERNAL backend points to reset" "--no-external-llm" "$OUT"
+check_eq "rejected uppercase EXTERNAL mode switch leaves .env unchanged" "$BEFORE" "$(cat "$ROOT/.env")"
+
+ROOT="$(new_root)"
+printf 'ODS_MODE=cloud\nODS_MODEL_SWITCHBOARD=ENABLED\n' > "$ROOT/.env"
+run_mode "$ROOT" local > /dev/null
+check_eq "uppercase ENABLED switchboard routes Hermes through model-router" "HERMES_LLM_BASE_URL=http://model-router:9099/v1" "$(grep -m1 '^HERMES_LLM_BASE_URL=' "$ROOT/.env")"
+check_eq "uppercase ENABLED switchboard gives Hermes the local router key" "HERMES_LLM_API_KEY=no-key" "$(grep -m1 '^HERMES_LLM_API_KEY=' "$ROOT/.env")"
+
+# ── 9. Bash 3.2 and POSIX compatibility ───────────────────────────────────
+
+# Ensure mode-switch.sh contains no Bash 4 case-modification parameter expansions (${var,,} or ${var^^})
+if grep -E -q '\$\{[a-zA-Z_0-9]+,,|\$\{[a-zA-Z_0-9]+\^\^' "$MODE_SWITCH"; then
+    fail "Bash 3.2 compat: mode-switch.sh contains non-portable Bash 4 case expansion" "found: $(grep -nE '\$\{[a-zA-Z_0-9]+,,|\$\{[a-zA-Z_0-9]+\^\^' "$MODE_SWITCH")"
+else
+    pass "Bash 3.2 compat: no non-portable case expansion syntax in mode-switch.sh"
+fi
+
+# When /bin/bash exists (macOS Bash 3.2 or Linux), verify direct execution under /bin/bash
+if [[ -x /bin/bash ]]; then
+    ROOT="$(new_root)"
+    printf 'ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\n' > "$ROOT/.env"
+    ( cd "$ROOT/scripts" && PATH=/usr/bin:/bin /bin/bash ./mode-switch.sh cloud ) >/dev/null 2>&1
+    check_eq "/bin/bash mode switch exits 0" "0" "$?"
+    check_eq "/bin/bash switch updates ODS_MODE" "ODS_MODE=cloud" "$(grep -m1 '^ODS_MODE=' "$ROOT/.env")"
+    check_eq "/bin/bash switch updates LLM_API_URL" "LLM_API_URL=http://litellm:4000" "$(grep -m1 '^LLM_API_URL=' "$ROOT/.env")"
+fi
+
 # ── Summary ───────────────────────────────────────────────────────────────
 
 echo ""

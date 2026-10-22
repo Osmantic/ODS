@@ -1351,6 +1351,21 @@ function verificationCommand(params) {
   if (workspaceCd) {
     commandWorkdir = workspaceCd[1] ?? workspaceCd[2] ?? workspaceCd[3];
     command = workspaceCd[4];
+  } else {
+    // A literal relative cd is common in real coding turns. Recognize the
+    // runner after it so completed test receipts and output-masking checks
+    // use the same path as the absolute /workspace form. Do not parse general
+    // shell syntax or change the command that will actually execute.
+    const relativeCd = command.match(
+      /^cd[ \t]+([A-Za-z0-9._][A-Za-z0-9._/-]*)[ \t]*&&[ \t]*(.+)$/
+    );
+    if (relativeCd && relativeCd[1].split("/").every(part => part && part !== "." && part !== "..")) {
+      const base = normalizeExecWorkdir(params.workdir);
+      if (base == null || typeof base === "string") {
+        commandWorkdir = path.posix.join(!base || base === "." ? "/workspace" : base, relativeCd[1]);
+        command = relativeCd[2];
+      }
+    }
   }
   const withoutStderrMerge = command.replace(/\s+2>&1\s*$/i, "").trim();
   if (
@@ -1407,7 +1422,8 @@ function verificationExecFingerprint(params) {
   const command = parsed.command
     .replace(/\s+2>&1\s*$/i, "")
     .replace(/\s+/g, " ");
-  const normalizedWorkdir = normalizeExecWorkdir(params.workdir ?? parsed.commandWorkdir);
+  // The runner executes after cd, even when exec also supplied a starting cwd.
+  const normalizedWorkdir = normalizeExecWorkdir(parsed.commandWorkdir ?? params.workdir);
   const workdir = normalizedWorkdir === "." ? "" : normalizedWorkdir;
   return JSON.stringify([command, typeof workdir === "string" ? workdir : ""]);
 }
