@@ -12,6 +12,42 @@ const handoff='Turn these notes into a concise handoff using only the facts prov
 const answer='Maya will send the quote Thursday. Luis will finish testing Friday. The customer CSV has no assigned owner or delivery date. Review can happen after both the quote and testing are done.';
 const context={trigger:'user',agentId:'pixel',runId:'handoff-run',sessionId:'handoff-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
 
+test('visual projects retain an explicit download-of handoff',()=>{
+  for(const prompt of [
+    'Create a small project in a folder named fleet-dev-preview-418565c2 with three files: index.html, style.css, and app.js. Show a dark green card titled “Fleet preview”, a counter starting at 0, and an “Add one” button that increments it. Keep the CSS in style.css and load app.js as a JavaScript module. Show me a working preview and give me a download of the project. Keep it simple.',
+    'Build a webpage and give me a download of the project.',
+    'Show the website and give me a download of the project files.',
+    'Display the webpage and provide me with a download of the source code.',
+    'Preview the website and send me a download of demo.zip.',
+    'Render the webpage and return a download of the files.',
+    'Show the preview and give me the project files.',
+    'Create a Python project and give me a download of the project.',
+    'Show the webpage and give me a download of current.zip. Do not give me a download of old.zip.',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.match(fresh(prompt).deliveryVerificationForRun(context.runId).text,/requested download was not attached/,prompt);
+  }
+});
+
+test('visual download wording does not override owner intent boundaries',()=>{
+  for(const prompt of [
+    'Build a webpage with a download button.',
+    'Create a website project with a download button.',
+    'Show a working preview of the project.',
+    'Show the webpage and give me a download of the image.',
+    'Show the webpage and give me a download of the project from https://example.com/project.zip.',
+    'Show the webpage and give me a download of the project. Do not send anything.',
+    'Show the webpage and give me a download of the project. Do not give me a download of the project.',
+    'Show the webpage and give me a download of the project. Do not give me a download of the source.',
+    'Show the webpage and give me a download of the source files. Never send us a download of the source files.',
+    'Show the webpage and do not give me a download of the project.',
+    'Do not use tools. Show the webpage and give me a download of the project.',
+    'Summarize this example: "Show the webpage and give me a download of the project".',
+    'Ask Alice to show the webpage and give me a download of the project.',
+    'How can I download the project after previewing the webpage?',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
+
 test('ordinary format-noun handoffs select document delivery without inventing a website obligation',()=>{
   for(const prompt of [
     'Please give me that CSV again as a download.',
