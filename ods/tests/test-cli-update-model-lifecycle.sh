@@ -62,7 +62,8 @@ run_update() {
             _ods_cli_network_access_enabled() { return 1; }
             # Stop before Compose or real service ownership changes.
             _ods_cli_repair_rootless_ownership() { echo "RESTART-PROCEEDED"; exit 99; }
-            cmd_restart "${RESTART_ARGS[@]}" </dev/null
+            # Bash 3.2 treats an empty array as unset under nounset.
+            cmd_restart ${RESTART_ARGS[@]+"${RESTART_ARGS[@]}"} </dev/null
         else
             cmd_update </dev/null
         fi
