@@ -1,11 +1,9 @@
-# Maintainer Decision Record: Windows Native Supervisor Architecture
+# Windows Native Supervisor Architecture Evaluation
 
-**Document ID**: `ODS-MDR-2026-WIN01`
-**Status**: Experimental Proposal / Pending Maintainer Review
-**Author**: Antigravity (AI Contributor for `vaibhavsrv`)
-**Target Upstream Repository**: `Osmantic/ODS`
+**Author**: `vaibhavsrv`
+**Status**: Experimental Proposal & Reference Implementation (Issue #7952)
 **Branch**: `experiment/windows-supervisor-clean`
-**Verified Code Commit**: `0ef5cc0afe69403a49af3aa89c258a91a27e8577` (`0ef5cc0af`)
+**Target Upstream Repository**: `Osmantic/ODS`
 **Verified CI Telemetry**: Offline Run 39751880189 & Manual Heavy Run 39750717938
 
 ---
