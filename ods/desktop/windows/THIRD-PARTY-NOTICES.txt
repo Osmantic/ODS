@@ -1,0 +1,52 @@
+ODS Windows native chat preview
+
+Original preview code: Apache License 2.0; see LICENSE-ODS.txt.
+Brand icon: existing ODS dashboard asset, unchanged.
+
+llama.cpp b9014 CPU x64
+Source: https://github.com/ggml-org/llama.cpp/tree/b9014
+Binary: llama-b9014-bin-win-cpu-x64.zip, official ggml-org release.
+SHA-256: 3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2
+Runtime binaries are NOT redistributed in this preview package. They are
+downloaded directly from the upstream publisher on the owner's request.
+The exact executable's embedded dependency notices (cpp-httplib, BoringSSL,
+jsonhpp and llama.cpp) are exported as LICENSE-LLAMA-DEPENDENCIES.txt.
+The upstream ZIP also contains Microsoft's libomp140.x86_64.dll. This
+preview does not establish rights to redistribute that DLL. See README.md's
+runtime distribution gate before creating an all-in-one/offline installer.
+
+MIT License
+
+Copyright (c) 2023-2026 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Qwen 3.5 2B Q4_K_M
+Original model: Qwen team, Alibaba Cloud, Apache License 2.0.
+Model source: https://huggingface.co/Qwen/Qwen3.5-2B
+GGUF conversion: Unsloth, https://huggingface.co/unsloth/Qwen3.5-2B-GGUF
+Revision: f6d5376be1edb4d416d56da11e5397a961aca8ae
+File: Qwen3.5-2B-Q4_K_M.gguf
+SHA-256: aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223
+Licence text: Apache License 2.0, included in LICENSE-ODS.txt.
+The online package downloads these weights on the owner's request; an
+offline bundle redistributes the same checked file. No model modification
+is made by this preview. Retain the licence and these notices with the bundle.
+
+Microsoft .NET Framework / WPF is a Windows prerequisite, not redistributed.
