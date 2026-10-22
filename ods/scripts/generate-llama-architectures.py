@@ -146,7 +146,7 @@ def nextn_architectures(model: str, architecture_source: str) -> list[str]:
     end = architecture_source.index('\n};', start)
     names = dict(re.findall(r'\{\s*(LLM_ARCH_[A-Z0-9_]+)\s*,\s*"([^"]+)"\s*\}', architecture_source[start:end]))
     supported = []
-    pending = []
+    pending: list[str] = []
     for label, case_body in cases:
         if label is None:
             pending = []
