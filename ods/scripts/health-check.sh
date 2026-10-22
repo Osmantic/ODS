@@ -43,13 +43,15 @@ if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then
 fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 LLM_HOST="${LLM_HOST:-localhost}"
-LLM_PORT="${LLM_PORT:-8080}"
 TIMEOUT="${TIMEOUT:-5}"
 
 # Safe .env loading for port overrides (no eval; use lib/safe-env.sh)
 [[ -f "$SCRIPT_DIR/lib/safe-env.sh" ]] && . "$SCRIPT_DIR/lib/safe-env.sh"
 load_env_file "${INSTALL_DIR}/.env"
 sr_resolve_ports
+# 8080 is llama-server's container port; compose publishes it on the host as
+# OLLAMA_PORT (default 11434), which sr_resolve_ports has just applied.
+LLM_PORT="${LLM_PORT:-${SERVICE_PORTS[llama-server]:-11434}}"
 
 # Colors (disabled for JSON/quiet)
 if $JSON_OUTPUT || $QUIET; then

@@ -2285,13 +2285,54 @@
       "description": "Dense 27B reasoning model with embedded MTP. Smaller GPUs can use partial offload and a reduced context profile. MTP needs a compatible llama.cpp runtime and measured memory/throughput validation; it is not enabled automatically.",
       "llm_model_name": "qwen3.8-27b",
       "llama_server_image": null,
+      "runtime_profiles": [
+        {
+          "id": "nvidia-24gb-64k-b11429",
+          "label": "NVIDIA 24GB 64K context with Q8 KV cache",
+          "backend": "nvidia",
+          "memory_type": "discrete",
+          "host_arch": ["amd64"],
+          "vram_min_gb": 24,
+          "context_length": 65536,
+          "fit_label": "64K NVIDIA Q8 KV profile",
+          "llama_server_image": "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_CTX_CHECKPOINTS": "4",
+            "LLAMA_ARG_CACHE_RAM": "1024",
+            "LLAMA_SERVER_MEMORY_LIMIT": "26G"
+          }
+        },
+        {
+          "id": "cpu-32gb-64k-b11429",
+          "label": "CPU 32GB RAM 64K context with Q8 KV cache",
+          "backend": "cpu",
+          "host_arch": ["amd64"],
+          "system_ram_min_gb": 32,
+          "context_length": 65536,
+          "fit_label": "64K CPU Q8 KV profile",
+          "llama_server_image": "ghcr.io/ggml-org/llama.cpp:server-b11429@sha256:2f8ebc2dde83c4bd7e5c6d61efa57965e0d5a79d29802c246c4593740d9c04c1",
+          "env": {
+            "LLAMA_PARALLEL": "1",
+            "LLAMA_ARG_FLASH_ATTN": "on",
+            "LLAMA_ARG_CACHE_TYPE_K": "q8_0",
+            "LLAMA_ARG_CACHE_TYPE_V": "q8_0",
+            "LLAMA_ARG_CTX_CHECKPOINTS": "4",
+            "LLAMA_ARG_CACHE_RAM": "1024",
+            "LLAMA_SERVER_MEMORY_LIMIT": "26G"
+          }
+        }
+      ],
       "install_recommendation": false,
       "default_runtime_compatibility": {
         "status": "incompatible",
         "runtime": "llama.cpp b9014",
-        "reason": "llama.cpp b9014, the ODS NVIDIA/CPU image, predates Qwen3.8 architecture support (ggml-org/llama.cpp#27742, b10660) and fails to load Qwen3.8-27B with \"missing tensor 'blk.64.ssm_conv1d.weight'\". Every other ODS default runtime (b8210, b8248, b8668, b8763) is older. Observed with the UD-Q4_K_XL GGUF of the same model on tower2; this IQ4_XS file was not loaded.",
+        "reason": "The historical llama.cpp b9014 loader failed Qwen3.8-27B UD-Q4_K_XL with missing tensor blk.64.ssm_conv1d.weight. That verdict does not qualify a different build or quantization. The exact catalog IQ4_XS artifact loaded and completed a basic CPU request on b11429 on 2026-10-21; its explicit backend-specific profiles retain separate context and agent acceptance requirements. Backends without a matching image profile retain this refusal.",
         "evidence": "ODS-Fleet-Qualification findings/llama-cpp-version-policy.md, section 3 (tower2 A/B bench, 2026-09-25)",
-        "userNote": "This model needs a newer llama.cpp runtime than ODS installs by default. Choose another model for now."
+        "userNote": "This model has no compatible runtime profile for this machine. Choose another model for now."
       },
       "source_repo": "unsloth/Qwen3.8-27B-GGUF",
       "source_revision": "4ca720788d1e01f1bff70c033e0d0028fd02e502",
