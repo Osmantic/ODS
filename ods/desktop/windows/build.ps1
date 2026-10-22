@@ -73,6 +73,8 @@ $icon = Join-Path $repoRoot 'extensions/services/dashboard/public/osmantic-os.ic
     (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs')
 if ($LASTEXITCODE -ne 0) { throw 'The desktop application did not compile.' }
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $output
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'VALIDATION.md') -Destination $output
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'docs') -Destination $output -Recurse
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'THIRD-PARTY-NOTICES.txt') -Destination $output
 Copy-Item -LiteralPath (Join-Path $repoRoot '../LICENSE') -Destination (Join-Path $output 'LICENSE-ODS.txt')
 if ($IncludeModel) {

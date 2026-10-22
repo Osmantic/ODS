@@ -9,6 +9,9 @@ the complete ODS product: Portal/Pixel, tools, voice, extensions, GPU routing,
 durable chat history, automatic updates and an installer are not included.
 It does not replace `install.ps1` or change an existing ODS installation.
 
+See [validation, actual screenshot and the next integration boundary](VALIDATION.md)
+for the exact source/environment, executed checks and remaining product work.
+
 ## Open the preview
 
 1. Extract the complete preview ZIP to a normal folder.
