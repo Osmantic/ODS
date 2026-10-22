@@ -562,7 +562,7 @@ function ConfirmStep({
         <div className="mb-6 p-4 bg-theme-text-secondary/10 border border-theme-border rounded-xl text-theme-text-secondary text-sm flex items-start gap-2">
           <AlertCircle size={18} className="flex-shrink-0 mt-0.5" />
           <span>
-            {ownerCardStatus.reason || t('firstBoot.confirm.proxyRequired')}
+            {t('firstBoot.confirm.proxyRequired')}
             {' '}{t('firstBoot.confirm.finishLater')}
           </span>
         </div>
@@ -642,7 +642,7 @@ function DoneScreen({ invite, onDone }) {
         const data = await resp.json()
         if (!cancelled) setQrDataUrl(data.data_url)
       } catch (err) {
-        if (!cancelled) setQrError(err.message)
+        if (!cancelled) setQrError(t('firstBoot.done.qrUnavailable'))
       }
     }
     loadQr()
