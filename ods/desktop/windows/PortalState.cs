@@ -111,9 +111,17 @@ namespace OdsDesktop
                 input = new FileStream(handle, FileAccess.Read, 8192, false);
                 var security = input.GetAccessControl();
                 var sid = WindowsIdentity.GetCurrent().User;
-                if (!sid.Equals(security.GetOwner(typeof(SecurityIdentifier))) || security.GetAccessRules(true, true, typeof(SecurityIdentifier))
+                var owner = (SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier));
+                // The text-only preview used the token's default file owner.
+                // Elevated tokens can default to BUILTIN\Administrators even
+                // inside our SID-owned, current-user-only private directory.
+                // This privileged owner does not authorize any foreign DACL
+                // grant; arbitrary owners remain refused for every schema.
+                bool defaultAdministratorOwner = owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid);
+                if ((!sid.Equals(owner) && !defaultAdministratorOwner) || security.GetAccessRules(true, true, typeof(SecurityIdentifier))
                     .Cast<FileSystemAccessRule>().Any(rule => rule.AccessControlType == AccessControlType.Allow && !sid.Equals(rule.IdentityReference)))
                     throw new IOException("Saved Portal files must be private to this Windows account. Their bytes were preserved.");
+                if (defaultAdministratorOwner) PrivateDirectory(directory);
                 return input;
             }
             catch { if (input != null) input.Dispose(); else handle.Dispose(); throw; }

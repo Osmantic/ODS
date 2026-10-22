@@ -38,7 +38,7 @@ this preview. The document capability is one bounded native Markdown tool.
 
 | Boundary | Result | What it establishes |
 | --- | --- | --- |
-| Native regression suite | **264 passed** | Acquisition/cancellation, real Windows children, Job cleanup, storage capacity/recovery/API errors, exact-token context selection, cached repair/reopen, reflection errors, model/auth identity, Portal history/result/Stop, document publication/ownership/HTTP tool calls and runtime refusal |
+| Native regression suite | **264 passed at the document milestone** | Acquisition/cancellation, real Windows children, Job cleanup, storage capacity/recovery/API errors, exact-token context selection, cached repair/reopen, reflection errors, model/auth identity, Portal history/result/Stop, document publication/ownership/HTTP tool calls and runtime refusal; ownership follow-up below |
 | Actual EXE | **11 passed**, repeated on package | Real Main entrypoint, Unicode path, duplicate instance, incomplete-package recovery, reopen and side-effect-free idle/busy installation probe |
 | Graphical installer lifecycle | **23 passed** | Real wizard cancellation/install/Finish launch; HKCU and Start Menu target; busy upgrade/uninstall refusal; data-retention notice/cancellation; repair; upgrade; downgrade refusal; failed directory inspection; descendant junction refusal; removal; foreign/saved-data preservation |
 | Installed Portal UI | **11 passed** | Actual production frontend in WebView2, multi-turn text, history, New chat/select, Stop/recovery, external navigation/CSP refusal |
@@ -138,6 +138,41 @@ native and normal builds passing. ESLint reported **zero errors / 897 existing
 warnings**. The new graphical fixture is executed explicitly in the path-filtered
 native workflow; catalog-model execution remains a separately recorded local
 gate, with no model download added to CI.
+
+### Hosted Windows ownership follow-up
+
+The first hosted run at `536578c7a` passed **74 other checks** but failed the
+native suite while reopening legacy default-owner files. The earlier 0.1 producer
+used an ordinary `FileStream`, so an elevated Windows token can create a file
+owned by exact `BUILTIN\Administrators` despite its private current-user-only
+DACL. The new file-owner gate initially rejected that legitimate history. Local
+non-elevated tests did not exercise that ownership choice.
+
+Reads now accept only the current SID or that exact privileged built-in owner.
+Administrators ownership additionally requires a freshly validated current-SID
+private parent. Foreign allow grants, arbitrary owners, links and failed reads
+still refuse, and no read changes ownership/permissions. New receipts and
+tombstones explicitly use the current SID. Independent review checked the safety
+delta and the unchanged-byte/foreign-owner/grant controls.
+
+The focused standard-user qualification passed **41 document + 19 existing state
+checks**. Four unconditional regressions recreate the old default-owner producer
+and exercise recovery, update, tombstones and deletion; four additional tests
+require an already elevated token and record whether actual Administrators and
+foreign-owner branches executed. The local host records its privilege limit and
+does not attempt elevation. Hosted logs provide the actual token/owner evidence;
+a standard-user pass does not establish those elevated paths.
+
+The actual retained 0.1 application also refused a real v2 receipt while keeping
+its exact bytes (**2 checks**). The final local installer passed
+**23 lifecycle + 2 saved-history checks**, and the rebuilt package passed the **9-check actual
+text-model flow**, including Stop, context fitting and recovery.
+
+One repeated native frontend build on Node 24.21.0 emitted its output and then
+aborted during process shutdown with a libuv assertion. That attempt was recorded
+as failed. Fresh native and normal builds on CI's declared Node 22 line
+(22.23.4, verified official archive/executable digests) passed; native assets
+matched the already exercised package byte-for-byte.
 
 ## Regression and review evidence
 

@@ -18,6 +18,18 @@ static class NativeDocumentTests
     static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 8 * 1024 * 1024 };
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     static extern bool CreateHardLink(string name, string existing, IntPtr security);
+    [StructLayout(LayoutKind.Sequential)] struct TokenPrivilege
+    { public uint Count, Low; public int High; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)] struct PrivilegeId
+    { public uint Low; public int High; }
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool LookupPrivilegeValue(string system, string name, out PrivilegeId id);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TokenPrivilege value, uint size,
+        out TokenPrivilege previous, out uint returned);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr handle);
     static void Check(bool value, string message)
     { if (!value) throw new Exception(message); checks++; Console.WriteLine("PASS " + message); }
     static bool Refuses<T>(Action action) where T : Exception
@@ -98,8 +110,133 @@ static class NativeDocumentTests
         Check(recovered.Find("abrupt", "lost").State == "interrupted" && recovered.ReadDocument(document.SiteId) == null &&
             File.ReadAllText(Path.Combine(abrupt, "uncommitted.partial")) == exact,
             "crash before terminal commit preserves partial bytes but never publishes them or fabricates completion");
-        CorruptReceipts(root, document); PrivatePaths(root, document); IndexedOwners(root, document); Quota(root, document);
+        LegacyOwners(root, document); CorruptReceipts(root, document); PrivatePaths(root, document); IndexedOwners(root, document); Quota(root, document);
         return checks;
+    }
+    static bool RestorePrivilege(Action action)
+    {
+        IntPtr token;
+        using (var process = Process.GetCurrentProcess())
+            if (!OpenProcessToken(process.Handle, 0x0020 | 0x0008, out token)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try
+        {
+            PrivilegeId id;
+            if (!LookupPrivilegeValue(null, "SeRestorePrivilege", out id)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            var enabled = new TokenPrivilege { Count = 1, Low = id.Low, High = id.High, Attributes = 2 };
+            TokenPrivilege previous; uint returned;
+            if (!AdjustTokenPrivileges(token, false, ref enabled, (uint)Marshal.SizeOf(typeof(TokenPrivilege)), out previous, out returned))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            int error = Marshal.GetLastWin32Error();
+            if (error == 1300) return false; // This token has no restore privilege; do not elevate it.
+            if (error != 0) throw new Win32Exception(error);
+            try { action(); }
+            finally
+            {
+                TokenPrivilege ignored;
+                if (!AdjustTokenPrivileges(token, false, ref previous, (uint)Marshal.SizeOf(typeof(TokenPrivilege)), out ignored, out returned))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+            return true;
+        }
+        finally { CloseHandle(token); }
+    }
+    static SecurityIdentifier Owner(string path)
+    { return (SecurityIdentifier)File.GetAccessControl(path).GetOwner(typeof(SecurityIdentifier)); }
+    static void SetOwner(string path, SecurityIdentifier owner)
+    { var security = new FileSecurity(); security.SetOwner(owner); File.SetAccessControl(path, security); }
+    static void WriteOldFile(string path, string text)
+    {
+        // Match 38ba2cdee Save/Delete: default token owner, inherited private DACL.
+        using (var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+        { byte[] bytes = new UTF8Encoding(false).GetBytes(text); file.Write(bytes, 0, bytes.Length); file.Flush(true); }
+    }
+    static void LegacyOwners(string root, NativeDocument document)
+    {
+        var sid = WindowsIdentity.GetCurrent().User;
+        var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+        bool elevated = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
+        string directory = Path.Combine(root, "native-document-legacy-owner"); new PortalState(directory);
+        var legacy = Response("legacy-default-owner", "plain");
+        var deleted = Response("legacy-deleted", "plain");
+        var active = Active("legacy-active", "pending");
+        string path = PathFor(directory, legacy), marker = Path.Combine(directory, PortalState.Digest(deleted.Chat) + ".deleted");
+        File.WriteAllText(path, Json.Serialize(legacy), new UTF8Encoding(false));
+        WriteOldFile(PathFor(directory, deleted), Json.Serialize(deleted));
+        WriteOldFile(PathFor(directory, active), Json.Serialize(active));
+        WriteOldFile(marker, deleted.Chat);
+        bool receiptAdministrator = Owner(path).Equals(administrators), markerAdministrator = Owner(marker).Equals(administrators);
+        Func<string, bool> foreignAllow = saved => File.GetAccessControl(saved).GetAccessRules(true, true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>().Any(rule => rule.AccessControlType == AccessControlType.Allow && !sid.Equals(rule.IdentityReference));
+        Console.WriteLine("LEGACY OWNER elevated=" + elevated + " receiptAdministrators=" + receiptAdministrator +
+            " tombstoneAdministrators=" + markerAdministrator + " receiptCurrentUser=" + Owner(path).Equals(sid) +
+            " tombstoneCurrentUser=" + Owner(marker).Equals(sid) + " receiptForeignAllow=" + foreignAllow(path) +
+            " tombstoneForeignAllow=" + foreignAllow(marker));
+        var store = new PortalState(directory);
+        Check(store.Find(legacy.Chat, legacy.Request).Events == legacy.Events && store.IsDeleted(deleted.Chat) &&
+            store.Find(active.Chat, active.Request).State == "interrupted",
+            "actual legacy default-owner receipts and tombstones reopen, including interrupted-request recovery");
+        legacy.Events = "updated legacy answer"; store.Save(legacy);
+        Check(new PortalState(directory).Find(legacy.Chat, legacy.Request).Events == legacy.Events && store.IsDeleted(deleted.Chat),
+            "legacy default-owner receipt update remains durable without losing the existing deletion marker");
+        byte[] before = File.ReadAllBytes(path);
+        var security = File.GetAccessControl(path); byte[] original = security.GetSecurityDescriptorBinaryForm();
+        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.Read, AccessControlType.Allow));
+        File.SetAccessControl(path, security);
+        try
+        {
+            Check(Refuses<IOException>(() => store.Find(legacy.Chat, legacy.Request)) && File.ReadAllBytes(path).SequenceEqual(before),
+                "legacy default-owner compatibility never accepts a foreign allow grant or rewrites refused bytes");
+        }
+        finally { RestoreAccess(path, original); }
+        store.Delete(deleted.Chat); store.Delete(legacy.Chat);
+        string newMarker = Path.Combine(directory, PortalState.Digest(legacy.Chat) + ".deleted");
+        store.Save(Response("new-private-owner", "request", document));
+        Check(!File.Exists(path) && !File.Exists(PathFor(directory, deleted)) && store.IsDeleted(deleted.Chat) && store.IsDeleted(legacy.Chat) &&
+            Owner(newMarker).Equals(sid) && Owner(PathFor(directory, Response("new-private-owner", "request"))).Equals(sid),
+            "legacy deletion preserves its tombstone while newly written receipts and markers explicitly belong to the user SID");
+
+        if (!elevated)
+        {
+            Console.WriteLine("LIMIT legacy Administrators-owner and arbitrary-owner filesystem branches need an already elevated token; no elevation attempted.");
+            return;
+        }
+        string documentPath = PathFor(directory, Response("new-private-owner", "request"));
+        SetOwner(documentPath, administrators);
+        try
+        {
+            Check(Owner(documentPath).Equals(administrators) && new PortalState(directory).ReadDocument(document.SiteId).FileSha256 == document.FileSha256,
+                "an actual Administrators-owned document still requires its exact validated private receipt and parent");
+            var parentSecurity = Directory.GetAccessControl(directory); byte[] parentOriginal = parentSecurity.GetSecurityDescriptorBinaryForm();
+            parentSecurity.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null), FileSystemRights.Read, AccessControlType.Allow));
+            Directory.SetAccessControl(directory, parentSecurity);
+            try { Check(Refuses<IOException>(() => store.Find("new-private-owner", "request")), "Administrators-owned file lookup freshly refuses a parent directory with foreign access"); }
+            finally
+            {
+                parentSecurity = new DirectorySecurity(); parentSecurity.SetSecurityDescriptorBinaryForm(parentOriginal, AccessControlSections.Access);
+                Directory.SetAccessControl(directory, parentSecurity);
+            }
+            security = File.GetAccessControl(documentPath); original = security.GetSecurityDescriptorBinaryForm();
+            security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null), FileSystemRights.Read, AccessControlType.Allow));
+            File.SetAccessControl(documentPath, security);
+            try { Check(Refuses<IOException>(() => store.ReadDocument(document.SiteId)), "Administrators file ownership never permits a foreign group allow DACL"); }
+            finally { RestoreAccess(documentPath, original); }
+        }
+        finally { SetOwner(documentPath, sid); }
+        byte[] documentBefore = File.ReadAllBytes(documentPath);
+        bool foreignOwner = RestorePrivilege(() =>
+        {
+            var foreign = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+            SetOwner(documentPath, foreign);
+            try
+            {
+                Check(Owner(documentPath).Equals(foreign) && !foreignAllow(documentPath) && Refuses<IOException>(() => new PortalState(directory)) &&
+                    Refuses<IOException>(() => store.ReadDocument(document.SiteId)) && File.ReadAllBytes(documentPath).SequenceEqual(documentBefore),
+                    "an actual arbitrary foreign file owner refuses reopening and document serving despite a current-user-only DACL");
+            }
+            finally { SetOwner(documentPath, sid); }
+        });
+        Console.WriteLine("LEGACY OWNER elevatedAdministratorsBranch=True foreignOwnerRestorePrivilege=" + foreignOwner);
+        if (!foreignOwner) Console.WriteLine("LIMIT token lacks SeRestorePrivilege for the arbitrary-owner filesystem refusal regression.");
     }
     static void CorruptReceipts(string root, NativeDocument document)
     {
