@@ -12,6 +12,10 @@ it.each([
   'Created report.csv.\r\nMEDIA:report.csv\r\nSum: 225.',
   'Created **report.csv**.\nMEDIA:report.csv\nSum: 225.',
   'Created &amp; verified.\nMEDIA:report.csv\nSum: 225.',
+  '**MEDIA:report.csv**', '__MEDIA:report.csv__',
+  '*MEDIA:report.csv*', '_MEDIA:report.csv_',
+  '***MEDIA:report.csv***', '___MEDIA:report.csv___',
+  'Created report.csv.\n**MEDIA:report.csv**\nSum: 225.',
 ])('hides a delivered MEDIA line while preserving the rest of the answer: %s',source=>{
   const receipts=Object.freeze([Object.freeze(mediaReceipt())])
   const before=JSON.stringify(receipts)
@@ -34,6 +38,10 @@ it.each([
   '<div>\nMEDIA:report.csv\n</div>', '<span>\nMEDIA:report.csv\n</span>',
   'MEDIA\\:report.csv', 'MEDIA&#58;report.csv',
   'MEDIA:report.csv extra', 'MEDIA:report.csv ', 'MEDIA:report.csv  \nNext line',
+  '**MEDIA:report.csv** extra', 'See **MEDIA:report.csv** for details.',
+  '> **MEDIA:report.csv**', '- **MEDIA:report.csv**',
+  '`**MEDIA:report.csv**`', '**MEDIA\\:report.csv**', '**MEDIA&#58;report.csv**',
+  '[**MEDIA:report.csv**](https://example.com/reference)',
 ])('preserves examples and non-directive Markdown: %s',source=>{
   const {container}=render(<PortalStreamingText artifacts={[mediaReceipt()]}>{source}</PortalStreamingText>)
   expect(container.textContent).toContain('MEDIA:report.csv')
@@ -62,6 +70,19 @@ it('changes presentation only for a completed response with a valid receipt',()=
   expect(container.textContent).not.toContain('MEDIA:report.csv')
   rerender(<PortalStreamingText artifacts={[{...mediaReceipt(),schemaVersion:2}]}>{source}</PortalStreamingText>)
   expect(container).toHaveTextContent('MEDIA:report.csv')
+})
+
+it('renders the captured installed CSV reply without its emphasized transport line',()=>{
+  const name='fleet-main-f5e-cubes.csv'
+  const source='Perfect. The file has been verified and is ready for download.\n\n**Summary:**\n- Created `fleet-main-f5e-cubes.csv` with columns `n` and `cube` for integers 1 through 5\n- **Sum of the cube column:** 225 (1 + 8 + 27 + 64 + 125)\n- File is 37 bytes and ready for download\n\n**MEDIA:fleet-main-f5e-cubes.csv**'
+  const receipt=mediaReceipt()
+  const artifacts=[{...receipt,relativePath:name,file:{...receipt.file,path:name}}]
+  const {container,rerender}=render(<PortalStreamingText artifacts={artifacts}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('Sum of the cube column: 225')
+  expect(container).toHaveTextContent('File is 37 bytes and ready for download')
+  expect(container.textContent).not.toContain(`MEDIA:${name}`)
+  rerender(<PortalStreamingText artifacts={[]}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent(`MEDIA:${name}`)
 })
 
 beforeEach(()=>{
