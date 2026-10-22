@@ -215,6 +215,14 @@ static class DesktopTests
                     Check(runtime.TurnCount == 1, "failed turn does not poison conversation history");
                     string limited = await runtime.ChatAsync("truncate", CancellationToken.None);
                     Check(limited.Contains("length limit"), "length-limited answer is labelled");
+                    string streamed = await runtime.CompleteAsync(new List<Dictionary<string, string>> { new Dictionary<string, string> { { "role", "user" }, { "content", "native UTF-8 chào" } } }, CancellationToken.None);
+                    Check(streamed == "Answer: native UTF-8 chào", "native inference consumes the real authenticated SSE/UTF-8 contract");
+                    using (var stop = new CancellationTokenSource(250))
+                    {
+                        await Fails(() => runtime.CompleteAsync(new List<Dictionary<string, string>> { new Dictionary<string, string> { { "role", "user" }, { "content", "native-wait" } } }, stop.Token), "native cancellation aborts an HTTP stream stalled after its headers");
+                        await runtime.VerifyIdleAsync();
+                        Check(runtime.IsRunning, "native stream cancellation releases the inspected slot without stopping its model child");
+                    }
                     runtime.NewChat();
                     Check(runtime.TurnCount == 0, "new chat clears model context");
                     using (var cancellation = new CancellationTokenSource(250))
@@ -306,11 +314,26 @@ static class DesktopTests
             if (!headers.Contains("Bearer " + key)) { code = 401; result = "{}"; }
             else if (headers.StartsWith("GET /v1/models"))
                 result = Json.Serialize(new { data = new[] { new { id = File.ReadAllText(model) == "wrong-identity" ? "foreign" : LocalRuntime.Alias } } });
+            else if (headers.StartsWith("GET /slots")) result = "[{\"is_processing\":false}]";
             else
             {
                 var request = (Dictionary<string, object>)Json.DeserializeObject(body);
                 var messages = (object[])request["messages"];
                 string prompt = (string)((Dictionary<string, object>)messages.Last())["content"];
+                if ((bool)request["stream"])
+                {
+                    byte[] streamHeaders = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n");
+                    stream.Write(streamHeaders, 0, streamHeaders.Length);
+                    string data = "data: " + Json.Serialize(new { choices = new[] { new { delta = new { content = "Answer: " + prompt }, finish_reason = prompt == "native-wait" ? null : "stop" } } }) + "\n\n";
+                    if (prompt != "native-wait") data += "data: [DONE]\n\n";
+                    byte[] part = Encoding.UTF8.GetBytes(data); stream.Write(part, 0, part.Length);
+                    if (prompt == "native-wait")
+                    {
+                        try { while (stream.ReadByte() >= 0) { } }
+                        catch (IOException) { /* The owner deliberately aborts this request. */ }
+                    }
+                    continue;
+                }
                 if (prompt == "wait") Thread.Sleep(15000);
                 if ((bool)((Dictionary<string, object>)request["chat_template_kwargs"])["enable_thinking"] || (string)request["model"] != LocalRuntime.Alias)
                 { code = 422; result = "{}"; }
@@ -356,6 +379,7 @@ static class DesktopTests
                 else
                 {
                     Downloads(root).GetAwaiter().GetResult(); RuntimeDownloads(root).GetAwaiter().GetResult(); Processes(root).GetAwaiter().GetResult();
+                    checks += NativePortalTests.Run(root).GetAwaiter().GetResult();
                     checks += WindowTests.Run(root, FixtureBundle);
                     string package = Path.Combine(root, "entrypoint-fixture");
                     FixtureBundle(package, "fixture");

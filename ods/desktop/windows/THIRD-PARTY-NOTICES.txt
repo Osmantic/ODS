@@ -1,7 +1,20 @@
-ODS Windows native chat preview
+ODS Windows native Portal preview
 
 Original preview code: Apache License 2.0; see LICENSE-ODS.txt.
 Brand icon: existing ODS dashboard asset, unchanged.
+
+Microsoft WebView2 SDK 1.0.4258.31
+Package: https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4258.31
+SHA-256: 56f7f4b8bf9aee4b8efefbbdd4f67d5f74ebd1b100ed0806da71bf76af481aa9
+The three SDK DLLs are distributed with the complete package licence text
+in LICENSE-WEBVIEW2.txt. The installed WebView2 Runtime is a prerequisite,
+not redistributed in this package.
+
+ODS Portal frontend
+Existing ODS React components are built from the same source tree.
+Dependency versions follow the dashboard package-lock.json. Complete installed
+package licence/notice inventory is in portal/LICENSE-FRONTEND-DEPENDENCIES.txt;
+it also includes build/test packages and does not imply all are bundled.
 
 llama.cpp b9014 CPU x64
 Source: https://github.com/ggml-org/llama.cpp/tree/b9014

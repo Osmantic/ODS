@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-# Build on Windows with the inbox .NET Framework compiler. No SDK/NuGet needed.
+# Build with the inbox .NET Framework compiler; Portal also uses its pinned WebView2 SDK.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [Parameter(Mandatory = $true)][string]$RuntimeArchive,
     [switch]$IncludeModel,
-    [string]$ModelPath
+    [string]$ModelPath,
+    [string]$PortalAssets,
+    [string]$WebViewArchive
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
@@ -70,8 +72,13 @@ $icon = Join-Path $repoRoot 'extensions/services/dashboard/public/osmantic-os.ic
     /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Xaml.dll `
     /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "/reference:$wpf/WindowsBase.dll" `
     "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
-    (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs')
+    (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs') `
+    (Join-Path $PSScriptRoot 'PortalPackage.cs') (Join-Path $PSScriptRoot 'PortalState.cs') (Join-Path $PSScriptRoot 'NativePortalSession.cs')
 if ($LASTEXITCODE -ne 0) { throw 'The desktop application did not compile.' }
+if ($PortalAssets) {
+    if (-not $WebViewArchive) { throw 'PortalAssets requires the pinned WebViewArchive SDK package.' }
+    & (Join-Path $PSScriptRoot 'build-portal.ps1') -OutputDirectory $output -PortalAssets $PortalAssets -WebViewArchive $WebViewArchive
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $output
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'VALIDATION.md') -Destination $output
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'docs') -Destination $output -Recurse

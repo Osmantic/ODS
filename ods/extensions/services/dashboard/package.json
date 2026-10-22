@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:native": "vite build --config vite.native.config.js && node scripts/native-notices.mjs",
     "preview": "vite preview",
     "lint": "eslint src",
     "test": "vitest run",

@@ -80,6 +80,12 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-desktop-preview.ps1
 
+      - name: Node for the native Portal frontend build
+        if: runner.os == 'Windows'
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: '22'
+
       - name: Build and launch Windows native review package
         if: runner.os == 'Windows'
         shell: powershell
@@ -92,19 +98,31 @@ jobs:
           $null = New-Item -ItemType Directory -Path $review
           $archive = Join-Path $review 'llama-b9014-bin-win-cpu-x64.zip'
           Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-win-cpu-x64.zip' -OutFile $archive
+          $webview = Join-Path $review 'microsoft.web.webview2.1.0.4258.31.nupkg'
+          Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg' -OutFile $webview
+          Push-Location extensions/services/dashboard
+          try {
+            npm ci --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { throw 'Dashboard dependencies failed to install.' }
+            npm run build:native
+            if ($LASTEXITCODE -ne 0) { throw 'Native Portal frontend did not build.' }
+          } finally { Pop-Location }
           $package = Join-Path $review 'package'
-          ./desktop/windows/build.ps1 -OutputDirectory $package -RuntimeArchive $archive
+          ./desktop/windows/build.ps1 -OutputDirectory $package -RuntimeArchive $archive -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview
           ./tests/test-windows-desktop-preview.ps1 -PackageBundle $package
+          ./tests/test-windows-native-portal.ps1 -Bundle $package
           $files = @(Get-ChildItem -LiteralPath $package -Recurse -File)
-          if (@($files | Where-Object Extension -EQ '.dll').Count -ne 0 -or @($files | Where-Object Extension -EQ '.exe').Count -ne 1) {
-            throw 'The review package must contain only the ODS executable, with no upstream executable or DLL.'
+          $allowedDlls = @('OdsPortal.dll','Microsoft.Web.WebView2.Core.dll','Microsoft.Web.WebView2.Wpf.dll','WebView2Loader.dll')
+          $dlls = @($files | Where-Object Extension -EQ '.dll')
+          if ($dlls.Count -ne 4 -or @($dlls | Where-Object Name -NotIn $allowedDlls).Count -ne 0 -or @($files | Where-Object Extension -EQ '.exe').Count -ne 1) {
+            throw 'The review package may contain only the ODS EXE and its exact Portal/WebView2 DLLs; no llama runtime binary.'
           }
           git diff --quiet HEAD
           if ($LASTEXITCODE -ne 0) { throw 'The tested source changed after checkout.' }
           $source = git rev-parse HEAD
           if ($LASTEXITCODE -ne 0) { throw 'Could not identify the tested checkout.' }
           $receipt = @{ checkout_sha = $source; pr_head_sha = $env:ODS_DESKTOP_PR_HEAD; workflow_run = $env:GITHUB_RUN_ID
-            scope = 'Unsigned CPU chat review preview; runtime/model acquired on first use; no release acceptance'
+            scope = 'Unsigned native Portal text-chat review; WebView2 SDK included, installed WebView2 Runtime required; llama runtime/model acquired on first use'
             executable_sha256 = (Get-FileHash -LiteralPath (Join-Path $package 'ODS Windows Preview.exe') -Algorithm SHA256).Hash.ToLowerInvariant() }
           [IO.File]::WriteAllText((Join-Path $package 'BUILD-INFO.json'), ($receipt | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
           $zip = Join-Path $review 'ODS-Windows-Native-Preview.zip'

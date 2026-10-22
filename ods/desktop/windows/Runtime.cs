@@ -33,6 +33,7 @@ namespace OdsDesktop
         public ModelPin Model;
         public ModelPin Runtime;
         public FilePin[] Files;
+        public string PortalSha256;
         public static Bundle Read(string directory)
         {
             var bundle = new JavaScriptSerializer().Deserialize<Bundle>(
@@ -277,7 +278,13 @@ namespace OdsDesktop
         public void Dispose() { handle.Dispose(); }
     }
 
-    public sealed class LocalRuntime : IDisposable
+    public interface IPortalModel : IDisposable
+    {
+        bool IsRunning { get; }
+        Task<string> CompleteAsync(List<Dictionary<string, string>> messages, CancellationToken token);
+        Task VerifyIdleAsync();
+    }
+    public sealed class LocalRuntime : IPortalModel
     {
         public const string Alias = "ods-desktop-preview";
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
@@ -387,6 +394,12 @@ namespace OdsDesktop
             catch { Dispose(); throw; }
         }
         public void NewChat() { history.Clear(); }
+        sealed class Completion
+        {
+            public string Text;
+            public bool Truncated;
+            public string Display { get { return Text + (Truncated ? "\n\n[The response reached this preview's length limit.]" : ""); } }
+        }
         public async Task<string> ChatAsync(string prompt, CancellationToken token)
         {
             if (client == null || child.HasExited) throw new InvalidOperationException("Start local AI before sending a message.");
@@ -394,6 +407,78 @@ namespace OdsDesktop
             if (TurnCount >= 8) throw new InvalidOperationException("Start a new chat to keep this preview within its context limit.");
             var messages = new List<Dictionary<string, string>>(history);
             messages.Add(new Dictionary<string, string> { { "role", "user" }, { "content", prompt } });
+            var answer = await RequestCompletionAsync(messages, token);
+            history.Add(messages.Last());
+            history.Add(new Dictionary<string, string> { { "role", "assistant" }, { "content", answer.Text } });
+            return answer.Display;
+        }
+        public async Task<string> CompleteAsync(List<Dictionary<string, string>> messages, CancellationToken token)
+        {
+            if (!IsRunning || client == null) throw new InvalidOperationException("Start local AI before sending a message.");
+            byte[] body = Encoding.UTF8.GetBytes(json.Serialize(new { model = Alias, messages, stream = true, max_tokens = 512,
+                temperature = 0.7, chat_template_kwargs = new { enable_thinking = false } }));
+            var request = (HttpWebRequest)WebRequest.Create(new Uri(client.BaseAddress, "v1/chat/completions"));
+            request.Method = "POST"; request.ContentType = "application/json"; request.Accept = "text/event-stream";
+            request.Headers[HttpRequestHeader.Authorization] = client.DefaultRequestHeaders.Authorization.ToString();
+            request.ContentLength = body.Length; request.Proxy = null; request.AllowAutoRedirect = false; request.KeepAlive = false;
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                deadline.CancelAfter(TimeSpan.FromMinutes(5));
+                using (deadline.Token.Register(request.Abort))
+                {
+                    try
+                    {
+                        using (var output = await request.GetRequestStreamAsync()) await output.WriteAsync(body, 0, body.Length, deadline.Token);
+                        using (var response = (HttpWebResponse)await request.GetResponseAsync())
+                        using (var input = new StreamReader(response.GetResponseStream(), new UTF8Encoding(false, true)))
+                        {
+                            if (response.ContentType == null || !response.ContentType.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase))
+                                throw new InvalidDataException("The local model did not return an inference stream.");
+                            var answer = new StringBuilder(); string finish = null;
+                            string line;
+                            while ((line = await input.ReadLineAsync()) != null)
+                            {
+                                deadline.Token.ThrowIfCancellationRequested();
+                                if (line.Length > 1024 * 1024) throw new InvalidDataException("The model stream exceeded its frame limit.");
+                                if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+                                string data = line.Substring(5).TrimStart();
+                                if (data == "[DONE]")
+                                {
+                                    if (String.IsNullOrWhiteSpace(answer.ToString()) || finish != "stop" && finish != "length")
+                                        throw new InvalidDataException("The local model did not complete a text answer.");
+                                    return new Completion { Text = answer.ToString(), Truncated = finish == "length" }.Display;
+                                }
+                                var frame = json.DeserializeObject(data) as Dictionary<string, object>;
+                                var choices = frame != null && frame.ContainsKey("choices") ? frame["choices"] as object[] : null;
+                                if (frame == null || frame.ContainsKey("error") || choices == null) throw new InvalidDataException("The model stream failed.");
+                                if (choices.Length == 0) continue; // A terminal usage-only frame.
+                                var choice = choices[0] as Dictionary<string, object>;
+                                var delta = choice != null && choice.ContainsKey("delta") ? choice["delta"] as Dictionary<string, object> : null;
+                                if (delta == null) throw new InvalidDataException("The model stream contained an invalid delta.");
+                                object text;
+                                if (delta.TryGetValue("content", out text) && text is string) answer.Append((string)text);
+                                if (answer.Length > 65536) throw new InvalidDataException("The model answer exceeded its preview limit.");
+                                if (choice.ContainsKey("finish_reason") && choice["finish_reason"] != null) finish = choice["finish_reason"] as string;
+                            }
+                            throw new InvalidDataException("The model stream ended without completion.");
+                        }
+                    }
+                    catch (WebException error)
+                    {
+                        if (deadline.IsCancellationRequested) throw new OperationCanceledException("Local inference stopped or timed out.", error, deadline.Token);
+                        throw new HttpRequestException("The local model stream failed.", error);
+                    }
+                    catch (IOException error)
+                    {
+                        if (deadline.IsCancellationRequested) throw new OperationCanceledException("Local inference stopped or timed out.", error, deadline.Token);
+                        throw;
+                    }
+                }
+            }
+        }
+        async Task<Completion> RequestCompletionAsync(List<Dictionary<string, string>> messages, CancellationToken token)
+        {
+            if (!IsRunning || client == null) throw new InvalidOperationException("Start local AI before sending a message.");
             string request = json.Serialize(new { model = Alias, messages = messages, stream = false, max_tokens = 512,
                 temperature = 0.7, chat_template_kwargs = new { enable_thinking = false } });
             using (var content = new StringContent(request, Encoding.UTF8, "application/json"))
@@ -409,10 +494,37 @@ namespace OdsDesktop
                 string answer = message != null && message.ContainsKey("content") ? message["content"] as string : null;
                 if (String.IsNullOrWhiteSpace(answer)) throw new InvalidDataException("The model returned no answer. Your message was kept so you can try again.");
                 token.ThrowIfCancellationRequested();
-                history.Add(messages.Last());
-                history.Add(new Dictionary<string, string> { { "role", "assistant" }, { "content", answer } });
-                return answer + (choice.ContainsKey("finish_reason") && (string)choice["finish_reason"] == "length"
-                    ? "\n\n[The response reached this preview's length limit.]" : "");
+                return new Completion { Text = answer, Truncated = choice.ContainsKey("finish_reason") && (string)choice["finish_reason"] == "length" };
+            }
+        }
+        public async Task VerifyIdleAsync()
+        {
+            // b9014 /slots reports is_processing for the single owned slot.
+            // HTTP cancellation alone is not evidence that inference stopped.
+            using (var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10)))
+            {
+                while (true)
+                {
+                    if (!IsRunning) return;
+                    if (!await IsProcessingAsync(deadline.Token)) return;
+                    await Task.Delay(100, deadline.Token);
+                }
+            }
+        }
+        public async Task<bool> IsProcessingAsync(CancellationToken token)
+        {
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(token))
+            {
+                deadline.CancelAfter(TimeSpan.FromSeconds(2));
+                using (var response = await client.GetAsync("slots", deadline.Token))
+                {
+                    response.EnsureSuccessStatusCode();
+                    var slots = json.DeserializeObject(await response.Content.ReadAsStringAsync()) as object[];
+                    var slot = slots != null && slots.Length == 1 ? slots[0] as Dictionary<string, object> : null;
+                    if (slot == null || !slot.ContainsKey("is_processing") || !(slot["is_processing"] is bool))
+                        throw new InvalidDataException("The owned inference slot could not be inspected.");
+                    return (bool)slot["is_processing"];
+                }
             }
         }
         public void Dispose()

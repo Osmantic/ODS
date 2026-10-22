@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Reflection;
 using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
@@ -31,6 +32,8 @@ namespace OdsDesktop
         LocalRuntime runtime;
         CancellationTokenSource operation;
         bool closing;
+        Window portal;
+        string prerequisiteHelp = NativePrerequisites.HelpUrl;
         public ChatWindow(string directory, string state, Bundle bundle)
         {
             this.directory = directory; this.state = state; this.bundle = bundle;
@@ -54,7 +57,9 @@ namespace OdsDesktop
             var setup = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
             status.Text = "Ready to set up " + bundle.Model.Name;
             status.FontWeight = FontWeights.SemiBold; status.FontSize = 16;
-            detail.Text = "Download the model once, then chat offline. Your conversations stay in memory and are cleared when you close the app.";
+            detail.Text = String.IsNullOrEmpty(bundle.PortalSha256)
+                ? "Download the model once, then chat offline. Your conversations stay in memory and are cleared when you close the app."
+                : "Download the model once, then open ODS Portal. Conversations are saved privately on this Windows account.";
             detail.Margin = new Thickness(0, 6, 0, 10); detail.Foreground = Brush("#4B5563");
             setup.Children.Add(status); setup.Children.Add(detail);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
@@ -68,15 +73,17 @@ namespace OdsDesktop
             var compose = new DockPanel { Margin = new Thickness(0, 16, 0, 0), LastChildFill = true };
             DockPanel.SetDock(send, Dock.Right); compose.Children.Add(send); compose.Children.Add(prompt);
             Grid.SetRow(compose, 3); layout.Children.Add(compose);
-            var note = new TextBlock { Text = "Enter to send · Shift+Enter for a new line · AI can make mistakes.\nThis preview covers local text chat. Portal, agents, voice and extensions are not included.",
+            var note = new TextBlock { Text = String.IsNullOrEmpty(bundle.PortalSha256)
+                ? "Enter to send · Shift+Enter for a new line · AI can make mistakes.\nThis preview covers local text chat. Portal, agents, voice and extensions are not included."
+                : "AI can make mistakes. This preview opens the ODS Portal text-chat flow.\nAgent tools, voice, images, extensions and GPU acceleration are not included.",
                 TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Brush("#4B5563"), Margin = new Thickness(0, 10, 0, 0) };
             Grid.SetRow(note, 4); layout.Children.Add(note);
             System.Windows.Automation.AutomationProperties.SetName(prompt, "Message to your local AI");
             start.Click += async (sender, args) => await StartAsync();
             prerequisites.Click += (sender, args) =>
             {
-                try { Process.Start(new ProcessStartInfo(NativePrerequisites.HelpUrl) { UseShellExecute = true }); }
-                catch (Win32Exception error) { detail.Text = error.Message + " Open " + NativePrerequisites.HelpUrl; }
+                try { Process.Start(new ProcessStartInfo(prerequisiteHelp) { UseShellExecute = true }); }
+                catch (Win32Exception error) { detail.Text = error.Message + " Open " + prerequisiteHelp; }
             };
             send.Click += async (sender, args) => await SendAsync();
             prompt.PreviewKeyDown += async (sender, args) =>
@@ -105,10 +112,12 @@ namespace OdsDesktop
             fresh.IsEnabled = !busy && runtime != null;
             cancel.IsEnabled = busy;
             cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+            if (portal != null) { send.IsEnabled = false; prompt.IsEnabled = false; fresh.IsEnabled = false; }
         }
         async Task StartAsync()
         {
             if (operation != null) return;
+            prerequisiteHelp = NativePrerequisites.HelpUrl;
             if (!NativePrerequisites.Available(Environment.SystemDirectory))
             {
                 status.Text = "One Windows component is needed first";
@@ -126,6 +135,20 @@ namespace OdsDesktop
             try
             {
                 {
+                    Type portalType = null;
+                    if (!String.IsNullOrEmpty(bundle.PortalSha256))
+                    {
+                        status.Text = "Checking your Portal package…";
+                        await PortalPackage.VerifyAsync(directory, bundle.PortalSha256, operation.Token);
+                        portalType = Assembly.LoadFrom(Path.Combine(directory, "OdsPortal.dll")).GetType("OdsDesktop.PortalWindow", true);
+                        string prerequisite = (string)portalType.GetMethod("RuntimePrerequisite").Invoke(null, null);
+                        if (prerequisite != null)
+                        {
+                            status.Text = "One Windows component is needed first"; detail.Text = prerequisite;
+                            prerequisiteHelp = "https://developer.microsoft.com/en-us/microsoft-edge/webview2/";
+                            prerequisites.Visibility = Visibility.Visible; return;
+                        }
+                    }
                     var feedback = new Progress<double>(value =>
                         {
                             if (closing || operation == null) return;
@@ -145,6 +168,21 @@ namespace OdsDesktop
                     status.Text = "Ready · " + bundle.Model.Name + " · running locally on CPU";
                     detail.Text = "You're offline-ready. Type a message below to begin.";
                     start.Content = "Start local AI";
+                    if (portalType != null)
+                    {
+                        portal = (Window)Activator.CreateInstance(portalType, new object[] { runtime, directory, state, bundle.Model.Name });
+                        portal.Closed += async (sender, args) =>
+                        {
+                            bool restart = (bool)portalType.GetProperty("RestartRequested").GetValue(portal, null);
+                            portal = null;
+                            if (closing) return;
+                            if (!restart) { Close(); return; }
+                            Show();
+                            try { runtime.Dispose(); runtime = null; UpdateControls(false); await StartAsync(); }
+                            catch (Exception error) { HandleFailure(error, "Restart stopped.", false); }
+                        };
+                        portal.Show(); Hide();
+                    }
                 }
             }
             catch (Exception error) { HandleFailure(error, "Setup stopped. You can start again.", true); }
@@ -199,7 +237,8 @@ namespace OdsDesktop
         {
             closing = true;
             if (operation != null) operation.Cancel();
-            if (runtime != null) { runtime.Dispose(); runtime = null; }
+            try { if (portal != null) portal.Close(); }
+            finally { if (runtime != null) { runtime.Dispose(); runtime = null; } }
         }
     }
 
