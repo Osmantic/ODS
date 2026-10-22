@@ -297,7 +297,7 @@ test('document delivery is discoverable and callable through actual pinned ToolS
  const ctx={agentId:'pixel',catalogRef:result.catalogRef,config:{tools:{toolSearch:{enabled:true,mode:'tools'}}},executeTool:async params=>params.tool.execute(`tool_search_code:deliver:${ARTIFACT_TOOL}:1`,params.input)};
  const byName=Object.fromEntries(createControls(ctx).map(t=>[t.name,t]));
  const found=await byName.tool_search.execute('find',{query:'pixel_ods_workspace_artifact',limit:5});assert.ok(found.details.some(x=>x.name===ARTIFACT_TOOL));
- const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
+ const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512},sourcePath:{type:'string',minLength:1,maxLength:512}}});
  const args={relativePath:'project/report.md'};
  // Live cloud regression: the model searched the tool but guessed `path`.
  // The actual dispatcher must return schema guidance before any broker work.

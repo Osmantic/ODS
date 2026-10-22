@@ -34,6 +34,7 @@ tests/test-ape-data-ownership.sh
 tests/test-backup-delete-status.sh
 tests/test-backup-macos-appledouble.sh
 tests/test-backup-restore-cli.sh
+tests/test-backup-verify-compressed.py
 tests/test-bash32-guards.sh
 tests/test_dashboard_published_readiness.py
 tests/test-bind-address-sweep.sh
@@ -296,3 +297,5 @@ tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
+tests/test-cli-chat-error-exit.py
+tests/test-cli-update-model-lifecycle.sh

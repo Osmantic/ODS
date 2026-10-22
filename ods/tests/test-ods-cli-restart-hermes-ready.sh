@@ -72,8 +72,9 @@ if ODS_HERMES_READY_TIMEOUT=2 ODS_HERMES_READY_INTERVAL=1 \
     exit 1
 fi
 
-awk '/cmd_restart\(\)/,/^}/' "$ROOT/ods-cli" \
-    | grep -Fq '_ods_cli_wait_for_hermes_ready_with_retry'
+# Read the complete function so grep cannot close the pipe early under pipefail.
+extract_function cmd_restart \
+    | grep -F '_ods_cli_wait_for_hermes_ready_with_retry' >/dev/null
 
 ready_calls=0
 compose_calls=0

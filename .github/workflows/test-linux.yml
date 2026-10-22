@@ -107,6 +107,7 @@ jobs:
         run: |
           python -m pytest -q extensions/services/pixel-agent/tests/test_workspace_preview.py \
             extensions/services/pixel-agent/tests/test_workspace_artifact.py \
+            extensions/services/pixel-agent/tests/test_workspace_artifact_archive.py \
             extensions/services/pixel-agent/tests/test_workspace_preview_charset.py \
             extensions/services/pixel-agent/tests/test_workspace_preview_git.py \
             extensions/services/pixel-agent/tests/test_preview_empty_assets.py
