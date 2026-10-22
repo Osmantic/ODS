@@ -12421,6 +12421,231 @@ test("a post-verification repetition stop preserves a partial tool receipt, not 
   assert.equal(guard.verificationForRun("run-1").status, "failed");
 });
 
+// Real before/after hooks share a tool-call ID; receipt tests must model it.
+const executionPreparedParams = new WeakMap();
+function executionBefore(guard, toolName, overrides = {}) {
+  const result = call(guard, toolName, {...overrides,
+    context:{toolCallId:"execution-1",...overrides.context}});
+  assert.notEqual(result?.block, true, result?.blockReason);
+  executionPreparedParams.set(guard, {toolName,params:result?.params ?? overrides.event?.params});
+  return result;
+}
+function executionAfter(guard, toolName, overrides = {}) {
+  const prepared = executionPreparedParams.get(guard);
+  return afterCall(guard, toolName, {...overrides,
+    event:{...overrides.event,...(prepared?.toolName===toolName ? {params:prepared.params}: {})},
+    context:{toolCallId:"execution-1",...overrides.context}});
+}
+
+test("explicit code execution without a terminal exit-0 receipt is not delivered as success", () => {
+  const prompt = "Use your Python execution tool to calculate sum(i*i for i in range(1,21)). Report the actual tool output and say whether you executed it. Do not infer or estimate the result.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.match(delivered.text, /did not receive a successful terminal execution receipt/);
+  assert.doesNotMatch(delivered.text, /\b2550\b|\b2870\b/);
+});
+
+test("a terminal exit-0 exec receipt satisfies an explicit execution request", () => {
+  const prompt = "Use your Python execution tool to calculate sum(i*i for i in range(1,21)). Report the actual tool output and say whether you executed it.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 -c 'print(sum(i*i for i in range(1,21)))'", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0, aggregated: "2870" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("failed, missing-exit, isError and pending exec receipts do not satisfy execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  for (const result of [
+    { details: { status: "completed", exitCode: 1 } },
+    { details: { status: "completed" } },
+    { details: { status: "failed", exitCode: 0 } },
+    { isError: true, details: { status: "completed", exitCode: 0 } },
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { command: "python3 script.py", workdir: "/workspace" };
+    executionBefore(guard, "exec", { event: { params } });
+    executionAfter(guard, "exec", { event: { params, result } });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+  }
+});
+
+test("a polled background completion with exit 0 satisfies execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-1" }, result: { details: { status: "completed", exitCode: 0, sessionId: "sess-1" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("execution classifier excludes explanations, quotes, math and no-tools", () => {
+  for (const prompt of [
+    "Explain how to run a Python script.",
+    "Show me a command to run this script.",
+    "What is sum(i*i for i in range(1,21))?",
+    "Do not use any tools; just tell me the answer.",
+    "Quote: `python3 script.py`.",
+    "Give me Python code to run locally.",
+    "Quote the instruction: run this Python code and report output.",
+    "Explain how I can run a Python script.",
+    "Print the words run Python code.",
+    "Run this Python script; do not actually execute it, just show the code.",
+    "Do not run it, but execute the Python code.",
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("execution classifier allows explicit execution requests", () => {
+  for (const prompt of [
+    "Run this Python code without changing files.",
+    "Please execute the Python script.",
+    "Can you run this Python code?",
+    "Write a Python script and then run it.",
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed", prompt);
+  }
+});
+
+test("nested tool_call exec receipt satisfies execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "tool_call", { event: { params: { id: "openclaw:core:exec", args: params } } });
+  executionAfter(guard, "tool_call", {
+    event: {
+      params: { id: "openclaw:core:exec", args: params },
+      result: wrappedCoreResult("exec", { details: { status: "completed", exitCode: 0 } }),
+    },
+  });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("background exec pending before poll does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("a self-consistent process receipt without a bound exec cannot satisfy execution", () => {
+  const guard=createToolLoopGuard();
+  guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",{prompt:"Run this Python script."});
+  executionAfter(guard,"process",{event:{params:{action:"poll",sessionId:"never-started"},
+    result:{details:{status:"completed",sessionId:"never-started",exitCode:0}}}});
+  assert.match(guard.deliveryVerificationForRun("run-1").text,/did not receive a successful terminal execution receipt/);
+});
+
+test("background poll with failed, missing-exit, or isError does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  for (const pollResult of [
+    { details: { status: "completed", exitCode: 1, sessionId: "sess-1" } },
+    { details: { status: "completed", sessionId: "sess-1" } },
+    { isError: true, details: { status: "completed", exitCode: 0, sessionId: "sess-1" } },
+  ]) {
+    const guard = createToolLoopGuard();
+    guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+    const params = { command: "python3 script.py", workdir: "/workspace" };
+    executionBefore(guard, "exec", { event: { params } });
+    executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+    executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-1" }, result: pollResult } });
+    assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+  }
+});
+
+test("unrelated poll session does not satisfy execution", () => {
+  const prompt = "Run this Python script in the background and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "running", sessionId: "sess-1" } } } });
+  executionAfter(guard, "process", { event: { params: { action: "poll", sessionId: "sess-other" }, result: { details: { status: "completed", exitCode: 0, sessionId: "sess-other" } } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("read-only tool receipt does not satisfy execution", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { path: "/workspace/script.py" };
+  executionBefore(guard, "read", { event: { params } });
+  executionAfter(guard, "read", { event: { params, result: { content: [{type:"text", text:"print(2870)"}] } } });
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("previous-run receipt does not satisfy a new execution request", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0 } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+  guard.observeRun({ agentId: "pixel", runId: "run-2", sessionId: "session-1" }, "pixel", { prompt });
+  assert.equal(guard.deliveryVerificationForRun("run-2").status, "failed");
+});
+
+test("successful execution followed by write keeps durable evidence", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const params = { command: "python3 script.py", workdir: "/workspace" };
+  executionBefore(guard, "exec", { event: { params } });
+  executionAfter(guard, "exec", { event: { params, result: { details: { status: "completed", exitCode: 0 } } } });
+  const writeParams = { path: "/workspace/out.txt", content: "ok" };
+  executionBefore(guard, "write", { event: { params: writeParams } });
+  executionAfter(guard, "write", { event: { params: writeParams, result: { details: { status: "completed" } } } });
+  assert.notEqual(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("delivery hook replaces fabricated answer when execution receipt is missing", () => {
+  const prompt = "Run this Python script and report the output.";
+  const guard = createToolLoopGuard();
+  guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.match(delivered.text, /did not receive a successful terminal execution receipt/);
+  const outgoing = reply(guard, {event:{payload:{text:"I executed the Python code and got 2550."}}});
+  assert.match(outgoing.payload.text, /did not receive a successful terminal execution receipt/);
+  assert.doesNotMatch(outgoing.payload.text, /2550/);
+});
+
+test("execution evidence rejects unbound and foreign terminal receipts", () => {
+  for (const wrapped of [false, true]) for (const variant of ["no-call", "wrong-call", "wrong-run", "wrong-session", "wrong-params", "outer-error"]) {
+    const guard=createToolLoopGuard();
+    const context={agentId:"pixel",runId:"run-1",sessionId:"session-1",toolCallId:"execution-1"};
+    guard.observeRun(context,"pixel",{prompt:"Run this Python code and report the actual output."});
+    const args={command:"python3 -c 'print(2870)'",workdir:"/workspace"};
+    const toolName=wrapped?"tool_call":"exec";
+    const params=wrapped?{id:"openclaw:core:exec",args}:args;
+    if (variant!=="no-call") guard.beforeToolCall({toolName,params},{...context,toolName});
+    const result={details:{status:"completed",exitCode:0}};
+    const observed=wrapped?wrappedCoreResult("exec",result):result;
+    if (variant==="outer-error") observed.isError=true;
+    const altered={...args,command:"python3 -c 'print(1)'"};
+    guard.afterToolCall({toolName,params:variant==="wrong-params"?(wrapped?{id:"openclaw:core:exec",args:altered}:altered):params,
+      ...(variant==="wrong-run"?{runId:"other-run"}:{}),result:observed},
+      {...context,toolName,...(variant==="wrong-call"?{toolCallId:"other-call"}:{}),...(variant==="wrong-session"?{sessionId:"other-session"}:{})});
+    assert.match(guard.deliveryVerificationForRun("run-1").text,/did not receive a successful terminal execution receipt/,`${wrapped} ${variant}`);
+  }
+});
+
 test("negated workspace repairs do not grant continuation intent", () => {
   for (const prompt of ["Do not repair the game in my workspace.", "Never fix /workspace/moon-garden."]) {
     assert.equal(userMessageRequestsWorkspaceContinuation([], prompt), false);
