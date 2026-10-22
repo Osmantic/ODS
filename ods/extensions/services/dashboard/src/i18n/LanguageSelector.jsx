@@ -1,19 +1,23 @@
-import {LANGUAGES,useI18n} from './index'
+import { useTranslation } from 'react-i18next'
+import { LANGUAGES } from './index'
 
-/**
- * Small dependency-free language selector shared by FirstBoot and Settings.
- *
- * Keeping this component native (a <select>) avoids adding another UI
- * dependency and keeps keyboard/accessibility behavior provided by the
- * browser. Language names are intentionally displayed in their native form.
- */
+/** Native select keeps language selection accessible by keyboard and screen readers. */
 export default function LanguageSelector() {
-  const {language,setLanguage,t} = useI18n()
+  const { t, i18n } = useTranslation()
 
-  return <label className="firstboot-language">
-    <span>{t('common.language')}</span>
-    <select value={language} onChange={event => setLanguage(event.target.value)} aria-label={t('common.language')}>
-      {LANGUAGES.map(item => <option key={item.code} value={item.code}>{item.label}</option>)}
-    </select>
-  </label>
+  return (
+    <label className="flex items-center gap-2 text-xs text-theme-text-muted">
+      <span>{t('common.language')}</span>
+      <select
+        value={i18n.resolvedLanguage || i18n.language}
+        onChange={(event) => { void i18n.changeLanguage(event.target.value) }}
+        aria-label={t('common.language')}
+        className="rounded-lg border border-theme-border bg-theme-card text-theme-text px-2 py-1.5"
+      >
+        {LANGUAGES.map(({ code, label }) => (
+          <option key={code} value={code}>{label}</option>
+        ))}
+      </select>
+    </label>
+  )
 }
