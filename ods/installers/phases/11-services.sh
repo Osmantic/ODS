@@ -1318,8 +1318,9 @@ MODELS_INI_EOF
             _hermes_request_timeout=180
             if [[ "$_hermes_switchboard_mode" == "enabled" ]]; then
                 _hermes_request_timeout=900
-            elif [[ "${ODS_MODE:-local}" != "cloud" ]] && { [[ "${GPU_BACKEND:-}" == "amd" ]] || _phase11_host_native_llm; }; then
-                # Large models on AMD APUs take minutes to answer an agent turn.
+            elif [[ "${ODS_MODE:-local}" != "cloud" ]]; then
+                # Local prefill and validated tool responses can take minutes
+                # on every backend, including NVIDIA and CPU.
                 _hermes_request_timeout=900
             elif _phase11_external_llm; then
                 _hermes_request_timeout=900

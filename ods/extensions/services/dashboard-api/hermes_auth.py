@@ -1,7 +1,8 @@
-"""ODS managed Hermes login; never writes an operator's config or credentials.
+"""ODS managed Hermes login; never changes operator authentication fields.
 
 Also mounted read-only as the Hermes entrypoint so s6's dashboard inherits the
-same defaults as the gateway. Explicit upstream auth configuration wins.
+same defaults as the gateway. Explicit upstream auth configuration wins. Before
+authentication setup, the separate config migrator updates legacy timeouts.
 """
 from __future__ import annotations
 
@@ -96,6 +97,16 @@ def _prepare_scratch_volume():
 
 
 def bootstrap():
+    # Run before upstream reads private retained config or drops its UID. This
+    # mounted migrator is absent in older/custom compose files; auth remains
+    # compatible with those deployments. It never edits authentication fields.
+    migrator = Path("/opt/hermes/ods-config-migrate.py")
+    if migrator.exists():
+        import subprocess
+        import sys
+        if not migrator.is_file():
+            raise RuntimeError("Hermes config migrator is not a regular file")
+        subprocess.run([sys.executable, str(migrator)], check=True)
     config_path = Path(os.environ.get("HERMES_HOME", "/opt/data")) / "config.yaml"
     if not config_path.exists():
         config_path = Path("/opt/hermes/cli-config.yaml.example")

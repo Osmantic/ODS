@@ -401,11 +401,14 @@ def test_agent_and_installer_write_identical_template_bytes(tmp_path, monkeypatc
     installer_copy = tmp_path / "installer-template.yaml"
     installer_copy.write_bytes(SHIPPED_TEMPLATE.read_bytes())
     model, base_url, context = ROUTE
-    assert installer_patcher.patch_config(installer_copy, model, base_url, context) is True
+    assert installer_patcher.patch_config(installer_copy, model, base_url, context,
+                                         request_timeout_seconds=900) is True
     monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
 
     assert agent._prepare_hermes_route_for_start() == (True, "")
     assert template.read_bytes() == installer_output(installer_copy)
+    live = yaml.safe_load((tmp_path / 'data/hermes/config.yaml').read_text())
+    assert live['providers']['custom']['request_timeout_seconds'] == 900
 
 
 def test_library_start_after_installer_update_does_not_write_the_template(tmp_path, monkeypatch):
@@ -421,6 +424,23 @@ def test_library_start_after_installer_update_does_not_write_the_template(tmp_pa
     after = template.stat()
     assert template.read_bytes() == content
     assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+@pytest.mark.parametrize('mode, switchboard, timeout, expected', [
+    ('local', 'observe', 180, 900), ('cloud', 'observe', 180, 180),
+    ('local', 'observe', 600, 600), ('cloud', 'enabled', 180, 900),
+])
+def test_library_first_start_selects_local_budget_without_overwriting_owner(tmp_path, monkeypatch, mode, switchboard, timeout, expected):
+    template = shipped_install(tmp_path)
+    env = tmp_path / '.env'
+    env.write_text(env.read_text().replace('"enabled"', f'"{switchboard}"')
+                   + f'ODS_MODE="{mode}"\nGGUF_FILE="local-model.gguf"\n')
+    template.write_text(template.read_text().replace('request_timeout_seconds: 180',
+                                                    f'request_timeout_seconds: {timeout}'))
+    monkeypatch.setattr(agent, 'INSTALL_DIR', tmp_path)
+    assert agent._prepare_hermes_route_for_start() == (True, '')
+    config = yaml.safe_load((tmp_path / 'data/hermes/config.yaml').read_text())
+    assert config['providers']['custom']['request_timeout_seconds'] == expected
 
 
 def bound_view_of(path, tmp_path):
