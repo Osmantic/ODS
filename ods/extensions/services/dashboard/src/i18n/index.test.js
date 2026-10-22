@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import i18n, { LANGUAGE_KEY, persistLanguage, readSavedLanguage } from './index'
 
 describe('i18next configuration', () => {
-  beforeEach(() => localStorage.clear())
+  beforeEach(async () => {
+    localStorage.clear()
+    await i18n.changeLanguage('en')
+  })
 
   it('uses English when the saved locale is missing or unsupported', () => {
     expect(readSavedLanguage()).toBe('en')
@@ -14,6 +17,10 @@ describe('i18next configuration', () => {
     await i18n.changeLanguage('es')
     expect(i18n.t('profile.save')).toBe('Guardar perfil')
     expect(i18n.t('a.key.not.in.catalog')).toBe('a.key.not.in.catalog')
+  })
+
+  it('interpolates values in translated strings', () => {
+    expect(i18n.t('firstBoot.done.body', { username: 'Alice' })).toContain('Alice')
   })
 
   it('ignores unsupported languages when persisting', () => {
