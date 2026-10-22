@@ -14,7 +14,8 @@ extract() {
     awk -v name="$1" '$0 ~ "^" name "\\(\\) \\{" {copy=1} copy{print} copy && /^}$/{exit}' "$TARGET"
 }
 
-# $1 = /v1/model/status body ("" = agent unreachable), $2 = /v1/model/recovery body
+# $1 = /v1/model/status body ("" = agent unreachable), $2 = /v1/model/recovery body.
+# COMMAND=restart (with RESTART_ARGS) runs cmd_restart instead of cmd_update.
 run_update() {
     local status="$1" recovery="$2" dir="$FIXTURE/run"
     rm -rf "$dir"; mkdir -p "$dir"
@@ -47,8 +48,22 @@ run_update() {
         bash() { echo "UPDATE-PROCEEDED"; exit 99; }
         STATUS_BODY="$status" RECOVERY_BODY="$recovery"
         eval "$(extract _agent_model_lifecycle_busy)"
+        eval "$(extract _ods_cli_refuse_under_model_lifecycle)"
         eval "$(extract cmd_update)"
-        cmd_update </dev/null
+        eval "$(extract cmd_restart)"
+        if [[ "${COMMAND:-update}" == restart ]]; then
+            ensure_llama_cpu_budget() { :; }
+            resolve_service() { printf '%s' "$1"; }
+            _ods_cli_macos_native_llama() { return 1; }
+            get_compose_flags() { printf -- '-f docker-compose.base.yml'; }
+            _ods_cli_network_access_enabled() { return 1; }
+            # Repairing bind-mount ownership is the first change after the
+            # guard; stop there.
+            _ods_cli_repair_rootless_ownership() { echo "RESTART-PROCEEDED"; exit 99; }
+            cmd_restart "${RESTART_ARGS[@]}" </dev/null
+        else
+            cmd_update </dev/null
+        fi
     )
 }
 
@@ -77,3 +92,13 @@ expect 1 "an interrupted switch awaiting recovery blocks the update" "waiting fo
     '{"status":"idle"}' '{"pending":true,"phase":"held","transactionId":"abc"}'
 expect 99 "an idle lifecycle lets the update continue" "UPDATE-PROCEEDED" '{"status":"idle"}' "$idle"
 expect 99 "an unreachable agent warns and continues" "Could not ask the host agent" "" ""
+
+busy='{"status":"idle","lifecycleActive":true,"activeOperation":"model_activation","activeTarget":"qwen3.5-2b-q4"}'
+COMMAND=restart RESTART_ARGS=()
+expect 1 "a full restart under a model switch is refused" "Restart not started: model_activation for qwen3.5-2b-q4 is in progress" "$busy" "$idle"
+RESTART_ARGS=(llama-server)
+expect 1 "a llama-server restart under a model switch is refused" "Restart not started" "$busy" "$idle"
+RESTART_ARGS=(searxng)
+expect 99 "restarting an unrelated service is not blocked" "RESTART-PROCEEDED" "$busy" "$idle"
+RESTART_ARGS=()
+expect 99 "a full restart with an idle lifecycle continues" "RESTART-PROCEEDED" '{"status":"idle"}' "$idle"

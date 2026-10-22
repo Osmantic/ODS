@@ -1822,6 +1822,11 @@ cmd_restart() {
         _ods_cli_macos_llama restart
         return 0
     fi
+    # A full restart or a llama-server restart under a model switch leaves the
+    # switch half-applied, as an update would.
+    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
+        _ods_cli_refuse_under_model_lifecycle restart
+    fi
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -2377,15 +2382,7 @@ cmd_update() {
 
     # Never restart the agent or recreate the stack under a model switch or a
     # Portal access check: either would be left half-applied.
-    local lifecycle_busy=""
-    if lifecycle_busy="$(_agent_model_lifecycle_busy)"; then
-        lifecycle_busy="$(printf '%s\n' "$lifecycle_busy" | sed '/^$/d' | paste -sd ';' -)"
-        if [[ -n "$lifecycle_busy" ]]; then
-            error "Update not started: ${lifecycle_busy//;/; }. Let it finish (or recover it), then run ods update again."
-        fi
-    else
-        warn "Could not ask the host agent whether a model change is in progress; continuing."
-    fi
+    _ods_cli_refuse_under_model_lifecycle update
 
     # Require the configuration snapshot that `ods rollback` can restore,
     # before changing configuration, Compose selection, images or containers.
@@ -5531,6 +5528,26 @@ _agent_model_lifecycle_busy() {
             "http://${host}:${port}/v1/model/recovery" 2>/dev/null) || return 1
     printf '%s' "$recovery" | jq -er 'if .pending == true then
         "an interrupted model switch is waiting for recovery (ods model recover)" else "" end' || return 1
+}
+
+# Refuse $1 (a CLI action that recreates the stack or restarts the agent or
+# llama-server) while the agent's model lifecycle is busy; warn and continue
+# when the agent cannot be asked.
+_ods_cli_refuse_under_model_lifecycle() {
+    local action="$1" label lifecycle_busy=""
+    case "$action" in
+        update) label="Update" ;;
+        restart) label="Restart" ;;
+        *) label="ods $action" ;;
+    esac
+    if lifecycle_busy="$(_agent_model_lifecycle_busy)"; then
+        lifecycle_busy="$(printf '%s\n' "$lifecycle_busy" | sed '/^$/d' | paste -sd ';' -)"
+        if [[ -n "$lifecycle_busy" ]]; then
+            error "$label not started: ${lifecycle_busy//;/; }. Let it finish (or recover it), then run ods ${action} again."
+        fi
+    else
+        warn "Could not ask the host agent whether a model change is in progress; continuing."
+    fi
 }
 
 _agent_refresh_mode() {
