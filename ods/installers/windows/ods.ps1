@@ -2531,12 +2531,17 @@ function Invoke-Chat {
     } | ConvertTo-Json -Depth 3
 
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
+    $headers = @{}
+    if ($llmEndpoint.ContainsKey("ApiKey") -and -not [string]::IsNullOrWhiteSpace([string]$llmEndpoint.ApiKey)) {
+        $headers.Authorization = "Bearer " + [string]$llmEndpoint.ApiKey
+    }
     try {
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
-            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
+            -Method POST -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 120
 
         if (-not $resp.choices -or -not $resp.choices[0].message -or
-            $resp.choices[0].message.content -isnot [string] -or $resp.choices[0].message.content.Length -eq 0) {
+            $resp.choices[0].message.content -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($resp.choices[0].message.content)) {
             $detail = 'No assistant text in the response'
             if ($resp.error -and $resp.error.message) { $detail = [string]$resp.error.message }
             throw $detail
