@@ -5523,9 +5523,12 @@ _agent_model_lifecycle_busy() {
     recovery=$(printf 'Authorization: Bearer %s\n' "$key" | \
         curl --silent --fail --max-time 5 --header @- \
             "http://${host}:${port}/v1/model/recovery" 2>/dev/null) || return 1
-    printf '%s' "$status" | jq -er 'if .lifecycleActive == true then
-        "\(.activeOperation // "a model operation")\(if .activeTarget then " for \(.activeTarget)" else "" end) is in progress"
-        else "" end' || return 1
+    # A switch in progress also reports its recovery as pending; only name
+    # recovery when nothing is running.
+    if printf '%s' "$status" | jq -e '.lifecycleActive == true' >/dev/null; then
+        printf '%s' "$status" | jq -r '"\(.activeOperation // "a model operation")\(if .activeTarget then " for \(.activeTarget)" else "" end) is in progress"'
+        return
+    fi
     printf '%s' "$recovery" | jq -er 'if .pending == true then
         "an interrupted model switch is waiting for recovery (ods model recover)" else "" end' || return 1
 }

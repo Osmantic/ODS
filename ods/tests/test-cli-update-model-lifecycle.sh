@@ -69,6 +69,8 @@ expect 1 "a model switch in progress blocks the update" "model_activation for qw
     '{"status":"idle","lifecycleActive":true,"activeOperation":"model_activation","activeTarget":"qwen2.5-0.5b-instruct-q4"}' "$idle"
 expect 1 "a Portal access check in progress blocks the update" "pixel_startup_reproof is in progress" \
     '{"status":"idle","lifecycleActive":true,"activeOperation":"pixel_startup_reproof","activeTarget":null}' "$idle"
+expect 1 "a running switch is not also reported as interrupted" "model_activation for qwen2.5-0.5b-instruct-q4 is in progress. Let it finish" \
+    '{"status":"idle","lifecycleActive":true,"activeOperation":"model_activation","activeTarget":"qwen2.5-0.5b-instruct-q4"}' '{"pending":true,"phase":"held","transactionId":"abc"}'
 expect 1 "an interrupted switch awaiting recovery blocks the update" "waiting for recovery (ods model recover)" \
     '{"status":"idle"}' '{"pending":true,"phase":"held","transactionId":"abc"}'
 expect 99 "an idle lifecycle lets the update continue" "UPDATE-PROCEEDED" '{"status":"idle"}' "$idle"
