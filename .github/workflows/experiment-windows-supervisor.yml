@@ -39,3 +39,126 @@ jobs:
         with:
           name: stub-test-results-${{ matrix.os }}
           path: ci-logs/
+
+  verify-real-path:
+    name: Real Llama Help & Loopback Auth Probe (windows-latest)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Probe llama-server b9014 flags and loopback auth
+        shell: bash
+        run: |
+          mkdir -p ci-logs
+          python -c "
+          import urllib.request, zipfile, subprocess, sys, time, json, os
+          from pathlib import Path
+
+          url = 'https://github.com/ggml-org/llama.cpp/releases/download/b9014/llama-b9014-bin-win-cpu-x64.zip'
+          zip_dest = Path('llama.zip')
+          print('Downloading llama-server b9014 from', url)
+          urllib.request.urlretrieve(url, zip_dest)
+          with zipfile.ZipFile(zip_dest, 'r') as z:
+              z.extractall('llama-bin')
+          exe = list(Path('llama-bin').glob('**/llama-server.exe'))[0]
+          print('Extracted executable:', exe)
+
+          res = subprocess.run([str(exe), '--help'], capture_output=True, text=True, errors='replace')
+          help_text = res.stdout + res.stderr
+          with open('ci-logs/llama_help.txt', 'w', encoding='utf-8') as f:
+              f.write(help_text)
+
+          has_api_key = '--api-key' in help_text
+          has_api_key_file = '--api-key-file' in help_text
+          has_llama_api_key = 'LLAMA_API_KEY' in help_text
+          print(f'--api-key present: {has_api_key}')
+          print(f'--api-key-file present: {has_api_key_file}')
+          print(f'LLAMA_API_KEY present: {has_llama_api_key}')
+
+          model_url = 'https://huggingface.co/unsloth/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf'
+          model_dest = Path('model.gguf')
+          print('Downloading SmolLM2 model GGUF...')
+          urllib.request.urlretrieve(model_url, model_dest)
+
+          key_path = Path('llama_test_key.txt')
+          secret_key = 'sk-test-loopback-auth-key-12345'
+          key_path.write_text(secret_key, encoding='utf-8')
+          user_name = os.environ.get('USERNAME', 'runneradmin')
+          subprocess.run(['icacls.exe', str(key_path), '/inheritance:r', '/grant:r', f'{user_name}:(F)'], capture_output=True)
+
+          port = 18090
+          cmd = [
+              str(exe),
+              '--model', str(model_dest),
+              '--alias', 'test-model',
+              '--host', '127.0.0.1',
+              '--port', str(port),
+              '--ctx-size', '512',
+              '--no-webui',
+              '--api-key-file', str(key_path)
+          ]
+          print('Starting llama-server with --api-key-file on port', port)
+          srv = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+          models_url = f'http://127.0.0.1:{port}/v1/models'
+          ready = False
+          for _ in range(40):
+              time.sleep(0.5)
+              if srv.poll() is not None:
+                  print('llama-server exited prematurely with code', srv.returncode)
+                  break
+              try:
+                  req = urllib.request.Request(f'http://127.0.0.1:{port}/health')
+                  with urllib.request.urlopen(req, timeout=1.0) as r:
+                      if r.status == 200:
+                          ready = True
+                          break
+              except Exception:
+                  pass
+
+          assert ready, 'llama-server did not become healthy'
+          print('llama-server is ready on loopback.')
+
+          unauth_rejected = False
+          try:
+              req = urllib.request.Request(models_url)
+              with urllib.request.urlopen(req, timeout=2.0) as r:
+                  print('Unexpected 200 on unauthenticated request!')
+          except urllib.error.HTTPError as e:
+              print(f'Unauthenticated request rejected with HTTP {e.code} (expected 401)')
+              if e.code == 401:
+                  unauth_rejected = True
+
+          auth_ok = False
+          try:
+              req = urllib.request.Request(models_url, headers={'Authorization': f'Bearer {secret_key}'})
+              with urllib.request.urlopen(req, timeout=2.0) as r:
+                  print(f'Authenticated request returned HTTP {r.status} (expected 200)')
+                  data = json.loads(r.read().decode('utf-8'))
+                  print('Models list response:', data)
+                  if r.status == 200:
+                      auth_ok = True
+          except Exception as e:
+              print('Authenticated request failed:', e)
+
+          srv.kill()
+          srv.wait()
+
+          assert unauth_rejected, 'Unauthenticated request was NOT rejected with 401!'
+          assert auth_ok, 'Authenticated request did NOT return 200!'
+          print('SUCCESS: Loopback authentication verified: unauthenticated 401 rejected, authenticated 200 accepted.')
+          " 2>&1 | tee ci-logs/probe_real_llama.log
+
+      - name: Upload Logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-llama-probe-logs
+          path: ci-logs/

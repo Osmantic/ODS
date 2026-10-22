@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Lightweight offline integration test suite for ODS Native Supervisor.
-Exercises process management and failure recovery using stub child processes (no network):
+Exercises process management, loopback security, and failure recovery using stub child processes (no network):
   1. Port collision rejection (exit code 3)
   2. Child killed mid-run detection (assert exit code 6, killed by PID only)
-  3. Supervisor killed, zero orphaned processes (Job Object cleanup on Windows, PDEATHSIG on Linux)
+  3. Supervisor killed, zero orphaned processes (Job Object cleanup on Windows; explicit SKIP on POSIX)
   4. Graceful stop path verification (all children exit with code 0, supervisor exits code 0)
   5. Abnormal child exit failure detection (assert supervisor exits code 7 when child exits non-zero on stop path)
   6. Forced stop path fallback (timeout expires, triggers forced kill, zero orphans)
+  7. Job assignment failure compensation (zero orphans on AssignProcessToJobObject failure)
+  8. Secret file permissions (owner-only via icacls / chmod 600) and pids.json credential elimination
 """
 
 import json
@@ -91,7 +93,7 @@ def wait_for_pids_ready(pids_file: Path, timeout: float = 15.0) -> dict:
     raise TimeoutError(f"Timed out waiting for pids.json readiness at {pids_file}")
 
 def run_test_port_collision():
-    print("\n[TEST 1/6] Testing Port Collision Rejection (Exit Code 3)...")
+    print("\n[TEST 1/8] Testing Port Collision Rejection (Exit Code 3)...")
     conflict_port = get_free_port()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", conflict_port))
@@ -115,7 +117,7 @@ def run_test_port_collision():
         sock.close()
 
 def run_test_child_death_stub():
-    print("\n[TEST 2/6] Testing Mid-Run Child Death Detection (Assert Exit 6, Kill by PID Only)...")
+    print("\n[TEST 2/8] Testing Mid-Run Child Death Detection (Assert Exit 6, Kill by PID Only)...")
     llama_port, dash_port = get_free_port_pair()
     stub_data = DATA_DIR / "stub_death_data"
     pids_file = stub_data / "pids.json"
@@ -151,7 +153,7 @@ def run_test_child_death_stub():
     print("PASS: Child death by PID detected and supervisor exited with strictly code 6.")
 
 def run_test_zero_orphans_stub():
-    print("\n[TEST 3/6] Testing Supervisor Killed: Zero Orphan Verification (Kill by PID Only)...")
+    print("\n[TEST 3/8] Testing Win32 Job Object KILL_ON_JOB_CLOSE (Windows Only; Explicit SKIP on POSIX)...")
     llama_port, dash_port = get_free_port_pair()
     stub_data = DATA_DIR / "stub_orphan_data"
     pids_file = stub_data / "pids.json"
@@ -195,15 +197,15 @@ def run_test_zero_orphans_stub():
     if sys.platform == "win32":
         assert not llama_running, f"Orphaned llama child (PID {llama_pid}) detected!"
         assert not dash_running, f"Orphaned dashboard child (PID {dash_pid}) detected!"
+        print("PASS: Supervisor killed by PID; child processes terminated with zero orphans via Win32 Job Object.")
     else:
         # On POSIX without Win32 Job Objects, clean up any lingering test processes
         if llama_running: kill_pid_forcefully(llama_pid)
         if dash_running: kill_pid_forcefully(dash_pid)
-
-    print("PASS: Supervisor killed by PID; child processes terminated with zero orphans.")
+        print("SKIP: Win32 Job Object KILL_ON_JOB_CLOSE is Windows-only; skipped on POSIX.")
 
 def run_test_graceful_stop_clean():
-    print("\n[TEST 4/6] Testing Graceful Stop Path (Clean Exit Code 0 Verification)...")
+    print("\n[TEST 4/8] Testing Graceful Stop Path (Clean Exit Code 0 Verification)...")
     llama_port, dash_port = get_free_port_pair()
     stub_data = DATA_DIR / "stub_graceful_data"
     pids_file = stub_data / "pids.json"
@@ -236,7 +238,7 @@ def run_test_graceful_stop_clean():
     print("PASS: Graceful stop path confirmed clean cooperative exit (all children exit code 0).")
 
 def run_test_abnormal_exit_failure():
-    print("\n[TEST 5/6] Testing Abnormal Child Exit Detection on Stop Path (Assert Exit 7)...")
+    print("\n[TEST 5/8] Testing Abnormal Child Exit Detection on Stop Path (Assert Exit 7)...")
     llama_port, dash_port = get_free_port_pair()
     stub_data = DATA_DIR / "stub_abnormal_data"
     pids_file = stub_data / "pids.json"
@@ -265,7 +267,7 @@ def run_test_abnormal_exit_failure():
     print("PASS: Abnormal child exit on graceful path correctly detected and rejected with exit code 7.")
 
 def run_test_forced_stop_timeout():
-    print("\n[TEST 6/6] Testing Forced Stop Path (Timeout Fallback)...")
+    print("\n[TEST 6/8] Testing Forced Stop Path (Timeout Fallback)...")
     llama_port, dash_port = get_free_port_pair()
     stub_data = DATA_DIR / "stub_forced_data"
     pids_file = stub_data / "pids.json"
@@ -298,6 +300,112 @@ def run_test_forced_stop_timeout():
     assert not is_pid_running(pids.get("dashboard_pid")), "dashboard process still running!"
     print("PASS: Forced stop path confirmed timeout fallback, process kill, and zero orphans.")
 
+def run_test_job_assignment_failure_compensation():
+    print("\n[TEST 7/8] Testing Job Assignment Failure Compensation (Zero Orphans on Error 5)...")
+    import tempfile
+    sup_dir = str(SUPERVISOR_SCRIPT.parent)
+    if sup_dir not in sys.path:
+        sys.path.insert(0, sup_dir)
+    from supervisor import WindowsNativeSupervisor
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        sup = WindowsNativeSupervisor(
+            Path(tmpdir),
+            llama_port=get_free_port(),
+            dashboard_port=get_free_port(),
+            stub_children=True,
+            stub_behavior="clean"
+        )
+
+        real_assign = sup.job.assign_process
+        calls = 0
+        def patched_assign(pid):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("Simulated error 5: AssignProcessToJobObject Access Denied")
+            return real_assign(pid)
+
+        sup.job.assign_process = patched_assign
+
+        raised = False
+        try:
+            sup.start()
+        except RuntimeError as e:
+            raised = True
+            print(f"Caught expected assignment exception: {e}")
+
+        assert raised, "Expected RuntimeError from patched assign_process"
+
+        dash_proc = sup.dashboard_proc
+        llama_proc = sup.llama_proc
+
+        assert dash_proc is not None, "Dashboard process was never created"
+        dash_poll = dash_proc.poll()
+        print(f"Unassigned dashboard child poll(): {dash_poll}")
+        assert dash_poll is not None, f"Orphan detected! Unassigned dashboard child PID {dash_proc.pid} is still alive!"
+
+        if llama_proc:
+            llama_poll = llama_proc.poll()
+            print(f"Assigned llama child poll(): {llama_poll}")
+            assert llama_poll is not None, f"Orphan detected! Llama child PID {llama_proc.pid} is still alive!"
+
+        print("PASS: Assignment failure triggered immediate compensation kill; zero orphans confirmed.")
+
+def run_test_secret_file_permissions_and_pids_json():
+    print("\n[TEST 8/8] Testing Secret File ACLs & pids.json Credential Elimination...")
+    import tempfile
+    sup_dir = str(SUPERVISOR_SCRIPT.parent)
+    if sup_dir not in sys.path:
+        sys.path.insert(0, sup_dir)
+    from supervisor import WindowsNativeSupervisor
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        test_key = "sk-test-super-secret-key-12345"
+        sup = WindowsNativeSupervisor(
+            Path(tmpdir),
+            llama_port=get_free_port(),
+            dashboard_port=get_free_port(),
+            api_key=test_key,
+            stub_children=True
+        )
+        sup.start()
+
+        # 1. Verify pids.json contains NO secrets
+        pids_file = Path(tmpdir) / "pids.json"
+        assert pids_file.exists(), "pids.json was not created"
+        pids_data = json.loads(pids_file.read_text(encoding="utf-8"))
+        assert "api_key" not in pids_data, f"SECURITY DEFECT: api_key found in pids.json! Content: {pids_data}"
+        assert "llama_key" not in pids_data, f"SECURITY DEFECT: llama_key found in pids.json! Content: {pids_data}"
+        print("pids.json contains zero secret keys:", list(pids_data.keys()))
+
+        # 2. Verify key files exist and check permissions
+        key_file = Path(tmpdir) / "api_key.txt"
+        llama_key_file = Path(tmpdir) / "llama_key.txt"
+        assert key_file.exists(), "api_key.txt missing"
+        assert llama_key_file.exists(), "llama_key.txt missing"
+        assert key_file.read_text(encoding="utf-8").strip() == test_key
+        assert len(llama_key_file.read_text(encoding="utf-8").strip()) == 64
+
+        if sys.platform == "win32":
+            # Run icacls to verify owner-only permissions
+            for f in [key_file, llama_key_file]:
+                res = subprocess.run(["icacls.exe", str(f)], capture_output=True, text=True, check=True)
+                icacls_out = res.stdout
+                print(f"icacls output for {f.name}:\n{icacls_out.strip()}")
+                assert "(F)" in icacls_out, f"Expected (F) full control for owner in {icacls_out}"
+                assert "(I)" not in icacls_out, f"Expected no inherited permissions (I) in {icacls_out}"
+                assert "BUILTIN\\Users" not in icacls_out, f"Public BUILTIN\\Users grant detected in {icacls_out}"
+        else:
+            # On POSIX: verify mode is 0600
+            for f in [key_file, llama_key_file]:
+                mode = oct(f.stat().st_mode & 0o777)
+                print(f"POSIX mode for {f.name}: {mode}")
+                assert mode == "0o600", f"Expected mode 0600, got {mode}"
+
+        sup.stop()
+        print("PASS: Secret files restricted owner-only (icacls / chmod 600) and pids.json contains zero credentials.")
+
 def main():
     print("===============================================================")
     print("       ODS Process Supervisor Offline Test Suite               ")
@@ -310,9 +418,11 @@ def main():
     run_test_graceful_stop_clean()
     run_test_abnormal_exit_failure()
     run_test_forced_stop_timeout()
+    run_test_job_assignment_failure_compensation()
+    run_test_secret_file_permissions_and_pids_json()
     elapsed = time.perf_counter() - t0
     print("\n===============================================================")
-    print(f"SUCCESS: All 6 offline supervisor tests passed in {elapsed:.2f}s! ")
+    print(f"SUCCESS: All 8 offline supervisor tests passed in {elapsed:.2f}s! ")
     print("===============================================================")
 
 if __name__ == "__main__":

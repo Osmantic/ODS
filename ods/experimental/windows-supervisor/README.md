@@ -45,23 +45,25 @@ This prototype manages the core inference runtime (`llama-server.exe`) and the c
 
 ## Test Suite (`test_supervisor.py`)
 
-The offline stub test suite runs against lightweight stub child processes (`python -c ...`) with zero network access in under 8 seconds:
+The offline stub test suite runs against lightweight stub child processes (`python -c ...`) with zero network access in under 9 seconds:
 1. **Port Collision Rejection** (Assert Exit 3): Binds a blocking socket to loopback; asserts supervisor exits 3 on port collision.
 2. **Mid-Run Child Death Detection** (Assert Exit 6): Kills stub child llama PID mid-run; asserts supervisor detects death and exits 6.
-3. **Supervisor Killed / Zero Orphans**: Forcefully kills supervisor by PID; asserts child processes terminate (kernel Job Object on Windows).
+3. **Supervisor Killed / Zero Orphans**: Forcefully kills supervisor by PID; asserts child processes terminate (kernel Job Object on Windows; explicit SKIP on POSIX).
 4. **Graceful Stop Path** (Assert Exit 0): Runs `--stop-after-ready --stop-timeout 5.0`; asserts exit 0 when children exit cleanly before timeout.
 5. **Abnormal Child Exit on Stop Path** (Assert Exit 7): Configures stub child to return code 3 on break; asserts supervisor detects abnormal stop and exits 7.
 6. **Forced Stop Path** (Assert Exit 7): Configures stub child to ignore break; asserts supervisor triggers timeout (0.001s), kills child, and exits 7.
+7. **Job Assignment Failure Compensation**: Simulates `AssignProcessToJobObject` failure (e.g. error 5) on second child; asserts supervisor triggers immediate compensation kill and leaves zero orphans.
+8. **Secret File ACLs & Credential Elimination**: Asserts `pids.json` contains zero credentials (`api_key` omitted), and asserts secret files (`api_key.txt`, `llama_key.txt`) are restricted owner-only (verified via `icacls` on Windows, `chmod 0600` on POSIX).
 
 ---
 
 ## Explicit Limits & Boundaries
 
-- **Python Version**: Tested on host Python 3.12 only (the version tested in CI).
+- **Python Version**: Tested on host Python 3.12 in CI; offline suite verified passing 6/6 by community review on a physical Windows 11 PC under Python 3.10.
 - **CPU Execution**: CPU-only execution tested; consumer GPU behavior in Session 0/1 remains unverified without physical hardware.
-- **Offline Stub Coverage**: Automated offline tests use stub child processes (`python -c ...`); model download and runtime caching paths are not covered by automated offline tests.
+- **Offline Stub Coverage**: Automated offline tests use stub child processes (`python -c ...`); full model download, GPU offloading, and real-network chat routes are isolated in manual `workflow_dispatch` jobs.
 - **Port Helper Concurrency**: Dynamic free-port discovery (`get_free_port`) has a known race window between port release and supervisor binding.
-- **Asset Verification**: Cryptographic pinned hashes are trust-on-first-use against hardcoded values.
+- **Loopback Secret Confinement**: API keys for `dashboard-api` and `llama-server` are written owner-only (`icacls /inheritance:r /grant:r %USERNAME%:F`) and passed via `--api-key-file` and environment variables, keeping plaintext credentials out of process argv and `pids.json`.
 - **Cross-Platform Control**: The Linux CI control run validates process management and signal handling logic; Win32 Job Object limits apply exclusively on Windows.
 - **Production Integration**: This prototype is strictly isolated under `ods/experimental/windows-supervisor/`; it is not integrated into `ods.ps1` or `ods-host-agent.py`.
 

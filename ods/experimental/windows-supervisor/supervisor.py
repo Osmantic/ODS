@@ -67,6 +67,27 @@ def verify_port_available(port: int, host: str = "127.0.0.1") -> bool:
     except OSError:
         return False
 
+def write_private_secret_file(path: Path, content: str) -> None:
+    """Writes a secret file with owner-only access permissions (DACL / chmod 0600).
+    Follows ODS Windows private-file contract (icacls /inheritance:r /grant:r %USERNAME%:F)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    if sys.platform == "win32":
+        import getpass
+        username = os.environ.get("USERNAME") or getpass.getuser()
+        try:
+            subprocess.run(
+                ["icacls.exe", str(path), "/inheritance:r", "/grant:r", f"{username}:(F)"],
+                capture_output=True, text=True, check=True
+            )
+        except Exception as e:
+            print(f"Warning: Failed to set owner-only ACL on {path}: {e}", file=sys.stderr)
+    else:
+        try:
+            os.chmod(path, 0o600)
+        except Exception:
+            pass
+
 class Win32JobManager:
     """Manages an NT Job Object ensuring all assigned processes terminate when closed."""
     def __init__(self):
@@ -154,6 +175,7 @@ class WindowsNativeSupervisor:
         self.llama_port = llama_port
         self.dashboard_port = dashboard_port
         self.api_key = api_key or secrets.token_hex(16)
+        self.llama_key = secrets.token_hex(32)
         self.stop_timeout = stop_timeout
         self.llama_url = llama_url or LLAMA_SERVER_PIN["url"]
         self.model_url = model_url or MODEL_PIN["url"]
@@ -169,6 +191,7 @@ class WindowsNativeSupervisor:
         self.logs_dir = self.data_dir / "logs"
         self.pids_file = self.data_dir / "pids.json"
         self.key_file = self.data_dir / "api_key.txt"
+        self.llama_key_file = self.data_dir / "llama_key.txt"
 
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
@@ -179,8 +202,9 @@ class WindowsNativeSupervisor:
         self.llama_log_file = None
         self.dashboard_log_file = None
 
-        # Write API key to disk for caller consumption
-        self.key_file.write_text(self.api_key, encoding="utf-8")
+        # Write API keys to disk with owner-only ACLs (zero credentials in pids.json)
+        write_private_secret_file(self.key_file, self.api_key)
+        write_private_secret_file(self.llama_key_file, self.llama_key)
 
     def _write_pids(self, ready: bool = False):
         pids_data = {
@@ -189,10 +213,44 @@ class WindowsNativeSupervisor:
             "dashboard_pid": self.dashboard_proc.pid if self.dashboard_proc else None,
             "llama_port": self.llama_port,
             "dashboard_port": self.dashboard_port,
-            "api_key": self.api_key,
             "ready": ready
         }
         self.pids_file.write_text(json.dumps(pids_data, indent=2), encoding="utf-8")
+
+    def _spawn_and_assign_child(self, name: str, cmd: list, **kwargs) -> subprocess.Popen:
+        """Spawns child process and assigns it to Job Object.
+        If assignment fails for any reason, immediately terminates child
+        and raises RuntimeError to guarantee zero orphaned processes."""
+        creationflags = kwargs.pop("creationflags", 0)
+        if sys.platform == "win32":
+            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        proc = subprocess.Popen(cmd, creationflags=creationflags, **kwargs)
+        if "llama" in name:
+            self.llama_proc = proc
+        elif "dashboard" in name:
+            self.dashboard_proc = proc
+        try:
+            self.job.assign_process(proc.pid)
+        except Exception as e:
+            print(f"ERROR: Failed to assign {name} (PID {proc.pid}) to Win32 Job Object: {e}. Terminating child immediately to guarantee zero orphans.", file=sys.stderr)
+            try:
+                proc.kill()
+                proc.wait(timeout=2.0)
+            except Exception:
+                pass
+            self._terminate_spawned_children()
+            raise
+        return proc
+
+    def _terminate_spawned_children(self):
+        for proc in [self.llama_proc, self.dashboard_proc]:
+            if proc and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                except Exception:
+                    pass
+        self.job.close()
 
     def _tail_log(self, path: Path, max_lines: int = 25) -> str:
         if not path.exists():
@@ -290,8 +348,6 @@ class WindowsNativeSupervisor:
             print(f"ERROR: Port {self.dashboard_port} is already in use by another process.", file=sys.stderr)
             sys.exit(3)
 
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
-
         # Open log files for child redirection
         self.llama_log_file = open(self.llama_log_path, "a", encoding="utf-8")
         self.dashboard_log_file = open(self.dashboard_log_path, "a", encoding="utf-8")
@@ -343,18 +399,14 @@ class WindowsNativeSupervisor:
             api_cmd = [sys.executable, "-c", dash_stub]
 
             print("Starting stub llama child (clean)...")
-            self.llama_proc = subprocess.Popen(
-                llama_cmd, stdout=self.llama_log_file, stderr=subprocess.STDOUT,
-                creationflags=creationflags
+            self.llama_proc = self._spawn_and_assign_child(
+                "stub-llama", llama_cmd, stdout=self.llama_log_file, stderr=subprocess.STDOUT
             )
-            self.job.assign_process(self.llama_proc.pid)
 
             print(f"Starting stub dashboard child ({self.stub_behavior})...")
-            self.dashboard_proc = subprocess.Popen(
-                api_cmd, stdout=self.dashboard_log_file, stderr=subprocess.STDOUT,
-                creationflags=creationflags
+            self.dashboard_proc = self._spawn_and_assign_child(
+                f"stub-dashboard ({self.stub_behavior})", api_cmd, stdout=self.dashboard_log_file, stderr=subprocess.STDOUT
             )
-            self.job.assign_process(self.dashboard_proc.pid)
 
             # Give stub children a moment to initialize signal handlers
             time.sleep(0.3)
@@ -374,16 +426,15 @@ class WindowsNativeSupervisor:
             "--ctx-size", "2048",
             "--parallel", "1",
             "--threads", "4",
-            "--no-webui"
+            "--no-webui",
+            "--api-key-file", str(self.llama_key_file)
         ]
+        llama_env = os.environ.copy()
+        llama_env["LLAMA_API_KEY"] = self.llama_key
         print(f"Starting llama-server.exe on port {self.llama_port} (logs: {self.llama_log_path.name})...")
-        self.llama_proc = subprocess.Popen(
-            llama_cmd,
-            stdout=self.llama_log_file,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags
+        self.llama_proc = self._spawn_and_assign_child(
+            "llama-server", llama_cmd, stdout=self.llama_log_file, stderr=subprocess.STDOUT, env=llama_env
         )
-        self.job.assign_process(self.llama_proc.pid)
         print(f"Assigned llama-server (PID {self.llama_proc.pid}) to Win32 Job Object.")
 
         # 3. Launch dashboard-api via Uvicorn with clean SIGBREAK handler pre-registered
@@ -400,6 +451,10 @@ class WindowsNativeSupervisor:
         env["LLM_MODEL"] = model_path.name
         env["GGUF_FILE"] = model_path.name
         env["AMD_INFERENCE_LOCATION"] = ""
+        env["OPEN_WEBUI_LLM_BASE_URL"] = f"http://127.0.0.1:{self.llama_port}/v1"
+        env["OPEN_WEBUI_LLM_API_KEY"] = self.llama_key
+        env["LLAMA_SERVER_API_KEY"] = self.llama_key
+        env["LLAMA_API_KEY"] = self.llama_key
         (self.data_dir / "ods_data").mkdir(parents=True, exist_ok=True)
 
         runner_code = (
@@ -412,14 +467,9 @@ class WindowsNativeSupervisor:
             sys.executable, "-c", runner_code, str(self.dashboard_port)
         ]
         print(f"Starting dashboard-api on port {self.dashboard_port} (logs: {self.dashboard_log_path.name})...")
-        self.dashboard_proc = subprocess.Popen(
-            api_cmd,
-            env=env,
-            stdout=self.dashboard_log_file,
-            stderr=subprocess.STDOUT,
-            creationflags=creationflags
+        self.dashboard_proc = self._spawn_and_assign_child(
+            "dashboard-api", api_cmd, env=env, stdout=self.dashboard_log_file, stderr=subprocess.STDOUT
         )
-        self.job.assign_process(self.dashboard_proc.pid)
         print(f"Assigned dashboard-api (PID {self.dashboard_proc.pid}) to Win32 Job Object.")
 
         # Write initial PIDs
@@ -433,7 +483,8 @@ class WindowsNativeSupervisor:
         t0 = time.perf_counter()
         llama_url = f"http://127.0.0.1:{self.llama_port}/health"
         dash_url = f"http://127.0.0.1:{self.dashboard_port}/health"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
+        llama_headers = {"Authorization": f"Bearer {self.llama_key}"}
+        dash_headers = {"Authorization": f"Bearer {self.api_key}"}
 
         llama_ready = False
         dash_ready = False
@@ -453,7 +504,8 @@ class WindowsNativeSupervisor:
 
             if not llama_ready:
                 try:
-                    with urllib.request.urlopen(llama_url, timeout=1.0) as r:
+                    req = urllib.request.Request(llama_url, headers=llama_headers)
+                    with urllib.request.urlopen(req, timeout=1.0) as r:
                         if r.status == 200:
                             llama_ready = True
                             print(f"llama-server.exe is ready ({time.perf_counter() - t0:.2f}s).")
@@ -462,7 +514,7 @@ class WindowsNativeSupervisor:
 
             if not dash_ready:
                 try:
-                    req = urllib.request.Request(dash_url, headers=headers)
+                    req = urllib.request.Request(dash_url, headers=dash_headers)
                     with urllib.request.urlopen(req, timeout=1.0) as r:
                         if r.status == 200:
                             dash_ready = True
