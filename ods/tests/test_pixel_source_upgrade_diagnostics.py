@@ -202,7 +202,21 @@ def test_manager_cli_refusals_preserve_all_fixture_state(
     if reason:
         assert reason in message
         assert 'Restore the complete matching prior installation state' in message
-        assert 'owner-authorized clean install' in message
+        if condition == 'missing-state':
+            assert 'bash ./ods-uninstall.sh --keep-models --keep-data' in message
+            assert 'from the installed ODS directory' in message
+            assert 'confirm its uninstall prompt' in message
+            assert 'If uninstall refuses, preserve its state and stop' in message
+            assert 'After successful uninstall' in message
+            assert "'bash ./install.sh' from the new source checkout" in message
+            assert 'does not automatically restore' in message
+            assert 'check free disk space' in message
+            assert 'owner-authorized clean install' not in message
+            assert '--force' not in message
+            assert 'never ran' not in message and 'never ready' not in message
+        else:
+            assert 'owner-authorized clean install' in message
+            assert 'ods-uninstall.sh' not in message
     else:
         assert 'is missing' not in message
         assert 'Preserve any existing admission hold' in message
@@ -259,6 +273,7 @@ def test_other_cli_failures_preserve_hold_guidance_without_leaking_exception(mon
     assert 'Preserve any existing admission hold and protected source snapshots' in message
     assert '/private/' not in message
     assert 'clean install' not in message
+    assert 'ods-uninstall.sh' not in message
     if isinstance(error, upgrade.UpgradeError):
         # A fixed code is source text, not private data; naming it says what
         # blocks the update (fleet row 27 hid model-recovery-required).
