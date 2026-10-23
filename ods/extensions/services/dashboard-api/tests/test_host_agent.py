@@ -2210,6 +2210,65 @@ class TestHandleCoreRecreate:
         assert compose_calls == []
 
 
+class TestCoreRecreateModelLifecycle:
+
+    @pytest.fixture(autouse=True)
+    def _auth(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "CORE_SERVICE_IDS", {"llama-server", "litellm", "model-router", "searxng"})
+
+    def _recreate(self, monkeypatch, service_ids):
+        calls = []
+        seen_operation = []
+
+        def fake_recreate(ids):
+            calls.append(ids)
+            seen_operation.append(_mod._model_lifecycle_status().get("activeOperation"))
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": service_ids}).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+        return handler, calls, seen_operation
+
+    @pytest.mark.parametrize("service_id", ["llama-server", "litellm", "model-router"])
+    def test_model_stack_recreate_is_refused_during_a_model_switch(self, monkeypatch, service_id):
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        try:
+            handler, calls, _ = self._recreate(monkeypatch, [service_id])
+        finally:
+            _mod._end_model_lifecycle("model_activation")
+
+        assert handler.response_code == 409
+        response = handler.parse_response()
+        assert response["code"] == "model_lifecycle_busy"
+        assert response["activeOperation"] == "model_activation"
+        assert calls == []
+
+    def test_model_stack_recreate_holds_the_lifecycle_while_it_runs(self, monkeypatch):
+        handler, calls, seen_operation = self._recreate(monkeypatch, ["llama-server"])
+
+        assert handler.response_code == 200
+        assert calls == [["llama-server"]]
+        assert seen_operation == ["core_recreate"]
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        _mod._end_model_lifecycle("model_activation")
+
+    def test_other_core_recreates_do_not_wait_for_a_model_switch(self, monkeypatch):
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        try:
+            handler, calls, _ = self._recreate(monkeypatch, ["searxng"])
+        finally:
+            _mod._end_model_lifecycle("model_activation")
+
+        assert handler.response_code == 200
+        assert calls == [["searxng"]]
+
+
 class TestResolveComposeFlagsCache:
 
     def test_cached_recipe_is_checked_before_any_docker_command(self, tmp_path, monkeypatch):

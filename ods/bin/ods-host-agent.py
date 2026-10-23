@@ -287,6 +287,10 @@ _ALLOWED_CORE_RECREATE_IDS = frozenset({
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
     "ape", "privacy-shield", "model-router",
 })
+# A model switch recreates these itself. Recreating them alongside it races
+# that recreation (Docker name conflict) and leaves the switch held, so their
+# recreation claims the model lifecycle like an update does.
+_MODEL_STACK_RECREATE_IDS = frozenset({"llama-server", "litellm", "model-router"})
 # Pixel's model relay picks its upstream (model-router, or LiteLLM in cloud
 # mode) from ODS_MODE once, when it starts. A remote-provider route change
 # therefore recreates it with LiteLLM, or Portal keeps the old model.
@@ -12331,6 +12335,16 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         unique_service_ids = sorted(set(requested))
 
+        lifecycle_claimed = bool(_MODEL_STACK_RECREATE_IDS.intersection(unique_service_ids))
+        if lifecycle_claimed:
+            acquired, active = _begin_model_lifecycle("core_recreate", ",".join(unique_service_ids))
+            if not acquired:
+                json_response(self, 409, {
+                    "success": False,
+                    **_model_lifecycle_conflict("core service recreation", active),
+                })
+                return
+
         locks = []
         try:
             for service_id in unique_service_ids:
@@ -12357,6 +12371,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         finally:
             for lock in reversed(locks):
                 lock.release()
+            if lifecycle_claimed:
+                _end_model_lifecycle("core_recreate")
 
     def _handle_extension(self, action: str):
         if not check_auth(self):
