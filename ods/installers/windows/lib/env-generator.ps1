@@ -219,6 +219,61 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+function ConvertTo-ODSIanaTimeZone {
+    <# Map a Windows time zone ID to IANA for Windows PowerShell 5.1, which
+       lacks TimeZoneInfo.TryConvertWindowsIdToIanaId. Exact IDs only: the old
+       wildcard match sent "Central Europe Standard Time" to America/Chicago
+       and "Central Pacific"/"SA Eastern" to US zones. Unlisted IDs fall back
+       to a fixed-offset Etc zone. #>
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$WindowsId)
+
+    $map = @{
+        "Eastern Standard Time"          = "America/New_York"
+        "Central Standard Time"          = "America/Chicago"
+        "Mountain Standard Time"         = "America/Denver"
+        "US Mountain Standard Time"      = "America/Phoenix"
+        "Pacific Standard Time"          = "America/Los_Angeles"
+        "Alaskan Standard Time"          = "America/Anchorage"
+        "Hawaiian Standard Time"         = "Pacific/Honolulu"
+        "UTC"                            = "UTC"
+        "GMT Standard Time"              = "Europe/London"
+        "Greenwich Standard Time"        = "Atlantic/Reykjavik"
+        "W. Europe Standard Time"        = "Europe/Berlin"
+        "Romance Standard Time"          = "Europe/Paris"
+        "Central Europe Standard Time"   = "Europe/Budapest"
+        "Central European Standard Time" = "Europe/Warsaw"
+        "E. Europe Standard Time"        = "Europe/Chisinau"
+        "GTB Standard Time"              = "Europe/Bucharest"
+        "FLE Standard Time"              = "Europe/Kiev"
+        "Russian Standard Time"          = "Europe/Moscow"
+        "Turkey Standard Time"           = "Europe/Istanbul"
+        "India Standard Time"            = "Asia/Kolkata"
+        "China Standard Time"            = "Asia/Shanghai"
+        "Tokyo Standard Time"            = "Asia/Tokyo"
+        "Korea Standard Time"            = "Asia/Seoul"
+        "Singapore Standard Time"        = "Asia/Singapore"
+        "SE Asia Standard Time"          = "Asia/Bangkok"
+        "Arab Standard Time"             = "Asia/Riyadh"
+        "Arabian Standard Time"          = "Asia/Dubai"
+        "Egypt Standard Time"            = "Africa/Cairo"
+        "South Africa Standard Time"     = "Africa/Johannesburg"
+        "E. South America Standard Time" = "America/Sao_Paulo"
+        "AUS Eastern Standard Time"      = "Australia/Sydney"
+    }
+    if ($map.ContainsKey($WindowsId)) { return $map[$WindowsId] }
+    # Unlisted zone: keep the right clock with a fixed-offset Etc zone (POSIX
+    # sign is inverted: UTC-3 is Etc/GMT+3). Half-hour offsets have no Etc
+    # zone and stay UTC.
+    try {
+        $offset = [TimeZoneInfo]::FindSystemTimeZoneById($WindowsId).BaseUtcOffset
+    } catch [System.TimeZoneNotFoundException] {
+        return "UTC"
+    }
+    if ($offset.Minutes -ne 0 -or $offset.Hours -eq 0) { return "UTC" }
+    if ($offset.Hours -lt 0) { return "Etc/GMT+$(-$offset.Hours)" }
+    return "Etc/GMT-$($offset.Hours)"
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -577,40 +632,7 @@ function New-ODSEnv {
             $ok = [System.TimeZoneInfo]::TryConvertWindowsIdToIanaId($tzInfo.Id, [ref]$outIana)
             if ($ok -and $outIana) { $ianaId = $outIana }
         } catch { }
-        if ($ianaId) { $ianaId } else {
-            # PowerShell `switch` runs *every* matching arm, and as a
-            # subexpression it collects all emitted values into an array, so
-            # multi-matching IDs (e.g. "AUS Eastern Standard Time" hits both
-            # "*AUS Eastern*" and "*Eastern*") would write an invalid
-            # "TIMEZONE=America/New_York Australia/Sydney". `break` on every arm
-            # makes the first match win; the more specific "*AUS Eastern*" is
-            # ordered ahead of "*Eastern*" so it takes precedence.
-            switch -Wildcard ($tzInfo.Id) {
-                "*AUS Eastern*"  { "Australia/Sydney"; break }
-                "*Eastern*"    { "America/New_York"; break }
-                "*Central*"    { "America/Chicago"; break }
-                "*Mountain*"   { "America/Denver"; break }
-                "*Pacific*"    { "America/Los_Angeles"; break }
-                "*Alaska*"     { "America/Anchorage"; break }
-                "*Hawaii*"     { "Pacific/Honolulu"; break }
-                "*UTC*"        { "UTC"; break }
-                "*GMT*"        { "Europe/London"; break }
-                "*W. Europe*"  { "Europe/Berlin"; break }
-                "*Romance*"    { "Europe/Paris"; break }
-                "*India*"      { "Asia/Kolkata"; break }
-                "*China*"      { "Asia/Shanghai"; break }
-                "*Tokyo*"      { "Asia/Tokyo"; break }
-                "*Korea*"      { "Asia/Seoul"; break }
-                "*E. South America*" { "America/Sao_Paulo"; break }
-                "*SE Asia*"    { "Asia/Bangkok"; break }
-                "*Arab*"       { "Asia/Riyadh"; break }
-                "*Egypt*"      { "Africa/Cairo"; break }
-                "*South Africa*" { "Africa/Johannesburg"; break }
-                "*E. Europe*"  { "Europe/Bucharest"; break }
-                "*FLE*"        { "Europe/Kiev"; break }
-                default        { "UTC"; break }
-            }
-        }
+        if ($ianaId) { $ianaId } else { ConvertTo-ODSIanaTimeZone -WindowsId $tzInfo.Id }
     } catch { "UTC" })
 
     $timestamp = Get-Date -Format "o"
