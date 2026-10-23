@@ -45,6 +45,7 @@ jobs:
         shell: powershell
         run: |
           ./tests/test-windows-native-installer-version.ps1
+          ./tests/test-windows-native-sandbox-bootstrap.ps1
           ./tests/test-windows-desktop-preview.ps1
 
       - name: Build and launch Windows native review package
@@ -54,6 +55,7 @@ jobs:
           ODS_DESKTOP_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
+          ./tests/test-windows-native-sandbox-bootstrap.ps1
           ./tests/test-windows-native-installer-version.ps1
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $review = Join-Path $env:RUNNER_TEMP 'ods-windows-review'

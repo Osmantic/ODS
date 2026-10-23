@@ -295,6 +295,28 @@ toolchain, frontend, SDK and installer-engine notices are retained.
 
 ## Deferred acceptance gates
 
+The first Windows 10 Sandbox attempt after the authorized October 23 host
+reboot reached the guest desktop and the exact mapped build receipt was
+readable. Private PowerShell engine logs show the QA script starting and
+exiting before Setup; the correlated WMI event identifies
+`Win32_OptionalFeature` failing with `0x80070422`. That optional diagnostic ran
+before the transcript and result finalizer, leaving no guest log/results. This
+was a QA bootstrap failure; no clean installation/model pass was claimed.
+
+The handoff now starts its transcript after the unchanged mandatory guest guard
+and before inventory. An optional-feature provider failure is recorded as
+`unavailable` with its error, then the actual application checks continue.
+Unknown inventory is never represented as verified absence of Windows
+features. OS identification, clean-tool refusal, installer integrity, actual
+Setup, model and save checks remain mandatory failures. Phase markers locate
+later failures, and Finish-launched cleanup requires the retained process,
+creation time, exact path and build-receipt application hash. Isolated bootstrap
+contracts passed **seven cases each** through the actual script in inbox
+PowerShell 5.1 and 7, including the private catch-to-throw negative control.
+Both interpreter runs are wired into native CI. Their private dummy payload
+refuses before compilation or installation; these tests are not live guest
+application acceptance.
+
 The October 23 follow-up adds **14 real-Setup prerequisite checks** using a
 private publisher executable and a fresh GUID-scoped registry producer. Only
 the fixture's registry-key literal and publisher input differ from production
@@ -337,9 +359,10 @@ hosted failure or qualify a new artifact.
   prerequisite cancellation/failure and offline/proxy recovery. The prepared
   Sandbox kit records OS/token/tool availability, installer hash, real model
   results and screenshot; generating it is not successful guest execution.
-  The local Sandbox feature was enabled with `-NoRestart`; Windows reports a
-  required reboot, which has not been performed. No clean guest execution is
-  claimed. A guest token is recorded rather than assumed non-elevated.
+  The host completed its authorized reboot and launched a fresh guest; the
+  initial QA bootstrap failure above still prevents clean application
+  acceptance until the corrected handoff completes. A guest token is recorded
+  rather than assumed non-elevated.
 - Windows 11 and wider hardware qualification, accessibility and independent
   human review. A single non-elevated development host does not establish these.
 - Signed public website release, SmartScreen reputation, authenticated update
