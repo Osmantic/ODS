@@ -176,7 +176,7 @@ if bash -c "
         command docker \"\$@\"
     }
 
-    unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
+    unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V HERMES_REQUIRE_OWNER_CARD
     # Run phase 06 (generates .env, configs)
     source installers/phases/06-directories.sh
     grep -qx 'TTS_WORKERS=1' \"\$INSTALL_DIR/.env\" || exit 1
@@ -187,6 +187,7 @@ if bash -c "
     grep -qx 'LLAMA_ARG_FLASH_ATTN=auto' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_CACHE_TYPE_K=f16' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_CACHE_TYPE_V=f16' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' \"\$INSTALL_DIR/.env\" || exit 1
 
     # A second installer run must retain the values written by the first run,
     # even when the invoking process now carries different defaults.
@@ -205,6 +206,9 @@ if bash -c "
     sed -i 's/^LLAMA_ARG_FLASH_ATTN=.*/LLAMA_ARG_FLASH_ATTN=on/' \"\$INSTALL_DIR/.env\"
     sed -i 's/^LLAMA_ARG_CACHE_TYPE_K=.*/LLAMA_ARG_CACHE_TYPE_K=q8_0/' \"\$INSTALL_DIR/.env\"
     sed -i 's/^LLAMA_ARG_CACHE_TYPE_V=.*/LLAMA_ARG_CACHE_TYPE_V=q8_0/' \"\$INSTALL_DIR/.env\"
+    # An enabled owner-card gate must survive the same real installer rerun.
+    sed -i 's/^HERMES_REQUIRE_OWNER_CARD=.*/HERMES_REQUIRE_OWNER_CARD=true/' \"\$INSTALL_DIR/.env\"
+    unset HERMES_REQUIRE_OWNER_CARD
     unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
     source installers/phases/06-directories.sh
     echo 'Saved llama.cpp tuning after installer rerun:'
@@ -217,6 +221,11 @@ if bash -c "
     grep -qx 'LLAMA_ARG_FLASH_ATTN=on' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_CACHE_TYPE_K=q8_0' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_CACHE_TYPE_V=q8_0' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=true' \"\$INSTALL_DIR/.env\" || {
+        echo 'Owner Hermes gate was not preserved:'
+        grep '^HERMES_REQUIRE_OWNER_CARD=' \"\$INSTALL_DIR/.env\"
+        exit 1
+    }
 
     # An explicit installer value in the process environment must override
     # the saved .env value on a rerun.
@@ -224,11 +233,14 @@ if bash -c "
     export LLAMA_ARG_FLASH_ATTN=off
     export LLAMA_ARG_CACHE_TYPE_K=f32
     export LLAMA_ARG_CACHE_TYPE_V=f32
+    export HERMES_REQUIRE_OWNER_CARD=false
     source installers/phases/06-directories.sh
     grep -qx 'LLAMA_PARALLEL=2' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_FLASH_ATTN=off' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_CACHE_TYPE_K=f32' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'LLAMA_ARG_CACHE_TYPE_V=f32' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' \"\$INSTALL_DIR/.env\" || exit 1
+    unset HERMES_REQUIRE_OWNER_CARD
     unset LLAMA_PARALLEL LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V
 
     # An owner override must survive subsequent installs.
