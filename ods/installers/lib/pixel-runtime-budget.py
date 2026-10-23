@@ -243,8 +243,8 @@ if "skillsLimits" in updated_agent and not isinstance(skills_limits, dict):
 if context_window <= 8192:
     if skills_limits is None:
         skills_limits = updated_agent["skillsLimits"] = {}
-    skills_limits["maxSkillsPromptChars"] = 4000
-elif skills_limits is not None and skills_limits.get("maxSkillsPromptChars") == 4000:
+    skills_limits["maxSkillsPromptChars"] = 4300
+elif skills_limits is not None and skills_limits.get("maxSkillsPromptChars") == 4300:
     skills_limits.pop("maxSkillsPromptChars")
     if not skills_limits:
         updated_agent.pop("skillsLimits")

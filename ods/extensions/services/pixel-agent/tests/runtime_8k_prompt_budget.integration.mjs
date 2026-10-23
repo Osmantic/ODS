@@ -17,7 +17,7 @@ import {createHash} from 'node:crypto';
 import {registerHooks} from 'node:module';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
-import {promptContractForAgent, ODS_COMPACT_CONVERSATION_CONTRACT} from '../plugin/prompt-contract.mjs';
+import {promptContractForAgent, ODS_TINY_CONVERSATION_CONTRACT} from '../plugin/prompt-contract.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE_DIR;
 assert.ok(pkg,'provide the pinned reviewed OpenClaw package');
@@ -92,7 +92,7 @@ const compactContract=promptContractForAgent(
   {prompt:'No tools are needed. In one short sentence, what is a bicycle?',messages:[]},
   {configuredContextWindow:CONTEXT_WINDOW,configuredLeanPrompt:true}
 );
-assert.ok(compactContract?.appendSystemContext?.includes(ODS_COMPACT_CONVERSATION_CONTRACT.slice(0,80)),'production compact contract must be selected');
+assert.ok(compactContract?.appendSystemContext?.includes(ODS_TINY_CONVERSATION_CONTRACT.slice(0,80)),'production compact contract must be selected');
 
 // Production bootstrap shape: a small BOOTSTRAP.md and a small AGENTS.md,
 // bounded by the per-agent 2000/6000 budget and contextInjection 'never'.

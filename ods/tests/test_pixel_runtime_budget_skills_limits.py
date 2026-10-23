@@ -49,7 +49,7 @@ def pixel_agent(value):
 @pytest.mark.parametrize('context', [4096, 8192])
 def test_small_context_sets_managed_skills_prompt_chars(tmp_path, context):
     updated = stage(tmp_path, configuration(context))
-    assert pixel_agent(updated)['skillsLimits']['maxSkillsPromptChars'] == 4000
+    assert pixel_agent(updated)['skillsLimits']['maxSkillsPromptChars'] == 4300
 
 
 def test_small_context_overrides_preexisting_stricter_value(tmp_path):
@@ -57,7 +57,7 @@ def test_small_context_overrides_preexisting_stricter_value(tmp_path):
     value['agents']['list'][0]['skillsLimits'] = {'maxSkillsPromptChars': 3500, 'maxSkillsInPrompt': 27}
     updated = stage(tmp_path, value)
     limits = pixel_agent(updated)['skillsLimits']
-    assert limits['maxSkillsPromptChars'] == 4000
+    assert limits['maxSkillsPromptChars'] == 4300
     assert limits['maxSkillsInPrompt'] == 27
 
 
@@ -65,7 +65,7 @@ def test_small_context_overrides_preexisting_stricter_value(tmp_path):
 def test_large_context_removes_only_managed_value(tmp_path, context):
     value = configuration(context)
     value['agents']['list'][0]['skillsLimits'] = {
-        'maxSkillsPromptChars': 4000, 'maxSkillsInPrompt': 27,
+        'maxSkillsPromptChars': 4300, 'maxSkillsInPrompt': 27,
     }
     updated = stage(tmp_path, value)
     limits = pixel_agent(updated)['skillsLimits']
@@ -82,14 +82,14 @@ def test_large_context_preserves_owner_stricter_value(tmp_path):
 
 def test_large_context_drops_empty_skills_limits(tmp_path):
     value = configuration(65536)
-    value['agents']['list'][0]['skillsLimits'] = {'maxSkillsPromptChars': 4000}
+    value['agents']['list'][0]['skillsLimits'] = {'maxSkillsPromptChars': 4300}
     updated = stage(tmp_path, value)
     assert 'skillsLimits' not in pixel_agent(updated)
 
 
 def test_8k_to_64k_restore_removes_managed_value(tmp_path):
     small = stage(tmp_path, configuration(8192))
-    assert pixel_agent(small)['skillsLimits']['maxSkillsPromptChars'] == 4000
+    assert pixel_agent(small)['skillsLimits']['maxSkillsPromptChars'] == 4300
     tmp_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp_path.chmod(0o700)
     path = tmp_path / 'openclaw.json'
@@ -102,7 +102,7 @@ def test_8k_to_64k_restore_removes_managed_value(tmp_path):
     assert 'skillsLimits' not in pixel_agent(restored)
 
 
-@pytest.mark.parametrize('bad', [None, 'string', 4000, ['x'], True])
+@pytest.mark.parametrize('bad', [None, 'string', 4300, ['x'], True])
 def test_malformed_skills_limits_fails_closed_without_write(tmp_path, bad):
     tmp_path.chmod(0o700)
     value = configuration(8192)
