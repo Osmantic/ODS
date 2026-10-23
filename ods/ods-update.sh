@@ -1387,8 +1387,10 @@ _acquire_update_lock() {
     local action="$1" holder=""
     mkdir -p "${INSTALL_DIR}/data"
     if [[ -z "${ODS_UPDATE_LOCK_NO_FLOCK:-}" ]] && command -v flock >/dev/null 2>&1; then
-        exec {ODS_UPDATE_LOCK_FD}>"$UPDATE_LOCK_FILE"
-        flock -xn "$ODS_UPDATE_LOCK_FD" || _update_lock_busy "$action"
+        # Fixed fd: the macOS host agent runs this under /bin/bash 3.2, which
+        # has no {var}> redirection (bash 4.1+).
+        exec 9>"$UPDATE_LOCK_FILE"
+        flock -xn 9 || _update_lock_busy "$action"
         return
     fi
     if ! mkdir "$UPDATE_LOCK_DIR" 2>/dev/null; then

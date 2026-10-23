@@ -128,6 +128,13 @@ check_mode() {
     pass "[$mode] lock is released after a failed update"
 }
 
+# The macOS host agent runs ods-update.sh with /bin/bash 3.2, which has no
+# {var}> fd allocation (bash 4.1+); with flock on PATH that aborted rc 127.
+if grep -En 'exec[[:space:]]+\{[A-Za-z_][A-Za-z0-9_]*\}[<>]' "$ROOT_DIR/ods-update.sh"; then
+    fail "ods-update.sh uses {var}> fd allocation, which bash 3.2 (macOS /bin/bash) lacks"
+fi
+pass "lock fd redirection is bash 3.2 compatible"
+
 if command -v flock >/dev/null 2>&1; then
     check_mode flock
 fi
