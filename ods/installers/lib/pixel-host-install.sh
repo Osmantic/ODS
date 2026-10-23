@@ -1684,6 +1684,20 @@ normalized_lean_prompt = normalized_compact_context or normalized_small_model
 normalized_agent["bootstrapMaxChars"] = 2000 if normalized_lean_prompt else 14000
 normalized_agent["bootstrapTotalMaxChars"] = 6000 if normalized_lean_prompt else 36000
 normalized_agent["contextInjection"] = "never" if normalized_lean_prompt else "continuation-skip"
+# Accept only the exact context-derived skill budget, preserving every other
+# limit in the live configuration. The final whole-config equality still gates
+# changes to unrelated fields.
+normalized_skills_limits = normalized_agent.get("skillsLimits")
+if "skillsLimits" in normalized_agent and not isinstance(normalized_skills_limits, dict):
+    raise SystemExit("OpenClaw skillsLimits configuration must be an object")
+if contract.get("modelContextWindow") <= 8192:
+    if normalized_skills_limits is None:
+        normalized_skills_limits = normalized_agent["skillsLimits"] = {}
+    normalized_skills_limits["maxSkillsPromptChars"] = 4300
+elif normalized_skills_limits is not None and normalized_skills_limits.get("maxSkillsPromptChars") == 4300:
+    normalized_skills_limits.pop("maxSkillsPromptChars")
+    if not normalized_skills_limits:
+        normalized_agent.pop("skillsLimits")
 normalized_agent_context_limits = normalized_agent.setdefault("contextLimits", {})
 normalized_agent_context_limits["toolResultMaxChars"] = max(
     4000,

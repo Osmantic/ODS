@@ -116,3 +116,36 @@ def test_malformed_skills_limits_fails_closed_without_write(tmp_path, bad):
     assert 'skillsLimits' in result.stderr
     assert path.read_bytes() == before
     assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))
+
+
+@pytest.mark.parametrize('context', [8192, 32768, 65536])
+def test_activation_and_installer_share_skills_budget(tmp_path, context):
+    sys.path.insert(0, str(WRITER.parents[2] / 'bin'))
+    import pixel_model_contract as contract
+    large = stage(tmp_path, configuration(65536))
+    large['agents']['list'][0]['skillsLimits'] = {'maxSkillsInPrompt': 27, 'maxSkillsPromptChars': 16000}
+    original = json.loads(json.dumps(large))
+    proposed = contract.projection(large)['contract']
+    proposed.update(contextLength=context, maxTokens=2048)
+    planned = contract.plan(large, proposed)
+    assert large == original
+    expected = 4300 if context <= 8192 else 16000
+    assert pixel_agent(planned)['skillsLimits'] == {'maxSkillsInPrompt': 27, 'maxSkillsPromptChars': expected}
+    if context == 8192:
+        proposed['contextLength'] = 65536
+        restored = contract.plan(planned, proposed)
+        assert pixel_agent(restored)['skillsLimits'] == {'maxSkillsInPrompt': 27}
+
+
+@pytest.mark.parametrize('bad', [None, 'bad', [], 4300])
+def test_activation_rejects_malformed_skills_limits_without_mutating_input(tmp_path, bad):
+    sys.path.insert(0, str(WRITER.parents[2] / 'bin'))
+    import pixel_model_contract as contract
+    value = stage(tmp_path, configuration(65536))
+    proposed = contract.projection(value)['contract']
+    proposed['contextLength'] = 8192
+    value['agents']['list'][0]['skillsLimits'] = bad
+    before = json.loads(json.dumps(value))
+    with pytest.raises(contract.ModelError, match='skills-limits'):
+        contract.plan(value, proposed)
+    assert value == before

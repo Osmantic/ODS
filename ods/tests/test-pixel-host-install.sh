@@ -2335,6 +2335,25 @@ check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$runtime_home" \
 cp "$runtime_full_candidate" "$runtime_config"
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; assert all(k not in a.get("params", {}) for k in ("temperature","topP","frequencyPenalty","presencePenalty"))' "$runtime_config"
 
+# The new profile field is not a general permission to alter skill limits.
+runtime_unmanaged_skills="$runtime_home/.openclaw/unmanaged-skills.json"
+for skill_limit in maxSkillsPromptChars maxSkillsInPrompt; do
+    python3 - "$runtime_config" "$runtime_unmanaged_skills" "$skill_limit" <<'PY'
+import json, pathlib, sys
+source, target = map(pathlib.Path, sys.argv[1:3])
+value = json.loads(source.read_text())
+value["agents"]["list"][0].setdefault("skillsLimits", {})[sys.argv[3]] = 9999
+target.write_text(json.dumps(value))
+PY
+    chmod 0600 "$runtime_unmanaged_skills"
+    if _ods_pixel_candidate_is_managed_runtime_update "$owner" "$runtime_home" \
+        "$runtime_unmanaged_skills" "$runtime_transition_answers" >/dev/null 2>&1; then
+        fail "unmanaged skill limit $skill_limit rejected"
+    else
+        pass "unmanaged skill limit $skill_limit rejected"
+    fi
+done
+
 runtime_unsafe_bind="$runtime_home/.openclaw/unsafe-bind.json"
 python3 - "$runtime_config" "$runtime_unsafe_bind" <<'PY'
 import json, pathlib, sys

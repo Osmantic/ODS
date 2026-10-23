@@ -61,10 +61,11 @@ const MODEL_MAX_TOKENS=2048;
 const writerHome=path.join(root,'writer-home');
 fs.mkdirSync(writerHome,{mode:0o700});
 const writerConfigPath=path.join(root,'writer-openclaw.json');
+const modelContractDir=fileURLToPath(new URL('../../../../bin/',import.meta.url));
 const writerConfig={
   models:{providers:{'ods-local':{api:'openai-completions',apiKey:'local-no-auth',
     baseUrl:'http://127.0.0.1:11434/v1',
-    models:[{id:'Qwen3.5-9B',name:'ODS Local Qwen3.5-9B',contextWindow:CONTEXT_WINDOW,maxTokens:MODEL_MAX_TOKENS,reasoning:false}]}}},
+    models:[{id:'Qwen3.5-9B',name:'ODS Local Qwen3.5-9B',contextWindow:65536,maxTokens:MODEL_MAX_TOKENS,reasoning:false}]}}},
   agents:{defaults:{},list:[{id:'pixel',model:'ods-local/Qwen3.5-9B'}]},
   session:{},tools:{alsoAllow:[],sandbox:{tools:{allow:[]}}},
 };
@@ -74,7 +75,13 @@ const writerResult=spawnSync(process.env.PYTHON||'python3',[writer,writerConfigP
 assert.equal(writerResult.status,0,writerResult.stderr);
 const stagedPath=writerResult.stdout.trim();
 assert.ok(stagedPath&&stagedPath!=='unchanged','writer must stage a config');
-const staged=JSON.parse(fs.readFileSync(stagedPath,'utf8'));
+// Exercise the real activation planner after the initial 64K install profile.
+// An installer-only fix must not pass this regression.
+const planResult=spawnSync(process.env.PYTHON||'python3',['-c',
+  'import json,sys; sys.path.insert(0,sys.argv[1]); import pixel_model_contract as m; v=json.load(open(sys.argv[2])); p=m.projection(v)["contract"]; p.update(model="smollm2-360m-instruct",contextLength=8192,maxTokens=2048); print(json.dumps(m.plan(v,p)))',
+  modelContractDir,stagedPath],{encoding:'utf8'});
+assert.equal(planResult.status,0,planResult.stderr);
+const staged=JSON.parse(planResult.stdout);
 const stagedAgent=staged.agents.list.find(a=>a.id==='pixel');
 const stagedDefaults=staged.agents.defaults;
 const stagedModel=staged.models.providers['ods-local'].models[0];
