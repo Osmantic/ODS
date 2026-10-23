@@ -2,12 +2,127 @@ import {act,render,screen} from '@testing-library/react'
 import PortalStreamingText from './PortalStreamingText'
 import {EMBED_NOTE,EMBED_ONLY_NOTE} from '../lib/embedDisplay'
 
+const mediaReceipt=(digit='a')=>({schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.csv',
+  siteId:`site-${digit.repeat(24)}`,sha256:digit.repeat(64),file:{path:'report.csv',bytes:37,sha256:'c'.repeat(64)}})
+
+it.each([
+  'MEDIA:report.csv',
+  'Created report.csv.\n\nMEDIA:report.csv\n\nSum: 225.',
+  'Created report.csv.\nMEDIA:report.csv\nSum: 225.',
+  'Created report.csv.\r\nMEDIA:report.csv\r\nSum: 225.',
+  'Created **report.csv**.\nMEDIA:report.csv\nSum: 225.',
+  'Created &amp; verified.\nMEDIA:report.csv\nSum: 225.',
+  '**MEDIA:report.csv**', '__MEDIA:report.csv__',
+  '*MEDIA:report.csv*', '_MEDIA:report.csv_',
+  '***MEDIA:report.csv***', '___MEDIA:report.csv___',
+  'Created report.csv.\n**MEDIA:report.csv**\nSum: 225.',
+])('hides a delivered MEDIA line while preserving the rest of the answer: %s',source=>{
+  const receipts=Object.freeze([Object.freeze(mediaReceipt())])
+  const before=JSON.stringify(receipts)
+  const {container}=render(<PortalStreamingText artifacts={receipts}>{source}</PortalStreamingText>)
+  expect(container.textContent).not.toContain('MEDIA:report.csv')
+  if(source.includes('Created')) expect(container).toHaveTextContent('Created')
+  if(source.includes('Sum:')) expect(container).toHaveTextContent('Sum: 225.')
+  expect(container.querySelector('a,img,button')).toBeNull()
+  expect(JSON.stringify(receipts)).toBe(before)
+})
+
+it.each([
+  'See MEDIA:report.csv for details.',
+  ' MEDIA:report.csv', '  MEDIA:report.csv', '   MEDIA:report.csv', '    MEDIA:report.csv',
+  '> MEDIA:report.csv', '> Example:\nMEDIA:report.csv',
+  '- MEDIA:report.csv', '- Example:\nMEDIA:report.csv',
+  '`MEDIA:report.csv`', '`example\nMEDIA:report.csv\nend`',
+  '```text\nMEDIA:report.csv\n```', '~~~\nMEDIA:report.csv\n~~~',
+  '[MEDIA:report.csv](https://example.com/reference)',
+  '<div>\nMEDIA:report.csv\n</div>', '<span>\nMEDIA:report.csv\n</span>',
+  'MEDIA\\:report.csv', 'MEDIA&#58;report.csv',
+  'MEDIA:report.csv extra', 'MEDIA:report.csv ', 'MEDIA:report.csv  \nNext line',
+  '**MEDIA:report.csv** extra', 'See **MEDIA:report.csv** for details.',
+  '> **MEDIA:report.csv**', '- **MEDIA:report.csv**',
+  '`**MEDIA:report.csv**`', '**MEDIA\\:report.csv**', '**MEDIA&#58;report.csv**',
+  '[**MEDIA:report.csv**](https://example.com/reference)',
+])('preserves examples and non-directive Markdown: %s',source=>{
+  const {container}=render(<PortalStreamingText artifacts={[mediaReceipt()]}>{source}</PortalStreamingText>)
+  expect(container.textContent).toContain('MEDIA:report.csv')
+})
+
+it.each(['MEDIA:unknown.csv','MEDIA:../report.csv','MEDIA:https://example.com/report.csv','MEDIA: report.csv','media:report.csv'])('preserves an unmatched or malformed marker: %s',source=>{
+  const {container}=render(<PortalStreamingText artifacts={[mediaReceipt()]}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent(source)
+})
+
+it.each([null,[],[{file:{path:'report.csv'}}],[{...mediaReceipt(),sha256:'invalid'}],[mediaReceipt(),mediaReceipt('b')]])('preserves a marker without a unique validated receipt: %j',artifacts=>{
+  const {container}=render(<PortalStreamingText artifacts={artifacts}>MEDIA:report.csv</PortalStreamingText>)
+  expect(container).toHaveTextContent('MEDIA:report.csv')
+})
+
+it('changes presentation only for a completed response with a valid receipt',()=>{
+  const source='Created.\n\nMEDIA:report.csv'
+  const artifacts=[mediaReceipt()]
+  const {container,rerender}=render(<PortalStreamingText active instant artifacts={artifacts}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('MEDIA:report.csv')
+  rerender(<PortalStreamingText artifacts={artifacts}>{source}</PortalStreamingText>)
+  expect(container.textContent).not.toContain('MEDIA:report.csv')
+  rerender(<PortalStreamingText active instant artifacts={artifacts}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('MEDIA:report.csv')
+  rerender(<PortalStreamingText artifacts={artifacts}>{source}</PortalStreamingText>)
+  expect(container.textContent).not.toContain('MEDIA:report.csv')
+  rerender(<PortalStreamingText artifacts={[{...mediaReceipt(),schemaVersion:2}]}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('MEDIA:report.csv')
+})
+
+it('renders the captured installed CSV reply without its emphasized transport line',()=>{
+  const name='fleet-main-f5e-cubes.csv'
+  const source='Perfect. The file has been verified and is ready for download.\n\n**Summary:**\n- Created `fleet-main-f5e-cubes.csv` with columns `n` and `cube` for integers 1 through 5\n- **Sum of the cube column:** 225 (1 + 8 + 27 + 64 + 125)\n- File is 37 bytes and ready for download\n\n**MEDIA:fleet-main-f5e-cubes.csv**'
+  const receipt=mediaReceipt()
+  const artifacts=[{...receipt,relativePath:name,file:{...receipt.file,path:name}}]
+  const {container,rerender}=render(<PortalStreamingText artifacts={artifacts}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent('Sum of the cube column: 225')
+  expect(container).toHaveTextContent('File is 37 bytes and ready for download')
+  expect(container.textContent).not.toContain(`MEDIA:${name}`)
+  rerender(<PortalStreamingText artifacts={[]}>{source}</PortalStreamingText>)
+  expect(container).toHaveTextContent(`MEDIA:${name}`)
+})
+
 beforeEach(()=>{
   vi.useFakeTimers()
   vi.stubGlobal('matchMedia',()=>({matches:false,addEventListener:vi.fn(),removeEventListener:vi.fn()}))
 })
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const advance=ms=>act(()=>vi.advanceTimersByTime(ms))
+
+it('keeps a verified download free of authored navigation throughout reveal',()=>{
+  const href='https://untrusted.example/api/download?siteId=invented'
+  const source=`[![Download report.md](${href})](${href})`
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.md',
+    siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),file:{path:'report.md',bytes:20,sha256:'b'.repeat(64)}}
+  const {container}=render(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
+  for(let elapsed=0;elapsed<2000;elapsed+=16){
+    advance(16)
+    expect([...container.querySelectorAll('a')].filter(a=>new URL(a.href).hostname==='untrusted.example'),
+      `${elapsed}: ${container.innerHTML}`).toHaveLength(0)
+  }
+  expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
+})
+
+it('finishes partially revealed Markdown atomically when its completed receipt arrives',()=>{
+  const href='https://untrusted.example/download'
+  const source=`[![Download report.md](${href})](${href})\n\n[Python docs](https://docs.python.org/3/)`
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.md',
+    siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),file:{path:'report.md',bytes:20,sha256:'b'.repeat(64)}}
+  const {container,rerender}=render(<PortalStreamingText active>{source}</PortalStreamingText>)
+  advance(400)
+  expect(container.firstChild).toHaveAttribute('aria-busy','true')
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+  rerender(<PortalStreamingText animate artifacts={[artifact]}>{source}</PortalStreamingText>)
+  expect(container.firstChild).toHaveAttribute('aria-busy','false')
+  expect(screen.getByRole('button',{name:'Download verified report.md'})).toBeInTheDocument()
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+  expect(screen.getByRole('link',{name:/Python docs/})).toHaveAttribute('href','https://docs.python.org/3/')
+  advance(2000)
+  expect(screen.getAllByRole('link')).toHaveLength(1)
+})
 
 it('reveals a final response received in one batch rather than displaying it instantly',()=>{
   const text='Uma resposta completa recebida de uma vez, com conteúdo real e sem perder nenhuma palavra.'

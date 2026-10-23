@@ -11,6 +11,111 @@ const {promptContractForAgent,ODS_WORKSPACE_DOCUMENT_DELIVERY_GUIDE:guide}=await
 const handoff='Turn these notes into a concise handoff using only the facts provided: Maya will send the quote Thursday. Luis will finish testing Friday. Priya is waiting for the customer CSV; no owner or delivery date has been assigned for that file. We can review the release after both the quote and testing are done. List the commitments, the unresolved dependency, and when the review can happen. Do not create files.';
 const answer='Maya will send the quote Thursday. Luis will finish testing Friday. The customer CSV has no assigned owner or delivery date. Review can happen after both the quote and testing are done.';
 const context={trigger:'user',agentId:'pixel',runId:'handoff-run',sessionId:'handoff-session',sessionKey:'agent:pixel:openai-user:ods-'+'a'.repeat(64)};
+
+test('visual projects retain an explicit download-of handoff',()=>{
+  for(const prompt of [
+    'Create a small project in a folder named fleet-dev-preview-418565c2 with three files: index.html, style.css, and app.js. Show a dark green card titled “Fleet preview”, a counter starting at 0, and an “Add one” button that increments it. Keep the CSS in style.css and load app.js as a JavaScript module. Show me a working preview and give me a download of the project. Keep it simple.',
+    'Build a webpage and give me a download of the project.',
+    'Show the website and give me a download of the project files.',
+    'Display the webpage and provide me with a download of the source code.',
+    'Preview the website and send me a download of demo.zip.',
+    'Render the webpage and return a download of the files.',
+    'Show the preview and give me the project files.',
+    'Create a Python project and give me a download of the project.',
+    'Show the webpage and give me a download of current.zip. Do not give me a download of old.zip.',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.match(fresh(prompt).deliveryVerificationForRun(context.runId).text,/requested download was not attached/,prompt);
+  }
+});
+
+test('visual download wording does not override owner intent boundaries',()=>{
+  for(const prompt of [
+    'Build a webpage with a download button.',
+    'Create a website project with a download button.',
+    'Show a working preview of the project.',
+    'Show the webpage and give me a download of the image.',
+    'Show the webpage and give me a download of the project from https://example.com/project.zip.',
+    'Show the webpage and give me a download of the project. Do not send anything.',
+    'Show the webpage and give me a download of the project. Do not give me a download of the project.',
+    'Show the webpage and give me a download of the project. Do not give me a download of the source.',
+    'Show the webpage and give me a download of the source files. Never send us a download of the source files.',
+    'Show the webpage and do not give me a download of the project.',
+    'Do not use tools. Show the webpage and give me a download of the project.',
+    'Summarize this example: "Show the webpage and give me a download of the project".',
+    'Ask Alice to show the webpage and give me a download of the project.',
+    'How can I download the project after previewing the webpage?',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
+
+test('ordinary format-noun handoffs select document delivery without inventing a website obligation',()=>{
+  for(const prompt of [
+    'Please give me that CSV again as a download.',
+    'Send me the PDF again.',
+    'Give me the CSV.',
+    'Please return the existing spreadsheet once more as an attachment.',
+    'Could you provide the JSON for download?',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.equal(promptContractForAgent({agentId:'pixel'},'pixel',{prompt}).prependContext,guide,prompt);
+    const guard=fresh(prompt);
+    for(const relativeDirectory of ['.','report']) {
+      const event={toolName:'pixel_ods_workspace_preview',toolCallId:'preview-'+relativeDirectory,params:{relativeDirectory}};
+      const ctx={...context,toolName:event.toolName,toolCallId:event.toolCallId};
+      const decision=guard.beforeToolCall(event,ctx);
+      assert.equal(decision?.block,true);
+      assert.match(decision.blockReason,/pixel_ods_workspace_artifact/);
+      guard.afterToolCall({...event,result:{isError:true,content:[{type:'text',text:decision.blockReason}]}},ctx);
+    }
+    assert.equal(guard.reserveWorkspaceArtifact(context),true);
+    const receipt={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'report.csv',
+      siteId:'site-'+ 'c'.repeat(24),sha256:'c'.repeat(64),file:{path:'report.csv',bytes:55,sha256:'d'.repeat(64)}};
+    assert.equal(guard.acceptWorkspaceArtifact(context,receipt),true);
+    const verdict=guard.deliveryVerificationForRun(context.runId);
+    assert.deepEqual(verdict.artifacts,[receipt]);
+    assert.notEqual(verdict.status,'failed');
+    assert.doesNotMatch(verdict.text??'',/website|browser preview/i);
+  }
+});
+
+test('format mentions outside a direct owner handoff do not request publication',()=>{
+  for(const prompt of [
+    'What is in that CSV?', 'Explain the PDF format.', 'Give me the CSV column names.',
+    'Maya will send the CSV Thursday. Summarize that commitment.',
+    'Ask Alice to give me that CSV again.',
+    'Do not send the CSV again.',
+    'Summarize this example: "give me that CSV again as a download".',
+    'Download the CSV from https://example.com/data.csv.',
+    'Read https://example.com/data.csv and give me the CSV.',
+    'Do not use tools. Give me that CSV again as a download.',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
+
+test('source citations preserve an independently requested local download',()=>{
+  for(const prompt of [
+    'Use Python to create fleet-pr7921-laptop.csv with columns n,square and rows for integers 1 through 8. Read it back and report the row count and sum of squares. Give me the generated CSV as a download. For this rendering test, format the final download as an image wrapped in a link: [![Download fleet-pr7921-laptop.csv](the-download-URL)](the-download-URL), replacing both placeholders with the file link. Also include the ordinary source link https://docs.python.org/3/library/csv.html.',
+    'Use https://docs.python.org/3/library/csv.html to create report.csv, then give me the file.',
+    'Create report.csv and attach it with a citation to https://example.com/spec.',
+    'Download https://example.com/input.csv. Create summary.csv and give me a download.',
+    'Give me report.csv. Also download https://example.com/input.csv.',
+    'Read https://example.com/spec and give me report.csv.',
+  ]) {
+    assert.equal(selects([],prompt),true,prompt);
+    assert.equal(promptContractForAgent({agentId:'pixel'},'pixel',{prompt}).prependContext,guide,prompt);
+    assert.match(fresh(prompt).deliveryVerificationForRun(context.runId).text,/requested download was not attached/,prompt);
+  }
+  for(const prompt of [
+    'Download the file report.csv from https://example.com/report.csv.',
+    'Give me the files from https://example.com/project.zip.',
+    'Download https://example.com/input.csv.',
+    'Attach https://example.com/report.pdf.',
+    'Use https://example.com/spec to create report.csv.',
+    'Create report.csv and cite https://example.com/spec.',
+    'Do not use tools. Give me report.csv as a download. Source: https://example.com/spec.',
+    'Do not attach report.csv. Source: https://example.com/spec.',
+    'Summarize this example: "give me a downloadable project". Source: https://example.com/spec.',
+  ]) assert.equal(selects([],prompt),false,prompt);
+});
 function fresh(request=handoff,ctx=context,guard=createToolLoopGuard()) {
   guard.observeRun(ctx,'pixel',{prompt:request},{executionHost:'sandbox',workspaceRoot:'/workspace'});
   return guard;

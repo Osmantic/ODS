@@ -15,7 +15,8 @@ macos_log="$work/macos.log"
 compose_log="$work/compose.log"
 
 # Exercise the actual functions without dispatching the full CLI.
-for name in _ods_cli_macos_native_llama _ods_cli_macos_llama cmd_stop cmd_start cmd_restart; do
+for name in _ods_cli_macos_native_llama _ods_cli_macos_llama cmd_stop cmd_start cmd_restart \
+    _ods_cli_refuse_under_model_lifecycle; do
     fn_src="$work/fn_$name.sh"
     sed -n "/^${name}() {/,/^}/p" "$root/ods-cli" > "$fn_src"
     source "$fn_src"
@@ -25,6 +26,8 @@ NC=""
 check_install() { :; }
 load_env() { :; }
 ensure_llama_cpu_budget() { :; }
+# Dispatch coverage assumes idle admission; the lifecycle suite covers refusal.
+_agent_model_lifecycle_busy() { return 0; }
 sr_load() { :; }
 error() { echo "ERROR: $1" >&2; exit 1; }
 resolve_service() {
