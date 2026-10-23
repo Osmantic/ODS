@@ -40,6 +40,11 @@ The private choice survives restart and leaves saved conversations intact.
 This remains an unsigned integration candidate, separate from the qualified CPU
 artifact described below. It does not make the full ODS agents stack native.
 
+[Watch the actual two-minute CUDA demo](docs/native-cuda-demo.mp4). It shows
+automated live QA with cached runtime/model bytes, recorded cuts, real Vietnamese
+chat, Stop/continue, document creation and the native Windows Save picker.
+The picker navigation is cropped to omit unrelated local folders.
+
 ## Install and use
 
 Download **ods-windows-native-preview-<run id>** from the PR's **Windows native
