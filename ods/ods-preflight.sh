@@ -121,9 +121,9 @@ log ""
 
 # 1. Docker check
 log "[1/8] Checking Docker..."
-if command -v docker &> /dev/null; then
-    DOCKER_VERSION=$(docker --version | awk '{print $3}' | tr -d ',')
-    pass "Docker installed: $DOCKER_VERSION"
+if command -v docker &> /dev/null && docker --version &> /dev/null; then
+    DOCKER_VERSION=$(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',' || true)
+    pass "Docker installed: ${DOCKER_VERSION:-present}"
 
     if docker info &> /dev/null; then
         pass "Docker daemon running"
@@ -138,8 +138,8 @@ log ""
 # 2. Docker Compose check
 log "[2/8] Checking Docker Compose..."
 if docker compose version &> /dev/null 2>&1 || docker-compose version &> /dev/null 2>&1; then
-    COMPOSE_VERSION=$(docker compose version 2>/dev/null | awk '{print $4}' || docker-compose version 2>/dev/null | head -1 | awk '{print $3}')
-    pass "Docker Compose available: $COMPOSE_VERSION"
+    COMPOSE_VERSION=$(docker compose version 2>/dev/null | awk '{print $4}' || docker-compose version 2>/dev/null | head -1 | awk '{print $3}' || true)
+    pass "Docker Compose available: ${COMPOSE_VERSION:-present}"
 else
     fail "Docker Compose not found"
 fi
