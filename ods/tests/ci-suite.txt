@@ -215,6 +215,7 @@ tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
 tests/test-uninstall-lemonade-leftovers.sh
+tests/test-uninstall-opencode-config.sh
 tests/test-uninstall-refuses-sudo.sh
 tests/test-unix-restart-recreate-env.sh
 tests/test-update-backup-restore-configs.sh
