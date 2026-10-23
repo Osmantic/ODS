@@ -7,7 +7,7 @@
   #define AppTitle "ODS Windows Preview"
 #endif
 #ifndef PreviewVersion
-  #define PreviewVersion "0.2.0.0"
+  #define PreviewVersion "0.3.0.0"
 #endif
 
 #define MinimumWebViewVersion "154.0.4258.31"

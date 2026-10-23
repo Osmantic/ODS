@@ -3,7 +3,7 @@
 param([Parameter(Mandatory=$true)][string]$PackageDirectory,
     [Parameter(Mandatory=$true)][string]$OutputDirectory,
     [Parameter(Mandatory=$true)][string]$ToolsCache,
-    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')][string]$Version='0.2.0.0')
+    [ValidatePattern('^\d+\.\d+\.\d+\.\d+$')][string]$Version='0.3.0.0')
 $ErrorActionPreference='Stop'
 if(@($Version.Split('.') | Where-Object {[int64]$_ -gt 65535}).Count){throw 'Installer version parts must be between 0 and 65535.'}
 # Schema 2 documents cannot be opened by the published 0.1 text-only reader.

@@ -9,11 +9,11 @@ $parseTokens=$null;$parseErrors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($builder,[ref]$parseTokens,[ref]$parseErrors)
 if($parseErrors.Count){throw 'Installer builder did not parse.'}
 $versionParameter=@($ast.ParamBlock.Parameters | Where-Object {$_.Name.VariablePath.UserPath -eq 'Version'})
-if($versionParameter.Count -ne 1 -or $versionParameter[0].DefaultValue.SafeGetValue() -cne '0.2.0.0'){
-    throw 'Document-capable packages require an installer version newer than the text-only preview.'
+if($versionParameter.Count -ne 1 -or $versionParameter[0].DefaultValue.SafeGetValue() -cne '0.3.0.0'){
+    throw 'The CPU/CUDA preview installer must use the current 0.3 version.'
 }
 $iss=[IO.File]::ReadAllText((Join-Path $SourceDirectory 'installer.iss'))
-if(-not $iss.Contains('#define PreviewVersion "0.2.0.0"')){throw 'Installer and public builder defaults disagree.'}
+if(-not $iss.Contains('#define PreviewVersion "0.3.0.0"')){throw 'Installer and public builder defaults disagree.'}
 $fixture=Join-Path ([IO.Path]::GetTempPath()) ('ods-installer-version-'+[guid]::NewGuid().ToString('N'))
 $null=New-Item -ItemType Directory -Path (Join-Path $fixture 'package')
 $package=Join-Path $fixture 'package'
@@ -33,7 +33,7 @@ try{
         }
         $checks++
     }
-    foreach($version in @('0.2.0.0','0.10.0.0','1.0.0.0')){
+    foreach($version in @('0.2.0.0','0.3.0.0','0.10.0.0','1.0.0.0')){
         $message=''
         try{& $builder -PackageDirectory $package -OutputDirectory $output -ToolsCache $cache -Version $version}
         catch{$message=$_.Exception.Message}

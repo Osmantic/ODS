@@ -87,6 +87,9 @@ administrator to update or repair Microsoft WebView2 before retrying ODS Setup.
 
 ## Repair, upgrades and removal
 
+Version 0.3 adds the optional NVIDIA choice in metadata-enabled packages and
+preserves existing text/document histories. CPU remains the default.
+
 Version 0.2 adds saved Markdown documents and reads existing text histories.
 Earlier previews cannot open histories containing documents. Back up `portal/`
 before changing versions and use 0.2 or newer. Setup refuses an older version
