@@ -134,6 +134,16 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-portal-amd.ps1
 
+      - name: Windows Portal NVIDIA CUDA x64 Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-nvidia-cuda-x64.ps1
+
+      - name: Windows Portal NVIDIA CUDA x64 Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-nvidia-cuda-x64.ps1
+
       - name: Windows Portal AMD Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell

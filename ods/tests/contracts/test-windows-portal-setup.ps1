@@ -2,6 +2,7 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-setup.ps1')
 $originalOS = $env:OS
+function Get-ODSPortalRuntimeTask { return $null }
 if ($IsLinux) {
     # Real Invoke-ODSPortalWsl: stderr warnings never reach parsed Output.
     $fake = Join-Path ([IO.Path]::GetTempPath()) ('ods-fake-wsl-' + [guid]::NewGuid().ToString('N'))
