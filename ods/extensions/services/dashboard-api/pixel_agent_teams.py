@@ -11,6 +11,7 @@ import copy
 from datetime import datetime
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -26,6 +27,7 @@ MAX_TEAMS = 128
 MAX_BYTES = 4 * 1024 * 1024
 # Matches pixel_chat_results.RETENTION_SECONDS.
 RETENTION_SECONDS = 7 * 24 * 60 * 60
+logger = logging.getLogger(__name__)
 FINISHED_TEAM_STATUSES = {"completed", "failed", "cancelled", "stopped", "interrupted"}
 
 
@@ -209,8 +211,17 @@ class TeamStore:
         finished: list[tuple[float, Path]] = []
         gates: dict[tuple[str, str], list[tuple[float, Path]]] = {}
         for path in self.directory.glob("*.json"):
-            row = self.get(path.stem[:64], path.stem[65:])
-            if not self._evictable(row):
+            try:
+                row = self.get(path.stem[:64], path.stem[65:])
+                evictable = self._evictable(row)
+            except (ValueError, KeyError, TypeError) as exc:
+                # ValueError covers truncated JSON, non-private files and stray
+                # names; Key/TypeError a row that is not a team. Leave that file
+                # alone (it still counts toward MAX_TEAMS) so one bad file cannot
+                # block every new team.
+                logger.warning("Skipping unreadable agent team file %s during pruning: %s", path.name, exc)
+                continue
+            if not evictable:
                 continue
             stamp = row.get("updated", row["created"])
             if row["status"] in ACTIVE:

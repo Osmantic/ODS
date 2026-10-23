@@ -693,3 +693,18 @@ def test_history_full_of_stop_gates_still_conflicts(tmp_path):
     with pytest.raises(TeamConflict, match="full"):
         store.save(OWNER, _team(999, "new", "queued", time.time(), store.instance))
     assert len(list((tmp_path / "teams").glob("*.json"))) == pixel_agent_teams.MAX_TEAMS
+
+
+def test_unreadable_team_file_does_not_block_new_teams(tmp_path, caplog):
+    import time
+    store = TeamStore(tmp_path / "teams")
+    teams = tmp_path / "teams"
+    (teams / f"{OWNER}-{'1' * 32}.json").write_text('{"id": "trunc', encoding="utf-8")
+    (teams / "notes.json").write_text("{}", encoding="utf-8")
+    (teams / f"{OWNER}-{'2' * 32}.json").write_text("[]", encoding="utf-8")
+    for path in teams.glob("*.json"):
+        path.chmod(0o600)
+    store.save(OWNER, _team(999, "new", "queued", time.time(), store.instance))
+    assert store.get(OWNER, f"{999:032x}")["chat_id"] == "new"
+    assert (teams / "notes.json").exists()
+    assert "Skipping unreadable agent team file" in caplog.text
