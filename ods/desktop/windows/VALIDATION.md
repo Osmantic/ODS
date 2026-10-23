@@ -317,6 +317,72 @@ Both interpreter runs are wired into native CI. Their private dummy payload
 refuses before compilation or installation; these tests are not live guest
 application acceptance.
 
+The corrected handoff for head `79adbb765fecf1e87b7f2e95d35d8a8a7322bd07`
+then ran in a fresh Windows 10 Enterprise x64 Sandbox (reported build 19041,
+PowerShell 5.1.19041.6456, actual token elevated). The exact downloaded
+[CI artifact](https://github.com/Osmantic/ODS/actions/runs/39900623705/artifacts/12478532856)
+Setup SHA-256 was
+`818f61b2888cf9caa1d5bfbcad6ea00666af78c6ddf82fd9bb57862a3312d8af`.
+All 75 checks passed on that head. The guest reported Git, Node, Docker and
+Python absent; the inbox `wsl` command was present, which does not establish
+an installed distribution or application dependence on it. Optional-feature
+inventory was explicitly unavailable. Setup encountered missing WebView2,
+accepted the actual component prompt, ran Microsoft's checked bootstrapper,
+installed per user into HKCU, created the Start Menu shortcut and launched the
+exact installed application after Finish. Setup logged success without a
+restart. These are real clean-guest installation results, not publisher stubs.
+
+That attempt failed in `chat_model` before model/chat/document acceptance.
+The native UI runner returned failure after its five-minute startup wait, but
+its stdout/stderr were missing from the PowerShell transcript; the generic
+wrapper exception was not enough to establish the root cause. The preserved
+guest and failed receipt remain separate from the completed Setup result.
+An optional elevated HCS diagnostic was cancelled before execution, so no
+guest TLS probe result is claimed.
+
+Review found that this runner constructs `ChatWindow` directly and bypasses
+the application's `App.Main` TLS 1.2 initialization. The test entry point now
+uses that same policy. Its shared startup wait follows only the current
+startup window's Portal, logs actual status/detail and reports a terminal
+production recovery message immediately; both live waits retain 300,000 ms.
+The actual entry-point policy and a genuine missing-Portal-package error
+passed two isolated startup contracts locally. Private source mutants using
+TLS 1.0 or removing terminal-error handling both failed at their intended
+boundaries. A package without a checked Portal is refused before the startup
+fixture can attempt any model acquisition. A separate x64 console probe,
+compiled with the same inbox compiler on the development host, selected
+`Ssl3, Tls` by default and failed a HEAD request to the pinned model URL with
+"Could not create SSL/TLS secure channel"; selecting TLS 1.2 in that process
+returned HTTP 200. This is an actual host reproduction, not a guest probe.
+This repairs a demonstrated harness discrepancy and diagnostic
+gap; it does not retrospectively prove the failed guest's download cause or
+turn that attempt into a model pass. Corrected clean model qualification
+remains pending.
+
+The Portal driver now retains UTF-8 runner stdout, stderr and exact exit status
+outside its disposable fixture when `DiagnosticsDirectory` is supplied. Both
+streams are drained concurrently before the native exit is checked, and
+stderr is also reported through the PowerShell success stream so it survives
+the guest transcript. Nonzero exit still fails the test; empty stderr is not
+treated as evidence of success. Chat and document guests use separate output
+subdirectories. The native workflow runs the driver contracts in both inbox
+PowerShell and PowerShell 7, executes the actual startup contracts with the
+built Portal package, and uploads only controlled stdout/stderr/runner JSON
+diagnostics even when a test fails. Incomplete installers remain unpublished.
+
+All six copied-driver console cases passed locally in PowerShell 5.1 and 7:
+empty streams, simultaneous 128 KiB UTF-8 streams with exit 17, startup-mode
+dispatch, an empty screenshot argument, mode rejection and a lost-stderr
+negative control. Spaced/Unicode/trailing-backslash paths, private working
+directory, sentinel preservation and cleanup are checked through the actual
+driver. The first PowerShell 5 fixture attempt exposed an ANSI interpretation
+of its generated Unicode invoker; UTF-8 BOM and explicit UTF-8 JSON reads fixed
+that test-only issue. The real PowerShell 5 driver also passed its two startup
+contracts while retaining stdout/stderr/exit-zero evidence. Static analysis
+reported no warnings or errors for the driver and its regression. Independent
+static review covered the driver, console isolation and startup changes;
+live guest qualification and new-head hosted execution remain separate.
+
 The October 23 follow-up adds **14 real-Setup prerequisite checks** using a
 private publisher executable and a fresh GUID-scoped registry producer. Only
 the fixture's registry-key literal and publisher input differ from production
@@ -360,8 +426,9 @@ hosted failure or qualify a new artifact.
   Sandbox kit records OS/token/tool availability, installer hash, real model
   results and screenshot; generating it is not successful guest execution.
   The host completed its authorized reboot and launched a fresh guest; the
-  initial QA bootstrap failure above still prevents clean application
-  acceptance until the corrected handoff completes. A guest token is recorded
+  initial QA bootstrap failure was corrected and the next real Setup passed,
+  but the model/chat/document phases still require a successful corrected
+  handoff. A guest token is recorded
   rather than assumed non-elevated.
 - Windows 11 and wider hardware qualification, accessibility and independent
   human review. A single non-elevated development host does not establish these.

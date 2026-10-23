@@ -46,6 +46,7 @@ jobs:
         run: |
           ./tests/test-windows-native-installer-version.ps1
           ./tests/test-windows-native-sandbox-bootstrap.ps1
+          ./tests/test-windows-native-portal-driver.ps1
           ./tests/test-windows-desktop-preview.ps1
 
       - name: Build and launch Windows native review package
@@ -56,6 +57,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           ./tests/test-windows-native-sandbox-bootstrap.ps1
+          ./tests/test-windows-native-portal-driver.ps1
           ./tests/test-windows-native-installer-version.ps1
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $review = Join-Path $env:RUNNER_TEMP 'ods-windows-review'
@@ -75,7 +77,8 @@ jobs:
           $package = Join-Path $review 'package'
           ./desktop/windows/build.ps1 -OutputDirectory $package -NativeRuntimeDirectory $runtime -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview
           ./tests/test-windows-desktop-preview.ps1 -PackageBundle $package
-          ./tests/test-windows-native-portal.ps1 -Bundle $package
+          ./tests/test-windows-native-portal.ps1 -Bundle $package -StartupContracts -DiagnosticsDirectory (Join-Path $review 'qa-diagnostics/startup')
+          ./tests/test-windows-native-portal.ps1 -Bundle $package -DiagnosticsDirectory (Join-Path $review 'qa-diagnostics/portal')
           ./tests/test-windows-native-installer.ps1 -Package $package -ToolsCache $tools -ReceiptDirectory (Join-Path $review 'installer-tests')
           ./tests/test-windows-native-installer-prerequisites.ps1 -Package $package -ToolsCache $tools -ReceiptDirectory (Join-Path $review 'installer-tests/prerequisites')
           $files = @(Get-ChildItem -LiteralPath $package -Recurse -File)
@@ -97,7 +100,7 @@ jobs:
           ./desktop/windows/qa/new-sandbox-kit.ps1 -InstallerDirectory (Join-Path $review 'installer') -OutputDirectory (Join-Path $review 'sandbox-qa')
           # Exercise the actual handoff copies so a missing C# helper cannot
           # leave a generated kit that only fails later in a clean guest.
-          & (Join-Path $review 'sandbox-qa/input/ods/tests/test-windows-native-portal.ps1') -Bundle $package -DocumentFixture
+          & (Join-Path $review 'sandbox-qa/input/ods/tests/test-windows-native-portal.ps1') -Bundle $package -DocumentFixture -DiagnosticsDirectory (Join-Path $review 'qa-diagnostics/document')
           if ($LASTEXITCODE -ne 0) { throw 'Copied clean-Windows handoff driver failed.' }
           $zip = Join-Path $review 'ODS-Windows-Native-Preview.zip'
           Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip
@@ -105,6 +108,18 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $review 'SHA256SUMS.txt'), "$digest  ODS-Windows-Native-Preview.zip`n", [Text.UTF8Encoding]::new($false))
           $setupDigest = (Get-FileHash (Join-Path $review 'installer/ODS-Windows-Preview-Setup.exe')).Hash.ToLowerInvariant()
           Add-Content -Encoding utf8 (Join-Path $review 'SHA256SUMS.txt') "$setupDigest  installer/ODS-Windows-Preview-Setup.exe"
+
+      - name: Upload Windows native QA diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ods-windows-native-qa-diagnostics-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/ods-windows-review/qa-diagnostics/*/stdout.log
+            ${{ runner.temp }}/ods-windows-review/qa-diagnostics/*/stderr.log
+            ${{ runner.temp }}/ods-windows-review/qa-diagnostics/*/runner.json
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Windows native review preview
         if: runner.os == 'Windows'

@@ -32,6 +32,70 @@ static class PortalUiTests
         while (clock.ElapsedMilliseconds < milliseconds) { if (await predicate()) return; await Task.Delay(50); }
         throw new TimeoutException(message);
     }
+    static T StartupField<T>(ChatWindow window, string name) where T : class
+    {
+        var field = typeof(ChatWindow).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field == null) throw new MissingFieldException(typeof(ChatWindow).FullName, name);
+        return (T)field.GetValue(window);
+    }
+    static string StartupDetail(ChatWindow window)
+    { return StartupField<TextBlock>(window, "status").Text + " | " + StartupField<TextBlock>(window, "detail").Text; }
+    static async Task<PortalWindow> StartPortal(ChatWindow setup, int milliseconds)
+    {
+        var start = StartupField<Button>(setup, "start");
+        start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        PortalWindow owned = null;
+        string previous = null;
+        try
+        {
+            await Until(() =>
+            {
+                // Only this startup window's handoff may satisfy readiness.
+                owned = StartupField<Window>(setup, "portal") as PortalWindow;
+                if (owned != null && owned.IsVisible) return Task.FromResult(true);
+                string current = StartupDetail(setup);
+                if (current != previous) { Console.WriteLine("LIVE STARTUP " + current); previous = current; }
+                // StartAsync reports recoverable errors in the production UI.
+                // A completed failed operation must not become a generic wait.
+                if (StartupField<CancellationTokenSource>(setup, "operation") == null && start.IsEnabled)
+                    throw new InvalidOperationException("Packaged startup stopped before Portal: " + current);
+                return Task.FromResult(false);
+            }, milliseconds, "Packaged startup did not hand off to Portal.");
+        }
+        catch (TimeoutException error)
+        { throw new TimeoutException(error.Message + " Last startup state: " + StartupDetail(setup), error); }
+        return owned;
+    }
+    static async Task StartupContracts(string package)
+    {
+        Check(ServicePointManager.SecurityProtocol == SecurityProtocolType.Tls12,
+            "the actual UI runner entry point uses the production TLS 1.2 policy before model acquisition");
+        var bundle = Bundle.Read(package);
+        if (String.IsNullOrEmpty(bundle.PortalSha256))
+            throw new InvalidOperationException("Startup contracts require a package with a checked native Portal; no model acquisition is attempted.");
+        string root = Path.Combine(Path.GetTempPath(), "ods-startup-contract-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var setup = new ChatWindow(root, Path.Combine(root, "state"), bundle);
+        setup.Show();
+        try
+        {
+            bool refused = false;
+            try { await StartPortal(setup, 2000); }
+            catch (InvalidOperationException error)
+            {
+                refused = error.Message.Contains("Something needs your attention") &&
+                    error.Message.Contains("The Portal package failed verification. Extract the complete ZIP again.");
+            }
+            Check(refused, "an actual terminal startup failure preserves the production recovery text without waiting for a generic timeout");
+        }
+        finally
+        {
+            setup.Close();
+            if (Path.GetDirectoryName(root) != Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar))
+                throw new InvalidOperationException("Unexpected private startup fixture path.");
+            Directory.Delete(root, true);
+        }
+    }
     static WebView2 View(PortalWindow window)
     { return (WebView2)typeof(PortalWindow).GetField("view", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(window); }
     static Task<string> Script(PortalWindow window, string script) { return View(window).CoreWebView2.ExecuteScriptAsync(script); }
@@ -387,10 +451,7 @@ static class PortalUiTests
         var setup = new ChatWindow(package, state, Bundle.Read(package)); setup.Show();
         try
         {
-            var start = Find<Button>(setup, button => ((string)button.Content).Contains("start") || (string)button.Content == "Start local AI");
-            start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            await Until(() => Task.FromResult(Application.Current.Windows.OfType<PortalWindow>().Any()), 300000, "Packaged startup did not hand off to the document Portal.");
-            var window = Application.Current.Windows.OfType<PortalWindow>().Single();
+            var window = await StartPortal(setup, 300000);
             var runtime = (LocalRuntime)typeof(ChatWindow).GetField("runtime", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(setup);
             try
             {
@@ -437,11 +498,8 @@ static class PortalUiTests
         var setup = new ChatWindow(package, state, Bundle.Read(package)); setup.Show();
         try
         {
-            var start = Find<Button>(setup, button => ((string)button.Content).Contains("start") || (string)button.Content == "Start local AI");
-            start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             var clock = Stopwatch.StartNew();
-            await Until(() => Task.FromResult(Application.Current.Windows.OfType<PortalWindow>().Any()), 300000, "Packaged startup did not hand off to Portal.");
-            var window = Application.Current.Windows.OfType<PortalWindow>().Single();
+            var window = await StartPortal(setup, 300000);
             var runtime = (LocalRuntime)typeof(ChatWindow).GetField("runtime", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(setup);
             await Ready(window);
             await Script(window, "document.querySelector('.pixel-conversation-navigation > button.pixel-nav-item').click()");
@@ -501,6 +559,9 @@ static class PortalUiTests
     [STAThread]
     static int Main(string[] args)
     {
+        // This test runner instantiates ChatWindow directly, bypassing App.Main.
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+        Console.OutputEncoding = new UTF8Encoding(false);
         int result = 1;
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.Startup += async (sender, eventArgs) =>
@@ -508,7 +569,8 @@ static class PortalUiTests
             try
             {
                 string package = AppDomain.CurrentDomain.BaseDirectory;
-                if (args.Length > 0 && args[0] == "--live") await Live(package, args[1], args.Length > 2 ? args[2] : "");
+                if (args.Length > 0 && args[0] == "--startup-contracts") await StartupContracts(package);
+                else if (args.Length > 0 && args[0] == "--live") await Live(package, args[1], args.Length > 2 ? args[2] : "");
                 else if (args.Length > 0 && args[0] == "--document-live") await DocumentLive(package, args[1], args.Length > 2 ? args[2] : "");
                 else if (args.Length > 0 && args[0] == "--document-fixture") await DocumentFixture(package, args.Length > 1 ? args[1] : Path.Combine(package, "qa-document-state"));
                 else if (args.Length > 0 && args[0] == "--saved-state") await Fixture(package, args[1]);

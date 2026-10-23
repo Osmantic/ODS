@@ -58,11 +58,11 @@ try {
     if(-not $app.CloseMainWindow() -or -not $app.WaitForExit(10000)){throw 'Installed guest application did not close normally.'}
     $app.Dispose();$app=$null
     $record.phase='chat_model';Write-Output 'QA_PHASE=chat_model'
-    & (Join-Path $PSScriptRoot 'ods/tests/test-windows-native-portal.ps1') -Bundle $installed -LiveState (Join-Path $env:LOCALAPPDATA 'ODS Guest QA') -Screenshot (Join-Path $output 'native-portal.png')
+    & (Join-Path $PSScriptRoot 'ods/tests/test-windows-native-portal.ps1') -Bundle $installed -LiveState (Join-Path $env:LOCALAPPDATA 'ODS Guest QA') -Screenshot (Join-Path $output 'native-portal.png') -DiagnosticsDirectory (Join-Path $output 'chat-diagnostics')
     if($LASTEXITCODE -ne 0){throw 'Real model/Portal qualification failed in the guest.'}
     $record.text_model='passed'
     $record.phase='document_model';Write-Output 'QA_PHASE=document_model'
-    & (Join-Path $PSScriptRoot 'ods/tests/test-windows-native-portal.ps1') -Bundle $installed -LiveState (Join-Path $env:LOCALAPPDATA 'ODS Guest QA') -DocumentLive -Screenshot (Join-Path $output 'native-document.png')
+    & (Join-Path $PSScriptRoot 'ods/tests/test-windows-native-portal.ps1') -Bundle $installed -LiveState (Join-Path $env:LOCALAPPDATA 'ODS Guest QA') -DocumentLive -Screenshot (Join-Path $output 'native-document.png') -DiagnosticsDirectory (Join-Path $output 'document-diagnostics')
     if($LASTEXITCODE -ne 0){throw 'Real model/document/save qualification failed in the guest.'}
     $record.document_model='passed'
     $record.phase='complete'
