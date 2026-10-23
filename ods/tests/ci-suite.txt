@@ -312,3 +312,4 @@ tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
 tests/test-cli-compose-cache-model-store.sh
+tests/test-update-compose-cache-owner-overlays.sh
