@@ -7,6 +7,7 @@ on:
       - 'ods/desktop/windows/**'
       - 'ods/extensions/services/dashboard/**'
       - 'ods/config/model-library.json'
+      - 'ods/config/backends/nvidia.json'
       - 'ods/tests/test-windows-desktop-preview.ps1'
       - 'ods/tests/test-windows-native-*.ps1'
       - 'LICENSE'
@@ -17,10 +18,17 @@ on:
       - 'ods/desktop/windows/**'
       - 'ods/extensions/services/dashboard/**'
       - 'ods/config/model-library.json'
+      - 'ods/config/backends/nvidia.json'
       - 'ods/tests/test-windows-desktop-preview.ps1'
       - 'ods/tests/test-windows-native-*.ps1'
       - 'LICENSE'
   workflow_dispatch:
+    inputs:
+      cuda_preview:
+        description: Include the opt-in NVIDIA CUDA desktop metadata
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -47,6 +55,8 @@ jobs:
           ./tests/test-windows-native-installer-version.ps1
           ./tests/test-windows-native-sandbox-bootstrap.ps1
           ./tests/test-windows-native-portal-driver.ps1
+          ./tests/test-windows-native-clean-user-qa.ps1
+          ./desktop/windows/tests/Test-CudaRuntimePin.ps1
           ./tests/test-windows-desktop-preview.ps1
 
       - name: Build and launch Windows native review package
@@ -54,10 +64,13 @@ jobs:
         shell: pwsh
         env:
           ODS_DESKTOP_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          ODS_DESKTOP_INCLUDE_CUDA: ${{ github.event_name == 'workflow_dispatch' && inputs.cuda_preview && 'true' || 'false' }}
         run: |
           $ErrorActionPreference = 'Stop'
           ./tests/test-windows-native-sandbox-bootstrap.ps1
           ./tests/test-windows-native-portal-driver.ps1
+          ./tests/test-windows-native-clean-user-qa.ps1
+          ./desktop/windows/tests/Test-CudaRuntimePin.ps1
           ./tests/test-windows-native-installer-version.ps1
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $review = Join-Path $env:RUNNER_TEMP 'ods-windows-review'
@@ -75,7 +88,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Native Portal frontend did not build.' }
           } finally { Pop-Location }
           $package = Join-Path $review 'package'
-          ./desktop/windows/build.ps1 -OutputDirectory $package -NativeRuntimeDirectory $runtime -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview
+          ./desktop/windows/build.ps1 -OutputDirectory $package -NativeRuntimeDirectory $runtime -PortalAssets ./extensions/services/dashboard/dist/native -WebViewArchive $webview -IncludeCudaPreview:($env:ODS_DESKTOP_INCLUDE_CUDA -eq 'true')
           ./tests/test-windows-desktop-preview.ps1 -PackageBundle $package
           ./tests/test-windows-native-portal.ps1 -Bundle $package -StartupContracts -DiagnosticsDirectory (Join-Path $review 'qa-diagnostics/startup')
           ./tests/test-windows-native-portal.ps1 -Bundle $package -DiagnosticsDirectory (Join-Path $review 'qa-diagnostics/portal')

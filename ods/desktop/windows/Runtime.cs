@@ -35,6 +35,7 @@ namespace OdsDesktop
         public FilePin[] Files;
         public string PortalSha256;
         public bool RuntimeBundled;
+        public CudaRuntimePin Cuda;
         public static Bundle Read(string directory)
         {
             var bundle = new JavaScriptSerializer().Deserialize<Bundle>(
@@ -55,6 +56,7 @@ namespace OdsDesktop
             }
             else if (bundle.Files.Length != 1 || bundle.Runtime.File != "llama-server.exe" || bundle.Files[0].Sha256 != bundle.Runtime.Sha256)
                 throw new InvalidDataException("The packaged native CPU runtime manifest is invalid.");
+            if (bundle.Cuda != null) CudaRuntimeDownload.ValidatePin(bundle.Cuda);
             return bundle;
         }
         public static void SafeName(string name)
@@ -84,7 +86,7 @@ namespace OdsDesktop
     }
     // A retained Windows Job handle owns exactly the child we create. Closing the
     // handle also cleans up after an application crash; no process-name/PID search.
-    public sealed class ChildJob : IDisposable
+    public sealed partial class ChildJob : IDisposable
     {
         [StructLayout(LayoutKind.Sequential)] struct BasicLimits
         {
@@ -122,6 +124,7 @@ namespace OdsDesktop
         static extern bool UpdateProcThreadAttribute(IntPtr attributes, uint flags, IntPtr attribute, IntPtr value, IntPtr bytes, IntPtr previous, IntPtr returned);
         [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr attributes);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr value);
+        [DllImport("kernel32.dll", SetLastError = true)] static extern uint ResumeThread(IntPtr thread);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         static extern bool CreateProcess(string application, StringBuilder command, IntPtr processAttributes, IntPtr threadAttributes,
             bool inheritHandles, uint flags, IntPtr environment, string directory, ref StartupInfoEx startup, out ProcessInformation process);
@@ -140,19 +143,23 @@ namespace OdsDesktop
             }
         }
         public Process Start(ProcessStartInfo start)
+        { return StartCore(start, null); }
+        Process StartCore(ProcessStartInfo start, IntPtr[] inherited)
         {
             // Windows 10+ can assign the Job inside CreateProcess, before the
             // child can execute. There is no start-then-assign crash window.
             IntPtr bytes = IntPtr.Zero;
-            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref bytes);
+            int count = inherited == null ? 1 : 2;
+            InitializeProcThreadAttributeList(IntPtr.Zero, count, 0, ref bytes);
             IntPtr attributes = Marshal.AllocHGlobal(bytes);
             IntPtr jobValue = Marshal.AllocHGlobal(IntPtr.Size);
             IntPtr environment = IntPtr.Zero;
+            IntPtr handles = IntPtr.Zero;
             bool initialized = false;
             var info = new ProcessInformation();
             try
             {
-                if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref bytes)) throw new System.ComponentModel.Win32Exception();
+                if (!InitializeProcThreadAttributeList(attributes, count, 0, ref bytes)) throw new System.ComponentModel.Win32Exception();
                 initialized = true;
                 Marshal.WriteIntPtr(jobValue, handle.DangerousGetHandle());
                 if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x0002000D), jobValue, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
@@ -162,13 +169,28 @@ namespace OdsDesktop
                 environment = Marshal.StringToHGlobalUni(String.Join("\0", entries) + "\0\0");
                 var startup = new StartupInfoEx { Attributes = attributes };
                 startup.Startup.Size = Marshal.SizeOf(startup);
+                if (inherited != null)
+                {
+                    handles = Marshal.AllocHGlobal(IntPtr.Size * inherited.Length);
+                    Marshal.Copy(inherited, 0, handles, inherited.Length);
+                    if (!UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x00020002), handles,
+                        new IntPtr(IntPtr.Size * inherited.Length), IntPtr.Zero, IntPtr.Zero)) throw new System.ComponentModel.Win32Exception();
+                    startup.Startup.Flags = 0x100; // STARTF_USESTDHANDLES; explicit handle allowlist only.
+                    startup.Startup.StdInput = inherited[0];
+                    startup.Startup.StdOutput = startup.Startup.StdError = inherited[1];
+                }
                 var command = new StringBuilder("\"" + start.FileName + "\" " + start.Arguments);
-                if (!CreateProcess(start.FileName, command, IntPtr.Zero, IntPtr.Zero, false, 0x08080400,
+                if (!CreateProcess(start.FileName, command, IntPtr.Zero, IntPtr.Zero, inherited != null, 0x08080404,
                     environment, start.WorkingDirectory, ref startup, out info)) throw new System.ComponentModel.Win32Exception();
+                // Retain before resuming: short read-only probes can otherwise
+                // exit before GetProcessById can obtain their handle. The Job
+                // already owns the suspended child if this application crashes.
                 var child = Process.GetProcessById(info.ProcessId);
                 // Retain the child handle before releasing CreateProcess's handle.
                 // The process object remains alive, preventing PID reuse here.
                 var retained = child.Handle;
+                if (ResumeThread(info.Thread) == UInt32.MaxValue)
+                { int error = Marshal.GetLastWin32Error(); child.Dispose(); throw new System.ComponentModel.Win32Exception(error); }
                 return child;
             }
             finally
@@ -178,6 +200,7 @@ namespace OdsDesktop
                 if (initialized) DeleteProcThreadAttributeList(attributes);
                 Marshal.FreeHGlobal(attributes); Marshal.FreeHGlobal(jobValue);
                 if (environment != IntPtr.Zero) Marshal.FreeHGlobal(environment);
+                if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
                 GC.KeepAlive(handle);
             }
         }
@@ -208,6 +231,8 @@ namespace OdsDesktop
         public int TurnCount { get { return history.Count / 2; } }
         public bool IsRunning { get { return child != null && !child.HasExited; } }
         public string SessionDirectory { get { return session; } }
+        public bool IsCuda { get; private set; }
+        public string BackendDescription { get { return IsCuda ? "NVIDIA CUDA" : "CPU"; } }
         internal static int PreviewCpuThreads(int logicalProcessors)
         {
             // Keep b9014's MinGW lower-core default, but avoid oversubscribing
@@ -229,7 +254,16 @@ namespace OdsDesktop
             }
             return result.Append('\\', slashes * 2).Append('"').ToString();
         }
-        public async Task StartAsync(string runtimeDirectory, Bundle bundle, string modelPath, string stateDirectory, CancellationToken token)
+        public Task StartAsync(string runtimeDirectory, Bundle bundle, string modelPath, string stateDirectory, CancellationToken token)
+        { return StartCoreAsync(runtimeDirectory, bundle, modelPath, stateDirectory, null, token); }
+        public Task StartCudaAsync(string runtimeDirectory, Bundle bundle, string modelPath, string stateDirectory, CudaRuntimePin pin, CancellationToken token)
+        {
+            CudaRuntimeDownload.ValidatePin(pin);
+            if (bundle.Files.Length != pin.Files.Length || pin.Files.Any(f => !bundle.Files.Any(b => b.Name == f.Name && b.Sha256 == f.Sha256)))
+                throw new InvalidDataException("The CUDA launch manifest does not match the checked runtime.");
+            return StartCoreAsync(runtimeDirectory, bundle, modelPath, stateDirectory, pin, token);
+        }
+        async Task StartCoreAsync(string runtimeDirectory, Bundle bundle, string modelPath, string stateDirectory, CudaRuntimePin cuda, CancellationToken token)
         {
             if (child != null) throw new InvalidOperationException("The local model is already running.");
             RuntimeDownload.ValidateForLaunch(runtimeDirectory, bundle);
@@ -252,7 +286,17 @@ namespace OdsDesktop
                 security.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl,
                     InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
                 session = Path.Combine(stateDirectory, "sessions", Guid.NewGuid().ToString("N"));
+                ModelDownload.InspectPath(session, true);
                 Directory.CreateDirectory(session, security);
+                string device = "none";
+                if (cuda != null)
+                {
+                    var hardware = await CudaRuntime.HardwareAsync(cuda, session, token);
+                    string devices = await CudaRuntime.CaptureAsync(Path.Combine(runtimeDirectory, "llama-server.exe"),
+                        "--list-devices", session, token, TimeSpan.FromSeconds(30));
+                    device = CudaRuntime.SelectDevice(devices, hardware);
+                }
+                token.ThrowIfCancellationRequested();
                 var secret = new byte[32];
                 using (var rng = RandomNumberGenerator.Create()) rng.GetBytes(secret);
                 string key = Convert.ToBase64String(secret);
@@ -263,19 +307,21 @@ namespace OdsDesktop
                 Port = ((IPEndPoint)listener.LocalEndpoint).Port;
                 listener.Stop();
                 job = new ChildJob();
-                var start = new ProcessStartInfo(Path.Combine(runtimeDirectory, "llama-server.exe"));
+                var start = cuda == null ? new ProcessStartInfo(Path.Combine(runtimeDirectory, "llama-server.exe"))
+                    : CudaRuntime.StartInfo(Path.Combine(runtimeDirectory, "llama-server.exe"), "");
                 string threads = PreviewCpuThreads(Environment.ProcessorCount).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 start.Arguments = String.Join(" ", new[] { "--model", modelPath, "--alias", Alias, "--host", "127.0.0.1",
-                    "--port", Port.ToString(), "--ctx-size", "4096", "--parallel", "1", "--device", "none",
-                    "--n-gpu-layers", "0", "--threads", threads, "--threads-batch", threads,
+                    "--port", Port.ToString(), "--ctx-size", "4096", "--parallel", "1", "--device", device,
+                    "--n-gpu-layers", cuda == null ? "0" : "99", "--threads", threads, "--threads-batch", threads,
                     "--fit", "off", "--jinja", "--no-webui", "--api-key-file", keyPath }.Select(Argument));
                 start.UseShellExecute = false;
                 start.CreateNoWindow = true;
                 start.WorkingDirectory = runtimeDirectory;
                 foreach (string name in start.EnvironmentVariables.Keys.Cast<string>().ToArray())
-                    if (name.StartsWith("LLAMA_", StringComparison.OrdinalIgnoreCase) || name == "HF_TOKEN" || name == "HUGGING_FACE_HUB_TOKEN")
+                    if (name.StartsWith("LLAMA_", StringComparison.OrdinalIgnoreCase) || String.Equals(name, "HF_TOKEN", StringComparison.OrdinalIgnoreCase) || String.Equals(name, "HUGGING_FACE_HUB_TOKEN", StringComparison.OrdinalIgnoreCase))
                         start.EnvironmentVariables.Remove(name);
-                child = job.Start(start);
+                string engineLog = Path.Combine(session, "engine.log");
+                child = cuda == null ? job.Start(start) : job.StartCaptured(start, engineLog);
                 client = new HttpClient(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false });
                 client.BaseAddress = new Uri("http://127.0.0.1:" + Port + "/");
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key);
@@ -284,6 +330,8 @@ namespace OdsDesktop
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
+                    if (cuda != null && new FileInfo(engineLog).Length > 4194304)
+                        throw new InvalidDataException("The CUDA startup diagnostic output exceeded its limit.");
                     if (child.HasExited) throw new InvalidOperationException("The local model exited with code " + child.ExitCode + ". Close other applications or extract the complete package again.");
                     if (clock.Elapsed > TimeSpan.FromMinutes(3)) throw new TimeoutException("The local model took too long to start. Close other applications and try again.");
                     using (var probe = CancellationTokenSource.CreateLinkedTokenSource(token))
@@ -299,6 +347,8 @@ namespace OdsDesktop
                                     var data = payload == null ? null : payload["data"] as object[];
                                     if (data == null || data.Length != 1 || (string)((Dictionary<string, object>)data[0])["id"] != Alias)
                                         throw new InvalidDataException("The local model identity did not match this application.");
+                                    if (cuda != null) CudaRuntime.VerifyOffload(CudaRuntime.ReadLog(engineLog, 4194304), device);
+                                    IsCuda = cuda != null;
                                     return;
                                 }
                                 if (response.StatusCode != HttpStatusCode.ServiceUnavailable)
@@ -450,6 +500,7 @@ namespace OdsDesktop
         }
         public void Dispose()
         {
+            IsCuda = false;
             if (client != null) { client.Dispose(); client = null; }
             if (job != null) { job.Dispose(); job = null; }
             if (child != null)

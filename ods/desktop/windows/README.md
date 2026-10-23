@@ -10,11 +10,35 @@ requires no Docker, WSL, Git, Node, Python, terminal or administrator account.
 local answer → explicit Create document → verified Download → Windows save
 dialog → reopen saved history. Stop and another turn remain available.
 Full OpenClaw/Pixel agents, host tools, workspace editing, voice, images,
-extensions and GPU routing remain outside this preview. Their controls are
+extensions and model switching remain outside this preview. Their controls are
 hidden and the native API refuses unsupported operations. Existing ODS
 installations and the supported `install.ps1` path are separate.
 
 See [validation](VALIDATION.md) for executed checks and release gates.
+
+## Optional NVIDIA integration candidate
+
+The isolated integration build combines this desktop preview with the reviewed
+x64 NVIDIA pin from #8014. Build with `-IncludeCudaPreview` to include the checked
+CUDA metadata. Ordinary builds retain the CPU default and need no GPU driver.
+
+In an integration package, choose **NVIDIA CUDA (opt-in)** before Start. The app
+checks the Windows driver and compiled compute targets before downloading two
+official ggml-org CUDA archives (about 606 MB combined). It verifies both archives
+and the complete extracted file census, then checks all runtime/model bytes again
+before launching. The same 2B model and 4K context run inside the application's
+Windows Job; this route uses no service, scheduled task, Docker or WSL.
+
+CUDA requires the Microsoft Visual C++ v14.44+ x64 runtime, a compatible NVIDIA
+driver (551.78+), and this preview's 4 GB VRAM admission floor. Only listed compute
+targets are accepted; the pinned CUDA 12.4 engine excludes RTX 50-series GPUs.
+The actual tested GPU is RTX 3060 12 GB; wider hardware remains a release gate.
+Allow about 6 GB free disk for first acquisition/cache. GPU failure explains how
+to retry or explicitly choose CPU; it never silently switches backends.
+The private choice survives restart and leaves saved conversations intact.
+
+This remains an unsigned integration candidate, separate from the qualified CPU
+artifact described below. It does not make the full ODS agents stack native.
 
 ## Install and use
 

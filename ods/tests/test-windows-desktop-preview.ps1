@@ -4,9 +4,10 @@ param([string]$LiveBundle, [string]$ModelPath, [string]$UiBundle, [string]$UiSta
 $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { throw 'This suite must execute on native Windows.' }
 $source = Join-Path $PSScriptRoot '../desktop/windows'
+$runtimeSources = @('Runtime.cs','RuntimeDownload.cs','CudaRuntime.cs','CudaRuntimeDownload.cs','NativeBackendSettings.cs') | ForEach-Object { Join-Path $source $_ }
 $portalSources = @('PortalPackage.cs','PortalState.cs','NativePortalSession.cs') | ForEach-Object { Join-Path $source $_ }
 $supportSources = @('ModelDownload.cs','NativeContextBudget.cs','NativeDocument.cs','NativeDocumentModel.cs') | ForEach-Object { Join-Path $source $_ }
-$reviewTests = @('PortalStateReviewTests.cs','NativeContextBudgetTests.cs','ModelDownloadReviewTests.cs','NativeDocumentTests.cs','NativeDocumentBudgetTests.cs','NativeDocumentFlowTests.cs') | ForEach-Object { Join-Path $source "tests/$_" }
+$reviewTests = @('PortalStateReviewTests.cs','NativeContextBudgetTests.cs','ModelDownloadReviewTests.cs','NativeDocumentTests.cs','NativeDocumentBudgetTests.cs','NativeDocumentFlowTests.cs','NativeBackendSettingsTests.cs') | ForEach-Object { Join-Path $source "tests/$_" }
 $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
 $wpf = Join-Path (Split-Path $compiler) 'WPF'
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-desktop-build-' + [guid]::NewGuid().ToString('N'))
@@ -17,14 +18,14 @@ try {
         /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Xaml.dll `
         "/reference:$wpf/WindowsBase.dll" "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
         /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll `
-        (Join-Path $source 'Runtime.cs') (Join-Path $source 'RuntimeDownload.cs') (Join-Path $source 'App.cs') `
+        $runtimeSources (Join-Path $source 'App.cs') `
         (Join-Path $source 'tests/DesktopTests.cs') (Join-Path $source 'tests/WindowTests.cs') (Join-Path $source 'tests/EntrypointTests.cs') (Join-Path $source 'tests/NativePortalTests.cs') $portalSources $supportSources $reviewTests
     if ($LASTEXITCODE -ne 0) { throw 'Desktop test runner did not compile.' }
     & $compiler /nologo /target:winexe /platform:x64 "/out:$fixture/ODS Windows Preview.exe" `
         /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Xaml.dll `
         /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "/reference:$wpf/WindowsBase.dll" `
         "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
-        (Join-Path $source 'Runtime.cs') (Join-Path $source 'RuntimeDownload.cs') (Join-Path $source 'App.cs') $portalSources $supportSources
+        $runtimeSources (Join-Path $source 'App.cs') $portalSources $supportSources
     if ($LASTEXITCODE -ne 0) { throw 'Desktop GUI did not compile.' }
     if ($PackageBundle) {
         & $runner --package ([IO.Path]::GetFullPath($PackageBundle))
@@ -36,6 +37,21 @@ try {
         & $runner --live ([IO.Path]::GetFullPath($LiveBundle)) ([IO.Path]::GetFullPath($ModelPath))
     } else { & $runner }
     if ($LASTEXITCODE -ne 0) { throw 'Desktop behavioral tests failed.' }
+    if (-not ($PackageBundle -or $UiBundle -or $LiveBundle)) {
+        # Separate Main methods keep acquisition and launch regressions explicit.
+        # Both use private fixtures; no real GPU, model or network is required.
+        foreach ($testClass in @('CudaRuntimeTests','CudaRuntimeLaunchTests')) {
+            $cudaRunner=Join-Path $fixture ($testClass+'.exe')
+            & $compiler /nologo /target:exe "/main:$testClass" /platform:x64 "/out:$cudaRunner" `
+                /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Xaml.dll `
+                /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll `
+                "/reference:$wpf/WindowsBase.dll" "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
+                $runtimeSources (Join-Path $source 'App.cs') $portalSources $supportSources (Join-Path $source "tests/$testClass.cs")
+            if ($LASTEXITCODE -ne 0) { throw "$testClass did not compile." }
+            & $cudaRunner
+            if ($LASTEXITCODE -ne 0) { throw "$testClass failed." }
+        }
+    }
 } finally {
     # A fixed fixture child created by this suite; never enumerate arbitrary paths.
     if ((Split-Path $fixture -Parent) -ne [IO.Path]::GetTempPath().TrimEnd('\')) { throw 'Unexpected fixture path.' }

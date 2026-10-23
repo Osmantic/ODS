@@ -504,6 +504,7 @@ static class DesktopTests
                 {
                     Downloads(root).GetAwaiter().GetResult(); RuntimeDownloads(root).GetAwaiter().GetResult(); Processes(root).GetAwaiter().GetResult();
                     checks += PortalStateReviewTests.Run(root);
+                    checks += NativeBackendSettingsTests.Run(root);
                     checks += NativeContextBudgetTests.Run().GetAwaiter().GetResult();
                     checks += ModelDownloadReviewTests.Run(root).GetAwaiter().GetResult();
                     checks += NativeDocumentTests.Run(root);

@@ -29,6 +29,8 @@ namespace OdsDesktop
         readonly FlowDocument transcript = new FlowDocument { FontFamily = new FontFamily("Segoe UI"), FontSize = 16, PagePadding = new Thickness(20) };
         readonly Button start = Button("Download & start (1.30 GB)"), send = Button("Send"), cancel = Button("Cancel"), fresh = Button("New chat");
         readonly Button prerequisites = Button("Windows runtime help");
+        readonly ComboBox acceleration = new ComboBox { MinWidth = 250, Margin = new Thickness(0, 0, 0, 10), Padding = new Thickness(8, 4, 8, 4) };
+        bool cudaSelected, changingAcceleration;
         LocalRuntime runtime;
         CancellationTokenSource operation;
         bool closing;
@@ -37,6 +39,12 @@ namespace OdsDesktop
         public ChatWindow(string directory, string state, Bundle bundle)
         {
             this.directory = directory; this.state = state; this.bundle = bundle;
+            try { cudaSelected = NativeBackendSettings.ReadCuda(state); }
+            catch (Exception error)
+            {
+                throw new InvalidOperationException("Could not read the saved acceleration choice at " + Path.Combine(state, "preferences", "backend.json") +
+                    ". Existing settings were kept. Back up or repair that private settings file before reopening ODS. " + error.Message, error);
+            }
             if (bundle.RuntimeBundled) start.Content = "Download & start (1.28 GB)";
             Title = "ODS — Windows Preview";
             Width = 940; Height = 740; MinWidth = 640; MinHeight = 520;
@@ -53,7 +61,7 @@ namespace OdsDesktop
             var header = new StackPanel { Margin = new Thickness(0, 0, 0, 20) };
             header.Children.Add(new TextBlock { Text = "ODS", FontSize = 30, FontWeight = FontWeights.Bold, Foreground = Brush("#14664C") });
             header.Children.Add(new TextBlock { Text = "Your AI, on your Windows PC.", FontSize = 19, Margin = new Thickness(0, 4, 0, 6) });
-            header.Children.Add(new TextBlock { Text = "Local chat preview · CPU · No Docker or WSL", Foreground = Brush("#4B5563"), FontSize = 14 });
+            header.Children.Add(new TextBlock { Text = bundle.Cuda == null ? "Local chat preview · CPU · No Docker or WSL" : "Local chat preview · CPU or NVIDIA CUDA · No Docker or WSL", Foreground = Brush("#4B5563"), FontSize = 14 });
             layout.Children.Add(header);
             var setup = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
             status.Text = "Ready to set up " + bundle.Model.Name;
@@ -63,6 +71,28 @@ namespace OdsDesktop
                 : "Download the model once, then open ODS Portal. Conversations are saved privately on this Windows account.";
             detail.Margin = new Thickness(0, 6, 0, 10); detail.Foreground = Brush("#4B5563");
             setup.Children.Add(status); setup.Children.Add(detail);
+            acceleration.Items.Add("CPU (default)"); acceleration.Items.Add("NVIDIA CUDA (opt-in)");
+            acceleration.SelectedIndex = cudaSelected ? 1 : 0;
+            System.Windows.Automation.AutomationProperties.SetName(acceleration, "Local AI acceleration");
+            acceleration.SelectionChanged += (sender, args) =>
+            {
+                if (changingAcceleration) return;
+                bool requested = acceleration.SelectedIndex == 1;
+                try
+                {
+                    NativeBackendSettings.WriteCuda(state, requested); cudaSelected = requested;
+                    status.Text = requested ? "NVIDIA CUDA selected" : "CPU selected";
+                    detail.Text = requested ? "Start will check your NVIDIA GPU, acquire its pinned runtime and load the same local model. CPU remains available above."
+                        : "Start uses the included CPU runtime. Your saved conversations and downloaded files are kept.";
+                    UpdateStartLabel();
+                }
+                catch (Exception error)
+                {
+                    changingAcceleration = true; acceleration.SelectedIndex = cudaSelected ? 1 : 0; changingAcceleration = false;
+                    status.Text = "The acceleration choice could not be saved"; detail.Text = error.Message;
+                }
+            };
+            setup.Children.Add(acceleration);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 10) };
             actions.Children.Add(start); actions.Children.Add(cancel); actions.Children.Add(fresh);
             prerequisites.Visibility = Visibility.Collapsed; actions.Children.Add(prerequisites);
@@ -76,7 +106,7 @@ namespace OdsDesktop
             Grid.SetRow(compose, 3); layout.Children.Add(compose);
             var note = new TextBlock { Text = String.IsNullOrEmpty(bundle.PortalSha256)
                 ? "Enter to send · Shift+Enter for a new line · AI can make mistakes.\nThis preview covers local text chat. Portal, agents, voice and extensions are not included."
-                : "AI can make mistakes. This preview opens the ODS Portal text-chat flow.\nAgent tools, voice, images, extensions and GPU acceleration are not included.",
+                : "AI can make mistakes. This preview opens the ODS Portal chat and document flow.\nAgent tools, voice, images and extensions are not included.",
                 TextWrapping = TextWrapping.Wrap, FontSize = 12, Foreground = Brush("#4B5563"), Margin = new Thickness(0, 10, 0, 0) };
             Grid.SetRow(note, 4); layout.Children.Add(note);
             System.Windows.Automation.AutomationProperties.SetName(prompt, "Message to your local AI");
@@ -95,8 +125,7 @@ namespace OdsDesktop
             cancel.Click += (sender, args) => { if (operation != null) operation.Cancel(); };
             fresh.Click += (sender, args) => { if (runtime != null) runtime.NewChat(); transcript.Blocks.Clear(); prompt.Focus(); };
             Closing += OnClosing;
-            if (File.Exists(Path.Combine(state, "models", bundle.Model.File)) || File.Exists(Path.Combine(directory, "models", bundle.Model.File)))
-                start.Content = "Start local AI";
+            UpdateStartLabel();
             UpdateControls(false);
         }
         static SolidColorBrush Brush(string color) { return (SolidColorBrush)new BrushConverter().ConvertFromString(color); }
@@ -107,6 +136,7 @@ namespace OdsDesktop
         }
         void UpdateControls(bool busy)
         {
+            acceleration.IsEnabled = !busy && runtime == null;
             start.IsEnabled = !busy && runtime == null;
             send.IsEnabled = !busy && runtime != null;
             prompt.IsEnabled = !busy && runtime != null;
@@ -115,14 +145,35 @@ namespace OdsDesktop
             cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
             if (portal != null) { send.IsEnabled = false; prompt.IsEnabled = false; fresh.IsEnabled = false; }
         }
+        void UpdateStartLabel()
+        {
+            bool cached = File.Exists(Path.Combine(state, "models", bundle.Model.File)) || File.Exists(Path.Combine(directory, "models", bundle.Model.File));
+            start.Content = cached ? "Start local AI" : cudaSelected ? "Download & start (CUDA runtime + model)"
+                : bundle.RuntimeBundled ? "Download & start (1.28 GB)" : "Download & start (1.30 GB)";
+        }
+        string ReadyStatus()
+        { return "Ready · " + bundle.Model.Name + " · running locally on " + (runtime != null && runtime.IsCuda ? runtime.BackendDescription : "CPU"); }
+        Task StartSelectedAsync(bool cuda, string native, Bundle launch, string model, CancellationToken token)
+        {
+            return cuda ? runtime.StartCudaAsync(native, launch, model, state, bundle.Cuda, token)
+                : runtime.StartAsync(native, launch, model, state, token);
+        }
         async Task StartAsync()
         {
             if (operation != null) return;
+            bool useCuda = cudaSelected;
+            if (useCuda && bundle.Cuda == null)
+            {
+                status.Text = "NVIDIA CUDA is unavailable in this package";
+                detail.Text = "Choose CPU above or use a complete package containing the pinned CUDA runtime metadata. Your saved acceleration choice was kept.";
+                return;
+            }
             prerequisiteHelp = NativePrerequisites.HelpUrl;
-            if (!bundle.RuntimeBundled && !NativePrerequisites.Available(Environment.SystemDirectory))
+            if ((useCuda || !bundle.RuntimeBundled) && !NativePrerequisites.Available(Environment.SystemDirectory))
             {
                 status.Text = "One Windows component is needed first";
-                detail.Text = "Install Microsoft's latest Visual C++ v14 x64 runtime, then click Start again. Windows may ask for administrator permission to install it.";
+                detail.Text = "Install Microsoft's latest Visual C++ v14 x64 runtime, then click Start again. Windows may ask for administrator permission to install it." +
+                    (useCuda ? " You can also choose CPU above to use the included CPU engine." : "");
                 prerequisites.Visibility = Visibility.Visible;
                 return;
             }
@@ -150,16 +201,38 @@ namespace OdsDesktop
                             prerequisites.Visibility = Visibility.Visible; return;
                         }
                     }
-                    var feedback = new Progress<double>(value =>
-                        {
-                            if (closing || operation == null) return;
-                            progress.IsIndeterminate = false; progress.Value = value * 100;
-                            status.Text = "Downloading local AI files — " + Math.Floor(value * 100) + "%";
-                        });
-                    detail.Text = bundle.RuntimeBundled ? "Checking the included CPU runtime and downloading your model from Hugging Face. You can cancel at any time."
-                        : "Downloading the checked runtime from GitHub and model from Hugging Face. You can cancel at any time.";
-                    string native = bundle.RuntimeBundled ? RuntimeDownload.BundledCandidate(bundle, directory)
-                        : await RuntimeDownload.EnsureAsync(bundle, state, feedback, operation.Token);
+                    int downloadPhase = 1;
+                    var pending = operation;
+                    Action<double, string, int> report = (value, label, phase) =>
+                    {
+                        if (closing || operation != pending || downloadPhase != phase) return;
+                        progress.IsIndeterminate = false; progress.Value = value * 100;
+                        status.Text = label + " — " + Math.Floor(value * 100) + "%";
+                    };
+                    var engineFeedback = new Progress<double>(value => report(value, "Downloading the pinned runtime", 1));
+                    var feedback = new Progress<double>(value => report(value, "Downloading your model", 2));
+                    Bundle launch = bundle;
+                    string native;
+                    if (useCuda)
+                    {
+                        status.Text = "Checking your NVIDIA GPU…";
+                        detail.Text = "Checking the Windows driver and supported CUDA compute capability before downloading the runtime.";
+                        await CudaRuntime.CheckHardwareAsync(bundle.Cuda, state, operation.Token);
+                        status.Text = "Preparing the NVIDIA CUDA runtime…";
+                        detail.Text = "Acquiring the two pinned CUDA archives from ggml-org. You can cancel; completed verified downloads are kept.";
+                        native = await CudaRuntimeDownload.EnsureAsync(bundle.Cuda, state, engineFeedback, operation.Token);
+                        launch = CudaRuntimeDownload.ForLaunch(bundle, bundle.Cuda);
+                    }
+                    else
+                    {
+                        detail.Text = bundle.RuntimeBundled ? "Checking the included CPU runtime. You can cancel at any time."
+                            : "Downloading the checked CPU runtime from GitHub. You can cancel at any time.";
+                        native = bundle.RuntimeBundled ? RuntimeDownload.BundledCandidate(bundle, directory)
+                            : await RuntimeDownload.EnsureAsync(bundle, state, engineFeedback, operation.Token);
+                    }
+                    downloadPhase = 2;
+                    status.Text = "Preparing your model…";
+                    detail.Text = "Using the checked local model or downloading it from Hugging Face. You can cancel at any time.";
                     string bundled = Path.Combine(directory, "models", bundle.Model.File);
                     string cached = Path.Combine(state, "models", bundle.Model.File);
                     bool hasSeed = ModelDownload.InspectPath(bundled, false) && new FileInfo(bundled).Length == bundle.Model.Size;
@@ -169,18 +242,20 @@ namespace OdsDesktop
                         ? cached : hasSeed ? bundled
                         : await ModelDownload.CandidateForLaunchAsync(bundle.Model, Path.Combine(state, "models"), feedback, operation.Token);
                     status.Text = "Starting your local AI…";
-                    detail.Text = "Verifying the model and loading it into memory. This can take a few minutes.";
+                    downloadPhase = 3;
+                    detail.Text = useCuda ? "Verifying the runtime and model, qualifying the CUDA device and loading the model. CUDA is ready only after startup succeeds."
+                        : "Verifying the model and loading it into memory. This can take a few minutes.";
                     progress.IsIndeterminate = true;
                     runtime = new LocalRuntime();
                     bool repairModel = false;
-                    try { await runtime.StartAsync(native, bundle, model, state, operation.Token); }
+                    try { await StartSelectedAsync(useCuda, native, launch, model, operation.Token); }
                     catch (ModelIntegrityException) { repairModel = true; }
                     if (repairModel && model != bundled && hasSeed)
                     {
                         // A valid included seed remains an offline recovery path
                         // for a damaged cache. It passes the same launch gate.
                         repairModel = false;
-                        try { await runtime.StartAsync(native, bundle, bundled, state, operation.Token); }
+                        try { await StartSelectedAsync(useCuda, native, launch, bundled, operation.Token); }
                         catch (ModelIntegrityException) { repairModel = true; }
                     }
                     if (repairModel)
@@ -190,12 +265,14 @@ namespace OdsDesktop
                         // runtime corruption, access failures or failed inference.
                         operation.Token.ThrowIfCancellationRequested();
                         status.Text = "Repairing your model download…";
+                        downloadPhase = 2;
                         model = await ModelDownload.DownloadReplacementAsync(bundle.Model, Path.Combine(state, "models"), feedback, operation.Token);
+                        downloadPhase = 3;
                         progress.IsIndeterminate = true;
                         status.Text = "Starting your local AI…";
-                        await runtime.StartAsync(native, bundle, model, state, operation.Token);
+                        await StartSelectedAsync(useCuda, native, launch, model, operation.Token);
                     }
-                    status.Text = "Ready · " + bundle.Model.Name + " · running locally on CPU";
+                    status.Text = ReadyStatus();
                     detail.Text = "You're offline-ready. Type a message below to begin.";
                     start.Content = "Start local AI";
                     if (portalType != null)
@@ -230,7 +307,7 @@ namespace OdsDesktop
                 string answer = await runtime.ChatAsync(message, operation.Token);
                 AddMessage("You", message); AddMessage("ODS", answer);
                 prompt.Clear();
-                status.Text = "Ready · " + bundle.Model.Name + " · running locally on CPU";
+                status.Text = ReadyStatus();
                 detail.Text = "Your conversation is kept in memory until you start a new chat or close the app.";
             }
             catch (Exception error) { HandleFailure(error, "Response stopped. Start local AI to begin a new chat.", false); }
@@ -258,6 +335,8 @@ namespace OdsDesktop
                 : (error is OperationCanceledException ? (setup
                     ? "Setup timed out. Check your connection and start again. Completed downloads are kept."
                     : "The response timed out. Try a shorter message or start a new chat.") : error.Message);
+            if (setup && cudaSelected && !cancelled)
+                detail.Text += " NVIDIA CUDA did not start. Choose CPU above or resolve this issue and retry; the acceleration choice was kept.";
         }
         void EndOperation()
         {

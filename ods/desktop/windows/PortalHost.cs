@@ -63,7 +63,9 @@ namespace OdsDesktop
             var restart = new Button { Content = "Restart local AI", Padding = new Thickness(12, 5, 12, 5) };
             restart.Click += (sender, args) => { RestartRequested = true; Close(); };
             toolbar.Children.Add(restart);
-            toolbar.Children.Add(new TextBlock { Text = "  Native Windows · local CPU · saved conversations", VerticalAlignment = VerticalAlignment.Center });
+            var local = model as LocalRuntime;
+            string backend = local != null && local.IsCuda ? local.BackendDescription : "local CPU";
+            toolbar.Children.Add(new TextBlock { Text = "  Native Windows · " + backend + " · saved conversations", VerticalAlignment = VerticalAlignment.Center });
             toolbar.Children.Add(downloadStatus);
             DockPanel.SetDock(toolbar, Dock.Top); dock.Children.Add(toolbar); dock.Children.Add(view); Content = dock;
             Loaded += async (sender, args) => await InitializeAsync();

@@ -1918,7 +1918,7 @@ export default function Pixel({ systemStatus = null, nativeChat = false }) {
         </div>
       </header>
       {status === 'available' && !nativeChat && <PortalReadiness readiness={runtimeReadiness} />}
-      {nativeChat && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">Local CPU chat and Markdown documents · Context uses the recent messages that fit; full conversation history stays saved on this Windows account. Other agent tools, voice, images and extensions are not available in this preview.</p>}
+      {nativeChat && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">Local chat and Markdown documents · Context uses the recent messages that fit; full conversation history stays saved on this Windows account. Other agent tools, voice, images and extensions are not available in this preview.</p>}
       <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'held' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail}</p>}
       {status === 'recovery' && <p role="alert" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail} <Link to="/settings?section=access" className="underline">Portal permissions</Link></p>}

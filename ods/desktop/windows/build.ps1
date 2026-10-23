@@ -5,12 +5,18 @@ param(
     [Parameter(Mandatory = $true)][string]$OutputDirectory,
     [string]$RuntimeArchive,
     [string]$NativeRuntimeDirectory,
+    [switch]$IncludeCudaPreview,
     [switch]$IncludeModel,
     [string]$ModelPath,
     [string]$PortalAssets,
     [string]$WebViewArchive
 )
 $ErrorActionPreference = 'Stop'
+$cudaPin=$null
+if ($IncludeCudaPreview) {
+    . (Join-Path $PSScriptRoot 'validate-cuda-runtime-pin.ps1')
+    $cudaPin=Assert-CudaRuntimePinContract (Join-Path $PSScriptRoot 'cuda-runtime-pin.json') (Join-Path $PSScriptRoot '../../config/backends/nvidia.json')
+}
 if ([string]::IsNullOrEmpty($RuntimeArchive) -eq [string]::IsNullOrEmpty($NativeRuntimeDirectory)) { throw 'Supply exactly one RuntimeArchive or NativeRuntimeDirectory.' }
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $output = [IO.Path]::GetFullPath($OutputDirectory)
@@ -92,13 +98,14 @@ $bundle = @{
     Model = @{ Name = $model.name; File = $model.gguf_file; Url = $model.gguf_url; Sha256 = $model.gguf_sha256; Size = $model.size_bytes }
     Files = $files
 }
-[IO.File]::WriteAllText((Join-Path $output 'bundle.json'), ($bundle | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+if ($IncludeCudaPreview) { $bundle.Cuda=$cudaPin }
+[IO.File]::WriteAllText((Join-Path $output 'bundle.json'), ($bundle | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
 $icon = Join-Path $repoRoot 'extensions/services/dashboard/public/osmantic-os.ico'
 & $compiler /nologo /target:winexe /platform:x64 /optimize+ "/out:$output/ODS Windows Preview.exe" "/win32icon:$icon" `
     /reference:System.Net.Http.dll /reference:System.Web.Extensions.dll /reference:System.Xaml.dll `
     /reference:System.IO.Compression.dll /reference:System.IO.Compression.FileSystem.dll "/reference:$wpf/WindowsBase.dll" `
     "/reference:$wpf/PresentationFramework.dll" "/reference:$wpf/PresentationCore.dll" `
-    (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'ModelDownload.cs') (Join-Path $PSScriptRoot 'NativeContextBudget.cs') (Join-Path $PSScriptRoot 'NativeDocument.cs') (Join-Path $PSScriptRoot 'NativeDocumentModel.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs') `
+    (Join-Path $PSScriptRoot 'Runtime.cs') (Join-Path $PSScriptRoot 'CudaRuntime.cs') (Join-Path $PSScriptRoot 'CudaRuntimeDownload.cs') (Join-Path $PSScriptRoot 'NativeBackendSettings.cs') (Join-Path $PSScriptRoot 'ModelDownload.cs') (Join-Path $PSScriptRoot 'NativeContextBudget.cs') (Join-Path $PSScriptRoot 'NativeDocument.cs') (Join-Path $PSScriptRoot 'NativeDocumentModel.cs') (Join-Path $PSScriptRoot 'RuntimeDownload.cs') (Join-Path $PSScriptRoot 'App.cs') `
     (Join-Path $PSScriptRoot 'PortalPackage.cs') (Join-Path $PSScriptRoot 'PortalState.cs') (Join-Path $PSScriptRoot 'NativePortalSession.cs')
 if ($LASTEXITCODE -ne 0) { throw 'The desktop application did not compile.' }
 if ($PortalAssets) {

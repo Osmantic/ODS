@@ -34,6 +34,14 @@ SHA-256 3503cc30154266ac0fbedd38e39e35a313a13412415738ae8f9e23e4fcb44da2.
 That profile downloads the archive directly on the owner's request and does
 not redistribute its runtime binaries, including libomp140.x86_64.dll.
 
+Optional NVIDIA integration: official ggml-org b9014 Windows CUDA 12.4 x64
+engine and cudart archives. Both release-asset SHA-256/size pins and all 46
+extracted file pins are in cuda-runtime-pin.json. These files are downloaded
+directly on the owner's explicit selection; they are not embedded in Setup.
+This includes NVIDIA cudart/cuBLAS DLLs and the upstream MSVC/OpenMP dependency.
+Upstream release: https://github.com/ggml-org/llama.cpp/releases/tag/b9014
+CUDA distribution terms: https://docs.nvidia.com/cuda/eula/index.html
+
 Inno Setup 7.1.0 (installer engine)
 Copyright (C) 1997-2026 Jordan Russell. https://jrsoftware.org/
 Installer engine copyright/website notices remain in the generated installer.

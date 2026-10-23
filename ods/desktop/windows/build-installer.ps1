@@ -40,6 +40,11 @@ $receipt=@{schemaVersion=1;version=$Version;unsigned=$true;scope='Per-user nativ
     installer_sha256=(Get-FileHash $installer).Hash.ToLowerInvariant();installer_bytes=(Get-Item $installer).Length;
     application_sha256=(Get-FileHash (Join-Path $package 'ODS Windows Preview.exe')).Hash.ToLowerInvariant();portal_manifest_sha256=$bundle.PortalSha256;
     runtime_sha256=$bundle.Runtime.Sha256;webview_bootstrapper_sha256=(Get-FileHash $tools.webview).Hash.ToLowerInvariant()}
+$receipt.cuda_preview=[bool]$bundle.Cuda
+if($bundle.Cuda){
+    $receipt.scope='Per-user native Portal preview; CPU default, optional NVIDIA CUDA; data retained on uninstall'
+    $receipt.cuda_archive_sha256=@($bundle.Cuda.Archives | ForEach-Object {$_.Sha256})
+}
 [IO.File]::WriteAllText((Join-Path $output 'INSTALLER-BUILD-INFO.json'),($receipt|ConvertTo-Json -Depth 4),[Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $output 'SHA256SUMS.txt'),"$($receipt.installer_sha256)  ODS-Windows-Preview-Setup.exe`n",[Text.UTF8Encoding]::new($false))
 Write-Output $installer
