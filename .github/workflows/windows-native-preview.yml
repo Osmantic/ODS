@@ -64,7 +64,7 @@ jobs:
         shell: pwsh
         env:
           ODS_DESKTOP_PR_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          ODS_DESKTOP_INCLUDE_CUDA: ${{ github.event_name == 'workflow_dispatch' && inputs.cuda_preview && 'true' || 'false' }}
+          ODS_DESKTOP_INCLUDE_CUDA: ${{ (github.event_name != 'workflow_dispatch' || inputs.cuda_preview) && 'true' || 'false' }}
         run: |
           $ErrorActionPreference = 'Stop'
           ./tests/test-windows-native-sandbox-bootstrap.ps1

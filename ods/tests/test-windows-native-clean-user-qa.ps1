@@ -1,4 +1,4 @@
-﻿# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot '../desktop/windows/qa/clean-user-preflight.ps1')
 $guest=[guid]::NewGuid().ToString();$hostId=[guid]::NewGuid().ToString()
@@ -86,4 +86,3 @@ try {
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
 Write-Output "PASS $checks standard-user VM contracts; no UI or installer executed"
-
