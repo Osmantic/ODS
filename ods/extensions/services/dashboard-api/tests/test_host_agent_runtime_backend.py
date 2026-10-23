@@ -31,7 +31,7 @@ def _options(kwargs):
 @pytest.fixture
 def recorded(monkeypatch):
     calls = []
-    replies = {}
+    replies: dict[tuple[str, ...], object] = {}
 
     def run(command, **kwargs):
         calls.append((list(command), _options(kwargs)))
