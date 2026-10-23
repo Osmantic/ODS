@@ -505,7 +505,7 @@ namespace OdsDesktop
             if (job != null) { job.Dispose(); job = null; }
             if (child != null)
             {
-                if (!child.HasExited && !child.WaitForExit(5000)) throw new TimeoutException("The owned local model did not stop.");
+                if (!child.WaitForExit(5000)) throw new TimeoutException("The owned local model did not stop.");
                 child.Dispose(); child = null;
             }
             if (session != null && Directory.Exists(session)) Directory.Delete(session, true);

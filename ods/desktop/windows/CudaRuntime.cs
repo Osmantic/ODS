@@ -124,7 +124,10 @@ namespace OdsDesktop
             {
                 process=job.StartCaptured(StartInfo(executable,arguments),path);
                 var clock=Stopwatch.StartNew();
-                while(!process.HasExited)
+                // HasExited can observe an exit code before native DLL detach
+                // has flushed stdout. Wait for the kernel process object to be
+                // signalled before reading output or closing the owning Job.
+                while(!process.WaitForExit(0))
                 {
                     token.ThrowIfCancellationRequested();
                     if(clock.Elapsed>timeout) throw new TimeoutException("The NVIDIA device check timed out. Choose CPU or repair the NVIDIA driver.");
@@ -138,7 +141,7 @@ namespace OdsDesktop
             finally
             {
                 job.Dispose();
-                if(process!=null) {try {if(!process.HasExited && !process.WaitForExit(5000)) throw new TimeoutException("The owned NVIDIA probe did not stop.");} finally {process.Dispose();}}
+                if(process!=null) {try {if(!process.WaitForExit(5000)) throw new TimeoutException("The owned NVIDIA probe did not stop.");} finally {process.Dispose();}}
                 if(ModelDownload.InspectPath(path,false)) File.Delete(path);
             }
         }

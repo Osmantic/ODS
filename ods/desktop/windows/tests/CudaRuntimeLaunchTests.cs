@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -12,6 +13,8 @@ using OdsDesktop;
 
 static class CudaRuntimeLaunchTests
 {
+    [DllImport("msvcrt.dll",CallingConvention=CallingConvention.Cdecl,EntryPoint="printf")]
+    static extern int PrintCrt(string text);
     static int checks;
     static void Check(bool value,string text) { if(!value) throw new Exception(text); checks++; Console.WriteLine("PASS "+text); }
     static void Refuses(Action action,string text) { bool failed=false; try {action();} catch(InvalidDataException){failed=true;} Check(failed,text); }
@@ -76,6 +79,10 @@ static class CudaRuntimeLaunchTests
         Refuses(()=>CudaRuntime.ReadLog(bounded,1024),"diagnostic read enforces byte limit");File.Delete(bounded);
         string output=await CudaRuntime.CaptureAsync(self,"--capture-fixture",root,CancellationToken.None,TimeSpan.FromSeconds(10));
         Check(output.Contains("fixture stdout")&&output.Contains("fixture stderr"),"atomic Job child captures both output streams");
+        for(int i=0;i<12;i++) {
+            string late=await CudaRuntime.CaptureAsync(self,"--crt-exit-fixture",root,CancellationToken.None,TimeSpan.FromSeconds(10));
+            Check(late.Contains("buffered CRT stdout"),"native buffered stdout survives complete process exit "+i);
+        }
         bool timeout=false; try {await CudaRuntime.CaptureAsync(self,"--hang-fixture",root,CancellationToken.None,TimeSpan.FromMilliseconds(300));} catch(TimeoutException){timeout=true;}
         Check(timeout,"hung probe times out and closes its Job");
         using(var cancel=new CancellationTokenSource(200)) {
@@ -90,6 +97,7 @@ static class CudaRuntimeLaunchTests
     {
         if(args.Length>0) {
             if(args[0]=="--capture-fixture") {Console.WriteLine("fixture stdout");Console.Error.WriteLine("fixture stderr");return 0;}
+            if(args[0]=="--crt-exit-fixture") {PrintCrt("buffered CRT stdout");Console.Error.WriteLine("stderr before exit");return 0;}
             if(args[0]=="--hang-fixture") {Thread.Sleep(30000);return 0;}
             if(args[0]=="--large-fixture") {Console.Write(new string('x',300000));return 0;}
             if(args[0]=="--env-fixture") {Console.WriteLine(Environment.GetEnvironmentVariable("CUDA_VISIBLE_DEVICES")==null && Environment.GetEnvironmentVariable("GGML_CUDA_ENABLE_UNIFIED_MEMORY")==null && Environment.GetEnvironmentVariable("HF_TOKEN")==null ? "clean" : "dirty");return 0;}
