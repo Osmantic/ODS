@@ -17,7 +17,10 @@ each template under extensions/library/workflows for:
 - every HTTP Request node uses typeVersion 4.2 with that version's request
   fields (V1's `body`/`headers`/`binary` are silently ignored by V4, and V4's
   `method`/`jsonBody` are ignored by V1), sends the body it declares, and
-  keeps its JSON body expression parseable.
+  keeps its JSON body expression parseable,
+- every chat-completions call goes through LiteLLM (`litellm:4000`) with a
+  named Header Auth credential: `llama-server` does not exist on macOS
+  native-llama, cloud or external-LLM installs, while LiteLLM runs on all.
 """
 
 from __future__ import annotations
@@ -180,6 +183,29 @@ def jscode_errors(rel: Path, workflow: dict, node_bin: str) -> list[str]:
     return errors
 
 
+LLM_GATEWAY_URL = "http://litellm:4000/v1/chat/completions"
+
+
+def llm_route_errors(rel: Path, workflow: dict) -> list[str]:
+    errors: list[str] = []
+    for node in workflow.get("nodes", []):
+        params = node.get("parameters") or {}
+        url = str(params.get("url") or "")
+        if node.get("type") != HTTP_NODE or "/chat/completions" not in url:
+            continue
+        where = f"{rel}: HTTP node {node.get('name')!r}"
+        if "llama-server" in url or ("text-generation-webui" not in url and url != LLM_GATEWAY_URL):
+            errors.append(f"{where} calls {url}; route the ODS LLM through {LLM_GATEWAY_URL}")
+            continue
+        if url != LLM_GATEWAY_URL:
+            continue
+        if params.get("authentication") != "genericCredentialType" or params.get("genericAuthType") != "httpHeaderAuth":
+            errors.append(f"{where} calls LiteLLM without Header Auth (LiteLLM requires LITELLM_KEY)")
+        if not ((node.get("credentials") or {}).get("httpHeaderAuth") or {}).get("name"):
+            errors.append(f"{where} calls LiteLLM without a named httpHeaderAuth credential")
+    return errors
+
+
 def is_allowed(host: str, known: set[str]) -> bool:
     if host in known or host in PLACEHOLDER_HOSTS:
         return True
@@ -210,6 +236,7 @@ def main() -> int:
                 errors.append(f"{rel}: URL host {host!r} is not an ODS compose service or example.invalid")
         errors.extend(url_errors(rel, text, services))
         errors.extend(webhook_errors(rel, workflow))
+        errors.extend(llm_route_errors(rel, workflow))
         errors.extend(http_node_errors(rel, path.relative_to(WORKFLOW_DIR).as_posix(), workflow))
         if node_bin is not None:
             errors.extend(jscode_errors(rel, workflow, node_bin))

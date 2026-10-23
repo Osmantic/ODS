@@ -82,8 +82,9 @@
       "name": "Process with LLM",
       "parameters": {
         "method": "POST",
-        "url": "http://llama-server:8080/v1/chat/completions",
-        "authentication": "none",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ model: 'default', messages: [{ role: 'system', content: 'You are a helpful assistant processing form submissions.' }, { role: 'user', content: 'Process this form submission: ' + JSON.stringify($json.data) }], temperature: 0.7, max_tokens: 500 }) }}",
@@ -92,6 +93,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [850, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS LiteLLM Key"
+        }
+      },
       "onError": "continueRegularOutput"
     },
     {

@@ -24,7 +24,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'local-model',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
+        "jsCode": "const body = $json.body || $json;\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'default',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
       },
       "id": "validate-and-auth",
       "name": "Validate and Auth",
@@ -35,10 +35,12 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://llama-server:8080/v1/chat/completions",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n  messages: [\n    {\n      role: 'system',\n      content: `You are a ComfyUI workflow generator. Generate a valid ComfyUI workflow JSON that can be directly used with the ComfyUI API.\n      \n      Requirements:\n      - Output ONLY valid JSON, no markdown formatting\n      - Use the workflow structure with node IDs as strings\n      - Include all required fields for each node\n      - Generate an image generation workflow based on the user prompt\n      - Include nodes for: CheckpointLoaderSimple, KSampler, VAEDecode, SaveImage\n      - Set positive and negative prompts from the user input\n      - Return just the workflow object, wrapped in {\"workflow\": ...}`\n    },\n    {\n      role: 'user',\n      content: $json.prompt\n    }\n  ],\n  model: $json.model || 'local-model',\n  max_tokens: $json.max_tokens || 2000,\n  temperature: $json.temperature || 0.7,\n  top_p: $json.top_p || 0.9,\n  stream: false\n}) }}",
+        "jsonBody": "={{ JSON.stringify({\n  messages: [\n    {\n      role: 'system',\n      content: `You are a ComfyUI workflow generator. Generate a valid ComfyUI workflow JSON that can be directly used with the ComfyUI API.\n      \n      Requirements:\n      - Output ONLY valid JSON, no markdown formatting\n      - Use the workflow structure with node IDs as strings\n      - Include all required fields for each node\n      - Generate an image generation workflow based on the user prompt\n      - Include nodes for: CheckpointLoaderSimple, KSampler, VAEDecode, SaveImage\n      - Set positive and negative prompts from the user input\n      - Return just the workflow object, wrapped in {\"workflow\": ...}`\n    },\n    {\n      role: 'user',\n      content: $json.prompt\n    }\n  ],\n  model: $json.model || 'default',\n  max_tokens: $json.max_tokens || 2000,\n  temperature: $json.temperature || 0.7,\n  top_p: $json.top_p || 0.9,\n  stream: false\n}) }}",
         "options": {
           "timeout": 300000
         }
@@ -47,7 +49,13 @@
       "name": "LLM Chat API",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [650, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS LiteLLM Key"
+        }
+      }
     },
     {
       "parameters": {

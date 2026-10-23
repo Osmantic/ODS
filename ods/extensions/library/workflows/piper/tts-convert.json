@@ -1,5 +1,5 @@
 {
-  "name": "Piper TTS Voice Synthesis",
+  "name": "Text-to-Speech via ODS TTS (Kokoro)",
   "active": true,
   "settings": {},
   "nodes": [

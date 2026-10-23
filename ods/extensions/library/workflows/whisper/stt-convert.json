@@ -25,7 +25,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst input = $input.first().json || {};\nconst audio = input.audio || '';\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\n\n// === AUDIO VALIDATION ===\nif (!audio || audio.trim().length === 0) {\n  throw new Error('Missing required field: audio (base64)');\n}\nif (audio.length > 2097152) { // ~2MB base64 ≈ 1.5MB binary\n  throw new Error('Audio too large: max ~2MB base64 encoded');\n}\n\n// === CHANNEL VALIDATION ===\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  throw new Error('Invalid channel: must be alphanumeric, dash, or underscore only');\n}\nconst channel = channelRaw;\n\nreturn [{\n  json: {\n    channel: channel\n  },\n  binary: {\n    audio: {\n      data: audio.trim(),\n      mimeType: 'audio/wav',\n      fileName: 'audio.wav'\n    }\n  }\n}];"
+        "jsCode": "// Authentication is enforced by the Webhook node's Header Auth credential.\n\nconst input = $input.first().json || {};\nconst audio = input.audio || '';\nconst channelRaw = (input.channel || 'general').replace(/^#+/, '').replace(/[<>@&]/g, '').slice(0, 100);\n\n// === AUDIO VALIDATION ===\nif (!audio || audio.trim().length === 0) {\n  throw new Error('Missing required field: audio (base64)');\n}\nif (audio.length > 2097152) { // ~2MB base64 ≈ 1.5MB binary\n  throw new Error('Audio too large: max ~2MB base64 encoded');\n}\n\n// === CHANNEL VALIDATION ===\nif (!channelRaw.match(/^[a-zA-Z0-9_-]+$/)) {\n  throw new Error('Invalid channel: must be alphanumeric, dash, or underscore only');\n}\nconst channel = channelRaw;\n\n// Must match the model the whisper service loads (AUDIO_STT_MODEL in .env);\n// NVIDIA installs default to deepdml/faster-whisper-large-v3-turbo-ct2.\nconst model = (input.model || 'Systran/faster-whisper-base').toString().trim();\nif (!model.match(/^[A-Za-z0-9._\\/-]{1,200}$/)) {\n  throw new Error('Invalid model name');\n}\n\nreturn [{\n  json: {\n    channel: channel,\n    model: model\n  },\n  binary: {\n    audio: {\n      data: audio.trim(),\n      mimeType: 'audio/wav',\n      fileName: 'audio.wav'\n    }\n  }\n}];"
       },
       "id": "validate-input",
       "name": "Validate Input",
@@ -50,7 +50,7 @@
             },
             {
               "name": "model",
-              "value": "Systran/faster-whisper-base"
+              "value": "={{ $json.model }}"
             }
           ]
         },

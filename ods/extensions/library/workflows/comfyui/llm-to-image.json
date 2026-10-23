@@ -65,7 +65,9 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://llama-server:8080/v1/chat/completions",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({\n  \"model\": 'default',\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an AI image generation assistant. Convert the user's text description into a detailed, artistic image generation prompt for ComfyUI/FLUX. Include style, lighting, composition, and artistic details. Keep it under 500 characters.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": $('Validate Input').first().json.prompt\n    }\n  ],\n  \"max_tokens\": 500,\n  \"temperature\": 0.7\n}) }}",
@@ -78,6 +80,12 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [850, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS LiteLLM Key"
+        }
+      },
       "comment": "Sends user prompt to LLM for image generation prompt enhancement. Uses validated input."
     },
     {
