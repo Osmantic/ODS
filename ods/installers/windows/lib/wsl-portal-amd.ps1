@@ -980,7 +980,9 @@ function Initialize-ODSPortalAmdRuntime($Plan, [string]$SourceRoot, [bool]$NonIn
     $runtime = $null
     $installDir = Get-ODSNativeLlamaInstallDirectory $pin
     if (Test-Path -LiteralPath $installDir) {
-        try { $runtime = Test-ODSNativeLlamaInstall -Directory $installDir -ExpectedZipSha256 $pin.Sha256 -ExpectedReleaseTag $pin.ReleaseTag } catch { $runtime = $null }
+        $verificationArgs = @{}
+        if ($GpuVendor -eq 'nvidia') { $verificationArgs.ExpectedArchives = $pin.Archives }
+        try { $runtime = Test-ODSNativeLlamaInstall -Directory $installDir -ExpectedZipSha256 $pin.Sha256 -ExpectedReleaseTag $pin.ReleaseTag @verificationArgs } catch { $runtime = $null }
     }
     if (-not $runtime) {
         $mib = [math]::Ceiling($pin.Size / 1MB)

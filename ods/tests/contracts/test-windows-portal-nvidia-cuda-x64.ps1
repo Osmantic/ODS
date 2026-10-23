@@ -103,6 +103,21 @@ try {
     Refuses { Initialize-ODSPortalAmdRuntime $plan $sourceRoot $true -GpuVendor nvidia } 'rollback retained'
     $script:failCutover=$false
     $route = Initialize-ODSPortalAmdRuntime $plan $sourceRoot $true -GpuVendor nvidia
+    function Get-ODSNativeLlamaInstallDirectory { return $script:fixture }
+    $script:rejectCachedRuntime=$false
+    function Test-ODSNativeLlamaInstall {
+        param($Directory,$ExpectedZipSha256,$ExpectedReleaseTag,$ExpectedArchives)
+        $script:checkedCacheArchives=@($ExpectedArchives)
+        if ($script:rejectCachedRuntime) { throw 'cached CUDA dependency archive differs' }
+        return @{Directory=$Directory;ExecutablePath=(Join-Path $Directory 'llama-server.exe');ReleaseTag=$ExpectedReleaseTag;ZipSha256=$ExpectedZipSha256}
+    }
+    $script:downloaded=$false
+    $null=Initialize-ODSPortalAmdRuntime $plan $sourceRoot $true -GpuVendor nvidia
+    $expectedPin=Get-ODSNativeLlamaPin -SourceRoot $sourceRoot -Backend nvidia -Architecture x64
+    Check ($script:checkedCacheArchives.Count -eq 2 -and $script:checkedCacheArchives[1].Sha256 -ceq $expectedPin.Archives[1].Sha256 -and -not $script:downloaded) 'cached CUDA reuse verifies both pinned archives before skipping acquisition'
+    $script:rejectCachedRuntime=$true; $script:downloaded=$false
+    $null=Initialize-ODSPortalAmdRuntime $plan $sourceRoot $true -GpuVendor nvidia
+    Check ($script:downloaded) 'a changed cached CUDA dependency requires verified acquisition'
     Check ($script:writtenOptions.GpuVendor -eq 'nvidia' -and $script:writtenOptions.Backend -eq 'cuda' -and
         $script:writtenOptions.Architecture -eq 'x64' -and $script:writtenOptions.NGpuLayers -eq 'all' -and
         $script:description -match 'CUDA x64') 'successful retry persists NVIDIA x64 CUDA choice and task description'
