@@ -324,6 +324,15 @@ import, missing-module and missing-command failures still fail. The old-block
 negative control retains the failure. These contracts run on both lint hosts;
 new-head hosted dependency acquisition is qualified by its own CI result.
 
+On head `70557fca1`, both hosted analyzer jobs passed, as did **281 native**
+and **11 packaged-EXE** checks. The subsequent WebView test timed out during
+initialization before installer tests or artifact publication; the cause was
+not established. The UI harness now logs available/selected runtime and the
+initialization exception, and immediately reports production recovery text.
+Its readiness condition and 30-second deadline are unchanged. The updated
+harness passed all **11 Portal checks** locally; that does not erase the
+hosted failure or qualify a new artifact.
+
 - **Clean Windows first use**, especially missing WebView2 installation,
   prerequisite cancellation/failure and offline/proxy recovery. The prepared
   Sandbox kit records OS/token/tool availability, installer hash, real model

@@ -45,7 +45,28 @@ static class PortalUiTests
     }
     static async Task Ready(PortalWindow window)
     {
-        await Until(() => Task.FromResult(View(window).CoreWebView2 != null), 30000, "WebView2 did not initialize.");
+        string browser;
+        try { browser = CoreWebView2Environment.GetAvailableBrowserVersionString(); }
+        catch (Exception error) { browser = error.ToString(); }
+        Console.WriteLine("WEBVIEW available " + browser);
+        var view = View(window);
+        EventHandler<CoreWebView2InitializationCompletedEventArgs> initialized = (sender, args) =>
+            Console.WriteLine("WEBVIEW initialization: " + (args.IsSuccess ? "success" :
+                args.InitializationException == null ? "failed without an exception" : args.InitializationException.ToString()));
+        view.CoreWebView2InitializationCompleted += initialized;
+        try
+        {
+            await Until(() =>
+            {
+                // Production replaces the content with its actionable error.
+                // Preserve that evidence instead of hiding it behind a timeout.
+                var failure = window.Content as TextBlock;
+                if (failure != null && failure.Text.StartsWith("Portal could not open.", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Production Portal initialization failed: " + failure.Text);
+                return Task.FromResult(view.CoreWebView2 != null);
+            }, 30000, "WebView2 did not initialize. Available runtime: " + browser);
+        }
+        finally { view.CoreWebView2InitializationCompleted -= initialized; }
         await Until(() => Test(window, "!!document.querySelector('textarea:not([disabled])')"), 30000, "The existing Portal composer did not become available.");
         Console.WriteLine("WEBVIEW runtime " + View(window).CoreWebView2.Environment.BrowserVersionString);
     }
