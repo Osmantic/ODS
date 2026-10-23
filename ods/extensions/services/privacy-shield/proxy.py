@@ -44,6 +44,12 @@ _TEXTUAL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Bodies whose PII tokens sit inside JSON string literals; restored values
+# must be JSON-escaped there or a quote in the original breaks the document.
+_JSON_BODY_RE = re.compile(
+    r"^(?:application/(?:json|.*\+json|x-ndjson)|text/event-stream)$", re.IGNORECASE
+)
+
 # Bodies larger than this are passed through untouched even if textual, so a
 # pathological response cannot pin the box buffering a hold-back window.
 RESTORE_MAX_BYTES = int(os.getenv("SHIELD_RESTORE_MAX_BYTES", str(8 * 1024 * 1024)))
@@ -454,7 +460,9 @@ async def proxy(request: Request, path: str):
             if do_restore:
                 # do_restore is only true when the body is uncompressed text,
                 # so raw bytes == decoded bytes here and stay byte-exact.
-                restorer = StreamRestorer(shield.detector, charset)
+                restorer = StreamRestorer(
+                    shield.detector, charset, json_escape=bool(_JSON_BODY_RE.match(mime))
+                )
                 encoder = codecs.getincrementalencoder(charset)(errors="replace")
                 emitted = False
                 seen = 0

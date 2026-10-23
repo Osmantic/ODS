@@ -7,6 +7,7 @@ Detects and replaces PII with tokens, restores on reverse.
 import codecs
 import hashlib
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -37,6 +38,17 @@ def _luhn_ok(number_str: str) -> bool:
                 d -= 9
         checksum += d
     return checksum % 10 == 0
+
+
+# Issuer prefixes: Amex 34/37, Diners/JCB 3x, Visa 4, Mastercard 2/5,
+# Discover/UnionPay 6. Bare digit runs starting with 0, 1, 7, 8 or 9 (for
+# example 13-digit millisecond timestamps) are never treated as cards.
+_CARD_ISSUER_DIGITS = frozenset("23456")
+
+
+def _card_ok(candidate: str) -> bool:
+    """Card candidates need a known issuer leading digit and a valid Luhn."""
+    return candidate[0] in _CARD_ISSUER_DIGITS and _luhn_ok(candidate)
 
 
 def _ip_ok(candidate: str) -> bool:
@@ -74,7 +86,7 @@ _PATTERNS: Tuple[Tuple[str, "re.Pattern[str]", Optional[Callable[[str], bool]]],
         r'\b(?:api[_-]?key|apikey|token)[\s]*[=:]\s*["\']?[a-zA-Z0-9_\-]{16,}["\']?\b',
         re.IGNORECASE), None),
     # 13-19 digit cards (Visa/MC 4-4-4-4, Amex 4-6-5, ...), Luhn-validated.
-    ('credit_card', re.compile(r'\b\d(?:[ -]?\d){12,18}\b'), _luhn_ok),
+    ('credit_card', re.compile(r'\b\d(?:[ -]?\d){12,18}\b'), _card_ok),
     # E.164 international numbers: +CC followed by digit groups.
     ('phone', re.compile(r'(?<![\w+])\+[1-9]\d{0,2}(?:[ .-]?\(?\d{1,5}\)?){2,5}\b'), _e164_ok),
     ('phone', re.compile(r'\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b'), None),
@@ -161,16 +173,26 @@ class PIIDetector:
 
         return scrubbed
 
-    def restore(self, text: str) -> str:
+    def restore(self, text: str, *, json_escape: bool = False) -> str:
         """
         Restore PII from tokens in text.
-        Returns restored text.
+
+        With *json_escape*, each original is inserted JSON-string escaped.
+        Tokens in a JSON (or SSE/NDJSON) body sit inside string literals, and
+        an original such as ``api_key="..."`` would otherwise break the JSON.
         """
         if not isinstance(text, str):
             raise TypeError("PII restore requires text")
         if not self.pii_map:
             return text
-        return TOKEN_RE.sub(lambda m: self.pii_map.get(m.group(0), m.group(0)), text)
+
+        def original(match: "re.Match[str]") -> str:
+            value = self.pii_map.get(match.group(0))
+            if value is None:
+                return match.group(0)
+            return json.dumps(value, ensure_ascii=False)[1:-1] if json_escape else value
+
+        return TOKEN_RE.sub(original, text)
 
     def max_token_len(self) -> int:
         """Length of the longest PII token issued (0 if none active).
@@ -215,8 +237,10 @@ class StreamRestorer:
     _PREFIX = "<PII_"
     _SUFFIX = ">"
 
-    def __init__(self, detector: "PIIDetector", encoding: str = "utf-8"):
+    def __init__(self, detector: "PIIDetector", encoding: str = "utf-8",
+                 *, json_escape: bool = False):
         self._detector = detector
+        self._json_escape = json_escape
         try:
             self._decoder = codecs.getincrementaldecoder(encoding)(errors="replace")
         except (LookupError, TypeError):
@@ -269,7 +293,7 @@ class StreamRestorer:
             releasable, self._carry = text, ""
         if not releasable:
             return ""
-        return self._detector.restore(releasable)
+        return self._detector.restore(releasable, json_escape=self._json_escape)
 
     def finalize(self, *, restore: bool = True) -> str:
         """Flush the decoder and carry buffer at end of stream."""
@@ -278,7 +302,9 @@ class StreamRestorer:
         self._carry = ""
         if not remaining:
             return ""
-        return self._detector.restore(remaining) if restore else remaining
+        if not restore:
+            return remaining
+        return self._detector.restore(remaining, json_escape=self._json_escape)
 
 
 class PrivacyShield:

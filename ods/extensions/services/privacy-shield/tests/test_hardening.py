@@ -229,3 +229,38 @@ def test_header_session_map_stays_capped():
     shield = proxy.CachedPrivacyShield(max_entries=3)
     shield.detector.scrub(" ".join(f"u{i}@corp.com" for i in range(10)))
     assert len(shield.detector.pii_map) == 3
+
+
+# ── 6. Restore escaping and card false positives ─────────────────────────
+
+@pytest.mark.parametrize("ctype", ["application/json", "text/event-stream"])
+def test_restored_quoted_value_keeps_json_valid(run_proxy, ctype):
+    def handler(request):
+        echoed = json.loads(request.content)["messages"][0]["content"]
+        assert TOKEN.search(echoed)
+        body = json.dumps({"reply": echoed}).encode()
+        if ctype == "text/event-stream":
+            body = b"data: " + body + b"\n\n"
+        return _resp(200, {"content-type": ctype}, [body])
+
+    client = run_proxy(handler)
+    secret = 'api_key="abcdefghijklmnopqrstuv"'
+    resp = client.post("/v1/chat/completions", headers=AUTH,
+                       json={"messages": [{"content": secret}]})
+    text = resp.text
+    if ctype == "text/event-stream":
+        text = text[len("data: "):].strip()
+    assert json.loads(text) == {"reply": secret}
+
+
+def test_plain_text_restore_is_not_escaped():
+    detector = PIIDetector()
+    secret = 'api_key="abcdefghijklmnopqrstuv"'
+    assert detector.restore(detector.scrub(secret)) == secret
+
+
+def test_millisecond_timestamps_are_not_cards():
+    detector = PIIDetector()
+    stamps = [str(1761200000000 + i) for i in range(100)]
+    text = " ".join(f'"ts":"{s}"' for s in stamps)
+    assert detector.scrub(text) == text
