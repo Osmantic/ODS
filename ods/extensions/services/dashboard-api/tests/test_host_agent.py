@@ -2314,7 +2314,10 @@ class TestCoreRecreateModelLifecycle:
         monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
         (tmp_path / '.env').write_text('A=1\n', encoding='utf-8')
         calls = []
-        monkeypatch.setattr(_mod, 'docker_compose_recreate', lambda ids: (calls.append(ids), (True, ''))[1])
+        def fake_recreate(ids):
+            calls.append(ids)
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
         handler = _FakeHandler(json.dumps({
             'service_ids': ['searxng'],
             'expected_env_revision': '0' * 64,
@@ -2354,7 +2357,10 @@ class TestCoreRecreateModelLifecycle:
     def test_core_recreate_revision_read_error_fails_closed(self, monkeypatch, tmp_path):
         monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
         calls = []
-        monkeypatch.setattr(_mod, 'docker_compose_recreate', lambda ids: (calls.append(ids), (True, ''))[1])
+        def fake_recreate(ids):
+            calls.append(ids)
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
         handler = _FakeHandler(json.dumps({
             'service_ids': ['searxng'],
             'expected_env_revision': 'a' * 64,
@@ -2368,7 +2374,10 @@ class TestCoreRecreateModelLifecycle:
 
     def test_core_recreate_rejects_malformed_revision(self, monkeypatch):
         calls = []
-        monkeypatch.setattr(_mod, 'docker_compose_recreate', lambda ids: (calls.append(ids), (True, ''))[1])
+        def fake_recreate(ids):
+            calls.append(ids)
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
         handler = _FakeHandler(json.dumps({
             'service_ids': ['searxng'],
             'expected_env_revision': 'not-hex',

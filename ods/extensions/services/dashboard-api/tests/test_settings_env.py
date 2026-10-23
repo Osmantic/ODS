@@ -2089,7 +2089,7 @@ def test_api_settings_env_apply_propagates_env_revision_mismatch(test_client, mo
 
 def test_core_recreate_client_sends_the_expected_revision(monkeypatch):
     import main
-    captured = {}
+    captured: dict[str, object] = {}
     def fake_request(method, path, *, payload, timeout):
         captured.update(method=method, path=path, payload=payload, timeout=timeout)
         return {'status': 'ok'}
