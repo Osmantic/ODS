@@ -177,7 +177,7 @@ def test_get_n8n_workflows_success(test_client, monkeypatch):
 
 
 def test_get_n8n_workflows_failure(test_client, monkeypatch):
-    """get_n8n_workflows returns empty list on connection error."""
+    """get_n8n_workflows distinguishes unavailable inventory from empty on connection error."""
     import routers.workflows as wf_mod
 
     session_mock = AsyncMock()
@@ -189,7 +189,7 @@ def test_get_n8n_workflows_failure(test_client, monkeypatch):
         import asyncio
         result = asyncio.run(wf_mod.get_n8n_workflows())
 
-    assert result == []
+    assert result is None
 
 
 def test_get_n8n_workflows_auth_rejection_is_reported(test_client, monkeypatch, caplog):
@@ -224,8 +224,8 @@ def test_get_n8n_workflows_auth_rejection_is_reported(test_client, monkeypatch, 
         with caplog.at_level(logging.WARNING, logger=wf_mod.logger.name):
             result = asyncio.run(wf_mod.get_n8n_workflows())
 
-    # Return contract is unchanged; only the silence is fixed.
-    assert result == []
+    # Unavailable inventory is distinct from a complete empty inventory.
+    assert result is None
     messages = [r.getMessage() for r in caplog.records]
     assert any("401" in m and "N8N_API_KEY" in m for m in messages), (
         f"401 from n8n was not reported; logged: {messages}"
@@ -257,7 +257,7 @@ def test_get_n8n_workflows_other_error_status_is_reported(test_client, monkeypat
         with caplog.at_level(logging.WARNING, logger=wf_mod.logger.name):
             result = asyncio.run(wf_mod.get_n8n_workflows())
 
-    assert result == []
+    assert result is None
     assert any("500" in r.getMessage() for r in caplog.records), \
         "non-200 status from n8n was not reported"
 

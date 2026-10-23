@@ -90,10 +90,40 @@ def test_later_page_failure_never_publishes_partial_inventory(n8n_inventory, sta
     state["status"] = status
     response = client.get("/api/workflows")
     assert response.status_code == 200
-    assert all(row["n8nId"] is None for row in response.json()["workflows"])
+    body = response.json()
+    assert all(row["n8nId"] is None for row in body["workflows"])
+    # A partial inventory must not be reported as available, or the UI will
+    # offer an import for a workflow that may already exist on the unread page.
+    assert body["n8nAvailable"] is False
+    assert body["n8nInventoryComplete"] is False
     assert state["key"] not in caplog.text
     state["status"] = 200
-    assert [row["n8nId"] for row in client.get("/api/workflows").json()["workflows"]] == ["first", "second"]
+    body = client.get("/api/workflows").json()
+    assert [row["n8nId"] for row in body["workflows"]] == ["first", "second"]
+    assert body["n8nAvailable"] is True
+    assert body["n8nInventoryComplete"] is True
+
+
+def test_partial_inventory_does_not_false_404_removal(n8n_inventory):
+    state, client = n8n_inventory
+    state["status"] = 503
+    response = client.delete("/api/workflows/beta")
+    assert response.status_code == 503
+    assert state["deleted"] == []
+    state["status"] = 200
+    assert client.delete("/api/workflows/beta").status_code == 200
+    assert state["deleted"] == [("/api/v1/workflows/second", state["key"])]
+
+
+def test_partial_inventory_does_not_claim_workflow_not_installed(n8n_inventory):
+    state, client = n8n_inventory
+    state["status"] = 503
+    response = client.get("/api/workflows/beta/executions")
+    assert response.status_code == 200
+    assert response.json() == {"executions": [], "error": "n8n workflow inventory is unavailable"}
+    state["status"] = 200
+    response = client.get("/api/workflows/beta/executions")
+    assert response.json()["n8nId"] == "second"
 
 
 def test_repeated_cursor_is_refused(n8n_inventory):
@@ -101,6 +131,27 @@ def test_repeated_cursor_is_refused(n8n_inventory):
     state["repeat"] = True
     assert client.get("/api/workflows").status_code == 502
     assert len(state["seen"]) == 2
+
+
+def test_complete_empty_inventory_remains_available(n8n_inventory):
+    state, client = n8n_inventory
+    state["payloads"]["first"] = {"data": [], "nextCursor": None}
+    body = client.get("/api/workflows").json()
+    assert body["n8nInventoryComplete"] is True
+    assert body["n8nAvailable"] is True
+    assert all(row["installed"] is False for row in body["workflows"])
+
+
+def test_first_install_without_api_key_keeps_catalog_visible(n8n_inventory, monkeypatch):
+    state, client = n8n_inventory
+    monkeypatch.setattr(workflows, "read_live_env_value", lambda _key: "")
+    response = client.get("/api/workflows")
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["id"] for row in body["workflows"]] == ["alpha", "beta"]
+    assert body["n8nAvailable"] is False
+    assert body["n8nInventoryComplete"] is False
+    assert state["deleted"] == []
 
 
 @pytest.mark.parametrize("cursor", [False, 0, [], {}])
@@ -134,8 +185,11 @@ def test_malformed_page_discards_inventory_and_prevents_removal(n8n_inventory, p
 
     response = client.get("/api/workflows")
     assert response.status_code == 200
-    assert all(row["n8nId"] is None for row in response.json()["workflows"])
-    assert client.delete("/api/workflows/alpha").status_code == 404
+    body = response.json()
+    assert all(row["n8nId"] is None for row in body["workflows"])
+    assert body["n8nAvailable"] is False
+    assert body["n8nInventoryComplete"] is False
+    assert client.delete("/api/workflows/alpha").status_code == 503
     assert state["deleted"] == []
     assert state["key"] not in caplog.text
 
@@ -206,5 +260,5 @@ async def test_total_inventory_deadline_closes_session(monkeypatch):
         return timeout(0.01)
     monkeypatch.setattr(workflows, "_async_timeout", short_deadline)
     monkeypatch.setattr(workflows.aiohttp, "ClientSession", lambda **_kwargs: Session())
-    assert await asyncio.wait_for(workflows.get_n8n_workflows(), timeout=0.2) == []
+    assert await asyncio.wait_for(workflows.get_n8n_workflows(), timeout=0.2) is None
     assert closed == [True]
