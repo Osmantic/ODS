@@ -85,6 +85,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-env-utf8.ps1
 
+      - name: Windows CLI chat sends UTF-8 (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-cli-chat-utf8.ps1
+
       - name: Windows Compose startup recovery (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh

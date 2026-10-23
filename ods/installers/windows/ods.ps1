@@ -2529,6 +2529,9 @@ function Invoke-Chat {
             @{ role = "user"; content = $Message }
         )
     } | ConvertTo-Json -Depth 3
+    # Windows PowerShell 5.1 encodes a [string] -Body as ISO-8859-1, which
+    # replaces non-Latin text with "?". Send explicit UTF-8 bytes instead.
+    $bodyBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($body)
 
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
     $headers = @{}
@@ -2537,7 +2540,7 @@ function Invoke-Chat {
     }
     try {
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
-            -Method POST -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 120
+            -Method POST -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec 120
 
         if (-not $resp.choices -or -not $resp.choices[0].message -or
             $resp.choices[0].message.content -isnot [string] -or
