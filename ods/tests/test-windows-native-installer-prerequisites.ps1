@@ -96,6 +96,9 @@ try {
         [IO.File]::WriteAllText($state,$scenario)
         $result=@(Invoke-PrerequisiteGui $setup $scenario @('--expect-prerequisite-failure'))
         Assert-Prerequisite ($result[-1] -eq 0 -and $result -contains 'PREREQUISITE_FAILURE_OBSERVED=True') ('actual prerequisite '+$scenario+' shows actionable refusal before application installation')
+        if($scenario -eq 'fail'){
+            Assert-Prerequisite ([IO.File]::ReadAllText((Join-Path $fixture 'bootstrapper-argv.txt')) -ceq '/silent|/install') 'explicit owner consent invokes the publisher with documented silent install flags'
+        }
         Assert-NoInstall
     }
     Clear-PrivateVersion
@@ -121,6 +124,21 @@ try {
     $app.Dispose();$app=$null
     Invoke-FixtureUninstall
     Assert-Prerequisite (-not (Test-Path -LiteralPath (Join-Path $target 'ODS Windows Preview.exe')) -and -not (Test-Path -LiteralPath $registry) -and -not (Test-Path -LiteralPath $shortcut) -and (Get-FileHash -LiteralPath $sentinel).Hash -eq $sentinelHash) 'recovery uninstall removes its application and unique registration and preserves saved bytes'
+    Clear-PrivateVersion
+    $target=Join-Path $fixture 'nonzero installed app'
+    $script:uninstalled=$false
+    [IO.File]::WriteAllText($state,'nonzero-installed')
+    $usable=@(Invoke-PrerequisiteGui $setup 'nonzero-installed' @())
+    if($usable[-1] -ne 0){throw 'A verified usable runtime must remain sufficient despite a nonzero publisher exit.'}
+    $pidLine=@($usable | Where-Object {$_ -match '^APPLICATION_PID=\d+$'})
+    if($pidLine.Count -ne 1){throw 'Nonzero publisher scenario did not identify its exact application.'}
+    $candidate=Get-Process -Id ([int]$pidLine[0].Split('=')[1])
+    try{$null=$candidate.Handle;if($candidate.MainModule.FileName -ne (Join-Path $target 'ODS Windows Preview.exe')){throw 'Unexpected nonzero-scenario application.'};$app=$candidate;$candidate=$null}finally{if($candidate){$candidate.Dispose()}}
+    Assert-Prerequisite ([IO.File]::ReadAllText((Join-Path $fixture 'bootstrapper-exit.txt')) -ceq '13' -and (Test-Path -LiteralPath $registry) -and (Test-Path -LiteralPath $shortcut)) 'a verified usable runtime remains sufficient after a nonzero publisher exit'
+    if(-not $app.CloseMainWindow() -or -not $app.WaitForExit(10000)){throw 'Nonzero-scenario app did not close normally.'}
+    $app.Dispose();$app=$null
+    Invoke-FixtureUninstall
+    Assert-Prerequisite (-not (Test-Path -LiteralPath (Join-Path $target 'ODS Windows Preview.exe')) -and -not (Test-Path -LiteralPath $registry) -and -not (Test-Path -LiteralPath $shortcut) -and (Get-FileHash -LiteralPath $sentinel).Hash -eq $sentinelHash) 'nonzero publisher fixture uninstalls only its owned application and preserves saved bytes'
     Write-Output "PASS $checks Windows native prerequisite checks"
 } finally {
     try {

@@ -177,8 +177,15 @@ begin
     if MsgBox('ODS needs Microsoft WebView2 to display Portal. Install this Microsoft component now?', mbConfirmation, MB_YESNO) <> IDYES then begin Result := 'WebView2 installation was cancelled. ODS has not been installed. Run Setup again when ready.'; exit; end;
     ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
     WizardForm.StatusLabel.Caption := 'Installing Microsoft WebView2. This can take a few minutes...';
-    if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/install', '', SW_SHOW, ewWaitUntilTerminated, Code) or
-       not WebViewInstalled then begin Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. Existing ODS data was kept.'; exit; end;
+    { Owner consent is above. Microsoft documents /silent /install for app setup:
+      https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution }
+    if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
+      Log(Format('Microsoft WebView2 bootstrapper could not start (Windows error %d).', [Code]));
+      Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. Existing ODS data was kept.'; exit;
+    end;
+    Log(Format('Microsoft WebView2 bootstrapper exited with code %d; checking the installed runtime version.', [Code]));
+    { The verified usable version remains authoritative, including concurrent updates. }
+    if not WebViewInstalled then begin Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. Existing ODS data was kept.'; exit; end;
   end;
 end;
 
