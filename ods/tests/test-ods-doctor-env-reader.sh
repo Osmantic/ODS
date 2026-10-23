@@ -38,6 +38,8 @@ INSTALL="$TMP_DIR/install"
 mkdir -p "$INSTALL/bin" "$INSTALL/extensions/services"
 cp -R "$ROOT_DIR/lib" "$ROOT_DIR/scripts" "$ROOT_DIR/config" "$INSTALL/"
 cp "$ROOT_DIR/.env.schema.json" "$INSTALL/"
+mkdir -p "$INSTALL/installers/lib"
+cp "$ROOT_DIR/installers/lib/amd-topo.sh" "$INSTALL/installers/lib/"  # detect-hardware.sh sources it, as in a real install
 cp "$DOCTOR" "$INSTALL/scripts/ods-doctor.sh"
 for manifest in "$ROOT_DIR"/extensions/services/*/manifest.yaml; do
     svc="$(basename "$(dirname "$manifest")")"
