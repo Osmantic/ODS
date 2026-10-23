@@ -308,8 +308,8 @@ tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
 tests/test-cli-chat-route.py
 tests/test-cli-chat-error-exit.py
+tests/test-cli-compose-cache-model-store.sh
+tests/test-update-compose-cache-owner-overlays.sh
 tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
 tests/test_dashboard_env_custody.py
-tests/test-cli-compose-cache-model-store.sh
-tests/test-update-compose-cache-owner-overlays.sh
