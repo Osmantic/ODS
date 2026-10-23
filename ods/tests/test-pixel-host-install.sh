@@ -28,6 +28,62 @@ ai_bad() { :; }
 ai_ok() { :; }
 ai() { :; }
 
+# Dependency selection is isolated from the host package manager. The real
+# Ubuntu 26.04 package/group transition is also exercised in a clean container.
+for prereq_case in present ubuntu24 ubuntu26 debian12 python both unsupported \
+    parse_failure no_helper wrong_manager install_failure still_missing dry_run before_groups; do
+    if (
+        have_sg=false; have_python=true; install_calls=''; mutations=0
+        os_id=ubuntu; os_version=26.04; expected='util-linux-extra'; expected_status=0
+        PKG_MANAGER=apt; ENABLE_PIXEL_RUNTIME=true; DRY_RUN=false
+        case "$prereq_case" in
+            present) have_sg=true; expected='' ;;
+            ubuntu24) os_version=24.04; expected=login ;;
+            debian12) os_id=debian; os_version=12; expected=login ;;
+            python) have_sg=true; have_python=false; expected=python3 ;;
+            both) have_python=false; expected='util-linux-extra python3' ;;
+            unsupported) os_id=fedora; expected=''; expected_status=1 ;;
+            parse_failure|no_helper|wrong_manager|before_groups) expected=''; expected_status=1 ;;
+            install_failure|still_missing) expected_status=1 ;;
+            dry_run) expected='' ;;
+        esac
+        command() {
+            if [[ "$#" == 2 && "$1" == -v && "$2" == sg ]]; then "$have_sg"
+            elif [[ "$#" == 2 && "$1" == -v && "$2" == python3 ]]; then "$have_python"
+            else builtin command "$@"; fi
+        }
+        _ods_pixel_parse_os_release() {
+            [[ "$prereq_case" != parse_failure ]] || return 1
+            _ODS_PIXEL_OS_ID="$os_id"; _ODS_PIXEL_OS_VERSION_ID="$os_version"
+        }
+        pkg_install() {
+            install_calls="$*"
+            [[ "$prereq_case" != install_failure ]] || return 1
+            if [[ "$prereq_case" != still_missing ]]; then have_sg=true; have_python=true; fi
+        }
+        case "$prereq_case" in
+            no_helper|before_groups) unset -f pkg_install ;;
+            wrong_manager) PKG_MANAGER=dnf ;;
+        esac
+        status=0
+        if [[ "$prereq_case" == dry_run || "$prereq_case" == before_groups ]]; then
+            [[ "$prereq_case" != dry_run ]] || DRY_RUN=true
+            ods_sudo_available() { return 0; }
+            ods_pixel_install_owner() { printf '%s\n' "$owner"; }
+            ods_sudo() { mutations=$((mutations+1)); return 99; }
+            getent() { mutations=$((mutations+1)); return 99; }
+            ods_pixel_prepare_runtime_identity || status=$?
+        else
+            _ods_pixel_ensure_runtime_group_tools || status=$?
+        fi
+        [[ "$status" == "$expected_status" && "$install_calls" == "$expected" && "$mutations" == 0 ]]
+    ); then
+        pass "runtime group prerequisites: $prereq_case"
+    else
+        fail "runtime group prerequisites: $prereq_case"
+    fi
+done
+
 if (
     ods_sudo_available() { return 0; }
     ods_sudo() { printf '%s\n' 'unexpected redundant sudo' >&2; return 99; }
