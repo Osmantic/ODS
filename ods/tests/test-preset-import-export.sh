@@ -134,17 +134,8 @@ test_export_validation() {
     fi
 }
 
-# Test 9: Verify import validates archive structure
-test_import_validation() {
-    info "Test 9: Checking if import validates archive structure"
-    if grep -A50 "import|i)" "$ODS_CLI" 2>/dev/null | grep -q "meta.txt"; then
-        pass "Import validates archive structure"
-        return 0
-    else
-        fail "Import missing structure validation"
-        return 0
-    fi
-}
+# Archive validation and replacement now execute through the public CLI in
+# test-preset-import-transaction.sh, including both missing required files.
 
 # Test 10: Verify export creates relative paths
 test_export_relative_paths() {
@@ -195,7 +186,6 @@ test_import_case
 test_export_uses_tar
 test_import_security
 test_export_validation
-test_import_validation
 test_export_relative_paths
 test_import_overwrite
 test_usage_updated

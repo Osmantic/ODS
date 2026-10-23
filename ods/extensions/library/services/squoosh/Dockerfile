@@ -12,5 +12,5 @@ FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451
 RUN rm -rf /usr/share/nginx/html/*
 COPY --from=build /app/build /usr/share/nginx/html
 COPY --from=build /app/LICENSE /usr/share/nginx/html/LICENSE
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101

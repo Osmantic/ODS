@@ -112,6 +112,28 @@ async function elfTurn({reply, painted = false, before, after, messages, prompt 
   return {guard, preview, inspection: result, delivery: guard.deliveryVerificationForRun(runId)};
 }
 
+test('a passed visual preview cannot replace an explicitly requested project download', async () => {
+  const {guard,preview,inspection,delivery}=await elfTurn({painted:true,
+    prompt:'Show the webpage and give me a download of the project.'});
+  assert.equal(inspection.isError,undefined);
+  assert.equal(inspection.details.status,'passed');
+  assert.equal(delivery.status,'failed');
+  assert.match(delivery.text,/requested download was not attached/);
+  assert.equal(delivery.preview.siteId,preview.siteId,'retain the working preview');
+  assert.equal(delivery.artifacts,undefined,'preview and inspection receipts cannot fabricate an archive');
+
+  assert.equal(guard.reserveWorkspaceArtifact(context),true);
+  const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'elf-of-doom.zip',
+    siteId:'site-'+'a'.repeat(24),sha256:'a'.repeat(64),
+    file:{path:'elf-of-doom.zip',bytes:8809,sha256:'b'.repeat(64)}};
+  assert.equal(guard.acceptWorkspaceArtifact(context,artifact),true);
+  const complete=guard.deliveryVerificationForRun(context.runId);
+  assert.equal(complete.status,'passed');
+  assert.equal(complete.preview.siteId,preview.siteId);
+  assert.deepEqual(complete.artifacts,[artifact]);
+  assert.doesNotMatch(complete.text,/requested download was not attached/);
+});
+
 test('Elf of Doom: the failed paint check is the real uniform-colour receipt', async () => {
   const {inspection, delivery} = await elfTurn();
   assert.equal(inspection.isError, true);
