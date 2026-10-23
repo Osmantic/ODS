@@ -17,17 +17,11 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.BARK_HOST || 'localhost') + ':' + ($env.BARK_PORT || '9200') + '/tts' }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  text: $json.text || $json.message || 'Hello from Bark',\n  voice_preset: $json.voice || 'v2/en_speaker_6',\n  output_format: $json.format || 'wav'\n}) }}",
+        "url": "http://bark:9200/tts",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  text: $json.text || $json.message || 'Hello from Bark',\n  voice_preset: $json.voice || 'v2/en_speaker_6',\n  output_format: $json.format || 'wav'\n}) }}",
         "options": {
           "timeout": 300000
         }
@@ -35,7 +29,7 @@
       "id": "bark-tts-api",
       "name": "Bark TTS API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [450, 300]
     },
     {

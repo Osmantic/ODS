@@ -17,23 +17,30 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.RVC_HOST || 'localhost') + ':' + ($env.RVC_PORT || '7809') + '/voice-convert' }}",
         "method": "POST",
-        "headers": {
-          "list": [
+        "url": "http://rvc:7865/voice-convert",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
             {
-              "name": "Content-Type",
-              "value": "multipart/form-data"
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file"
+            },
+            {
+              "name": "model",
+              "value": "={{ (() => { const m = String(($json.body || $json).model || 'index.pth'); const ml = m.toLowerCase(); if (ml.includes('..') || m.startsWith('/') || m.includes('\\') || ml.includes('%2e') || ml.includes('%2f') || ml.includes('%5c')) throw new Error('Invalid model path'); if (!/^[a-zA-Z0-9._-]+$/.test(m)) throw new Error('Invalid model name'); if (m.length > 100) throw new Error('Model name too long'); return m; })() }}"
+            },
+            {
+              "name": "pitch",
+              "value": "={{ ($json.body || $json).pitch || 0 }}"
+            },
+            {
+              "name": "f0_method",
+              "value": "={{ ($json.body || $json).f0_method || 'rmvpe' }}"
             }
           ]
-        },
-        "binary": {
-          "file": "={{ $binary.file ? $binary.file.data : null }}"
-        },
-        "parameters": {
-          "model": "={{ (() => { const m = String($json.model || 'index.pth'); const ml = m.toLowerCase(); if (ml.includes('..') || m.startsWith('/') || m.includes('\\') || ml.includes('%2e') || ml.includes('%2f') || ml.includes('%5c')) throw new Error('Invalid model path'); if (!/^[a-zA-Z0-9._-]+$/.test(m)) throw new Error('Invalid model name'); if (m.length > 100) throw new Error('Model name too long'); return m; })() }}",
-          "pitch": "={{ $json.pitch || 0 }}",
-          "f0_method": "={{ $json.f0_method || 'rmvpe' }}"
         },
         "options": {
           "timeout": 120000
@@ -42,7 +49,7 @@
       "id": "rvc-api",
       "name": "RVC API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [450, 300]
     },
     {
@@ -106,4 +113,3 @@
     "instanceId": "rvc-workflow-v1"
   }
 }
-

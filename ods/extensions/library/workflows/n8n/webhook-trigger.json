@@ -9,19 +9,21 @@
       "id": "webhook-process-data",
       "name": "Webhook",
       "parameters": {
+        "authentication": "headerAuth",
         "path": "process-data",
         "responseMode": "responseNode",
-        "options": {
-          "headerAuth": {
-            "name": "X-Webhook-Auth",
-            "value": "={{ $env.WEBHOOK_AUTH_TOKEN }}"
-          }
-        }
+        "options": {}
       },
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
       "position": [250, 300],
-      "webhookId": "process-data-webhook"
+      "webhookId": "process-data-webhook",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "id": "code-process",
@@ -38,15 +40,15 @@
       "name": "Health Check",
       "parameters": {
         "method": "GET",
-        "url": "={{ $env.ODS_URL || 'http://host.docker.internal:3002' }}/api/v1/health",
+        "url": "http://dashboard-api:3002/health",
         "options": {
-          "continueOnFail": true,
           "timeout": 30000
         }
       },
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [650, 300]
+      "position": [650, 300],
+      "onError": "continueRegularOutput"
     },
     {
       "id": "respond-webhook",

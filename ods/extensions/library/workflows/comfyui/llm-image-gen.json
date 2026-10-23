@@ -5,6 +5,7 @@
   "nodes": [
     {
       "parameters": {
+        "authentication": "headerAuth",
         "httpMethod": "POST",
         "path": "comfyui-dynamic-workflow",
         "options": {}
@@ -13,11 +14,17 @@
       "name": "ComfyUI Image Gen Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [250, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS Webhook Header Auth"
+        }
+      }
     },
     {
       "parameters": {
-        "jsCode": "const body = $json.body || $json;\nconst headers = $json.headers || {};\n\nconst expectedKey = $env.COMFYUI_DYNAMIC_API_KEY;\nconst providedKey = headers['x-api-key'] || headers['X-API-Key'];\n\nfunction timingSafeEqual(a, b) {\n  if (a.length !== b.length) return false;\n  let result = 0;\n  for (let i = 0; i < a.length; i++) {\n    result |= a.charCodeAt(i) ^ b.charCodeAt(i);\n  }\n  return result === 0;\n}\n\nif (expectedKey && expectedKey.length > 0) {\n  if (!providedKey) {\n    return [{ json: { error: 'Authentication required', code: 401 } }];\n  }\n  if (!timingSafeEqual(expectedKey, providedKey)) {\n    return [{ json: { error: 'Invalid API key', code: 403 } }];\n  }\n} else if (providedKey) {\n  return [{ json: { error: 'Server not configured for API key auth', code: 401 } }];\n}\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'local-model',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
+        "jsCode": "const body = $json.body || $json;\n// Authentication is enforced by the Webhook node's Header Auth credential.\n\nreturn [{\n  json: {\n    prompt: body.prompt || body.message || 'Create a beautiful landscape image',\n    channel: body.channel || '#general',\n    model: body.model || 'default',\n    max_tokens: parseInt(body.max_tokens || '2000'),\n    temperature: parseFloat(body.temperature || '0.7'),\n    top_p: parseFloat(body.top_p || '0.9')\n  }\n}];"
       },
       "id": "validate-and-auth",
       "name": "Validate and Auth",
@@ -27,17 +34,13 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.LLM_HOST || 'localhost') + ':' + ($env.LLM_API_PORT || '8080') + '/v1/chat/completions' }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  messages: [\n    {\n      role: 'system',\n      content: `You are a ComfyUI workflow generator. Generate a valid ComfyUI workflow JSON that can be directly used with the ComfyUI API.\n      \n      Requirements:\n      - Output ONLY valid JSON, no markdown formatting\n      - Use the workflow structure with node IDs as strings\n      - Include all required fields for each node\n      - Generate an image generation workflow based on the user prompt\n      - Include nodes for: CheckpointLoaderSimple, KSampler, VAEDecode, SaveImage\n      - Set positive and negative prompts from the user input\n      - Return just the workflow object, wrapped in {\"workflow\": ...}`\n    },\n    {\n      role: 'user',\n      content: $json.prompt\n    }\n  ],\n  model: $json.model || 'local-model',\n  max_tokens: $json.max_tokens || 2000,\n  temperature: $json.temperature || 0.7,\n  top_p: $json.top_p || 0.9,\n  stream: false\n}) }}",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  messages: [\n    {\n      role: 'system',\n      content: `You are a ComfyUI workflow generator. Generate a valid ComfyUI workflow JSON that can be directly used with the ComfyUI API.\n      \n      Requirements:\n      - Output ONLY valid JSON, no markdown formatting\n      - Use the workflow structure with node IDs as strings\n      - Include all required fields for each node\n      - Generate an image generation workflow based on the user prompt\n      - Include nodes for: CheckpointLoaderSimple, KSampler, VAEDecode, SaveImage\n      - Set positive and negative prompts from the user input\n      - Return just the workflow object, wrapped in {\"workflow\": ...}`\n    },\n    {\n      role: 'user',\n      content: $json.prompt\n    }\n  ],\n  model: $json.model || 'default',\n  max_tokens: $json.max_tokens || 2000,\n  temperature: $json.temperature || 0.7,\n  top_p: $json.top_p || 0.9,\n  stream: false\n}) }}",
         "options": {
           "timeout": 300000
         }
@@ -45,8 +48,14 @@
       "id": "llm-api",
       "name": "LLM Chat API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
-      "position": [650, 300]
+      "typeVersion": 4.2,
+      "position": [650, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ODS LiteLLM Key"
+        }
+      }
     },
     {
       "parameters": {
@@ -60,17 +69,11 @@
     },
     {
       "parameters": {
-        "url": "={{ 'http://' + ($env.COMFYUI_HOST || 'localhost') + ':' + ($env.COMFYUI_PORT || '8188') + '/prompt' }}",
         "method": "POST",
-        "headers": {
-          "list": [
-            {
-              "name": "Content-Type",
-              "value": "application/json"
-            }
-          ]
-        },
-        "body": "={{ JSON.stringify({\n  prompt: $json.workflow,\n  client_id: 'n8n-comfyui-integration'\n}) }}",
+        "url": "http://comfyui:8188/prompt",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  prompt: $json.workflow,\n  client_id: 'n8n-comfyui-integration'\n}) }}",
         "options": {
           "timeout": 600000
         }
@@ -78,7 +81,7 @@
       "id": "comfyui-api",
       "name": "ComfyUI Prompt API",
       "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 1,
+      "typeVersion": 4.2,
       "position": [1050, 300]
     },
     {
