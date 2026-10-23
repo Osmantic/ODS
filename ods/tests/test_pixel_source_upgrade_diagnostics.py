@@ -312,6 +312,56 @@ def test_cli_mismatched_hold_preserves_actual_journal_and_snapshots(private_root
     assert manager.journal()['hold'] == 'd' * 64
 
 
+@pytest.mark.parametrize('kind,has_plan,access_guidance', [
+    ('access', False, True), ('legacy-absent', False, True),
+    ('access', True, True), ('legacy-absent', True, True),
+    ('model', False, False), ('unknown', False, False), (None, False, False),
+])
+def test_pending_access_journal_cli_names_its_recovery_without_writes(
+        private_root, monkeypatch, capsys, kind, has_plan, access_guidance):
+    root = private_root
+    install, home, candidate, state = (root / name for name in ('installed', 'owner', 'candidate', 'state'))
+    for path in (install, home, candidate, state):
+        path.mkdir(mode=0o700)
+    (install / 'retained-source').write_text('prior source')
+    (home / 'retained-data').write_text('owner data')
+    (state / 'source-upgrade').mkdir(mode=0o700)
+    (state / 'source-upgrade/retained-snapshot').write_bytes(b'prior snapshot')
+    for service in ('pixel-edge', 'litellm'):
+        path = candidate / f'extensions/services/{service}/compose.yaml'
+        path.parent.mkdir(parents=True)
+        path.write_text('services: {}')
+    pending = dict(phase='applying', configured_mode='sandboxed', transaction_id='d' * 64)
+    if kind != 'legacy-absent':
+        pending['kind'] = kind
+    journal = state / 'transition.json'
+    journal.write_text(json.dumps(pending))
+    journal.chmod(0o600)
+    manager = SimpleNamespace(state=state / 'source-upgrade', install=install,
+                              journal=lambda: {'hold': 'd' * 64} if has_plan else None,
+                              stage=refuse)
+    owner = SimpleNamespace(pw_uid=os.getuid(), pw_dir=str(home))
+    original_json = upgrade._protected_json
+    monkeypatch.setattr(upgrade, '_protected_json', lambda path, uid=0: original_json(path, os.getuid()))
+    monkeypatch.setattr(upgrade, '_manager', lambda *a, **kw: (manager, owner, state))
+    import contextlib
+    monkeypatch.setattr(upgrade, 'admission_lock', lambda _: contextlib.nullcontext())
+    monkeypatch.setattr(upgrade, 'owner_baseline', refuse)
+    monkeypatch.setattr(upgrade, '_client', refuse)
+    before = snapshot(root)
+    message = cli(monkeypatch, capsys, ['stage', str(install), 'fixture', str(candidate), 'b' * 40])
+    if access_guidance:
+        assert 'source-access-journal-pending' in message
+        assert 'Settings > Portal permissions' in message and 'Restore Sandbox' in message
+        assert 'Models page' not in message and 'ods model recover' not in message
+    else:
+        assert 'source-previous-hold-pending' in message
+        assert 'Models page' in message and 'ods model recover' in message
+        assert 'Restore Sandbox' not in message
+    assert snapshot(root) == before
+    assert str(root) not in message
+
+
 @pytest.mark.parametrize('error,shown', [
     (upgrade.UpgradeError('source-completion-required'), '(reason: source-completion-required)'),
     (RuntimeError('model-hold-unconfirmed'), '(reason: model-hold-unconfirmed)'),

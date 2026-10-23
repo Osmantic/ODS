@@ -362,6 +362,11 @@ jobs:
       - name: Atomic Environment Write Tests
         run: /bin/bash tests/test-atomic-env-writes.sh
 
+      - name: Preflight route under stock Bash 3.2
+        run: |
+          /bin/bash -c 'test "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" = 3.2'
+          /bin/bash tests/test-ods-preflight-llm-route.sh
+
       - name: Bash 3.2 syntax check (catches declare -g, associative arrays, etc.)
         run: |
           echo "=== Checking installer scripts for Bash 3.2 compatibility ==="

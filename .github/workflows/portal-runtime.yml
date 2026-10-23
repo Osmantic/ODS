@@ -99,6 +99,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_context.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_no_work.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_32k_prompt_budget.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_hook_provenance.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_long_run_compaction.integration.mjs
+      - name: Verify 8K POSIX runtime profile and first chat
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_8k_prompt_budget.integration.mjs
       - name: Verify deferred delegation through the real gateway and Portal ingress
         shell: bash
         env:

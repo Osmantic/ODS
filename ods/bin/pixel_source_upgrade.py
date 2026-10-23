@@ -1474,6 +1474,10 @@ def _stage(manager, account, source, requested_ref):
             raise UpgradeError('source-pixel-services-required')
     if os.path.lexists(manager.state.parent / 'transition.json'):
         pending, _ = _protected_json(manager.state.parent / 'transition.json')
+        # Missing kind is the legacy access journal, as in the permissions
+        # coordinator; model recovery cannot settle either form.
+        if pending.get('kind', 'access') == 'access':
+            raise UpgradeError('source-access-journal-pending')
         if (existing is None or existing['hold'] is None
                 or pending.get('kind') != 'model' or pending.get('transaction_id') != existing['hold']):
             raise UpgradeError('source-previous-hold-pending')
@@ -1679,6 +1683,11 @@ def _failure_message(error):
     # the update. Any other text, which could carry a path, stays out.
     code = str(error) if isinstance(error, (UpgradeError, RuntimeError)) else ""
     detail = f" (reason: {code})" if re.fullmatch(r"[a-z][a-z0-9-]{0,95}", code) else ""
+    if code == "source-access-journal-pending":
+        return (f"Portal is paused by an unfinished permissions change{detail}, so the Pixel update "
+                "did not start. Open the ODS dashboard's Settings > Portal permissions and choose "
+                "Restore Sandbox. After recovery succeeds, run the installer again. "
+                "The paused state and source snapshots were kept.")
     if code == "source-previous-hold-pending":
         # Unload model keeps Portal admission held until Resume model, and a
         # Windows rerun restarts the model without releasing that hold. The
