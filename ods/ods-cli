@@ -952,6 +952,20 @@ get_compose_flags() {
             if [[ "$cached" == *"docker-compose.lemonade-external.yml"* ]]; then
                 stale=1
             fi
+            # Registered model stores (scripts/register-model-store.py) and the
+            # active store's /models mount come after install. A cache from
+            # before them would start llama-server on the default directory,
+            # where the selected model is missing, and Compose then leaves
+            # LiteLLM and the Dashboard unstarted.
+            if [[ -f "$INSTALL_DIR/.model-stores.compose.json" \
+                && "$cached" != *".model-stores.compose.json"* ]]; then
+                stale=1
+            fi
+            if [[ "${ODS_ACTIVE_MODEL_STORE:-default}" != "default" ]]; then
+                [[ "$cached" == *".active-model-store.compose.json"* ]] || stale=1
+            elif [[ "$cached" == *".active-model-store.compose.json"* ]]; then
+                stale=1
+            fi
             # The AMD image follows AMD_INFERENCE_BACKEND (vulkan or rocm).
             if [[ "$cached" == *"docker-compose.amd.yml"* ]]; then
                 if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
