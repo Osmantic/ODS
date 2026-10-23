@@ -223,18 +223,6 @@ def plan(config, proposed):
     lean = context < 32768 or any(float(n) <= 4 for n in re.findall(r"(?<![a-z0-9.])(\d+(?:\.\d+)?)\s*b(?![a-z0-9])", proposed["model"].lower()))
     agent.update(bootstrapMaxChars=2000 if lean else 14000, bootstrapTotalMaxChars=6000 if lean else 36000,
                  contextInjection="never" if lean else "continuation-skip")
-    # Match the installer overlay when a live activation changes the context.
-    skills_limits = agent.get("skillsLimits")
-    if "skillsLimits" in agent and not isinstance(skills_limits, dict):
-        raise ModelError("invalid-model-skills-limits")
-    if context <= 8192:
-        if skills_limits is None:
-            skills_limits = agent["skillsLimits"] = {}
-        skills_limits["maxSkillsPromptChars"] = 4300
-    elif skills_limits is not None and skills_limits.get("maxSkillsPromptChars") == 4300:
-        skills_limits.pop("maxSkillsPromptChars")
-        if not skills_limits:
-            agent.pop("skillsLimits")
     compaction = result["agents"].setdefault("defaults", {}).setdefault("compaction", {})
     # The computed reserve already includes output and transport headroom.
     # A half-window floor would unnecessarily reject compacted tool history.

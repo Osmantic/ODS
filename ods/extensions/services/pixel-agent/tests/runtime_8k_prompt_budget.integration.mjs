@@ -18,6 +18,16 @@ import {registerHooks} from 'node:module';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {promptContractForAgent, ODS_TINY_CONVERSATION_CONTRACT} from '../plugin/prompt-contract.mjs';
+import {createExtensionReadTool} from '../plugin/host-observe.mjs';
+import {createPublicWebExtractTool} from '../plugin/web-extract.mjs';
+import {createAgentSkillTool} from '../plugin/agent-skills.mjs';
+import {createAskUserTool} from '../plugin/ask-user.mjs';
+import {createExtensionRequestStatusTool} from '../plugin/extension-proposal.mjs';
+import {createWorkspacePreviewTool} from '../plugin/workspace-preview.mjs';
+import {createWorkspacePreviewInspectTool} from '../plugin/workspace-preview-inspect.mjs';
+import {ACTIVITY_CONTRACT} from '../plugin/activity-display.mjs';
+import {executionContext} from '../plugin/completion-assurance.mjs';
+import {executionLocationContext} from '../plugin/execution-location.mjs';
 
 const pkg=process.env.OPENCLAW_PACKAGE_DIR;
 assert.ok(pkg,'provide the pinned reviewed OpenClaw package');
@@ -32,6 +42,7 @@ for(const [name,module] of [
   ['compaction-no-work','compact-DuWIsaq_.js'],
   ['compaction-resume','sessions-CZbwb3_c.js'],
   ['compaction-budget','selection-BEwSQKM-.js'],
+  ['image-envelope','tool-search-BInRpkE3.js'],
 ]) {
   const manifest=JSON.parse(fs.readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
   const filename=path.join(pkg,'dist',module);
@@ -48,7 +59,6 @@ for(const [name,module] of [
 }
 const loader=registerHooks({load(url,context,next){return sources.has(url)
   ? {format:'module',source:sources.get(url),shortCircuit:true}:next(url,context);}});
-const {t:buildWorkspaceSkillSnapshot}=await import(pathToFileURL(path.join(pkg,'dist/workspace-BPpGiOak.js')));
 const {t:runEmbeddedAgent}=await import(pathToFileURL(path.join(pkg,'dist/embedded-agent-CJx-nG3W.js')));
 test.after(async()=>{
   const {n:closeStateDatabases}=await import(pathToFileURL(path.join(pkg,'dist/openclaw-state-db-BtpXMqJX.js')));
@@ -90,7 +100,6 @@ const BOOTSTRAP_MAX_CHARS=stagedAgent.bootstrapMaxChars;
 const BOOTSTRAP_TOTAL_MAX_CHARS=stagedAgent.bootstrapTotalMaxChars;
 const CONTEXT_INJECTION=stagedAgent.contextInjection;
 const TOOL_SEARCH=staged.tools.toolSearch;
-const SKILLS_LIMITS=stagedAgent.skillsLimits;
 
 // Production compact contract for this route.
 const compactContract=promptContractForAgent(
@@ -100,6 +109,9 @@ const compactContract=promptContractForAgent(
   {configuredContextWindow:CONTEXT_WINDOW,configuredLeanPrompt:true}
 );
 assert.ok(compactContract?.appendSystemContext?.includes(ODS_TINY_CONVERSATION_CONTRACT.slice(0,80)),'production compact contract must be selected');
+// Include the surrounding production before_prompt_build hook, not only its
+// conversation contract. These prompts also consume the first-turn budget.
+compactContract.appendSystemContext = `${ACTIVITY_CONTRACT} ${executionLocationContext({agentId:'pixel'},'pixel')}  ${compactContract.appendSystemContext} ${executionContext()} `;
 
 // Production bootstrap shape: a small BOOTSTRAP.md and a small AGENTS.md,
 // bounded by the per-agent 2000/6000 budget and contextInjection 'never'.
@@ -119,14 +131,7 @@ test('8K compact-profile fresh chat reaches provider with compact contract and f
   t.after(async()=>{upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));});
   const workspace=path.join(root,'workspace'),agentDir=path.join(root,'agent');
   fs.mkdirSync(workspace);fs.mkdirSync(agentDir);
-  // A representative 15-skill catalog, independent of CI-installed binaries
-  // and credentials. The native loader, compact renderer and limits are real.
-  const fixtureSkillNames=Array.from({length:15},(_,i)=>`budget-guide-${String(i).padStart(2,'0')}`);
-  for(const name of fixtureSkillNames){
-    const dir=path.join(workspace,'skills',name);fs.mkdirSync(dir,{recursive:true});
-    const description='Specialized instructions for this fixture workflow. Read the guide before performing its task, inspect the relevant inputs and results, and retain the owner requirements throughout the work.';
-    fs.writeFileSync(path.join(dir,'SKILL.md'),`---\nname: ${name}\ndescription: ${description}\n---\n\nPreserve the owner instructions and verify the result.\n`);
-  }
+  const fixtureSkillNames=[]; // ODS uses pixel_ods_skill instead of native skill injection.
   fs.writeFileSync(path.join(workspace,'BOOTSTRAP.md'),bootstrapText);
   fs.writeFileSync(path.join(workspace,'AGENTS.md'),agentsText);
   const sessionId='1bbbbbbb-2222-4333-8444-555555555555',sessionFile=path.join(root,sessionId+'.jsonl');
@@ -138,28 +143,31 @@ test('8K compact-profile fresh chat reaches provider with compact contract and f
   const prompt='No tools are needed. In one short sentence, what is a bicycle?';
   const plugin=path.join(root,'plugin');fs.mkdirSync(plugin);
   fs.writeFileSync(path.join(plugin,'package.json'),JSON.stringify({name:'ods-8k-budget-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
-  fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'ods-8k-budget-fixture',activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
-  fs.writeFileSync(path.join(plugin,'index.mjs'),`export default {id:'ods-8k-budget-fixture',register(api){api.on('before_prompt_build',()=>(${JSON.stringify(compactContract)}));}};`);
+  const fixtureContext={agentId:'pixel',sessionKey:'agent:pixel:openai-user:ods-'+ 'a'.repeat(64)};
+  const noExternalCall=()=>{throw new Error('No external operations in prompt-budget fixture');};
+  const odsTools=[createExtensionReadTool(),createPublicWebExtractTool({guardedFetch:noExternalCall,readResponseText:noExternalCall,extractBasicHtmlContent:noExternalCall}),createAgentSkillTool(),createAskUserTool(),
+    createExtensionRequestStatusTool(fixtureContext),createWorkspacePreviewTool(),createWorkspacePreviewInspectTool()];
+  assert.ok(odsTools.every(Boolean),'all seven real ODS direct-tool definitions must be present');
+  const definitions=odsTools.map(({name,description,parameters})=>({name,description,parameters}));
+  fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'ods-8k-budget-fixture',activation:{onStartup:true},contracts:{tools:definitions.map(t=>t.name)},configSchema:{type:'object',properties:{}}}));
+  fs.writeFileSync(path.join(plugin,'index.mjs'),`export default {id:'ods-8k-budget-fixture',register(api){api.on('before_prompt_build',()=>(${JSON.stringify(compactContract)}));for(const tool of ${JSON.stringify(definitions)})api.registerTool({...tool,execute:async()=>{throw new Error('No external operations in prompt-budget fixture');}});}};`);
   // Adapt the writer-generated model provider to the loopback fixture; the
   // real host is never invoked. All other writer-derived fields are preserved.
   const config={
     agents:{
       defaults:{workspace,skipBootstrap:false,model:'fixture/model',contextTokens:CONTEXT_WINDOW,compaction:stagedDefaults.compaction,bootstrapMaxChars:BOOTSTRAP_MAX_CHARS,bootstrapTotalMaxChars:BOOTSTRAP_TOTAL_MAX_CHARS,contextInjection:CONTEXT_INJECTION,heartbeat:{every:'0m'}},
-      list:[{id:'pixel',model:'fixture/model',default:true,workspace,agentDir,experimental:stagedAgent.experimental,skills:fixtureSkillNames,skillsLimits:SKILLS_LIMITS,bootstrapMaxChars:BOOTSTRAP_MAX_CHARS,bootstrapTotalMaxChars:BOOTSTRAP_TOTAL_MAX_CHARS,contextInjection:CONTEXT_INJECTION}],
+      list:[{id:'pixel',model:'fixture/model',default:true,workspace,agentDir,experimental:stagedAgent.experimental,skills:fixtureSkillNames,bootstrapMaxChars:BOOTSTRAP_MAX_CHARS,bootstrapTotalMaxChars:BOOTSTRAP_TOTAL_MAX_CHARS,contextInjection:CONTEXT_INJECTION}],
     },
-    tools:{toolSearch:TOOL_SEARCH},
+    tools:{toolSearch:TOOL_SEARCH,alsoAllow:definitions.map(t=>t.name),fs:{workspaceOnly:true},exec:{applyPatch:{enabled:true}}},
     plugins:{allow:['ods-8k-budget-fixture'],load:{paths:[plugin]},entries:{'ods-8k-budget-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}},
     models:{mode:'replace',providers:{fixture:{api:'openai-completions',baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,apiKey:'fixture-only',
       models:[{id:'model',name:'Fixture 8K',contextWindow:CONTEXT_WINDOW,maxTokens:MODEL_MAX_TOKENS,reasoning:false,input:['text']}]}}},
   };
-  const fullSkillsConfig=structuredClone(config);
-  delete fullSkillsConfig.agents.list[0].skillsLimits;
-  const fullSkills=buildWorkspaceSkillSnapshot(workspace,{config:fullSkillsConfig,agentId:'pixel'});
   fs.writeFileSync(process.env.OPENCLAW_CONFIG_PATH,JSON.stringify(config));
   const result=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:budget-8k',workspaceDir:workspace,agentDir,
     config,provider:'fixture',model:'model',prompt,runId:'budget-8k-fresh',trigger:'user',timeoutMs:30000});
   const trace=JSON.stringify({requests:requests.length,error:result.meta?.error,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length});
-  console.log(JSON.stringify({requests:requests.length,error:result.meta?.error,contractChars:compactContract.appendSystemContext.length,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length}));
+  console.log(JSON.stringify({requests:requests.length,error:result.meta?.error,contractChars:compactContract.appendSystemContext.length,systemChars:result.meta?.systemPromptReport?.systemPrompt?.chars,skillChars:result.meta?.systemPromptReport?.skills?.promptChars,skillCount:result.meta?.systemPromptReport?.skills?.entries?.length,wireTools:requests[0]?.tools?.map(t=>t.function.name),configuredContext:config.agents.defaults.contextTokens}));
   // The failure mode under investigation: precheck overflow before any provider call.
   if(result.meta?.error?.kind==='context_overflow'||result.meta?.error?.kind==='compaction_failure'){
     assert.fail('8K compact profile overflowed before reaching the provider: '+trace);
@@ -168,20 +176,14 @@ test('8K compact-profile fresh chat reaches provider with compact contract and f
   assert.equal(requests.length,1,'one actual provider continuation\n'+trace);
   assert.equal(requests[0].max_tokens??requests[0].max_completion_tokens,MODEL_MAX_TOKENS,'preserve full configured output budget');
   const sent=JSON.stringify(requests[0].messages);
-  assert.ok(requests[0].messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.includes(compactContract.appendSystemContext)),
+  assert.ok(requests[0].messages.some(m=>m.role==='system'&&typeof m.content==='string'&&m.content.includes(compactContract.appendSystemContext.trim())),
     'the actual native provider payload must include the production compact contract');
   assert.equal(sent.split(prompt).length-1,1,'submit new owner request exactly once');
   assert.ok(!sent.includes('Inspect the fixture documentation once.'),'no archived owner request replay');
-  // Compare the native full and compact catalogs, not a list with itself.
-  const fullReport=result.meta?.systemPromptReport?.skills;
-  assert.ok(fullReport,'system prompt report must include skills section');
-  const fullNames=fullSkills.resolvedSkills.map(e=>e.name).sort();
-  const compactNames=(fullReport.entries||[]).map(e=>e.name).sort();
-  assert.deepEqual(compactNames,fullNames,'compact profile must not drop fixture skills');
-  assert.deepEqual(fullNames,fixtureSkillNames,'exercise every fixture skill');
-  assert.deepEqual(requests[0].tools.map(t=>t.function.name).sort(),['tool_call','tool_describe','tool_search'],'retain native tool discovery and invocation');
-  assert.ok(fullReport.promptChars<=SKILLS_LIMITS.maxSkillsPromptChars,
-    `skills prompt chars ${fullReport.promptChars} must fit managed cap ${SKILLS_LIMITS.maxSkillsPromptChars}`);
+  assert.equal(result.meta?.systemPromptReport?.skills?.promptChars,0,'match installed ODS native-skills configuration');
+  assert.deepEqual(requests[0].tools.map(t=>t.function.name).sort(),
+    ['tool_call','tool_describe','tool_search'],
+    '8K loads permitted schemas through the catalog to preserve the reply budget');
   const followup=await runEmbeddedAgent({agentId:'pixel',sessionId,sessionFile,sessionKey:'agent:pixel:budget-8k',workspaceDir:workspace,agentDir,config,provider:'fixture',model:'model',prompt:'What powers it?',runId:'budget-8k-followup',trigger:'user',timeoutMs:30000});
   assert.equal(followup.meta?.error,undefined,JSON.stringify(followup.meta?.error));
   assert.equal(requests.length,2,'follow-up must reach the provider too');

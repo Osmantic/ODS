@@ -233,21 +233,6 @@ if sys.argv[3]:
 updated_agent["bootstrapMaxChars"] = 2000 if lean_prompt else 14000
 updated_agent["bootstrapTotalMaxChars"] = 6000 if lean_prompt else 36000
 updated_agent["contextInjection"] = "never" if lean_prompt else "continuation-skip"
-# Fit the native skill catalog alongside the ODS contract on 8K contexts.
-# OpenClaw first keeps names and locations in compact form, before truncating
-# an unusually large catalog. Tools and skill execution remain available.
-# This profile owns only this key; restore the native default on switch-back.
-skills_limits = updated_agent.get("skillsLimits")
-if "skillsLimits" in updated_agent and not isinstance(skills_limits, dict):
-    raise SystemExit("OpenClaw skillsLimits configuration must be an object")
-if context_window <= 8192:
-    if skills_limits is None:
-        skills_limits = updated_agent["skillsLimits"] = {}
-    skills_limits["maxSkillsPromptChars"] = 4300
-elif skills_limits is not None and skills_limits.get("maxSkillsPromptChars") == 4300:
-    skills_limits.pop("maxSkillsPromptChars")
-    if not skills_limits:
-        updated_agent.pop("skillsLimits")
 # Bound each live tool result by the real context capacity of the selected model.
 # This is capability-based prompt shaping, never a model allowlist: failures
 # retain OpenClaw diagnostic head/tail projection and every tool remains

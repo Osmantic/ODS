@@ -152,7 +152,7 @@ export const ODS_COMPACT_CONVERSATION_CONTRACT = [
   PREVIEW_RUNTIME_CONTRACT,
 ].join(" ");
 
-// Keep the same operational requirements with room for native skill paths on
+// Keep the same operational requirements with room for tool discovery and replies on
 // 8K models. Larger compact profiles retain their existing wording.
 export const ODS_TINY_CONVERSATION_CONTRACT = [
   "Private ODS assistant; use the saved profile name. Reply visibly; short/ambiguous text is conversation, not an action.",
