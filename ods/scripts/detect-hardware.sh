@@ -10,6 +10,11 @@ set -euo pipefail
 # - avoid pipeline masking failures
 # - do not hang on missing system tools
 
+# amd_card_memory_type: the installer's APU/discrete classifier (gpu_metrics
+# format first, GTT/VRAM sizes only when the kernel publishes no table).
+# shellcheck source=../installers/lib/amd-topo.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../installers/lib/amd-topo.sh"
+
 # Print errors with context
 err() {
     echo -e "${RED}Error:${NC} $*" >&2
@@ -199,7 +204,8 @@ count_nvidia_gpus() {
 # Detect AMD GPU via sysfs (works without ROCm installed)
 # Returns: gpu_name|vram_bytes|gtt_bytes|is_apu|gpu_busy|temp|power|vulkan|rocm|driver|device_id|subsystem_device|revision
 detect_amd_sysfs() {
-    for card_dir in /sys/class/drm/card*/device; do
+    local drm_sys="${ODS_DRM_SYS:-/sys/class/drm}"
+    for card_dir in "$drm_sys"/card*/device; do
         [[ -d "$card_dir" ]] || continue
         local vendor
         vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
@@ -218,21 +224,14 @@ detect_amd_sysfs() {
             vram_total=$(cat "$card_dir/mem_info_vram_total" 2>/dev/null) || vram_total=0
             gtt_total=$(cat "$card_dir/mem_info_gtt_total" 2>/dev/null) || gtt_total=0
 
-            # Detect if APU (unified memory)
-            # Strix Halo has small VRAM carve-out (UMA frame buffer, often 1GB)
-            # but large GTT (actual usable GPU memory from system RAM).
+            # Detect if APU (unified memory). Same classifier as the
+            # installer (installers/lib/detection.sh): the gpu_metrics table
+            # tells an APU from a discrete GPU. A size-only guess called a
+            # discrete card unified whenever its GTT reached 32 GB (any
+            # desktop with 64 GB of RAM) or its VRAM did (W7800/W7900).
             is_apu="false"
-            if [[ $vram_total -gt 0 && $gtt_total -gt 0 ]]; then
-                local vram_gb=$(( vram_total / 1073741824 ))
-                local gtt_gb=$(( gtt_total / 1073741824 ))
-                if [[ $gtt_gb -ge 16 && $vram_gb -le 4 ]]; then
-                    # Small VRAM + large GTT = APU with unified memory
-                    is_apu="true"
-                elif [[ $gtt_gb -ge 32 ]]; then
-                    is_apu="true"
-                elif [[ $vram_gb -ge 32 ]]; then
-                    is_apu="true"
-                fi
+            if [[ "$(amd_card_memory_type "$card_dir")" == "unified" ]]; then
+                is_apu="true"
             fi
 
             # GPU utilization

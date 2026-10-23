@@ -26,6 +26,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
+	@bash tests/test-detect-hardware-amd-apu.sh
 	@python3 tests/test-model-library-pinned-urls.py
 	@python3 tests/test-tier-map-catalog-pins.py
 	@bash tests/test-installer-context-parity.sh
