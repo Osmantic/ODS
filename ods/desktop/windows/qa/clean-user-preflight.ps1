@@ -26,7 +26,7 @@ function Assert-CleanUserMachine($Policy,$Machine){
     if($Policy.require_windows11 -and [int]$Machine.Build -lt 22000){throw 'This kit requires Windows 11.'}
     if($Machine.Elevated -ne $false){throw 'Use a non-elevated standard-user token.'}
 }
-function Assert-CleanUserInputs([string]$Root,$Manifest){
+function Assert-CleanUserInput([string]$Root,$Manifest){
     $expected=@('INSTALLER-BUILD-INFO.json','ODS-Windows-Preview-Setup.exe','run-clean-user-qa.ps1','clean-user-preflight.ps1',
         'ods/desktop/windows/tests/InstallerUiTests.cs','ods/desktop/windows/tests/PortalUiTests.cs','ods/desktop/windows/tests/NativePortalTests.cs',
         'ods/desktop/windows/tests/DocumentSaveDialogTests.cs','ods/tests/test-windows-native-portal.ps1')

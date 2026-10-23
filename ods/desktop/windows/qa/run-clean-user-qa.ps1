@@ -8,7 +8,7 @@ if($RunQualification -and $PreflightOnly){throw 'Choose preflight or qualificati
 $policy=[IO.File]::ReadAllText((Join-Path $PSScriptRoot 'QA-SOURCE.json')) | ConvertFrom-Json
 $machine=Get-CleanUserMachine
 Assert-CleanUserMachine $policy $machine
-Assert-CleanUserInputs $PSScriptRoot $policy
+Assert-CleanUserInput $PSScriptRoot $policy
 $installed=Join-Path $env:LOCALAPPDATA 'Programs/ODS Windows Preview'
 $state=Join-Path $env:LOCALAPPDATA 'ODS Guest QA'
 foreach($path in @($installed,$state,(Join-Path $env:LOCALAPPDATA 'ODS Desktop Preview'))){

@@ -38,6 +38,6 @@ foreach($name in $mapping.Keys){
 $policy=@{schemaVersion=1;expected_guest_uuid=$expected;generator_host_uuid=$hostUuid;require_windows11=[bool]$RequireWindows11;
     source_head=$source;files=$files;scope='Frozen QA bytes; source_head identifies checkout ancestry, file hashes identify exact inputs'}
 [IO.File]::WriteAllText((Join-Path $output 'QA-SOURCE.json'),($policy | ConvertTo-Json -Depth 6),[Text.UTF8Encoding]::new($false))
-Assert-CleanUserInputs $output $policy
+Assert-CleanUserInput $output $policy
 Write-Output "Kit ready: $output"
 Write-Output 'Transfer this entire directory to the designated disposable Microsoft VM as read-only input. Run run-clean-user-qa.ps1 in a non-elevated Windows PowerShell session for preflight. Explicit -RunQualification installs and downloads only after all guards pass. Results use a new private LOCALAPPDATA directory. No VM/account/security configuration was changed.'
