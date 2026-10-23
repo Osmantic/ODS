@@ -53,8 +53,29 @@ try {
     $compiler=Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
     $wpf=Join-Path (Split-Path $compiler) 'WPF'
     $runner=Join-Path $output 'InstallerUiTests.exe'
-    & $compiler /nologo /target:exe /platform:x64 "/out:$runner" /reference:System.Management.dll "/reference:$wpf/WindowsBase.dll" "/reference:$wpf/UIAutomationClient.dll" "/reference:$wpf/UIAutomationTypes.dll" (Join-Path $PSScriptRoot 'ods/desktop/windows/tests/InstallerUiTests.cs')
-    if($LASTEXITCODE -ne 0){throw 'Guest UI harness did not compile using the inbox .NET compiler.'}
+    $compilerSource=Join-Path $PSScriptRoot 'ods/desktop/windows/tests/InstallerUiTests.cs'
+    $compilerArguments=@('/nologo','/utf8output','/target:exe','/platform:x64',"/out:$runner",'/reference:System.Management.dll',
+        "/reference:$wpf/WindowsBase.dll","/reference:$wpf/UIAutomationClient.dll","/reference:$wpf/UIAutomationTypes.dll",$compilerSource)
+    $compilerStart=[Diagnostics.ProcessStartInfo]::new()
+    $compilerStart.FileName=$compiler;$compilerStart.UseShellExecute=$false;$compilerStart.CreateNoWindow=$true
+    $compilerStart.Arguments=($compilerArguments | ForEach-Object {
+        '"'+[regex]::Replace([regex]::Replace($_,'(\\*)"','$1$1\"'),'(\\+)$','$1$1')+'"'
+    }) -join ' '
+    $compilerStart.RedirectStandardOutput=$true;$compilerStart.RedirectStandardError=$true
+    $compilerEncoding=[Text.UTF8Encoding]::new($false)
+    $compilerStart.StandardOutputEncoding=$compilerEncoding;$compilerStart.StandardErrorEncoding=$compilerEncoding
+    $compile=[Diagnostics.Process]::new();$compile.StartInfo=$compilerStart
+    $record.compiler=@{executable=$compiler;arguments=$compilerArguments;source=$compilerSource;
+        source_sha256=(Get-FileHash -LiteralPath $compilerSource).Hash.ToLowerInvariant();log='compiler.log';exit_code=$null}
+    try {
+        if(-not $compile.Start()){throw 'Guest inbox compiler did not start.'}
+        $compilerOut=$compile.StandardOutput.ReadToEndAsync();$compilerError=$compile.StandardError.ReadToEndAsync()
+        $compile.WaitForExit()
+        $compilerStdout=$compilerOut.GetAwaiter().GetResult();$compilerStderr=$compilerError.GetAwaiter().GetResult()
+        $record.compiler.exit_code=$compile.ExitCode
+        [IO.File]::WriteAllText((Join-Path $output 'compiler.log'),("STDOUT:`r`n"+$compilerStdout+"`r`nSTDERR:`r`n"+$compilerStderr),$compilerEncoding)
+    }finally{$compile.Dispose()}
+    if($record.compiler.exit_code -ne 0){throw 'Guest UI harness did not compile using the inbox .NET compiler; see compiler.log and compiler receipt.'}
     $installed=Join-Path $env:LOCALAPPDATA 'Programs/ODS Windows Preview'
     if(Test-Path -LiteralPath $installed){throw 'Use a fresh guest; the application folder already exists.'}
     $installStarted=[DateTime]::UtcNow
