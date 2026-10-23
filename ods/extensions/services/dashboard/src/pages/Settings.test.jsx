@@ -354,7 +354,7 @@ it.each([true,false])('locks the environment draft until its pending save settle
 })
 
 it.each([true, false])('protects saved settings while runtime apply is pending and recovers (success=%s)', async success => {
-  const plan = {status:'pending',supported:true,services:['litellm'],summary:'Restart LiteLLM.'}
+  const plan = {status:'pending',supported:true,envRevision:'a'.repeat(64),services:['litellm'],summary:'Restart LiteLLM.'}
   const {fetchMock} = renderSettings(url => url === '/api/settings/env'
     ? response({...editor,applyPlan:plan}) : null)
   const field = await screen.findByLabelText('LAN Host IP')
@@ -403,7 +403,7 @@ it.each([true, false])('protects saved settings while runtime apply is pending a
 })
 
 it('keeps saved changes and retries a busy Apply without another Save', async () => {
-  const plan = {status:'pending',supported:true,services:['llama-server'],summary:'Restart llama-server.'}
+  const plan = {status:'pending',supported:true,envRevision:'a'.repeat(64),services:['llama-server'],summary:'Restart llama-server.'}
   const busy = 'ODS is finishing another operation. Your settings are saved. Wait for it to finish, then choose Apply changes again.'
   const {fetchMock} = renderSettings()
   const field = await screen.findByLabelText('LAN Host IP')
@@ -438,11 +438,11 @@ it('keeps saved changes and retries a busy Apply without another Save', async ()
   expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
   const requests = fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env/apply')
   expect(requests.map(([,options]) => JSON.parse(options.body)))
-    .toEqual([{service_ids:['llama-server']},{service_ids:['llama-server']}])
+    .toEqual([{service_ids:['llama-server'],expected_env_revision:'a'.repeat(64)},{service_ids:['llama-server'],expected_env_revision:'a'.repeat(64)}])
 })
 
 it.each([['Refresh',true],['Refresh',false],['Reload',true],['Reload',false]])('does not start runtime apply before an environment %s settles (success=%s)', async (action, success) => {
-  const plan = {status:'pending',supported:true,services:['litellm'],summary:'Restart LiteLLM.'}
+  const plan = {status:'pending',supported:true,envRevision:'a'.repeat(64),services:['litellm'],summary:'Restart LiteLLM.'}
   const {fetchMock} = renderSettings(url => url === '/api/settings/env'
     ? response({...editor,applyPlan:plan}) : null)
   const field = await screen.findByLabelText('LAN Host IP')
@@ -462,4 +462,63 @@ it.each([['Refresh',true],['Refresh',false],['Reload',true],['Reload',false]])('
   expect(field).toHaveValue('192.168.1.10')
   expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled()
   if (!success && action === 'Reload') expect(screen.getByText('Environment read failed')).toBeInTheDocument()
+})
+
+
+it('requires a saved configuration revision before sending Apply', async () => {
+  const plan = {status:'pending',supported:true,services:['llama-server']}
+  const {fetchMock} = renderSettings(url => url === '/api/settings/env' ? response({...editor,applyPlan:plan}) : null)
+  await screen.findByLabelText('LAN Host IP')
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText('Reload the current settings, then review and save your changes before applying.')).toBeVisible()
+  expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/env/apply')).toBe(false)
+})
+
+it.each([true,false])('rejects a stale saved plan and refreshes current settings (refresh succeeds=%s)', async refreshSucceeds => {
+  const modelEditor = {...editor,
+    fields:{LLAMA_PARALLEL:{key:'LLAMA_PARALLEL',label:'Llama Parallel',type:'integer',secret:false,required:false,readOnly:false}},
+    sections:[{id:'configuration',title:'Configuration',keys:['LLAMA_PARALLEL']}],
+    values:{LLAMA_PARALLEL:'1'}}
+  const plan = {status:'ready',supported:true,services:['llama-server'],envRevision:'a'.repeat(64),summary:'Restart llama-server.'}
+  let envReads = 0
+  let saves = 0
+  let applies = 0
+  const fetchMock = vi.fn(async (url,options) => {
+    if (url === '/api/settings/env') {
+      if (options?.method === 'PUT') {
+        saves += 1
+        return response({...modelEditor,values:JSON.parse(options.body).values,applyPlan:{...plan,envRevision:(saves === 1 ? 'a' : 'b').repeat(64)}})
+      }
+      envReads += 1
+      return envReads > 1 && !refreshSucceeds ? response({detail:'Settings temporarily unavailable'},503) : response(modelEditor)
+    }
+    if (url === '/api/settings/env/apply') {
+      applies += 1
+      return applies === 1 ? response({detail:{code:'env_revision_mismatch',message:'Settings changed'}},409) : response({message:'Runtime applied.'})
+    }
+    return response(payloadByUrl(url))
+  })
+  vi.stubGlobal('fetch',fetchMock)
+  render(<Settings />)
+  let field = await screen.findByLabelText('Llama Parallel')
+  fireEvent.change(field,{target:{value:'2'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  await screen.findByText(/Settings changed while you were waiting/)
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeDisabled()
+  expect(saves).toBe(1)
+  expect(applies).toBe(1)
+  expect(envReads).toBe(2)
+  if (!refreshSucceeds) return
+  field = screen.getByLabelText('Llama Parallel')
+  expect(field).toHaveValue(1)
+  fireEvent.change(field,{target:{value:'2'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText('Runtime applied.')).toBeVisible()
+  expect(saves).toBe(2)
+  const requests=fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env/apply')
+  expect(requests.map(([,options]) => JSON.parse(options.body).expected_env_revision)).toEqual(['a'.repeat(64),'b'.repeat(64)])
 })

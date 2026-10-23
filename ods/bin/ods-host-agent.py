@@ -12304,6 +12304,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             # the live .env keeps mode 0600 instead of inheriting 0644.
             os.chmod(tmp_path, 0o600)
             os.replace(str(tmp_path), str(env_path))
+            env_revision = hashlib.sha256(env_path.read_bytes()).hexdigest()
         except OSError as exc:
             logger.warning("env_update OSError from %s: %s", client_ip, exc)
             json_response(self, 500, {"error": str(exc)})
@@ -12316,6 +12317,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             "status": "ok",
             "backup_path": backup_relative_path,
             "enforced_values": enforced_values,
+            "env_revision": env_revision,
         })
 
     def _handle_core_recreate(self):
@@ -12335,7 +12337,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         unique_service_ids = sorted(set(requested))
 
-        lifecycle_claimed = bool(_MODEL_STACK_RECREATE_IDS.intersection(unique_service_ids))
+        expected_env_revision = body.get("expected_env_revision")
+        if expected_env_revision is not None:
+            if not isinstance(expected_env_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_env_revision):
+                json_response(self, 400, {"error": "expected_env_revision must be a 64-character lowercase hex digest"})
+                return
+
+        # A revision-bound Apply must serialize against env_update for every
+        # service, not only the model stack: the digest it compares is the
+        # same file env_update rewrites. Unbound callers keep the historical
+        # model-stack-only guard.
+        lifecycle_claimed = bool(_MODEL_STACK_RECREATE_IDS.intersection(unique_service_ids)) or expected_env_revision is not None
         if lifecycle_claimed:
             acquired, active = _begin_model_lifecycle("core_recreate", ",".join(unique_service_ids))
             if not acquired:
@@ -12353,6 +12365,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                     json_response(self, 409, {"error": f"Operation already in progress for {service_id}"})
                     return
                 locks.append(lock)
+
+            if expected_env_revision is not None:
+                env_path = INSTALL_DIR / ".env"
+                try:
+                    actual_revision = hashlib.sha256(env_path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    logger.warning("core_recreate revision read failed: %s", exc)
+                    json_response(self, 500, {
+                        "success": False,
+                        "code": "env_revision_unavailable",
+                        "error": "Saved settings could not be read. Reload Settings before applying.",
+                    })
+                    return
+                if actual_revision != expected_env_revision:
+                    logger.info("core_recreate refused: saved settings changed")
+                    json_response(self, 409, {
+                        "success": False,
+                        "code": "env_revision_mismatch",
+                        "error": "Environment file changed since this plan was saved; reload Settings and re-save before applying.",
+                    })
+                    return
 
             logger.info("Recreating core services: %s", ", ".join(unique_service_ids))
             ok, err = docker_compose_recreate(unique_service_ids)

@@ -329,12 +329,17 @@ export default function Settings({ activeSection = 'all' }) {
 
   const handleApplyEnv = async () => {
     if (envSaving || envApplying || envReloading || loading || !envApplyPlan?.supported || !envApplyPlan?.services?.length) return
+    const expectedEnvRevision = envApplyPlan?.envRevision
+    if (typeof expectedEnvRevision !== 'string' || !/^[0-9a-f]{64}$/.test(expectedEnvRevision)) {
+      setNotice({ type: 'warn', text: 'Reload the current settings, then review and save your changes before applying.' })
+      return
+    }
     setEnvApplying(true)
     try {
       const payload = await fetchPayload('/api/settings/env/apply', 180000, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service_ids: envApplyPlan.services }),
+        body: JSON.stringify({ service_ids: envApplyPlan.services, expected_env_revision: expectedEnvRevision }),
       })
       const { remainingPlan, followUpPlan } = settleSettingsApplyPlan(envApplyPlan)
       setEnvApplyPlan(remainingPlan)
@@ -349,7 +354,17 @@ export default function Settings({ activeSection = 'all' }) {
       })
     } catch (err) {
       if (err?.details?.code === 'model_lifecycle_busy') {
-        setNotice({ type: 'info', text: err.details.message || 'ODS is finishing another operation. Your settings are saved. Wait for it to finish, then choose Apply changes again.' })
+        setNotice({ type: 'info', text: err.details.message || 'ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. If settings changed, ODS will ask you to review them.' })
+      } else if (err?.details?.code === 'env_revision_mismatch') {
+        setEnvApplyPlan(null)
+        try {
+          const fresh = await fetchPayload('/api/settings/env', 10000)
+          applyEnvEditorPayload(fresh)
+          setNotice({ type: 'warn', text: 'Settings changed while you were waiting. The current values are shown below. Review and save your changes before applying.' })
+        } catch (refreshErr) {
+          setNotice({ type: 'danger', text: `Settings changed while you were waiting. Reload the current settings before saving or applying. (${getErrorText(refreshErr)})` })
+        }
+        return
       } else {
         setNotice({ type: 'danger', text: getErrorText(err) })
       }
