@@ -348,7 +348,11 @@ export default function Settings({ activeSection = 'all' }) {
           : (payload?.message || 'Runtime changes applied successfully.'),
       })
     } catch (err) {
-      setNotice({ type: 'danger', text: getErrorText(err) })
+      if (err?.details?.code === 'model_lifecycle_busy') {
+        setNotice({ type: 'info', text: err.details.message || 'ODS is finishing another operation. Your settings are saved. Wait for it to finish, then choose Apply changes again.' })
+      } else {
+        setNotice({ type: 'danger', text: getErrorText(err) })
+      }
     } finally {
       setEnvApplying(false)
     }

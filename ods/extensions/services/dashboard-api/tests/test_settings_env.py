@@ -840,6 +840,73 @@ def test_api_settings_env_apply_allows_model_router(test_client, monkeypatch):
     assert captured["service_ids"] == ["model-router"]
 
 
+def test_api_settings_env_apply_returns_structured_409_for_model_lifecycle_busy(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(
+            409,
+            "model lifecycle busy",
+            json.dumps({"code": "model_lifecycle_busy", "message": "busy"}),
+        )
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "model_lifecycle_busy"
+    assert detail["message"] == (
+        "ODS is finishing another operation. Your settings are saved. "
+        "Wait for it to finish, then choose Apply changes again."
+    )
+
+
+def test_api_settings_env_apply_keeps_503_for_unrelated_409(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(
+            409,
+            "conflict",
+            json.dumps({"code": "other_conflict", "message": "conflict"}),
+        )
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "conflict"
+
+
+def test_api_settings_env_apply_keeps_503_for_malformed_409(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(409, "not json", "not-json")
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "not json"
+
+
 def test_api_settings_env_apply_rejects_disallowed_service(test_client):
     response = test_client.post(
         "/api/settings/env/apply",

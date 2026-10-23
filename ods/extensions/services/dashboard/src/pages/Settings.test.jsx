@@ -402,6 +402,45 @@ it.each([true, false])('protects saved settings while runtime apply is pending a
   expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
 })
 
+it('keeps saved changes and retries a busy Apply without another Save', async () => {
+  const plan = {status:'pending',supported:true,services:['llama-server'],summary:'Restart llama-server.'}
+  const busy = 'ODS is finishing another operation. Your settings are saved. Wait for it to finish, then choose Apply changes again.'
+  const {fetchMock} = renderSettings()
+  const field = await screen.findByLabelText('LAN Host IP')
+  const original = fetchMock.getMockImplementation()
+  let applyCalls = 0
+  fetchMock.mockImplementation((url, options) => {
+    if (url === '/api/settings/env' && options?.method === 'PUT') {
+      return response({...editor,values:JSON.parse(options.body).values,applyPlan:plan})
+    }
+    if (url === '/api/settings/env/apply') {
+      applyCalls += 1
+      return applyCalls === 1
+        ? response({detail:{code:'model_lifecycle_busy',message:busy}},409)
+        : response({message:'Runtime applied.'})
+    }
+    return original(url, options)
+  })
+
+  fireEvent.change(field,{target:{value:'192.168.1.25'}})
+  fireEvent.click(screen.getByRole('button',{name:'Save .env'}))
+  await waitFor(() => expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled())
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText(busy)).toBeInTheDocument()
+  expect(field).toHaveValue('192.168.1.25')
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeEnabled()
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+
+  fireEvent.click(screen.getByRole('button',{name:'Apply changes'}))
+  expect(await screen.findByText('Runtime applied.')).toBeInTheDocument()
+  expect(screen.getByRole('button',{name:'Apply changes'})).toBeDisabled()
+  expect(applyCalls).toBe(2)
+  expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
+  const requests = fetchMock.mock.calls.filter(([url]) => url === '/api/settings/env/apply')
+  expect(requests.map(([,options]) => JSON.parse(options.body)))
+    .toEqual([{service_ids:['llama-server']},{service_ids:['llama-server']}])
+})
+
 it.each([['Refresh',true],['Refresh',false],['Reload',true],['Reload',false]])('does not start runtime apply before an environment %s settles (success=%s)', async (action, success) => {
   const plan = {status:'pending',supported:true,services:['litellm'],summary:'Restart LiteLLM.'}
   const {fetchMock} = renderSettings(url => url === '/api/settings/env'

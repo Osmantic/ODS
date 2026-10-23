@@ -1898,8 +1898,20 @@ async def api_settings_env_apply(
             "message": f"Applied runtime changes to {', '.join(normalized)}.",
         }
     except AgentHTTPError as exc:
-        detail = exc.detail
-        raise HTTPException(status_code=503, detail={"message": detail}) from exc
+        if exc.status_code == 409:
+            try:
+                body = json.loads(exc.response_text) if exc.response_text else None
+            except (ValueError, TypeError):
+                body = None
+            if isinstance(body, dict) and body.get("code") == "model_lifecycle_busy":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "model_lifecycle_busy",
+                        "message": "ODS is finishing another operation. Your settings are saved. Wait for it to finish, then choose Apply changes again.",
+                    },
+                ) from exc
+        raise HTTPException(status_code=503, detail={"message": exc.detail}) from exc
     except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,
