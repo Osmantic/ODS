@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
 import shlex
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 
 # The code under test refuses group-writable state. Create every fixture with
@@ -407,6 +409,34 @@ def test_an_unreadable_import_registry_does_not_drop_a_catalog_model() -> None:
             imports.write_text(content, encoding="utf-8")
             values = run_helper(env, catalog, imports, models_dir)
             assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", (content, values)
+
+
+def test_import_permission_error_keeps_catalog_records() -> None:
+    helper = runpy.run_path(str(HELPER))
+    with tempfile.TemporaryDirectory() as tmp:
+        _, catalog, imports, _ = write_model_fixture(Path(tmp))
+        imports.write_text('{"models": []}', encoding="utf-8")
+        expected = json.loads(catalog.read_text(encoding="utf-8"))["models"]
+        original_read = Path.read_text
+
+        def read_with_denied_import(path: Path, *args, **kwargs):
+            if path == imports:
+                raise PermissionError("fixture import registry is private")
+            return original_read(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", read_with_denied_import):
+            assert helper["load_records"](catalog, imports) == expected
+
+
+def test_corrupt_import_registry_does_not_select_an_unrelated_catalog_model() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
+        record = json.loads(imports.read_text(encoding="utf-8"))["models"][0]
+        other = dict(record, id="other-model", gguf_file="Other-Model.gguf")
+        other.pop("source")
+        catalog.write_text(json.dumps({"models": [other]}), encoding="utf-8")
+        imports.write_text("{broken", encoding="utf-8")
+        assert run_helper(env, catalog, imports, models_dir) == {}
 
 
 def test_valid_dashboard_import_is_preserved() -> None:
@@ -1588,6 +1618,8 @@ def main() -> int:
         test_vision_projector_and_fixed_template_survive_the_actual_installer_phases,
         test_an_import_the_catalog_now_ships_does_not_drop_the_active_model,
         test_an_unreadable_import_registry_does_not_drop_a_catalog_model,
+        test_import_permission_error_keeps_catalog_records,
+        test_corrupt_import_registry_does_not_select_an_unrelated_catalog_model,
     ]
     for test in tests:
         test()
