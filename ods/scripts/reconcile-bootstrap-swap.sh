@@ -26,7 +26,10 @@
 #           recorded "failed" (interrupted), which `ods start` resumes.
 #
 # Modder notes:
-#   Called by the host agent at boot and by `ods start`. It never acts while:
+#   Called by the host agent at boot and by `ods start`. It never acts on a
+#   macOS native-llama install (Darwin + GPU_BACKEND=apple): there the model
+#   is the launchd job com.ods.llama-server, not the Docker container, and
+#   ods-macos.sh owns the bootstrap status. Otherwise it never acts while:
 #   - a bootstrap-upgrade.sh process (or the recorded task pid) is alive;
 #   - the active status is younger than ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS
 #     (default 900). Same knob and default as
@@ -50,8 +53,8 @@ BG_TASK_ID="full-model-download"
 # Same knob/default as _ods_cli_bootstrap_upgrade_status_is_stale (ods-cli).
 STALE_SECONDS="${ODS_BOOTSTRAP_UPGRADE_STALE_SECONDS:-900}"
 [[ "$STALE_SECONDS" =~ ^[0-9]+$ ]] || STALE_SECONDS=900
-HEALTH_ATTEMPTS="${ODS_BOOTSTRAP_RECONCILE_HEALTH_ATTEMPTS:-60}"
-[[ "$HEALTH_ATTEMPTS" =~ ^[0-9]+$ ]] || HEALTH_ATTEMPTS=60
+HEALTH_ATTEMPTS="${ODS_BOOTSTRAP_RECONCILE_HEALTH_ATTEMPTS:-12}"
+[[ "$HEALTH_ATTEMPTS" =~ ^[0-9]+$ ]] || HEALTH_ATTEMPTS=12
 HEALTH_INTERVAL="${ODS_BOOTSTRAP_RECONCILE_HEALTH_INTERVAL:-5}"
 [[ "$HEALTH_INTERVAL" =~ ^[0-9]+$ ]] || HEALTH_INTERVAL=5
 
@@ -173,6 +176,11 @@ PY
 }
 
 [[ -f "$STATUS_FILE" ]] || exit 0
+# Same predicate as _ods_cli_macos_native_llama in ods-cli.
+if [[ "$(uname -s)" == Darwin && "$(env_value GPU_BACKEND)" == apple ]]; then
+    log "macOS native llama-server: bootstrap status is owned by ods-macos.sh; skipping."
+    exit 0
+fi
 status="$(status_field status)"
 case "$status" in
     starting|downloading|verifying|swapping) ;;

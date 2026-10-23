@@ -316,6 +316,8 @@ _ods_cli_bootstrap_active_status_settled() {
 _ods_cli_reconcile_bootstrap_swap() {
     local script="$INSTALL_DIR/scripts/reconcile-bootstrap-swap.sh"
     [[ -f "$script" ]] || return 0
+    # The script settles a Docker llama-server; macOS serves the model natively.
+    _ods_cli_macos_native_llama && return 0
     local rc=0
     bash "$script" "$INSTALL_DIR" || rc=$?
     # 75 = deferred: the status is still fresh or the lifecycle lock is busy.

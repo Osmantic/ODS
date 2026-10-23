@@ -81,7 +81,18 @@ cat > "$BIN_DIR/curl" <<'SH'
 echo "CURL_ARGS: $*" >> "${DOCKER_LOG:?}"
 [[ "${FAKE_HEALTH:-ok}" == ok ]]
 SH
-chmod +x "$BIN_DIR/docker" "$BIN_DIR/ps" "$BIN_DIR/curl"
+cat > "$BIN_DIR/uname" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-s" && -n "${FAKE_UNAME:-}" ]]; then
+    echo "$FAKE_UNAME"
+    exit 0
+fi
+for real_uname in /bin/uname /usr/bin/uname; do
+    [[ -x "$real_uname" ]] && exec "$real_uname" "$@"
+done
+exit 127
+SH
+chmod +x "$BIN_DIR/docker" "$BIN_DIR/ps" "$BIN_DIR/curl" "$BIN_DIR/uname"
 
 bash -c 'exit 0' &
 DEAD_PID=$!
@@ -218,10 +229,19 @@ grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "reconcile started llama-serv
     || fail "reconcile rewrote the task record during a live upgrade"
 pass "live upgrade process: no action"
 
+# 4b. macOS native llama: the Docker container is not the runtime, so a stale
+# status is left to ods-macos.sh instead of being marked failed.
+write_fixture "$FULL_MODEL"
+sed -i.bak 's/^GPU_BACKEND=nvidia$/GPU_BACKEND=apple/' "$INSTALL_DIR/.env"
+FAKE_UNAME=Darwin FAKE_LLAMA_STATE= run_reconcile
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]]     || fail "reconcile rewrote the status on a macOS native-llama install"
+grep -q 'DOCKER_ARGS' "$DOCKER_LOG" && fail "reconcile queried Docker on a macOS native-llama install"
+pass "macOS native llama: status left to ods-macos.sh"
+
 # 5. `ods status` flags the unstarted container and hides the dead upgrade line.
 write_fixture "$FULL_MODEL"
 PATH="$BIN_DIR:$PATH" ODS_HOME="$INSTALL_DIR" FAKE_LLAMA_STATE=created \
-    timeout 120 "$BASH" "$INSTALL_DIR/ods-cli" status > "$OUT" 2>&1 || true # status exit code reflects stub health checks
+    "$BASH" "$INSTALL_DIR/ods-cli" status > "$OUT" 2>&1 || true # status exit code reflects stub health checks
 grep -q "llama-server: container created but not started" "$OUT" \
     || fail "ods status did not report the Created llama-server container"
 grep -q "downloaded)" "$OUT" && fail "ods status still prints a progress line for a dead upgrade"
