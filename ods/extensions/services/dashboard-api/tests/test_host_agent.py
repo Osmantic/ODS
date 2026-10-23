@@ -9207,6 +9207,16 @@ class TestModelDownloadDiskSpace:
 
         assert handler.response_code == 409
 
+    def test_empty_existing_unsized_file_still_needs_space(self, tmp_path, monkeypatch):
+        install_dir = self._setup(tmp_path, monkeypatch, size_bytes=None, size_mb=1120,
+                                  free_bytes=self.GIB // 2, total_bytes=20 * self.GIB)
+        (install_dir / "data" / "models" / "test-model.gguf").touch()
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 507
+        assert handler.parse_response()["requiredBytes"] == 1_120_000_000
+
     def test_exact_margin_passes_the_space_check(self, tmp_path, monkeypatch):
         self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
                     free_bytes=12 * self.GIB, total_bytes=20 * self.GIB)
@@ -9274,7 +9284,7 @@ class TestModelDownloadDiskSpace:
 
         assert _mod._download_bytes_needed(artifacts, paths) == 11
         # A catalog estimate covers the unsized artifact still to fetch.
-        assert _mod._download_bytes_needed(artifacts, paths, 50) == 50
+        assert _mod._download_bytes_needed(artifacts, paths, 50) == 47
         assert _mod._download_bytes_needed(artifacts, paths, 5) == 11
         (tmp_path / "unsized.gguf").write_bytes(b"x")
         assert _mod._download_bytes_needed(artifacts, paths, 50) == 11
@@ -9282,8 +9292,23 @@ class TestModelDownloadDiskSpace:
     def test_catalog_size_estimate_reads_decimal_megabytes(self):
         assert _mod._catalog_size_estimate({"size_mb": 1120}) == 1_120_000_000
         assert _mod._catalog_size_estimate({"size_mb": 0.5}) == 500_000
-        for model in ({}, {"size_mb": 0}, {"size_mb": -1}, {"size_mb": True}, {"size_mb": "9"}):
+        for model in ({}, {"size_mb": 0}, {"size_mb": -1}, {"size_mb": True}, {"size_mb": "9"},
+                      {"size_mb": float("nan")}, {"size_mb": float("inf")}, {"size_mb": 1e308}):
             assert _mod._catalog_size_estimate(model) is None
+
+    def test_total_estimate_subtracts_reusable_unsized_parts(self, tmp_path):
+        artifacts = [{"file": "a.gguf"}, {"file": "b.gguf"},
+                     {"file": "projector.gguf", "size_bytes": 10}]
+        paths = {a["file"]: tmp_path / a["file"] for a in artifacts}
+        paths["a.gguf"].write_bytes(b"a" * 40)
+        paths["b.gguf"].write_bytes(b"b" * 20)
+        assert _mod._download_bytes_needed(artifacts, paths, 100) == 10
+        # Verification found b corrupt; its bytes cannot be subtracted.
+        assert _mod._download_bytes_needed(
+            artifacts, paths, 100, verified_files={"a.gguf"}) == 60
+        # A stale estimate cannot undercut exact pending sizes.
+        assert _mod._download_bytes_needed(
+            artifacts, paths, 45, verified_files={"a.gguf"}) == 10
 
     def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
@@ -9883,6 +9908,57 @@ class TestModelDeleteSafety:
 
 
 class TestModelDownloadFileIntegrity:
+
+    @pytest.mark.parametrize("sized", [False, True])
+    def test_corrupt_existing_file_checks_space_before_any_network(self, tmp_path, monkeypatch, sized):
+        payload = b"valid gguf bytes"
+        model = {"gguf_file": "test-model.gguf",
+                 "gguf_url": "https://example.com/test-model.gguf",
+                 "gguf_sha256": hashlib.sha256(payload).hexdigest(), "size_mb": 1120}
+        if sized:
+            model["size_bytes"] = len(payload)
+        install_dir = self._setup_env(tmp_path, monkeypatch, library_models=[model])
+        target = install_dir / "data" / "models" / "test-model.gguf"
+        target.write_bytes(b"x" * len(payload))
+        storage_calls = []
+        def storage(_path):
+            storage_calls.append(True)
+            return {"freeBytes": 0, "marginBytes": 2 * 1024 ** 3}
+        monkeypatch.setattr(_mod, "_model_storage_status", storage)
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("no HEAD request"))
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *a, **kw: pytest.fail("no download"))
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text())
+        assert status["status"] == "failed"
+        assert "Not enough free disk space" in status["error"]
+        assert storage_calls == [True]
+        assert not target.exists()
+        assert _mod._begin_model_lifecycle("model_download", "retry")[0]
+        _mod._end_model_lifecycle("model_download")
+
+    def test_verified_unsized_file_needs_no_free_space_or_network(self, tmp_path, monkeypatch):
+        payload = b"valid gguf bytes"
+        model = {"gguf_file": "test-model.gguf",
+                 "gguf_url": "https://example.com/test-model.gguf",
+                 "gguf_sha256": hashlib.sha256(payload).hexdigest(), "size_mb": 1120}
+        install_dir = self._setup_env(tmp_path, monkeypatch, library_models=[model])
+        target = install_dir / "data" / "models" / "test-model.gguf"
+        target.write_bytes(payload)
+        monkeypatch.setattr(_mod, "_model_storage_status", lambda *a: pytest.fail("no storage needed"))
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("no HEAD request"))
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *a, **kw: pytest.fail("no download"))
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text())
+        assert status["status"] == "complete"
+        assert target.read_bytes() == payload
 
     class _NoCancel:
         def clear(self):

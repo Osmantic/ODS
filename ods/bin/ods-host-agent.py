@@ -1049,9 +1049,13 @@ def _catalog_size_estimate(model: dict) -> int | None:
     integrity is still proved by the checksum after download.
     """
     raw = model.get("size_mb")
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    return int(raw * 1_000_000)
+    try:
+        estimate = int(raw * 1_000_000)
+    except (OverflowError, ValueError):
+        return None
+    return estimate if estimate > 0 else None
 
 
 _DOWNLOAD_DISK_MARGIN_MIN_BYTES = 2 * 1024 ** 3
@@ -1064,33 +1068,40 @@ def _download_disk_margin(total_bytes: int) -> int:
 
 
 def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path],
-                           size_estimate: int | None = None) -> int:
-    """Bytes still to fetch: sized artifacts not already on disk at that size.
+                           size_estimate: int | None = None,
+                           *, verified_files: set[str] | None = None) -> int:
+    """Additional bytes to fetch, using exact sizes or a total model estimate.
 
-    An artifact of unknown size is not counted, unless the catalog gives an
-    approximate ``size_estimate`` for the model: then a missing unsized
-    artifact makes the requirement at least that estimate, so a model without
-    an exact catalog size still gets the free-space check.
+    The request uses cheap stat checks; the worker repeats this after hashing
+    with the set of reusable files. Never hash large files in the request.
+    A total estimate includes reusable artifacts, so subtract their bytes.
     """
     needed = 0
+    reusable_bytes = 0
     unsized_missing = False
     for artifact in artifacts:
+        filename = artifact["file"]
         expected = artifact.get("size_bytes")
-        if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
-            target = paths.get(artifact["file"])
-            if target is None or not target.exists():
-                unsized_missing = True
-            continue
-        target = paths.get(artifact["file"])
+        sized = isinstance(expected, int) and not isinstance(expected, bool) and expected > 0
+        target = paths.get(filename)
+        present_bytes = 0
         try:
-            if target is not None and target.stat().st_size == expected:
-                continue
+            info = target.stat() if target is not None else None
+            if info is not None and stat_mod.S_ISREG(info.st_mode):
+                present_bytes = info.st_size
         except OSError:
-            # Not present, or not readable here: it still has to be fetched.
             pass
-        needed += expected
+        reusable = present_bytes > 0 and (not sized or present_bytes == expected)
+        if verified_files is not None:
+            reusable = reusable and filename in verified_files
+        if reusable:
+            reusable_bytes += present_bytes
+        elif sized:
+            needed += expected
+        else:
+            unsized_missing = True
     if unsized_missing and size_estimate:
-        needed = max(needed, size_estimate)
+        needed = max(needed, size_estimate - reusable_bytes)
     return needed
 
 
@@ -13803,6 +13814,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                         for idx, (fn, url) in enumerate(download_plan, 1)
                         if fn not in valid_preexisting_files
                     ]
+                    # A plausible existing file can fail its checksum and need
+                    # replacing. Recheck after verification, before any network
+                    # activity, and use only files proved reusable above.
+                    if _model_download_cancel.is_set():
+                        _finish_cancelled_download()
+                        return
+                    needed_bytes = _download_bytes_needed(
+                        manifest["artifacts"], artifact_paths,
+                        manifest.get("size_estimate_bytes"),
+                        verified_files=valid_preexisting_files,
+                    )
+                    if needed_bytes:
+                        storage = _model_storage_status(models_dir)
+                        if storage["freeBytes"] < needed_bytes + storage["marginBytes"]:
+                            _write_model_status(
+                                status_path, "failed", gguf_file, 0, 0,
+                                "Not enough free disk space for this model after verification "
+                                f"(required {needed_bytes} bytes plus {storage['marginBytes']} "
+                                f"bytes free-space margin; available {storage['freeBytes']} bytes)",
+                            )
+                            return
                     for _part_idx, part_file_name, part_url in pending_download_plan:
                         url_error = _model_download_url_error(part_url)
                         if url_error:
