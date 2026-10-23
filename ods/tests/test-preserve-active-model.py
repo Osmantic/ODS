@@ -15,6 +15,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 
+# The code under test refuses group-writable state. Create every fixture with
+# the installer's modes, whatever the host's umask (Ubuntu's default 0002
+# would otherwise make them unsafe).
+os.umask(0o022)
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "preserve-active-model.py"
 

@@ -44,16 +44,35 @@ it.each([
   'Download: <https://untrusted.example/s/report.md>',
   '[Download](https://untrusted.example/s/report.md)',
   '[Download report.md](https://untrusted.example/s/report.md)',
+  '[Download report.md](https://untrusted.example/api/download?siteId=invented&sha256=wrong)',
+  '[![Download report.md](https://untrusted.example/api/download?siteId=invented)](https://untrusted.example/api/download?siteId=invented)',
 ])('binds explicit download prose to verified bytes without visiting the authored URL: %s',async content=>{
   reply=stream([{choices:[{delta:{content}}]},marker,'[DONE]'])
   const view=render(<Pixel/>);await send()
   const inline=await screen.findByRole('button',{name:'Download verified report.md'},{timeout:5000})
   expect(inline).toHaveTextContent('Download report.md')
   expect(screen.queryAllByRole('link').filter(link=>/untrusted\.example|portal\.openclaw\.io/.test(link.href))).toHaveLength(0)
+  expect(view.container.querySelector('img[src^="https://untrusted.example"]')).toBeNull()
   fireEvent.click(inline)
   await screen.findByText('Verified download started')
   expect(fetch).toHaveBeenCalledWith(`/pixel-preview/${artifact.siteId}/report.md`,expect.objectContaining({cache:'no-store'}))
   expect(fetch.mock.calls.some(([url])=>String(url).startsWith('https://'))).toBe(false)
+  expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe(content)
+  view.unmount();render(<Pixel/>)
+  expect(await screen.findByRole('button',{name:'Download verified report.md'})).toBeEnabled()
+})
+
+it.each([
+  '**Download:** [report.md](vscode-file://vscode-app/Applications/Visual%20Studio%20Code.app/Contents/Resources/app/out/vs/code/electron-sandbox/workbench/workbench.html?file=/workspace/report.md)',
+  'Download: [report.md](https://untrusted.example/download?file=other.md)',
+])('binds a prefixed document filename to verified bytes: %s',async content=>{
+  reply=stream([{choices:[{delta:{content}}]},marker,'[DONE]'])
+  const view=render(<Pixel/>);await send()
+  const inline=await screen.findByRole('button',{name:'Download verified report.md'},{timeout:5000})
+  fireEvent.click(inline)
+  await screen.findByText('Verified download started')
+  expect(fetch).toHaveBeenCalledWith(`/pixel-preview/${artifact.siteId}/report.md`,expect.objectContaining({cache:'no-store'}))
+  expect(fetch.mock.calls.some(([url])=>/^(?:https:|vscode-file:)/.test(String(url)))).toBe(false)
   expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe(content)
   view.unmount();render(<Pixel/>)
   expect(await screen.findByRole('button',{name:'Download verified report.md'})).toBeEnabled()
@@ -69,6 +88,13 @@ it.each([
   'Download the source from [upstream](https://untrusted.example/s/report.md)',
   'Download: [Source](https://untrusted.example/s/report.md)',
   '[Download other.md](https://untrusted.example/s/report.md)',
+  'Download: [other.md](https://untrusted.example/s/report.md)',
+  '> Download: [report.md](https://untrusted.example/s/report.md)',
+  '`Download:` [report.md](https://untrusted.example/s/report.md)',
+  '> [![Download report.md](https://untrusted.example/api/download)](https://untrusted.example/api/download)',
+  '`[![Download report.md](https://untrusted.example/api/download)](https://untrusted.example/api/download)`',
+  '```text\n[![Download report.md](https://untrusted.example/api/download)](https://untrusted.example/api/download)\n```',
+  '[![Source](https://untrusted.example/cover.png)](https://untrusted.example/api/download)',
 ])('does not reinterpret sources or quoted/code examples as downloads: %s',async content=>{
   reply=stream([{choices:[{delta:{content}}]},marker,'[DONE]'])
   render(<Pixel/>);await send()
@@ -95,6 +121,27 @@ it('refuses an authored download whose filename matches multiple completed recei
   await screen.findByRole('region',{name:'Delivered files'})
   expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
   expect(fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/'))).toHaveLength(0)
+})
+
+it.each(['[Download report.md]','Download: [report.md]'])('does not substitute a different receipt when a named download is ambiguous: %s',async label=>{
+  const other={...artifact,relativePath:'Other/report.md',siteId:`site-${'c'.repeat(24)}`,sha256:'c'.repeat(64)}
+  const href=`https://untrusted.example/${artifact.siteId}/report.md`
+  reply=stream([{choices:[{delta:{content:`${label}(${href})`}}]},
+    {...marker,pixel_artifacts:{schemaVersion:1,artifacts:[artifact,other]}},'[DONE]'])
+  render(<Pixel/>);await send()
+  await screen.findByRole('region',{name:'Delivered files'})
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/pixel-preview/'))).toHaveLength(0)
+})
+
+it.each(['text','image'])('keeps an unmatched explicit filename from selecting a different file by URL (%s)',async kind=>{
+  const href=`https://untrusted.example/${artifact.siteId}/report.md`
+  const label=kind==='image' ? `![Download other.md](${href})` : 'Download other.md'
+  reply=stream([{choices:[{delta:{content:`[${label}](${href})`}}]},marker,'[DONE]'])
+  render(<Pixel/>);await send()
+  await screen.findByRole('button',{name:'Download report.md'})
+  expect(await screen.findByRole('link',{name:/Download other.md/},{timeout:5000})).toHaveAttribute('href',href)
+  expect(screen.queryByRole('button',{name:'Download verified report.md'})).toBeNull()
 })
 
 it('keeps byte verification on a download-labelled filename match',async()=>{

@@ -864,4 +864,30 @@ cd "$INSTALL_DIR"
 # Native artifact provenance compares installed bytes with this clean checkout's
 # immutable Git objects. The runtime copy deliberately contains no .git directory.
 export ODS_BOOTSTRAP_SOURCE_DIR="$TEMP_DIR/repo/ods"
+# Keep the original foreground exec: it preserves stdin, process group, PID,
+# signal dispositions and exit status. Backgrounding the installer makes INT
+# ignored by a Bash child on macOS 3.2, even after trap - INT.
+# A detached-output watcher removes only this private clone once the original
+# process identity is gone. A failed observation retains the source instead.
+bootstrap_installer_pid=$$
+bootstrap_process_start() {
+    # A successful full inventory distinguishes an absent PID from ps failing
+    # to observe one. lstart survives exec and prevents confusing a reused PID.
+    LC_ALL=C ps -A -o pid= -o lstart= |
+        awk -v target_pid="$bootstrap_installer_pid" '$1 == target_pid { $1=""; print }'
+}
+if bootstrap_installer_start="$(bootstrap_process_start)" && [[ -n "$bootstrap_installer_start" ]]; then
+    (
+        trap - EXIT
+        trap '' INT TERM HUP
+        while :; do
+            current_start="$(bootstrap_process_start)" || exit 0
+            [[ "$current_start" == "$bootstrap_installer_start" ]] || break
+            sleep 0.2 || exit 0
+        done
+        rm -rf -- "$TEMP_DIR"
+    ) </dev/null >/dev/null 2>&1 &
+else
+    warn "Could not monitor temporary source cleanup; retain $TEMP_DIR for this install."
+fi
 exec ./install.sh "$@"

@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-06T14:59:46Z",
+  "generated_at": "2026-10-16T12:07:14Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -5000,7 +5000,29 @@
       "port": 7860,
       "external_port_default": 7802,
       "health_endpoint": "/health",
-      "env_vars": [],
+      "env_vars": [
+        {
+          "key": "LANGFLOW_SUPERUSER_PASSWORD",
+          "required": true,
+          "description": "Password for the Langflow superuser; flows can run arbitrary Python.",
+          "min_length": 8,
+          "max_length": 128,
+          "generate": "password"
+        },
+        {
+          "key": "LANGFLOW_SECRET_KEY",
+          "required": true,
+          "description": "Stable key Langflow uses to encrypt stored credentials and sign sessions.",
+          "generate": "hex64",
+          "format": "hex64"
+        },
+        {
+          "key": "LANGFLOW_SUPERUSER",
+          "required": false,
+          "default": "admin",
+          "description": "Langflow superuser username."
+        }
+      ],
       "tags": [
         "visual",
         "workflow",

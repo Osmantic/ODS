@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {createToolLoopGuard, VERIFICATION_COMMAND_NOT_AUDITABLE_REASON} from '../plugin/tool-loop-guard.mjs';
 import {REDIRECT_ORDER_NOTE} from '../plugin/shell-redirect-order.mjs';
 
 // tower1 7402eb38, 2026-09-25 11:07Z coding journey (Qwen3.5-27B), verbatim.
@@ -65,12 +65,27 @@ for(const exitCode of [1,2]) test(`failing runs get the note too: exit ${exitCod
 
 for(const command of [
   'cd fleet-qualification-489210351f87-coding && mkdir -p public && python3 -m unittest -v > public/test-results.txt 2>&1',
-  'cd fleet-qualification-489210351f87-coding && python3 -m unittest -v 2>&1 | tee public/test-results.txt',
-  'cd fleet-qualification-489210351f87-coding && python3 -m unittest -v &> public/test-results.txt',
   "cat > public/run.sh <<'EOF'\npython3 -m unittest -v 2>&1 > public/test-results.txt\nEOF",
   'echo "python3 -m unittest -v 2>&1 > public/test-results.txt"',
 ]) test(`no note for ${JSON.stringify(command)}`,()=>{
   assert.ok(!exercise({command}).texts.includes(REDIRECT_ORDER_NOTE));
+});
+
+for(const command of [
+  'cd fleet-qualification-489210351f87-coding && python3 -m unittest -v 2>&1 | tee public/test-results.txt',
+  'cd fleet-qualification-489210351f87-coding && python3 -m unittest -v &> public/test-results.txt',
+]) test(`recognized relative test refuses masked output before any receipt: ${JSON.stringify(command)}`,()=>{
+  for(const deferred of [false,true]) {
+    let executions=0;
+    const guard=createToolLoopGuard({execControl:{prepare:(_run,value)=>{ executions++; return value; }}});
+    const context={agentId:'pixel',runId:'run',sessionId:'owner-session',toolCallId:'masked-test'};
+    guard.observeRun(context,'pixel',{prompt:'Run the unit tests and save their output.'});
+    const toolName=deferred?'tool_call':'exec',args={command,workdir:'/workspace'};
+    const params=deferred?{id:'openclaw:core:exec',args}:args;
+    const before=guard.beforeToolCall({toolName,params},{...context,toolName});
+    assert.equal(before?.blockReason,VERIFICATION_COMMAND_NOT_AUDITABLE_REASON);
+    assert.equal(executions,0);
+  }
 });
 
 for(const options of [{status:'running'},{session:true},{variant:'wrong-run'},{variant:'no-after'},
