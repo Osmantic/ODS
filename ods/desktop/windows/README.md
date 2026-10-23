@@ -4,7 +4,8 @@ Install a Windows application, open ODS Portal, and talk to a local CPU model
 or create a short Markdown document.
 The preview reuses Portal's composer, message rendering, conversation library,
 saved history and Stop flow inside a native WPF/WebView2 window. Running it
-requires no Docker, WSL, Git, Node, Python, terminal or administrator account.
+requires no Docker, WSL, Git, Node, Python or terminal. ODS installs and runs
+for the current Windows account.
 
 **Supported flow:** install → launch → download the checked model → Portal →
 local answer → explicit Create document → verified Download → Windows save
@@ -81,6 +82,8 @@ The WebView2 bootstrapper is invoked unelevated. Microsoft may promote its
 installation to machine servicing when a shared Edge updater is present; ODS
 does not promise exclusive per-user ownership of that component and never
 uninstalls it. See [Microsoft's distribution contract](https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution).
+If an older shared runtime cannot be serviced from this account, ask the device
+administrator to update or repair Microsoft WebView2 before retrying ODS Setup.
 
 ## Repair, upgrades and removal
 

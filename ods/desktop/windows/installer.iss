@@ -181,11 +181,11 @@ begin
       https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution }
     if not Exec(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'), '/silent /install', '', SW_HIDE, ewWaitUntilTerminated, Code) then begin
       Log(Format('Microsoft WebView2 bootstrapper could not start (Windows error %d).', [Code]));
-      Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. Existing ODS data was kept.'; exit;
+      Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. If WebView2 is installed for all users, ask your device administrator to update or repair it first. Existing ODS data was kept.'; exit;
     end;
     Log(Format('Microsoft WebView2 bootstrapper exited with code %d; checking the installed runtime version.', [Code]));
     { The verified usable version remains authoritative, including concurrent updates. }
-    if not WebViewInstalled then begin Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. Existing ODS data was kept.'; exit; end;
+    if not WebViewInstalled then begin Result := 'Microsoft WebView2 did not finish installing. Check your connection and retry Setup. If WebView2 is installed for all users, ask your device administrator to update or repair it first. Existing ODS data was kept.'; exit; end;
   end;
 end;
 
