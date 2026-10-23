@@ -961,6 +961,12 @@ get_compose_flags() {
                 && "$cached" != *".model-stores.compose.json"* ]]; then
                 stale=1
             fi
+            # docs/PROFILES.md has owners add docker-compose.override.yml to
+            # turn services off; the resolver appends it when it exists.
+            if [[ -f "$INSTALL_DIR/docker-compose.override.yml" \
+                && "$cached" != *"docker-compose.override.yml"* ]]; then
+                stale=1
+            fi
             if [[ "${ODS_ACTIVE_MODEL_STORE:-default}" != "default" ]]; then
                 [[ "$cached" == *".active-model-store.compose.json"* ]] || stale=1
             elif [[ "$cached" == *".active-model-store.compose.json"* ]]; then

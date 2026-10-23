@@ -50,5 +50,12 @@ check "a model selected in a store resolves a cache without its mount" "RESOLVED
 check "a cache with the active store's mount is kept" "$base_cache $stores $active" "$base_cache $stores $active" models-ssd
 check "back on the default store, a cache with the store mount resolves again" "RESOLVED" "$base_cache $stores $active" default
 
+# An owner override (docs/PROFILES.md) created after install is picked up too.
+rm -f "$INSTALL_DIR/.model-stores.compose.json" "$INSTALL_DIR/data/.active-model-store.compose.json"
+printf 'services:\n  n8n:\n    profiles: [disabled]\n' > "$INSTALL_DIR/docker-compose.override.yml"
+check "an owner override added after install resolves the stack again" "RESOLVED" "$base_cache"
+check "a cache that already includes the override is kept" \
+    "$base_cache -f docker-compose.override.yml" "$base_cache -f docker-compose.override.yml"
+
 [[ "$FAILURES" == 0 ]] || exit 1
 echo "All Compose cache model-store checks passed"
