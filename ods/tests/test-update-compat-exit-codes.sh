@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # `ods update` must exit non-zero when the version compatibility check refuses
 # the update (installed version below min_compatible_ods_version). Declining
-# an interactive prompt stays exit 0. Exercises the real cmd_update and
+# an interactive prompt stays exit 0; a prompt nobody can answer (EOF on
+# stdin, e.g. cron or `< /dev/null`) is a refusal and exits non-zero. Exercises the real cmd_update and
 # _check_version_compat; nothing after the compatibility check may run.
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,3 +65,5 @@ expect_rc() {
 expect_rc 1 "hard block below min_compatible_ods_version fails" 1.2.0 1.6.0 1.5.0 n
 expect_rc 0 "declined major-version jump stays a cancellation" 1.0.0 3.0.0 0.0.0 n
 expect_rc 0 "declined downgrade stays a cancellation" 3.0.0 2.0.0 0.0.0 n
+expect_rc 1 "unanswerable major-version prompt fails" 1.0.0 3.0.0 0.0.0 ""
+expect_rc 1 "unanswerable downgrade prompt fails" 3.0.0 2.0.0 0.0.0 ""
