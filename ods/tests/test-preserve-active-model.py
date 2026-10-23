@@ -400,6 +400,15 @@ def test_an_import_the_catalog_now_ships_does_not_drop_the_active_model() -> Non
         assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", values
 
 
+def test_an_unreadable_import_registry_does_not_drop_a_catalog_model() -> None:
+    for content in ("{not json", '{"models": {"bad": true}}', '{"models": ["not-a-record"]}'):
+        with tempfile.TemporaryDirectory() as tmp:
+            env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+            imports.write_text(content, encoding="utf-8")
+            values = run_helper(env, catalog, imports, models_dir)
+            assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", (content, values)
+
+
 def test_valid_dashboard_import_is_preserved() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
@@ -1578,6 +1587,7 @@ def main() -> int:
         test_a_linked_chat_template_is_not_kept,
         test_vision_projector_and_fixed_template_survive_the_actual_installer_phases,
         test_an_import_the_catalog_now_ships_does_not_drop_the_active_model,
+        test_an_unreadable_import_registry_does_not_drop_a_catalog_model,
     ]
     for test in tests:
         test()

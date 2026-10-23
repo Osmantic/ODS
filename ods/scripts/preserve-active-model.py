@@ -188,14 +188,18 @@ def load_records(catalog_path: Path, imports_path: Path | None) -> list[dict[str
     seen_files = {str(item.get("gguf_file") or "").lower() for item in records}
     if imports_path is None or not imports_path.is_file():
         return records
+    # An unreadable or malformed import registry hides only the imports, as in
+    # the dashboard: the catalog (and an active catalog model) still counts.
     try:
         imported_payload = json.loads(imports_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return []
+        return records
     imported = imported_payload.get("models") if isinstance(imported_payload, dict) else None
-    if not isinstance(imported, list) or not all(isinstance(item, dict) for item in imported):
-        return []
+    if not isinstance(imported, list):
+        return records
     for item in imported:
+        if not isinstance(item, dict):
+            continue
         model_id = str(item.get("id") or "")
         filename = str(item.get("gguf_file") or "").lower()
         # Skip an import the catalog now ships (or one that is malformed), as
