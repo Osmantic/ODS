@@ -100,6 +100,7 @@ tests/test-linux-host-agent-stop.sh
 tests/test-linux-opencode-path.sh
 tests/test-linux-whisper-cuda-gating.sh
 tests/test-litellm-amd-auth-enforced.sh
+tests/test-langflow-auth.sh
 tests/test-litellm-config-selection.sh
 tests/test-llama-image-compute-cap.sh
 tests/test-llama-memory-budget.sh
@@ -209,6 +210,7 @@ tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
 tests/test-uninstall-lemonade-leftovers.sh
+tests/test-uninstall-refuses-sudo.sh
 tests/test-unix-restart-recreate-env.sh
 tests/test-update-backup-restore-configs.sh
 tests/test-update-backup-retention-spaces.sh
