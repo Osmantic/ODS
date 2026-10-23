@@ -9299,7 +9299,7 @@ class TestModelDownloadDiskSpace:
     def test_total_estimate_subtracts_reusable_unsized_parts(self, tmp_path):
         artifacts = [{"file": "a.gguf"}, {"file": "b.gguf"},
                      {"file": "projector.gguf", "size_bytes": 10}]
-        paths = {a["file"]: tmp_path / a["file"] for a in artifacts}
+        paths = {name: tmp_path / name for name in ("a.gguf", "b.gguf", "projector.gguf")}
         paths["a.gguf"].write_bytes(b"a" * 40)
         paths["b.gguf"].write_bytes(b"b" * 20)
         assert _mod._download_bytes_needed(artifacts, paths, 100) == 10
