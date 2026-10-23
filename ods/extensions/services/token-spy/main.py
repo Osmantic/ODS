@@ -725,6 +725,14 @@ async def proxy_messages(request: Request):
         )
 
 
+# Dropped when relaying a buffered provider error: the body was already read
+# (and decoded), so framing/encoding headers no longer describe it.
+_STREAM_ERROR_DROP_HEADERS = frozenset({
+    "content-length", "transfer-encoding", "connection", "content-encoding",
+    "keep-alive",
+})
+
+
 async def _open_upstream_stream(client, path, raw_body, headers):
     """Open a provider stream, or return the response the caller must get.
 
@@ -752,6 +760,8 @@ async def _open_upstream_stream(client, path, raw_body, headers):
     return Response(
         content=err_body,
         status_code=upstream.status_code,
+        headers={k: v for k, v in upstream.headers.items()
+                 if k.lower() not in _STREAM_ERROR_DROP_HEADERS},
         media_type=upstream.headers.get("content-type", "application/json"),
     )
 

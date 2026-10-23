@@ -135,7 +135,9 @@ def test_streaming_provider_error_keeps_upstream_status(proxy, monkeypatch, prot
 
     async def exercise():
         async with httpx.AsyncClient(base_url="https://provider.example",
-                transport=httpx.MockTransport(lambda _: httpx.Response(status, json=error))) as upstream:
+                transport=httpx.MockTransport(lambda _: httpx.Response(
+                    status, json=error,
+                    headers={"retry-after": "7", "request-id": "req_fixture"}))) as upstream:
             monkeypatch.setattr(api, getter, lambda: upstream)
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),
                     base_url="http://token-spy.test",
@@ -144,6 +146,8 @@ def test_streaming_provider_error_keeps_upstream_status(proxy, monkeypatch, prot
                     "model": "fixture", "stream": True, "messages": []})
                 assert response.status_code == status
                 assert response.json() == error
+                assert response.headers["retry-after"] == "7"
+                assert response.headers["request-id"] == "req_fixture"
     asyncio.run(exercise())
 
 
