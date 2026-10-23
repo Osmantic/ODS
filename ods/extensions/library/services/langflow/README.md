@@ -38,9 +38,22 @@ for any extension: when using the CLI, set both in `.env` first (for example
 
 **Upgrading an existing install:** an installed copy keeps its previous
 definition (with `AUTO_LOGIN`) until you choose **Update** for Langflow in the
-dashboard. Before updating, save both settings (or add them to `.env`);
-otherwise the updated definition cannot start and the dashboard restores the
-previous one.
+dashboard. Back up the Langflow data before updating. Reuse the current
+`LANGFLOW_SECRET_KEY` for an existing database; if Langflow generated it, retain
+the value from its configuration directory's `secret_key` file. Generating a new
+key does not migrate stored credentials and makes them unreadable.
+
+`LANGFLOW_SUPERUSER_PASSWORD` initializes a missing account; it does not reset an
+existing superuser's password. Sign in with that account's existing password.
+If the chosen username already belongs to a regular user, choose an unused
+`LANGFLOW_SUPERUSER` name before updating. Disabling automatic login does not
+remove every existing account: change any known/default passwords on retained
+accounts before exposing the service.
+
+Save both required settings (or add them to `.env`) before choosing **Update**.
+Without them, the updated definition cannot start and the dashboard restores
+the previous definition. Restoring the definition does not undo database or
+encryption-key changes.
 
 ## First-Time Setup
 
