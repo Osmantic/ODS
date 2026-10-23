@@ -60,7 +60,10 @@ expect() {
     status=$?
     set -e
     if [[ "$expected" == blocked ]]; then
-        if [[ "$status" -eq 0 ]] || grep -q ADMITTED "$tmp/output"; then
+        # A missing tool, unexpected Docker command or unrelated phase error
+        # must not masquerade as a successful collision/validation refusal.
+        if [[ "$status" -ne 1 ]] || grep -q ADMITTED "$tmp/output" \
+            || ! grep -qE '^(Required local model port [0-9]+ is in use|OLLAMA_PORT must be a port from 1 to 65535)' "$tmp/output"; then
             cat "$tmp/output"; echo "FAIL $label"; exit 1
         fi
     else
