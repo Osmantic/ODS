@@ -24,6 +24,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
+      - name: Analyzer bootstrap exit contract (no dependency installation)
+        shell: pwsh
+        run: ../.github/scripts/test-pssa-bootstrap.ps1
+
       - name: Install PSScriptAnalyzer
         shell: pwsh
         run: |
@@ -42,6 +46,13 @@ jobs:
           Install-Module -Name PSScriptAnalyzer -Repository PSGallery -Scope CurrentUser -Force -AllowClobber
           Import-Module PSScriptAnalyzer -ErrorAction Stop
           Get-Module PSScriptAnalyzer | Format-Table Name, Version, Path -AutoSize
+
+          # Declare success only after checking the actual imported dependency.
+          # PowerShellGet can handle a failed native NuGet probe while leaving
+          # LASTEXITCODE nonzero for the Actions PowerShell epilogue.
+          if (-not (Get-Module -Name PSScriptAnalyzer)) { throw 'PSScriptAnalyzer was not imported.' }
+          Get-Command Invoke-ScriptAnalyzer -Module PSScriptAnalyzer -ErrorAction Stop | Out-Null
+          exit 0
 
       - name: Run PowerShell Script Analyzer
         shell: pwsh

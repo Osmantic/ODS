@@ -295,6 +295,35 @@ toolchain, frontend, SDK and installer-engine notices are retained.
 
 ## Deferred acceptance gates
 
+The October 23 follow-up adds **14 real-Setup prerequisite checks** using a
+private publisher executable and a fresh GUID-scoped registry producer. Only
+the fixture's registry-key literal and publisher input differ from production
+Setup. The suite covers silent refusal, declining the real prompt, publisher
+failure, successful exit without a compatible runtime, a below-floor version,
+failure to execute the publisher, and recovery in the same wizard. It verifies
+no premature application/registration/shortcut, preserved saved bytes, exact
+Finish-launched application ownership and normal removal. The existing **23
+lifecycle + 2 history checks** also passed with the updated UI driver. Both
+suites execute in the Windows native workflow. This is isolated publisher
+contract coverage; actual Microsoft acquisition in a clean guest remains a
+separate gate below.
+
+Intermediate fixture runs exposed legacy Inno controls reported as `Pane`, an
+incorrect fake-publisher basename and a cleanup race with Inno's self-deleting
+uninstaller. The final driver recognizes the known native control classes,
+posts clicks only to verified process-owned controls, handles bounded ordinary
+cancellation and never invokes the completed uninstaller twice. Failed attempts
+were retained; the corrected complete runs exited successfully.
+
+The preceding Windows analyzer job imported PSScriptAnalyzer successfully but
+failed at the Actions footer with a stale native NuGet exit code. The bootstrap
+now declares success only after verifying the imported module and its analyzer
+command. **Six isolated child-PowerShell contracts** execute the actual workflow
+block with the Actions footer: handled native failure succeeds, while install,
+import, missing-module and missing-command failures still fail. The old-block
+negative control retains the failure. These contracts run on both lint hosts;
+new-head hosted dependency acquisition is qualified by its own CI result.
+
 - **Clean Windows first use**, especially missing WebView2 installation,
   prerequisite cancellation/failure and offline/proxy recovery. The prepared
   Sandbox kit records OS/token/tool availability, installer hash, real model
