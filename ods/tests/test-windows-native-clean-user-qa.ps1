@@ -22,7 +22,7 @@ try {
     $library=[IO.File]::ReadAllText((Join-Path $qa 'clean-user-preflight.ps1'))
     # The copied production entrypoint uses the actual guard and hash validator.
     # Only observation is replaced; no Windows identity, UI or process is touched.
-    $library+="`nfunction Get-CleanUserMachine { return `$global:OdsCleanUserFixtureMachine }`n"
+    $library+="`nfunction Get-CleanUserMachine { return `$OdsCleanUserFixtureMachine }`n"
     [IO.File]::WriteAllText((Join-Path $fixture 'clean-user-preflight.ps1'),$library,$utf8)
     $names=@('INSTALLER-BUILD-INFO.json','ODS-Windows-Preview-Setup.exe','run-clean-user-qa.ps1','clean-user-preflight.ps1',
         'ods/desktop/windows/tests/InstallerUiTests.cs','ods/desktop/windows/tests/PortalUiTests.cs','ods/desktop/windows/tests/NativePortalTests.cs',
@@ -39,30 +39,33 @@ try {
     $policy.source_head='a'*40
     $policy.files=@(foreach($name in $names){$item=Get-Item (Join-Path $fixture $name);@{path=$name;bytes=$item.Length;sha256=(Get-FileHash $item.FullName).Hash.ToLowerInvariant()}})
     [IO.File]::WriteAllText((Join-Path $fixture 'QA-SOURCE.json'),($policy|ConvertTo-Json -Depth 5),$utf8)
-    $global:OdsCleanUserFixtureMachine=$machine.Clone()
+    $OdsCleanUserFixtureMachine=$machine.Clone()
     function Invoke-GuardedFixture([switch]$Run){
         # All PowerShell mutation boundaries must remain unreachable. The only
         # native invocation in the runner is below these blocked boundaries.
-        function New-Item {throw 'UNSAFE MUTATOR REACHED'}
-        function Copy-Item {throw 'UNSAFE MUTATOR REACHED'}
-        function Set-Content {throw 'UNSAFE MUTATOR REACHED'}
-        function Start-Transcript {throw 'UNSAFE MUTATOR REACHED'}
-        function Start-Process {throw 'UNSAFE MUTATOR REACHED'}
-        function Get-Command {return $null}
-        function Test-Path {param($LiteralPath) if($LiteralPath.StartsWith($fixture)){return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath};return $false} # Declared fresh private user profile.
+        function Stop-CleanUserFixtureMutation {throw 'UNSAFE MUTATOR REACHED'}
+        function Get-CleanUserFixtureCommand {return $null}
+        function Test-CleanUserFixturePath {param($LiteralPath) if($LiteralPath.StartsWith($fixture)){return Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath};return $false} # Declared fresh private user profile.
+        # Child scripts inherit these function-local aliases and fixture state.
+        # Built-in command definitions and the caller's global scope stay intact.
+        foreach($name in @('New-Item','Copy-Item','Set-Content','Start-Transcript','Start-Process')){
+            Set-Alias -Name $name -Value Stop-CleanUserFixtureMutation -Scope Local
+        }
+        Set-Alias -Name Get-Command -Value Get-CleanUserFixtureCommand -Scope Local
+        Set-Alias -Name Test-Path -Value Test-CleanUserFixturePath -Scope Local
         & (Join-Path $fixture 'run-clean-user-qa.ps1') -RunQualification:$Run
     }
     $result=@(Invoke-GuardedFixture)
     if(-not ($result -match 'PASS read-only')){throw 'Default did not stop at read-only preflight.'};$checks++
     foreach($case in @('elevated','wrong-uuid','physical','server','old-windows')){
-        $global:OdsCleanUserFixtureMachine=$machine.Clone()
-        switch($case){elevated{$global:OdsCleanUserFixtureMachine.Elevated=$true} wrong-uuid{$global:OdsCleanUserFixtureMachine.Uuid=$hostId}
-            physical{$global:OdsCleanUserFixtureMachine.Model='Physical'} server{$global:OdsCleanUserFixtureMachine.ProductType=3} old-windows{$global:OdsCleanUserFixtureMachine.Build=19045}}
+        $OdsCleanUserFixtureMachine=$machine.Clone()
+        switch($case){elevated{$OdsCleanUserFixtureMachine.Elevated=$true} wrong-uuid{$OdsCleanUserFixtureMachine.Uuid=$hostId}
+            physical{$OdsCleanUserFixtureMachine.Model='Physical'} server{$OdsCleanUserFixtureMachine.ProductType=3} old-windows{$OdsCleanUserFixtureMachine.Build=19045}}
         try{Invoke-GuardedFixture -Run;throw 'Missing guard refusal.'}catch{
             if($_.Exception.Message -match 'UNSAFE MUTATOR|Missing guard'){throw};$checks++
         }
     }
-    $global:OdsCleanUserFixtureMachine=$machine.Clone()
+    $OdsCleanUserFixtureMachine=$machine.Clone()
     $extra=Join-Path $fixture 'unexpected.txt'
     [IO.File]::WriteAllText($extra,'Not in frozen input manifest.',$utf8)
     try{Invoke-GuardedFixture -Run;throw 'Missing extra-file refusal.'}catch{
@@ -81,7 +84,7 @@ try {
         if($_.Exception.Message -notmatch 'Frozen input bytes changed'){throw};$checks++
     }
 }finally{
-    Remove-Variable -Name OdsCleanUserFixtureMachine -Scope Global -ErrorAction SilentlyContinue
+    Remove-Variable -Name OdsCleanUserFixtureMachine -Scope Script -ErrorAction SilentlyContinue
     if([IO.Path]::GetDirectoryName($fixture) -ne [IO.Path]::GetTempPath().TrimEnd('\')){throw 'Unexpected private fixture path.'}
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
