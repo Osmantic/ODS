@@ -292,8 +292,16 @@ if not resolved:
 if (script_dir / primary).resolve() == macos_cloud_auth_resolved:
     primary = resolved[-1]
 
-# Multi-GPU overlay if we have more than 1 GPU.
-if selected_stack is None and gpu_count > 1:
+# Multi-GPU overlay if we have more than 1 GPU. It scopes the in-stack
+# llama-server to the GPUs phase 03 assigned, and phase 03 skips that
+# assignment when no in-stack llama-server runs (cloud, external API,
+# host-native runtime). Its required LLAMA_SERVER_GPU_* values are then empty
+# and Compose refuses the whole stack, so select it only for managed local
+# inference.
+in_stack_inference = (
+    ods_mode != "cloud" and tier != "CLOUD" and not host_native and not external_llm
+)
+if selected_stack is None and gpu_count > 1 and in_stack_inference:
     multigpu_file = f"docker-compose.multigpu-{gpu_backend}.yml"
     if (script_dir / multigpu_file).exists():
         resolved.append(multigpu_file)
