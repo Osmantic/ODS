@@ -1057,6 +1057,15 @@ function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[stri
     $environment=@()
     if ($ResolvedRoot) { $environment += 'INSTALL_DIR=' + (ConvertTo-ODSBashArgument $ResolvedRoot) }
     if ($script:ODSWslStateRoot) { $environment += 'ODS_WSL_STATE_ROOT=' + (ConvertTo-ODSBashArgument $script:ODSWslStateRoot) }
+    # wsl.exe does not implicitly forward arbitrary Windows environment values.
+    # Carry the owner's documented port override into the Linux admission and
+    # config writer, refusing invalid values before constructing a shell command.
+    if ($env:OLLAMA_PORT) {
+        if ($env:OLLAMA_PORT -cnotmatch '^[1-9][0-9]{0,4}$' -or [int]$env:OLLAMA_PORT -gt 65535) {
+            throw 'OLLAMA_PORT must be a port from 1 to 65535'
+        }
+        $environment += 'OLLAMA_PORT=' + (ConvertTo-ODSBashArgument $env:OLLAMA_PORT)
+    }
     if ($environment.Count) { $command += 'env ' + ($environment -join ' ') + ' ' }
     $command += 'bash install-core.sh'
     foreach ($argument in $Arguments) { $command += ' ' + (ConvertTo-ODSBashArgument $argument) }
