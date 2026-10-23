@@ -3611,17 +3611,10 @@ validate_preset_compatibility() {
     return 0
 }
 
-# Preset names become directory names under presets/.
-_preset_require_name() {
-    local name="$1"
-    [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || error "Invalid preset name: '$name' (use letters, digits, '.', '_' or '-')"
-}
-
 _preset_env_is_valid() {
     local line
     while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'
-'}"
+        line="${line%$'\r'}"
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || return 1
     done < "$1"
@@ -3632,14 +3625,12 @@ _preset_env_without_secrets() {
     local src="$1" dst="$2" line key
     : > "$dst"
     while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'
-'}"
+        line="${line%$'\r'}"
         if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
             key="${BASH_REMATCH[1]}"
             _cmd_config_is_secret "$key" && continue
         fi
-        printf '%s
-' "$line" >> "$dst"
+        printf '%s\n' "$line" >> "$dst"
     done < "$src"
 }
 
@@ -3651,8 +3642,7 @@ _preset_merge_env() {
     local -A preset_values=() seen=()
     local -a preset_order=() ignored=()
     while IFS= read -r line || [[ -n "$line" ]]; do
-        line="${line%$'
-'}"
+        line="${line%$'\r'}"
         [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]] || continue
         key="${BASH_REMATCH[1]}"
         if _cmd_config_is_secret "$key"; then
@@ -3668,8 +3658,7 @@ _preset_merge_env() {
     chmod 600 "$tmp"
     if [[ -f "$target" ]]; then
         while IFS= read -r line || [[ -n "$line" ]]; do
-            line="${line%$'
-'}"
+            line="${line%$'\r'}"
             if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)= ]]; then
                 key="${BASH_REMATCH[1]}"
                 if [[ -n "${preset_values[$key]+x}" ]]; then
@@ -3678,15 +3667,13 @@ _preset_merge_env() {
                     line="${preset_values[$key]}"
                 fi
             fi
-            printf '%s
-' "$line" >> "$tmp"
+            printf '%s\n' "$line" >> "$tmp"
         done < "$target"
         cp -p "$target" "$INSTALL_DIR/.env.preset-backup"
         chmod 600 "$INSTALL_DIR/.env.preset-backup"
     fi
     for key in "${preset_order[@]}"; do
-        [[ -n "${seen[$key]+x}" ]] || printf '%s
-' "${preset_values[$key]}" >> "$tmp"
+        [[ -n "${seen[$key]+x}" ]] || printf '%s\n' "${preset_values[$key]}" >> "$tmp"
     done
     mv -f "$tmp" "$target"
     if [[ ${#ignored[@]} -gt 0 ]]; then
@@ -3702,7 +3689,11 @@ cmd_preset() {
     local name="${2:-}"
     case "$action" in
         save|s|load|l|delete|rm|export|e)
-            [[ -n "$name" ]] && _preset_require_name "$name" ;;
+            # Names become one directory under presets/. Spaces and leading
+            # dots stay valid so existing presets remain loadable.
+            if [[ -n "$name" ]] && { [[ "$name" == */* || "$name" == "." || "$name" == ".." || "$name" =~ [[:cntrl:]] ]]; }; then
+                error "Invalid preset name: '$name' (must not contain '/' or control characters, or be '.' or '..')"
+            fi ;;
     esac
 
     case "$action" in
@@ -3929,7 +3920,7 @@ META
             local archive_name
             archive_name=$(tar tzf "$archive" 2>/dev/null | sed -n '1p' | cut -d/ -f1)
             [[ -z "$archive_name" ]] && error "Invalid archive structure"
-            _preset_require_name "$archive_name"
+            [[ "$archive_name" != "." && "$archive_name" != ".." && ! "$archive_name" =~ [[:cntrl:]] ]] || error "Invalid preset name in archive: '$archive_name'"
 
             # Check if preset already exists
             if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then

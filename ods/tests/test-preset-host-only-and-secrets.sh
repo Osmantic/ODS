@@ -136,6 +136,17 @@ else
     fail "missing backup or wrong mode"
 fi
 
+# CRLF preset env (edited on Windows) loads without carrying  into .env
+printf 'LLM_MODEL=model-crlf
+' > "$FIXTURE/presets/base/env"
+output=$(printf 'y
+' | run_cli preset load base)
+if grep -qx 'LLM_MODEL=model-crlf' "$FIXTURE/.env" && ! grep -q $'' "$FIXTURE/.env"; then
+    pass "load strips CRLF from preset env"
+else
+    fail "CRLF preset env not normalized: $output"
+fi
+
 # Invalid env content is rejected without touching .env
 before=$(cat "$FIXTURE/.env")
 printf 'LLM_MODEL=model-c\nnot a valid line\n' > "$FIXTURE/presets/base/env"
@@ -147,7 +158,8 @@ else
 fi
 
 # (e) bad preset names
-for bad in "../evil" ".hidden" "a/b"; do
+for bad in "../evil" ".." "a/b" $'bad
+name'; do
     output=$(printf 'y\n' | run_cli preset save "$bad")
     if echo "$output" | grep -q "Invalid preset name" && [[ ! -e "$FIXTURE/evil" ]]; then
         pass "save rejects name '$bad'"
