@@ -1,12 +1,10 @@
 services:
   whisper:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${WHISPER_GPU_UUID}"]
-              capabilities: [gpu]
+    # The GPU itself is reserved by compose.nvidia.yaml via device_ids, which
+    # resolves to WHISPER_GPU_UUID here. Do not add a second devices entry: Compose
+    # appends reservation lists, so the container would get an extra GPU.
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${WHISPER_GPU_UUID:?WHISPER_GPU_UUID must be set for the NVIDIA multi-GPU overlay}"
     logging:
       driver: "json-file"
       options:
