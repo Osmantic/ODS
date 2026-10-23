@@ -413,6 +413,36 @@ def test_the_wrapper_turns_sign_in_on_when_open_webui_is_published_beyond_loopba
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX wrapper with sh")
+@pytest.mark.parametrize("bind,auth,handed_over", [
+    # Local-only with sign-in off: an account made at start would refuse the
+    # no-sign-in login and lock the owner out of chat.
+    ("127.0.0.1", "false", False),
+    (None, "", False),
+    # Local-only with sign-in on, or published (sign-in forced on): kept.
+    ("127.0.0.1", "true", True),
+    (None, None, True),
+    ("0.0.0.0", "false", True),
+])
+def test_the_wrapper_hands_over_the_administrator_only_while_sign_in_is_on(tmp_path, bind, auth, handed_over):
+    stand_in = tmp_path / "python3"
+    stand_in.write_text("#!/bin/sh\nexit 0\n")
+    stand_in.chmod(0o755)
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in ("ODS_WEBUI_BIND_ADDRESS", "ODS_WEBUI_PROXY_BIND", "WEBUI_AUTH")}
+    environment.update(PATH=f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+                       WEBUI_ADMIN_EMAIL="owner@example.test", WEBUI_ADMIN_PASSWORD="test-only")
+    if bind is not None:
+        environment["ODS_WEBUI_BIND_ADDRESS"] = bind
+    if auth is not None:
+        environment["WEBUI_AUTH"] = auth
+    started = subprocess.run(
+        ["sh", str(WRAPPER), "sh", "-c", 'printf "%s|%s" "${WEBUI_ADMIN_EMAIL-unset}" "${WEBUI_ADMIN_PASSWORD-unset}"'],
+        capture_output=True, text=True, env=environment, check=False)
+    assert started.returncode == 0, started.stderr
+    assert started.stdout == ("owner@example.test|test-only" if handed_over else "unset|unset")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="runs the POSIX wrapper with sh")
 def test_the_wrapper_refuses_to_run_without_a_start_command():
     refused = subprocess.run(["sh", str(WRAPPER)], capture_output=True, text=True, check=False)
     assert refused.returncode == 64
