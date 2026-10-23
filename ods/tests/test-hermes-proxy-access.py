@@ -9,6 +9,7 @@ import argparse
 import contextlib
 import http.client
 import http.server
+from http.cookies import CookieError, SimpleCookie
 import os
 from pathlib import Path
 import socket
@@ -31,7 +32,14 @@ class Upstream(http.server.BaseHTTPRequestHandler):
         if self.server.is_auth:
             # Exercise proxy admission independently of the existing signed-
             # cookie unit tests. The literal below is a fixture, not a secret.
-            ok = self.headers.get("Cookie") == "ods-session=fixture-valid"
+            # Parse ods-session out of a combined Cookie header so the test
+            # matches real browsers that send ODS + Hermes cookies together.
+            jar = SimpleCookie()
+            try:
+                jar.load(self.headers.get("Cookie", ""))
+            except CookieError:
+                jar = SimpleCookie()
+            ok = jar.get("ods-session") is not None and jar["ods-session"].value == "fixture-valid"
             self.send_response(200 if ok else 401)
             self.end_headers()
         elif self.headers.get("Upgrade", "").lower() == "websocket":
@@ -41,6 +49,17 @@ class Upstream(http.server.BaseHTTPRequestHandler):
             self.end_headers()
         elif self.path == "/api/protected":
             self.send_response(401)
+            self.end_headers()
+        elif self.path == "/api/native-session":
+            # Downstream Hermes endpoint that requires its own native cookie.
+            # Proves the proxy preserves browser cookies end-to-end.
+            jar = SimpleCookie()
+            try:
+                jar.load(self.headers.get("Cookie", ""))
+            except CookieError:
+                jar = SimpleCookie()
+            ok = jar.get("hermes_session_at") is not None and jar["hermes_session_at"].value == "native-ok"
+            self.send_response(200 if ok else 401)
             self.end_headers()
         else:
             self.send_response(200)
@@ -155,6 +174,32 @@ class ProxyAccess(unittest.TestCase):
             self.assertEqual(self.request(port, "/api/protected", headers=headers)[0], 401)
             self.assertEqual(len(calls), 2)
             self.assertEqual(len(auth), 2)
+
+    def test_opt_in_preserves_native_hermes_cookies_alongside_ods_session(self):
+        with self.proxy("true") as (port, calls, auth):
+            combined = ("ods-session=fixture-valid; hermes_session_at=native-ok; "
+                        "hermes_session_rt=native-refresh; hermes_session_provider=basic")
+            status, _, _ = self.request(port, "/api/native-session", headers={"Cookie": combined})
+            self.assertEqual(status, 200)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(auth), 1)
+            forwarded = {k.lower(): v for k, v in calls[0][1].items()}
+            self.assertEqual(forwarded.get("cookie"), combined)
+            # ODS admission does not replace Hermes's own session check.
+            self.assertEqual(self.request(port, "/api/native-session", headers={
+                "Cookie": "ods-session=fixture-valid",
+            })[0], 401)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(len(auth), 2)
+
+    def test_opt_in_refuses_forged_ods_even_with_valid_native_cookie(self):
+        with self.proxy("true") as (port, calls, auth):
+            combined = "ods-session=forged; hermes_session_at=native-ok"
+            status, headers, _ = self.request(port, "/api/native-session", headers={"Cookie": combined})
+            self.assertEqual(status, 303)
+            self.assertEqual(headers.get("Location"), "/auth/required")
+            self.assertEqual(calls, [])
+            self.assertEqual(len(auth), 1)
 
     def test_opt_in_fails_closed_when_auth_backend_is_unavailable(self):
         with self.proxy("true", auth_available=False) as (port, calls, _):

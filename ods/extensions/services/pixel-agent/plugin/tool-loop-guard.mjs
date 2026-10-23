@@ -254,6 +254,9 @@ export const VERIFICATION_FAILED_DELIVERY_PREFIX =
 export const VERIFICATION_NOT_RUN_DELIVERY_PREFIX =
   "Portal could not complete this task successfully because the owner-requested verification was not executed. The workspace is preserved; ask Portal to continue and run the requested checks.";
 
+export const EXECUTION_EVIDENCE_MISSING_DELIVERY_PREFIX =
+  "Portal did not receive a successful terminal execution receipt for the requested code run, so it cannot report a computed result as executed. The workspace is preserved; ask Portal to continue and run the code.";
+
 // Refusal for a test command composed with a pipe, redirect, chain or filter.
 // A plain `> file` keeps the exit status, but the runner output then never
 // reaches the exec result that verification is judged from (exit-zero
@@ -1351,6 +1354,21 @@ function verificationCommand(params) {
   if (workspaceCd) {
     commandWorkdir = workspaceCd[1] ?? workspaceCd[2] ?? workspaceCd[3];
     command = workspaceCd[4];
+  } else {
+    // A literal relative cd is common in real coding turns. Recognize the
+    // runner after it so completed test receipts and output-masking checks
+    // use the same path as the absolute /workspace form. Do not parse general
+    // shell syntax or change the command that will actually execute.
+    const relativeCd = command.match(
+      /^cd[ \t]+([A-Za-z0-9._][A-Za-z0-9._/-]*)[ \t]*&&[ \t]*(.+)$/
+    );
+    if (relativeCd && relativeCd[1].split("/").every(part => part && part !== "." && part !== "..")) {
+      const base = normalizeExecWorkdir(params.workdir);
+      if (base == null || typeof base === "string") {
+        commandWorkdir = path.posix.join(!base || base === "." ? "/workspace" : base, relativeCd[1]);
+        command = relativeCd[2];
+      }
+    }
   }
   const withoutStderrMerge = command.replace(/\s+2>&1\s*$/i, "").trim();
   if (
@@ -1407,7 +1425,8 @@ function verificationExecFingerprint(params) {
   const command = parsed.command
     .replace(/\s+2>&1\s*$/i, "")
     .replace(/\s+/g, " ");
-  const normalizedWorkdir = normalizeExecWorkdir(params.workdir ?? parsed.commandWorkdir);
+  // The runner executes after cd, even when exec also supplied a starting cwd.
+  const normalizedWorkdir = normalizeExecWorkdir(parsed.commandWorkdir ?? params.workdir);
   const workdir = normalizedWorkdir === "." ? "" : normalizedWorkdir;
   return JSON.stringify([command, typeof workdir === "string" ? workdir : ""]);
 }
@@ -4828,6 +4847,36 @@ function namesAttachedPicture(params, ids) {
   return ids.some(id => text.includes(id));
 }
 
+// Explicit owner request to execute code. This selects a delivery-evidence
+// boundary only; it grants no tool or execution authority. Explanations,
+// quoted commands, code fences, ordinary math, no-tools directives and
+// negations are excluded. A request to write AND execute code is preserved.
+function ownerRequestsCodeExecution(text) {
+  if (!text || ownerForbidsTools(text)) return false;
+  const lane = ownerLaneText(text);
+  // A later instruction can withdraw an earlier execution request. Keep such
+  // turns outside this delivery obligation; tool authority is handled elsewhere.
+  if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:(?:actually|really)\s+)?(?:execute|executing|run|running|interpret|interpreting)\b/i.test(lane)) return false;
+  const clauses = lane.split(/[!?;\n]+|\.(?=\s|$)/);
+  const executionVerb = /\b(?:execute|run|interpret)\b/i;
+  const codeObject = /\b(?:code|script|program|python|javascript|typescript|node|command|interpreter|execution\s+tool|exec\s+tool)\b/i;
+  const toolPhrase = /\b(?:use|call|invoke)\s+(?:your\s+)?(?:python\s+)?(?:execution|exec|interpreter|terminal|shell)\s+tool\b/i;
+  // Meta/instructional framings that mention execution without requesting it.
+  const metaPrefix = /^\s*(?:please\s+)?(?:how\b|what\b|why\b|where\b|when\b|explain\b|describe\b|show\s+(?:me\s+)?(?:a\s+)?command\b|tell\s+me\s+how\b|give\s+me\b|print\s+(?:the\s+)?(?:words?|text|string)\b|quote\b|write\s+(?:the\s+)?(?:words?|text|string)\b|say\s+(?:the\s+)?(?:words?|text|string)\b)/i;
+  // "Give me Python code to run locally" / "code to run" is a request for
+  // code, not a request to execute it. Detect the code-object-then-verb form.
+  const codeToRun = /\b(?:code|script|program|snippet)\b[^.!?;\n]{0,40}\b(?:to|that\s+(?:i|you)\s+can)\s+(?:run|execute|interpret)\b/i;
+  return clauses.some(raw => {
+    const clause = raw.trim();
+    if (!clause) return false;
+    if (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:(?:actually|really)\s+)?(?:execute|executing|run|running|interpret|interpreting|use|using|call|calling|invoke|invoking)\b/i.test(clause)) return false;
+    if (metaPrefix.test(clause)) return false;
+    if (codeToRun.test(clause)) return false;
+    if (toolPhrase.test(clause)) return true;
+    return executionVerb.test(clause) && codeObject.test(clause);
+  });
+}
+
 function ownerWorkspaceLaneRequested(text, workspaceRequested) {
   if (workspaceRequested) return true;
   // Repository investigation named within an extension slash route belongs to
@@ -8125,6 +8174,12 @@ export function createToolLoopGuard({
         recursiveDeleteAbortAttempted: false,
         pendingExecSessions: new Map(),
         pendingExecBlocks: new Map(),
+        // Durable action evidence: a terminal exit-0 exec receipt observed in
+        // this run. Unlike successfulExec (a repetition map cleared on writes),
+        // this is never cleared and is the only fact that satisfies an explicit
+        // owner request to execute code.
+        executionReceiptObserved: false,
+        executionRequested: false,
         // Phantom-process bookkeeping: allowed exec calls whose receipt has
         // not been observed yet, and whether any exec went to the background.
         execCallsInFlight: new Set(),
@@ -10560,6 +10615,7 @@ export function createToolLoopGuard({
         state.workspaceMutationRequested =
           state.workspacePreviewRequired ||
           userMessageRequestsWorkspaceMutation(event?.messages, event?.prompt);
+        state.executionRequested = ownerRequestsCodeExecution(laneText);
         state.workspaceTaskPath = userMessageWorkspaceContinuationPath(
           event?.messages,
           event?.prompt
@@ -11910,6 +11966,12 @@ export function createToolLoopGuard({
           state.latestVerificationStatus = "passed";
           state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
         }
+        // A polled background completion is durable action evidence only when
+        // it is a terminal exit-0 receipt for the matched pending session.
+        if (pending.executionReceiptBound && event?.params?.sessionId === completion.sessionId &&
+            event?.result?.details?.exitCode === 0 && !completion.failed && !toolCallFailed(event)) {
+          state.executionReceiptObserved = true;
+        }
       }
       return;
     }
@@ -11955,6 +12017,9 @@ export function createToolLoopGuard({
       state.pendingExecSessions.set(pendingSessionId, {
         fingerprint,
         verificationFingerprint,
+        executionReceiptBound: Boolean(boundExecReceipt(
+          state, pendingToolRun, event, context, runId, toolCallId, toolName
+        )) && !toolCallFailed(event),
       });
       if (verificationFingerprint) state.latestVerificationStatus = "pending";
       return;
@@ -12020,6 +12085,17 @@ export function createToolLoopGuard({
         state.latestVerificationStatus = "passed";
         state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
       }
+    }
+    // Durable action evidence: only a terminal exit-0 receipt counts. Attempts,
+    // missing exit status, isError, and failed/pending/read/previous-run
+    // receipts do not satisfy an explicit execution request.
+    if (!verificationFailed && !toolCallFailed(event) &&
+        boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName) &&
+        execEvent?.result?.details?.status === "completed" &&
+        Number.isSafeInteger(execEvent.result.details.exitCode) &&
+        execEvent.result.details.exitCode === 0 &&
+        !toolCallFailed(execEvent)) {
+      state.executionReceiptObserved = true;
     }
   }
 
@@ -13759,6 +13835,13 @@ export function createToolLoopGuard({
     }
     if (state.githubCanonicalUrl && !state.githubCanonicalSatisfied) {
       return { status: "failed", text: GITHUB_SOURCE_UNVERIFIED_DELIVERY_PREFIX };
+    }
+    // Action-evidence boundary: an explicit owner request to execute code
+    // cannot be delivered as successful without a terminal exit-0 receipt.
+    // This replaces unsupported prose with bounded factual wording and does
+    // not claim execution did not occur (it may be pending or failed).
+    if (state.executionRequested && !state.executionReceiptObserved) {
+      return { status: "failed", text: EXECUTION_EVIDENCE_MISSING_DELIVERY_PREFIX };
     }
     const staleExecWarningSuppression = state.suppressStaleExecWarning
       ? { suppressStaleExecWarning: true }
