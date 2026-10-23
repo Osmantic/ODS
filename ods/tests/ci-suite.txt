@@ -91,6 +91,7 @@ tests/test-install-menu-hermes-flag.sh
 tests/test-installed-feature-defaults.sh
 tests/test-installed-root-group-repair.sh
 tests/test-installer-log-safety.sh
+tests/test-installer-apt-stdin.sh
 tests/test-jetson-detection.sh
 tests/test-lean-linux-defaults.sh
 tests/test-lemonade-retirement-guard.py
@@ -302,4 +303,3 @@ tests/test-preset-completion.sh
 tests/test-cli-chat-error-exit.py
 tests/test-cli-update-model-lifecycle.sh
 tests/test-summary-quick-commands.sh
-tests/test-installer-apt-stdin.sh
