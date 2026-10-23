@@ -46,6 +46,7 @@ class TestStatsAuth:
             "cache_size",
             "active_sessions",
             "total_pii_scrubbed",
+            "requests_scrubbed",
         }
 
     def test_stats_with_invalid_bearer_returns_403(self, client):
