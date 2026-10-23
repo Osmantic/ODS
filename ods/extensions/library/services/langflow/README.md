@@ -29,7 +29,7 @@ Langflow flows can execute arbitrary Python, so ODS disables Langflow's
 |---|---|---|
 | `LANGFLOW_SUPERUSER` | no | Username, default `admin` |
 | `LANGFLOW_SUPERUSER_PASSWORD` | yes | The dashboard install dialog asks for it; **Generate** fills a random value |
-| `LANGFLOW_SECRET_KEY` | yes | 64 hex characters, same dialog; keep it stable or stored credentials become unreadable |
+| `LANGFLOW_SECRET_KEY` | yes | At least 32 characters; **Generate** fills 64 hex characters. Existing Langflow-generated URL-safe keys are accepted. Keep the value stable or stored credentials become unreadable |
 
 The dashboard refuses to install or enable Langflow until both are saved, so
 nothing reaches Compose without them. `ods enable` does not generate settings

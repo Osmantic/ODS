@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-16T12:07:14Z",
+  "generated_at": "2026-10-23T23:19:02Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -5014,7 +5014,7 @@
           "required": true,
           "description": "Stable key Langflow uses to encrypt stored credentials and sign sessions.",
           "generate": "hex64",
-          "format": "hex64"
+          "min_length": 32
         },
         {
           "key": "LANGFLOW_SUPERUSER",

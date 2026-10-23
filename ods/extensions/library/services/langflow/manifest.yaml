@@ -33,7 +33,7 @@ service:
       secret: true
       description: Stable key Langflow uses to encrypt stored credentials and sign sessions.
       generate: hex64
-      format: hex64
+      min_length: 32
     - key: LANGFLOW_SUPERUSER
       required: false
       default: admin
