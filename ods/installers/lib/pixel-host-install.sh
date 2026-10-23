@@ -5554,7 +5554,9 @@ ods_pixel_install_default_agent() {
         && _ods_pixel_initial_unconfigured_marker "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
         initial_access_reproved=true
     fi
-    if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
+    # This fixed, noninteractive file entrypoint needs no terminal input.
+    # Nested sudo/NodeSource/apt must inherit EOF without changing sudoers.
+    if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply </dev/null >>"$pixel_log" 2>&1; then
         # Phase 11 can stop here without reaching the installer's help trap,
         # so these messages carry the cause, recovery and help link themselves.
         # A failed check of an existing candidate is not a download problem.
