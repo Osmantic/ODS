@@ -126,7 +126,7 @@ def _observe_resource_refresh(task: asyncio.Task) -> None:
         logger.error("Resource collection failed", exc_info=(type(error), error, error.__traceback__))
 
 
-async def _resource_snapshot(key: str, collector, ttl: int):
+async def _resource_snapshot(key: str, collector, ttl: float):
     from main import _cache  # noqa: PLC0415
 
     cached = _cache.get(key)

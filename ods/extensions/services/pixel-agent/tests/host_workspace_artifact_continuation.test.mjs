@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 const api = await import(process.env.GUARD_MODULE
   ? pathToFileURL(process.env.GUARD_MODULE).href : '../plugin/tool-loop-guard.mjs');
@@ -14,9 +15,14 @@ const ctx = {trigger:'user', agentId:'pixel', runId:'artifact-composition', sess
 function fixture(prompt) {
   const guard = api.createToolLoopGuard({abortRunAndDrain:async()=>({aborted:true,drained:true,forceCleared:false})});
   guard.observeRun(ctx,'pixel',{prompt});
+  let calls=0;
   const call = (toolName,params,result) => {
-    assert.notEqual(guard.beforeToolCall({toolName,params,runId:ctx.runId},{...ctx,toolName},'pixel')?.block,true);
-    guard.afterToolCall({toolName,params,result},{...ctx,toolName},'pixel');
+    const toolCallId=`artifact-continuation-${++calls}`;
+    const event={toolName,params,runId:ctx.runId,toolCallId};
+    const context={...ctx,toolName,toolCallId};
+    const action=guard.beforeToolCall(event,context,'pixel');
+    assert.notEqual(action?.block,true);
+    guard.afterToolCall({...event,params:action?.params??params,result},context,'pixel');
   };
   const host = (status='succeeded') => call('pixel_ods_host_observe',{actions:['host.identity']},
     {details:{jobId:'ops-1234567890123-abcdef123456',status,waitTimedOut:false,
@@ -76,7 +82,7 @@ test('real hooks coach publication only after exact write and read, then require
     assert.equal(f.guard.reserveWorkspaceArtifact(ctx),true);
     assert.equal(f.guard.acceptWorkspaceArtifact(ctx,{schemaVersion:1,kind:'ods-pixel-workspace-artifact',
       relativePath:name,siteId:`site-${'a'.repeat(24)}`,sha256:'a'.repeat(64),
-      file:{path:name,bytes:10,sha256:'b'.repeat(64)}}),true);
+      file:{path:name,bytes:10,sha256:createHash('sha256').update('test-host\n').digest('hex')}}),true);
     assert.equal(f.guard.deliveryVerificationForRun(ctx.runId).artifacts.length,1);
     assert.notEqual(f.finalize()?.retry?.idempotencyKey,'pixel-ods-workspace-publish');
   }

@@ -5,7 +5,8 @@ This guide covers how to iterate on `extensions/services/dashboard-api/` (the Fa
 ## TL;DR
 
 - Editing `.py` files under `extensions/services/dashboard-api/` on the host **does not** reload the running `ods-dashboard-api` container. The image bakes a copy into `/app/` at build time.
-- Recommended dev workflow: stop **both** the `dashboard` and `dashboard-api` Docker containers to free host ports 3001 and 3002, then run **Vite dev server** for the dashboard frontend (`npm run dev` on port 3001) plus **native uvicorn** with `--reload` for the API (port 3002). Vite's built-in `/api` proxy already points at `localhost:3002`, so the two host processes wire up automatically. The rest of the compose stack (llama-server, host-agent, etc.) stays running.
+- For frontend work, keep the installed stack running and start **Vite on port 3003** with the installed `DASHBOARD_API_KEY` in its server environment. API requests use port 3002; previews and downloads use the installed dashboard on port 3001. The key never reaches browser JavaScript.
+- For Python changes, rebuild the API image or use the scoped native uvicorn workflow below. Native uvicorn requires host-reachable service endpoints; it does not automatically inherit the Docker network.
 - Only rebuild the image (or `docker cp` as a stop-gap) when you actually need to ship the change.
 
 ## The Trap
@@ -38,89 +39,63 @@ Two consequences:
 
 If you only test by editing host files and reloading the dashboard, your changes silently no-op. This has bitten contributors before; don't waste an afternoon on it.
 
-## Recommended Workflow: Vite + Native uvicorn
+## Frontend Workflow: Vite + the Installed Stack
 
-The clean dev story is to swap the **dashboard** and **dashboard-api** Docker containers out for host-side processes that share the same ports, leaving the rest of the compose stack (llama-server, host-agent, etc.) running. Vite's built-in proxy at `extensions/services/dashboard/vite.config.js` already routes `/api` to `http://localhost:3002`:
+Keep the `dashboard`, `dashboard-api`, and Pixel services running. Vite hot-reloads frontend changes on **http://127.0.0.1:3003**:
 
-```js
-// vite.config.js (already in repo, no change needed)
-server: {
-  port: 3001,
-  proxy: { '/api': { target: 'http://localhost:3002', changeOrigin: true } }
-}
+```text
+browser -> Vite :3003 -> /api/*           -> installed API :3002
+                     -> /pixel-preview/* -> installed nginx :3001 -> pixel-edge
 ```
 
-So the dev proxy chain becomes:
-
-```
-browser → http://localhost:3001 (Vite dev)  → /api/* → http://localhost:3002 (host uvicorn)
-```
-
-### Why both containers must be stopped
-
-`docker-compose.base.yml` binds host port 3001 to the `dashboard` (nginx) container and host port 3002 to the `dashboard-api` (uvicorn) container — both with `${BIND_ADDRESS:-127.0.0.1}` defaults. If either is running, the matching host-side process refuses to bind.
-
-Stopping only `dashboard-api` (an earlier draft of this guide's recommendation) is **wrong**: the Docker `dashboard` container's nginx config hardcodes `proxy_pass http://dashboard-api:3002` (see `extensions/services/dashboard/nginx.conf`). Without the Docker dashboard-api running, every `/api/*` request the Docker nginx proxies returns 502 Bad Gateway. The correct path is to stop **both** containers and replace them with Vite + uvicorn running on the same host ports.
-
-You can keep the rest of the stack (`llama-server`, `ods-host-agent`, `qdrant`, etc.) running. Only the two dashboard containers need to step aside.
-
-### One-time setup
-
-```bash
-# API venv
-cd ods/extensions/services/dashboard-api
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend deps
-cd ../dashboard
-npm install
-```
-
-### Each session
-
-Stop the two dashboard containers so host ports 3001 and 3002 are free:
-
-```bash
-cd /path/to/ods
-docker compose stop dashboard dashboard-api
-```
-
-Terminal 1 — Vite dev server (claims host port 3001):
+The second route is necessary for actual file downloads, preview frames, project files, change summaries, and source review. Pixel's private edge listener stays inside the Docker network. Vite preserves the preview response's content type, digest, sandbox and cross-origin headers.
 
 ```bash
 cd ods/extensions/services/dashboard
-npm run dev
+npm ci
+DASHBOARD_API_KEY="$(grep '^DASHBOARD_API_KEY=' /path/to/ods/.env | cut -d= -f2-)" \
+  npm run dev
 ```
 
-Terminal 2 — native uvicorn (claims host port 3002). Set `ODS_INSTALL_DIR` to the path of your installed ODS repo (the same path the container sees as `/ods`):
+Use the installed key in the Vite **server process environment**. Do not use a `VITE_` variable, client code, or a browser field. With no key, Vite warns and leaves API authentication to the caller; protected API requests retain their normal authentication error. Production builds do not require the key. `npm run preview` can use the same server environment to serve the built frontend on port 4173; its API and preview routes enforce the same local access checks.
+
+The API proxy preserves browser Host and Origin and adds its server-held key only for admitted local requests. Talk and dashboard login/logout retain their own cookie/session authentication and receive no admin key. The preview proxy adds no key: the installed nginx gate supplies its own credential after its normal checks.
+
+Development access trusts processes on this computer. Vite binds to `127.0.0.1` and refuses to silently change ports. Keep port 3001 available to the installed dashboard; select another development port explicitly if 3003 is occupied (`npm run dev -- --port 3004`). Remote listeners/targets, HTTPS, middleware mode, forwarding headers, and proxy redirects/websockets are rejected for these routes. API requests and source review require the same origin; immutable preview assets retain the cross-origin reads needed by their opaque sandbox. Preview requests allow only GET/HEAD and validated snapshot paths, so path normalization cannot reach a different nginx route.
+
+Use the production dashboard's authenticated access when connecting from another device. Python edits in this checkout still do not update the installed API image.
+
+## Backend Workflow: Native uvicorn for Host-Reachable Routes
+
+For backend iteration, stop **only `dashboard-api`** to free port 3002. Keep `dashboard` running on 3001 for Vite's preview/download route. Browse through Vite on 3003: the production dashboard's `/api` route resolves the container service and cannot reach your native uvicorn process.
 
 ```bash
-cd ods/extensions/services/dashboard-api
+cd /path/to/ods
+docker compose stop dashboard-api
+
+cd extensions/services/dashboard-api
+python -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
 ODS_INSTALL_DIR=/path/to/ods \
 ODS_DATA_DIR=/path/to/ods/data \
 ODS_AGENT_HOST=127.0.0.1 \
 ODS_AGENT_PORT=7710 \
-DASHBOARD_API_KEY="$(grep ^DASHBOARD_API_KEY /path/to/ods/.env | cut -d= -f2-)" \
-ODS_AGENT_KEY="$(grep ^ODS_AGENT_KEY /path/to/ods/.env | cut -d= -f2-)" \
+DASHBOARD_API_KEY="$(grep '^DASHBOARD_API_KEY=' /path/to/ods/.env | cut -d= -f2-)" \
+ODS_AGENT_KEY="$(grep '^ODS_AGENT_KEY=' /path/to/ods/.env | cut -d= -f2-)" \
   uvicorn main:app --host 127.0.0.1 --port 3002 --reload
 ```
 
-`ODS_AGENT_HOST=127.0.0.1` is required when running uvicorn natively on the host — `config.py` defaults it to `host.docker.internal`, which Docker Desktop only injects inside containers. Without this override, any host-agent-backed dashboard-api route (extensions install/start, model download, `/v1/env/update`, etc.) fails DNS resolution and returns 502.
+Start Vite in a separate terminal as above, with the same dashboard key. uvicorn reloads Python edits in its working directory. `ODS_AGENT_HOST=127.0.0.1` replaces the container-only default `host.docker.internal`; the host agent must actually be reachable at the configured port. Dashboard and host-agent keys are independent.
 
-uvicorn's `--reload` uses `watchfiles` and picks up edits to any `.py` file under the working directory. Vite hot-reloads JSX/CSS as you edit.
+This native backend workflow covers routes whose dependencies are reachable from the host. **It is not a complete native Pixel development environment.** Pixel routes require the private `pixel-edge:9595` Docker endpoint, and native uvicorn does not acquire Docker DNS or network access. Use the installed backend for the full frontend journey, or rebuild the API container when testing changes to those backend routes. Do not expose the private edge listener or weaken its endpoint validation to make a development test pass.
 
-Browse to **http://localhost:3001** (Vite). Backend traffic flows through Vite's proxy to your host uvicorn; the rest of the stack (host-agent on 7710, llama-server on 8080, etc.) is reached the same way it was via the Docker dashboard.
-
-When you're done, restart the production containers:
+Mirror other environment settings only as required by the route under test. When finished, stop native uvicorn and restore the installed API:
 
 ```bash
-docker compose start dashboard dashboard-api
+cd /path/to/ods
+docker compose start dashboard-api
 ```
-
-Mirror any other env vars your code path reads (`OLLAMA_URL`, `LLM_MODEL`, `KOKORO_URL`, etc.) from the values in `.env`. A small wrapper script that exports the relevant subset is a reasonable thing to keep locally. Note that `DASHBOARD_API_KEY` and `ODS_AGENT_KEY` are independent secrets (since PR #979 they are no longer aliased) — if you only export one, calls in the direction that needs the other will return 401.
 
 ## Stop-gap: `docker cp`
 

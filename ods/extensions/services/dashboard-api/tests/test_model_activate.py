@@ -3622,7 +3622,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=4bf2203c56cce323490e41e36736062d4f74cf39\n"
+        "PIXEL_SOURCE_REF=3d2acd8f22a53d28b36b7e6ee017bb3143dc428b\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -3716,7 +3716,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "4bf2203c56cce323490e41e36736062d4f74cf39"
+    source_ref = "3d2acd8f22a53d28b36b7e6ee017bb3143dc428b"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -6440,6 +6440,77 @@ class TestModelActivateRollback:
             assert reached_runtime == [True]
         assert env_path.read_text(encoding="utf-8") == env_text
         assert models_ini.read_text(encoding="utf-8") == ini_text
+
+    @pytest.mark.parametrize(
+        ("backend", "profile_backend", "arch", "ram", "vram", "allowed"),
+        [
+            ("nvidia", "nvidia", "amd64", 64, 32, True),
+            ("cpu", "cpu", "amd64", 64, 0, True),
+            ("none", "cpu", "amd64", 64, 0, True),
+            ("nvidia", "cpu", "amd64", 64, 32, False),
+            ("cpu", "nvidia", "amd64", 64, 0, False),
+            ("nvidia", "nvidia", "arm64", 64, 32, False),
+            ("nvidia", "nvidia", "amd64", 64, 16, False),
+            ("cpu", "cpu", "amd64", 16, 0, False),
+            ("amd", "amd", "amd64", 64, 0, False),
+            ("apple", "apple", "amd64", 64, 0, False),
+        ],
+    )
+    def test_incompatible_catalog_activation_uses_only_matching_runtime_image(
+        self, tmp_path, monkeypatch, backend, profile_backend, arch, ram, vram, allowed,
+    ):
+        install, env_path, env_before, ini, ini_before, *_ = (
+            _write_model_activation_fixture(tmp_path, gpu_backend=backend)
+        )
+        image = "ghcr.io/ggml-org/llama.cpp:server-b11429@sha256:" + "b" * 64
+        profile = {
+            "id": "qualified-image", "backend": profile_backend,
+            "host_arch": [arch], "context_length": 65536,
+            "llama_server_image": image, "system_ram_min_gb": 32,
+        }
+        if profile_backend == "nvidia":
+            profile["vram_min_gb"] = 24
+        path = install / "config" / "model-library.json"
+        library = json.loads(path.read_text())
+        library["models"][0].update(
+            llama_server_image=None, runtime_profiles=[profile],
+            default_runtime_compatibility={
+                "status": "incompatible", "runtime": "llama.cpp b9014",
+                "userNote": "The default runtime cannot load this model.",
+            },
+        )
+        path.write_text(json.dumps(library))
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: vram)
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: ram)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        launches, selections = [], []
+        select = _mod._select_runtime_profile
+
+        def select_once(model, env):
+            selections.append(True)
+            assert len(selections) == 1, "launch must reuse the approved profile"
+            return select(model, env)
+
+        monkeypatch.setattr(_mod, "_select_runtime_profile", select_once)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda env: launches.append(dict(env)))
+        handler = _ResponseHandler()
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+        response = handler.parse_response()
+        if allowed:
+            assert handler.response_code == 200, response
+            assert len(launches) == 1
+            assert launches[0]["LLAMA_SERVER_IMAGE"] == image
+            assert _mod.load_env(env_path)["MODEL_RUNTIME_PROFILE"] == profile["id"]
+            assert response["context_length"] == 65536
+        else:
+            assert handler.response_code == 400, response
+            assert not launches
+            assert env_path.read_text() == env_before
+            assert ini.read_text() == ini_before
+            assert not (install / "data" / "model-activation-receipt.json").exists()
 
     def test_identity_without_meaningful_completion_rolls_back_and_proves_previous(
         self, tmp_path, monkeypatch,

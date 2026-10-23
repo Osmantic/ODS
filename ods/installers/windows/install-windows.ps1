@@ -410,7 +410,7 @@ if ($dryRun) {
         if ($bootstrapActive) {
             $envPath = Join-Path $installDir ".env"
             if (Test-Path $envPath) {
-                $envContent = Get-Content $envPath -Raw
+                $envContent = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8
                 # Same .NET group-substitution hazard as Update-HermesConfigFile:
                 # '$' in a replacement string is a token, not a literal.
                 $ggufReplacement = "$($tierConfig.GgufFile)".Replace('$', '$$')
@@ -1224,7 +1224,7 @@ if ($dryRun) {
         if (-not $cloudMode -and $currentBackend -ne "amd") {
             $envLlamaImage = ""
             $envFallbackImage = ""
-            foreach ($line in Get-Content $_envCheck) {
+            foreach ($line in Get-Content -LiteralPath $_envCheck -Encoding UTF8) {
                 if ($line -match '^LLAMA_SERVER_IMAGE=(.+)$') {
                     $envLlamaImage = $Matches[1].Trim().Trim('"').Trim("'")
                 } elseif ($line -match '^LLAMA_SERVER_IMAGE_FALLBACK=(.+)$') {
@@ -1243,7 +1243,7 @@ if ($dryRun) {
                 if ([string]::IsNullOrWhiteSpace($validatedImage)) { Exit-ODSInstallFailure }
 
                 if ($validatedImage -ne $envLlamaImage) {
-                    $envLines = Get-Content $_envCheck
+                    $envLines = Get-Content -LiteralPath $_envCheck -Encoding UTF8
                     $envLines = $envLines | ForEach-Object {
                         if ($_ -match '^LLAMA_SERVER_IMAGE=') { "LLAMA_SERVER_IMAGE=$validatedImage" } else { $_ }
                     }
@@ -1270,7 +1270,7 @@ if ($dryRun) {
             if ([string]::IsNullOrWhiteSpace($validatedHermesImage)) { Exit-ODSInstallFailure }
 
             if ($validatedHermesImage -ne $envHermesImage) {
-                $envLines = Get-Content $_envCheck
+                $envLines = Get-Content -LiteralPath $_envCheck -Encoding UTF8
                 $updatedHermesImage = $false
                 $envLines = $envLines | ForEach-Object {
                     if ($_ -match '^HERMES_AGENT_IMAGE=') {

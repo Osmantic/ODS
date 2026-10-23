@@ -67,3 +67,39 @@ test('a fresh preview with an active installation blocks retry', async () => {
   expect(screen.getByRole('button', { name: 'Retry Template' })).toBeEnabled()
   expect(fetchMock).toHaveBeenCalledTimes(2)
 })
+
+test.each([false, true])('Creative Studio reviews optional WebUI and reports partial=%s', async failed => {
+  const onApplied = vi.fn()
+  const fetchMock = vi.fn().mockResolvedValueOnce(preview({
+    to_enable: ['open-webui'], has_errors: [],
+    already_enabled: ['llama-server', 'comfyui', 'tts', 'whisper'],
+  })).mockResolvedValueOnce(response({
+    enabled_count: failed ? 0 : 1, started_count: failed ? 0 : 1,
+    failed_services: [], skipped_services: failed ? ['open-webui'] : [],
+    warnings: failed ? ['open-webui: Open WebUI requires inspection before another change'] : [],
+    restart_required: false,
+  }))
+  vi.stubGlobal('fetch', fetchMock)
+  render(<TemplatePicker templates={[{
+    id: 'creative-studio', name: 'Creative Studio', _status: 'available',
+    services: ['llama-server', 'open-webui', 'comfyui', 'tts', 'whisper'],
+  }]} onApplied={onApplied} />)
+  fireEvent.click(screen.getByRole('button', { name: /Creative Studio/i }))
+  const apply = await screen.findByRole('button', { name: 'Apply Template' })
+  expect(apply).toBeEnabled()
+  expect(screen.getByText('open-webui')).toBeInTheDocument()
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+  fireEvent.click(apply)
+  expect(await screen.findByText(failed
+    ? 'Template applied with exceptions'
+    : /Template applied — check extension cards/)).toBeInTheDocument()
+  if (failed) {
+    expect(screen.getByText('Skipped: open-webui.')).toBeInTheDocument()
+    expect(screen.getByText(/Open WebUI requires inspection/)).toBeInTheDocument()
+    expect(screen.queryByText('All services in this template are already available')).not.toBeInTheDocument()
+  }
+  expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+    '/api/templates/creative-studio/preview', '/api/templates/creative-studio/apply',
+  ])
+  expect(onApplied).toHaveBeenCalledTimes(1)
+})

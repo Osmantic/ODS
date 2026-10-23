@@ -23,6 +23,7 @@ test: ## Run unit and contract tests
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
+	@bash tests/test-summary-quick-commands.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh

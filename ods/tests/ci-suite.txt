@@ -3,6 +3,8 @@
 # .mjs with node --test, a .py file with test functions with pytest, other .py with python3.
 # Add new tests here, to an existing workflow step, or to ci-not-run.txt with a reason;
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
+
+tests/test-installer-dry-run-jq.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
@@ -32,6 +34,7 @@ tests/test-ape-data-ownership.sh
 tests/test-backup-delete-status.sh
 tests/test-backup-macos-appledouble.sh
 tests/test-backup-restore-cli.sh
+tests/test-backup-verify-compressed.py
 tests/test-bash32-guards.sh
 tests/test_dashboard_published_readiness.py
 tests/test-bind-address-sweep.sh
@@ -46,6 +49,7 @@ tests/test-cli-preset-restore-user-extensions.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
 tests/test-cli-status-gpu-backend.sh
+tests/test-cli-status-json-state.sh
 tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
@@ -54,6 +58,7 @@ tests/test-compose-failure-evidence.sh
 tests/test-compose-image-discovery.sh
 tests/test-custom-menu-agent-flags.sh
 tests/test-dashboard-approval-terminal-proxy.py
+tests/test-dashboard-extensions-lock.sh
 tests/test-dashboard-image-upload.py
 tests/test-disk-check-install-dir.sh
 tests/test-disk-space-preflight.sh
@@ -74,7 +79,9 @@ tests/test-fleet-multi-distro-keep-going.sh
 tests/test-gpu-apple.sh
 tests/test-gpu-layer-contract.py
 tests/test-hardware-compatibility.sh
+tests/test-health-check-core-services.sh
 tests/test-health-check-json-output.sh
+tests/test-health-check-llm-port.sh
 tests/test-hermes-context-floor.sh
 tests/test-hermes-dashboard-session-token.py
 tests/test-hermes-data-ownership.sh
@@ -165,6 +172,7 @@ tests/test-path-utils-cross-platform.py
 tests/test-perplexica-embedding-defaults.py
 tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
+tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
@@ -179,6 +187,7 @@ tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
 tests/test-preset-import-export.sh
+tests/test-preset-import-transaction.sh
 tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh
@@ -289,3 +298,7 @@ tests/test-update-backup-publication.py
 tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
+tests/test-preset-completion.sh
+tests/test-cli-chat-error-exit.py
+tests/test-cli-update-model-lifecycle.sh
+tests/test-summary-quick-commands.sh

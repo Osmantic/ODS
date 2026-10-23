@@ -134,7 +134,6 @@ export default function ODSTalk() {
   const bottomRef = useRef(null)
   const fileInputRef = useRef(null)
   const recorderRef = useRef(null)
-  const recordingChunksRef = useRef([])
   const streamControllerRef = useRef(null)
   // React state disables the buttons visibly; this synchronous guard closes
   // the smaller window before that state update paints.
@@ -484,7 +483,7 @@ export default function ODSTalk() {
     // prompt for images ("Describe what you see in this image."). Without
     // either a caption or an attachment, there's nothing to send.
     if (!clean && !attachment) return
-    if (sending || status !== 'ready') return
+    if (sending || recorderRef.current || status !== 'ready') return
     setSending(true)
 
     const userId = transcriptId || makeId('user')
@@ -711,36 +710,69 @@ export default function ODSTalk() {
     }
   }, [refreshStatus, sending, speak, status])
 
+  // Each permission request owns its recorder, tracks and callbacks. Removing
+  // that identity cancels capture even when browser permission resolves later.
+  useEffect(() => () => {
+    const capture = recorderRef.current
+    recorderRef.current = null
+    if (!capture) return
+    if (capture.recorder) {
+      capture.recorder.ondataavailable = null
+      capture.recorder.onstop = null
+      if (capture.recorder.state !== 'inactive') {
+        try { capture.recorder.stop() } catch { /* tracks still need releasing */ }
+      }
+    }
+    capture.stream?.getTracks().forEach(track => track.stop())
+  }, [])
+
   const startRecording = async () => {
-    if (!voiceState.liveMic || recording || sending) return
+    if (!voiceState.liveMic || recorderRef.current || sending) return
+    const capture = { stream: null, recorder: null, chunks: [] }
+    recorderRef.current = capture
+    setRecording(true)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (recorderRef.current !== capture) {
+        stream.getTracks().forEach(track => track.stop())
+        return
+      }
+      capture.stream = stream
       const recorder = new MediaRecorder(stream)
-      recordingChunksRef.current = []
+      capture.recorder = recorder
       recorder.ondataavailable = event => {
-        if (event.data?.size) recordingChunksRef.current.push(event.data)
+        if (recorderRef.current === capture && event.data?.size) capture.chunks.push(event.data)
       }
       recorder.onstop = () => {
         stream.getTracks().forEach(track => track.stop())
-        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+        if (recorderRef.current !== capture) return
+        recorderRef.current = null
+        setRecording(false)
+        const blob = new Blob(capture.chunks, { type: recorder.mimeType || 'audio/webm' })
         if (blob.size > 0) {
           sendAudioFile(new File([blob], 'recording.webm', { type: blob.type || 'audio/webm' }))
         }
       }
-      recorderRef.current = recorder
       recorder.start()
-      setRecording(true)
     } catch {
+      capture.stream?.getTracks().forEach(track => track.stop())
+      if (recorderRef.current !== capture) return
+      recorderRef.current = null
+      setRecording(false)
       setVoiceState(current => ({ ...current, liveMic: false }))
     }
   }
 
   const stopRecording = () => {
-    const recorder = recorderRef.current
-    if (!recorder || recorder.state === 'inactive') return
-    recorder.stop()
-    recorderRef.current = null
-    setRecording(false)
+    const capture = recorderRef.current
+    if (!capture) return
+    if (!capture.recorder) {
+      // Permission is still pending; its eventual stream must be discarded.
+      recorderRef.current = null
+      setRecording(false)
+      return
+    }
+    if (capture.recorder.state !== 'inactive') capture.recorder.stop()
   }
 
   const handleAttachmentPicked = useCallback((file) => {
@@ -778,7 +810,7 @@ export default function ODSTalk() {
 
   // Send is enabled either with text OR an attachment (an image alone is a
   // valid message — the model gets a default "describe this" prompt).
-  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && status === 'ready'
+  const canSend = (input.trim().length > 0 || pendingAttachment) && !sending && !recording && status === 'ready'
 
   return (
     <div className="pixel-app ods-talk min-h-dvh bg-theme-bg text-theme-text antialiased">
@@ -936,7 +968,7 @@ export default function ODSTalk() {
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  if (canSend) sendText(input)
+                  if (canSend) submit(event)
                 }
               }}
               rows={1}
