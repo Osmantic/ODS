@@ -293,7 +293,47 @@ EXE, static CPU engine EXE and four allowed Portal/WebView2 DLLs. The separate
 installer embeds the checked Microsoft WebView2 bootstrapper. Complete engine,
 toolchain, frontend, SDK and installer-engine notices are retained.
 
-## Deferred acceptance gates
+## Clean Windows qualification and remaining gates
+
+The October 23 clean Sandbox run completed **real Setup, missing-WebView2
+installation, first model acquisition, nine chat checks and eleven document
+checks**, using the downloaded CI installer for head `79adbb765` and the
+reviewed QA helpers committed at `a9d9267f6`. The Setup SHA-256 was
+`818f61b2888cf9caa1d5bfbcad6ea00666af78c6ddf82fd9bb57862a3312d8af`.
+Its frozen installer/QA inputs and WSB mappings remained unchanged throughout
+the run. The final guest receipt reported both model phases passed, and the
+two native runner receipts recorded exit zero with empty stderr. Both actual
+WebView screenshots were inspected; the README images now come from this run.
+
+The guest reported Windows 10 Enterprise x64 build 19041, PowerShell
+5.1.19041.6456 and an elevated WDAGUtilityAccount token. Git, Node, Docker and
+Python were absent. The inbox `wsl` command was present; optional-feature
+inventory was unavailable, so this is not a claim that every Windows feature
+was enumerated or absent. The app used its included static CPU engine and
+downloaded the pinned 1.28 GB model inside the guest without a host cache.
+The real Microsoft bootstrapper installed WebView2 **156.0.4314.42**; Setup
+registered ODS per user in HKCU, created its Start Menu entry, and Finish
+launched the exact installed executable without a reboot.
+
+Portal became ready in **106.1 seconds** including acquisition/startup on this
+one guest. Real checks covered a math response, a Vietnamese turn, Stop and
+subsequent recovery, over-context history fitting, oversized-prompt refusal,
+the next successful request and exact-child closure with an unrelated listener
+preserved. The actual document tool/result/final answer produced **511 bytes**,
+SHA-256 `ed570043d80a96b0f021364415eb0f8058629d54ef27955f600e3be05a627ca4`.
+The native picker first cancelled without writing, then saved the exact bytes
+and hash to the chosen fixture path. Document inference ended idle and its
+owned model child closed. This is one CPU/Windows 10 qualification, not a
+hardware benchmark or Windows 11/fleet approval.
+
+Private qualification evidence hashes all eleven guest output files, both
+runner receipts and the frozen input manifest. The initial automatic host
+observer refused an early process-image observation; that failure was retained.
+The main session independently verified the exact live launcher/client,
+continued observing that same guest and checked its completed evidence. No
+observer timeout or failure was used to infer guest termination or restart it.
+
+### QA recovery evidence
 
 The first Windows 10 Sandbox attempt after the authorized October 23 host
 reboot reached the guest desktop and the exact mapped build receipt was
@@ -356,8 +396,8 @@ compiled with the same inbox compiler on the development host, selected
 returned HTTP 200. This is an actual host reproduction, not a guest probe.
 This repairs a demonstrated harness discrepancy and diagnostic
 gap; it does not retrospectively prove the failed guest's download cause or
-turn that attempt into a model pass. Corrected clean model qualification
-remains pending.
+turn that failed attempt into a model pass. The subsequent successful clean
+run is recorded above.
 
 The Portal driver now retains UTF-8 runner stdout, stderr and exact exit status
 outside its disposable fixture when `DiagnosticsDirectory` is supplied. Both
@@ -381,7 +421,8 @@ that test-only issue. The real PowerShell 5 driver also passed its two startup
 contracts while retaining stdout/stderr/exit-zero evidence. Static analysis
 reported no warnings or errors for the driver and its regression. Independent
 static review covered the driver, console isolation and startup changes;
-live guest qualification and new-head hosted execution remain separate.
+the successful live guest is recorded above, while new-head hosted execution
+is recorded separately by its own CI result.
 
 The October 23 follow-up adds **14 real-Setup prerequisite checks** using a
 private publisher executable and a fresh GUID-scoped registry producer. Only
@@ -421,15 +462,12 @@ Its readiness condition and 30-second deadline are unchanged. The updated
 harness passed all **11 Portal checks** locally; that does not erase the
 hosted failure or qualify a new artifact.
 
-- **Clean Windows first use**, especially missing WebView2 installation,
-  prerequisite cancellation/failure and offline/proxy recovery. The prepared
-  Sandbox kit records OS/token/tool availability, installer hash, real model
-  results and screenshot; generating it is not successful guest execution.
-  The host completed its authorized reboot and launched a fresh guest; the
-  initial QA bootstrap failure was corrected and the next real Setup passed,
-  but the model/chat/document phases still require a successful corrected
-  handoff. A guest token is recorded
-  rather than assumed non-elevated.
+- **Additional clean-environment gates:** a non-elevated fresh account, actual
+  Microsoft acquisition cancellation/network failure, and offline/proxy
+  recovery. The real Windows 10 Sandbox install/model/chat/document run above
+  passed; its token was elevated. The fourteen isolated publisher contracts
+  cover prerequisite refusal/failure/recovery but do not replace these wider
+  live environments. Kit generation alone is not guest acceptance.
 - Windows 11 and wider hardware qualification, accessibility and independent
   human review. A single non-elevated development host does not establish these.
 - Signed public website release, SmartScreen reputation, authenticated update
