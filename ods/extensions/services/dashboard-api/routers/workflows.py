@@ -93,6 +93,17 @@ async def get_n8n_workflows() -> list[dict]:
     return []
 
 
+def _installed_n8n_workflows(catalog_name: str, n8n_workflows: list[dict]) -> list[dict]:
+    """n8n workflows imported from a catalog entry: the same name, ignoring case.
+
+    Templates are imported under their catalog name. A partial match would
+    also select the owner's own workflows, such as an n8n duplicate named
+    "Daily Digest copy", and removing a catalog workflow deletes what it selects.
+    """
+    wanted = catalog_name.casefold()
+    return [wf for wf in n8n_workflows if str(wf.get("name") or "").casefold() == wanted]
+
+
 async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, bool] | None = None) -> dict[str, bool]:
     """Check if required services are running. Uses health_cache to avoid duplicate checks."""
     from helpers import check_service_health
@@ -149,17 +160,12 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
     """Get workflow catalog with status and dependency info."""
     catalog = load_workflow_catalog()
     n8n_workflows = await get_n8n_workflows()
-    n8n_by_name = {w.get("name", "").lower(): w for w in n8n_workflows}
 
     workflows = []
     health_cache: dict[str, bool] = {}
     for wf in catalog.get("workflows", []):
-        wf_name_lower = wf["name"].lower()
-        installed = None
-        for n8n_name, n8n_wf in n8n_by_name.items():
-            if wf_name_lower in n8n_name or n8n_name in wf_name_lower:
-                installed = n8n_wf
-                break
+        matches = _installed_n8n_workflows(wf["name"], n8n_workflows)
+        installed = matches[0] if matches else None
 
         dep_status = await check_workflow_dependencies(wf.get("dependencies", []), health_cache)
         all_deps_met = all(dep_status.values())
@@ -281,14 +287,15 @@ async def _remove_workflow(workflow_id: str):
     if not wf_info:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
-    n8n_wf = None
-    wf_name_lower = wf_info["name"].lower()
-    for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
-            n8n_wf = wf
-            break
-    if not n8n_wf:
+    matches = _installed_n8n_workflows(wf_info["name"], n8n_workflows)
+    if not matches:
         raise HTTPException(status_code=404, detail="Workflow not installed in n8n")
+    if len(matches) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Several n8n workflows are named {wf_info['name']}. Remove the one you do not want in n8n.",
+        )
+    n8n_wf = matches[0]
 
     try:
         headers = _n8n_headers()
@@ -329,14 +336,10 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
     if not wf_info:
         raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
 
-    n8n_wf = None
-    wf_name_lower = wf_info["name"].lower()
-    for wf in n8n_workflows:
-        if wf_name_lower in wf.get("name", "").lower():
-            n8n_wf = wf
-            break
-    if not n8n_wf:
+    matches = _installed_n8n_workflows(wf_info["name"], n8n_workflows)
+    if not matches:
         return {"executions": [], "message": "Workflow not installed"}
+    n8n_wf = matches[0]
 
     try:
         headers = _n8n_headers()
