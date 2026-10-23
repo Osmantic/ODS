@@ -35,14 +35,15 @@ export function validModelContract(value) {
   const required = ['model','contextLength','maxTokens','reasoning'];
   return value && typeof value === 'object' && !Array.isArray(value)
     && required.every(key => Object.hasOwn(value, key))
-    && Object.keys(value).every(key => [...required,'routeFingerprint','imageInput'].includes(key))
+    && Object.keys(value).every(key => [...required,'routeFingerprint','imageInput','thinkingControl'].includes(key))
     && typeof value.model === 'string' && value.model.length <= 256
     && /^[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]*$/.test(value.model) && !/[\r\n]/.test(value.model)
     && Number.isInteger(value.contextLength) && value.contextLength >= 4096 && value.contextLength <= 10000000
     && Number.isInteger(value.maxTokens) && value.maxTokens >= 1 && value.maxTokens <= value.contextLength
     && typeof value.reasoning === 'boolean'
     && (!Object.hasOwn(value,'routeFingerprint') || hex(value.routeFingerprint))
-    && (!Object.hasOwn(value,'imageInput') || ['supported','unsupported','unknown'].includes(value.imageInput));
+    && (!Object.hasOwn(value,'imageInput') || ['supported','unsupported','unknown'].includes(value.imageInput))
+    && (!Object.hasOwn(value,'thinkingControl') || ['enable_thinking','always','none'].includes(value.thinkingControl));
 }
 
 export function validModelControl(value) {

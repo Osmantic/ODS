@@ -4,3 +4,6 @@ fastapi==0.141.1
 starlette==1.7.0
 uvicorn[standard]>=0.27.0,<0.30.0
 httpx>=0.27.0,<0.29.0
+
+# Remove the compromised emSign CA from the bundled TLS trust store.
+certifi>=2026.10.19

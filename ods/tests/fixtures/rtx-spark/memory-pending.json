@@ -1,0 +1,27 @@
+{
+  "_source": "Synthesized, not measured: the factory split right after ODS set a fixed 32 GB page file that waits for a restart (configured 32, active none).",
+  "VisibleGiB": 62.5,
+  "CommitLimitGiB": 62.5,
+  "CommittedGiB": 12.0,
+  "CarveOutMiB": 63936,
+  "SystemDrive": "C:",
+  "PageFileActiveGiB": 0,
+  "PageFileConfiguredGiB": 32,
+  "OtherPageFileGiB": 0.0,
+  "PageFileAutomatic": false,
+  "PageFilePending": true,
+  "PagingFiles": [
+    "C:\\pagefile.sys 32768 32768"
+  ],
+  "WslConfig": {
+    "GiB": null,
+    "Owner": null
+  },
+  "WslNowGiB": null,
+  "RunningModelGiB": 0,
+  "ModelsDrive": "C:",
+  "FreeGiB": {
+    "C:": 400
+  },
+  "StackPresent": true
+}

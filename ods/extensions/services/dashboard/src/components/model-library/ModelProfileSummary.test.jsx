@@ -115,10 +115,10 @@ test.each([null, undefined])('an unknown thinking check is not presented as meas
   expect(screen.queryByText('Always thinks before it answers')).toBeNull()
 })
 
-test('a model not measured yet says when it will be', async () => {
+test('a missing saved check explains how to run one', async () => {
   profileBody.profile = null
   await show()
-  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  expect(screen.getByText('No saved capability check is available for this model on this machine. Choose Check again to run one.')).toBeVisible()
 })
 
 test('a running model never checked can be checked from its card', async () => {
@@ -127,7 +127,7 @@ test('a running model never checked can be checked from its card', async () => {
   await show()
   profileBody.profile = profile(capable)
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
-  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST'})
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST', signal: expect.any(AbortSignal)})
   await waitFor(() => expect(screen.getByRole('region', {name: 'What this model can do'}))
     .toHaveTextContent('Tool-call check passed'))
 })
@@ -138,7 +138,7 @@ test('a refused first check is shown in words', async () => {
   await show()
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only the running model can be checked'))
-  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  expect(screen.getByText(/No saved capability check/)).toBeVisible()
 })
 
 test('nothing shows when profiles are off or the check is unavailable', async () => {
@@ -155,7 +155,7 @@ test('nothing shows when profiles are off or the check is unavailable', async ()
 test('Check again re-measures, and a refusal is shown in words', async () => {
   await show()
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
-  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST'})
+  expect(fetch).toHaveBeenCalledWith('/api/models/qwen3.5-9b/profile/recheck', {method: 'POST', signal: expect.any(AbortSignal)})
   recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Only the running model can be checked; run it first'}}}
   await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
   await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Only the running model can be checked'))
@@ -215,7 +215,7 @@ test('refreshes a delayed first profile after the model lifecycle settles withou
   profileBody.profile = null
   const view = render(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
   await act(async () => {})
-  expect(screen.getByText(/Not checked yet/)).toBeVisible()
+  expect(screen.getByText(/No saved capability check/)).toBeVisible()
   view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={true}/>)
   await act(async () => {})
   expect(fetch).toHaveBeenCalledTimes(1)
@@ -281,4 +281,132 @@ test('a late recheck of an unmounted model does not launch another read or chang
   await act(async () => { resolveRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
   expect(fetch).toHaveBeenCalledTimes(3)
   expect(screen.getByText('Tool-call check did not pass')).toBeVisible()
+})
+
+test('a lost recheck response explains uncertainty, refreshes saved results and allows manual recovery', async () => {
+  await show()
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+  recheckResponse = {ok: false, status: 409, body: {detail: {error: 'Another model operation is active; wait for it to finish.'}}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(2)
+  expect(screen.getByRole('status')).toHaveTextContent('Another model operation is active')
+  recheckResponse = {ok: true, status: 200, body: {status: 'recorded'}}
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(3)
+  expect(screen.queryByRole('status')).toBeNull()
+})
+
+test('failed recovery reads preserve the last visible capability check', async () => {
+  await show()
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  fetch.mockRejectedValueOnce(new TypeError('Still offline'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+})
+
+test.each(['headers', 'body'])('a stalled recheck %s reaches its deadline and ignores a late response', async stage => {
+  vi.useFakeTimers()
+  await show()
+  let settle
+  fetch.mockImplementationOnce(() => stage === 'headers'
+    ? new Promise(resolve => { settle = resolve })
+    : Promise.resolve({ok: true, json: () => new Promise(resolve => { settle = resolve })}))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  await act(async () => {})
+  const signal = fetch.mock.calls[1][1].signal
+  await act(async () => { await vi.advanceTimersByTimeAsync(194999) })
+  expect(screen.getByRole('button', {name: 'Checking…'})).toBeDisabled()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(screen.getByRole('status')).toHaveTextContent(/may still be checking/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(signal.aborted).toBe(true)
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(fetch).toHaveBeenCalledTimes(3)
+  await act(async () => { settle(stage === 'headers'
+    ? {ok: false, json: async () => ({detail: 'late refusal'})}
+    : {status: 'error'}) })
+  expect(screen.getByRole('status')).not.toHaveTextContent('late refusal')
+  expect(fetch).toHaveBeenCalledTimes(3)
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+test('a successful recheck with an unavailable saved result preserves the previous card', async () => {
+  await show()
+  fetch.mockResolvedValueOnce({ok: true, json: async () => ({status: 'recorded'})})
+  fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('status')).toHaveTextContent(/could not refresh/i)
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+})
+
+test('a recheck response during the active lifecycle defers its read without reporting a failure', async () => {
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  let finishRecheck
+  fetch.mockImplementationOnce(() => new Promise(resolve => { finishRecheck = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => { finishRecheck({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(2)
+  profileBody.profile = profile({...capable, tokensPerSecond: 39})
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  expect(screen.getByText('About 39 tokens/s')).toBeVisible()
+  expect(screen.getByText('Tool-call check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test.each(['abort', 'late response'])('a superseded recheck read (%s) does not warn after the settled lifecycle reads the saved check', async outcome => {
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  fetch.mockResolvedValueOnce({ok: true, json: async () => ({status: 'recorded'})})
+  let finishRead
+  fetch.mockImplementationOnce((url, {signal}) => new Promise((resolve, reject) => {
+    finishRead = () => resolve({ok: true, json: async () => profileBody})
+    if (outcome === 'abort') signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), {once: true})
+  }))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Check again'})) })
+  expect(fetch).toHaveBeenCalledTimes(3)
+  const signal = fetch.mock.calls[2][1].signal
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive/>)
+  await act(async () => {})
+  expect(signal.aborted).toBe(true)
+  profileBody.profile = profile({...capable, tokensPerSecond: 39})
+  view.rerender(<ModelProfileSummary modelId="qwen3.5-9b" lifecycleActive={false}/>)
+  await act(async () => {})
+  // A fetch implementation may still deliver a response after abort; the
+  // completed lifecycle's newer read owns the visible measurements.
+  await act(async () => { finishRead() })
+  expect(screen.getByText('About 39 tokens/s')).toBeVisible()
+  expect(screen.getByText('Streaming tool check passed')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Check again'})).toBeEnabled()
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(fetch).toHaveBeenCalledTimes(4)
+  expect(fetch.mock.calls.filter(([, options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test('unmount aborts the local recheck request and removes its deadline without launching another probe', async () => {
+  vi.useFakeTimers()
+  let settle
+  const view = render(<ModelProfileSummary modelId="qwen3.5-9b"/>)
+  await act(async () => {})
+  fetch.mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+  fireEvent.click(screen.getByRole('button', {name: 'Check again'}))
+  const signal = fetch.mock.calls[1][1].signal
+  view.unmount()
+  expect(signal.aborted).toBe(true)
+  expect(vi.getTimerCount()).toBe(0)
+  await act(async () => { settle({ok: true, json: async () => ({status: 'recorded'})}) })
+  expect(fetch).toHaveBeenCalledTimes(2)
 })

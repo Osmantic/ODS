@@ -96,6 +96,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "retained-extensions.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -409,7 +410,7 @@ if ($dryRun) {
         if ($bootstrapActive) {
             $envPath = Join-Path $installDir ".env"
             if (Test-Path $envPath) {
-                $envContent = Get-Content $envPath -Raw
+                $envContent = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8
                 # Same .NET group-substitution hazard as Update-HermesConfigFile:
                 # '$' in a replacement string is a token, not a literal.
                 $ggufReplacement = "$($tierConfig.GgufFile)".Replace('$', '$$')
@@ -598,6 +599,14 @@ if ($dryRun) {
         if ($skippedExtensionServices.Count -gt 0) {
             Write-AI "Skipped extension services: $($skippedExtensionServices.Count)"
         }
+
+        # Preserve active dashboard-installed recipes before saving the stack or
+        # running up --remove-orphans. User recipes keep their own enabled state.
+        $retainedBackend = $(if ($currentBackend -eq "nvidia" -and $script:gpuPassthroughFailed) { "cpu" } else { $currentBackend })
+        $composeFlags = @(Add-ODSWindowsRetainedExtensions -InstallDir $installDir `
+            -ComposeFlags $composeFlags -Tier $selectedTier -GpuBackend $retainedBackend `
+            -GpuCount ([Math]::Max(1, [int]$gpuInfo.Count)) `
+            -OdsMode $(if ($cloudMode) { "cloud" } else { "local" }))
 
         # Tier 0 memory overlay
         if ($selectedTier -eq "0" -and (Test-Path (Join-Path $installDir "docker-compose.tier0.yml"))) {
@@ -1215,7 +1224,7 @@ if ($dryRun) {
         if (-not $cloudMode -and $currentBackend -ne "amd") {
             $envLlamaImage = ""
             $envFallbackImage = ""
-            foreach ($line in Get-Content $_envCheck) {
+            foreach ($line in Get-Content -LiteralPath $_envCheck -Encoding UTF8) {
                 if ($line -match '^LLAMA_SERVER_IMAGE=(.+)$') {
                     $envLlamaImage = $Matches[1].Trim().Trim('"').Trim("'")
                 } elseif ($line -match '^LLAMA_SERVER_IMAGE_FALLBACK=(.+)$') {
@@ -1234,7 +1243,7 @@ if ($dryRun) {
                 if ([string]::IsNullOrWhiteSpace($validatedImage)) { Exit-ODSInstallFailure }
 
                 if ($validatedImage -ne $envLlamaImage) {
-                    $envLines = Get-Content $_envCheck
+                    $envLines = Get-Content -LiteralPath $_envCheck -Encoding UTF8
                     $envLines = $envLines | ForEach-Object {
                         if ($_ -match '^LLAMA_SERVER_IMAGE=') { "LLAMA_SERVER_IMAGE=$validatedImage" } else { $_ }
                     }
@@ -1261,7 +1270,7 @@ if ($dryRun) {
             if ([string]::IsNullOrWhiteSpace($validatedHermesImage)) { Exit-ODSInstallFailure }
 
             if ($validatedHermesImage -ne $envHermesImage) {
-                $envLines = Get-Content $_envCheck
+                $envLines = Get-Content -LiteralPath $_envCheck -Encoding UTF8
                 $updatedHermesImage = $false
                 $envLines = $envLines | ForEach-Object {
                     if ($_ -match '^HERMES_AGENT_IMAGE=') {
@@ -1670,7 +1679,10 @@ if ($enableVoice)     {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
 }
-if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
+if ($enableWorkflows) {
+    $healthN8nPort = Get-WindowsODSEnvPort -EnvMap $windowsEnvMap -Name "N8N_PORT" -DefaultPort 5678
+    $healthChecks += @{ Name = "n8n (Workflows)"; Url = "http://localhost:$healthN8nPort/healthz" }
+}
 
 Write-AI "Running health checks..."
 $maxAttempts = 60; $allHealthy = $true
@@ -1910,11 +1922,12 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $servicePlan) {
     if (($perplexicaUsesLiteLlm -or $switchboardMode -eq "enabled") -and $windowsEnvMap.ContainsKey("LITELLM_KEY") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["LITELLM_KEY"])) {
         $perplexicaApiKey = $windowsEnvMap["LITELLM_KEY"]
     }
-    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort 3004 -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey
+    $perplexicaPort = Get-WindowsODSEnvPort -EnvMap $windowsEnvMap -Name "PERPLEXICA_PORT" -DefaultPort 3004
+    $perplexicaOk = Set-PerplexicaConfig -PerplexicaPort $perplexicaPort -LlmModel $perplexicaModel -LlmBaseUrl $perplexicaBaseUrl -ApiKey $perplexicaApiKey
     if ($perplexicaOk) {
         Write-AISuccess "Perplexica configured (model: $perplexicaModel)"
     } else {
-        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:3004"
+        Write-AIWarn "Perplexica auto-config skipped -- complete setup at http://localhost:$perplexicaPort"
     }
 }
 
@@ -2003,7 +2016,7 @@ if ($installReadiness -and $installReadiness.AllReady -and $llmModelReady -and $
 
 # ── Desktop & Start Menu shortcuts ───────────────────────────────────────────
 try {
-    $dashboardUrl  = "http://localhost:3001"
+    $dashboardUrl  = "http://localhost:$dashboardPort"
     $shortcutName  = "ODS"
     $iconPath      = Join-Path $installDir "extensions\services\dashboard\public\osmantic-os.ico"
     $iconContent   = if (Test-Path -LiteralPath $iconPath) { "IconFile=$iconPath`nIconIndex=0" } else { "IconIndex=0" }
@@ -2033,7 +2046,7 @@ try {
 
 # ── Success card ──────────────────────────────────────────────────────────────
 if ($allHealthy) {
-    Write-SuccessCard
+    Write-SuccessCard -WebUIPort $webuiPort -DashboardPort $dashboardPort
 } else {
     Write-Host ""
     Write-AIWarn "Install finished, but one or more services are not ready yet. Check status with:"

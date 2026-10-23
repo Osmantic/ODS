@@ -127,6 +127,78 @@ def test_unauthorized_cannot_get_hermes_cookies(client, monkeypatch):
     login.assert_not_called()
 
 
+BROWSER = {"accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"}
+
+
+def _lapsed_session(monkeypatch):
+    """A session minted by a dashboard that was opened long ago."""
+    with monkeypatch.context() as past:
+        past.setattr(session_signer.time, "time", lambda: 1_000_000)
+        return session_signer.issue(ttl_seconds=auth.SESSION_TTL_SECONDS)
+
+
+def test_lapsed_session_browser_launch_explains_recovery(client, monkeypatch):
+    monkeypatch.setitem(auth.SERVICES, "dashboard", {"external_port": 3001})
+    client.cookies.set("ods-session", _lapsed_session(monkeypatch))
+    login = AsyncMock()
+    monkeypatch.setattr(hermes_bridge, "login_dashboard", login)
+    response = client.get("/api/auth/hermes-session?next=https://evil.example",
+                          headers={**BROWSER, "host": "localhost:9120"}, follow_redirects=False)
+    assert response.status_code == 401
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert "set-cookie" not in response.headers
+    assert "ODS sign-in expired" in response.text
+    assert "Open the ODS dashboard and click Hermes again." in response.text
+    assert 'href="http://localhost:3001/"' in response.text
+    assert f'href="{auth.ODS_HELP_DISCORD_URL}"' in response.text
+    assert auth.ODS_HELP_DISCORD_URL == "https://discord.gg/4ntNp9MAwC"
+    assert "evil.example" not in response.text
+    login.assert_not_called()
+
+
+@pytest.mark.parametrize("host,dashboard,link", [
+    ("127.0.0.1:9120", {"external_port": 3005}, "http://127.0.0.1:3005/"),
+    ("[::1]:9120", {"external_port": 3001}, "http://[::1]:3001/"),
+    ("localhost:9120", None, None),
+])
+def test_recovery_link_stays_on_the_browser_host_at_the_dashboard_port(client, monkeypatch, host, dashboard, link):
+    monkeypatch.delitem(auth.SERVICES, "dashboard", raising=False)
+    if dashboard:
+        monkeypatch.setitem(auth.SERVICES, "dashboard", dashboard)
+    response = client.get("/api/auth/hermes-session", headers={**BROWSER, "host": host}, follow_redirects=False)
+    assert response.status_code == 401
+    assert "click Hermes again" in response.text and auth.ODS_HELP_DISCORD_URL in response.text
+    if link:
+        assert f'<a class="btn" href="{link}">' in response.text
+    else:
+        assert 'class="btn"' not in response.text
+
+
+def test_recovery_page_escapes_the_request_host(client, monkeypatch):
+    monkeypatch.setitem(auth.SERVICES, "dashboard", {"external_port": 3001})
+    response = client.get("/api/auth/hermes-session", headers={**BROWSER, "host": 'x"onmouseover="alert(1)'},
+                          follow_redirects=False)
+    assert response.status_code == 401
+    assert '"onmouseover' not in response.text
+
+
+@pytest.mark.parametrize("accept", [None, "application/json", "*/*"])
+def test_non_browser_callers_keep_the_json_401(client, monkeypatch, accept):
+    client.cookies.set("ods-session", _lapsed_session(monkeypatch))
+    headers = {"accept": accept} if accept else {}
+    response = client.get("/api/auth/hermes-session", headers=headers, follow_redirects=False)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid or expired session"}
+
+
+def test_browser_launch_with_a_valid_session_still_signs_in(client, monkeypatch):
+    client.cookies.set("ods-session", session_signer.issue(ttl_seconds=60))
+    monkeypatch.setattr(hermes_auth, "settings", lambda: None)
+    response = client.get("/api/auth/hermes-session", headers=BROWSER, follow_redirects=False)
+    assert response.status_code == 303 and response.headers["location"] == "/login"
+
+
 def test_launch_rejects_arbitrary_destination(client, monkeypatch):
     client.cookies.set("ods-session", session_signer.issue(ttl_seconds=60))
     login = AsyncMock()

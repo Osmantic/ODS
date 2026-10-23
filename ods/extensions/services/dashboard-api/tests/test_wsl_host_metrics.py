@@ -85,3 +85,23 @@ def test_missing_counters_remain_unavailable_and_zero_is_valid(monkeypatch):
     info = gpu.get_gpu_info_wsl_host_detailed()[0]
     assert not info.memory_usage_available and not info.utilization_available
     assert not info.temperature_available
+
+
+def test_nvidia_adapter_reports_the_windows_driver_temperature_and_power(monkeypatch):
+    # A model server on Windows (an RTX Spark here): the host agent adds
+    # nvidia-smi's readings to the DXGI row; out-of-range readings are unknown.
+    data = payload()
+    data["gpus"][0].update(name="NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU)", backend="nvidia",
+                           memory_type="discrete", memory_total_mb=98240, memory_used_mb=90529,
+                           temperature_c=69, power_w=58.72)
+    monkeypatch.setattr(host_metrics, "request_json", lambda *a, **kw: data)
+    info = gpu.get_gpu_info_wsl_host_detailed()[0]
+    assert info.temperature_available and info.temperature_c == 69
+    assert info.power_w == 58.7
+    aggregate = gpu.aggregate_gpu_details([info], "nvidia")
+    assert aggregate.temperature_available and aggregate.temperature_c == 69 and aggregate.power_w == 58.7
+    for temperature, power in ((999, -1), (151, 2001)):
+        data["gpus"][0].update(temperature_c=temperature, power_w=power)
+        monkeypatch.setattr(host_metrics, "_windows_cached", (0, None))
+        info = gpu.get_gpu_info_wsl_host_detailed()[0]
+        assert not info.temperature_available and info.power_w is None

@@ -48,4 +48,12 @@ if [ -n "$reachable" ]; then
 else
     python3 /opt/ods/openwebui-prepare.py
 fi
+
+# List ods/current once instead of every LiteLLM alias for the same model
+# (openwebui-model-list.py). Nothing printed leaves the connections as they are.
+model_configs="$(python3 /opt/ods/openwebui-model-list.py)"
+if [ -n "$model_configs" ]; then
+    OPENAI_API_CONFIGS="$model_configs"
+    export OPENAI_API_CONFIGS
+fi
 exec "$@"

@@ -11,12 +11,12 @@ RUN apk add --no-cache make zip
 RUN npm ci --no-audit --no-fund && npm run build \
     && PATH="/app/bin:$PATH" make -C docs/examples/data all \
     && npm run docs
-COPY basemap.js /app/www/basemap.js
+COPY --chmod=0644 basemap.js /app/www/basemap.js
 FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236
 RUN rm -rf /usr/share/nginx/html/*
 COPY --from=build /app/www /usr/share/nginx/html
 COPY --from=build /app/LICENSE /usr/share/nginx/html/LICENSE
 COPY --from=build /tmp/source.tar.gz /usr/share/nginx/html/source/mapshaper-0.7.62.tar.gz
-COPY Dockerfile basemap.js nginx.conf compose.yaml manifest.yaml upstream.json README.md /usr/share/nginx/html/source/ods-recipe/
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY --chmod=0644 Dockerfile basemap.js nginx.conf compose.yaml manifest.yaml upstream.json README.md /usr/share/nginx/html/source/ods-recipe/
+COPY --chmod=0644 nginx.conf /etc/nginx/nginx.conf
 USER 101:101

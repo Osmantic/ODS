@@ -1192,6 +1192,40 @@ class TestSwitchboardRuntimeConfig:
             "LLM_API_URL": "http://litellm:4000/v1",
         }) == "http://llama-server:8080/v1"
 
+    @pytest.mark.parametrize("mode,consumer_url", [
+        ("local", "http://llama-server:8080"),
+        ("hybrid", "http://litellm:4000"),
+    ])
+    @pytest.mark.parametrize("gateway,ports,expected", [
+        ("192.168.64.1", {"ODS_NATIVE_LLAMA_PORT": "8080", "OLLAMA_PORT": "9999", "AMD_INFERENCE_PORT": "7777"}, "http://192.168.64.1:8080"),
+        ("192.168.106.1", {"ODS_NATIVE_LLAMA_PORT": "19090"}, "http://192.168.106.1:19090"),
+        ("", {"ODS_NATIVE_LLAMA_PORT": "19090"}, "http://host.docker.internal:19090"),
+        ("192.168.64.1", {"OLLAMA_PORT": "19091", "AMD_INFERENCE_PORT": "7777"}, "http://192.168.64.1:19091"),
+        ("", {}, "http://host.docker.internal:8080"),
+    ])
+    def test_apple_activation_renders_native_origin_after_mode_change(
+        self, monkeypatch, tmp_path, mode, consumer_url, gateway, ports, expected,
+    ):
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+        _mod._render_model_router_runtime_configs(
+            tmp_path,
+            {"ODS_MODEL_SWITCHBOARD": "enabled", "GPU_BACKEND": "apple",
+             "ODS_MODE": mode, "LLM_API_URL": consumer_url,
+             "ODS_MACOS_HOST_GATEWAY": gateway, **ports},
+            model="qwen", gguf_file="Qwen.gguf", context_length=65536,
+        )
+        endpoints = json.loads(
+            (tmp_path / "config/model-router/endpoints.json").read_text(encoding="utf-8")
+        )
+        assert endpoints == {"endpoints": [{
+            "id": "llama-server-default", "baseUrl": expected,
+        }]}
+        # Consumer aliases still go through the switchboard; only its upstream
+        # must use the actual native listener instead of a nonexistent container.
+        switchboard = (tmp_path / "config/litellm/switchboard.yaml").read_text(encoding="utf-8")
+        assert "api_base: http://model-router:9099/v1" in switchboard
+        assert "model_name: default" in switchboard
+
     def test_windows_native_runtime_base_uses_host_gateway(self, monkeypatch):
         monkeypatch.setattr(_mod, "_is_windows_host_llama_server", lambda _env: True)
 
@@ -3588,7 +3622,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=2ef78e7067211a198748c5499ed5a0261f4b48b6\n"
+        "PIXEL_SOURCE_REF=3d2acd8f22a53d28b36b7e6ee017bb3143dc428b\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -3682,7 +3716,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "2ef78e7067211a198748c5499ed5a0261f4b48b6"
+    source_ref = "3d2acd8f22a53d28b36b7e6ee017bb3143dc428b"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -3885,7 +3919,7 @@ class TestModelActivateRollback:
     def _successful_meaningful_completion(self, monkeypatch):
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
-        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, "", None))
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
@@ -6407,6 +6441,77 @@ class TestModelActivateRollback:
         assert env_path.read_text(encoding="utf-8") == env_text
         assert models_ini.read_text(encoding="utf-8") == ini_text
 
+    @pytest.mark.parametrize(
+        ("backend", "profile_backend", "arch", "ram", "vram", "allowed"),
+        [
+            ("nvidia", "nvidia", "amd64", 64, 32, True),
+            ("cpu", "cpu", "amd64", 64, 0, True),
+            ("none", "cpu", "amd64", 64, 0, True),
+            ("nvidia", "cpu", "amd64", 64, 32, False),
+            ("cpu", "nvidia", "amd64", 64, 0, False),
+            ("nvidia", "nvidia", "arm64", 64, 32, False),
+            ("nvidia", "nvidia", "amd64", 64, 16, False),
+            ("cpu", "cpu", "amd64", 16, 0, False),
+            ("amd", "amd", "amd64", 64, 0, False),
+            ("apple", "apple", "amd64", 64, 0, False),
+        ],
+    )
+    def test_incompatible_catalog_activation_uses_only_matching_runtime_image(
+        self, tmp_path, monkeypatch, backend, profile_backend, arch, ram, vram, allowed,
+    ):
+        install, env_path, env_before, ini, ini_before, *_ = (
+            _write_model_activation_fixture(tmp_path, gpu_backend=backend)
+        )
+        image = "ghcr.io/ggml-org/llama.cpp:server-b11429@sha256:" + "b" * 64
+        profile = {
+            "id": "qualified-image", "backend": profile_backend,
+            "host_arch": [arch], "context_length": 65536,
+            "llama_server_image": image, "system_ram_min_gb": 32,
+        }
+        if profile_backend == "nvidia":
+            profile["vram_min_gb"] = 24
+        path = install / "config" / "model-library.json"
+        library = json.loads(path.read_text())
+        library["models"][0].update(
+            llama_server_image=None, runtime_profiles=[profile],
+            default_runtime_compatibility={
+                "status": "incompatible", "runtime": "llama.cpp b9014",
+                "userNote": "The default runtime cannot load this model.",
+            },
+        )
+        path.write_text(json.dumps(library))
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(_mod.platform, "machine", lambda: "x86_64")
+        monkeypatch.setattr(_mod, "_nvidia_vram_gb", lambda: vram)
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: ram)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        launches, selections = [], []
+        select = _mod._select_runtime_profile
+
+        def select_once(model, env):
+            selections.append(True)
+            assert len(selections) == 1, "launch must reuse the approved profile"
+            return select(model, env)
+
+        monkeypatch.setattr(_mod, "_select_runtime_profile", select_once)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda env: launches.append(dict(env)))
+        handler = _ResponseHandler()
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+        response = handler.parse_response()
+        if allowed:
+            assert handler.response_code == 200, response
+            assert len(launches) == 1
+            assert launches[0]["LLAMA_SERVER_IMAGE"] == image
+            assert _mod.load_env(env_path)["MODEL_RUNTIME_PROFILE"] == profile["id"]
+            assert response["context_length"] == 65536
+        else:
+            assert handler.response_code == 400, response
+            assert not launches
+            assert env_path.read_text() == env_before
+            assert ini.read_text() == ini_before
+            assert not (install / "data" / "model-activation-receipt.json").exists()
+
     def test_identity_without_meaningful_completion_rolls_back_and_proves_previous(
         self, tmp_path, monkeypatch,
     ):
@@ -7655,6 +7760,206 @@ class TestModelActivateRollback:
         assert rollback_restart < rollback_health < rollback_probe
 
 
+_NVIDIA_CONTRACT = _agent_path.parents[1] / "config" / "backends" / "nvidia.json"
+_COMPUTE_121_IMAGE = json.loads(_NVIDIA_CONTRACT.read_text(encoding="utf-8"))[
+    "runtime"]["llama_server"]["container_images_by_compute"]["12.1"]
+_CUDA12_DEFAULT_IMAGE = (
+    "ghcr.io/ggml-org/llama.cpp:server-cuda-b11429@sha256:"
+    "883915ea20a4b350e98f7284098f4d400c21e9b366e248d397cd42d90602a84c"
+)
+_CUDA12_CATALOG_IMAGE = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:" + "f" * 64
+
+
+class TestComputeCapabilityLlamaImage:
+    """A compute-12.1 GPU (DGX Spark GB10, RTX Spark N1X) never runs a CUDA 12 build."""
+
+    @pytest.fixture(autouse=True)
+    def _synthetic_runtime(self, monkeypatch):
+        # The same synthetic runtime as TestModelActivateRollback.
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
+        monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
+        monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
+
+    @staticmethod
+    def _install(tmp_path, monkeypatch, env_lines: str):
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        backends = install_dir / "config" / "backends"
+        backends.mkdir(parents=True)
+        shutil.copyfile(_NVIDIA_CONTRACT, backends / "nvidia.json")
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8") + "MAX_CONTEXT=2048\n" + env_lines,
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        return install_dir, env_path
+
+    def test_the_pin_is_the_cuda13_build_of_the_nvidia_release(self):
+        assert _COMPUTE_121_IMAGE.startswith("ghcr.io/ggml-org/llama.cpp:server-cuda13-b11429@sha256:")
+        assert _CUDA12_DEFAULT_IMAGE.split("@")[0].rsplit("-", 1)[1] == "b11429"
+
+    @pytest.mark.parametrize(
+        ("image", "env", "expected"),
+        [
+            ("", {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1"}, _COMPUTE_121_IMAGE),
+            (_CUDA12_DEFAULT_IMAGE, {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1"}, _COMPUTE_121_IMAGE),
+            (_CUDA12_CATALOG_IMAGE, {"GPU_BACKEND": "NVIDIA", "GPU_COMPUTE_CAP": " 12.1 "}, _COMPUTE_121_IMAGE),
+            ("ghcr.io/ggml-org/llama.cpp:server-cuda12-b11429@sha256:" + "a" * 64,
+             {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1"}, _COMPUTE_121_IMAGE),
+            # Another CUDA 13 build and an owner's own image are kept.
+            ("ghcr.io/ggml-org/llama.cpp:server-cuda13-b9014@sha256:" + "b" * 64,
+             {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1"},
+             "ghcr.io/ggml-org/llama.cpp:server-cuda13-b9014@sha256:" + "b" * 64),
+            ("local/llama-gb10:sm121", {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1"}, "local/llama-gb10:sm121"),
+            # Every other compute capability and backend is unchanged.
+            (_CUDA12_DEFAULT_IMAGE, {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.0"}, _CUDA12_DEFAULT_IMAGE),
+            (_CUDA12_DEFAULT_IMAGE, {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "8.9"}, _CUDA12_DEFAULT_IMAGE),
+            ("", {"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.0"}, ""),
+            ("", {"GPU_BACKEND": "nvidia"}, ""),
+            ("", {"GPU_BACKEND": "amd", "GPU_COMPUTE_CAP": "12.1"}, ""),
+            (_CUDA12_CATALOG_IMAGE, {"GPU_BACKEND": "cpu", "GPU_COMPUTE_CAP": "12.1"}, _CUDA12_CATALOG_IMAGE),
+        ],
+    )
+    def test_image_for_compute(self, tmp_path, monkeypatch, image, env, expected):
+        self._install(tmp_path, monkeypatch, "")
+        assert _mod._llama_image_for_compute(image, env) == expected
+
+    def test_other_hosts_never_read_the_contract(self, tmp_path, monkeypatch):
+        # No nvidia.json at all: only a compute capability with an entry reads it.
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path / "missing")
+        assert _mod._llama_image_for_compute(_CUDA12_DEFAULT_IMAGE, {"GPU_BACKEND": "nvidia"}) == _CUDA12_DEFAULT_IMAGE
+        assert _mod._llama_image_for_compute("", {"GPU_BACKEND": "amd", "GPU_COMPUTE_CAP": "12.1"}) == ""
+
+    @pytest.mark.parametrize(
+        ("env", "expected"),
+        [
+            ({"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1"}, _COMPUTE_121_IMAGE),
+            ({"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1", "LLAMA_SERVER_IMAGE": _CUDA12_CATALOG_IMAGE},
+             _COMPUTE_121_IMAGE),
+            ({"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "12.1", "LLAMA_SERVER_IMAGE": "local/llama:own"},
+             "local/llama:own"),
+            # Elsewhere an empty value still keeps the inspected container's image.
+            ({"GPU_BACKEND": "nvidia", "GPU_COMPUTE_CAP": "8.9"}, ""),
+            ({"GPU_BACKEND": "nvidia", "LLAMA_SERVER_IMAGE": _CUDA12_CATALOG_IMAGE}, _CUDA12_CATALOG_IMAGE),
+            ({"GPU_BACKEND": "amd", "GPU_COMPUTE_CAP": "12.1", "LLAMA_SERVER_IMAGE": _CUDA12_CATALOG_IMAGE}, ""),
+        ],
+    )
+    def test_rollback_image(self, tmp_path, monkeypatch, env, expected):
+        self._install(tmp_path, monkeypatch, "")
+        assert _mod._container_llama_rollback_image(env) == expected
+
+    @pytest.mark.parametrize("case", ["no-image", "previous-catalog-image", "model-image"])
+    def test_in_container_switch_on_compute_121_runs_and_writes_the_cuda13_build(
+        self, tmp_path, monkeypatch, case,
+    ):
+        env_lines = "GPU_COMPUTE_CAP=12.1\n"
+        install_dir, env_path = self._install(tmp_path, monkeypatch, env_lines)
+        catalog_path = install_dir / "config" / "model-library.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        if case == "previous-catalog-image":
+            catalog["models"].append({
+                "id": "previous-model", "gguf_file": "old-model.gguf",
+                "gguf_url": "https://example.test/old-model.gguf", "gguf_sha256": "0" * 64,
+                "llm_model_name": "old-model", "context_length": 4096,
+                "llama_server_image": _CUDA12_CATALOG_IMAGE,
+            })
+            env_path.write_text(
+                env_path.read_text(encoding="utf-8") + f"LLAMA_SERVER_IMAGE={_CUDA12_CATALOG_IMAGE}\n",
+                encoding="utf-8",
+            )
+        elif case == "model-image":
+            catalog["models"][0]["llama_server_image"] = _CUDA12_CATALOG_IMAGE
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        recreates = []
+        monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install_dir))
+        monkeypatch.setattr(
+            _mod,
+            "_recreate_llama_server",
+            lambda env, override_image="": recreates.append((dict(env), override_image)),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert recreates[0][1] == _COMPUTE_121_IMAGE
+        # .env names it too, so a later Compose start does not fall back to
+        # the CUDA 12 default.
+        assert _mod.load_env(env_path)["LLAMA_SERVER_IMAGE"] == _COMPUTE_121_IMAGE
+
+    @pytest.mark.parametrize("compute_cap", ["12.0", "8.9", None])
+    def test_in_container_switch_elsewhere_keeps_the_cuda12_default(self, tmp_path, monkeypatch, compute_cap):
+        env_lines = f"GPU_COMPUTE_CAP={compute_cap}\n" if compute_cap else ""
+        install_dir, env_path = self._install(tmp_path, monkeypatch, env_lines)
+        recreates = []
+        monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install_dir))
+        monkeypatch.setattr(
+            _mod,
+            "_recreate_llama_server",
+            lambda env, override_image="": recreates.append((dict(env), override_image)),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert recreates[0][1] == _CUDA12_DEFAULT_IMAGE
+        assert "LLAMA_SERVER_IMAGE" not in _mod.load_env(env_path)
+
+    def test_owner_image_is_kept_on_compute_121(self, tmp_path, monkeypatch):
+        install_dir, env_path = self._install(
+            tmp_path, monkeypatch, "GPU_COMPUTE_CAP=12.1\nLLAMA_SERVER_IMAGE=local/llama-gb10:sm121\n",
+        )
+        recreates = []
+        monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install_dir))
+        monkeypatch.setattr(
+            _mod,
+            "_recreate_llama_server",
+            lambda env, override_image="": recreates.append((dict(env), override_image)),
+        )
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        assert recreates[0][1] == "local/llama-gb10:sm121"
+        assert _mod.load_env(env_path)["LLAMA_SERVER_IMAGE"] == "local/llama-gb10:sm121"
+
+    def test_failed_switch_on_compute_121_rolls_back_to_the_cuda13_build(self, tmp_path, monkeypatch):
+        install_dir, env_path = self._install(tmp_path, monkeypatch, "GPU_COMPUTE_CAP=12.1\n")
+        original_env = env_path.read_text(encoding="utf-8")
+        images = []
+        monkeypatch.setenv("ODS_HOST_INSTALL_DIR", str(install_dir))
+        monkeypatch.setattr(
+            _mod,
+            "_recreate_llama_server",
+            lambda env, override_image="": images.append((env["GGUF_FILE"], override_image)),
+        )
+        monkeypatch.setattr(
+            _mod,
+            "_wait_for_model_readiness",
+            lambda *_args, **kwargs: (_ for _ in ()).throw(RuntimeError("simulated load failure"))
+            if kwargs.get("gguf_file") == "new-model.gguf"
+            else _mock_verified_readiness(*_args, **kwargs),
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 500
+        assert handler.parse_response()["rolled_back"] is True
+        assert images == [("new-model.gguf", _COMPUTE_121_IMAGE), ("old-model.gguf", _COMPUTE_121_IMAGE)]
+        assert env_path.read_text(encoding="utf-8") == original_env
+
+
 class TestNvidiaHealthUnchanged:
     """Ensure the NVIDIA health check still uses the simple '"ok"' check."""
 
@@ -7718,7 +8023,7 @@ class TestModelProfileInActivation:
     def _quiet_runtime(self, monkeypatch):
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
-        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, "", None))
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
@@ -8070,7 +8375,7 @@ class TestVisionProjectorActivation:
     def _quiet_runtime(self, monkeypatch):
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
-        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, "", None))
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
@@ -8219,7 +8524,7 @@ class TestChatTemplateOverrideActivation:
         monkeypatch.setattr(_mod, "_runtime_exchange", _no_runtime)
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
-        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, "", None))
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
@@ -8542,7 +8847,7 @@ class TestAutomaticTemplateRetry:
     def _quiet_runtime(self, monkeypatch):
         monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
-        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, ""))
+        monkeypatch.setattr(_mod, "_llama_runtime_props", lambda _env: (131072, "", None))
         monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
         monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
         monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
@@ -8770,3 +9075,191 @@ class TestAutomaticTemplateRetry:
 
         assert results[0] == results[1]
         assert "templateRetry" not in json.dumps(results[0][1])
+
+
+_NO_MODALITIES = object()
+
+
+class TestPixelVisionReadback:
+    """A Models-page switch declares Pixel's image input from what ODS's own
+    llama-server reports for the activated model (/props modalities.vision)."""
+
+    @pytest.fixture(autouse=True)
+    def _llama_server(self, monkeypatch):
+        # The real readiness proof runs against a scripted llama-server. Its
+        # /props reports vision exactly when the env it was launched with
+        # loads a projector, unless a test sets that model's answer.
+        self.answers: dict = {}
+        self.props_reads: list = []
+
+        def runtime_http(env, path, *, payload=None, timeout=5):
+            gguf = env["GGUF_FILE"]
+            if path == "/v1/models":
+                return _llama_identity_response(gguf)
+            assert path == "/props", path
+            self.props_reads.append(gguf)
+            answer = self.answers.get(gguf, {"vision": bool(env.get("LLAMA_ARG_MMPROJ")), "audio": False})
+            if isinstance(answer, OSError):
+                raise answer
+            props = {"default_generation_settings": {"n_ctx": int(env["CTX_SIZE"])}, "model_path": f"/models/{gguf}"}
+            if answer is not _NO_MODALITIES:
+                props["modalities"] = answer
+            return json.dumps(props)
+
+        monkeypatch.setattr(_mod, "_runtime_http", runtime_http)
+        monkeypatch.setattr(_mod, "_runtime_health", lambda _env: "ok")
+        monkeypatch.setattr(_mod, "_chat_completion_ready", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(_mod, "_runtime_exchange", _no_runtime)
+        monkeypatch.setattr(_mod, "_staged_llama_load_failure_probe", lambda *_args: None)
+        monkeypatch.setattr(_mod, "_failed_llama_server_log_excerpt", lambda *_args: "")
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_container_exists", lambda _container: False)
+        monkeypatch.setattr(_mod, "_container_running", lambda _container: False)
+        monkeypatch.setattr(_mod, "_verify_hermes_dashboard_ready", lambda: None)
+
+    @staticmethod
+    def _install(tmp_path, monkeypatch, *, text_record=None, native_transaction=False):
+        """The fixture's target-model as a vision import, plus a text-only text-model."""
+        install_dir, env_path, *_ = _write_model_activation_fixture(tmp_path)
+        models = install_dir / "data" / "models"
+        (models / "mmproj-vision.gguf").write_bytes(b"projector")
+        (models / "text-model.gguf").write_bytes(b"text")
+        library_path = install_dir / "config" / "model-library.json"
+        library = json.loads(library_path.read_text(encoding="utf-8"))
+        library["models"][0].update({
+            "context_length": 65536,
+            "mmproj_file": "mmproj-vision.gguf",
+            "mmproj_url": "https://example.test/mmproj-vision.gguf",
+            "mmproj_sha256": hashlib.sha256(b"projector").hexdigest(),
+        })
+        library["models"].append({
+            "id": "text-model", "gguf_file": "text-model.gguf", "gguf_url": "https://example.test/text-model.gguf",
+            "gguf_sha256": hashlib.sha256(b"text").hexdigest(), "llm_model_name": "text-model",
+            "context_length": 65536, **(text_record or {}),
+        })
+        library_path.write_text(json.dumps(library), encoding="utf-8")
+        env_path.write_text(
+            env_path.read_text(encoding="utf-8").replace("CTX_SIZE=2048", "CTX_SIZE=65536")
+            + ("PIXEL_OPENWEBUI_KEY=configured\n" if native_transaction else ""),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        return env_path
+
+    @staticmethod
+    def _pixel(monkeypatch):
+        """Pixel's declaration as the shell reconcile path writes and reads it."""
+        declared = {"contract": {"model": "old-model.gguf", "contextLength": 65536, "maxTokens": 8192,
+                                 "reasoning": False, "imageInput": "unknown"}}
+        written: list = []
+
+        def reconcile(model, context_length, **kwargs):
+            written.append(kwargs["image_input"])
+            declared["contract"] = {"model": model, "contextLength": context_length,
+                                    "maxTokens": kwargs["max_tokens"], "reasoning": kwargs["reasoning"],
+                                    "imageInput": kwargs["image_input"]}
+            return "reconciled"
+
+        monkeypatch.setattr(_mod, "_reconcile_ods_managed_pixel_model", reconcile)
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: dict(declared["contract"]))
+        monkeypatch.setattr(_mod, "_managed_pixel_thinking_control", lambda: None)
+        return written
+
+    @staticmethod
+    def _activate(model_id):
+        handler = _ResponseHandler()
+        _mod.AgentHandler._do_model_activate(handler, model_id)
+        return handler
+
+    def test_a_loaded_projector_declares_image_input_supported(self, tmp_path, monkeypatch):
+        env_path = self._install(tmp_path, monkeypatch)
+        written = self._pixel(monkeypatch)
+
+        handler = self._activate("target-model")
+
+        assert handler.response_code == 200, handler.parse_response()
+        assert "LLAMA_ARG_MMPROJ=/models/mmproj-vision.gguf" in env_path.read_text(encoding="utf-8").splitlines()
+        assert written == ["supported"]
+        assert handler.parse_response()["consumers"]["pixel"] == "reconciled"
+
+    @pytest.mark.parametrize("answer", [
+        {"vision": False, "audio": False},  # the launcher ran the weights alone
+        _NO_MODALITIES,                     # a build that reports no modalities
+        {"vision": "true"},
+        {"vision": None},
+    ], ids=["false", "absent", "string", "null"])
+    def test_without_a_vision_report_the_switch_keeps_todays_declaration(self, tmp_path, monkeypatch, answer):
+        self._install(tmp_path, monkeypatch)
+        written = self._pixel(monkeypatch)
+        self.answers["new-model.gguf"] = answer
+
+        handler = self._activate("target-model")
+
+        assert handler.response_code == 200, handler.parse_response()
+        assert written == ["unknown"]
+        assert "new-model.gguf" in self.props_reads
+
+    @pytest.mark.parametrize("text_record,today", [({}, "unknown"), ({"vision": False}, "unsupported")])
+    def test_a_switch_to_a_text_model_restores_its_own_declaration(self, tmp_path, monkeypatch, text_record, today):
+        env_path = self._install(tmp_path, monkeypatch, text_record=text_record)
+        written = self._pixel(monkeypatch)
+
+        assert self._activate("target-model").response_code == 200
+        handler = self._activate("text-model")
+
+        assert handler.response_code == 200, handler.parse_response()
+        assert "LLAMA_ARG_MMPROJ" not in env_path.read_text(encoding="utf-8")
+        # The text model gets exactly what it would have had without the
+        # readback, never the vision model's declaration.
+        assert written == ["supported", today]
+
+    def test_an_unreadable_props_answer_never_declares_support(self, tmp_path, monkeypatch):
+        env_path = self._install(tmp_path, monkeypatch)
+        before = env_path.read_text(encoding="utf-8")
+        written = self._pixel(monkeypatch)
+        self.answers["new-model.gguf"] = OSError("llama-server /props is unreachable (curl exit 7)")
+
+        handler = self._activate("target-model")
+
+        # The same /props answer proves the served context, so the switch
+        # cannot complete, and Pixel's declaration is never written.
+        payload = handler.parse_response()
+        assert handler.response_code >= 500 and payload["rolled_back"] is True, payload
+        assert written == []
+        assert env_path.read_text(encoding="utf-8") == before
+
+    def test_the_native_transaction_applies_each_declaration_before_admission_reopens(self, tmp_path, monkeypatch):
+        self._install(tmp_path, monkeypatch, native_transaction=True)
+        state: dict = {"schemaVersion": 1, "status": "ready", "revision": "a" * 64, "pending": False,
+                       "transactionId": None, "outcome": None,
+                       "contract": {"model": "old-model.gguf", "contextLength": 65536, "maxTokens": 8192,
+                                    "reasoning": False, "imageInput": "unknown"}}
+        events: list = []
+
+        def control(operation, request=None, *, config):
+            if operation == "model-begin":
+                state.update(status="held", pending=True, transactionId=request["transactionId"], outcome=None)
+            elif operation == "model-apply":
+                # Portal admits no request while the transaction holds it.
+                assert state["status"] == "held" and state["pending"] is True
+                events.append(("apply", request["target"]["model"], request["target"]["imageInput"]))
+                state.update(status="applied", contract=request["target"])
+            elif operation == "model-finish":
+                events.append(("finish", request["outcome"], state["contract"]["imageInput"]))
+                state.update(status="completed", pending=False, outcome=request["outcome"])
+            return json.loads(json.dumps(state))
+
+        monkeypatch.setattr(_mod, "_runtime_model_control", control)
+        monkeypatch.setattr(_mod, "_reconcile_ods_managed_pixel_model",
+                            lambda *_a, **_k: pytest.fail("must use the coordinated native apply"))
+
+        assert self._activate("target-model").response_code == 200
+        handler = self._activate("text-model")
+
+        assert handler.response_code == 200, handler.parse_response()
+        assert events == [
+            ("apply", "new-model.gguf", "supported"), ("finish", "commit", "supported"),
+            ("apply", "text-model.gguf", "unknown"), ("finish", "commit", "unknown"),
+        ]
+        assert state["contract"]["imageInput"] == "unknown" and state["pending"] is False

@@ -147,6 +147,9 @@ load_env_from_output_allowlist() {
     done
 }
 
+# Model contracts from scripts/select-model.py and scripts/preserve-active-model.py.
+# Only the preserved contract of the same active model carries the last three
+# keys (its vision projector and fixed chat template; model activation owns them).
 load_model_selector_env_from_output() {
     load_env_from_output_allowlist \
         LLM_MODEL \
@@ -183,5 +186,8 @@ load_model_selector_env_from_output() {
         LLAMA_ARG_SPEC_DRAFT_TYPE_K \
         LLAMA_ARG_SPEC_DRAFT_TYPE_V \
         LLAMA_ARG_SPLIT_MODE \
-        LLAMA_ARG_TENSOR_SPLIT
+        LLAMA_ARG_TENSOR_SPLIT \
+        LLAMA_ARG_MMPROJ \
+        MODEL_CHAT_TEMPLATE_OVERRIDE \
+        LLAMA_ARG_CHAT_TEMPLATE_FILE
 }

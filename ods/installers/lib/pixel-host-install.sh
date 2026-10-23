@@ -116,24 +116,46 @@ PY
 }
 
 ods_pixel_run_as_owner() {
-    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command
-    local -a refresh_groups=()
+    local owner="$1" home="$2" current_groups account_groups argv_json group refresh_command primary_group
+    local -a refresh_groups=() group_order=()
     shift 2
+    # The last group listed becomes the command's primary group (see below).
+    primary_group="${ODS_PIXEL_OWNER_PRIMARY_GROUP:-docker}"
+    case "$primary_group" in
+        docker) group_order=(ods-pixel docker) ;;
+        ods-pixel) group_order=(docker ods-pixel) ;;
+        *)
+            printf '%s\n' 'error: unsupported Pixel owner primary group' >&2
+            return 1
+            ;;
+    esac
     # A redundant sudo -u of the already-current owner can allocate a fresh
     # pseudo-terminal (sudoers use_pty). Pixel's child installers then lose
     # the authenticated parent tty and prompt for sudo mid-install/update.
     if [[ "$(id -un)" == "$owner" ]]; then
         current_groups=" $(id -nG) "
         account_groups=" $(id -nG "$owner") "
-        for group in docker ods-pixel; do
+        for group in "${group_order[@]}"; do
             if [[ "$current_groups" != *" $group "* && "$account_groups" == *" $group "* ]]; then
                 refresh_groups+=("$group")
             fi
         done
         if (( ${#refresh_groups[@]} > 0 )); then
+            # A requested group already present as the primary group can be
+            # lost when sg refreshes another missing group. Reapply it last
+            # even when it did not itself need refreshing.
+            if [[ "$account_groups" == *" $primary_group "* \
+                && "${refresh_groups[${#refresh_groups[@]}-1]}" != "$primary_group" ]]; then
+                refresh_groups+=("$primary_group")
+            fi
             # A first install may have just granted Docker and Pixel socket
-            # access. sg adds only its requested group, so refresh each missing
-            # runtime group without creating another sudo pseudo-terminal.
+            # access. Refresh each missing runtime group with nested sg rather
+            # than another sudo pseudo-terminal. The innermost sg sets the
+            # primary group. shadow's sg also keeps the outer groups, but
+            # util-linux sg (Ubuntu 26.04) only replaces the primary group, so
+            # the innermost one is the only group sure to survive. Owner
+            # commands need Docker there; only the root-owned inspection socket
+            # needs ods-pixel, and its caller asks for it.
             # Caller arguments remain JSON in the environment, never shell code.
             if ! command -v sg >/dev/null 2>&1 \
                 || ! command -v python3 >/dev/null 2>&1; then
@@ -268,6 +290,20 @@ _ods_pixel_assert_managed_state() {
     marker_dir="${marker%/*}"
     pixel_install="$home/.local/share/pixel"
     local gateway_unit="${ODS_PIXEL_GATEWAY_UNIT_PATH:-/etc/systemd/system/openclaw-gateway.service}"
+    local config_dir="${marker_dir%/*}"
+    # The access coordinator trusts the marker only when ~/.config is owned by
+    # the owner and not writable by others (model-marker-unsafe otherwise).
+    # The installer runs as the owner with Ubuntu's default umask 0002, which
+    # would create ~/.config as 0775, and other tools may have done the same.
+    if [[ -e "$config_dir" || -L "$config_dir" ]]; then
+        [[ -d "$config_dir" && ! -L "$config_dir" ]] || return 1
+        [[ "$(stat -c '%u' -- "$config_dir")" == "$(id -u "$owner")" ]] || return 1
+        if (( (8#$(stat -c '%a' -- "$config_dir") & 0022) != 0 )); then
+            ods_pixel_run_as_owner "$owner" "$home" chmod go-w -- "$config_dir" || return 1
+        fi
+    else
+        ods_pixel_run_as_owner "$owner" "$home" install -d -m 0755 -- "$config_dir" || return 1
+    fi
     if [[ -e "$marker_dir" || -L "$marker_dir" ]]; then
         [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || return 1
         [[ "$(stat -c '%u' -- "$marker_dir")" == "$(id -u "$owner")" ]] || return 1
@@ -2155,6 +2191,60 @@ _ods_pixel_install_exec_control() {
         && "$(_ods_pixel_exec_control_stat mode "$root/sudo")" == 500 ]]
 }
 
+# PIXEL_RESPONSE_LANGUAGE=en fixes Pixel's replies, questions and created
+# content to English. The plugin reads this owner file from the OpenClaw state
+# folder at start. A plugin config key would break a rollback to a release
+# whose config schema rejects it; an older plugin simply ignores this file.
+_ods_pixel_install_response_language() {
+    local owner="$1" home="$2" language="${PIXEL_RESPONSE_LANGUAGE:-}"
+    local parent="$home/.openclaw" target="$home/.openclaw/.ods-response-language"
+    case "$language" in
+        ""|en) ;;
+        *) return 1 ;;
+    esac
+    [[ -d "$parent" && ! -L "$parent" \
+        && "$(_ods_pixel_exec_control_stat owner "$parent")" == "$owner" ]] || return 1
+    if [[ -e "$target" || -L "$target" ]]; then
+        [[ -f "$target" && ! -L "$target" \
+            && "$(_ods_pixel_exec_control_stat owner "$target")" == "$owner" ]] || return 1
+    fi
+    if [[ -z "$language" ]]; then
+        ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$target"
+        return
+    fi
+    ods_pixel_run_as_owner "$owner" "$home" sh -c \
+        'umask 077 && printf "en\n" > "$1.new" && mv -f -- "$1.new" "$1"' sh "$target"
+}
+
+# Pixel bootstrap ends with this exact message when its sandbox candidate does
+# not run the pinned Node.js (vendor/pixel/scripts/bootstrap.sh). Print that
+# candidate's tag, so the owner is told which image to remove.
+_ods_pixel_failed_sandbox_proof_candidate() {
+    local log="$1" line
+    line="$(tail -n 5 -- "$log" | grep -F '[pixel] ERROR: Sandbox runtime proof failed: ' | tail -n 1)" || return 1
+    [[ "$line" =~ Sandbox\ runtime\ proof\ failed:\ (pixel-sandbox-candidate:[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}-uid-[1-9][0-9]*)\  ]] \
+        || return 1
+    printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# Portal tells the agent its sandbox has node (pixel-agent prompt-contract.mjs).
+# The bundled Pixel bootstrap proves that before it succeeds; a developer
+# PIXEL_SOURCE_URL checkout older than Pixel 4.3.32 builds a sandbox without
+# node and has no such proof. Require the candidate bootstrap just prepared to
+# carry the Node.js label, as macOS preparation requires the pinned runtime.
+_ods_pixel_sandbox_candidate_has_node() {
+    local owner="$1" home="$2" pixel_root="$3" version uid label
+    [[ -f "$pixel_root/VERSION" && ! -L "$pixel_root/VERSION" ]] || return 1
+    version="$(ods_pixel_run_as_owner "$owner" "$home" sed -n '1p' "$pixel_root/VERSION")" || return 1
+    [[ "$version" =~ ^[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]] || return 1
+    uid="$(id -u "$owner")" || return 1
+    [[ "$uid" =~ ^[1-9][0-9]*$ ]] || return 1
+    label="$(ods_pixel_run_as_owner "$owner" "$home" docker image inspect \
+        --format '{{index .Config.Labels "org.osmantic.pixel.sandbox-node"}}' \
+        "pixel-sandbox-candidate:$version-uid-$uid")" || return 1
+    [[ "$label" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$ ]]
+}
+
 _ods_pixel_recreate_agent_sandbox() {
     local owner="$1" home="$2" openclaw_bin="$3" remaining
     [[ "$openclaw_bin" == /* && -x "$openclaw_bin" ]] || return 1
@@ -3374,8 +3464,36 @@ PY
     printf '%s\n' "$retired_release"
 }
 
+_ods_pixel_ensure_runtime_group_tools() {
+    # Fresh Ubuntu 26.04 no longer ships sg in login. Install the qualified
+    # distro's package before adding groups that this shell must refresh.
+    local -a packages=()
+    local sg_package
+    if command -v sg >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+    _ods_pixel_parse_os_release || return 1
+    case "$_ODS_PIXEL_OS_ID:$_ODS_PIXEL_OS_VERSION_ID" in
+        ubuntu:26.04) sg_package=util-linux-extra ;;
+        ubuntu:24.04|debian:12) sg_package=login ;;
+        *) ai_bad "Pixel runtime group tools require a qualified Linux distribution."; return 1 ;;
+    esac
+    command -v sg >/dev/null 2>&1 || packages+=("$sg_package")
+    command -v python3 >/dev/null 2>&1 || packages+=(python3)
+    if [[ "${PKG_MANAGER:-}" != apt ]] || ! declare -f pkg_install >/dev/null 2>&1; then
+        ai_bad "Pixel runtime group tools are missing. Install: ${packages[*]}"
+        return 1
+    fi
+    pkg_install "${packages[@]}" || return 1
+    if ! command -v sg >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        ai_bad "Pixel runtime group tools are still unavailable after package installation."
+        return 1
+    fi
+}
+
 ods_pixel_prepare_runtime_identity() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    [[ "${DRY_RUN:-false}" != true ]] || return 0
     ods_sudo_available || {
         ai_bad "Pixel requires privileged systemd and group setup on this host."
         return 1
@@ -3383,6 +3501,10 @@ ods_pixel_prepare_runtime_identity() {
 
     local owner gid
     owner="$(ods_pixel_install_owner)" || return 1
+    if ! _ods_pixel_ensure_runtime_group_tools; then
+        ai_bad "Could not prepare Pixel's runtime group tools before identity setup."
+        return 1
+    fi
     if ! getent group ods-pixel >/dev/null 2>&1; then
         ods_sudo groupadd --system ods-pixel
     fi
@@ -5070,7 +5192,9 @@ _ods_pixel_install_preview_inspection() {
     ods_sudo systemctl is-active --quiet pixel-preview-inspection.service || return 1
     # Type=simple becomes active before Python imports finish and the broker
     # binds its socket. Slow WSL startup can exceed the former five-second wait.
-    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" wait-owner-socket \
+    # The socket directory is root:ods-pixel, so this probe needs that group.
+    ODS_PIXEL_OWNER_PRIMARY_GROUP=ods-pixel \
+        ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" wait-owner-socket \
         || return 1
     ods_sudo /usr/bin/python3 -B /usr/local/libexec/ods-pixel-inspection/preview_inspection.py health \
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
@@ -5233,7 +5357,7 @@ ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
     local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
-    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false
+    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false stale_sandbox=""
     # The access coordinator's proof ceremony inspects Pixel Edge's durable
     # transition gate. Start the edge before the host ingress is installed;
     # its transition endpoint is independent of upstream chat readiness, and
@@ -5345,6 +5469,15 @@ ods_pixel_install_default_agent() {
         ai_bad "Could not install Pixel's owner-private cancellable execution control."
         return 1
     fi
+    if ! _ods_pixel_install_response_language "$owner" "$home"; then
+        case "${PIXEL_RESPONSE_LANGUAGE:-}" in
+            ""|en) ai_bad "Could not apply PIXEL_RESPONSE_LANGUAGE: $home/.openclaw/.ods-response-language must be a regular file owned by $owner, not a link, in a $home/.openclaw folder owned by $owner. Remove that file, then rerun the installer." ;;
+            *) ai_bad "PIXEL_RESPONSE_LANGUAGE=${PIXEL_RESPONSE_LANGUAGE} in .env is not supported. Set it to en, or remove the line to match the owner's language, then rerun the installer." ;;
+        esac
+        # Phase 11 stops with exit 1 here, which the installer's ERR trap does not see.
+        ai_bad "Need help? Ask on the ODS Discord: ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        return 1
+    fi
     gateway_alias="$(_ods_pixel_gateway_model_alias)" || {
         ai_bad "Pixel received an unsupported ODS model Switchboard mode."
         return 1
@@ -5422,7 +5555,19 @@ ods_pixel_install_default_agent() {
         initial_access_reproved=true
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
-        ai_bad "Pixel bootstrap failed. See $pixel_log for the exact Pixel error."
+        # Phase 11 can stop here without reaching the installer's help trap,
+        # so these messages carry the cause, recovery and help link themselves.
+        # A failed check of an existing candidate is not a download problem.
+        stale_sandbox="$(_ods_pixel_failed_sandbox_proof_candidate "$pixel_log")" || stale_sandbox=""
+        if [[ -n "$stale_sandbox" ]]; then
+            ai_bad "Pixel stopped before applying its new release: the agent sandbox image $stale_sandbox did not pass the offline check for the pinned Node.js runtime without npm, npx or corepack. The image holds no projects or settings. Remove it with docker image rm $stale_sandbox, then run the ODS install or update again so Pixel rebuilds it. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        else
+            ai_bad "Pixel could not finish preparing its runtime and agent sandbox. It downloads pinned packages, including Debian packages from deb.debian.org and the sandbox's Node.js runtime from nodejs.org. Check this machine's internet access and free disk space, then run the ODS install or update again. The exact Pixel error is in $pixel_log. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
+        fi
+        return 1
+    fi
+    if ! _ods_pixel_sandbox_candidate_has_node "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
+        ai_bad "The selected Pixel source builds an agent sandbox without the Node.js runtime that Portal's agent is told it has, so ODS stopped before applying it. Use the Pixel source bundled with ODS (leave PIXEL_SOURCE_URL and PIXEL_SOURCE_REF unset), then run the ODS install or update again. Need help? ${ODS_HELP_DISCORD_URL:-https://discord.gg/4ntNp9MAwC}"
         return 1
     fi
     openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")"

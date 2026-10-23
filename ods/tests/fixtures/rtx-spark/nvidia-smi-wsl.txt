@@ -1,0 +1,2 @@
+name, pci.device_id, compute_cap, memory.total [MiB], driver_version
+NVIDIA RTX Spark N1X (6144-core Blackwell RTX GPU), 0x2E0310DE, 12.1, 98240 MiB, 616.62

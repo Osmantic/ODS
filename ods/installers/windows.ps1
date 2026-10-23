@@ -266,7 +266,7 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
         # a new installation does not inherit the stop its uninstall recorded.
         if ($DockerDesktopPath -or (Test-Path -LiteralPath (Join-Path $lifetimeIdentity.directory 'startup-config.json'))) {
             Enable-ODSWslStartup $lifetimeIdentity $DockerDesktopPath -NewInstallation:$newInstallation
-            Write-Host "Durable lifecycle: powershell -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+            Write-Host "Durable lifecycle: powershell -NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
         } else {
             Write-Warning 'Use the Windows Portal setup entry point to enable verified sign-in recovery.'
         }
@@ -274,10 +274,19 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
     if ($installerExitCode -eq 0 -and $OpenPortal) {
         $portalUrl = @($verifyOutput | ForEach-Object { if ($_ -match '^ODS_PORTAL_URL=(http://localhost:[0-9]{1,5}/pixel)$') { $Matches[1] } } | Select-Object -Last 1)
         if ($portalUrl.Count -eq 1) {
-            $desktopFolder = [Environment]::GetFolderPath('Desktop')
-            if ($desktopFolder) {
-                Set-Content -LiteralPath (Join-Path $desktopFolder 'ODS Portal.url') -Value @('[InternetShortcut]', "URL=$($portalUrl[0])") -Encoding ASCII
-                Write-Host "Created the desktop shortcut 'ODS Portal'."
+            # The ODS app (an Edge app window with the ODS icon), or the
+            # 'ODS Portal' web link when Edge or the shortcut is unavailable.
+            . (Join-Path $PSScriptRoot 'windows/lib/app-shortcut.ps1')
+            $appIcon = Join-Path (Split-Path -Parent $PSScriptRoot) 'extensions/services/dashboard/public/osmantic-os.ico'
+            $shortcuts = @(Publish-ODSPortalShortcut -PortalUrl $portalUrl[0] -IconSource $appIcon)
+            if ($shortcuts.Count -and $lifetimeRequired) {
+                # Uninstall (wsl-lifecycle disable-startup -RetireRelay) removes
+                # exactly these. Like the shortcut itself, never fail the install.
+                try {
+                    Write-ODSWslJson (Join-Path $lifetimeIdentity.directory 'shortcuts.json') @{ shortcuts = @(Get-ODSPortalShortcutRecord $shortcuts) }
+                } catch {
+                    Write-Warning "Uninstall will not remove the ODS shortcuts: their record was not saved: $($_.Exception.Message)"
+                }
             }
             Write-Host "Opening Portal: $($portalUrl[0])"
             Start-Process $portalUrl[0]

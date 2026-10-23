@@ -17,6 +17,8 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root_dir="$(cd "$script_dir/.." && pwd)"
 macos_cli="$root_dir/installers/macos/ods-macos.sh"
+# Resolve the real executable before fixture PATH changes (macOS uses /bin).
+sleep_bin="$(type -P sleep)"
 tmp_dir="$(mktemp -d)"
 install_dir="$tmp_dir/install"
 bin_dir="$tmp_dir/bin"
@@ -25,6 +27,8 @@ docker_log="$tmp_dir/docker.log"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 mkdir -p "$install_dir/data/models" "$install_dir/scripts" "$install_dir/bin" "$bin_dir"
+install_dir="$(cd "$install_dir" && pwd -P)"
+python3 "$script_dir/fixtures/macos-private-store-cli.py" "$install_dir"
 # This fixture checks resume dispatch, not launchd or native inference. The CLI
 # now delegates both start and stop through its installed service helper.
 mkdir -p "$install_dir/installers/macos/lib"
@@ -133,7 +137,7 @@ run_cli() {
         }
     for _ in {1..20}; do
         [[ -s "$resume_log" ]] && return 0
-        /usr/bin/sleep 0.1
+        "$sleep_bin" 0.1
     done
     cat "$tmp_dir/${command}.out" >&2
     cat "$install_dir/logs/model-upgrade.log" >&2 2>/dev/null || true

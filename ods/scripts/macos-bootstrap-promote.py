@@ -3,7 +3,9 @@
 
 Reads private environment, verifies catalog pair, performs read-only
 preflight, POSTs a single activation request, then verifies persisted
-state. Never writes files, never retries POST, never falls back.
+state. Never writes files, never falls back, and sends the POST again only
+after the host agent refused it outright because another model operation
+held the model lifecycle (409 model_lifecycle_busy), which starts nothing.
 """
 import argparse
 import importlib.util
@@ -37,6 +39,11 @@ MAX_RESPONSE_BYTES = 256 * 1024
 ACTIVATION_TIMEOUT = 600.0
 PREFLIGHT_TIMEOUT = 30.0
 PREFLIGHT_WAIT_SECONDS = 180.0
+# On a Mac with native Pixel the host agent re-proves Pixel access every 30 s,
+# holding the model lifecycle while its helper runs (up to 360 s). Wait out
+# such a hold instead of treating the refusal as an ambiguous activation.
+LIFECYCLE_BUSY_WAIT_SECONDS = 600.0
+LIFECYCLE_BUSY_RETRY_SECONDS = 5.0
 MAX_GGUF_BASENAME = 255
 
 
@@ -46,6 +53,10 @@ class AmbiguousActivation(Exception):
 
 class PreflightFailure(Exception):
     pass
+
+
+class LifecycleBusy(PreflightFailure):
+    """The host agent refused before starting: another operation owns the model lifecycle."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -172,11 +183,23 @@ def _request(url, *, method, headers, body, timeout):
                 raise PreflightFailure('response-too-large')
             return json.loads(payload.decode('utf-8'))
     except urllib.error.HTTPError as exc:
+        if exc.code == 409 and _lifecycle_busy_refusal(exc):
+            raise LifecycleBusy('model-lifecycle-busy')
         raise PreflightFailure(f'http-{exc.code}')
     except (urllib.error.URLError, OSError):
         raise PreflightFailure('transport-error')
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise PreflightFailure('bad-json')
+
+
+def _lifecycle_busy_refusal(exc):
+    """True for the host agent's 409 code model_lifecycle_busy (bin/ods-host-agent.py)."""
+    try:
+        payload = exc.read(MAX_RESPONSE_BYTES + 1)
+        refusal = json.loads(payload.decode('utf-8')) if len(payload) <= MAX_RESPONSE_BYTES else None
+    except (OSError, ValueError):
+        return False
+    return isinstance(refusal, dict) and refusal.get('code') == 'model_lifecycle_busy'
 
 
 def _preflight(base, auth, transport):
@@ -217,11 +240,19 @@ def _post_activation(base, auth, model_id, context, transport):
     body = json.dumps({'model_id': model_id, 'context_length': context}).encode('utf-8')
     headers = {'Authorization': f'Bearer {auth}', 'Content-Type': 'application/json',
                'Accept': 'application/json'}
-    try:
-        return transport(f'{base}/v1/model/activate', method='POST',
-                        headers=headers, body=body, timeout=ACTIVATION_TIMEOUT)
-    except (PreflightFailure, OSError, ValueError) as exc:
-        raise AmbiguousActivation('activation-result-unconfirmed') from exc
+    deadline = time.monotonic() + LIFECYCLE_BUSY_WAIT_SECONDS
+    while True:
+        try:
+            return transport(f'{base}/v1/model/activate', method='POST',
+                            headers=headers, body=body, timeout=ACTIVATION_TIMEOUT)
+        except LifecycleBusy as exc:
+            # Refused before anything started, unlike every other failure here.
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise PreflightFailure('model-lifecycle-busy') from exc
+            time.sleep(min(LIFECYCLE_BUSY_RETRY_SECONDS, remaining))
+        except (PreflightFailure, OSError, ValueError) as exc:
+            raise AmbiguousActivation('activation-result-unconfirmed') from exc
 
 
 def _verify_activation(response, model_id, full_gguf, full_llm, context):
@@ -353,8 +384,10 @@ def run(install_dir, full_gguf, full_llm, full_context, *, env_path=None,
     base = f'http://127.0.0.1:{port}'
     transport = request if request is not None else _request
     _wait_for_preflight(base, auth, transport)
+    # A lifecycle that stays busy is a definite refusal (nothing was activated),
+    # not an unconfirmed readback, so it is reported as a preflight failure.
+    response = _post_activation(base, auth, model_id, context, transport)
     try:
-        response = _post_activation(base, auth, model_id, context, transport)
         _verify_activation(response, model_id, full_gguf, full_llm, context)
         _verify_persisted(canonical_env, full_gguf, full_llm, context)
         _verify_runtime(base, auth, full_gguf, context, install, transport)
@@ -382,6 +415,10 @@ def main(argv=None):
             print('An existing model switch needs recovery. This upgrade did not '
                   'start another activation. Preserve data/pixel-model-transaction.json; '
                   'see docs/MACOS-MODEL-PROMOTION.md before retrying.', file=sys.stderr)
+        elif str(exc) == 'model-lifecycle-busy':
+            print('Another model operation kept ODS busy, so the full model was not '
+                  'activated. It is downloaded: choose it on the Models page to switch.',
+                  file=sys.stderr)
         return 1
     except (ValueError, OSError):
         print('validation_failure: invalid-installation-state', file=sys.stderr)

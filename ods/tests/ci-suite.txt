@@ -3,6 +3,8 @@
 # .mjs with node --test, a .py file with test functions with pytest, other .py with python3.
 # Add new tests here, to an existing workflow step, or to ci-not-run.txt with a reason;
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
+
+tests/test-installer-dry-run-jq.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
 tests/contracts/test-host-native-llm-cpu-fallback.sh
@@ -17,6 +19,7 @@ tests/contracts/test-remote-provider-cli.py
 tests/contracts/test-remote-provider-ssh-tunnel-service.py
 tests/contracts/test-windows-hermes-config-patching.sh
 tests/contracts/test-windows-llm-model-readiness.sh
+tests/contracts/test-whisper-model-ttl.py
 tests/contracts/test-windows-strix-tier-map.sh
 tests/contracts/test-wsl-lifecycle.sh
 tests/pixel_settings/test_pixel_settings_store.py
@@ -31,6 +34,7 @@ tests/test-ape-data-ownership.sh
 tests/test-backup-delete-status.sh
 tests/test-backup-macos-appledouble.sh
 tests/test-backup-restore-cli.sh
+tests/test-backup-verify-compressed.py
 tests/test-bash32-guards.sh
 tests/test_dashboard_published_readiness.py
 tests/test-bind-address-sweep.sh
@@ -45,19 +49,23 @@ tests/test-cli-preset-restore-user-extensions.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
 tests/test-cli-status-gpu-backend.sh
+tests/test-cli-status-json-state.sh
 tests/test-cli-status-optional-webui.sh
 tests/test-cli-stt-env.py
 tests/test-cli-update-verification.sh
 tests/test-comfyui-user-dir-persisted.sh
+tests/test-compose-failure-evidence.sh
 tests/test-compose-image-discovery.sh
 tests/test-custom-menu-agent-flags.sh
 tests/test-dashboard-approval-terminal-proxy.py
+tests/test-dashboard-extensions-lock.sh
 tests/test-dashboard-image-upload.py
 tests/test-disk-check-install-dir.sh
 tests/test-disk-space-preflight.sh
 tests/test-docker-image-pull-retry.sh
 tests/test-doctor-command.sh
 tests/test-doctor-extension-diagnostics.sh
+tests/test-doctor-spark-cuda-arch.sh
 tests/test-embeddings-prefetch-service-cache.sh
 tests/test-enable-gpu-validation.sh
 tests/test-env-example-inline-comments.sh
@@ -71,7 +79,9 @@ tests/test-fleet-multi-distro-keep-going.sh
 tests/test-gpu-apple.sh
 tests/test-gpu-layer-contract.py
 tests/test-hardware-compatibility.sh
+tests/test-health-check-core-services.sh
 tests/test-health-check-json-output.sh
+tests/test-health-check-llm-port.sh
 tests/test-hermes-context-floor.sh
 tests/test-hermes-dashboard-session-token.py
 tests/test-hermes-data-ownership.sh
@@ -91,9 +101,12 @@ tests/test-linux-opencode-path.sh
 tests/test-linux-whisper-cuda-gating.sh
 tests/test-litellm-amd-auth-enforced.sh
 tests/test-litellm-config-selection.sh
+tests/test-llama-image-compute-cap.sh
 tests/test-llama-memory-budget.sh
 tests/test-llama-mtp-args.sh
 tests/test-llm-cold-storage-arithmetic.py
+tests/test_cold_storage_initial_directory.py
+tests/test-cold-storage-recovery.py
 tests/test-local-app-auth-defaults.sh
 tests/test-locale-safe-cpu-formatting.sh
 tests/test-macos-agent-python.sh
@@ -138,6 +151,7 @@ tests/test-ods-doctor-install-diagnoses.sh
 tests/test-help-links.sh
 tests/test-macos-api-mode-flags.sh
 tests/test-install-failure-message.sh
+tests/test-release-gate-syntax.sh
 tests/test-remote-provider-cli-output.sh
 tests/test-doctor-fresh-report.sh
 tests/test-model-recover-cli.sh
@@ -156,7 +170,9 @@ tests/test-opencode-runtime.sh
 tests/test-parallel-health-checks.sh
 tests/test-path-utils-cross-platform.py
 tests/test-perplexica-embedding-defaults.py
+tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
+tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
@@ -172,6 +188,7 @@ tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
 tests/test-preset-host-only-and-secrets.sh
 tests/test-preset-import-export.sh
+tests/test-preset-import-transaction.sh
 tests/test-preview-inspection.mjs
 tests/test-resolve-compose-nondict-service.sh
 tests/test-resolve-compose-symlinked-install.sh
@@ -241,6 +258,7 @@ tests/test_persona_running_containers.py
 tests/test_pixel_access_http.py
 tests/test_pixel_access_reconcile.py
 tests/test_pixel_activity.py
+tests/test_pixel_example_projects.py
 tests/test_pixel_exec_control_install.py
 tests/test_pixel_extension_catalog.py
 tests/test_pixel_onboarding_upgrade.py
@@ -264,6 +282,9 @@ tests/test_pixel_source_upgrade_diagnostics.py
 tests/test_pixel_verify_lifecycle.py
 tests/test_portal_identity.py
 tests/test_preview_inspection_delayed_entrance.py
+tests/test_preview_inspection_paint.py
+tests/test_preview_inspection_press.py
+tests/test_preview_inspection_screenshot.py
 tests/test_remote_completion_telemetry.py
 tests/test_todo_fixes.py
 tests/test_validate_compose_stack_spaces.py
@@ -277,3 +298,8 @@ tests/test-ods-cli-update-backup-required.sh
 tests/test-update-backup-publication.py
 tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
+tests/test_uninstall_validate_install_dir.py
+tests/test-preset-completion.sh
+tests/test-cli-chat-error-exit.py
+tests/test-cli-update-model-lifecycle.sh
+tests/test-summary-quick-commands.sh

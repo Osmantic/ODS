@@ -161,13 +161,15 @@ export function boundVisibilityInspection(params, result, preview) {
 
 // A read-only inspection may preserve existing interaction evidence. It cannot
 // establish that evidence, and a click plan without a transition is not static.
+// assert-painted only observes, so a paint-only plan is read-only.
 export function boundStaticPreviewInspection(params, result, preview) {
   return boundInspection(params, result, preview,
-    request => request.steps.every(step => !['click', 'fill', 'select-option', 'download'].includes(step.action)));
+    request => request.steps.every(step => !['click', 'fill', 'select-option', 'download', 'press'].includes(step.action)));
 }
 
-const BEHAVIOR_ACTIONS = ['fill', 'click', 'select-option'];
-const BEHAVIOR_ASSERTIONS = ['assert-text', 'assert-visible', 'assert-hidden'];
+const BEHAVIOR_ACTIONS = ['fill', 'click', 'select-option', 'press'];
+// assert-painted is a postcondition too: press, then a painted canvas.
+const BEHAVIOR_ASSERTIONS = ['assert-text', 'assert-visible', 'assert-hidden', 'assert-painted'];
 
 // Remember the first bounded action plan, even if its locator schema was bad.
 // This is the model's attempted check, not a natural-language interpretation
@@ -190,6 +192,8 @@ export function boundPreviewBehavior(params, result, preview, attempted) {
     if (!request.steps.some(step => BEHAVIOR_ACTIONS.includes(step.action))) return false;
     // Fill/select can prepare a click, but each click needs a postcondition
     // before another action. A value change without a click needs one too.
+    // Key presses may chain (Space to start, then ArrowRight); the last
+    // action before the end still needs a postcondition.
     let pending;
     for (const step of request.steps) {
       if (BEHAVIOR_ASSERTIONS.includes(step.action)) pending = undefined;
@@ -208,7 +212,7 @@ export function previewBehaviorInstruction(preview, pageErrors) {
     `Read the actual controls and affected elements from the source; do not replace the behavior checks with a heading-only assertion. ` +
     `Call ${PREVIEW_INSPECTION_TOOL} with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and valid steps. ` +
     'Use {selector:"#actual-id"} or {role:"button",name:"Exact accessible name",exact:true}. Every assert-text needs both locator and expectedText. ' +
-    'After filling or selecting, click the relevant control and assert its visible result before another action. Each click needs a postcondition; a value change without a click needs one too. ' +
+    'After filling or selecting, click the relevant control and assert its visible result before another action. Each click needs a postcondition; a value change without a click needs one too. Key presses (press) may run in a row, but the last one needs a postcondition. ' +
     'Correct mistaken locators or action types from the source and tool schema; use click for a checkbox, and select-option only for a native select. Do not preserve a mistaken action just because it appeared in an earlier plan. Keep each plan within the tool limits, with at least one interaction and its postcondition. If a page check fails, first compare the plan\'s actions and expectation with the owner\'s request and the source. Correct a mistaken plan on the same published snapshot; do not change the site to satisfy a mistaken expectation. When the intended actions and expected outcome are right, repair the page, republish and rerun the intended checks within the existing turn budget. ' +
     'If unfinished or unavailable, keep the preview and report these checks as unverified. A pass covers only the submitted checks, not all requested behavior.';
 }

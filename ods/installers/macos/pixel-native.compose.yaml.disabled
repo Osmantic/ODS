@@ -68,6 +68,59 @@ services:
     volumes:
       - pixel-native-runtime:/runtime
 
+  # Provisioning runs explicitly through the owner-side native installer.
+  # It validates the private host file before sending bytes over stdin.
+  pixel-native-config-init:
+    profiles: [native-config-maintenance]
+    image: ${PIXEL_NATIVE_INGRESS_IMAGE:?Set the qualified Pixel ingress Node image}
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    pids_limit: 32
+    cpus: 0.5
+    mem_limit: 128m
+    memswap_limit: 128m
+    entrypoint: [node, -e]
+    command:
+      - >-
+        const fs=require('fs'),uid=Number(process.argv[1]),gid=Number(process.argv[2]),s=fs.lstatSync('/config');
+        if(!Number.isSafeInteger(uid)||uid<1||!Number.isSafeInteger(gid)||gid<0||!s.isDirectory()||s.isSymbolicLink())throw Error('directory');
+        if(s.uid===0){fs.chmodSync('/config',448);fs.chownSync('/config',uid,gid);}
+        const a=fs.lstatSync('/config');if(a.uid!==uid||a.gid!==gid||(a.mode&511)!==448)throw Error('owner');
+      - "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}"
+      - "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
+    volumes:
+      - pixel-native-config:/config
+
+  pixel-native-config-write:
+    profiles: [native-config-maintenance]
+    image: ${PIXEL_NATIVE_INGRESS_IMAGE:?Set the qualified Pixel ingress Node image}
+    user: "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}:${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    pids_limit: 32
+    cpus: 0.5
+    mem_limit: 128m
+    memswap_limit: 128m
+    entrypoint: [node, /source/native_ingress_config.mjs]
+    labels:
+      org.osmantic.ods.native-config-source: ${PIXEL_NATIVE_CONFIG_PATH:?Set PIXEL_NATIVE_CONFIG_PATH}
+    volumes:
+      - pixel-native-config:/config
+      - type: bind
+        source: ./extensions/services/pixel-agent/host
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+
   pixel-native-ingress:
     image: ${PIXEL_NATIVE_INGRESS_IMAGE:?Set the qualified Pixel ingress Node image}
     user: "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}:${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
@@ -84,7 +137,7 @@ services:
     environment:
       PIXEL_GATEWAY_TRANSPORT: docker-desktop-host
       PIXEL_GATEWAY_PORT: "${PIXEL_NATIVE_GATEWAY_PORT:-18789}"
-      PIXEL_GATEWAY_TOKEN_FILE: /run/gateway.json
+      PIXEL_GATEWAY_TOKEN_FILE: /run/pixel-config/${PIXEL_NATIVE_CONFIG_SHA256:-unprovisioned}.json
       PIXEL_INGRESS_SOCKET: /runtime/pixel-ingress.sock
       PIXEL_INGRESS_GID: "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
       PIXEL_STATUS_FILE: /runtime/status.json
@@ -97,12 +150,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - type: bind
-        source: ${PIXEL_NATIVE_CONFIG_PATH:?Set PIXEL_NATIVE_CONFIG_PATH}
-        target: /run/gateway.json
-        read_only: true
-        bind:
-          create_host_path: false
+      - pixel-native-config:/run/pixel-config:ro
     healthcheck:
       test: [CMD, node, -e, "require('http').get({socketPath:'/runtime/pixel-ingress.sock',path:'/health'},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
       interval: 30s
@@ -136,3 +184,4 @@ volumes:
   pixel-native-preview-runtime:
   pixel-native-previews:
   pixel-native-runtime:
+  pixel-native-config:

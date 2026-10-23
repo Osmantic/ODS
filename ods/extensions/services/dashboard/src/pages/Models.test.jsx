@@ -251,6 +251,38 @@ test.each([true, false])('only managed runtimes expose unload/resume and hide ad
   if (!running) expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
 })
 
+test('a stopped runtime shows the launcher error, and a memory refusal turns Resume into Start anyway', () => {
+  const refusal = 'The model was not started: Windows can lend it only 1.0 GiB right now (memory limit 30.5 GiB, 29.5 GiB in use) and it needs about 25.8 GiB.'
+  const state = baseState({
+    models: [model({ status: 'downloaded' })],
+    odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,
+    modelManagement: { managed: true, canActivate: false, canUnload: true, running: false, runtimeError: refusal, startRefusal: 'memory_refused' },
+    canActivateModels: false,
+    stopRuntime: vi.fn(), startRuntime: vi.fn(),
+  })
+  useModelsMock.mockReturnValue(state)
+  const view = renderModels()
+  const controls = screen.getByRole('region', { name: 'Model runtime controls' })
+  expect(within(controls).getByRole('status')).toHaveTextContent(refusal)
+  fireEvent.click(within(controls).getByRole('button', { name: 'Start anyway' }))
+  expect(state.startRuntime).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('button', { name: 'Resume model' })).toBeNull()
+
+  // An AMD launch failure: its text, and the ordinary Resume.
+  useModelsMock.mockReturnValue({ ...state,
+    modelManagement: { ...state.modelManagement, runtimeError: 'llama-server startup failed: Port 18080 is already occupied.', startRefusal: '' } })
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(within(screen.getByRole('region', { name: 'Model runtime controls' })).getByRole('status')).toHaveTextContent('llama-server startup failed: Port 18080 is already occupied.')
+  expect(screen.getByRole('button', { name: 'Resume model' })).toBeEnabled()
+
+  // A running model shows no launcher error.
+  useModelsMock.mockReturnValue({ ...state, canActivateModels: true,
+    modelManagement: { managed: true, canActivate: true, canUnload: true, running: true, runtimeError: '', startRefusal: '' } })
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(within(screen.getByRole('region', { name: 'Model runtime controls' })).queryByRole('status')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Unload model' })).toBeEnabled()
+})
+
 test.each([false, true])('unavailable management proof never offers adoption and recovers to managed controls (compact=%s)', compact => {
   const state = baseState({
     odsMode: 'local', configuredMode: 'local', llmBackend: 'llama-server', hostRuntime: true,

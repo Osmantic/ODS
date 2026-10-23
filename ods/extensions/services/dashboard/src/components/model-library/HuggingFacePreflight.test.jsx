@@ -127,6 +127,110 @@ test('an artifact without room on the model store is not importable', async () =
   expect(dialog.getByRole('button', {name: 'Import', exact: true})).toBeEnabled()
 })
 
+test('explains why the native disk reserve blocks even a small artifact', async () => {
+  // Recorded native store: 37.32 GB free, but its required reserve is 51.13 GB.
+  detailsBody = {...detailsBody, artifacts: [{...artifacts[0], sizeBytes: 627000000}, artifacts[1]]}
+  preflightBody = preflight({
+    storage: {freeBytes: 37320003584, totalBytes: 1022580748288, marginBytes: 51129037414},
+    artifacts: {q4: {...okCheck, disk: 'insufficient'}, q8: {...okCheck, disk: 'insufficient'}},
+  })
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent('34.76 GiB available')
+  expect(storage).toHaveTextContent('ODS must keep 47.62 GiB free after the download')
+  expect(storage).toHaveTextContent('reopen this repository to check again')
+  expect(dialog.getAllByText(/ODS must keep/)).toHaveLength(1)
+  expect(dialog.getByText('Free 13.45 GiB more to download.')).toBeVisible()
+  for (const button of dialog.getAllByRole('button', {name: 'Not enough disk'})) expect(button).toBeDisabled()
+  expect(importBodies()).toEqual([])
+})
+
+test('the disk shortfall follows the vision choice without changing its import gate', async () => {
+  detailsBody = {
+    ...detailsBody,
+    projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8}],
+    defaultProjectorId: 'p1',
+  }
+  preflightBody = preflight({
+    storage: {freeBytes: 6.4e9, marginBytes: 2e9},
+    artifacts: {
+      q4: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'ok'},
+      q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'insufficient'},
+    },
+  })
+  const dialog = await open()
+  expect(dialog.getByText('Free 476.84 MiB more to download.')).toBeVisible()
+  expect(dialog.getByText('Free 4.20 GiB more to download.')).toBeVisible()
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(2)
+  await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  expect(dialog.queryByText('Free 476.84 MiB more to download.')).toBeNull()
+  expect(dialog.queryByText('Free 4.20 GiB more to download.')).toBeNull()
+  expect(dialog.getByText('Free 3.36 GiB more to download.')).toBeVisible()
+  expect(dialog.getByRole('button', {name: 'Not enough disk'})).toBeDisabled()
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true})) })
+  expect(importBodies()).toEqual([{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q4', includeVision: false}])
+})
+
+test.each([
+  null,
+  {freeBytes: null, marginBytes: 5e10},
+  {freeBytes: 1e11},
+  {freeBytes: '37320003584', marginBytes: 51129037414},
+  {freeBytes: 1e11, marginBytes: -1},
+])('unavailable disk data never invents a reserve or shortfall: %j', async storage => {
+  preflightBody = preflight({storage, artifacts: {q4: {...okCheck, disk: 'insufficient'}, q8: okCheck}})
+  const dialog = await open()
+  expect(dialog.getByRole('region', {name: 'Model storage'})).toHaveTextContent('Disk space details are unavailable')
+  expect(dialog.queryByText(/ODS must keep/)).toBeNull()
+  expect(dialog.queryByText(/^Free .* more to download/)).toBeNull()
+  expect(dialog.getByRole('button', {name: 'Not enough disk'})).toBeDisabled()
+  expect(dialog.getByRole('button', {name: 'Import', exact: true})).toBeEnabled()
+  expect(importBodies()).toEqual([])
+})
+
+test('on WSL the storage line names the Windows drive whose free space it shows', async () => {
+  // Fleet laptop: WSL's virtual disk offered 836.21 GiB while its 1 TB drive C: had 68.8 GB free.
+  preflightBody = preflight({storage: {
+    freeBytes: 68800000000, totalBytes: 1022580748288, marginBytes: 51129037414,
+    windowsDrive: 'C:', windowsDriveChecked: true,
+  }})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent(
+    'Disk space: 64.07 GiB available on the Windows drive C:. ODS must keep 47.62 GiB free after the download.')
+  expect(storage).not.toHaveTextContent('could not check')
+})
+
+test('on WSL a Windows drive that could not be checked is said plainly', async () => {
+  preflightBody = preflight({storage: {
+    freeBytes: 897873650647, totalBytes: 1081054005821, marginBytes: 54052700291,
+    windowsDrive: null, windowsDriveChecked: false,
+  }})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent('Disk space: 836.21 GiB available. ODS must keep 50.34 GiB free after the download.')
+  expect(storage).toHaveTextContent(
+    'ODS could not check the Windows drive that stores WSL, so this is the space inside WSL only.')
+  expect(dialog.getAllByText(/ODS must keep/)).toHaveLength(1)
+})
+
+test('a malformed drive name is never shown', async () => {
+  preflightBody = preflight({storage: {freeBytes: 1e11, marginBytes: 5e10, windowsDrive: 'C:\\x', windowsDriveChecked: true}})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent('Disk space: 93.13 GiB available. ODS must keep')
+  expect(storage).not.toHaveTextContent('Windows drive')
+})
+
+test('a measured zero reserve is shown without inventing the host minimum', async () => {
+  preflightBody = preflight({storage: {freeBytes: 1e11, marginBytes: 0}})
+  const dialog = await open()
+  const storage = dialog.getByRole('region', {name: 'Model storage'})
+  expect(storage).toHaveTextContent('ODS must keep 0 bytes free after the download')
+  expect(storage).not.toHaveTextContent('Free up space')
+  for (const button of dialog.getAllByRole('button', {name: 'Import', exact: true})) expect(button).toBeEnabled()
+})
+
 test('a failed repository check leaves an artifact-specific check available', async () => {
   preflightBody = {status: 'idle'}
   const dialog = await open()
@@ -255,6 +359,24 @@ test('unticking Include vision imports the weights alone', async () => {
   expect(importBodies()[0]).toEqual({repoId: 'org/model', revision: 'c'.repeat(40), artifactId: 'q4', includeVision: false})
 })
 
+test('unticking Include vision frees an import that only the projector pushed past the disk', async () => {
+  detailsBody = {
+    ...repo, sha: 'c'.repeat(40), artifacts,
+    projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8, precision: 'F16'}],
+    defaultProjectorId: 'p1',
+  }
+  preflightBody = preflight({artifacts: {
+    q4: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'ok'},
+    q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'insufficient'},
+  }})
+  const dialog = await open()
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(2)
+  await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  expect(dialog.getAllByRole('button', {name: 'Not enough disk'})).toHaveLength(1)
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true})) })
+  expect(importBodies()).toEqual([{repoId: 'org/model', revision: 'c'.repeat(40), artifactId: 'q4', includeVision: false}])
+})
+
 test('a repository without a projector shows no vision choice', async () => {
   const dialog = await open()
   expect(dialog.queryByRole('checkbox', {name: /Include vision/})).toBeNull()
@@ -321,6 +443,49 @@ test('unchecked import waits for exactly one selected-artifact check before post
   expect(fetch.mock.calls.filter(([url]) => url.includes('artifactId=q8'))).toHaveLength(1)
   await act(async () => { finish(selectedPreflight('q8')) })
   expect(importBodies()).toEqual([{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q8', includeVision: true}])
+})
+
+test.each([
+  ['weights fit without vision', false, 'ok', null, 1],
+  ['weights alone still exceed disk', false, 'insufficient', null, 0],
+  ['vision remains included', true, 'ok', null, 0],
+  ['the selected artifact is not a chat model', false, 'ok',
+    {code: 'not_a_chat_model:reranker', message: 'The selected file is a reranker.', overridable: false}, 0],
+])('selected-artifact disk check: %s', async (_label, includeVision, weightsDisk, refusal, posts) => {
+  unreadSecondArtifact()
+  detailsBody = {...detailsBody, projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8}], defaultProjectorId: 'p1'}
+  let finish
+  selectedPreflightResponse = () => new Promise(resolve => { finish = resolve })
+  const dialog = await open()
+  if (!includeVision) await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  const button = dialog.getAllByRole('button', {name: 'Import', exact: true})[1]
+  await act(async () => { fireEvent.click(button); fireEvent.click(button) })
+  expect(importBodies()).toEqual([])
+  expect(dialog.getByRole('checkbox', {name: /Include vision/})).toBeDisabled()
+  expect(fetch.mock.calls.filter(([url]) => url.includes('artifactId=q8'))).toHaveLength(1)
+  await act(async () => { finish(selectedPreflight('q8', {artifacts: {
+    q4: okCheck, q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: weightsDisk, refusal},
+  }})) })
+  expect(importBodies()).toEqual(posts ? [{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q8', includeVision}] : [])
+  if (!posts) expect(dialog.getByRole('button', {name: refusal ? 'Not supported' : 'Not enough disk'})).toBeDisabled()
+})
+
+test('skipping vision preserves the selected architecture override gate', async () => {
+  unreadSecondArtifact()
+  detailsBody = {...detailsBody, projectors: [{id: 'p1', label: 'mmproj-F16.gguf', sizeBytes: 9e8}], defaultProjectorId: 'p1'}
+  const refusal = {code: 'runtime_architecture_unsupported', message: 'The selected file needs a newer runtime.', overridable: true}
+  selectedPreflightResponse = id => selectedPreflight(id, {artifacts: {
+    q4: okCheck, q8: {...okCheck, disk: 'insufficient', diskWithoutProjector: 'ok', refusal},
+  }})
+  const dialog = await open()
+  await act(async () => { fireEvent.click(dialog.getByRole('checkbox', {name: /Include vision/})) })
+  await act(async () => { fireEvent.click(dialog.getAllByRole('button', {name: 'Import', exact: true})[1]) })
+  expect(importBodies()).toEqual([])
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import anyway\u2026'})) })
+  expect(importBodies()).toEqual([])
+  await act(async () => { fireEvent.click(within(dialog.getByRole('alertdialog')).getByRole('button', {name: 'Import anyway'})) })
+  expect(importBodies()).toEqual([{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q8', includeVision: false, allowUnsupportedRuntime: true}])
+  expect(fetch.mock.calls.filter(([url]) => url.includes('artifactId=q8'))).toHaveLength(1)
 })
 
 test('matching checked metadata needs no additional network preflight', async () => {
@@ -460,4 +625,29 @@ test('repository access refusal still applies to all artifact rows', async () =>
   expect(dialog.getAllByRole('button', {name: 'Needs access'})).toHaveLength(2)
   for (const button of dialog.getAllByRole('button', {name: 'Needs access'})) expect(button).toBeDisabled()
   expect(dialog.getAllByRole('alert')).toHaveLength(1)
+})
+
+test('retained import metadata offers Import again after the owner removed its files', async () => {
+  detailsBody = {...detailsBody, artifacts: [{...artifacts[0], importedModelId: 'hf-retained', installed: false}]}
+  importResponse = {ok: true, status: 200, body: {modelId: 'hf-retained', status: 'started'}}
+  const dialog = await open()
+  expect(dialog.queryByRole('button', {name: 'Retry', exact: true})).toBeNull()
+  await act(async () => { fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true})) })
+  expect(importBodies()).toEqual([{repoId: repo.id, revision: 'c'.repeat(40), artifactId: 'q4'}])
+})
+
+test('retained installed files still disable the artifact action', async () => {
+  detailsBody = {...detailsBody, artifacts: [{...artifacts[0], importedModelId: 'hf-retained', installed: true}]}
+  const dialog = await open()
+  expect(dialog.getByRole('button', {name: 'Installed', exact: true})).toBeDisabled()
+  expect(importBodies()).toEqual([])
+})
+
+test('closing and reopening a deleted import keeps a single enabled Import action', async () => {
+  detailsBody = {...detailsBody, artifacts: [{...artifacts[0], importedModelId: 'hf-retained', installed: false}]}
+  await open()
+  fireEvent.click(screen.getByTitle('Close'))
+  await act(async () => { fireEvent.click(screen.getByRole('button', {name: 'Choose file'})) })
+  expect(within(screen.getByRole('dialog')).getByRole('button', {name: 'Import', exact: true})).toBeEnabled()
+  expect(importBodies()).toEqual([])
 })

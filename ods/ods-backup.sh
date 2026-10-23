@@ -31,6 +31,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # Source shared rsync utilities
 . "$ODS_DIR/lib/rsync.sh"
 . "$ODS_DIR/lib/backup-paths.sh"
+. "$SCRIPT_DIR/lib/dashboard-private-state.sh"
 
 # Convert bytes to a human-friendly string (best-effort)
 fmt_bytes() {
@@ -60,15 +61,20 @@ estimate_backup_bytes() {
 
     # user data volumes
     if [[ "$backup_type" == "full" || "$backup_type" == "user-data" ]]; then
-        local -a user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
-
-        for p in "${user_data_paths[@]}"; do
-            if [[ -d "$ODS_DIR/$p" ]]; then
+        local p
+        while IFS= read -r p; do
+            if [[ "$p" == data/pixel-images ]] && ods_private_images_selected; then
+                # Conservative bound includes SQLite pages/indexes. Do not
+                # estimate from a stale host shadow of the active volume.
+                total=$(( total + 512 * 1024 * 1024 ))
+                continue
+            fi
+            if [[ -e "$ODS_DIR/$p" ]]; then
                 local b
                 b=$(du -sk "$ODS_DIR/$p" 2>/dev/null | awk '{printf "%.0f\n", $1 * 1024}')
                 total=$(( total + ${b:-0} ))
             fi
-        done
+        done < <(ods_backup_data_paths "$ODS_DIR")
     fi
 
     # config files/dir
@@ -297,7 +303,7 @@ create_manifest() {
 
     local user_data_paths_json
     user_data_paths_json=$(
-        printf '%s\n' "${ODS_USER_DATA_PATHS[@]}" \
+        ods_backup_data_paths "$ODS_DIR" \
             | jq -R -s 'split("\n") | map(select(length > 0))'
     )
 
@@ -342,11 +348,17 @@ backup_user_data() {
     local backup_dir="$1"
     log_info "Backing up user data volumes..."
 
-    local user_data_paths=("${ODS_USER_DATA_PATHS[@]}")
-
-    for path in "${user_data_paths[@]}"; do
+    # Entries may be directories or single files; rsync -a keeps file modes,
+    # so a 0600 secret such as dashboard-password.json stays 0600.
+    local path
+    while IFS= read -r path; do
+        if [[ "$path" == data/pixel-images ]] && ods_private_images_selected; then
+            ods_private_images export --path "$backup_dir/$path" || return 1
+            log_success "Backed up: $path (private Docker volume)"
+            continue
+        fi
         local full_path="$ODS_DIR/$path"
-        if [[ -d "$full_path" ]]; then
+        if [[ -e "$full_path" && ! -L "$full_path" ]]; then
             local dest_dir="$backup_dir/$(dirname "$path")"
             mkdir -p "$dest_dir"
             rsync_with_progress "$full_path" "$dest_dir/" "Backing up $path"
@@ -354,7 +366,7 @@ backup_user_data() {
         else
             log_warn "Skipped (not found): $path"
         fi
-    done
+    done < <(ods_backup_data_paths "$ODS_DIR")
 }
 
 # Backup configuration
@@ -586,7 +598,7 @@ do_backup() (
 )
 
 # Verify checksums for an existing backup directory or archive
-verify_backup() {
+verify_backup() (
     local backup_id="$1"
 
     # Reject path traversal attempts
@@ -596,6 +608,9 @@ verify_backup() {
     fi
 
     local target="$BACKUP_ROOT/$backup_id"
+    if [[ ! -e "$target" && "$backup_id" != *.tar.gz && -f "$target.tar.gz" ]]; then
+        target="$target.tar.gz"
+    fi
 
     if [[ -d "$target" ]]; then
         if [[ ! -f "$target/checksums.sha256" ]]; then
@@ -618,10 +633,15 @@ verify_backup() {
     if [[ -f "$target" && "$target" == *.tar.gz ]]; then
         local tmpdir
         tmpdir=$(mktemp -d)
-        trap 'rm -rf "$tmpdir"' RETURN
+        # Verification can exit on tar/checksum failure or interruption before
+        # returning. Keep extraction and cleanup in this function's subshell.
+        trap 'rm -rf -- "$tmpdir"' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
 
         # Extract checksums first (fast fail if missing)
-        local archive_name="${backup_id%.tar.gz}"
+        local archive_name
+        archive_name=$(basename "$target" .tar.gz)
         if ! tar xzf "$target" -C "$tmpdir" "${archive_name}/checksums.sha256" >/dev/null 2>&1; then
             log_error "checksums.sha256 not found in archive: $backup_id"
             return 1
@@ -644,7 +664,7 @@ verify_backup() {
 
     log_error "Backup not found: $backup_id"
     return 1
-}
+)
 
 # Main entry point
 main() {

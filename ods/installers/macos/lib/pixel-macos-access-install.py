@@ -2002,6 +2002,10 @@ def _activate_upgrade(plan, records, journal, *, previous_guard=False):
                 state='/private/var/lib/pixel-ops-broker')
         elif plan.get('migration_qualification'):
             _activate_new_services(plan)
+        # Every previous job is stopped and none of the candidate's has started:
+        # no tool call can reuse or recreate an old sandbox in between.
+        if plan.get('migration_qualification'):
+            _retire_agent_sandboxes(plan)
 
     def restore_owner():
         _restore_upgrade_owner(plan, previous, candidate)
@@ -2786,6 +2790,75 @@ def _qualify_migration_ingress(plan):
     return ids[0]
 
 
+AGENT_SANDBOX_NAME_FILTER = 'name=^/pixel-sbx-agent-pixel-'
+# Printed by _migration_main with the failing code: cause, recovery, help link.
+SANDBOX_RETIREMENT_GUIDANCE = {
+    'native-update-sandbox-custody-mismatch':
+        'The update stopped before starting the new gateway: a Docker container named '
+        'pixel-sbx-agent-pixel-* is not the agent sandbox of this Pixel installation. List it with '
+        'docker ps -a --filter name=pixel-sbx-agent-pixel-, remove it with docker rm -f <name> if '
+        'nothing else uses it, then run the update again. Need help? https://discord.gg/4ntNp9MAwC',
+    'native-update-sandbox-retirement-failed':
+        'The update stopped before starting the new gateway: Docker could not remove the previous '
+        'agent sandbox container, which holds no Pixel state. Check that Docker is running, then run '
+        'the update again. Need help? https://discord.gg/4ntNp9MAwC',
+}
+
+
+def _retire_agent_sandboxes(plan):
+    """Remove this owner's agent sandbox containers while every gateway is stopped.
+
+    OpenClaw keeps a sandbox whose configuration changed if it ran in the last
+    five minutes, so an update would otherwise leave the new gateway on the
+    previous sandbox image. A container holds no owner state (the workspace is
+    a bind mount); the next tool call creates it from the configured image.
+    Linux retires the same containers before its gateway restarts.
+    """
+    spec = importlib.util.spec_from_file_location('pixel_native_uninstall_selection',
+                                                  HERE / 'pixel-native-uninstall.py')
+    selection = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(selection)
+    docker = str(_path(plan['migration_qualification']['transport']['docker']))
+    context = _migration_edge_context(plan)
+    root = _path(plan['access_settings']['install_dir'])
+
+    def call(*args):
+        result = subprocess.run([docker, *args], capture_output=True, text=True, timeout=60, **context)
+        if result.returncode or len(result.stdout) > 4 * 1024 * 1024:
+            raise InstallError('native-update-sandbox-retirement-failed')
+        return result.stdout
+
+    def agent_sandboxes():
+        ids = call('ps', '-aq', '--no-trunc', '--filter', AGENT_SANDBOX_NAME_FILTER).split()
+        if len(ids) > 64 or any(not re.fullmatch('[a-f0-9]{64}', cid) for cid in ids):
+            raise InstallError('native-update-sandbox-retirement-failed')
+        found = []
+        for cid in ids:
+            raw = call('inspect', cid)
+            try:
+                values = json.loads(raw)
+            except ValueError:
+                raise InstallError('native-update-sandbox-retirement-failed') from None
+            if (type(values) is not list or len(values) != 1 or type(values[0]) is not dict
+                    or values[0].get('Id') != cid):
+                raise InstallError('native-update-sandbox-retirement-failed')
+            try:
+                selected = selection.sandbox_selection(values[0], owner=plan['owner'], root=root)
+            except (ValueError, TypeError, AttributeError):
+                raise InstallError('native-update-sandbox-custody-mismatch') from None
+            # The gateway reuses a container by name, so a same-named container
+            # outside this installation's mounts must not survive either.
+            if selected is None:
+                raise InstallError('native-update-sandbox-custody-mismatch')
+            found.append(selected['id'])
+        return found
+
+    for cid in agent_sandboxes():
+        call('rm', '-f', cid)
+    if agent_sandboxes():
+        raise InstallError('native-update-sandbox-retirement-failed')
+
+
 def migrate_install(plan, source):
     """Apply a joint migration; caller must also retain the owner environment backup."""
     if not plan.get('migration_qualification') or plan.get('upgrade_kind') != 'native-migration':
@@ -3181,6 +3254,8 @@ def _migration_main(argv):
         outcome = migrate_install(plan, args.source) if args.activate else 'planned'
     except InstallError as error:
         print('error: ' + error.code, file=sys.stderr)
+        if error.code in SANDBOX_RETIREMENT_GUIDANCE:
+            print(SANDBOX_RETIREMENT_GUIDANCE[error.code], file=sys.stderr)
         return 1
     except (AccessError, CustodyError, _upgrade.UpgradeError, OSError, ValueError,
             KeyError, TypeError, subprocess.SubprocessError) as error:
@@ -3195,6 +3270,8 @@ def _migration_main(argv):
             if cause is None:
                 break
         print('error: native-joint-migration-failed' + detail + '; retain the preparation and protected recovery journal', file=sys.stderr)
+        if isinstance(cause, InstallError) and cause.code in SANDBOX_RETIREMENT_GUIDANCE:
+            print(SANDBOX_RETIREMENT_GUIDANCE[cause.code], file=sys.stderr)
         return 1
     public = {'operation': 'native-migration', 'status': outcome,
         'runtimeBundleDigest': args.bundle_digest, 'serviceBundleDigest': args.services_digest}

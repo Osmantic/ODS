@@ -338,6 +338,7 @@ def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypat
     monkeypatch.setattr(installer, '_activate_new_services', lambda plan: events.append('native-start'))
     monkeypatch.setattr(installer, '_restore_new_services', lambda plan: events.append('native-stop'))
     monkeypatch.setattr(installer, '_verify_new_services', lambda plan: events.append('native-ready'))
+    monkeypatch.setattr(installer, '_retire_agent_sandboxes', lambda plan: events.append('sandbox-retire'))
     if failure:
         with pytest.raises(RuntimeError, match='injected-readiness-failure'):
             installer._activate_upgrade(plan, records, journal)
@@ -345,6 +346,15 @@ def test_upgrade_activation_connects_hold_files_services_and_readiness(monkeypat
         installer._activate_upgrade(plan, records, journal)
     assert events[0] == 'hold'
     assert relocation.call_count == (2 if failure == 'candidate' else 1)
+    if migration:
+        # A native update retires the old agent sandboxes once, while every
+        # previous job is stopped and before any candidate job starts.
+        assert events.count('sandbox-retire') == 1
+        assert max(events.index(('stopped', 'previous', role)) for role in roles) < events.index('sandbox-retire')
+        assert events.index(('write', '/test/code', b'new')) < events.index('sandbox-retire')
+        assert events.index('sandbox-retire') < min(events.index(('start', 'candidate', role)) for role in roles)
+    else:
+        assert 'sandbox-retire' not in events
     if migration == 'managed':
         assert 'native-start' not in events and 'native-stop' not in events
         assert events.index(('stopped', 'previous', 'operations')) < events.index(('write', '/test/code', b'new'))

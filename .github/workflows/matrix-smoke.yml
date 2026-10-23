@@ -168,6 +168,17 @@ jobs:
             } >/etc/zypp/zypp.conf.d/99-ods-ci-network.conf
           }
 
+          configure_mint_ci_repository_transport() {
+            # The image's packages.linuxmint.com origin can be unavailable.
+            # This official mirror serves the same signed Virginia repository:
+            # https://www.linuxmint.com/mirrors.php
+            for repository in "${1:-/etc/apt/sources.list.d}"/official-package-repositories.list \
+                              "${1:-/etc/apt/sources.list.d}"/official-source-repositories.list; do
+              [ -f "$repository" ] || continue
+              sed -i -E 's#^([[:space:]]*deb(-src)?[[:space:]]+(\[[^]]*\][[:space:]]+)?)https?://packages\.linuxmint\.com/?([[:space:]]+virginia([[:space:]]|$))#\1https://mirrors.kernel.org/linuxmint-packages/\4#' "$repository"
+            done
+          }
+
           install_apt_checkout_prerequisites() {
             # Refresh indexes again after a mirror changes during package download.
             # Avoid stale proxy responses while retaining repository signatures.
@@ -178,6 +189,9 @@ jobs:
           }
 
           if command -v apt-get &>/dev/null; then
+            if [ '${{ matrix.distro }}' = linux-mint-21.3 ]; then
+              configure_mint_ci_repository_transport
+            fi
             retry install_apt_checkout_prerequisites
           elif command -v dnf &>/dev/null; then
             dnf install -y -q ca-certificates git curl-minimal
@@ -327,16 +341,31 @@ jobs:
           python -m pip install -r extensions/services/pixel-edge/requirements.txt pytest
           python -m pytest -q extensions/services/pixel-edge/tests
 
+      - name: Install modern Bash for macOS CLI fixtures
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: brew install bash
+
       - name: Native Pixel Installer And Recovery Tests
         env:
           TMPDIR: /private/tmp
         run: |
           python -m pip install pytest-subtests "PyYAML>=6.0,<7.0"
-          python -m pytest -q tests/test_macos_pixel_*.py tests/test_macos_runtime_*.py tests/test_macos_upgrade_process_crash.py tests/test_macos_protected_replace.py tests/test_pixel_startup_reproof.py tests/test_pixel_native_compose.py
+          ODS_LIFECYCLE_TEST_BASH="$(brew --prefix)/bin/bash" python -m pytest -q tests/test_macos_pixel_*.py tests/test_macos_runtime_*.py tests/test_macos_upgrade_process_crash.py tests/test_macos_protected_replace.py tests/test_pixel_startup_reproof.py tests/test_pixel_native_compose.py
           python -m unittest discover -s tests -p 'test_pixel_*.py' -q
+
+      - name: Native macOS chat response exit contract
+        run: |
+          command -v jq >/dev/null
+          python3 tests/test-cli-chat-error-exit.py
 
       - name: Atomic Environment Write Tests
         run: /bin/bash tests/test-atomic-env-writes.sh
+
+      - name: Preflight route under stock Bash 3.2
+        run: |
+          /bin/bash -c 'test "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}" = 3.2'
+          /bin/bash tests/test-ods-preflight-llm-route.sh
 
       - name: Bash 3.2 syntax check (catches declare -g, associative arrays, etc.)
         run: |

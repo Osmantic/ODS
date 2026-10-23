@@ -226,13 +226,20 @@ def _selection_lock(install_dir: Path, timeout: float):
         descriptor = os.open(
             lock_path,
             os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
-            0o600,
+            # The Dashboard (group 1000) opens this lock too; installer phase 06
+            # keeps it in that group.
+            0o660,
         )
     except OSError as exc:
         raise SelectionError(f"Cannot open shared extensions lock: {lock_path}") from exc
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
             raise SelectionError(f"Invalid shared extensions lock: {lock_path}")
+        # The umask can drop group write from a new lock, and older helpers
+        # created it 0600. Restore group read/write on a lock this user owns.
+        if fcntl is not None and info.st_uid == os.getuid() and info.st_mode & 0o060 != 0o060:
+            os.fchmod(descriptor, stat.S_IMODE(info.st_mode) | 0o060)
         if msvcrt is not None:
             # Match Dashboard's one-byte Windows lock for local processes.
             # Docker Desktop bind-mount interoperability needs live acceptance.

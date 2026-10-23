@@ -40,6 +40,17 @@ class ModelControlTests(unittest.TestCase):
             for extra in ({'path': '/etc'}, {'routeFingerprint': REV + '\n'}):
                 self.assertFalse(module.valid_model_contract({**TARGET, 'imageInput': 'unknown', **extra}))
 
+    def test_measured_thinking_control_survives_host_and_edge(self):
+        for module in (relay, edge):
+            for control in ('enable_thinking', 'always', 'none'):
+                target = dict(TARGET, thinkingControl=control)
+                state = dict(STATE, contract=target)
+                self.assertTrue(module.valid_model_control({'operation': 'model-apply',
+                    'request': {'transactionId': TX, 'target': target}}))
+                self.assertEqual(module.public_model_control(state), state)
+            for control in (None, True, 1, [], {}, '', 'auto', 'none\n'):
+                self.assertFalse(module.valid_model_contract(dict(TARGET, thinkingControl=control)))
+
     def test_host_and_edge_validation_share_the_same_contract(self):
         names={'valid_model_contract','_model_hex','valid_model_control','public_model_control'}
         def functions(path):
