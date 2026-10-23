@@ -1061,7 +1061,7 @@ function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[stri
     # Carry the owner's documented port override into the Linux admission and
     # config writer, refusing invalid values before constructing a shell command.
     if ($env:OLLAMA_PORT) {
-        if ($env:OLLAMA_PORT -cnotmatch '^[1-9][0-9]{0,4}$' -or [int]$env:OLLAMA_PORT -gt 65535) {
+        if ($env:OLLAMA_PORT -cnotmatch '\A[1-9][0-9]{0,4}\z' -or [int]$env:OLLAMA_PORT -gt 65535) {
             throw 'OLLAMA_PORT must be a port from 1 to 65535'
         }
         $environment += 'OLLAMA_PORT=' + (ConvertTo-ODSBashArgument $env:OLLAMA_PORT)

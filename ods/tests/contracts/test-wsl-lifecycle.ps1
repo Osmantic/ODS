@@ -71,7 +71,7 @@ try {
     $env:OLLAMA_PORT='11435'
     Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '') -ceq "cd -- '/mnt/c/source' && env OLLAMA_PORT='11435' bash install-core.sh '--pixel'") 'Windows port override reaches Linux even before root resolution'
     Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '/home/ods/ods').Contains("INSTALL_DIR='/home/ods/ods' OLLAMA_PORT='11435'")) 'Windows port override survives resolved-root rerun'
-    foreach($invalidPort in @('0','65536','01234','-1','1;id',"11435' injected")) {
+    foreach($invalidPort in @('0','65536','01234','-1','1;id',"11435' injected","11435`n")) {
         $env:OLLAMA_PORT=$invalidPort
         Reject { New-ODSWslInstallerCommand '/mnt/c/source' @() '' } 'invalid Windows port override fails before WSL execution'
     }
