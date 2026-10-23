@@ -160,7 +160,10 @@ test('8K compact-profile fresh chat reaches provider with compact contract and f
   assert.ok(odsTools.every(Boolean),'all seven real ODS direct-tool definitions must be present');
   const definitions=odsTools.map(({name,description,parameters})=>({name,description,parameters}));
   fs.writeFileSync(path.join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'pixel-ods',activation:{onStartup:true},contracts:{tools:definitions.map(t=>t.name)},configSchema:{type:'object',properties:{}}}));
-  fs.writeFileSync(path.join(plugin,'index.mjs'),`export default {id:'pixel-ods',register(api){api.on('before_prompt_build',()=>(${JSON.stringify(compactContract)}));for(const tool of ${JSON.stringify(definitions)})api.registerTool({...tool,execute:async()=>{throw new Error('No external operations in prompt-budget fixture');}});}};`);
+  fs.writeFileSync(path.join(plugin,'fixture-data.json'),JSON.stringify({compactContract,definitions}));
+  fs.writeFileSync(path.join(plugin,'index.mjs'),`import fs from 'node:fs';
+const {compactContract,definitions}=JSON.parse(fs.readFileSync(new URL('./fixture-data.json',import.meta.url),'utf8'));
+export default {id:'pixel-ods',register(api){api.on('before_prompt_build',()=>compactContract);for(const tool of definitions)api.registerTool({...tool,execute:async()=>{throw new Error('No external operations in prompt-budget fixture');}});}};`);
   // Adapt the writer-generated model provider to the loopback fixture; the
   // real host is never invoked. All other writer-derived fields are preserved.
   const config={
