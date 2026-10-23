@@ -85,6 +85,11 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-env-utf8.ps1
 
+      - name: Windows TIMEZONE map uses exact IDs (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-timezone-map.ps1
+
       - name: Windows Compose startup recovery (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
