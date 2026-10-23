@@ -63,6 +63,36 @@ signed website delivery and maintainer release acceptance remain separate gates.
 
 The dated CPU qualification below remains evidence for its named CPU artifact.
 
+### Final filtered-token Windows 10 Sandbox qualification
+
+The final local Setup SHA-256 is
+`db67a64152f4bb8b3eb123a17be2819bdc3c891941101be2b16d149b5972a8aa`.
+It passed actual graphical installation, first model acquisition, 9 real CPU
+chat/Stop/context/recovery checks and 11 document/Windows Save/Cancel checks.
+Portal became ready in 92.4 seconds including model acquisition on this guest.
+The final saved document is 369 bytes, SHA-256
+`fd62361dec3e8b8b70ebc1e0184e9c7d68f5eb720ca91d832aa225383ddbb688`.
+
+This used Windows 10 Enterprise x64 build 19041 and the same WDAG identity with
+a manually constructed medium token: non-elevated, Administrators deny-only,
+current-user/SYSTEM default DACL and verified pipe write/read capability.
+Microsoft WebView2 was prepared separately by the elevated guest parent,
+upgrading the existing shared runtime from 141.0.3537.71 to 156.0.4314.42.
+The ODS install, model download, chat and document phases used the filtered token.
+This does not qualify a separate ordinary account or non-elevated Microsoft
+prerequisite servicing. Earlier failed attempts and the private-token setup
+diagnostics remain in the validation receipts.
+
+[Sanitized exact-artifact summary](docs/windows10-filtered-token-summary.json).
+The tested application/Portal bytes come from source `95de936757f58`; the Setup
+source is `5edf917986f2`. The clean port into this PR preserves those production
+sources, with the builder defaults aligned to the tested explicit 0.3 version.
+Git, Node, Docker and Python were absent; the inbox WSL command was present.
+Optional-feature inventory was unavailable. No host model cache was mapped.
+
+![Actual filtered-token Sandbox chat after Stop and continuation](docs/native-filtered-portal.png)
+![Actual verified document in the filtered-token Sandbox](docs/native-filtered-document.png)
+
 The demonstrated scope is **graphical install → native setup → existing Portal
 → CPU chat or explicit Create document → verified Download → Windows save
 dialog → saved conversation → Stop/continue → reopen**. Full OpenClaw/Pixel
