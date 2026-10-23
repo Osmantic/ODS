@@ -95,6 +95,13 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-compose-startup-recovery.ps1
 
+      - name: Windows chat HTTP response exit contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Get-Command powershell.exe -ErrorAction Stop | Out-Null
+          python tests/test-cli-chat-error-exit.py
+
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell

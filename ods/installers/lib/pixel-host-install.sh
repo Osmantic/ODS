@@ -3464,8 +3464,36 @@ PY
     printf '%s\n' "$retired_release"
 }
 
+_ods_pixel_ensure_runtime_group_tools() {
+    # Fresh Ubuntu 26.04 no longer ships sg in login. Install the qualified
+    # distro's package before adding groups that this shell must refresh.
+    local -a packages=()
+    local sg_package
+    if command -v sg >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        return 0
+    fi
+    _ods_pixel_parse_os_release || return 1
+    case "$_ODS_PIXEL_OS_ID:$_ODS_PIXEL_OS_VERSION_ID" in
+        ubuntu:26.04) sg_package=util-linux-extra ;;
+        ubuntu:24.04|debian:12) sg_package=login ;;
+        *) ai_bad "Pixel runtime group tools require a qualified Linux distribution."; return 1 ;;
+    esac
+    command -v sg >/dev/null 2>&1 || packages+=("$sg_package")
+    command -v python3 >/dev/null 2>&1 || packages+=(python3)
+    if [[ "${PKG_MANAGER:-}" != apt ]] || ! declare -f pkg_install >/dev/null 2>&1; then
+        ai_bad "Pixel runtime group tools are missing. Install: ${packages[*]}"
+        return 1
+    fi
+    pkg_install "${packages[@]}" || return 1
+    if ! command -v sg >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
+        ai_bad "Pixel runtime group tools are still unavailable after package installation."
+        return 1
+    fi
+}
+
 ods_pixel_prepare_runtime_identity() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    [[ "${DRY_RUN:-false}" != true ]] || return 0
     ods_sudo_available || {
         ai_bad "Pixel requires privileged systemd and group setup on this host."
         return 1
@@ -3473,6 +3501,10 @@ ods_pixel_prepare_runtime_identity() {
 
     local owner gid
     owner="$(ods_pixel_install_owner)" || return 1
+    if ! _ods_pixel_ensure_runtime_group_tools; then
+        ai_bad "Could not prepare Pixel's runtime group tools before identity setup."
+        return 1
+    fi
     if ! getent group ods-pixel >/dev/null 2>&1; then
         ods_sudo groupadd --system ods-pixel
     fi
