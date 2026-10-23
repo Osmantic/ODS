@@ -1042,6 +1042,18 @@ def _artifact_expected_size(metadata: dict) -> int | None:
     return None
 
 
+def _catalog_size_estimate(model: dict) -> int | None:
+    """Approximate download size from the catalog's decimal ``size_mb``.
+
+    Only for the free-space check when the catalog has no exact byte size;
+    integrity is still proved by the checksum after download.
+    """
+    raw = model.get("size_mb")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
+        return None
+    return int(raw * 1_000_000)
+
+
 _DOWNLOAD_DISK_MARGIN_MIN_BYTES = 2 * 1024 ** 3
 _DOWNLOAD_DISK_MARGIN_FRACTION = 0.05
 
@@ -1051,15 +1063,23 @@ def _download_disk_margin(total_bytes: int) -> int:
     return max(_DOWNLOAD_DISK_MARGIN_MIN_BYTES, int(total_bytes * _DOWNLOAD_DISK_MARGIN_FRACTION))
 
 
-def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path]) -> int:
+def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path],
+                           size_estimate: int | None = None) -> int:
     """Bytes still to fetch: sized artifacts not already on disk at that size.
 
-    An artifact of unknown size is not counted; the download verifies it.
+    An artifact of unknown size is not counted, unless the catalog gives an
+    approximate ``size_estimate`` for the model: then a missing unsized
+    artifact makes the requirement at least that estimate, so a model without
+    an exact catalog size still gets the free-space check.
     """
     needed = 0
+    unsized_missing = False
     for artifact in artifacts:
         expected = artifact.get("size_bytes")
         if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
+            target = paths.get(artifact["file"])
+            if target is None or not target.exists():
+                unsized_missing = True
             continue
         target = paths.get(artifact["file"])
         try:
@@ -1069,6 +1089,8 @@ def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path]) -> int
             # Not present, or not readable here: it still has to be fetched.
             pass
         needed += expected
+    if unsized_missing and size_estimate:
+        needed = max(needed, size_estimate)
     return needed
 
 
@@ -1198,7 +1220,8 @@ def _model_download_manifest(model: dict) -> dict | None:
     filenames = [artifact["file"] for artifact in artifacts]
     if gguf_file not in filenames or len(filenames) != len(set(filenames)):
         return None
-    return {"gguf_file": gguf_file, "artifacts": artifacts}
+    return {"gguf_file": gguf_file, "artifacts": artifacts,
+            "size_estimate_bytes": _catalog_size_estimate(model)}
 
 
 def _library_record_for_gguf(gguf_file: str) -> dict | None:
@@ -13657,7 +13680,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             artifact_paths[artifact["file"]] = target
 
-        needed_bytes = _download_bytes_needed(manifest["artifacts"], artifact_paths)
+        needed_bytes = _download_bytes_needed(
+            manifest["artifacts"], artifact_paths, manifest.get("size_estimate_bytes"))
         if needed_bytes:
             try:
                 storage = _model_storage_status(models_dir)

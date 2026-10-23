@@ -9126,16 +9126,22 @@ class TestModelDownloadDiskSpace:
 
     GIB = 1024 ** 3
 
-    def _setup(self, tmp_path, monkeypatch, *, size_bytes, free_bytes, total_bytes):
+    def _setup(self, tmp_path, monkeypatch, *, size_bytes, free_bytes, total_bytes,
+               size_mb=None):
         install_dir = tmp_path / "install"
         (install_dir / "config").mkdir(parents=True)
         (install_dir / "data" / "models").mkdir(parents=True)
-        (install_dir / "config" / "model-library.json").write_text(json.dumps({"models": [{
+        record = {
             "id": "test-model",
             "gguf_file": "test-model.gguf",
             "gguf_url": "https://example.com/test-model.gguf",
-            "size_bytes": size_bytes,
-        }]}), encoding="utf-8")
+        }
+        if size_bytes is not None:
+            record["size_bytes"] = size_bytes
+        if size_mb is not None:
+            record["size_mb"] = size_mb
+        (install_dir / "config" / "model-library.json").write_text(
+            json.dumps({"models": [record]}), encoding="utf-8")
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
         monkeypatch.setattr(_mod, "_model_download_directory", lambda: install_dir / "data" / "models")
@@ -9172,6 +9178,34 @@ class TestModelDownloadDiskSpace:
         assert body["requiredBytes"] == 10 * self.GIB
         assert body["freeBytes"] == 11 * self.GIB
         assert body["marginBytes"] == 5 * self.GIB
+
+    def test_catalog_size_mb_is_checked_when_bytes_are_unknown(self, tmp_path, monkeypatch):
+        # Ten catalog models carry only size_mb; they must not skip the check
+        # and fill the disk until curl fails writing.
+        self._setup(tmp_path, monkeypatch, size_bytes=None, size_mb=1120,
+                    free_bytes=self.GIB // 2, total_bytes=20 * self.GIB)
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 507
+        body = handler.parse_response()
+        assert body["code"] == "insufficient_disk_space"
+        assert body["requiredBytes"] == 1_120_000_000
+
+    def test_catalog_size_mb_with_room_passes_the_space_check(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=None, size_mb=1120,
+                    free_bytes=4 * self.GIB, total_bytes=20 * self.GIB)
+        monkeypatch.setattr(
+            _mod, "_begin_model_lifecycle",
+            lambda *_args, **_kwargs: (False, {"operation": "model_activation"}),
+        )
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 409
 
     def test_exact_margin_passes_the_space_check(self, tmp_path, monkeypatch):
         self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
@@ -9239,6 +9273,17 @@ class TestModelDownloadDiskSpace:
             "present.gguf", "partial.gguf", "missing.gguf", "unsized.gguf")}
 
         assert _mod._download_bytes_needed(artifacts, paths) == 11
+        # A catalog estimate covers the unsized artifact still to fetch.
+        assert _mod._download_bytes_needed(artifacts, paths, 50) == 50
+        assert _mod._download_bytes_needed(artifacts, paths, 5) == 11
+        (tmp_path / "unsized.gguf").write_bytes(b"x")
+        assert _mod._download_bytes_needed(artifacts, paths, 50) == 11
+
+    def test_catalog_size_estimate_reads_decimal_megabytes(self):
+        assert _mod._catalog_size_estimate({"size_mb": 1120}) == 1_120_000_000
+        assert _mod._catalog_size_estimate({"size_mb": 0.5}) == 500_000
+        for model in ({}, {"size_mb": 0}, {"size_mb": -1}, {"size_mb": True}, {"size_mb": "9"}):
+            assert _mod._catalog_size_estimate(model) is None
 
     def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
