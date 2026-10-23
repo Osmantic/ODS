@@ -34,6 +34,7 @@ tests/test-ape-data-ownership.sh
 tests/test-backup-delete-status.sh
 tests/test-backup-macos-appledouble.sh
 tests/test-backup-restore-cli.sh
+tests/test-backup-verify-compressed.py
 tests/test-bash32-guards.sh
 tests/test_dashboard_published_readiness.py
 tests/test-bind-address-sweep.sh
@@ -78,7 +79,9 @@ tests/test-fleet-multi-distro-keep-going.sh
 tests/test-gpu-apple.sh
 tests/test-gpu-layer-contract.py
 tests/test-hardware-compatibility.sh
+tests/test-health-check-core-services.sh
 tests/test-health-check-json-output.sh
+tests/test-health-check-llm-port.sh
 tests/test-hermes-context-floor.sh
 tests/test-hermes-dashboard-session-token.py
 tests/test-hermes-data-ownership.sh
@@ -169,6 +172,7 @@ tests/test-path-utils-cross-platform.py
 tests/test-perplexica-embedding-defaults.py
 tests/test-phase05-docker-desktop-nvidia-refusal.sh
 tests/test-phase05-podman-shim.sh
+tests/test-phase06-hermes-owner-card-rerun.sh
 tests/test-phase06-secret-generation.sh
 tests/test-phase08-selected-images.sh
 tests/test-phase10-skip-templated-user-units.sh
@@ -295,3 +299,6 @@ tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
+tests/test-cli-chat-error-exit.py
+tests/test-cli-update-model-lifecycle.sh
+tests/test-summary-quick-commands.sh
