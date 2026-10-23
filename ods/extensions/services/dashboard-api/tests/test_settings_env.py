@@ -1,5 +1,6 @@
 """Security-focused tests for the Settings environment editor."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -108,7 +109,7 @@ def settings_env_fixture(tmp_path, monkeypatch):
             backup_path.write_bytes(env_path.read_bytes())
         payload = raw_text if raw_text.endswith("\n") else raw_text + "\n"
         env_path.write_text(payload, encoding="utf-8")
-        return {"backup_path": "data/config-backups/.env.backup.test"}
+        return {"backup_path": "data/config-backups/.env.backup.test", "env_revision": hashlib.sha256(env_path.read_bytes()).hexdigest()}
 
     monkeypatch.setattr("main._call_agent_env_update", fake_env_update)
 
@@ -838,6 +839,73 @@ def test_api_settings_env_apply_allows_model_router(test_client, monkeypatch):
     assert response.status_code == 200
     assert response.json()["success"] is True
     assert captured["service_ids"] == ["model-router"]
+
+
+def test_api_settings_env_apply_returns_structured_409_for_model_lifecycle_busy(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(
+            409,
+            "model lifecycle busy",
+            json.dumps({"code": "model_lifecycle_busy", "message": "busy"}),
+        )
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "model_lifecycle_busy"
+    assert detail["message"] == (
+        "ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. "
+        "If settings changed, ODS will ask you to review them."
+    )
+
+
+def test_api_settings_env_apply_keeps_503_for_unrelated_409(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(
+            409,
+            "conflict",
+            json.dumps({"code": "other_conflict", "message": "conflict"}),
+        )
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "conflict"
+
+
+def test_api_settings_env_apply_keeps_503_for_malformed_409(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+
+    def fake_call(service_ids):
+        raise AgentHTTPError(409, "not json", "not-json")
+
+    monkeypatch.setattr("main._call_agent_core_recreate", fake_call)
+
+    response = test_client.post(
+        "/api/settings/env/apply",
+        headers=test_client.auth_headers,
+        json={"service_ids": ["llama-server"]},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"] == "not json"
 
 
 def test_api_settings_env_apply_rejects_disallowed_service(test_client):
@@ -1954,3 +2022,79 @@ def test_is_secret_field_name_heuristic(key, expected):
     from settings import _is_secret_field
 
     assert _is_secret_field(key) is expected
+
+
+def test_api_settings_env_save_binds_env_revision_to_apply_plan(test_client, settings_env_fixture, monkeypatch):
+    monkeypatch.setattr('main._active_settings_apply_services', lambda: {'open-webui'})
+    revision = 'a' * 64
+    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text: {
+        'backup_path': 'data/config-backups/.env.backup.test',
+        'env_revision': revision,
+    })
+    response = test_client.put('/api/settings/env', headers=test_client.auth_headers,
+                               json={'mode': 'form', 'values': {'WEBUI_AUTH': False}})
+    assert response.status_code == 200
+    assert response.json()['applyPlan']['envRevision'] == revision
+
+
+def test_api_settings_env_save_marks_plan_unsupported_without_revision(test_client, settings_env_fixture, monkeypatch):
+    monkeypatch.setattr('main._active_settings_apply_services', lambda: {'open-webui'})
+    monkeypatch.setattr('main._call_agent_env_update', lambda raw_text: {
+        'backup_path': 'data/config-backups/.env.backup.test',
+    })
+    response = test_client.put('/api/settings/env', headers=test_client.auth_headers,
+                               json={'mode': 'form', 'values': {'WEBUI_AUTH': False}})
+    assert response.status_code == 200
+    plan = response.json()['applyPlan']
+    assert plan['supported'] is False
+    assert plan['envRevision'] is None
+    assert 'Update ODS' in plan['summary']
+
+
+def test_api_settings_env_apply_forwards_expected_revision(test_client, monkeypatch):
+    captured = {}
+    def fake_call(service_ids, expected_env_revision=None):
+        captured['service_ids'] = service_ids
+        captured['expected_env_revision'] = expected_env_revision
+        return {'status': 'ok'}
+    monkeypatch.setattr('main._call_agent_core_recreate', fake_call)
+    revision = 'b' * 64
+    response = test_client.post('/api/settings/env/apply', headers=test_client.auth_headers,
+                                json={'service_ids': ['llama-server'], 'expected_env_revision': revision})
+    assert response.status_code == 200
+    assert captured == {'service_ids': ['llama-server'], 'expected_env_revision': revision}
+
+
+def test_api_settings_env_apply_rejects_malformed_revision(test_client):
+    response = test_client.post('/api/settings/env/apply', headers=test_client.auth_headers,
+                                json={'service_ids': ['llama-server'], 'expected_env_revision': 'nope'})
+    assert response.status_code == 400
+
+
+def test_api_settings_env_apply_propagates_env_revision_mismatch(test_client, monkeypatch):
+    from host_agent_client import AgentHTTPError
+    def fake_call(service_ids, expected_env_revision=None):
+        raise AgentHTTPError(409, 'mismatch', json.dumps({
+            'code': 'env_revision_mismatch',
+            'error': 'Environment file changed since this plan was saved; reload Settings and re-save before applying.',
+        }))
+    monkeypatch.setattr('main._call_agent_core_recreate', fake_call)
+    response = test_client.post('/api/settings/env/apply', headers=test_client.auth_headers,
+                                json={'service_ids': ['llama-server'], 'expected_env_revision': 'c' * 64})
+    assert response.status_code == 409
+    detail = response.json()['detail']
+    assert detail['code'] == 'env_revision_mismatch'
+    assert 'reload' in detail['message'].lower()
+
+
+def test_core_recreate_client_sends_the_expected_revision(monkeypatch):
+    import main
+    captured: dict[str, object] = {}
+    def fake_request(method, path, *, payload, timeout):
+        captured.update(method=method, path=path, payload=payload, timeout=timeout)
+        return {'status': 'ok'}
+    monkeypatch.setattr(main, 'request_agent_json', fake_request)
+    main._call_agent_core_recreate(['llama-server'], 'd' * 64)
+    assert captured['payload'] == {'service_ids': ['llama-server'], 'expected_env_revision': 'd' * 64}
+    main._call_agent_core_recreate(['searxng'])
+    assert captured['payload'] == {'service_ids': ['searxng']}

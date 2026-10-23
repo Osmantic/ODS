@@ -1107,6 +1107,21 @@ def _switched_off_status(service_id: str, config: dict):
     return not_deployed()
 
 
+# Last time each service's own probe succeeded (monotonic seconds).
+_last_probe_success: dict[str, float] = {}
+# First completed observation bounds startup grace even if no probe succeeds.
+_first_probe_seen: dict[str, float] = {}
+_probe_clock = time.monotonic
+_TIMEOUT_OVERRIDE_GRACE_S = 60.0
+
+
+def _timeout_override_allowed(service_id: str, now: float) -> bool:
+    """Bound Docker-only health to startup or a recent application success."""
+    last_ok = _last_probe_success.get(service_id)
+    anchor = last_ok if last_ok is not None else _first_probe_seen.get(service_id)
+    return anchor is not None and now - anchor <= _TIMEOUT_OVERRIDE_GRACE_S
+
+
 async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> list[ServiceStatus]:
     """Get all service health statuses.
 
@@ -1149,6 +1164,11 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
             ))
         else:
             statuses.append(result)
+    now = _probe_clock()
+    for status in statuses:
+        _first_probe_seen.setdefault(status.id, now)
+        if status.status == "healthy":
+            _last_probe_success[status.id] = now
     if not any(status.status in {"degraded", "down", "unhealthy"} for status in statuses):
         return statuses
 
@@ -1183,10 +1203,12 @@ async def get_all_services(*, only_service_ids: Optional[set[str]] = None) -> li
         if item and config.get("type", "docker") == "docker":
             health = str(item.get("health") or "none").casefold()
             state = str(item.get("state") or "unknown").casefold()
-            if health == "healthy" and status.status == "degraded":
+            if health == "healthy" and status.status == "degraded" and _timeout_override_allowed(status.id, now):
                 # A successful declared Docker healthcheck is authoritative for
                 # transient dashboard-network timeouts, but never masks HTTP
                 # errors or connection refusal from the application probe.
+                # The in-container check cannot see inter-container network
+                # loss, so it only covers startup or a short grace window.
                 replacement = "healthy"
             elif health == "unhealthy":
                 replacement = "unhealthy"
