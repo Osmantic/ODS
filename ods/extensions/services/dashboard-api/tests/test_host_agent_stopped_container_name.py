@@ -32,14 +32,14 @@ def _fake_docker(calls):
 
 
 def test_resolve_container_name_finds_a_stopped_container(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     monkeypatch.setattr(_mod.subprocess, "run", _fake_docker(calls))
 
     assert _mod._resolve_container_name("open-webui") == "ods-webui"
 
 
 def test_service_logs_reads_a_stopped_open_webui(monkeypatch):
-    calls = []
+    calls: list[list[str]] = []
     monkeypatch.setattr(_mod.subprocess, "run", _fake_docker(calls))
     monkeypatch.setattr(_mod, "check_auth", lambda handler: True)
     handler = _FakeHandler(json.dumps({"service_id": "open-webui"}).encode())
