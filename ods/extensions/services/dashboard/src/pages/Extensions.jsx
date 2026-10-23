@@ -659,21 +659,22 @@ export default function Extensions({ compact = false }) {
   const STATUS_LABELS = { all: 'All', enabled: 'Enabled', cli_installed: 'CLI Installed', stopped: 'Stopped', unhealthy: 'Unhealthy', disabled: 'Disabled', installing: 'Installing', setting_up: 'Setting Up', error: 'Error', not_installed: 'Not Installed', incompatible: 'Incompatible' }
 
   // Filter extensions
-  const query = search.toLowerCase()
+  const normalizeSearch = value => String(value ?? '').toLowerCase().replace(/[\s_-]+/g, ' ').trim()
+  const query = normalizeSearch(search)
   const filtered = extensions.filter(ext => {
     if (libraryView === 'installed' && availableForAdd(ext)) return false
     if (libraryView === 'available' && !availableForAdd(ext)) return false
     if (libraryView === 'updates' && !ext.update_available) return false
     if (statusFilter !== 'all' && ext.status !== statusFilter) return false
     if (category !== 'all' && !ext.features?.some(f => f.category === category)) return false
-    if (query && !ext.name.toLowerCase().includes(query) && !ext.description?.toLowerCase().includes(query)) return false
+    if (query && !normalizeSearch(ext.name).includes(query) && !normalizeSearch(ext.description).includes(query)) return false
     return true
   })
   const collections = templates
     .filter(template => !(template.services || []).some(id => unsupportedIds.has(id)))
     .map(template => ({...template, _status: getTemplateStatus(template, extensions)}))
     .filter(template => template._status !== 'applied')
-  const filteredCollections = collections.filter(template => !query || `${template.name} ${template.description || ''}`.toLowerCase().includes(query))
+  const filteredCollections = collections.filter(template => !query || normalizeSearch(`${template.name} ${template.description || ''}`).includes(query))
   const showingCollections = libraryView === 'collections'
 
   return (

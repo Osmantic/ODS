@@ -10,6 +10,8 @@ serves only those immutable snapshots with browser-hardening headers.
 from __future__ import annotations
 
 import hashlib
+import io
+import zipfile
 import errno
 from contextlib import contextmanager
 import fcntl
@@ -170,6 +172,16 @@ def _profile_fields() -> dict[str, str]:
 
 
 PREVIEW_FAILURE_CODES = {
+    "archive exceeds limit": "archive_limit",
+    "archive source changed": "archive_changed",
+    "archive is empty": "archive_empty",
+    "archive contains secret content": "archive_private_source",
+    "archive contains secret-named path": "archive_private_source",
+    "archive contains secret-named file": "archive_private_source",
+    "unsafe archive path": "archive_unsafe_source",
+    "unsafe archive directory": "archive_unsafe_source",
+    "unsafe archive file": "archive_unsafe_source",
+    "archive has duplicate paths": "archive_unsafe_source",
     "source review exceeds limit": "source_capture_limit",
     "source review store quota exceeded": "source_store_full",
     "source review changed": "source_capture_changed",
@@ -221,12 +233,19 @@ def parse_request(payload: bytes) -> dict[str, Any]:
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PreviewError("invalid preview request") from exc
     if isinstance(value, dict) and value.get('action') == 'publish-artifact':
-        if (set(value) != {'schemaVersion', 'action', 'relativePath'} or PROFILE_ID is not None
+        fields = {'schemaVersion', 'action', 'relativePath'}
+        if 'sourcePath' in value:
+            fields.add('sourcePath')
+        if (set(value) != fields or PROFILE_ID is not None
                 or type(value.get('schemaVersion')) is not int or value['schemaVersion'] != 1):
             raise PreviewError('invalid artifact request')
         parts = _parts(value.get('relativePath'))
         if pathlib.PurePosixPath(parts[-1]).suffix.lower() not in ARTIFACT_SUFFIXES:
             raise PreviewError('unsupported preview file type')
+        if 'sourcePath' in value:
+            _parts(value['sourcePath'])
+            if pathlib.PurePosixPath(parts[-1]).suffix.lower() != '.zip':
+                raise PreviewError('archive output must be a ZIP')
         return value
     if (
         not isinstance(value, dict)
@@ -782,6 +801,318 @@ def _publish_captured_snapshot(previews, site_id, captured, full_digest, total, 
     }
 
 
+ARCHIVE_CACHE_DIRS = frozenset({'__pycache__', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.git', 'node_modules'})
+ARCHIVE_SKIP_SUFFIXES = frozenset({'.pyc', '.pyo'})
+ARCHIVE_SKIP_NAMES = frozenset({'.DS_Store'})
+ARCHIVE_ALLOWED_DOTFILES = frozenset({'.gitignore', '.gitattributes', '.editorconfig'})
+ARCHIVE_MAX_FILES = 128
+ARCHIVE_MAX_FILE_BYTES = 4 * 1024 * 1024
+ARCHIVE_MAX_TOTAL_BYTES = 16 * 1024 * 1024
+ARCHIVE_MAX_DEPTH = 12
+ARCHIVE_MAX_PATH = 512
+ARCHIVE_MAX_VISITED = 4096
+ARCHIVE_MAX_OUTPUT = 4 * 1024 * 1024
+ARCHIVE_BOUNDARY = 'Create-only deterministic ZIP snapshot from the configured Pixel workspace; byte integrity only, no execution or document-quality claim.'
+
+
+def _archive_identity(info):
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+            info.st_mode, info.st_uid, info.st_nlink)
+
+
+def _archive_open_dir(parent_fd, name, owner_uid):
+    fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != owner_uid
+                or info.st_mode & 0o022):
+            raise PreviewError('unsafe archive directory')
+        return fd, info
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _archive_read_file(parent_fd, name, owner_uid):
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=parent_fd)
+    try:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid
+                or before.st_nlink != 1 or before.st_mode & 0o022
+                or not 0 <= before.st_size <= ARCHIVE_MAX_FILE_BYTES):
+            raise PreviewError('unsafe archive file')
+        data = bytearray()
+        while len(data) <= ARCHIVE_MAX_FILE_BYTES:
+            chunk = os.read(fd, min(65536, ARCHIVE_MAX_FILE_BYTES + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+        after = os.fstat(fd)
+        if len(data) != before.st_size or _archive_identity(before) != _archive_identity(after):
+            raise PreviewError('archive source changed')
+        os.lseek(fd, 0, os.SEEK_SET)
+        with os.fdopen(os.dup(fd), 'rb') as stream:
+            repeated = stream.read(ARCHIVE_MAX_FILE_BYTES + 1)
+        if repeated != bytes(data) or _archive_identity(before) != _archive_identity(os.fstat(fd)):
+            raise PreviewError('archive source changed')
+        return bytes(data), before
+    finally:
+        os.close(fd)
+
+
+def _archive_manifest_walk(fd, prefix, depth, state, manifest):
+    if depth > ARCHIVE_MAX_DEPTH:
+        raise PreviewError('archive exceeds limit')
+    directory_before = _archive_identity(os.fstat(fd))
+    with os.scandir(fd) as entries:
+        names = sorted(entry.name for entry in itertools.islice(entries, ARCHIVE_MAX_VISITED + 1))
+    if len(names) > ARCHIVE_MAX_VISITED:
+        raise PreviewError('archive exceeds limit')
+    for name in names:
+        state['visited'] += 1
+        if state['visited'] > ARCHIVE_MAX_VISITED:
+            raise PreviewError('archive exceeds limit')
+        info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        relative = prefix + name
+        if len(relative) > ARCHIVE_MAX_PATH:
+            raise PreviewError('archive exceeds limit')
+        manifest[relative] = _archive_identity(info)
+        if relative in state['expectedBytes']:
+            repeated, observed = _archive_read_file(fd, name, state['owner_uid'])
+            if (_archive_identity(observed) != _archive_identity(info)
+                    or repeated != state['expectedBytes'][relative]):
+                raise PreviewError('archive source changed')
+        if stat.S_ISDIR(info.st_mode):
+            if name in ARCHIVE_CACHE_DIRS:
+                continue
+            child_fd, child_info = _archive_open_dir(fd, name, state['owner_uid'])
+            try:
+                if (child_info.st_dev, child_info.st_ino) != (info.st_dev, info.st_ino):
+                    raise PreviewError('archive source changed')
+                _archive_manifest_walk(child_fd, relative + '/', depth + 1, state, manifest)
+            finally:
+                os.close(child_fd)
+
+    if directory_before != _archive_identity(os.fstat(fd)):
+        raise PreviewError('archive source changed')
+
+
+def _archive_walk(root_fd, owner_uid, prefix, depth, state, out, manifest):
+    if depth > ARCHIVE_MAX_DEPTH:
+        raise PreviewError('archive exceeds limit')
+    directory_before = _archive_identity(os.fstat(root_fd))
+    with os.scandir(root_fd) as entries:
+        names = sorted(entry.name for entry in itertools.islice(entries, ARCHIVE_MAX_VISITED + 1))
+    if len(names) > ARCHIVE_MAX_VISITED:
+        raise PreviewError('archive exceeds limit')
+    folded = set()
+    for name in names:
+        state['visited'] += 1
+        if state['visited'] > ARCHIVE_MAX_VISITED:
+            raise PreviewError('archive exceeds limit')
+        key = name.casefold()
+        if key in folded:
+            raise PreviewError('archive has duplicate paths')
+        folded.add(key)
+        info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode):
+            raise PreviewError('unsafe archive path')
+        if info.st_uid != owner_uid or info.st_mode & 0o022:
+            raise PreviewError('unsafe archive path')
+        relative = prefix + name
+        if len(relative) > ARCHIVE_MAX_PATH:
+            raise PreviewError('archive exceeds limit')
+        if stat.S_ISDIR(info.st_mode):
+            if name in ARCHIVE_CACHE_DIRS:
+                state['omittedCacheEntries'] += 1
+                manifest[relative] = _archive_identity(info)
+                continue
+            if SOURCE_SECRET_NAME.search(name):
+                raise PreviewError('archive contains secret-named path')
+            if ASSET_COMPONENT.fullmatch(name) is None:
+                raise PreviewError('unsafe archive path')
+            child_fd, child_info = _archive_open_dir(root_fd, name, owner_uid)
+            try:
+                if (child_info.st_dev, child_info.st_ino) != (info.st_dev, info.st_ino):
+                    raise PreviewError('archive source changed')
+                manifest[relative] = _archive_identity(child_info)
+                _archive_walk(child_fd, owner_uid, relative + '/', depth + 1, state, out, manifest)
+            finally:
+                os.close(child_fd)
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise PreviewError('unsafe archive file')
+        if name == '.git' or name in ARCHIVE_SKIP_NAMES or pathlib.PurePosixPath(name).suffix.lower() in ARCHIVE_SKIP_SUFFIXES:
+            state['omittedCacheEntries'] += 1
+            manifest[relative] = _archive_identity(info)
+            continue
+        if name.startswith('.'):
+            if name not in ARCHIVE_ALLOWED_DOTFILES:
+                raise PreviewError('unsafe archive path')
+        else:
+            if ASSET_COMPONENT.fullmatch(name) is None:
+                raise PreviewError('unsafe archive path')
+        if SOURCE_SECRET_NAME.search(name):
+            raise PreviewError('archive contains secret-named file')
+        data, before = _archive_read_file(root_fd, name, owner_uid)
+        if _archive_identity(before) != _archive_identity(info):
+            raise PreviewError('archive source changed')
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            text = None
+        if text is not None and SOURCE_SECRET_CONTENT.search(text):
+            raise PreviewError('archive contains secret content')
+        state['total'] += len(data)
+        if state['total'] > ARCHIVE_MAX_TOTAL_BYTES:
+            raise PreviewError('archive exceeds limit')
+        state['files'] += 1
+        if state['files'] > ARCHIVE_MAX_FILES:
+            raise PreviewError('archive exceeds limit')
+        manifest[relative] = _archive_identity(before)
+        out.append((relative, data))
+
+    if directory_before != _archive_identity(os.fstat(root_fd)):
+        raise PreviewError('archive source changed')
+
+
+def _archive_capture(workspace, source_path, owner_uid):
+    _safe_root(workspace, owner_uid)
+    parts = _parts(source_path)
+    if not parts:
+        raise PreviewError('unsafe archive path')
+    root_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    current = root_fd
+    try:
+        root_info = os.fstat(root_fd)
+        if root_info.st_uid != owner_uid or root_info.st_mode & 0o022:
+            raise PreviewError('unsafe archive directory')
+        for component in parts[:-1]:
+            if component in ARCHIVE_CACHE_DIRS or SOURCE_SECRET_NAME.search(component):
+                raise PreviewError('unsafe archive path')
+            if ASSET_COMPONENT.fullmatch(component) is None:
+                raise PreviewError('unsafe archive path')
+            child, _info = _archive_open_dir(current, component, owner_uid)
+            if current != root_fd:
+                os.close(current)
+            current = child
+        leaf = parts[-1]
+        if (leaf in ARCHIVE_CACHE_DIRS or leaf in ARCHIVE_SKIP_NAMES
+                or pathlib.PurePosixPath(leaf).suffix.lower() in ARCHIVE_SKIP_SUFFIXES
+                or SOURCE_SECRET_NAME.search(leaf)):
+            raise PreviewError('unsafe archive path')
+        if ASSET_COMPONENT.fullmatch(leaf) is None:
+            raise PreviewError('unsafe archive path')
+        leaf_info = os.stat(leaf, dir_fd=current, follow_symlinks=False)
+        if stat.S_ISLNK(leaf_info.st_mode) or leaf_info.st_uid != owner_uid or leaf_info.st_mode & 0o022:
+            raise PreviewError('unsafe archive path')
+        state = {'visited': 0, 'files': 0, 'total': 0, 'omittedCacheEntries': 0, 'owner_uid': owner_uid}
+        out = []
+        manifest = {}
+        if stat.S_ISDIR(leaf_info.st_mode):
+            child_fd, child_info = _archive_open_dir(current, leaf, owner_uid)
+            try:
+                if (child_info.st_dev, child_info.st_ino) != (leaf_info.st_dev, leaf_info.st_ino):
+                    raise PreviewError('archive source changed')
+                manifest[leaf] = _archive_identity(child_info)
+                _archive_walk(child_fd, owner_uid, leaf + '/', 1, state, out, manifest)
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(leaf_info.st_mode):
+            if leaf_info.st_nlink != 1:
+                raise PreviewError('unsafe archive file')
+            data, before = _archive_read_file(current, leaf, owner_uid)
+            if _archive_identity(before) != _archive_identity(leaf_info):
+                raise PreviewError('archive source changed')
+            try:
+                text = data.decode('utf-8')
+            except UnicodeDecodeError:
+                text = None
+            if text is not None and SOURCE_SECRET_CONTENT.search(text):
+                raise PreviewError('archive contains secret content')
+            state['files'] = 1
+            state['total'] = len(data)
+            manifest[leaf] = _archive_identity(before)
+            out.append((leaf, data))
+        else:
+            raise PreviewError('unsafe archive path')
+        if not out:
+            raise PreviewError('archive is empty')
+        out.sort(key=lambda item: item[0])
+        folded = set()
+        for name, _data in out:
+            key = name.casefold()
+            if key in folded:
+                raise PreviewError('archive has duplicate paths')
+            folded.add(key)
+        final_manifest = {}
+        # Timestamps can be coarser than rapid same-size writes. Verify bytes
+        # again after capturing the whole tree, not just its metadata.
+        final_state = {'visited': 0, 'owner_uid': owner_uid, 'expectedBytes': dict(out)}
+        if stat.S_ISDIR(leaf_info.st_mode):
+            child_fd, child_info = _archive_open_dir(current, leaf, owner_uid)
+            try:
+                if (child_info.st_dev, child_info.st_ino) != (leaf_info.st_dev, leaf_info.st_ino):
+                    raise PreviewError('archive source changed')
+                final_manifest[leaf] = _archive_identity(child_info)
+                _archive_manifest_walk(child_fd, leaf + '/', 1, final_state, final_manifest)
+            finally:
+                os.close(child_fd)
+        else:
+            repeated, observed = _archive_read_file(current, leaf, owner_uid)
+            final_manifest[leaf] = _archive_identity(observed)
+            if repeated != out[0][1]:
+                raise PreviewError('archive source changed')
+        if final_manifest != manifest:
+            raise PreviewError('archive source changed')
+        return out, state
+    finally:
+        if current != root_fd:
+            os.close(current)
+        os.close(root_fd)
+
+
+def _archive_build(entries):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=False) as archive:
+        for name, data in entries:
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = (stat.S_IFREG | 0o644) << 16
+            info.create_system = 3
+            archive.writestr(info, data)
+    body = buffer.getvalue()
+    if len(body) > ARCHIVE_MAX_OUTPUT:
+        raise PreviewError('archive exceeds limit')
+    with zipfile.ZipFile(io.BytesIO(body), 'r') as archive:
+        names = archive.namelist()
+        if names != [name for name, _data in entries]:
+            raise PreviewError('archive verification failed')
+        for name, data in entries:
+            if archive.read(name) != data:
+                raise PreviewError('archive verification failed')
+        if archive.testzip() is not None:
+            raise PreviewError('archive verification failed')
+    return body
+
+
+def publish_artifact_archive(workspace, previews, relative_path, source_path, owner_uid):
+    _parts(relative_path)
+    if pathlib.PurePosixPath(relative_path).suffix.lower() != '.zip':
+        raise PreviewError('unsupported preview file type')
+    entries, state = _archive_capture(workspace, source_path, owner_uid)
+    body = _archive_build(entries)
+    receipt = _publish_artifact_bytes(previews, relative_path, body, owner_uid)
+    receipt['archive'] = {
+        'sourcePath': source_path,
+        'fileCount': state['files'],
+        'sourceBytes': state['total'],
+        'omittedCacheEntries': state['omittedCacheEntries'],
+    }
+    receipt['boundary'] = ARCHIVE_BOUNDARY
+    return receipt
+
+
 def publish_artifact(workspace, previews, relative_path, owner_uid):
     """Capture exactly one owner file through descriptor-relative no-link opens."""
     _safe_root(workspace, owner_uid)
@@ -832,6 +1163,15 @@ def publish_artifact(workspace, previews, relative_path, owner_uid):
             os.close(descriptor)
     finally:
         os.close(current)
+    return _publish_artifact_bytes(previews, relative_path, data, owner_uid)
+
+
+def _publish_artifact_bytes(previews, relative_path, data, owner_uid):
+    _safe_root(previews, owner_uid)
+    filename = _parts(relative_path)[-1]
+    if pathlib.PurePosixPath(filename).suffix.lower() not in ARTIFACT_SUFFIXES or len(data) > MAX_FILE_BYTES:
+        raise PreviewError('unsupported or oversized artifact')
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     digest = hashlib.sha256()
     encoded_name = filename.encode('utf-8')
     digest.update(len(encoded_name).to_bytes(4, 'big'))
@@ -1301,7 +1641,10 @@ def _serve_connection(
         else:
             request = parse_request(raw)
             if request['action'] == 'publish-artifact':
-                response = publish_artifact(workspace, previews, request['relativePath'], owner_uid)
+                if 'sourcePath' in request:
+                    response = publish_artifact_archive(workspace, previews, request['relativePath'], request['sourcePath'], owner_uid)
+                else:
+                    response = publish_artifact(workspace, previews, request['relativePath'], owner_uid)
                 _verify_http(port, response['siteId'], response['file']['sha256'], response['file']['path'])
                 response.update({'httpStatus': 200, 'readbackVerified': True})
             elif request["action"] == "verify-current":

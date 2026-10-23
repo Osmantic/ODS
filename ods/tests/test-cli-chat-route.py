@@ -33,6 +33,7 @@ class ChatRouteTests(unittest.TestCase):
         self.requests = []
         self.gateway_status = 200
         self.completion_status = 200
+        self.completion_payload = {"choices": [{"message": {"content": "fixture reply"}}]}
         self.servers = []
         self.threads = []
         fixture = self
@@ -59,7 +60,7 @@ class ChatRouteTests(unittest.TestCase):
                     body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                     fixture.requests.append((self.server.route, self.path,
                                              self.headers.get("Authorization"), body))
-                    self.respond({"choices": [{"message": {"content": "fixture reply"}}]})
+                    self.respond(fixture.completion_payload)
 
             server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
             server.route = route
@@ -110,6 +111,27 @@ class ChatRouteTests(unittest.TestCase):
         if arguments is None:
             self.assertEqual(sent["messages"][0]["content"], "Xin chào 🌏")
 
+    def test_missing_switchboard_uses_enabled_default(self):
+        self.assert_gateway({})
+
+    def test_explicit_disabled_switchboard_keeps_local_route(self):
+        result = self.command({"ODS_MODEL_SWITCHBOARD": "disabled"}, "chat", "hello")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([request[0] for request in self.requests], ["local", "local"])
+        self.assertTrue(all(request[2] is None for request in self.requests))
+
+    def test_context_length_error_body_is_reported_for_each_route(self):
+        self.completion_status = 400
+        self.completion_payload = {"error": {"message": "context length exceeded"}}
+        for mode in ("enabled", "disabled"):
+            with self.subTest(mode=mode):
+                self.requests.clear()
+                result = self.command({"ODS_MODEL_SWITCHBOARD": mode}, "chat", "hello")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("context length exceeded", result.stderr)
+                self.assertTrue(all(r[0] == ("gateway" if mode == "enabled" else "local")
+                                    for r in self.requests))
+
     def test_enabled_switchboard_uses_authenticated_public_alias(self):
         self.assert_gateway({"ODS_MODEL_SWITCHBOARD": "enabled"})
 
@@ -117,8 +139,8 @@ class ChatRouteTests(unittest.TestCase):
         self.assert_gateway({"ODS_MODE": "cloud", "ODS_MODEL_SWITCHBOARD": "observe"}, model="default")
 
     def test_external_and_host_native_routes_use_gateway(self):
-        for values in ({"EXTERNAL_LLM_URL": "https://provider.invalid/v1"},
-                       {"NATIVE_LLM_BASE_URL": "http://127.0.0.1:1"}):
+        for values in ({"ODS_MODEL_SWITCHBOARD": "observe", "EXTERNAL_LLM_URL": "https://provider.invalid/v1"},
+                       {"ODS_MODEL_SWITCHBOARD": "observe", "NATIVE_LLM_BASE_URL": "http://127.0.0.1:1"}):
             with self.subTest(values=values):
                 self.requests.clear()
                 self.assert_gateway(values, model="default")

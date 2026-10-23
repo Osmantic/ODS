@@ -475,7 +475,7 @@ function Assert-ODSInstallDirSafeForRemoval {
     }
     $envPath = Join-Path $fullPath ".env"
     if (Test-Path -LiteralPath $envPath -PathType Leaf) {
-        $envText = Get-Content -LiteralPath $envPath -Raw -ErrorAction SilentlyContinue
+        $envText = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
         if (
             $envText -match '(?m)^WEBUI_SECRET=' -and
             $envText -match '(?m)^DASHBOARD_API_KEY='
@@ -1165,6 +1165,12 @@ function Test-ODSComposeServicesStarted {
         try {
             $ids = @(& docker compose @ComposeFlags ps --all -q $service 2>$null |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            # Partial stdout is not a complete inventory when Docker failed.
+            # Keep the bounded retry path rather than certifying startup from
+            # whichever container IDs happened to arrive before the failure.
+            if ($LASTEXITCODE -ne 0) {
+                return $false
+            }
         } catch {
             return $false
         }
@@ -1299,7 +1305,7 @@ function Set-ODSEnvValue {
     $lines = New-Object 'System.Collections.Generic.List[string]'
     $escapedKey = [regex]::Escape($Key)
     $updated = $false
-    foreach ($line in @(Get-Content $envFile)) {
+    foreach ($line in @(Get-Content -LiteralPath $envFile -Encoding UTF8)) {
         if ($line -match "^${escapedKey}=") {
             if (-not $updated) {
                 [void]$lines.Add("${Key}=${Value}")
@@ -2492,7 +2498,7 @@ function Invoke-ConfigShow {
         return
     }
 
-    Get-Content $envFile | ForEach-Object {
+    Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         if ($line -match "^#" -or $line -eq "") { return }
         # Redact any key whose NAME contains a sensitive keyword, mirroring the
@@ -2525,18 +2531,29 @@ function Invoke-Chat {
     } | ConvertTo-Json -Depth 3
 
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
+    $headers = @{}
+    if ($llmEndpoint.ContainsKey("ApiKey") -and -not [string]::IsNullOrWhiteSpace([string]$llmEndpoint.ApiKey)) {
+        $headers.Authorization = "Bearer " + [string]$llmEndpoint.ApiKey
+    }
     try {
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
-            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
+            -Method POST -Headers $headers -Body $body -ContentType "application/json" -TimeoutSec 120
 
-        if ($resp.choices -and $resp.choices[0].message) {
-            Write-Host ""
-            Write-Host $resp.choices[0].message.content
-            Write-Host ""
+        if (-not $resp.choices -or -not $resp.choices[0].message -or
+            $resp.choices[0].message.content -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($resp.choices[0].message.content)) {
+            $detail = 'No assistant text in the response'
+            if ($resp.error -and $resp.error.message) { $detail = [string]$resp.error.message }
+            throw $detail
         }
+
+        Write-Host ""
+        Write-Host $resp.choices[0].message.content
+        Write-Host ""
     } catch {
         Write-AIError "Chat request failed: $_"
         Write-AI "Is llama-server running? Try: .\ods.ps1 status"
+        exit 1
     }
 }
 

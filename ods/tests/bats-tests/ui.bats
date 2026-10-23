@@ -90,6 +90,16 @@ setup() {
     refute_output --partial "⚠"
 }
 
+@test "ui_status_line: cinematic output clears entire line to prevent ghost characters" {
+    export ODS_UI_MODE="cinematic"
+    export INTERACTIVE="true"
+    run ui_status_line ok "Service ready"
+    assert_success
+    assert_output --partial $'\r\033[K'
+    assert_output --partial "✓"
+    assert_output --partial "Service ready"
+}
+
 # ── ai ──────────────────────────────────────────────────────────────────────
 
 @test "ai: outputs the ▸ marker and message" {
@@ -567,4 +577,35 @@ MOCK
     local rc=0
     spin_task "$task_pid" "Downloading model.gguf" "$part" 10 > "$BATS_TEST_TMPDIR/failed.out" || rc=$?
     [[ "$rc" -eq 23 ]]
+}
+
+@test "spin_task: cinematic mode updates lore in-place without scrolling newlines" {
+    export ODS_UI_MODE="cinematic"
+    export INTERACTIVE="true"
+    local rendered="$BATS_TEST_TMPDIR/spin-cinematic-lore.out"
+    command sleep 60 &
+    local task_pid=$!
+    local ticks=0
+
+    # Advance polling through 16 ticks (2 lore rotations at 8s and 16s)
+    sleep() {
+        ticks=$((ticks + 1))
+        if [[ "$ticks" -ge 17 ]]; then
+            kill -TERM "$task_pid"
+            wait "$task_pid" 2>/dev/null || :
+        fi
+    }
+    local rc=0
+    spin_task "$task_pid" "Downloading model.gguf" > "$rendered" || rc=$?
+    unset -f sleep
+
+    [[ "$rc" -eq 143 ]]
+    # Must use ANSI cursor up to stay in-place
+    grep -q $'\033\\[A' "$rendered"
+    # Must use clear-line to keep lines clean
+    grep -q $'\033\\[K' "$rendered"
+    # Lore quote was displayed
+    grep -qF "«" "$rendered"
+    # Lore line was cleared on exit
+    grep -q $'\n\033\\[K\033\\[A\r' "$rendered"
 }
