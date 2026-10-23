@@ -2269,6 +2269,47 @@ class TestCoreRecreateModelLifecycle:
         assert calls == [["searxng"]]
 
 
+    @pytest.mark.parametrize("compose_result, expected_status", [
+        ((False, "Docker compose operation timed out (120s)"), 503),
+        ((False, "compose up failed: exit 1"), 500),
+    ], ids=["timeout", "non-timeout"])
+    def test_compose_failure_releases_lifecycle_and_allows_subsequent_claim(
+        self, monkeypatch, compose_result, expected_status
+    ):
+        def fake_recreate(ids):
+            assert _mod._model_lifecycle_status()["activeOperation"] == "core_recreate"
+            return compose_result
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": ["llama-server"]}).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == expected_status
+        assert handler.parse_response()["error"] == compose_result[1]
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        acquired, _ = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        _mod._end_model_lifecycle("model_activation")
+
+    def test_compose_runtime_error_releases_lifecycle_and_allows_subsequent_claim(
+        self, monkeypatch
+    ):
+        def fake_recreate(ids):
+            assert _mod._model_lifecycle_status()["activeOperation"] == "core_recreate"
+            raise RuntimeError("compose resolution exploded")
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": ["llama-server"]}).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == 500
+        assert handler.parse_response()["error"] == "compose resolution exploded"
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        acquired, _ = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        _mod._end_model_lifecycle("model_activation")
+
+
 class TestResolveComposeFlagsCache:
 
     def test_cached_recipe_is_checked_before_any_docker_command(self, tmp_path, monkeypatch):
