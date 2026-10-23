@@ -68,19 +68,74 @@ export function requestsNewPlaygroundProject(intent) {
 // A bare directory name after "workspace directory" is still an explicit
 // owner operand. Match an affirmative creation clause, not an example, quoted
 // instruction, or prohibition. This preserves the path; it grants no access.
-function namesWorkspaceDirectory(text) {
-  return text.split(/[;!?\n]|\.(?=\s|$)/).some(clause => {
-    if (!/^\s*(?:please\s+)?(?:create|build|make|develop|design|implement|generate|write)\b/i.test(clause)) return false;
-    const match = /\b(?:in|inside|under)\s+(?:(?:a|an|the)\s+)?(?:(?:new|separate|empty)\s+)?workspace\s+(?:directory|folder)\s+(?:(?:called|named)\s+)?(?:"([A-Za-z0-9][A-Za-z0-9._-]{0,63})"|'([A-Za-z0-9][A-Za-z0-9._-]{0,63})'|`([A-Za-z0-9][A-Za-z0-9._-]{0,63})`|([A-Za-z0-9][A-Za-z0-9._-]{0,63}))(?=$|[\s,;.!?])/i.exec(clause);
-    if (!match || /\b(?:not|never|avoid|don't|don’t|example|e\.g\.)\b/i.test(clause.slice(0,match.index))) return false;
-    const name = match.slice(1).find(Boolean);
-    return Boolean(parts(name));
-  });
+function namedProjectDirectories(text) {
+  const names = new Set();
+  for (const clause of text.split(/[;!?\n]|\.(?=\s|$)/)) {
+    if (!/^\s*(?:please\s+)?(?:create|build|make|develop|design|implement|generate|write)\b/i.test(clause)) continue;
+    const pattern = /\b(?:in|inside|under)\s+(?:(?:a|an|the)\s+)?(?:(?:new|separate|empty)\s+(?:workspace\s+)?|workspace\s+)(?:directory|folder)\s+(?:(?:called|named)\s+)?(?:"([A-Za-z0-9][A-Za-z0-9._-]{0,63})"|'([A-Za-z0-9][A-Za-z0-9._-]{0,63})'|`([A-Za-z0-9][A-Za-z0-9._-]{0,63})`|([A-Za-z0-9][A-Za-z0-9._-]{0,63}))(?=$|[\s,;.!?])/gi;
+    for (const match of clause.matchAll(pattern)) {
+      if (/\b(?:not|never|avoid|don't|don’t|example|e\.g\.)\b/i.test(clause.slice(0,match.index))) continue;
+      if (/^\s*,?\s*(?:do not|don't|don’t|never)\s+(?:write|create|put|save|modify|touch)\s+(?:anything|there|here|(?:files?\s+)?in\s+(?:it|that\s+(?:directory|folder)))(?=$|[\s,.])/i.test(clause.slice(match.index + match[0].length))) continue;
+      const name = match.slice(1).find(Boolean);
+      if (parts(name)) names.add(name);
+    }
+  }
+  return [...names];
+}
+function namedProjectDirectory(text) {
+  const names = namedProjectDirectories(text);
+  return names.length === 1 ? names[0] : undefined;
+}
+
+// A refusal in the naming clause makes an inferred correction inappropriate.
+// Preserve the original call for core policy; this does not allow a write.
+function directoryCreationProhibited(text, directory) {
+  return text.split(/[;!?\n]|\.(?=\s|$)/).some(clause =>
+    namedProjectDirectories(clause).includes(directory) &&
+    (/\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|without)\s+(?:please\s+)?(?:add|write|create|put|save|modify|touch|place|include)\b/i.test(clause)
+      || /\b(?:no|without)\s+(?:files?|anything)\b/i.test(clause)));
+}
+
+// Diagnose an invented workspace prefix before the exact owner-named folder.
+// This only supplies a retry hint: no file is moved, reserved or rewritten.
+// Unrelated paths, explicit operands and reads/edits keep their core semantics.
+function misplacedNamedProjectPath(value, directory, root, intent, directoryTarget = false) {
+  if (typeof value !== 'string' || !value || value.length > 512) return undefined;
+  let text = value.replaceAll('\\','/');
+  const configured = root.replaceAll('\\','/').replace(/\/$/,'');
+  if (text.startsWith(configured + '/')) text = text.slice(configured.length + 1);
+  else if (text.startsWith('/workspace/')) text = text.slice('/workspace/'.length);
+  else if (text.startsWith('/') || /^[A-Za-z]:/.test(text)) return undefined;
+  const pathCharacter = /[\p{L}\p{N}_./\\-]/u;
+  const operands = new Set([value,text,`/workspace/${text}`,`${configured}/${text}`]);
+  // An explicit parent directory also selects its child locations. Keep the
+  // same token-boundary checks so labels and longer sibling names do not match.
+  for (const operand of [...operands]) {
+    const normalized = operand.replaceAll('\\','/');
+    for (let end=normalized.lastIndexOf('/');end>0;end=normalized.lastIndexOf('/',end-1)) {
+      const parent = normalized.slice(0,end);
+      if (parent.includes('/')) { operands.add(parent); operands.add(parent + '/'); }
+    }
+  }
+  for (const operand of [...operands]) operands.add(operand.replaceAll('/','\\'));
+  for (const operand of operands) for (let at=intent.indexOf(operand);at!==-1;at=intent.indexOf(operand,at+operand.length)) {
+    const after = intent.slice(at+operand.length);
+    if ((!at || !pathCharacter.test(intent[at-1])) &&
+        (!after || !pathCharacter.test(after[0]) || /^\.(?:\s|$)/.test(after))) return undefined;
+  }
+  if (directoryTarget) text = trimSlashes(text);
+  const segments = text.split('/');
+  if (segments.length > 12 || segments.some(part => !part || part === '.' || part === '..')) return undefined;
+  const at = segments.indexOf(directory);
+  if (at <= 0 || segments.lastIndexOf(directory) !== at) return undefined;
+  const correction = segments.slice(at).join('/');
+  const components = parts(correction);
+  return components && components.length >= (directoryTarget ? 1 : 2) ? correction : undefined;
 }
 
 function ownerNamesPath(intent) {
   const text = plainIntent(intent).replace(/https?:\/\/\S+/g, ' ');
-  return namesWorkspaceDirectory(text) || /(?:^|[\s`"'(])(?:\/?[A-Za-z0-9_.-]+[\/\\][A-Za-z0-9_./\\-]+|[A-Za-z]:[\/\\]\S+)(?=$|[\s`"'),;.!?])/i.test(text)
+  return namedProjectDirectories(text).length > 0 || /(?:^|[\s`"'(])(?:\/?[A-Za-z0-9_.-]+[\/\\][A-Za-z0-9_./\\-]+|[A-Za-z]:[\/\\]\S+)(?=$|[\s`"'),;.!?])/i.test(text)
     || /\b(?:folder|directory|pasta|diretorio)\s+(?:called|named|chamad[ao])\s+[`"']?[A-Za-z0-9_.-]+/i.test(text)
     || /\b(?:in|inside|under|em|na|no)\s+(?:the\s+)?(?:folder|directory|pasta|diretorio)\s+(?!with\b|for\b|com\b|para\b)[`"']?[A-Za-z0-9_.-]+/i.test(text);
 }
@@ -554,6 +609,22 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       state.fresh = false;
       state.binding = null;
     };
+    const ownerText = plainIntent(intent).replace(/https?:\/\/\S+/g, ' ');
+    const ownerDirectory = !preserveExisting && namedProjectDirectory(ownerText);
+    if (ownerDirectory && !directoryCreationProhibited(ownerText,ownerDirectory) && ['write','exec'].includes(selected.tool)) {
+      const args = selected.args;
+      const key = selected.tool === 'write' ? 'path' : 'workdir';
+      let correction = misplacedNamedProjectPath(args[key],ownerDirectory,root,ownerText,selected.tool === 'exec');
+      // Recognize only a simple mkdir operand, not arbitrary shell source.
+      // A command is never rewritten, replayed, or described as having run.
+      if (!correction && selected.tool === 'exec' && typeof args.command === 'string' && args.command.length <= 8192) {
+        const mkdir = /^\s*mkdir\s+(?:-p\s+)?(?:(['"])([^'"\r\n]+)\1|([^\s;&|<>`$()]+))\s*$/.exec(args.command);
+        if (mkdir) correction = misplacedNamedProjectPath(mkdir[2] ?? mkdir[3],ownerDirectory,root,ownerText,true);
+      }
+      if (correction) return {block:true,blockReason:selected.tool === 'write'
+        ? `Not written: the owner selected the workspace-relative folder ${ownerDirectory}. Call write again with path ${JSON.stringify(correction)} and the same content. Write creates parent folders. Keep project files in that exact folder and use /workspace/${ownerDirectory} as exec workdir. No path was rewritten.`
+        : `Nothing was executed: the owner selected the workspace-relative folder ${ownerDirectory}. Write the first project file under ${ownerDirectory}/; write creates parent folders, so mkdir is unnecessary. Then use /workspace/${ownerDirectory} as exec workdir. No command was rewritten.`};
+    }
     if (preserveExisting || ownerNamesPath(intent)) {
       if (preserveExisting || ['write','edit','apply_patch','pixel_ods_workspace_preview'].includes(selected.tool)) preserve();
       return undefined;
