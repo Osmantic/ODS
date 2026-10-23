@@ -803,7 +803,7 @@ fix_nvidia_secure_boot() {
     if [[ -z "$installed_driver" ]]; then
         ai "No NVIDIA driver package found. Installing recommended driver..."
         if command -v ubuntu-drivers &>/dev/null; then
-            ods_sudo ubuntu-drivers install 2>>"$LOG_FILE" || \
+            ods_sudo ubuntu-drivers install </dev/null 2>>"$LOG_FILE" || \
             ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true
         else
             ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" </dev/null 2>>"$LOG_FILE" || true

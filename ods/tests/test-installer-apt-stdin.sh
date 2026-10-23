@@ -54,6 +54,22 @@ _phase07_install_linux_node Pixel <<< 'installer input'
 [[ "$(wc -l <"$APT_CALLS")" -eq 5 ]]
 echo 'PASS: NodeSource and nodejs package work receive EOF'
 
+# ubuntu-drivers is another apt frontend: execute both production call sites
+# with an inert command that fails if it receives the installer's input.
+ubuntu-drivers() {
+    if IFS= read -r line; then
+        echo 'ubuntu-drivers inherited installer input' >&2; return 77
+    fi
+}
+MIN_DRIVER_VERSION=580
+for file in installers/lib/detection.sh installers/phases/02-detection.sh; do
+    driver_call="$(sed -n '/ods_sudo ubuntu-drivers install /p' "$ROOT/$file")"
+    [[ -n "$driver_call" ]]
+    driver_call="${driver_call%% ||*}"
+    eval "$driver_call" <<< 'installer input'
+done
+echo 'PASS: ubuntu-drivers package work receives EOF'
+
 # Execute the production bootstrap invocation without its unrelated service
 # setup. Its nested package installers must inherit EOF too.
 bootstrap_call="$(sed -n '/^    if ! ods_pixel_run_as_owner .* bootstrap --apply /p' "$ROOT/installers/lib/pixel-host-install.sh")"
