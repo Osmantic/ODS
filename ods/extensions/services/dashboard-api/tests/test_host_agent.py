@@ -2210,6 +2210,183 @@ class TestHandleCoreRecreate:
         assert compose_calls == []
 
 
+class TestCoreRecreateModelLifecycle:
+
+    @pytest.fixture(autouse=True)
+    def _auth(self, monkeypatch):
+        monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        monkeypatch.setattr(_mod, "CORE_SERVICE_IDS", {"llama-server", "litellm", "model-router", "searxng"})
+
+    def _recreate(self, monkeypatch, service_ids):
+        calls = []
+        seen_operation = []
+
+        def fake_recreate(ids):
+            calls.append(ids)
+            seen_operation.append(_mod._model_lifecycle_status().get("activeOperation"))
+            return True, ""
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": service_ids}).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+        return handler, calls, seen_operation
+
+    @pytest.mark.parametrize("service_id", ["llama-server", "litellm", "model-router"])
+    def test_model_stack_recreate_is_refused_during_a_model_switch(self, monkeypatch, service_id):
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        try:
+            handler, calls, _ = self._recreate(monkeypatch, [service_id])
+        finally:
+            _mod._end_model_lifecycle("model_activation")
+
+        assert handler.response_code == 409
+        response = handler.parse_response()
+        assert response["code"] == "model_lifecycle_busy"
+        assert response["activeOperation"] == "model_activation"
+        assert calls == []
+
+    def test_model_stack_recreate_holds_the_lifecycle_while_it_runs(self, monkeypatch):
+        handler, calls, seen_operation = self._recreate(monkeypatch, ["llama-server"])
+
+        assert handler.response_code == 200
+        assert calls == [["llama-server"]]
+        assert seen_operation == ["core_recreate"]
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        _mod._end_model_lifecycle("model_activation")
+
+    def test_other_core_recreates_do_not_wait_for_a_model_switch(self, monkeypatch):
+        acquired, _active = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        try:
+            handler, calls, _ = self._recreate(monkeypatch, ["searxng"])
+        finally:
+            _mod._end_model_lifecycle("model_activation")
+
+        assert handler.response_code == 200
+        assert calls == [["searxng"]]
+
+
+    @pytest.mark.parametrize("compose_result, expected_status", [
+        ((False, "Docker compose operation timed out (120s)"), 503),
+        ((False, "compose up failed: exit 1"), 500),
+    ], ids=["timeout", "non-timeout"])
+    def test_compose_failure_releases_lifecycle_and_allows_subsequent_claim(
+        self, monkeypatch, compose_result, expected_status
+    ):
+        def fake_recreate(ids):
+            assert _mod._model_lifecycle_status()["activeOperation"] == "core_recreate"
+            return compose_result
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": ["llama-server"]}).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == expected_status
+        assert handler.parse_response()["error"] == compose_result[1]
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        acquired, _ = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        _mod._end_model_lifecycle("model_activation")
+
+    def test_compose_runtime_error_releases_lifecycle_and_allows_subsequent_claim(
+        self, monkeypatch
+    ):
+        def fake_recreate(ids):
+            assert _mod._model_lifecycle_status()["activeOperation"] == "core_recreate"
+            raise RuntimeError("compose resolution exploded")
+
+        monkeypatch.setattr(_mod, "docker_compose_recreate", fake_recreate)
+        handler = _FakeHandler(json.dumps({"service_ids": ["llama-server"]}).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+
+        assert handler.response_code == 500
+        assert handler.parse_response()["error"] == "compose resolution exploded"
+        assert not _mod._model_lifecycle_status().get("lifecycleActive")
+        acquired, _ = _mod._begin_model_lifecycle("model_activation", "target")
+        assert acquired
+        _mod._end_model_lifecycle("model_activation")
+
+
+    def test_core_recreate_rejects_stale_env_revision_without_compose(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        (tmp_path / '.env').write_text('A=1\n', encoding='utf-8')
+        calls = []
+        def fake_recreate(ids):
+            calls.append(ids)
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
+        handler = _FakeHandler(json.dumps({
+            'service_ids': ['searxng'],
+            'expected_env_revision': '0' * 64,
+        }).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+        assert handler.response_code == 409
+        body = handler.parse_response()
+        assert body['code'] == 'env_revision_mismatch'
+        assert calls == []
+        assert not _mod._model_lifecycle_status().get('lifecycleActive')
+        acquired, _ = _mod._begin_model_lifecycle('model_activation', 'target')
+        assert acquired
+        _mod._end_model_lifecycle('model_activation')
+
+
+    def test_core_recreate_accepts_matching_env_revision_and_holds_lifecycle(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        (tmp_path / '.env').write_text('A=1\n', encoding='utf-8')
+        revision = _mod.hashlib.sha256((tmp_path / '.env').read_bytes()).hexdigest()
+        seen = []
+        def fake_recreate(ids):
+            assert _mod._model_activate_lock is _mod._model_lifecycle_lock
+            assert _mod._model_activate_lock.locked()
+            seen.append((ids, _mod._model_lifecycle_status().get('activeOperation')))
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
+        handler = _FakeHandler(json.dumps({
+            'service_ids': ['searxng'],
+            'expected_env_revision': revision,
+        }).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+        assert handler.response_code == 200
+        assert seen == [(['searxng'], 'core_recreate')]
+        assert not _mod._model_lifecycle_status().get('lifecycleActive')
+
+
+    def test_core_recreate_revision_read_error_fails_closed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        calls = []
+        def fake_recreate(ids):
+            calls.append(ids)
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
+        handler = _FakeHandler(json.dumps({
+            'service_ids': ['searxng'],
+            'expected_env_revision': 'a' * 64,
+        }).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+        assert handler.response_code == 500
+        assert handler.parse_response()['code'] == 'env_revision_unavailable'
+        assert calls == []
+        assert not _mod._model_lifecycle_status().get('lifecycleActive')
+
+
+    def test_core_recreate_rejects_malformed_revision(self, monkeypatch):
+        calls = []
+        def fake_recreate(ids):
+            calls.append(ids)
+            return True, ''
+        monkeypatch.setattr(_mod, 'docker_compose_recreate', fake_recreate)
+        handler = _FakeHandler(json.dumps({
+            'service_ids': ['searxng'],
+            'expected_env_revision': 'not-hex',
+        }).encode())
+        _mod.AgentHandler._handle_core_recreate(handler)
+        assert handler.response_code == 400
+        assert calls == []
+
+
 class TestResolveComposeFlagsCache:
 
     def test_cached_recipe_is_checked_before_any_docker_command(self, tmp_path, monkeypatch):
@@ -6050,6 +6227,31 @@ class TestHandleEnvUpdate:
         assert ".env.schema.json not found" in handler.parse_response()["error"]
 
 
+    def test_env_update_revision_covers_enforced_installed_bytes_under_lock(self, env_update_env, monkeypatch):
+        install_dir, _ = env_update_env
+        original_read_bytes = _mod.Path.read_bytes
+        digest_reads = []
+
+        def guarded_read(path):
+            if path == install_dir / '.env':
+                assert _mod._model_activate_lock.locked()
+                digest_reads.append(path)
+            return original_read_bytes(path)
+
+        monkeypatch.setattr(_mod.Path, 'read_bytes', guarded_read)
+        handler = _FakeHandler(_make_body('ODS_AGENT_KEY=newvalue\nBIND_ADDRESS=0.0.0.0\nWEBUI_AUTH=false'))
+        _mod.AgentHandler._handle_env_update(handler)
+        assert handler.response_code == 200
+        body = handler.parse_response()
+        installed = original_read_bytes(install_dir / '.env')
+        assert installed.endswith(b'\n') and b'WEBUI_AUTH=true' in installed
+        assert body['enforced_values'] == {'WEBUI_AUTH': 'true'}
+        assert body['env_revision'] == _mod.hashlib.sha256(installed).hexdigest()
+        assert digest_reads
+        assert 'raw_text' not in body and 'newvalue' not in json.dumps(body)
+        assert not _mod._model_activate_lock.locked()
+
+
 class TestHandleModelDownloadCancel:
 
     def test_returns_no_download_when_idle(self, monkeypatch):
@@ -8924,16 +9126,22 @@ class TestModelDownloadDiskSpace:
 
     GIB = 1024 ** 3
 
-    def _setup(self, tmp_path, monkeypatch, *, size_bytes, free_bytes, total_bytes):
+    def _setup(self, tmp_path, monkeypatch, *, size_bytes, free_bytes, total_bytes,
+               size_mb=None):
         install_dir = tmp_path / "install"
         (install_dir / "config").mkdir(parents=True)
         (install_dir / "data" / "models").mkdir(parents=True)
-        (install_dir / "config" / "model-library.json").write_text(json.dumps({"models": [{
+        record = {
             "id": "test-model",
             "gguf_file": "test-model.gguf",
             "gguf_url": "https://example.com/test-model.gguf",
-            "size_bytes": size_bytes,
-        }]}), encoding="utf-8")
+        }
+        if size_bytes is not None:
+            record["size_bytes"] = size_bytes
+        if size_mb is not None:
+            record["size_mb"] = size_mb
+        (install_dir / "config" / "model-library.json").write_text(
+            json.dumps({"models": [record]}), encoding="utf-8")
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
         monkeypatch.setattr(_mod, "_model_download_directory", lambda: install_dir / "data" / "models")
@@ -8970,6 +9178,44 @@ class TestModelDownloadDiskSpace:
         assert body["requiredBytes"] == 10 * self.GIB
         assert body["freeBytes"] == 11 * self.GIB
         assert body["marginBytes"] == 5 * self.GIB
+
+    def test_catalog_size_mb_is_checked_when_bytes_are_unknown(self, tmp_path, monkeypatch):
+        # Ten catalog models carry only size_mb; they must not skip the check
+        # and fill the disk until curl fails writing.
+        self._setup(tmp_path, monkeypatch, size_bytes=None, size_mb=1120,
+                    free_bytes=self.GIB // 2, total_bytes=20 * self.GIB)
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 507
+        body = handler.parse_response()
+        assert body["code"] == "insufficient_disk_space"
+        assert body["requiredBytes"] == 1_120_000_000
+
+    def test_catalog_size_mb_with_room_passes_the_space_check(self, tmp_path, monkeypatch):
+        self._setup(tmp_path, monkeypatch, size_bytes=None, size_mb=1120,
+                    free_bytes=4 * self.GIB, total_bytes=20 * self.GIB)
+        monkeypatch.setattr(
+            _mod, "_begin_model_lifecycle",
+            lambda *_args, **_kwargs: (False, {"operation": "model_activation"}),
+        )
+        handler = _FakeHandler(self._body())
+
+        _mod.AgentHandler._handle_model_download(handler)
+
+        assert handler.response_code == 409
+
+    def test_empty_existing_unsized_file_still_needs_space(self, tmp_path, monkeypatch):
+        install_dir = self._setup(tmp_path, monkeypatch, size_bytes=None, size_mb=1120,
+                                  free_bytes=self.GIB // 2, total_bytes=20 * self.GIB)
+        (install_dir / "data" / "models" / "test-model.gguf").touch()
+        self._no_lifecycle(monkeypatch)
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 507
+        assert handler.parse_response()["requiredBytes"] == 1_120_000_000
 
     def test_exact_margin_passes_the_space_check(self, tmp_path, monkeypatch):
         self._setup(tmp_path, monkeypatch, size_bytes=10 * self.GIB,
@@ -9037,6 +9283,32 @@ class TestModelDownloadDiskSpace:
             "present.gguf", "partial.gguf", "missing.gguf", "unsized.gguf")}
 
         assert _mod._download_bytes_needed(artifacts, paths) == 11
+        # A catalog estimate covers the unsized artifact still to fetch.
+        assert _mod._download_bytes_needed(artifacts, paths, 50) == 47
+        assert _mod._download_bytes_needed(artifacts, paths, 5) == 11
+        (tmp_path / "unsized.gguf").write_bytes(b"x")
+        assert _mod._download_bytes_needed(artifacts, paths, 50) == 11
+
+    def test_catalog_size_estimate_reads_decimal_megabytes(self):
+        assert _mod._catalog_size_estimate({"size_mb": 1120}) == 1_120_000_000
+        assert _mod._catalog_size_estimate({"size_mb": 0.5}) == 500_000
+        for model in ({}, {"size_mb": 0}, {"size_mb": -1}, {"size_mb": True}, {"size_mb": "9"},
+                      {"size_mb": float("nan")}, {"size_mb": float("inf")}, {"size_mb": 1e308}):
+            assert _mod._catalog_size_estimate(model) is None
+
+    def test_total_estimate_subtracts_reusable_unsized_parts(self, tmp_path):
+        artifacts = [{"file": "a.gguf"}, {"file": "b.gguf"},
+                     {"file": "projector.gguf", "size_bytes": 10}]
+        paths = {name: tmp_path / name for name in ("a.gguf", "b.gguf", "projector.gguf")}
+        paths["a.gguf"].write_bytes(b"a" * 40)
+        paths["b.gguf"].write_bytes(b"b" * 20)
+        assert _mod._download_bytes_needed(artifacts, paths, 100) == 10
+        # Verification found b corrupt; its bytes cannot be subtracted.
+        assert _mod._download_bytes_needed(
+            artifacts, paths, 100, verified_files={"a.gguf"}) == 60
+        # A stale estimate cannot undercut exact pending sizes.
+        assert _mod._download_bytes_needed(
+            artifacts, paths, 45, verified_files={"a.gguf"}) == 10
 
     def test_storage_status_uses_the_nearest_existing_directory(self, tmp_path, monkeypatch):
         monkeypatch.setattr(_mod, "_is_wsl_linux", lambda: False)
@@ -9636,6 +9908,57 @@ class TestModelDeleteSafety:
 
 
 class TestModelDownloadFileIntegrity:
+
+    @pytest.mark.parametrize("sized", [False, True])
+    def test_corrupt_existing_file_checks_space_before_any_network(self, tmp_path, monkeypatch, sized):
+        payload = b"valid gguf bytes"
+        model = {"gguf_file": "test-model.gguf",
+                 "gguf_url": "https://example.com/test-model.gguf",
+                 "gguf_sha256": hashlib.sha256(payload).hexdigest(), "size_mb": 1120}
+        if sized:
+            model["size_bytes"] = len(payload)
+        install_dir = self._setup_env(tmp_path, monkeypatch, library_models=[model])
+        target = install_dir / "data" / "models" / "test-model.gguf"
+        target.write_bytes(b"x" * len(payload))
+        storage_calls = []
+        def storage(_path):
+            storage_calls.append(True)
+            return {"freeBytes": 0, "marginBytes": 2 * 1024 ** 3}
+        monkeypatch.setattr(_mod, "_model_storage_status", storage)
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("no HEAD request"))
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *a, **kw: pytest.fail("no download"))
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text())
+        assert status["status"] == "failed"
+        assert "Not enough free disk space" in status["error"]
+        assert storage_calls == [True]
+        assert not target.exists()
+        assert _mod._begin_model_lifecycle("model_download", "retry")[0]
+        _mod._end_model_lifecycle("model_download")
+
+    def test_verified_unsized_file_needs_no_free_space_or_network(self, tmp_path, monkeypatch):
+        payload = b"valid gguf bytes"
+        model = {"gguf_file": "test-model.gguf",
+                 "gguf_url": "https://example.com/test-model.gguf",
+                 "gguf_sha256": hashlib.sha256(payload).hexdigest(), "size_mb": 1120}
+        install_dir = self._setup_env(tmp_path, monkeypatch, library_models=[model])
+        target = install_dir / "data" / "models" / "test-model.gguf"
+        target.write_bytes(payload)
+        monkeypatch.setattr(_mod, "_model_storage_status", lambda *a: pytest.fail("no storage needed"))
+        monkeypatch.setattr(_mod.subprocess, "run", lambda *a, **kw: pytest.fail("no HEAD request"))
+        monkeypatch.setattr(_mod.subprocess, "Popen", lambda *a, **kw: pytest.fail("no download"))
+        handler = _FakeHandler(self._body())
+        _mod.AgentHandler._handle_model_download(handler)
+        assert handler.response_code == 200
+        _mod._model_download_thread.join(timeout=2)
+        assert not _mod._model_download_thread.is_alive()
+        status = json.loads((install_dir / "data" / "model-download-status.json").read_text())
+        assert status["status"] == "complete"
+        assert target.read_bytes() == payload
 
     class _NoCancel:
         def clear(self):
