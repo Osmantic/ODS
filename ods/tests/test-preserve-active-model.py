@@ -387,6 +387,19 @@ def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
         assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "98304"
 
 
+def test_an_import_the_catalog_now_ships_does_not_drop_the_active_model() -> None:
+    # An owner imported a model from the Hub before the catalog added the same
+    # file (Qwen3.6 27B, after v3.0.0). The rerun must keep the active model.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        record = json.loads(catalog.read_text(encoding="utf-8"))["models"][0]
+        stale_import = dict(record, id="hf-osmantic-agent-test-0123456789ab", source="huggingface")
+        imports.write_text(json.dumps({"models": [stale_import]}), encoding="utf-8")
+        values = run_helper(env, catalog, imports, models_dir)
+        assert values.get("LLM_MODEL") == "agent-test", values
+        assert values.get("GGUF_FILE") == "Agent-Test-Q4_K_M.gguf", values
+
+
 def test_valid_dashboard_import_is_preserved() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         env, catalog, imports, models_dir = write_model_fixture(Path(tmp), imported=True)
@@ -1564,6 +1577,7 @@ def main() -> int:
         test_fixed_chat_template_is_dropped_unless_this_release_ships_it,
         test_a_linked_chat_template_is_not_kept,
         test_vision_projector_and_fixed_template_survive_the_actual_installer_phases,
+        test_an_import_the_catalog_now_ships_does_not_drop_the_active_model,
     ]
     for test in tests:
         test()

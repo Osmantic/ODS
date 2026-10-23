@@ -198,6 +198,9 @@ def load_records(catalog_path: Path, imports_path: Path | None) -> list[dict[str
     for item in imported:
         model_id = str(item.get("id") or "")
         filename = str(item.get("gguf_file") or "").lower()
+        # Skip an import the catalog now ships (or one that is malformed), as
+        # the dashboard's _load_library does. Dropping every record instead
+        # made a rerun replace the owner's active model with the tier pick.
         if (
             item.get("source") != "huggingface"
             or not model_id
@@ -205,7 +208,7 @@ def load_records(catalog_path: Path, imports_path: Path | None) -> list[dict[str
             or model_id in seen_ids
             or filename in seen_files
         ):
-            return []
+            continue
         records.append(item)
         seen_ids.add(model_id)
         seen_files.add(filename)
