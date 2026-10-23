@@ -1212,6 +1212,33 @@ class TestInstallExtension:
             assert conflict in resp.json()["detail"]
             assert not (tmp_path / "user" / "ext-b").exists()
 
+    @pytest.mark.parametrize("override, default, expected", [
+        ("7100", "7105", 409),  # the owner moved ext-b onto ext-a's port
+        ("7105", "7100", 200),  # the owner moved ext-b off the default clash
+    ])
+    def test_install_resolves_port_from_install_env_file(
+        self, test_client, monkeypatch, tmp_path, override, default, expected,
+    ):
+        """dashboard-api gets no env_file; port overrides live in the install's .env."""
+        install = tmp_path / "install"
+        install.mkdir()
+        (install / ".env").write_text(f"OTHER_PORT={override}\n")
+        monkeypatch.setattr("config.INSTALL_DIR", str(install))
+        monkeypatch.delenv("OTHER_PORT", raising=False)
+        first = "services:\n  first:\n    image: t:1\n    ports:\n      - \"127.0.0.1:7100:80\"\n"
+        second = ("services:\n  other:\n    image: t:1\n    ports:\n"
+                  f"      - \"127.0.0.1:${{OTHER_PORT:-{default}}}:80\"\n")
+        lib_dir = _setup_library_ext(tmp_path, "ext-a", compose_content=first)
+        _setup_library_ext(tmp_path, "ext-b", compose_content=second)
+        _patch_mutation_config(monkeypatch, tmp_path, lib_dir=lib_dir)
+
+        assert test_client.post("/api/extensions/ext-a/install",
+                                headers=test_client.auth_headers).status_code == 200
+        resp = test_client.post("/api/extensions/ext-b/install",
+                                headers=test_client.auth_headers)
+
+        assert resp.status_code == expected
+
 
 # --- Enable endpoint ---
 
@@ -1234,6 +1261,26 @@ class TestEnableExtension:
         assert data["restart_required"] is False
         assert (user_dir / "my-ext" / "compose.yaml").exists()
         assert not (user_dir / "my-ext" / "compose.yaml.disabled").exists()
+
+    def test_enable_rejects_collision_with_extension_installed_meanwhile(
+        self, test_client, monkeypatch, tmp_path,
+    ):
+        """A disabled extension was not part of later installs' collision check."""
+        user_dir = _setup_user_ext(tmp_path, "my-ext", enabled=False)
+        (user_dir / "my-ext" / "compose.yaml.disabled").write_text(
+            "services:\n  mine:\n    image: t:1\n    container_name: ods-shared\n")
+        other = user_dir / "other-ext"
+        other.mkdir()
+        (other / "compose.yaml").write_text(
+            "services:\n  other:\n    image: t:1\n    container_name: ods-shared\n")
+        _patch_mutation_config(monkeypatch, tmp_path, user_dir=user_dir)
+
+        resp = test_client.post("/api/extensions/my-ext/enable",
+                                headers=test_client.auth_headers)
+
+        assert resp.status_code == 409
+        assert "'other-ext'" in resp.json()["detail"]
+        assert (user_dir / "my-ext" / "compose.yaml.disabled").exists()
 
     def test_enable_stopped_starts_without_rename(self, test_client, monkeypatch, tmp_path):
         """Enable when compose.yaml exists (stopped) → starts without rename."""

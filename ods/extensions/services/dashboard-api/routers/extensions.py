@@ -27,7 +27,7 @@ from config import (
     ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
     EXTENSION_CATALOG, EXTENSIONS_DIR,
     EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, SERVICES,
-    USER_EXTENSIONS_DIR, normalize_llm_contract,
+    USER_EXTENSIONS_DIR, normalize_llm_contract, read_live_env_value,
 )
 from host_agent_client import (
     AgentClientError,
@@ -3723,11 +3723,15 @@ _PORT_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::?-([^}]*))?\}")
 
 
 def _resolve_port_part(value: str) -> str:
-    """Resolve a ``${VAR:-default}`` port part the way Compose would here."""
+    """Resolve a ``${VAR:-default}`` port part the way Compose would here.
+
+    This container gets an explicit ``environment:`` list, not the install's
+    ``.env``, so the owner's port overrides are read from the mounted file.
+    """
     match = _PORT_EXPANSION.fullmatch(value)
     if match is None:
         return value
-    return os.environ.get(match.group(1)) or (match.group(2) or "")
+    return read_live_env_value(match.group(1)) or (match.group(2) or "")
 
 
 def _published_ports(service: dict) -> set[tuple[str, str]]:
@@ -4954,6 +4958,10 @@ def enable_extension(
         raise HTTPException(
             status_code=404, detail=f"Extension has no compose file: {service_id}",
         )
+    elif ext_dir.is_relative_to(USER_EXTENSIONS_DIR.resolve()):
+        # A disabled extension was left out of the install-time check, so
+        # another extension may have taken its names or ports since.
+        _reject_installed_collisions(service_id, disabled_compose)
 
     # Check dependencies (transitive â€” gathers full tree, detects cycles)
     missing_deps = _get_missing_deps_transitive(service_id)
