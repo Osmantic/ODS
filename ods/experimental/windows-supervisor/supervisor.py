@@ -653,7 +653,6 @@ def main():
     parser.add_argument("--stub-children", action="store_true", help="Run with lightweight stub children (no network, no downloads)")
     parser.add_argument("--stub-abnormal", action="store_true", help="Configure stub child to exit with code 3 on break (for abnormal stop test)")
     parser.add_argument("--stub-hang", action="store_true", help="Configure stub child to ignore break signal (for forced timeout test)")
-    parser.add_argument("--run-probe", action="store_true", help="Start, verify health & chat, then stop")
     parser.add_argument("--stop-after-ready", action="store_true", help="Start, verify health, then execute stop() and exit 0")
     args = parser.parse_args()
 
@@ -706,24 +705,6 @@ def main():
             print("ERROR: Stop path experienced forced termination or abnormal child exit.", file=sys.stderr)
             sys.exit(7)
         print("SUCCESS: Stop path execution completed.")
-        sys.exit(0)
-    elif args.run_probe:
-        # Run a test chat query through dashboard-api
-        print("Probing dashboard-api /api/chat...")
-        chat_payload = {"message": "Say PASS", "system": "You are a test assistant."}
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{args.dashboard_port}/api/chat",
-            data=json.dumps(chat_payload).encode("utf-8"),
-            headers={"Authorization": f"Bearer {sup.api_key}", "Content-Type": "application/json"}
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            print(f"Chat probe response: {data}")
-            if not data.get("success"):
-                sup.stop()
-                sys.exit(1)
-        sup.stop()
-        print("SUCCESS: Probe completed cleanly.")
         sys.exit(0)
     else:
         sup.monitor_until_interrupted()
