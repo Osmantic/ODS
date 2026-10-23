@@ -1509,6 +1509,12 @@ SERVICE_PORT_DEFAULTS
     N_GPU_LAYERS_VALUE="${N_GPU_LAYERS_VALUE:-auto}"
     # Owner opt-out for the overlay default; empty keeps ngram-mod implicit.
     LLAMA_SPEC_TYPE_VALUE=$(_env_get LLAMA_SPEC_TYPE "${LLAMA_SPEC_TYPE:-}")
+    # llama.cpp runtime tuning: explicit process env > saved .env > default.
+    # These are documented owner settings; a rerun must not reset them.
+    LLAMA_PARALLEL_VALUE=$(_env_get_explicit_first LLAMA_PARALLEL "1")
+    LLAMA_ARG_FLASH_ATTN_VALUE=$(_env_get_explicit_first LLAMA_ARG_FLASH_ATTN "auto")
+    LLAMA_ARG_CACHE_TYPE_K_VALUE=$(_env_get_explicit_first LLAMA_ARG_CACHE_TYPE_K "f16")
+    LLAMA_ARG_CACHE_TYPE_V_VALUE=$(_env_get_explicit_first LLAMA_ARG_CACHE_TYPE_V "f16")
 
     # A retained port is kept (an AMD install moved to 9100 stays there).
     WHISPER_PORT_VALUE="$(_env_get_explicit_first WHISPER_PORT "9000")"
@@ -1650,9 +1656,9 @@ $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_S
 $(if [[ -n "${LLAMA_SERVER_IMAGE_FALLBACK:-}" ]]; then echo "LLAMA_SERVER_IMAGE_FALLBACK=${LLAMA_SERVER_IMAGE_FALLBACK}"; fi)
 $(if [[ -n "$LLAMA_SERVER_MEMORY_LIMIT_VALUE" ]]; then echo "LLAMA_SERVER_MEMORY_LIMIT=${LLAMA_SERVER_MEMORY_LIMIT_VALUE}"; fi)
 #=== llama.cpp Runtime Tuning ===
-LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
-LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
-LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
+LLAMA_ARG_FLASH_ATTN=$(dotenv_value "${LLAMA_ARG_FLASH_ATTN_VALUE}")
+LLAMA_ARG_CACHE_TYPE_K=$(dotenv_value "${LLAMA_ARG_CACHE_TYPE_K_VALUE}")
+LLAMA_ARG_CACHE_TYPE_V=$(dotenv_value "${LLAMA_ARG_CACHE_TYPE_V_VALUE}")
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE}"; fi)
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
@@ -1660,7 +1666,7 @@ $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPO
 $(if [[ -n "${LLAMA_ARG_CTX_CHECKPOINTS:-}" ]]; then echo "LLAMA_ARG_CTX_CHECKPOINTS=${LLAMA_ARG_CTX_CHECKPOINTS}"; fi)
 $(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then echo "LLAMA_ARG_CACHE_RAM=${LLAMA_ARG_CACHE_RAM}"; fi)
 $(if [[ -n "${LLAMA_THREADS_VALUE:-}" ]]; then echo "LLAMA_THREADS=${LLAMA_THREADS_VALUE}"; fi)
-LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
+LLAMA_PARALLEL=$(dotenv_value "${LLAMA_PARALLEL_VALUE}")
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
 $(if [[ -n "$LLAMA_SPEC_TYPE_VALUE" ]]; then echo "LLAMA_SPEC_TYPE=$(dotenv_value "$LLAMA_SPEC_TYPE_VALUE")"; fi)
