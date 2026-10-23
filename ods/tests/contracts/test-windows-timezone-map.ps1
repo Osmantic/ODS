@@ -15,8 +15,8 @@ $cases = [ordered]@{
     "Eastern Standard Time"          = "America/New_York"
     "Central Standard Time"          = "America/Chicago"
     "Arabian Standard Time"          = "Asia/Dubai"
-    "SA Eastern Standard Time"       = "UTC"
-    "Central Pacific Standard Time"  = "UTC"
+    "SA Eastern Standard Time"       = "Etc/GMT+3"
+    "Central Pacific Standard Time"  = "Etc/GMT-11"
     "Not A Zone"                     = "UTC"
 }
 $failed = $false

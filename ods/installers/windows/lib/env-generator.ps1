@@ -223,7 +223,8 @@ function ConvertTo-ODSIanaTimeZone {
     <# Map a Windows time zone ID to IANA for Windows PowerShell 5.1, which
        lacks TimeZoneInfo.TryConvertWindowsIdToIanaId. Exact IDs only: the old
        wildcard match sent "Central Europe Standard Time" to America/Chicago
-       and "Central Pacific"/"SA Eastern" to US zones. Unknown IDs -> UTC. #>
+       and "Central Pacific"/"SA Eastern" to US zones. Unlisted IDs fall back
+       to a fixed-offset Etc zone. #>
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$WindowsId)
 
     $map = @{
@@ -260,7 +261,17 @@ function ConvertTo-ODSIanaTimeZone {
         "AUS Eastern Standard Time"      = "Australia/Sydney"
     }
     if ($map.ContainsKey($WindowsId)) { return $map[$WindowsId] }
-    return "UTC"
+    # Unlisted zone: keep the right clock with a fixed-offset Etc zone (POSIX
+    # sign is inverted: UTC-3 is Etc/GMT+3). Half-hour offsets have no Etc
+    # zone and stay UTC.
+    try {
+        $offset = [TimeZoneInfo]::FindSystemTimeZoneById($WindowsId).BaseUtcOffset
+    } catch [System.TimeZoneNotFoundException] {
+        return "UTC"
+    }
+    if ($offset.Minutes -ne 0 -or $offset.Hours -eq 0) { return "UTC" }
+    if ($offset.Hours -lt 0) { return "Etc/GMT+$(-$offset.Hours)" }
+    return "Etc/GMT-$($offset.Hours)"
 }
 
 function New-ODSEnv {
