@@ -38,19 +38,25 @@ assert devices == [{"capabilities": ["gpu"], "driver": "nvidia", "device_ids": [
 ' "$svc"
 }
 
-check_missing_uuid_fails() {
-    local svc="$1" uuid_var="$2" err
-    if err=$(env -u "$uuid_var" docker compose -f "$svc/compose.yaml" -f "$svc/compose.nvidia.yaml"         -f "$svc/compose.multigpu-nvidia.yaml" config 2>&1); then
-        echo "FAIL: $svc multi-GPU overlay accepted an unset $uuid_var" >&2
-        exit 1
-    fi
-    grep -q "$uuid_var must be set" <<<"$err" || { echo "$err" >&2; exit 1; }
+# Cloud mode and external-API installs skip GPU assignment, so the UUID is
+# empty there. The overlay must still load and fall back to GPU 0 like the
+# single-GPU file, not refuse the whole stack.
+check_unset_uuid_falls_back() {
+    local svc="$1" uuid_var="$2"
+    env -u "$uuid_var" docker compose -f "$svc/compose.yaml" -f "$svc/compose.nvidia.yaml"         -f "$svc/compose.multigpu-nvidia.yaml" config --format json         | python3 -c '
+import json, sys
+svc = sys.argv[1]
+s = json.load(sys.stdin)["services"][svc]
+devices = s["deploy"]["resources"]["reservations"]["devices"]
+assert [d.get("device_ids") for d in devices] == [["0"]], f"{svc}: {devices}"
+assert s["environment"]["NVIDIA_VISIBLE_DEVICES"] == "0", f"{svc}: {s['environment']}"
+' "$svc"
 }
 
 check_single_gpu comfyui
 check_single_gpu whisper
-check_missing_uuid_fails comfyui COMFYUI_GPU_UUID
-check_missing_uuid_fails whisper WHISPER_GPU_UUID
+check_unset_uuid_falls_back comfyui COMFYUI_GPU_UUID
+check_unset_uuid_falls_back whisper WHISPER_GPU_UUID
 check_service comfyui COMFYUI_GPU_UUID
 check_service whisper WHISPER_GPU_UUID
 

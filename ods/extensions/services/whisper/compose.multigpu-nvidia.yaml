@@ -4,7 +4,7 @@ services:
     # resolves to WHISPER_GPU_UUID here. Do not add a second devices entry: Compose
     # appends reservation lists, so the container would get an extra GPU.
     environment:
-      NVIDIA_VISIBLE_DEVICES: "${WHISPER_GPU_UUID:?WHISPER_GPU_UUID must be set for the NVIDIA multi-GPU overlay}"
+      NVIDIA_VISIBLE_DEVICES: "${WHISPER_GPU_UUID:-0}"
     logging:
       driver: "json-file"
       options:
