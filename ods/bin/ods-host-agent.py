@@ -5116,11 +5116,8 @@ def _model_activation_recovery_status() -> dict | None:
     }
 
 
-def _restore_interrupted_model_activation(journal: dict) -> None:
-    """Restore the journaled files, re-raise the previous runtime and prove it."""
-    strategy = journal.get('strategy')
-    if strategy not in _MODEL_ACTIVATION_RECOVERABLE_STRATEGIES:
-        raise RuntimeError(f'Interrupted {strategy} activation requires explicit recovery')
+def _restore_model_activation_journal_files(journal: dict) -> None:
+    """Write the journaled before-state back byte-for-byte."""
     targets = _model_activation_journal_targets()
     for name, snapshot in journal['files'].items():
         if name not in targets or not isinstance(snapshot, dict):
@@ -5129,6 +5126,15 @@ def _restore_interrupted_model_activation(journal: dict) -> None:
             _restore_bound_env_file(targets[name], snapshot)
         else:
             _restore_text_file(targets[name], snapshot)
+
+
+def _restore_interrupted_model_activation(journal: dict) -> None:
+    """Restore the journaled files, re-raise the previous runtime and prove it."""
+    strategy = journal.get('strategy')
+    if strategy not in _MODEL_ACTIVATION_RECOVERABLE_STRATEGIES:
+        raise RuntimeError(f'Interrupted {strategy} activation requires explicit recovery')
+    _restore_model_activation_journal_files(journal)
+    targets = _model_activation_journal_targets()
     env = load_env(targets['env'])
     previous_gguf = str(env.get('GGUF_FILE') or '')
     if not previous_gguf:
@@ -5143,24 +5149,29 @@ def _restore_interrupted_model_activation(journal: dict) -> None:
         raise RuntimeError(f'previous model {previous_gguf} did not pass readiness')
 
 
-def _recover_interrupted_model_activation() -> str:
-    """Startup recovery of an activation the agent did not finish.
+def _resolve_interrupted_model_activation(release_unverified: bool = False) -> str:
+    """Resolve a retained activation journal; the caller holds the lifecycle.
 
-    Holds the model lifecycle like an activation does. The journal is cleared
-    only after the previous runtime is proven, so a failure retries next start.
-    Re-running it is idempotent: it restores the same bytes and re-proves.
+    The journal is cleared only after the previous runtime is proven, so a
+    failure keeps it. Re-running is idempotent: same bytes, re-proved.
+    release_unverified is the owner's explicit choice to restore the journaled
+    files and release the journal without re-raising or proving the runtime,
+    the way out when the strategy has no automatic restart or the previous
+    model can no longer pass readiness.
     """
     global _model_activation_recovery_running
     journal = _read_model_activation_journal()
     if journal is None:
         return 'none'
-    acquired, active = _begin_model_lifecycle('model_recovery')
-    if not acquired:
-        raise RuntimeError(f"Model lifecycle is busy: {active.get('operation')}")
     with _model_lifecycle_state_lock:
         _model_activation_recovery_running = True
     try:
         logger.warning('Recovering interrupted model activation of %s', journal.get('targetModelId'))
+        if release_unverified:
+            _restore_model_activation_journal_files(journal)
+            _clear_model_activation_journal()
+            logger.warning('Interrupted model activation released unverified; files restored')
+            return 'released-unverified'
         _restore_interrupted_model_activation(journal)
         _clear_model_activation_journal()
         logger.info('Interrupted model activation recovered; previous runtime proven')
@@ -5168,6 +5179,18 @@ def _recover_interrupted_model_activation() -> str:
     finally:
         with _model_lifecycle_state_lock:
             _model_activation_recovery_running = False
+
+
+def _recover_interrupted_model_activation() -> str:
+    """Startup recovery of an activation the agent did not finish."""
+    if not _model_activation_journal_path().exists():
+        return 'none'
+    acquired, active = _begin_model_lifecycle('model_recovery')
+    if not acquired:
+        raise RuntimeError(f"Model lifecycle is busy: {active.get('operation')}")
+    try:
+        return _resolve_interrupted_model_activation()
+    finally:
         _end_model_lifecycle('model_recovery')
 
 
@@ -14263,6 +14286,20 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self,409,{'error':'Model lifecycle is busy'})
             return
         try:
+            # A retained activation journal is resolved here, by the owner:
+            # {} retries restore+proof, releaseUnverified restores the files
+            # and releases the journal without the live proof.
+            if _model_activation_journal_path().exists():
+                try:
+                    outcome=_resolve_interrupted_model_activation(
+                        release_unverified=body.get('releaseUnverified') is True)
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                    logger.error('Interrupted model activation recovery failed: %s', exc)
+                    json_response(self,409,{'pending':True,'phase':'activation_recovery_failed',
+                                            'reason':'interrupted-model-activation'},no_store=True)
+                    return
+                json_response(self,200,{'pending':False,'phase':outcome},no_store=True)
+                return
             result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'),
                                                      release_unverified=body.get('releaseUnverified') is True)
             json_response(self,409 if result['pending'] else 200,result,no_store=True)

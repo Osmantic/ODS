@@ -9364,3 +9364,53 @@ class TestModelActivationJournal:
         _mod._startup_recover_interrupted_model_activation()
 
         assert (install / "data" / "model-activation-transaction.json").exists()
+
+    def test_owner_recover_retries_retained_journal_and_unblocks_activation(self, tmp_path, monkeypatch):
+        install, env_path, env_text, models_ini, ini_text = self._interrupted_install(tmp_path, monkeypatch)
+        journal_path = install / "data" / "model-activation-transaction.json"
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", lambda *_a, **_kw: False)
+        _mod._startup_recover_interrupted_model_activation()  # recovery fails
+        original = journal_path.read_bytes()
+
+        failed = _ResponseHandler(request_body={})
+        _mod.AgentHandler._handle_model_recover(failed)
+        assert failed.response_code == 409
+        assert failed.parse_response()["phase"] == "activation_recovery_failed"
+        assert journal_path.read_bytes() == original
+        assert _mod._model_lifecycle_status().get("lifecycleActive") is None
+
+        monkeypatch.setattr(_mod, "_wait_for_model_readiness", _mock_verified_readiness)
+        handler = _ResponseHandler(request_body={})
+        _mod.AgentHandler._handle_model_recover(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"pending": False, "phase": "recovered"}
+        assert not journal_path.exists()
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert models_ini.read_text(encoding="utf-8") == ini_text
+
+    def test_owner_release_unverified_resolves_explicit_strategy_journal(self, tmp_path, monkeypatch):
+        install, env_path, env_text, *_ = _write_model_activation_fixture(tmp_path)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install)
+        _mod._write_model_activation_journal("target-model", "wsl-native-llama", {
+            "env": _mod._snapshot_text_file(env_path)})
+        env_path.write_text(env_text.replace("old-model", "new-model"), encoding="utf-8")
+        journal_path = install / "data" / "model-activation-transaction.json"
+        monkeypatch.setattr(
+            _mod, "_compose_restart_llama_server",
+            lambda _env: pytest.fail("release must not restart the runtime"))
+
+        retry = _ResponseHandler(request_body={})
+        _mod.AgentHandler._handle_model_recover(retry)
+        assert retry.response_code == 409
+        assert journal_path.exists()
+
+        handler = _ResponseHandler(request_body={"releaseUnverified": True})
+        _mod.AgentHandler._handle_model_recover(handler)
+
+        assert handler.response_code == 200
+        assert handler.parse_response() == {"pending": False, "phase": "released-unverified"}
+        assert not journal_path.exists()
+        assert env_path.read_text(encoding="utf-8") == env_text
+        assert _mod._model_lifecycle_status().get("lifecycleActive") is None
