@@ -254,6 +254,75 @@ def test_activation_reconciliation_accepts_exact_remote_host_runtime(monkeypatch
     assert result == activation
 
 
+def _reconciled_activation():
+    return {
+        "valid": True,
+        "active": True,
+        "proven": True,
+        "reason": "active_and_proven",
+        "model": "remote-owner-model",
+        "contextLength": 131072,
+        "maxTokens": 16384,
+        "reasoning": False,
+        "pixel": "reconciled",
+    }
+
+
+def test_activation_reconciliation_waits_out_a_cold_host_readback(monkeypatch):
+    # A cold host cache answers without activeRuntime while it proves the
+    # runtime in the background; a proven route must not read as drift.
+    from routers import remote_provider_status as rps
+
+    replies = [
+        {"status": "failed", "modelTransactionPending": False},
+        {
+            "status": "failed",
+            "activeAgentViable": True,
+            "activeRuntime": {
+                "source": "remote-provider",
+                "model": "remote-owner-model",
+                "contextLength": 131072,
+                "maxTokens": 16384,
+                "reasoning": False,
+            },
+        },
+    ]
+    calls = []
+
+    async def warming_runtime(*_args, **_kwargs):
+        calls.append(1)
+        return replies[min(len(calls), len(replies)) - 1]
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(rps, "async_request_agent_json", warming_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", no_sleep)
+    activation = _reconciled_activation()
+    result = asyncio.run(rps._reconcile_activation_with_host(activation))
+
+    assert result == activation
+    assert len(calls) == 2
+
+
+def test_activation_reconciliation_reports_a_still_cold_readback_as_unverified(monkeypatch):
+    from routers import remote_provider_status as rps
+
+    async def cold_runtime(*_args, **_kwargs):
+        return {"status": "idle", "modelTransactionPending": False}
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(rps, "async_request_agent_json", cold_runtime)
+    monkeypatch.setattr(rps.asyncio, "sleep", no_sleep)
+    result = asyncio.run(rps._reconcile_activation_with_host(_reconciled_activation()))
+
+    assert result["valid"] is False
+    assert result["reason"] == "consumer_status_unavailable"
+    assert result["pixel"] == "unverified"
+
+
 def test_activation_reconciliation_fails_closed_when_host_status_is_unavailable(monkeypatch):
     from host_agent_client import AgentUnavailable
     from routers import remote_provider_status as rps
