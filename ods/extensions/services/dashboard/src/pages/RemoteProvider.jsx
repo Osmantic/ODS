@@ -521,7 +521,7 @@ export default function RemoteProvider({ compact = false }) {
       setTestResult(payload)
       // A real failure: say it in the error banner, with its help link.
       if (payload?.routeProof?.reason === 'provider_not_serving') setTestError(notServingSummary(payload.routeProof))
-      else if (payload?.routeProof?.recorded !== true) setStatusData(null)
+      if (payload?.routeProof?.recorded !== true) setStatusData(null)
     } catch (err) {
       setTestError(err?.message || 'The connection check failed')
       setStatusData(null)
@@ -562,6 +562,7 @@ export default function RemoteProvider({ compact = false }) {
         setConnectNotice(`Connected. ODS and Portal now use ${model} from ${host}.`)
       } else if (proof?.routeProof?.reason === 'provider_not_serving') {
         // The route is in use; the API itself fails chats.
+        setStatusData(null)
         setLifecycleError(notServingSummary(proof.routeProof))
       } else {
         setStatusData(null)

@@ -915,6 +915,20 @@ test('a typed lost host-proof receipt does not claim the model stayed local', as
   await waitFor(()=>expect(screen.getAllByText('Connected',{exact:true}).length).toBeGreaterThan(0))
 })
 
+test.each(['Connect','Check connection'])('a confirmed outage through %s cannot retain pre-request Connected status after readback fails', async action => {
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+  if(action==='Connect')globalThis.fetch.mockResolvedValueOnce(response(configureApplyPayload))
+  globalThis.fetch.mockResolvedValueOnce(response({...probePayload,routeProof:NOT_SERVING_PROOF}))
+    .mockRejectedValueOnce(new TypeError('readback unavailable'))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button',{name:action,exact:true}))
+  await screen.findByText('readback unavailable')
+  expect(screen.getByText(NOT_SERVING_SUMMARY)).toBeInTheDocument()
+  expect(screen.queryAllByText('Connected',{exact:true})).toHaveLength(0)
+  expect(globalThis.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(action==='Connect'?2:1)
+})
+
 test('a short switch-over after a check is not reported as a problem', async () => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
   try {
