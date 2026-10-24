@@ -13,6 +13,7 @@ case "$SCENARIO" in
  failure) echo 'Cannot connect to the Docker daemon' >&2; exit 1 ;;
  partial) echo ods-searxng; exit 1 ;;
  running) echo ods-searxng ;;
+ companion) printf 'ods-searxng-valkey\tsearxng-valkey\n' ;;
  unrelated) echo ods-searxng-other ;;
  stopped) : ;;
 esac
@@ -23,7 +24,7 @@ for command in sudo systemctl service launchctl powershell.exe curl; do
     chmod +x "$TMP/bin/$command"
 done
 export PATH="$TMP/bin:$PATH"
-for scenario in failure partial running stopped unrelated cancel; do
+for scenario in failure partial running companion stopped unrelated cancel; do
     fixture="$TMP/$scenario"
     mkdir -p "$fixture/data/searxng"
     touch "$fixture/docker-compose.base.yml"
@@ -40,6 +41,9 @@ for scenario in failure partial running stopped unrelated cancel; do
             [[ "$output" == *'Cannot verify whether searxng is running'* ]] || { echo "FAIL: missing recovery error: $output"; exit 1; } ;;
         running)
             [[ "$rc" != 0 && -f "$fixture/data/searxng/sentinel" && "$output" == *'container is still running'* ]] || { echo "FAIL: running container was not refused"; exit 1; } ;;
+        companion)
+            # A database or cache from the same fragment still writes the data.
+            [[ "$rc" != 0 && -f "$fixture/data/searxng/sentinel" && "$output" == *'searxng-valkey service is still running'* ]] || { echo "FAIL: running companion was not refused: $output"; exit 1; } ;;
         stopped|unrelated)
             [[ "$rc" == 0 && ! -e "$fixture/data/searxng" ]] || { echo "FAIL: stopped service purge failed: $output"; exit 1; } ;;
         cancel)

@@ -390,6 +390,27 @@ def _refresh_compose_flags(
             print(line, file=sys.stderr)
 
 
+def _stop_targets(install_dir: Path, service_id: str, compose_file: Path) -> set[str]:
+    """The extension's service and the namespaced companions its fragment owns.
+
+    Matches the host agent's _extension_stop_targets: a fragment's
+    ``<id>-*`` services (its database, worker, cache) stop with it, but a
+    service with its own extension directory keeps its own lifecycle.
+    """
+    document = _read_yaml(compose_file, compose=True)
+    services = document.get("services") if isinstance(document, dict) else None
+    targets = {service_id}
+    if not isinstance(services, dict):
+        return targets
+    for name in services:
+        if (isinstance(name, str) and SERVICE_ID.fullmatch(name)
+                and name.startswith(service_id + "-")
+                and not (install_dir / "extensions" / "services" / name).is_dir()
+                and not (install_dir / "data" / "user-extensions" / name).is_dir()):
+            targets.add(name)
+    return targets
+
+
 def _stop_for_disable(
     install_dir: Path, service_id: str, mode: str, compose_flags: str,
     service_names: set[str] | None = None,
@@ -403,7 +424,10 @@ def _stop_for_disable(
         if (not flags or len(flags) % 2 or any(flag != "-f" for flag in flags[::2])
                 or any(not path or path.startswith("-") for path in flags[1::2])):
             raise SelectionError("Invalid Compose flags; selection unchanged")
-        command = ["docker", "compose", *flags, "stop", service_id]
+        names = sorted(service_names) if service_names else [service_id]
+        if any(SERVICE_ID.fullmatch(name) is None for name in names):
+            raise SelectionError(f"Invalid Compose service for {service_id}; selection unchanged")
+        command = ["docker", "compose", *flags, "stop", *names]
     elif mode == "owned":
         names = sorted(service_names) if service_names is not None else [service_id]
         # An unfiltered owned-stop request stops every ODS container. Never
@@ -509,7 +533,8 @@ def run(
         if action == "check-disable":
             return "ready"
         if stop_mode is not None:
-            _stop_for_disable(install_dir, service_id, stop_mode, compose_flags)
+            _stop_for_disable(install_dir, service_id, stop_mode, compose_flags,
+                              service_names=_stop_targets(install_dir, service_id, enabled))
         try:
             cache.unlink(missing_ok=True)
             os.replace(enabled, disabled)
