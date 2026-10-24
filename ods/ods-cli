@@ -6502,6 +6502,36 @@ _gpu_reassign_update_amd_arch_env() {
     fi
 }
 
+# VRAM held on each GPU by this installation's own llama-server, printed as
+# "<gpu-uuid> <MiB>" lines. Reassignment recreates that container, so its
+# allocation is free for the new plan; counting it as used made the loaded
+# model fail to fit its own reassignment (#8087). Ownership must be proven:
+# the container is this installation's llama-server Compose service and each
+# GPU process runs in its cgroup. Anything not proven is not credited.
+_gpu_reassign_owned_llama_vram() {
+    local container="${SERVICE_CONTAINERS[llama-server]:-ods-llama-server}"
+    local proc_root="${ODS_PROC_ROOT:-/proc}"
+    local inspected container_id workdir config_files service running install_real
+    # No such container (or no Docker access) means nothing of ours to credit.
+    inspected=$(docker inspect -f '{{.Id}}|{{index .Config.Labels "com.docker.compose.project.working_dir"}}|{{index .Config.Labels "com.docker.compose.project.config_files"}}|{{index .Config.Labels "com.docker.compose.service"}}|{{.State.Running}}' \
+        "$container" 2>/dev/null) || return 0
+    IFS='|' read -r container_id workdir config_files service running <<< "$inspected"
+    [[ "$container_id" =~ ^[0-9a-f]{64}$ && "$service" == llama-server && "$running" == true ]] || return 0
+    install_real=$(cd -P "$INSTALL_DIR" && pwd)
+    [[ "$workdir" == "$INSTALL_DIR" || "$workdir" == "$install_real" ]] || return 0
+    [[ ",$config_files," == *",$workdir/docker-compose.base.yml,"* ]] || return 0
+    local apps pid uuid used
+    # A driver that cannot list compute processes leaves the budget as it was.
+    apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid,used_memory \
+        --format=csv,noheader,nounits 2>/dev/null) || return 0
+    while IFS=', ' read -r pid uuid used; do
+        [[ "$pid" =~ ^[0-9]+$ && "$used" =~ ^[0-9]+$ && -n "$uuid" ]] || continue
+        # A process that exited since the listing has nothing left to credit.
+        grep -Fq -- "$container_id" "$proc_root/$pid/cgroup" 2>/dev/null || continue
+        printf '%s %s\n' "$uuid" "$used"
+    done <<< "$apps"
+}
+
 _gpu_reassign() {
     local auto_mode=0 dry_run=0 manual_mode=0
     while [[ $# -gt 0 ]]; do
@@ -6590,11 +6620,31 @@ _gpu_reassign() {
         fi
     fi
 
+    # The assignment budgets each GPU by its free VRAM. Credit back what this
+    # installation's llama-server holds (capped at the GPU's total) so the
+    # loaded model can be reassigned; config/gpu-topology.json keeps the
+    # driver's figures.
+    local assign_topo_json="$topo_json" reclaimed=""
+    if [[ "$backend" == "nvidia" ]]; then
+        reclaimed=$(_gpu_reassign_owned_llama_vram)
+    fi
+    if [[ -n "$reclaimed" ]]; then
+        assign_topo_json=$(jq --arg reclaimed "$reclaimed" '
+            ($reclaimed | split("\n") | map(select(length > 0) | split(" "))
+                | reduce .[] as $row ({}; .[$row[0]] += ($row[1] | tonumber))) as $credit
+            | .gpus |= map(
+                if ($credit[.uuid] // 0) > 0 and .memory_free_gb != null then
+                    .memory_free_gb = ([.memory_free_gb + $credit[.uuid] / 1024, .memory_gb]
+                        | min | . * 10 | round / 10)
+                else . end)' <<< "$topo_json")
+        log "Counting $(awk '{ total += $2 } END { print total }' <<< "$reclaimed") MiB held by this installation's llama-server as available; reassignment recreates it."
+    fi
+
     # Write topology to tmpfile and run assignment
     local tmpdir
     tmpdir=$(mktemp -d)
     trap "rm -rf '$tmpdir'" RETURN
-    echo "$topo_json" > "$tmpdir/topo.json"
+    echo "$assign_topo_json" > "$tmpdir/topo.json"
     local env_backup="$tmpdir/env.before"
     cp "$INSTALL_DIR/.env" "$env_backup"
 

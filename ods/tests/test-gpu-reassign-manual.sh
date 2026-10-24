@@ -33,8 +33,9 @@ cat > "$STUB_BIN/nvidia-smi" <<'STUB'
 #!/usr/bin/env bash
 case "$*" in
     *"--query-gpu=index,name,memory.total,memory.free,pcie.link.gen.current,pcie.link.width.current,uuid"*)
+        # NVIDIA_LOADED: the managed model holds 9216 MiB of GPU 0.
         printf '%s\n' \
-            "0, NVIDIA GeForce GTX 1080 Ti, 11264, 10240, 3, 16, GPU-ti-0" \
+            "0, NVIDIA GeForce GTX 1080 Ti, 11264, $([[ "${NVIDIA_LOADED:-0}" == 1 ]] && echo 1024 || echo 10240), 3, 16, GPU-ti-0" \
             "1, NVIDIA GeForce GTX 1080, 8192, 7168, 3, 16, GPU-1080" \
             "2, NVIDIA GeForce GTX 1080 Ti, 11264, 9216, 3, 16, GPU-ti-2"
         ;;
@@ -51,6 +52,9 @@ case "$*" in
         printf '%s\n' "GPU-ti-0" "GPU-1080" "GPU-ti-2"
         ;;
     *"--query-gpu=driver_version"*) echo "580.0" ;;
+    *"--query-compute-apps=pid,gpu_uuid,used_memory"*)
+        [[ -z "${NVIDIA_COMPUTE_APPS:-}" ]] || printf '%s\n' "$NVIDIA_COMPUTE_APPS"
+        ;;
     "--list-gpus")
         printf '%s\n' \
             "GPU 0: NVIDIA GeForce GTX 1080 Ti (UUID: GPU-ti-0)" \
@@ -103,6 +107,10 @@ case "$*" in
         ;;
     compose\ *\ ps\ -q\ llama-server)
         echo llama-container
+        ;;
+    "inspect -f {{.Id}}|"*)
+        [[ -n "${DOCKER_LLAMA_INSPECT:-}" ]] || exit 1
+        printf '%s\n' "$DOCKER_LLAMA_INSPECT"
         ;;
     "inspect "*)
         if [[ "${DOCKER_UNHEALTHY_ASSIGNMENT:-}" == "${LLAMA_SERVER_GPU_UUIDS:-}" ]]; then
@@ -414,6 +422,40 @@ RC=$?
 set -e
 [[ $RC -eq 0 ]] || { echo "[FAIL] reassign --auto without a terminal exited $RC: $OUTPUT"; exit 1; }
 echo "$OUTPUT" | grep -q "All services recreated with new GPU assignment"
+
+# #8087: with the managed model loaded, GPU 0 reports only 1024 MiB free and
+# 16000 MB no longer fits any split. This installation's llama-server holds
+# 9216 MiB there and is recreated by the reassignment, so it counts as
+# available. A foreign process or another installation's container does not.
+llama_id=$(printf 'a%.0s' {1..64})
+mkdir -p "$FIXTURE/proc/4242" "$FIXTURE/proc/5151"
+printf '0::/system.slice/docker-%s.scope\n' "$llama_id" > "$FIXTURE/proc/4242/cgroup"
+printf '0::/user.slice/user-1000.slice/session-2.scope\n' > "$FIXTURE/proc/5151/cgroup"
+owned_inspect="$llama_id|$FAKE_INSTALL|$FAKE_INSTALL/docker-compose.base.yml,$FAKE_INSTALL/docker-compose.nvidia.yml|llama-server|true"
+run_loaded() {
+    set +e
+    OUTPUT=$(printf 'n\n' | ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" ODS_PROC_ROOT="$FIXTURE/proc" \
+        NVIDIA_LOADED=1 NVIDIA_COMPUTE_APPS="$1" DOCKER_LLAMA_INSPECT="$2" \
+        "$ODS_CLI" gpu reassign --auto 2>&1)
+    RC=$?
+    set -e
+}
+run_loaded "4242, GPU-ti-0, 9216" "$owned_inspect"
+[[ $RC -eq 0 ]] || { echo "[FAIL] loaded managed model could not be reassigned: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "Counting 9216 MiB held by this installation's llama-server"
+echo "$OUTPUT" | grep -q "GPU assignment updated"
+[[ "$(jq -r '.gpus[] | select(.uuid == "GPU-ti-0") | .memory_free_gb' "$FAKE_INSTALL/config/gpu-topology.json")" == 1 ]] \
+    || { echo "[FAIL] the saved topology must keep the driver's free memory"; exit 1; }
+
+before_hash=$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')
+run_loaded "5151, GPU-ti-0, 9216" "$owned_inspect"
+[[ $RC -ne 0 ]] || { echo "[FAIL] a foreign GPU process was credited"; exit 1; }
+echo "$OUTPUT" | grep -q "exceeds assignable free VRAM"
+run_loaded "4242, GPU-ti-0, 9216" "$llama_id|/srv/other|/srv/other/docker-compose.base.yml|llama-server|true"
+[[ $RC -ne 0 ]] || { echo "[FAIL] another installation's llama-server was credited"; exit 1; }
+echo "$OUTPUT" | grep -q "exceeds assignable free VRAM"
+[[ "$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')" == "$before_hash" ]] \
+    || { echo "[FAIL] a refused reassignment changed .env"; exit 1; }
 
 AMD_ROOT="$FIXTURE/amd-root"
 AMD_INSTALL="$FIXTURE/amd-install"
