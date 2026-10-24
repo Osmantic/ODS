@@ -43,17 +43,7 @@ def _read_utf8(path: Path) -> str:
 
 
 def _read_current_version() -> str:
-    """Read installed version from .env (preferred) or .version file."""
-    env_file = Path(INSTALL_DIR) / ".env"
-    if env_file.exists():
-        try:
-            for line in _read_utf8(env_file).splitlines():
-                if line.startswith("ODS_VERSION="):
-                    version = parse_env_value(line.split("=", 1)[1])
-                    if version.strip():
-                        return version
-        except OSError:
-            pass
+    """Read the successful update receipt before the install-time environment."""
     version_file = Path(INSTALL_DIR) / ".version"
     if version_file.exists():
         try:
@@ -66,6 +56,16 @@ def _read_current_version() -> str:
                 else:
                     return raw
         except (OSError, json.JSONDecodeError, ValueError):
+            pass
+    env_file = Path(INSTALL_DIR) / ".env"
+    if env_file.exists():
+        try:
+            for line in _read_utf8(env_file).splitlines():
+                if line.startswith("ODS_VERSION="):
+                    version = parse_env_value(line.split("=", 1)[1])
+                    if version.strip():
+                        return version
+        except OSError:
             pass
     manifest_file = Path(INSTALL_DIR) / "manifest.json"
     if manifest_file.exists():

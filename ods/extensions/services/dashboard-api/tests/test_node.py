@@ -149,12 +149,12 @@ class TestReadOdsVersion:
         monkeypatch.setattr(node_mod, "_install_root", lambda: tmp_path)
         assert node_mod._read_ods_version("fallback") == "8.0.0"
 
-    def test_env_takes_precedence_over_version_file(self, monkeypatch, tmp_path):
+    def test_version_file_takes_precedence_over_env(self, monkeypatch, tmp_path):
         import routers.node as node_mod
-        (tmp_path / ".env").write_text("ODS_VERSION=env-wins\n")
-        (tmp_path / ".version").write_text("file-loses")
+        (tmp_path / ".env").write_text("ODS_VERSION=env-loses\n")
+        (tmp_path / ".version").write_text("file-wins")
         monkeypatch.setattr(node_mod, "_install_root", lambda: tmp_path)
-        assert node_mod._read_ods_version("fallback") == "env-wins"
+        assert node_mod._read_ods_version("fallback") == "file-wins"
 
     def test_fallback_when_absent(self, monkeypatch, tmp_path):
         import routers.node as node_mod

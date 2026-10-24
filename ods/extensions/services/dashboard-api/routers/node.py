@@ -37,19 +37,14 @@ def _install_root() -> Path:
 def _read_ods_version(fallback: str) -> str:
     """Read the installed ODS version from the install .env or .version file.
 
-    Order: ODS_VERSION in .env, then .version (plain string or {"version": ...}).
+    Order: .version (plain string or {"version": ...}), then ODS_VERSION in .env.
     Falls back to *fallback* (the running app version) when neither is present.
     """
     root = _install_root()
 
-    env_file = root / ".env"
-    env_vars, _ = settings._read_env_map_from_path(env_file)
-    if "ODS_VERSION" in env_vars and env_vars["ODS_VERSION"]:
-        return env_vars["ODS_VERSION"]
-
     version_file = root / ".version"
     try:
-        raw = version_file.read_text().strip()
+        raw = version_file.read_text(encoding="utf-8").strip()
         if raw:
             if raw.startswith("{"):
                 data = json.loads(raw)
@@ -59,6 +54,13 @@ def _read_ods_version(fallback: str) -> str:
                 return raw
     except (OSError, json.JSONDecodeError, ValueError):
         pass
+
+    # .env records the original installation; ods-update.sh publishes the
+    # successful update version only in .version.
+    env_file = root / ".env"
+    env_vars, _ = settings._read_env_map_from_path(env_file)
+    if "ODS_VERSION" in env_vars and env_vars["ODS_VERSION"]:
+        return env_vars["ODS_VERSION"]
 
     return fallback
 
