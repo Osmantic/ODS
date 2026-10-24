@@ -573,6 +573,31 @@ def test_preset_noop_enable_invalidates_stale_compose_cache(tmp_path):
     assert not cache.exists()
 
 
+def test_cli_preset_skips_host_service_without_compose_marker(tmp_path):
+    # OpenCode runs on the host: its directory has a manifest and no Compose
+    # file. Presets saved by older CLIs list it as disabled:opencode, and
+    # `ods preset load` must still restore the Compose selection. The
+    # Dashboard's strict selection keeps refusing an explicit host service.
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    host = tmp_path / "extensions" / "services" / "opencode"
+    host.mkdir(parents=True)
+    (host / "manifest.yaml").write_text(
+        "service:\n  id: opencode\n  type: host-systemd\n", encoding="utf-8"
+    )
+    search = extension(tmp_path, "search", enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:search\ndisabled:opencode\n", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="No Compose selection file for opencode"):
+        selection.restore_preset(tmp_path, preset, compose_flags="-f docker-compose.base.yml",
+                                 strict=True)
+    assert (search / "compose.yaml.disabled").is_file()
+
+    assert restore(tmp_path, preset) == (1, 0, [])
+    assert (search / "compose.yaml").is_file()
+    assert [path.name for path in host.iterdir()] == ["manifest.yaml"]
+
+
 def test_preset_rejects_symlink_and_directory_inputs(tmp_path):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     target = extension(tmp_path, "search")

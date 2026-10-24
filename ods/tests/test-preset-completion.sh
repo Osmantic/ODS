@@ -16,10 +16,6 @@ error() { fail "$*"; }
 # Extract only the production preset entry point; do not source CLI dispatch or
 # invoke any lifecycle commands. The save arm writes solely in our fixture.
 eval "$(sed -n '/^cmd_preset() {/,/^}/p' "$ROOT/ods-cli")"
-# The save arm strips secrets from .env; no keys are secret in this fixture.
-eval "$(sed -n '/^_preset_env_without_secrets() {/,/^}/p' "$ROOT/ods-cli")"
-_cmd_config_load_secret_schema() { :; }
-_cmd_config_is_secret() { return 1; }
 PRESETS_DIR="$INSTALL_DIR/presets"
 printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
 cmd_preset save 'alpha'
