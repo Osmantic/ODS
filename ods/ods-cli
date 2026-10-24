@@ -1171,7 +1171,7 @@ _compose_run_with_summary() {
 
     log_error "${_verb} failed:"
     local _surfaced
-    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency|permission denied|docker API|docker daemon|docker\.sock|/var/run/docker\.sock' "$_compose_log" \
+    _surfaced=$(grep -iE 'error|unhealthy|failed|dependency|permission denied|docker API|docker daemon|docker\.sock|/var/run/docker\.sock|no such service:' "$_compose_log" \
         | sed 's/^/  /' \
         | head -20 || true)
     if [[ -n "$_surfaced" ]]; then
