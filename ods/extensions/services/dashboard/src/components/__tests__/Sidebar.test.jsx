@@ -38,6 +38,16 @@ describe('Sidebar', () => {
     expect(screen.getByText('Dashboard')).toBeInTheDocument()
   })
 
+  test('Windows Desktop has one chat list, in Local chat, not a second Portal one', () => {
+    const { unmount } = render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+    expect(screen.getByRole('button', { name: 'New task' })).toBeInTheDocument()
+    unmount()
+    render(<Sidebar status={{ ...defaultStatus, runtimeProfile: 'windows-desktop' }} collapsed={false} onToggle={() => {}} />)
+    expect(screen.getByText('Dashboard')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'New task' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Extensions')).not.toBeInTheDocument()
+  })
+
   test('opens profile settings from the workspace footer', () => {
     render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
     expect(screen.getByText('Your profile')).toBeInTheDocument()
