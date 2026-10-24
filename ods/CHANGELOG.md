@@ -109,6 +109,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   longer abort text status reporting.
 
 ### Security
+- The Weaviate library extension now runs Weaviate 1.39.13 (was 1.36.2),
+  pinned by digest. 1.39.13 is built with Go 1.26.10, which rejects
+  certificate chains through the eight leaked eMudhra intermediates
+  (CVE-2026-111943); no Weaviate line before 1.38 has that fix. Back up
+  `data/weaviate` before updating: 1.36.2 cannot load collections after
+  1.39.13 has run, so rolling back the extension also needs that backup. See
+  the extension's README for the upgrade path.
 - Open WebUI no longer starts for other devices while its built-in
   administrator, `admin@localhost`, still has the password `admin`. Open WebUI
   creates that account while it runs without sign-in, the default for a
