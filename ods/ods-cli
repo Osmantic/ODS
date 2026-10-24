@@ -1292,21 +1292,31 @@ _check_docker_access() {
 
 #=============================================================================
 # Rebuild local-built images (opt-in via --rebuild-images on restart/start/update).
-# Always rebuilds: dashboard, dashboard-api, ape, token-spy, privacy-shield.
-# Conditionally rebuilds based on .env state:
-#   - comfyui     (ENABLE_COMFYUI=true)
-# Mirrors the conditional logic in installers/phases/11-services.sh. Unlike that
-# phase's image-inspect fast-path, --rebuild-images is an explicit opt-in so we
-# always rebuild every applicable service from source.
+# Rebuilds whichever of dashboard, dashboard-api, ape, token-spy, privacy-shield
+# and comfyui this stack selects. Unlike the installer's image-inspect
+# fast-path, --rebuild-images is an explicit opt-in so we always rebuild every
+# applicable service from source.
 #=============================================================================
 _ods_cli_rebuild_images() {
     local flags=("$@")
-    local svcs=(dashboard dashboard-api ape token-spy privacy-shield)
-    # Mirror phases/11-services.sh conditional builds: ComfyUI when enabled.
-    # llama-server is a pulled upstream image on every GPU backend.
-    [[ "${ENABLE_COMFYUI:-}" == "true" ]] && svcs+=(comfyui)
+    # llama-server is a pulled upstream image on every GPU backend, and so is
+    # AMD's ComfyUI; Compose skips a selected service without a build section.
+    local candidates=(dashboard dashboard-api ape token-spy privacy-shield comfyui)
+    local selected svc
+    local -a svcs=()
     _check_docker_access
-    log "Rebuilding local-built images (--rebuild-images)..."
+    # Compose refuses the whole build when one named service is not in the
+    # stack, so a disabled extension used to stop every rebuild. The installer
+    # records ComfyUI as ENABLE_IMAGE_GENERATION, never ENABLE_COMFYUI, so the
+    # stack itself decides which candidates apply.
+    if ! selected=$(docker compose "${flags[@]}" config --services); then
+        warn "Could not list this stack's services; no images were rebuilt (continuing — see compose output above)"
+        return 0
+    fi
+    for svc in "${candidates[@]}"; do
+        grep -Fxq -- "$svc" <<< "$selected" && svcs+=("$svc")
+    done
+    log "Rebuilding local-built images (--rebuild-images): ${svcs[*]}"
     if ! docker compose "${flags[@]}" build --no-cache "${svcs[@]}"; then
         warn "One or more images failed to rebuild (continuing — see compose output above)"
     fi
