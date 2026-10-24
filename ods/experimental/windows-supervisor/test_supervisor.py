@@ -549,21 +549,50 @@ def run_test_real_dashboard_status_no_false_green():
         assert by_id.get("token-spy") in ("down", "not_deployed"), f"token-spy false green: {by_id.get('token-spy')}"
         assert by_id.get("searxng") in ("down", "not_deployed"), f"searxng false green: {by_id.get('searxng')}"
 
-        # Step C: Mutation check (mutate stub llama to unhealthy 503)
-        print("Testing mutation check (mutating stub llama response to HTTP 503)...")
-        StubLlamaHealthHandler.healthy = False
-        time.sleep(1.0)
-        req = urllib.request.Request("http://127.0.0.1:3002/status", headers={"Authorization": "Bearer sk-test-pass-after-key"})
+        print("PASS: Real dashboard-api /status verified: healthy supervised services and zero false greens.")
+    finally:
+        dash_pass.kill()
+        dash_pass.wait(timeout=5.0)
+
+    time.sleep(0.5)
+
+    # Step C: Mutation check (mutate stub llama to unhealthy 503 on fresh instance)
+    print("Testing mutation check (mutating stub llama response to HTTP 503)...")
+    StubLlamaHealthHandler.healthy = False
+    env_mut = os.environ.copy()
+    env_mut["DASHBOARD_API_KEY"] = "sk-test-mut-key"
+    env_mut["ODS_INSTALL_DIR"] = str(repo_root / "ods")
+    env_mut["ODS_DATA_DIR"] = str(data_dir / "ods_data_mut")
+    env_mut["ODS_EXTENSIONS_DIR"] = str(repo_root / "ods" / "extensions" / "services")
+    env_mut["PYTHONPATH"] = str(api_dir)
+    env_mut["OLLAMA_HOST"] = "127.0.0.1"
+    env_mut["DASHBOARD_API_HOST"] = "127.0.0.1"
+
+    dash_mut = subprocess.Popen([PYTHON, "-c", runner], env=env_mut, creationflags=creationflags)
+    try:
+        ready = False
+        for _ in range(40):
+            time.sleep(0.2)
+            try:
+                req = urllib.request.Request("http://127.0.0.1:3002/health", headers={"Authorization": "Bearer sk-test-mut-key"})
+                with urllib.request.urlopen(req, timeout=1.0) as r:
+                    if r.status == 200:
+                        ready = True
+                        break
+            except Exception:
+                pass
+        assert ready, "Failed to start mutation dashboard instance"
+
+        req = urllib.request.Request("http://127.0.0.1:3002/status", headers={"Authorization": "Bearer sk-test-mut-key"})
         with urllib.request.urlopen(req, timeout=20.0) as resp:
             mut_data = json.loads(resp.read().decode("utf-8"))
         mut_by_id = {s["id"]: s["status"] for s in mut_data.get("services", [])}
         print(f"Mutated statuses: llama-server={mut_by_id.get('llama-server')}, dashboard-api={mut_by_id.get('dashboard-api')}")
         assert mut_by_id.get("llama-server") in ("unhealthy", "down", "degraded"), f"Mutation check failed: {mut_by_id.get('llama-server')}"
-
-        print("PASS: Real dashboard-api /status verified: healthy supervised services, zero false greens, and mutation verified.")
+        print("PASS: Mutation check verified - health probe dynamically detects non-healthy service.")
     finally:
-        dash_pass.kill()
-        dash_pass.wait(timeout=5.0)
+        dash_mut.kill()
+        dash_mut.wait(timeout=5.0)
         llama_server.shutdown()
 
 def main():
