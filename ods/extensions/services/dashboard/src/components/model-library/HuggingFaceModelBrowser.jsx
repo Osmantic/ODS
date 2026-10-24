@@ -299,7 +299,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
       const detail = requestError.detail
       setOverrideOffer(
         detailsRequestRef.current === requestId && requestError.rejected && !allowUnsupportedRuntime && detail?.overridable === true
-          && ['runtime_architecture_unsupported', 'runtime_tensor_type_unsupported'].includes(detail?.code) ? artifact : null,
+          && ['runtime_architecture_unsupported', 'runtime_tensor_type_unsupported', 'runtime_nextn_unsupported'].includes(detail?.code) ? artifact : null,
       )
     } finally {
       if (artifactCheckRef.current?.owner === owner) artifactCheckRef.current = null
