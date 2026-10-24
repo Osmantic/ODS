@@ -1794,7 +1794,12 @@ else
     mkdir -p "${INSTALL_DIR}/data/langfuse/clickhouse"
     mkdir -p "${INSTALL_DIR}/data/langfuse/redis"
     mkdir -p "${INSTALL_DIR}/data/langfuse/minio"
-    mkdir -p "${INSTALL_DIR}/data/remote-provider/secrets"
+    # shellcheck source=../lib/remote-provider-directories.sh
+    source "${SOURCE_ROOT}/installers/lib/remote-provider-directories.sh"
+    ods_prepare_remote_provider_directories "$INSTALL_DIR" || {
+        ai_err "Could not safely prepare remote-provider state directories"
+        exit 1
+    }
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 

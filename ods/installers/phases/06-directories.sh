@@ -561,7 +561,12 @@ else
     mkdir -p "$INSTALL_DIR"/data/{open-webui,whisper,tts,n8n,qdrant,models,privacy-shield,ape,token-spy,hermes,persona}
     mkdir -p "$INSTALL_DIR"/data/hermes-proxy/{caddy-data,caddy-config}
     mkdir -p "$INSTALL_DIR"/data/langfuse/{postgres,clickhouse,redis,minio}
-    mkdir -p "$INSTALL_DIR"/data/remote-provider/secrets
+    # shellcheck source=../lib/remote-provider-directories.sh
+    source "$SCRIPT_DIR/installers/lib/remote-provider-directories.sh"
+    ods_create_remote_provider_directories "$INSTALL_DIR" || {
+        error "Could not safely prepare remote-provider state directories"
+        return 1
+    }
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,searxng}
 
     _phase06_repair_host_path() {
@@ -665,6 +670,12 @@ else
             _phase06_repair_host_path "$_cfg_dir" "container-owned config directory" || return 1
         fi
     done
+
+    # Prepare remote-provider group traversal after existing ownership recovery.
+    ods_prepare_remote_provider_directories "$INSTALL_DIR" || {
+        error "Could not safely prepare remote-provider state directory permissions"
+        return 1
+    }
 
     # Ensure we can write to config/data subtrees (rsync will fail otherwise)
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then

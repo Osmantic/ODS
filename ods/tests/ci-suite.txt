@@ -306,6 +306,8 @@ tests/test-update-changelog-fallback.py
 tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
+tests/test-remote-provider-directory-permissions.py
+tests/test-remote-provider-installer-directories.sh
 tests/test-cli-chat-route.py
 tests/test-cli-chat-error-exit.py
 tests/test-cli-update-model-lifecycle.sh
