@@ -71,7 +71,16 @@ def test_preexisting_request_prevents_spawning(tmp_path):
 @pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
 def test_external_interrupt_reaps_child_and_preserves_signal_status(tmp_path, sig):
     marker = tmp_path / "child.json"
-    process, _ = launch(tmp_path, f"import os,time,json; open({str(marker)!r},'w').write(json.dumps(os.getpid())); time.sleep(60)")
+    # Existence is the readiness signal. Publish only after the PID is fully
+    # written and closed; observing open(..., 'w') can otherwise read '' in CI.
+    process, _ = launch(tmp_path, f"""import os,time,json
+from pathlib import Path
+marker = Path({str(marker)!r})
+staged = marker.with_suffix('.tmp')
+staged.write_text(json.dumps(os.getpid()))
+staged.replace(marker)
+time.sleep(60)
+""")
     try:
         wait_for(marker.exists)
         pid = json.loads(marker.read_text())

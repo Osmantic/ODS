@@ -154,10 +154,30 @@ dashboard_compose_up() {
 _get_base_compose_flags() {
     ensure_hermes_dashboard_session_token
 
-    local flags_file="${INSTALL_DIR}/.compose-flags"
+    local flags_file="${INSTALL_DIR}/.compose-flags" cached_flags
     if [[ -f "$flags_file" ]]; then
-        macos_model_store_compose_flags "$(cat "$flags_file")"
-        return $?
+        cached_flags="$(cat "$flags_file")"
+        # docs/PROFILES.md has owners add docker-compose.override.yml after
+        # install; the cache predates it, so resolve (and scan) it again.
+        if [[ ! -f "${INSTALL_DIR}/docker-compose.override.yml" ]] \
+            || /usr/bin/python3 - "$INSTALL_DIR" "$cached_flags" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+
+try:
+    tokens = shlex.split(sys.argv[2])
+except ValueError:
+    sys.exit(1)
+root = Path(sys.argv[1])
+valid = tokens and len(tokens) % 2 == 0 and all(t == '-f' for t in tokens[::2])
+present = valid and any(root / p == root / 'docker-compose.override.yml' for p in tokens[1::2])
+sys.exit(0 if present else 1)
+PY
+        then
+            macos_model_store_compose_flags "$cached_flags"
+            return $?
+        fi
     fi
     # Fallback: dynamic resolution via resolve-compose-stack.sh so user-installed
     # extensions in data/user-extensions/ are discovered when the .compose-flags
@@ -1359,8 +1379,16 @@ cmd_chat() {
         return 1
     }
 
+    local content
+    content=$(printf '%s' "$response" | jq -er '.choices[0].message.content | select(type == "string") | select(test("\\S"))') || {
+        local backend_error
+        backend_error=$(printf '%s' "$response" | jq -r '.error.message // "No assistant text in the response"' 2>/dev/null || true)
+        ai_err "LLM error: ${backend_error:-Invalid response}"
+        return 1
+    }
+
     echo ""
-    echo "$response" | jq -r '.choices[0].message.content // .error.message // "Error: no response"'
+    printf '%s\n' "$content"
     echo ""
 }
 
