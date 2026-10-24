@@ -10,15 +10,19 @@ Exercises process management, loopback security, and failure recovery using stub
   6. Forced stop path fallback (timeout expires, triggers forced kill, zero orphans)
   7. Job assignment failure compensation (zero orphans on AssignProcessToJobObject failure)
   8. Secret file permissions (owner-only via icacls / chmod 600) and pids.json credential elimination
+  9. Real dashboard-api /status health verification, loopback isolation, and zero false greens
 """
 
+import http.server
 import json
 import os
 import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from pathlib import Path
 
 PYTHON = sys.executable
@@ -319,12 +323,12 @@ def run_test_job_assignment_failure_compensation():
 
         real_assign = sup.job.assign_process
         calls = 0
-        def patched_assign(pid):
+        def patched_assign(pid, *args, **kwargs):
             nonlocal calls
             calls += 1
             if calls == 2:
                 raise RuntimeError("Simulated error 5: AssignProcessToJobObject Access Denied")
-            return real_assign(pid)
+            return real_assign(pid, *args, **kwargs)
 
         sup.job.assign_process = patched_assign
 
@@ -409,6 +413,152 @@ def run_test_secret_file_permissions_and_pids_json():
             sup.stop()
         print("PASS: Secret files restricted owner-only (icacls / chmod 600) and pids.json contains zero credentials.")
 
+def run_test_real_dashboard_status_no_false_green():
+    print("\n[TEST 9/9] Testing Real dashboard-api /status Integration, Loopback Health, and No False Greens...")
+    repo_root = THIS_DIR.parents[2]
+    api_dir = repo_root / "ods" / "extensions" / "services" / "dashboard-api"
+    data_dir = DATA_DIR / "real_dash_status_data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Start stub llama-server on port 8080 answering /health
+    class StubLlamaHealthHandler(http.server.BaseHTTPRequestHandler):
+        healthy = True
+
+        def do_GET(self):
+            if self.path == "/health":
+                if StubLlamaHealthHandler.healthy:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"status": "ok"}')
+                else:
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"status": "error"}')
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    if not verify_port_available(8080):
+        print("Warning: Port 8080 is in use, skipping real status test")
+        return
+    if not verify_port_available(3002):
+        print("Warning: Port 3002 is in use, skipping real status test")
+        return
+
+    llama_server = http.server.ThreadingHTTPServer(("127.0.0.1", 8080), StubLlamaHealthHandler)
+    t_llama = threading.Thread(target=llama_server.serve_forever, daemon=True)
+    t_llama.start()
+
+    # Step A: Fail-Before demonstration (without OLLAMA_HOST and DASHBOARD_API_HOST)
+    print("Testing Fail-Before baseline (unconfigured host environment)...")
+    env_fail = os.environ.copy()
+    env_fail["DASHBOARD_API_KEY"] = "sk-test-fail-before-key"
+    env_fail["ODS_INSTALL_DIR"] = str(repo_root / "ods")
+    env_fail["ODS_DATA_DIR"] = str(data_dir / "ods_data_fail")
+    env_fail["ODS_EXTENSIONS_DIR"] = str(repo_root / "ods" / "extensions" / "services")
+    env_fail["PYTHONPATH"] = str(api_dir)
+    env_fail.pop("OLLAMA_HOST", None)
+    env_fail.pop("DASHBOARD_API_HOST", None)
+    env_fail.pop("SERVICE_HOST", None)
+
+    runner = (
+        "import sys, uvicorn, main; "
+        "uvicorn.run(main.app, host='127.0.0.1', port=3002, log_level='warning')"
+    )
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+    dash_fail = subprocess.Popen([PYTHON, "-c", runner], env=env_fail, creationflags=creationflags)
+    try:
+        ready = False
+        for _ in range(40):
+            time.sleep(0.2)
+            try:
+                req = urllib.request.Request("http://127.0.0.1:3002/health", headers={"Authorization": "Bearer sk-test-fail-before-key"})
+                with urllib.request.urlopen(req, timeout=1.0) as r:
+                    if r.status == 200:
+                        ready = True
+                        break
+            except Exception:
+                pass
+        assert ready, "Failed to start fail-before dashboard instance"
+
+        req = urllib.request.Request("http://127.0.0.1:3002/status", headers={"Authorization": "Bearer sk-test-fail-before-key"})
+        with urllib.request.urlopen(req, timeout=20.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        fail_by_id = {s["id"]: s["status"] for s in data.get("services", [])}
+        print(f"Fail-before statuses: llama-server={fail_by_id.get('llama-server')}, dashboard-api={fail_by_id.get('dashboard-api')}")
+        assert fail_by_id.get("llama-server") in ("down", "not_deployed"), "Expected llama-server down without OLLAMA_HOST"
+    finally:
+        dash_fail.kill()
+        dash_fail.wait(timeout=5.0)
+
+    time.sleep(0.5)
+
+    # Step B: Pass-After demonstration (with OLLAMA_HOST and DASHBOARD_API_HOST set to 127.0.0.1)
+    print("Testing Pass-After supervisor configuration (OLLAMA_HOST and DASHBOARD_API_HOST = 127.0.0.1)...")
+    env_pass = os.environ.copy()
+    env_pass["DASHBOARD_API_KEY"] = "sk-test-pass-after-key"
+    env_pass["ODS_INSTALL_DIR"] = str(repo_root / "ods")
+    env_pass["ODS_DATA_DIR"] = str(data_dir / "ods_data_pass")
+    env_pass["ODS_EXTENSIONS_DIR"] = str(repo_root / "ods" / "extensions" / "services")
+    env_pass["PYTHONPATH"] = str(api_dir)
+    env_pass["OLLAMA_HOST"] = "127.0.0.1"
+    env_pass["DASHBOARD_API_HOST"] = "127.0.0.1"
+    env_pass.pop("SERVICE_HOST", None)
+    env_pass.pop("WEBUI_HOST", None)
+    env_pass.pop("SEARXNG_HOST", None)
+    env_pass.pop("TOKEN_SPY_HOST", None)
+
+    dash_pass = subprocess.Popen([PYTHON, "-c", runner], env=env_pass, creationflags=creationflags)
+    try:
+        ready = False
+        for _ in range(40):
+            time.sleep(0.2)
+            try:
+                req = urllib.request.Request("http://127.0.0.1:3002/health", headers={"Authorization": "Bearer sk-test-pass-after-key"})
+                with urllib.request.urlopen(req, timeout=1.0) as r:
+                    if r.status == 200:
+                        ready = True
+                        break
+            except Exception:
+                pass
+        assert ready, "Failed to start pass-after dashboard instance"
+
+        req = urllib.request.Request("http://127.0.0.1:3002/status", headers={"Authorization": "Bearer sk-test-pass-after-key"})
+        with urllib.request.urlopen(req, timeout=20.0) as resp:
+            pass_data = json.loads(resp.read().decode("utf-8"))
+        by_id = {s["id"]: s["status"] for s in pass_data.get("services", [])}
+        print("Pass-after statuses:")
+        for sid in ["llama-server", "dashboard-api", "open-webui", "token-spy", "searxng"]:
+            print(f"  {sid}: {by_id.get(sid)}")
+
+        assert by_id.get("llama-server") == "healthy", f"llama-server expected healthy, got {by_id.get('llama-server')}"
+        assert by_id.get("dashboard-api") == "healthy", f"dashboard-api expected healthy, got {by_id.get('dashboard-api')}"
+        assert by_id.get("open-webui") in ("down", "not_deployed"), f"open-webui false green: {by_id.get('open-webui')}"
+        assert by_id.get("token-spy") in ("down", "not_deployed"), f"token-spy false green: {by_id.get('token-spy')}"
+        assert by_id.get("searxng") in ("down", "not_deployed"), f"searxng false green: {by_id.get('searxng')}"
+
+        # Step C: Mutation check (mutate stub llama to unhealthy 503)
+        print("Testing mutation check (mutating stub llama response to HTTP 503)...")
+        StubLlamaHealthHandler.healthy = False
+        time.sleep(1.0)
+        req = urllib.request.Request("http://127.0.0.1:3002/status", headers={"Authorization": "Bearer sk-test-pass-after-key"})
+        with urllib.request.urlopen(req, timeout=20.0) as resp:
+            mut_data = json.loads(resp.read().decode("utf-8"))
+        mut_by_id = {s["id"]: s["status"] for s in mut_data.get("services", [])}
+        print(f"Mutated statuses: llama-server={mut_by_id.get('llama-server')}, dashboard-api={mut_by_id.get('dashboard-api')}")
+        assert mut_by_id.get("llama-server") in ("unhealthy", "down", "degraded"), f"Mutation check failed: {mut_by_id.get('llama-server')}"
+
+        print("PASS: Real dashboard-api /status verified: healthy supervised services, zero false greens, and mutation verified.")
+    finally:
+        dash_pass.kill()
+        dash_pass.wait(timeout=5.0)
+        llama_server.shutdown()
+
 def main():
     print("===============================================================")
     print("       ODS Process Supervisor Offline Test Suite               ")
@@ -423,9 +573,10 @@ def main():
     run_test_forced_stop_timeout()
     run_test_job_assignment_failure_compensation()
     run_test_secret_file_permissions_and_pids_json()
+    run_test_real_dashboard_status_no_false_green()
     elapsed = time.perf_counter() - t0
     print("\n===============================================================")
-    print(f"SUCCESS: All 8 offline supervisor tests passed in {elapsed:.2f}s! ")
+    print(f"SUCCESS: All 9 offline supervisor tests passed in {elapsed:.2f}s! ")
     print("===============================================================")
 
 if __name__ == "__main__":

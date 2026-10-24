@@ -50,6 +50,62 @@ MODEL_PIN = {
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 JobObjectExtendedLimitInformation = 9
 PROCESS_ALL_ACCESS = 0x1F0FFF
+CREATE_SUSPENDED = 0x00000004
+
+def resume_win32_process(proc: subprocess.Popen) -> bool:
+    """Resumes a process created with CREATE_SUSPENDED after Job Object assignment.
+    Based on PR #7959 (ods/installers/windows/lib/native-process-job.ps1)."""
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    proc_handle = getattr(proc, "_handle", None)
+    h_val = int(proc_handle) if proc_handle is not None else None
+    if h_val:
+        try:
+            status = ctypes.windll.ntdll.NtResumeProcess(h_val)
+            if status == 0:
+                return True
+        except Exception:
+            pass
+    return _resume_threads_fallback(proc.pid)
+
+def _resume_threads_fallback(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+    TH32CS_SNAPTHREAD = 0x00000004
+    THREAD_SUSPEND_RESUME = 0x0002
+
+    class THREADENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ThreadID", wintypes.DWORD),
+            ("th32OwnerProcessID", wintypes.DWORD),
+            ("tpBasePri", ctypes.c_long),
+            ("tpDeltaPri", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD),
+        ]
+
+    h_snap = ctypes.windll.kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+    if h_snap == -1 or h_snap == 0xFFFFFFFF:
+        return False
+    try:
+        te = THREADENTRY32()
+        te.dwSize = ctypes.sizeof(THREADENTRY32)
+        if ctypes.windll.kernel32.Thread32First(h_snap, ctypes.byref(te)):
+            while True:
+                if te.th32OwnerProcessID == pid:
+                    h_th = ctypes.windll.kernel32.OpenThread(THREAD_SUSPEND_RESUME, False, te.th32ThreadID)
+                    if h_th:
+                        try:
+                            ctypes.windll.kernel32.ResumeThread(h_th)
+                        finally:
+                            ctypes.windll.kernel32.CloseHandle(h_th)
+                if not ctypes.windll.kernel32.Thread32Next(h_snap, ctypes.byref(te)):
+                    break
+    finally:
+        ctypes.windll.kernel32.CloseHandle(h_snap)
+    return True
 
 def compute_sha256(file_path: Path) -> str:
     h = hashlib.sha256()
@@ -145,19 +201,24 @@ class Win32JobManager:
         if not ok:
             raise RuntimeError(f"SetInformationJobObject failed with error {ctypes.GetLastError()}")
 
-    def assign_process(self, pid: int):
+    def assign_process(self, pid: int, handle=None):
         if not self.is_windows or not self.handle:
             return
         import ctypes
-        h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
+        h_proc = handle
+        close_needed = False
         if not h_proc:
-            raise RuntimeError(f"OpenProcess for PID {pid} failed with error {ctypes.GetLastError()}")
+            h_proc = ctypes.windll.kernel32.OpenProcess(PROCESS_ALL_ACCESS, False, pid)
+            close_needed = True
+            if not h_proc:
+                raise RuntimeError(f"OpenProcess for PID {pid} failed with error {ctypes.GetLastError()}")
         try:
             ok = ctypes.windll.kernel32.AssignProcessToJobObject(self.handle, h_proc)
             if not ok:
                 raise RuntimeError(f"AssignProcessToJobObject failed for PID {pid} with error {ctypes.GetLastError()}")
         finally:
-            ctypes.windll.kernel32.CloseHandle(h_proc)
+            if close_needed and h_proc:
+                ctypes.windll.kernel32.CloseHandle(h_proc)
 
     def close(self):
         if self.handle:
@@ -218,28 +279,43 @@ class WindowsNativeSupervisor:
         self.pids_file.write_text(json.dumps(pids_data, indent=2), encoding="utf-8")
 
     def _spawn_and_assign_child(self, name: str, cmd: list, **kwargs) -> subprocess.Popen:
-        """Spawns child process and assigns it to Job Object.
+        """Spawns child process suspended and assigns it to Job Object before resuming.
+        Eliminates the process creation assignment race condition (pattern from PR #7959).
         If assignment fails for any reason, immediately terminates child
         and raises RuntimeError to guarantee zero orphaned processes."""
         creationflags = kwargs.pop("creationflags", 0)
         if sys.platform == "win32":
-            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
+            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED
         proc = subprocess.Popen(cmd, creationflags=creationflags, **kwargs)
         if "llama" in name:
             self.llama_proc = proc
         elif "dashboard" in name:
             self.dashboard_proc = proc
+
+        proc_handle = getattr(proc, "_handle", None)
+        h_val = int(proc_handle) if proc_handle is not None else None
         try:
-            self.job.assign_process(proc.pid)
+            try:
+                self.job.assign_process(proc.pid, handle=h_val)
+            except TypeError:
+                self.job.assign_process(proc.pid)
         except Exception as e:
             print(f"ERROR: Failed to assign {name} (PID {proc.pid}) to Win32 Job Object: {e}. Terminating child immediately to guarantee zero orphans.", file=sys.stderr)
             try:
+                if sys.platform == "win32" and h_val is not None:
+                    import ctypes
+                    ctypes.windll.kernel32.TerminateProcess(h_val, 1)
                 proc.kill()
                 proc.wait(timeout=2.0)
             except Exception:
                 pass
             self._terminate_spawned_children()
-            raise
+            raise RuntimeError(f"Job Object assignment failed for {name}: {e}") from e
+
+        # Resume suspended child now that it is safely contained in the Job Object
+        if sys.platform == "win32":
+            resume_win32_process(proc)
+
         return proc
 
     def _close_log_handles(self):
@@ -463,7 +539,10 @@ class WindowsNativeSupervisor:
         env["ODS_DATA_DIR"] = str(self.data_dir / "ods_data")
         env["ODS_EXTENSIONS_DIR"] = str(repo_root / "ods" / "extensions" / "services")
         env["PYTHONPATH"] = str(api_dir)
-        env["SERVICE_HOST"] = "127.0.0.1"
+        # Configure ONLY the two supervised services to loopback via manifest host_env variables.
+        # Leaves other service hosts (open-webui, token-spy, searxng) untouched to prevent false greens.
+        env["OLLAMA_HOST"] = "127.0.0.1"
+        env["DASHBOARD_API_HOST"] = "127.0.0.1"
         env["LLM_API_URL"] = f"http://127.0.0.1:{self.llama_port}/v1"
         env["LLM_MODEL"] = model_path.name
         env["GGUF_FILE"] = model_path.name
@@ -692,11 +771,16 @@ def main():
         print(f"ERROR: Port {args.dashboard_port} is already in use by another process.", file=sys.stderr)
         sys.exit(3)
 
-    if args.stub_children:
-        sup.start()
-    else:
-        llama_exe, model_path = sup.download_and_verify()
-        sup.start(llama_exe, model_path)
+    try:
+        if args.stub_children:
+            sup.start()
+        else:
+            llama_exe, model_path = sup.download_and_verify()
+            sup.start(llama_exe, model_path)
+    except Exception as e:
+        print(f"FATAL: Supervisor startup failed: {e}", file=sys.stderr)
+        sup.stop()
+        sys.exit(4)
 
     if args.stop_after_ready:
         print("Executing stop path verification after health check...")

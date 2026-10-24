@@ -5,6 +5,7 @@ on:
   pull_request:
     paths:
       - 'ods/experimental/windows-supervisor/**'
+      - 'ods/extensions/services/dashboard-api/manifest.yaml'
       - '.github/workflows/experiment-windows-supervisor.yml'
 
 permissions:

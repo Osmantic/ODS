@@ -8,6 +8,7 @@ service:
   name: Dashboard API (System Status)
   aliases: []
   container_name: ods-dashboard-api
+  host_env: DASHBOARD_API_HOST
   default_host: dashboard-api
   port: 3002
   external_port_env: DASHBOARD_API_PORT
