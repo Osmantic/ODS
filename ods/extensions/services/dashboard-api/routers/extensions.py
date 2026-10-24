@@ -4771,6 +4771,9 @@ def prepare_extension_images(
     download. Library recipes prepare their images in their own install.
     """
     _validate_service_id(service_id)
+    if service_id == "opencode" and service_id in SERVICES:
+        # A host application with no images: its enable starts the host service.
+        return JSONResponse({"status": "ready", "service_ids": []})
     if service_id == "open-webui":
         plan = ["open-webui"]
     else:

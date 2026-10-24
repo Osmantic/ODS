@@ -96,6 +96,8 @@ function Test-DockerRunning {
 }
 
 function Test-Install {
+    param([switch]$SkipDockerCheck)
+
     if (-not (Test-Path $InstallDir)) {
         Write-AIError "ODS not found at $InstallDir. Set ODS_HOME or run installer first."
         exit 1
@@ -106,7 +108,7 @@ function Test-Install {
         Write-AIError "docker-compose.base.yml not found in $InstallDir"
         exit 1
     }
-    if (-not (Test-DockerRunning)) { exit 1 }
+    if (-not $SkipDockerCheck -and -not (Test-DockerRunning)) { exit 1 }
 }
 
 function Write-ODSUtf8NoBomFile {
@@ -475,7 +477,7 @@ function Assert-ODSInstallDirSafeForRemoval {
     }
     $envPath = Join-Path $fullPath ".env"
     if (Test-Path -LiteralPath $envPath -PathType Leaf) {
-        $envText = Get-Content -LiteralPath $envPath -Raw -ErrorAction SilentlyContinue
+        $envText = Get-Content -LiteralPath $envPath -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
         if (
             $envText -match '(?m)^WEBUI_SECRET=' -and
             $envText -match '(?m)^DASHBOARD_API_KEY='
@@ -1022,8 +1024,17 @@ function Invoke-ODSSttModelDownloadTrigger {
     # bounded so slow Hugging Face transfers do not wedge ods.ps1 or install.
     $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
     if ($curl) {
-        $curlOutput = & $curl.Source --fail --silent --show-error --max-time 30 -X POST $ModelUrl 2>&1
-        $curlExit = $LASTEXITCODE
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            # PS 5.1 turns redirected native stderr into ErrorRecords. Curl's
+            # timeout diagnostic must reach the exit-28 decision below instead
+            # of terminating repair before it can verify the model cache.
+            $ErrorActionPreference = 'Continue'
+            $curlOutput = & $curl.Source --fail --silent --show-error --max-time 30 -X POST $ModelUrl 2>&1
+            $curlExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
         if ($curlExit -eq 0 -or $curlExit -eq 28) { return $true }
         Write-AIWarn "STT model download trigger returned curl exit $curlExit; verifying cache before failing."
         if ($curlOutput) {
@@ -1165,6 +1176,12 @@ function Test-ODSComposeServicesStarted {
         try {
             $ids = @(& docker compose @ComposeFlags ps --all -q $service 2>$null |
                 Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            # Partial stdout is not a complete inventory when Docker failed.
+            # Keep the bounded retry path rather than certifying startup from
+            # whichever container IDs happened to arrive before the failure.
+            if ($LASTEXITCODE -ne 0) {
+                return $false
+            }
         } catch {
             return $false
         }
@@ -1299,7 +1316,7 @@ function Set-ODSEnvValue {
     $lines = New-Object 'System.Collections.Generic.List[string]'
     $escapedKey = [regex]::Escape($Key)
     $updated = $false
-    foreach ($line in @(Get-Content $envFile)) {
+    foreach ($line in @(Get-Content -LiteralPath $envFile -Encoding UTF8)) {
         if ($line -match "^${escapedKey}=") {
             if (-not $updated) {
                 [void]$lines.Add("${Key}=${Value}")
@@ -2492,7 +2509,7 @@ function Invoke-ConfigShow {
         return
     }
 
-    Get-Content $envFile | ForEach-Object {
+    Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
         $line = $_.Trim()
         if ($line -match "^#" -or $line -eq "") { return }
         # Redact any key whose NAME contains a sensitive keyword, mirroring the
@@ -2523,20 +2540,34 @@ function Invoke-Chat {
             @{ role = "user"; content = $Message }
         )
     } | ConvertTo-Json -Depth 3
+    # Windows PowerShell 5.1 encodes a [string] -Body as ISO-8859-1, which
+    # replaces non-Latin text with "?". Send explicit UTF-8 bytes instead.
+    $bodyBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($body)
 
     $llmEndpoint = Get-WindowsLocalLlmEndpoint -InstallDir $InstallDir -NativeBackend (Get-NativeInferenceBackend)
+    $headers = @{}
+    if ($llmEndpoint.ContainsKey("ApiKey") -and -not [string]::IsNullOrWhiteSpace([string]$llmEndpoint.ApiKey)) {
+        $headers.Authorization = "Bearer " + [string]$llmEndpoint.ApiKey
+    }
     try {
         $resp = Invoke-RestMethod -Uri $llmEndpoint.ChatCompletionsUrl `
-            -Method POST -Body $body -ContentType "application/json" -TimeoutSec 120
+            -Method POST -Headers $headers -Body $bodyBytes -ContentType "application/json; charset=utf-8" -TimeoutSec 120
 
-        if ($resp.choices -and $resp.choices[0].message) {
-            Write-Host ""
-            Write-Host $resp.choices[0].message.content
-            Write-Host ""
+        if (-not $resp.choices -or -not $resp.choices[0].message -or
+            $resp.choices[0].message.content -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($resp.choices[0].message.content)) {
+            $detail = 'No assistant text in the response'
+            if ($resp.error -and $resp.error.message) { $detail = [string]$resp.error.message }
+            throw $detail
         }
+
+        Write-Host ""
+        Write-Host $resp.choices[0].message.content
+        Write-Host ""
     } catch {
         Write-AIError "Chat request failed: $_"
         Write-AI "Is llama-server running? Try: .\ods.ps1 status"
+        exit 1
     }
 }
 
@@ -2576,7 +2607,9 @@ function Invoke-Update {
 }
 
 function Invoke-Report {
-    Test-Install
+    # Support diagnostics include failed Docker probes; an unavailable daemon
+    # must not prevent collecting the bundle needed to diagnose it.
+    Test-Install -SkipDockerCheck
     Push-Location $InstallDir
     try {
         $flags = Get-ComposeFlags

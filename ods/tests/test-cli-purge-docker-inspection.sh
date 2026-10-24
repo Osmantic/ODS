@@ -13,6 +13,19 @@ case "$SCENARIO" in
  failure) echo 'Cannot connect to the Docker daemon' >&2; exit 1 ;;
  partial) echo ods-searxng; exit 1 ;;
  running) echo ods-searxng ;;
+ companion|legacy|frozen|missing-recipe)
+     # Respect the requested projection so the old base-file-only guard is
+     # exercised by these regressions rather than hidden by the Docker stub.
+     case "$SCENARIO" in
+         legacy) recipe="$INSTALL_DIR/docker-compose.yml" ;;
+         frozen) recipe="$INSTALL_DIR/data/pixel-native/preparation/ingress-refresh-0123456789abcdef0123456789abcdef/lifecycle.compose.json" ;;
+         missing-recipe) recipe='' ;;
+         *) recipe="$INSTALL_DIR/docker-compose.base.yml" ;;
+     esac
+     printf 'ods-searxng-valkey\tsearxng-valkey\t%s' "$INSTALL_DIR"
+     [[ "$*" != *com.docker.compose.project.config_files* ]] || printf '\t%s' "$recipe"
+     printf '\n' ;;
+ other-project) printf 'foreign-project-searxng-valkey-1\tsearxng-valkey\t/srv/other\n' ;;
  unrelated) echo ods-searxng-other ;;
  stopped) : ;;
 esac
@@ -23,10 +36,14 @@ for command in sudo systemctl service launchctl powershell.exe curl; do
     chmod +x "$TMP/bin/$command"
 done
 export PATH="$TMP/bin:$PATH"
-for scenario in failure partial running stopped unrelated cancel; do
+for scenario in failure partial running companion legacy frozen missing-recipe other-project stopped unrelated cancel; do
     fixture="$TMP/$scenario"
     mkdir -p "$fixture/data/searxng"
-    touch "$fixture/docker-compose.base.yml"
+    if [[ "$scenario" == legacy ]]; then
+        touch "$fixture/docker-compose.yml"
+    else
+        touch "$fixture/docker-compose.base.yml"
+    fi
     printf 'keep\n' > "$fixture/data/searxng/sentinel"
     # Both selectors override a deliberately inherited unrelated installation.
     export INSTALL_DIR="$fixture" ODS_HOME="$fixture" ODS_INSTALL_DIR="$TMP/foreign"
@@ -40,7 +57,12 @@ for scenario in failure partial running stopped unrelated cancel; do
             [[ "$output" == *'Cannot verify whether searxng is running'* ]] || { echo "FAIL: missing recovery error: $output"; exit 1; } ;;
         running)
             [[ "$rc" != 0 && -f "$fixture/data/searxng/sentinel" && "$output" == *'container is still running'* ]] || { echo "FAIL: running container was not refused"; exit 1; } ;;
-        stopped|unrelated)
+        companion|legacy|frozen|missing-recipe)
+            # A database or cache from the same fragment still writes the data.
+            [[ "$rc" != 0 && -f "$fixture/data/searxng/sentinel" && "$output" == *'searxng-valkey service is still running'* ]] || { echo "FAIL: running companion was not refused: $output"; exit 1; } ;;
+        stopped|unrelated|other-project)
+            # Another installation's companion with the same service label
+            # does not block this installation's purge.
             [[ "$rc" == 0 && ! -e "$fixture/data/searxng" ]] || { echo "FAIL: stopped service purge failed: $output"; exit 1; } ;;
         cancel)
             [[ "$rc" == 0 && -f "$fixture/data/searxng/sentinel" ]] || { echo 'FAIL: cancellation changed data'; exit 1; } ;;

@@ -25,6 +25,16 @@ fi
 #=============================================================================
 # Configuration
 #=============================================================================
+# Commands cd into INSTALL_DIR; resolve user-typed paths against where ods ran.
+ODS_CALLER_PWD="$PWD"
+_caller_path() {
+    if [[ -z "$1" || "$1" == /* ]]; then
+        printf '%s' "$1"
+    else
+        printf '%s/%s' "$ODS_CALLER_PWD" "$1"
+    fi
+}
+
 _source="${BASH_SOURCE[0]}"
 while [[ -L "$_source" ]]; do
     _dir="$(cd "$(dirname "$_source")" && pwd)"
@@ -952,6 +962,26 @@ get_compose_flags() {
             if [[ "$cached" == *"docker-compose.lemonade-external.yml"* ]]; then
                 stale=1
             fi
+            # Registered model stores (scripts/register-model-store.py) and the
+            # active store's /models mount come after install. A cache from
+            # before them would start llama-server on the default directory,
+            # where the selected model is missing, and Compose then leaves
+            # LiteLLM and the Dashboard unstarted.
+            if [[ -f "$INSTALL_DIR/.model-stores.compose.json" \
+                && "$cached" != *".model-stores.compose.json"* ]]; then
+                stale=1
+            fi
+            # docs/PROFILES.md has owners add docker-compose.override.yml to
+            # turn services off; the resolver appends it when it exists.
+            if [[ -f "$INSTALL_DIR/docker-compose.override.yml" \
+                && "$cached" != *"docker-compose.override.yml"* ]]; then
+                stale=1
+            fi
+            if [[ "${ODS_ACTIVE_MODEL_STORE:-default}" != "default" ]]; then
+                [[ "$cached" == *".active-model-store.compose.json"* ]] || stale=1
+            elif [[ "$cached" == *".active-model-store.compose.json"* ]]; then
+                stale=1
+            fi
             # The AMD image follows AMD_INFERENCE_BACKEND (vulkan or rocm).
             if [[ "$cached" == *"docker-compose.amd.yml"* ]]; then
                 if [[ "${AMD_INFERENCE_BACKEND:-vulkan}" == "rocm" ]]; then
@@ -1778,7 +1808,18 @@ _ods_cli_wait_for_litellm_ready() {
 
 _ods_cli_wait_for_hermes_ready_with_retry() {
     local flags=("$@")
-    local state
+    local state flag hermes_selected=false
+
+    # `ods disable hermes` stops its container but leaves it in place, so the
+    # container existing does not mean this stack runs Hermes. Wait only when
+    # its Compose file is part of the stack being restarted.
+    for flag in "${flags[@]}"; do
+        if [[ "$flag" == extensions/services/hermes/compose.yaml \
+            || "$flag" == */extensions/services/hermes/compose.yaml ]]; then
+            hermes_selected=true
+        fi
+    done
+    [[ "$hermes_selected" == true ]] || return 0
 
     if _ods_cli_wait_for_hermes_ready; then
         return 0
@@ -1804,7 +1845,6 @@ cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
     load_env
-    ensure_llama_cpu_budget
 
     # Parse flags vs positional service name
     local rebuild_images="false"
@@ -1817,6 +1857,13 @@ cmd_restart() {
             *) service="$1"; shift ;;
         esac
     done
+    # A full restart or a llama-server restart under a model switch leaves the
+    # switch half-applied, as an update would. Refuse before changing CPU
+    # budgets in .env or dispatching to the native Mac llama helper.
+    if [[ -z "$service" || "$(resolve_service "$service")" == llama-server ]]; then
+        _ods_cli_refuse_under_model_lifecycle restart
+    fi
+    ensure_llama_cpu_budget
     if [[ -n "$service" && "$(resolve_service "$service")" == llama-server ]] \
         && _ods_cli_macos_native_llama; then
         _ods_cli_macos_llama restart
@@ -2375,6 +2422,10 @@ cmd_update() {
         log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
     fi
 
+    # Never restart the agent or recreate the stack under a model switch or a
+    # Portal access check: either would be left half-applied.
+    _ods_cli_refuse_under_model_lifecycle update
+
     # Require the configuration snapshot that `ods rollback` can restore,
     # before changing configuration, Compose selection, images or containers.
     local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
@@ -2696,6 +2747,24 @@ cmd_config() {
     esac
 }
 
+_chat_curl() {
+    local token="$1" response status
+    shift
+    # --fail-with-body is unavailable on older supported curl releases. Append
+    # the HTTP status instead, preserving both transport errors and API bodies.
+    if [[ -n "$token" ]]; then
+        response=$(curl -H @<(printf 'Authorization: Bearer %s\n' "$token") \
+            --write-out '\n%{http_code}' "$@") || return $?
+    else
+        response=$(curl --write-out '\n%{http_code}' "$@") || return $?
+    fi
+    status="${response##*$'\n'}"
+    printf '%s' "${response%$'\n'*}"
+    if [[ "$status" -ge 400 ]]; then
+        return 22
+    fi
+}
+
 cmd_chat() {
     check_install
     load_env  # B6 fix: use safe env loading function
@@ -2703,14 +2772,32 @@ cmd_chat() {
     local message="${1:-Hello}"
     local model="${2:-}"
 
-    # Resolve llama-server port once, regardless of how the model is provided
+    # Match the installed route used by ODS clients. A gateway-selected install
+    # may deliberately have no local llama-server, or keep one loaded while a
+    # remote provider is active. Never probe it as a fallback for that route.
+    # shellcheck source=lib/preflight-llm-route.sh
+    . "$SCRIPT_DIR/lib/preflight-llm-route.sh"
     local _llm_port="${SERVICE_PORTS[llama-server]:-11434}"
     _llm_port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-$_llm_port}}"
+    local _token="" _route_name="llama-server"
+    if [[ "${ODS_MODEL_SWITCHBOARD:-enabled}" == enabled ]] || ods_preflight_uses_litellm; then
+        _llm_port="${LITELLM_PORT:-4000}"
+        _token="${LITELLM_KEY:-${LITELLM_MASTER_KEY:-}}"
+        [[ -n "$_token" ]] || error "Chat cannot authenticate to the gateway: LITELLM_KEY is missing."
+        _route_name="LLM gateway"
+        if [[ -z "$model" ]]; then
+            if [[ "${ODS_MODEL_SWITCHBOARD:-enabled}" == enabled ]]; then
+                model="ods/current"
+            else
+                model="default"
+            fi
+        fi
+    fi
 
     local _probe
-    _probe=$(curl --silent --show-error --fail --max-time 3 \
+    _probe=$(_chat_curl "$_token" --silent --show-error --max-time 3 \
         "http://127.0.0.1:${_llm_port}/v1/models" 2>&1) || {
-        error "llama-server not reachable at http://127.0.0.1:${_llm_port} - is 'ods status' showing it healthy?"
+        error "$_route_name not reachable at http://127.0.0.1:${_llm_port} - is 'ods status' showing it healthy? $_probe"
     }
 
     if [[ -z "$model" ]]; then
@@ -2725,7 +2812,7 @@ cmd_chat() {
         '{model: $model, messages: [{role: "user", content: $msg}], max_tokens: 500}')
 
     local _resp
-    _resp=$(curl --silent --show-error --max-time 30 \
+    _resp=$(_chat_curl "$_token" --silent --show-error --max-time 30 \
         "http://127.0.0.1:${_llm_port}/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>&1) || {
@@ -2789,11 +2876,11 @@ cmd_doctor() {
                 ;;
             --report)
                 [[ -n "${2:-}" ]] || { echo "Error: --report requires a path argument" >&2; return 1; }
-                report_file="$2"
+                report_file="$(_caller_path "$2")"
                 shift 2
                 ;;
             *)
-                report_file="$1"
+                report_file="$(_caller_path "$1")"
                 shift
                 ;;
         esac
@@ -3132,6 +3219,25 @@ cmd_audit() {
 # Track visited services during recursive enable to prevent circular deps
 declare -a _ENABLE_VISITED=()
 
+# Host services (manifest type host-systemd) run outside Compose, so the
+# selection helper has no compose.yaml to move and would fail with "No Compose
+# selection file". Say what to do instead, matching the Dashboard's extension
+# detail for OpenCode. A shadowing user extension that ships Compose files
+# goes through the normal selection path.
+_ods_cli_reject_host_service() {
+    local service_id="$1" action="$2" ext_dir="$3"
+    [[ "${SERVICE_TYPES[$service_id]:-docker}" == "host-systemd" ]] || return 0
+    [[ -e "$ext_dir/compose.yaml" || -e "$ext_dir/compose.yaml.disabled" ]] && return 0
+    log_error "$service_id runs on the host, not as a Compose extension; 'ods $action' does not apply to it."
+    if [[ "$service_id" == "opencode" ]]; then
+        log "Open the OpenCode page in the ODS dashboard (/apps/opencode)."
+        log "Start OpenCode there when it is stopped; on Linux, set it up there when it is not installed."
+        log "Or re-run the ODS installer with --opencode to add it, or --no-opencode to remove it."
+    fi
+    echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
+    exit 1
+}
+
 cmd_enable() {
     check_install
     sr_load
@@ -3163,6 +3269,7 @@ cmd_enable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
+    _ods_cli_reject_host_service "$service_id" enable "$ext_dir"
 
     if [[ "$service_id" == "ods-proxy" ]]; then
         _ods_cli_require_proxy_auth
@@ -3291,6 +3398,7 @@ cmd_disable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
+    _ods_cli_reject_host_service "$service_id" disable "$ext_dir"
 
     # A preliminary check avoids resolving Compose with known dependents.
     # The helper repeats the check and holds its selection lock through the
@@ -3377,12 +3485,27 @@ cmd_purge() {
     # Check if container is still running (disable may have failed to stop it)
     local _container="${SERVICE_CONTAINERS[$service_id]:-ods-$service_id}"
     local _running_containers
-    if ! _running_containers=$(docker ps --format '{{.Names}}'); then
+    if ! _running_containers=$(docker ps --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.service"}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}'); then
         error "Cannot verify whether $service_id is running. Restore Docker connectivity and retry; data was not deleted."
     fi
-    if grep -Fxq -- "$_container" <<< "$_running_containers"; then
+    if cut -f1 <<< "$_running_containers" | grep -Fxq -- "$_container"; then
         error "$service_id container is still running. Run 'ods stop $service_id' first."
     fi
+    # Its companions (a database, worker or cache in the same fragment, named
+    # <id>-*) write the same data; one left running must block the delete too.
+    # Scope the refusal to this installation's directory. Recipe labels may
+    # name a legacy file or a frozen native recipe, or outlive their source.
+    # Refusing deletion must still protect those live writers; it does not
+    # grant authority to stop or modify any container.
+    local _install_real _name _companion _workdir
+    _install_real=$(cd -P "$INSTALL_DIR" && pwd)
+    while IFS=$'\t' read -r _name _companion _workdir; do
+        [[ "$_companion" == "$service_id"-* ]] || continue
+        # A separately registered extension keeps its own lifecycle and data.
+        [[ -n "${SERVICE_CONTAINERS[$_companion]+set}" ]] && continue
+        [[ "$_workdir" == "$INSTALL_DIR" || "$_workdir" == "$_install_real" ]] || continue
+        error "$service_id's $_companion service is still running (container $_name). Stop it first; data was not deleted."
+    done <<< "$_running_containers"
 
     # Check data directory exists
     local _data_dir="$INSTALL_DIR/data/$service_id"
@@ -3491,6 +3614,82 @@ cmd_list() {
 #=============================================================================
 PRESETS_DIR="${INSTALL_DIR}/presets"
 
+# Unlike mv, rename never nests a directory inside a competing destination.
+_ods_cli_rename_preset_dir() {
+    "$1" - "$2" "$3" <<'PY'
+import os
+import sys
+
+try:
+    if os.path.lexists(sys.argv[2]):
+        raise FileExistsError("preset destination already exists")
+    os.rename(sys.argv[1], sys.argv[2])
+except OSError as error:
+    print("Could not rename preset directory:", error, file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+# Keep a usable preset until its replacement is completely extracted and
+# validated. Staging beside the destination keeps publication on one filesystem.
+_ods_cli_publish_imported_preset() (
+    local archive="$1" name="$2"
+    local preset_python="${PYTHON_CMD:-python3}"
+    if ! "$preset_python" -c 'import os, sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then
+        warn "Safe preset import requires a working Python 3 runtime. Repair ODS's Python installation and retry; existing presets were retained."
+        return 1
+    fi
+    local stage previous="" published=false
+    stage=$(mktemp -d "$PRESETS_DIR/.import-XXXXXX") || return 1
+    _preset_import_cleanup() {
+        local status=$?
+        trap - EXIT
+        # Finish custody/cleanup decisions even if interrupted while unwinding.
+        trap 'status=130' INT
+        trap 'status=143' TERM
+        if [[ -n "$previous" && ( -e "$previous" || -L "$previous" ) && "$published" != true ]]; then
+            # A signal can land after rename but before published=true, or a
+            # different writer can create the destination. Never merge the
+            # recovery copy into that directory or discard it on ambiguity.
+            if [[ -e "$PRESETS_DIR/$name" || -L "$PRESETS_DIR/$name" ]]; then
+                warn "Preset destination exists. Recovery copy retained at: $previous"
+                exit 1
+            fi
+            if ! _ods_cli_rename_preset_dir "$preset_python" "$previous" "$PRESETS_DIR/$name"; then
+                warn "Could not restore the previous preset. Recovery copy retained at: $previous"
+                exit 1
+            fi
+        fi
+        # Cleanup failure cannot undo an already committed replacement. Keep
+        # its original status and identify any temporary recovery files left.
+        if ! rm -rf -- "$stage"; then
+            warn "Could not remove temporary preset import files. Retained at: $stage"
+        fi
+        exit "$status"
+    }
+    trap _preset_import_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    mkdir "$stage/payload" || return 1
+    tar xzf "$archive" -C "$stage/payload" 2>/dev/null || {
+        warn "Failed to extract archive; existing presets were retained."
+        return 1
+    }
+    [[ -f "$stage/payload/$name/meta.txt" ]] || { warn "Invalid preset: missing meta.txt"; return 1; }
+    [[ -f "$stage/payload/$name/extensions.list" ]] || { warn "Invalid preset: missing extensions.list"; return 1; }
+
+    if [[ -e "$PRESETS_DIR/$name" ]]; then
+        previous="$stage/previous"
+        _ods_cli_rename_preset_dir "$preset_python" "$PRESETS_DIR/$name" "$previous" || return 1
+    fi
+    _ods_cli_rename_preset_dir "$preset_python" "$stage/payload/$name" "$PRESETS_DIR/$name" || {
+        warn "Failed to publish imported preset; restoring the previous preset."
+        return 1
+    }
+    published=true
+)
+
 # Validate preset compatibility with current system
 validate_preset_compatibility() {
     local preset_dir="$1"
@@ -3528,8 +3727,18 @@ cmd_preset() {
     check_install
     sr_load
 
+    validate_preset_name() {
+        if [[ -z "$1" || "$1" == "." || "$1" == ".." || "$1" == */* || "$1" == *\\* || "$1" == -* || "$1" =~ [[:cntrl:]] ]]; then
+            error "Invalid preset name: path separators, directory traversal, and leading dashes are not allowed"
+        fi
+    }
     local action="${1:-list}"
     local name="${2:-}"
+
+    case "$action" in
+        save|s|load|l|delete|rm|export|e) [[ -n "$name" ]] && validate_preset_name "$name" ;;
+        diff|d) [[ -n "$name" ]] && validate_preset_name "$name"; [[ -n "${3:-}" ]] && validate_preset_name "$3" ;;
+    esac
 
     case "$action" in
         save|s)
@@ -3760,29 +3969,17 @@ META
                 read -p "Overwrite? [y/N] " -n 1 -r || REPLY=""
                 echo ""
                 [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
-                rm -rf "${PRESETS_DIR}/${archive_name}"
             fi
 
-            # Extract archive
+            # Resolve before staging changes tar's extraction directory.
+            [[ "$archive" == /* ]] || archive="$(pwd)/$archive"
             mkdir -p "$PRESETS_DIR"
-            cd "$PRESETS_DIR"
-            if tar xzf "$archive" 2>/dev/null; then
-                # Validate extracted preset
-                if [[ ! -f "${archive_name}/meta.txt" ]]; then
-                    rm -rf "${archive_name}"
-                    error "Invalid preset: missing meta.txt"
-                fi
-                if [[ ! -f "${archive_name}/extensions.list" ]]; then
-                    rm -rf "${archive_name}"
-                    error "Invalid preset: missing extensions.list"
-                fi
-
+            if _ods_cli_publish_imported_preset "$archive" "$archive_name"; then
                 success "Preset '${archive_name}' imported successfully"
                 log "Use 'ods preset load ${archive_name}' to apply it"
             else
-                error "Failed to extract archive"
+                error "Preset import failed"
             fi
-            cd "$INSTALL_DIR"
             ;;
 
         diff|d)
@@ -4002,13 +4199,25 @@ cmd_mode() {
 
     local api_url
     if [[ "$mode" == "local" ]]; then
-        api_url="http://llama-server:8080"
-        _env_set "LLM_API_URL" "$api_url"
-        local switchboard_mode
+        local switchboard_mode native_llm
         switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        native_llm=$(grep -m1 "^NATIVE_LLM_BASE_URL=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        # A host-native llama-server install keeps the in-stack llama-server
+        # off; LiteLLM is what reaches the native server (06-directories.sh).
+        if [[ -n "$native_llm" ]]; then
+            api_url="http://litellm:4000"
+        else
+            api_url="http://llama-server:8080"
+        fi
+        _env_set "LLM_API_URL" "$api_url"
         if [[ "${switchboard_mode,,}" == "enabled" ]]; then
             _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
             _env_set "HERMES_LLM_API_KEY" "no-key"
+        elif [[ -n "$native_llm" ]]; then
+            _env_set "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
+            if [[ -n "${LITELLM_KEY:-}" ]]; then
+                _env_set "HERMES_LLM_API_KEY" "$LITELLM_KEY"
+            fi
         else
             _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
             _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
@@ -4537,7 +4746,7 @@ _remote_provider_write_payload() {
             --api-key-file)
                 [[ $# -ge 2 ]] || error "--api-key-file requires a value"
                 secret_option_seen="true"
-                api_key_file="${2:-}"; shift 2 ;;
+                api_key_file="$(_caller_path "${2:-}")"; shift 2 ;;
             --api-key-env)
                 [[ $# -ge 2 ]] || error "--api-key-env requires a value"
                 secret_option_seen="true"
@@ -4547,7 +4756,7 @@ _remote_provider_write_payload() {
             --ssh-private-key-file)
                 [[ $# -ge 2 ]] || error "--ssh-private-key-file requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
-                ssh_private_key_file="${2:-}"; shift 2 ;;
+                ssh_private_key_file="$(_caller_path "${2:-}")"; shift 2 ;;
             --ssh-private-key-env)
                 [[ $# -ge 2 ]] || error "--ssh-private-key-env requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
@@ -4555,7 +4764,7 @@ _remote_provider_write_payload() {
             --ssh-known-hosts-file)
                 [[ $# -ge 2 ]] || error "--ssh-known-hosts-file requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
-                ssh_known_hosts_file="${2:-}"; shift 2 ;;
+                ssh_known_hosts_file="$(_caller_path "${2:-}")"; shift 2 ;;
             --ssh-known-hosts-env)
                 [[ $# -ge 2 ]] || error "--ssh-known-hosts-env requires a value"
                 secret_option_seen="true"; ssh_option_seen="true"
@@ -5356,8 +5565,19 @@ cmd_backup() {
         return
     fi
 
-    # Default: create backup (pass all args through)
-    "$INSTALL_DIR/ods-backup.sh" "$@"
+    # Default: create backup (pass all args through, output dir resolved)
+    local -a backup_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -o|--output)
+                backup_args+=("$1")
+                [[ $# -ge 2 ]] && { backup_args+=("$(_caller_path "$2")"); shift; }
+                ;;
+            *) backup_args+=("$1") ;;
+        esac
+        shift
+    done
+    "$INSTALL_DIR/ods-backup.sh" ${backup_args[@]+"${backup_args[@]}"}
 }
 
 cmd_restore() {
@@ -5420,6 +5640,61 @@ _agent_mode_snapshot() {
         select(.configuredMode == "local" or .configuredMode == "cloud" or .configuredMode == "hybrid") |
         select(.effectiveMode == "local" or .effectiveMode == "cloud" or .effectiveMode == "hybrid" or .effectiveMode == "unknown") |
         [.effectiveMode, .configuredMode] | join(" ")' 2>/dev/null
+}
+
+# Print what is holding the host agent's model lifecycle, or nothing when it is
+# idle. `ods update` recreates the stack and restarts the agent, which cuts a
+# model switch or Portal access check off half-done (the dashboard's update
+# already claims this boundary). Fails when the agent cannot be asked.
+_agent_model_lifecycle_busy() {
+    local key port host status recovery
+    key="$(_env_get_raw ODS_AGENT_KEY)"
+    [[ -n "$key" ]] || key="$(_env_get_raw DASHBOARD_API_KEY)"
+    case "$key" in
+        \"*\") key="${key:1:${#key}-2}" ;;
+        \'*\') key="${key:1:${#key}-2}" ;;
+    esac
+    [[ -n "$key" && "$key" != *$'\n'* && "$key" != *$'\r'* ]] || return 1
+    port="$(_env_get_raw ODS_AGENT_PORT)"
+    port="${port#\"}"; port="${port%\"}"
+    port="${port#\'}"; port="${port%\'}"
+    [[ "$port" =~ ^[0-9]+$ ]] || port=7710
+    host="$(_agent_probe_host)"
+    # Keep credentials off argv and out of diagnostics, including on failure.
+    status=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 5 --header @- \
+            "http://${host}:${port}/v1/model/status" 2>/dev/null) || return 1
+    # A known active operation is enough to refuse, whatever recovery would
+    # say; a switch in progress also reports its recovery as pending.
+    if printf '%s' "$status" | jq -e '.lifecycleActive == true' >/dev/null; then
+        printf '%s' "$status" | jq -r '"\(.activeOperation // "a model operation")\(if .activeTarget then " for \(.activeTarget)" else "" end) is in progress"'
+        return
+    fi
+    recovery=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl --silent --fail --max-time 5 --header @- \
+            "http://${host}:${port}/v1/model/recovery" 2>/dev/null) || return 1
+    printf '%s' "$recovery" | jq -er 'if .pending == true then
+        "an interrupted model switch is waiting for recovery (ods model recover)" else "" end' || return 1
+}
+
+# Refuse $1 (a CLI action that recreates the stack or restarts the agent or
+# llama-server) while the agent's model lifecycle is busy; warn and continue
+# when the agent cannot be asked.
+_ods_cli_refuse_under_model_lifecycle() {
+    local action="$1" label lifecycle_busy=""
+    case "$action" in
+        update) label="Update" ;;
+        restart) label="Restart" ;;
+        *) label="ods $action" ;;
+    esac
+    if lifecycle_busy="$(_agent_model_lifecycle_busy)"; then
+        lifecycle_busy="$(printf '%s\n' "$lifecycle_busy" | sed '/^$/d' | paste -sd ';' -)"
+        if [[ -n "$lifecycle_busy" ]]; then
+            error "$label not started: ${lifecycle_busy//;/; }. Let it finish (or recover it), then run ods ${action} again."
+        fi
+    else
+        warn "Could not ask the host agent whether a model change is in progress; continuing."
+    fi
 }
 
 _agent_refresh_mode() {
@@ -5533,12 +5808,22 @@ cmd_agent() {
                         success "Agent started (LaunchAgent)" || warn "Agent start failed"
                     ;;
                 systemd)
-                    if sudo systemctl start ods-host-agent.service 2>/dev/null; then
-                        success "Agent started (systemd)"
-                    else
+                    if ! sudo systemctl start ods-host-agent.service 2>/dev/null; then
                         log_error "Agent start failed"
                         return 1
                     fi
+                    # The unit is Type=simple: systemctl returns once the
+                    # process is forked, even if it then fails to bind.
+                    local attempt
+                    for attempt in {1..20}; do
+                        if _agent_health_ready; then
+                            success "Agent started (systemd)"
+                            return 0
+                        fi
+                        sleep 0.5
+                    done
+                    log_error "Agent did not become healthy on port ${port}; check: journalctl -u ods-host-agent.service"
+                    return 1
                     ;;
                 *)
                     # Fallback: nohup + PID file
@@ -6168,6 +6453,7 @@ _gpu_validate() {
 
     echo ""
     echo "  Result: ${pass} check(s) passed, ${fail} failed"
+    [[ "$fail" -eq 0 ]]
 }
 
 # Helper: write AMD-specific env vars from topology JSON for manual assignment
@@ -6684,9 +6970,10 @@ _gpu_reassign() {
 
         success "Manual GPU assignment saved"
         echo ""
-        echo -n "  Apply changes now? [Y/n] "
-        read -r _yn
-        case "${_yn:-y}" in
+        # Without a terminal (a script, cron, ssh), take the documented default
+        # instead of dying on EOF after .env has already been rewritten.
+        read -p "  Apply changes now? [Y/n] " -r || REPLY=""
+        case "${REPLY:-y}" in
             y|Y|"")
                 local _flags_str _flags=()
                 _flags_str=$(get_compose_flags)
@@ -6809,9 +7096,10 @@ _gpu_reassign() {
 
     success "GPU assignment updated (strategy: ${strategy})"
     echo ""
-    echo -n "  Apply changes now? [Y/n] "
-    read -r _yn
-    case "${_yn:-y}" in
+    # Without a terminal (a script, cron, ssh), take the documented default
+    # instead of dying on EOF after .env has already been rewritten.
+    read -p "  Apply changes now? [Y/n] " -r || REPLY=""
+    case "${REPLY:-y}" in
         y|Y|"")
             local _flags_str _flags=()
             _flags_str=$(get_compose_flags)
