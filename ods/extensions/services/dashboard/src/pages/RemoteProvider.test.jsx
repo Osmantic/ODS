@@ -419,6 +419,7 @@ test('a provider that lists models but serves no chat is named, not reported as 
   expect(await screen.findAllByText(NOT_SERVING_SUMMARY)).toHaveLength(1)
   expect(screen.getByRole('link', { name: /get help on discord/i })).toBeInTheDocument()
   expect(screen.queryByText(/busy with another model change/)).not.toBeInTheDocument()
+  expect(screen.queryByText(/Nothing was changed|ODS still uses its current model/)).not.toBeInTheDocument()
 })
 
 test('connecting to an API that serves no chat says so once, without claiming ODS kept its model', async () => {
@@ -810,7 +811,7 @@ test('connects in one step: saves the API, then checks it and switches ODS to it
   expect(screen.queryByText('unit-test-provider-token')).not.toBeInTheDocument()
 })
 
-test('a refused key says so, that ODS kept its model, and where to get help', async () => {
+test('a refused key preserves its error and refreshes the current route', async () => {
   globalThis.fetch
     .mockResolvedValueOnce(response(disabledStatusPayload))
     .mockResolvedValueOnce(response(configureApplyPayload))
@@ -822,12 +823,12 @@ test('a refused key says so, that ODS kept its model, and where to get help', as
   fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
 
   expect(await screen.findByText('The API refused the key. Check the key, then connect again.')).toBeInTheDocument()
-  expect(screen.getByText(/ODS still uses its current model\. The API settings were saved/)).toBeInTheDocument()
+  expect(screen.getByText(/API settings were saved.*connection result could not be confirmed/)).toBeInTheDocument()
   expect(screen.getByText('remote provider probe returned HTTP 401')).toBeInTheDocument()
   expect(screen.getByRole('link', { name: /get help on discord/i })).toBeInTheDocument()
 })
 
-test('a setting the API rejects before saving changes nothing', async () => {
+test('a rejected setting preserves the draft and reads back status without probing', async () => {
   globalThis.fetch
     .mockResolvedValueOnce(response(disabledStatusPayload))
     .mockResolvedValueOnce(response({ detail: 'Base URL must use https' }, 400))
@@ -838,8 +839,94 @@ test('a setting the API rejects before saving changes nothing', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Connect', exact: true }))
 
   expect(await screen.findByText('Base URL must use https')).toBeInTheDocument()
-  expect(screen.getByText('Nothing was changed. ODS still uses its current model.')).toBeInTheDocument()
+  expect(screen.getByText(/Saving the API settings could not be confirmed/)).toBeInTheDocument()
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
   expect(globalThis.fetch.mock.calls.map(call => call[0])).not.toContain('/api/remote-provider/probe')
+})
+
+test.each(['configure', 'probe'])('a committed %s with a lost response reads back before releasing Connect', async stage => {
+  let finishReadback
+  const readback = new Promise(resolve => { finishReadback = resolve })
+  const broken = {ok:true,status:200,json:async () => {throw new SyntaxError('truncated receipt')}}
+  globalThis.fetch.mockResolvedValueOnce(response(disabledStatusPayload))
+  if (stage === 'probe') globalThis.fetch.mockResolvedValueOnce(response(configureApplyPayload))
+  globalThis.fetch.mockResolvedValueOnce(broken).mockReturnValueOnce(readback)
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', {name:'Connect',exact:true}))
+  await screen.findByText(/The response could not be read/)
+  expect(screen.getByRole('button', {name:'Connecting',exact:true})).toBeDisabled()
+  expect(screen.queryByText(/Nothing was changed|ODS still uses its current model/)).not.toBeInTheDocument()
+  if (stage === 'configure') expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+  await act(async () => finishReadback(response(statusPayload)))
+  expect(screen.getByRole('button', {name:'Connect',exact:true})).toBeDefined()
+  expect(screen.getAllByText('Connected', {exact:true}).length).toBeGreaterThan(0)
+  expect(globalThis.fetch.mock.calls.filter(([,options]) => options?.method === 'POST')).toHaveLength(stage === 'probe' ? 2 : 1)
+})
+
+test('failed post-mutation readback does not leave the old Connected status authoritative', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+    .mockRejectedValueOnce(new TypeError('connection lost'))
+    .mockRejectedValueOnce(new TypeError('status unavailable'))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button', {name:'Connect',exact:true}))
+  await screen.findByText('status unavailable')
+  expect(screen.queryAllByText('Connected', {exact:true})).toHaveLength(0)
+  expect(screen.getByText(/Refresh status before retrying/)).toBeInTheDocument()
+  expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
+  expect(globalThis.fetch.mock.calls.filter(([,options]) => options?.method === 'POST')).toHaveLength(1)
+})
+
+test('a lost check response clears prior proof and reconciles the route before allowing another mutation', async () => {
+  let completeReadback
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+    .mockResolvedValueOnce(response(probePayload))
+    .mockResolvedValueOnce(response(statusPayload))
+    .mockRejectedValueOnce(new TypeError('proof response lost'))
+    .mockReturnValueOnce(new Promise(resolve => {completeReadback=resolve}))
+  render(createElement(RemoteProvider))
+  fireEvent.click(await screen.findByRole('button',{name:/check connection/i}))
+  await screen.findByText('Connection checked: the API answered, and ODS and Portal use it.')
+  fireEvent.click(screen.getByRole('button',{name:/check connection/i}))
+  await screen.findByText('proof response lost')
+  expect(screen.queryByText('Connection checked: the API answered, and ODS and Portal use it.')).not.toBeInTheDocument()
+  expect(screen.queryByText(/Nothing was changed|ODS still uses its current model/)).not.toBeInTheDocument()
+  expect(screen.getByRole('button',{name:/check connection/i})).toBeDisabled()
+  expect(screen.getByRole('button',{name:'Connect',exact:true})).toBeDisabled()
+  await act(async () => completeReadback(response(statusPayload)))
+  expect(screen.getByRole('button',{name:/check connection/i})).toBeEnabled()
+  expect(globalThis.fetch.mock.calls.map(([url])=>url)).toEqual([
+    '/api/remote-provider/status','/api/remote-provider/probe','/api/remote-provider/status',
+    '/api/remote-provider/probe','/api/remote-provider/status',
+  ])
+})
+
+test('a typed lost host-proof receipt does not claim the model stayed local', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response(disabledStatusPayload))
+    .mockResolvedValueOnce(response(configureApplyPayload))
+    .mockResolvedValueOnce(response({...probePayload,routeProof:{recorded:false,reachable:false,reason:'host_agent_unavailable'}}))
+    .mockResolvedValueOnce(response(statusPayload))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button',{name:'Connect',exact:true}))
+  await screen.findAllByText(/switching ODS could not be confirmed/)
+  expect(screen.queryByText(/still uses its current model/)).not.toBeInTheDocument()
+  await waitFor(()=>expect(screen.getAllByText('Connected',{exact:true}).length).toBeGreaterThan(0))
+})
+
+test.each(['Connect','Check connection'])('a confirmed outage through %s cannot retain pre-request Connected status after readback fails', async action => {
+  globalThis.fetch.mockResolvedValueOnce(response(statusPayload))
+  if(action==='Connect')globalThis.fetch.mockResolvedValueOnce(response(configureApplyPayload))
+  globalThis.fetch.mockResolvedValueOnce(response({...probePayload,routeProof:NOT_SERVING_PROOF}))
+    .mockRejectedValueOnce(new TypeError('readback unavailable'))
+  render(createElement(RemoteProvider))
+  await fillConfigureForm()
+  fireEvent.click(screen.getByRole('button',{name:action,exact:true}))
+  await screen.findByText('readback unavailable')
+  expect(screen.getByText(NOT_SERVING_SUMMARY)).toBeInTheDocument()
+  expect(screen.queryAllByText('Connected',{exact:true})).toHaveLength(0)
+  expect(globalThis.fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(action==='Connect'?2:1)
 })
 
 test('a short switch-over after a check is not reported as a problem', async () => {
