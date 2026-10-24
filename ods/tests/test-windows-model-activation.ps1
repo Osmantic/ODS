@@ -9,7 +9,7 @@ $root = Split-Path -Parent $PSScriptRoot
 
 function Assert-Equal {
     param($Actual, $Expected, [string]$Label)
-    if ($Actual -ne $Expected) {
+    if ($Actual -cne $Expected) {
         throw "$Label expected '$Expected', got '$Actual'"
     }
 }
@@ -55,6 +55,70 @@ MAX_CONTEXT=65536
     Assert-Equal `
         $openCodeJson.provider.'llama-server'.models.'LocalUpgrade.gguf'.limit.context `
         131072 "OpenCode canonical context precedence"
+    Assert-Equal $openCodeJson.agent.build.model `
+        'llama-server/LocalUpgrade.gguf' "OpenCode Build defaults to ODS"
+    Assert-Equal $openCodeJson.agent.plan.model `
+        'llama-server/LocalUpgrade.gguf' "OpenCode Plan defaults to ODS"
+
+    $customOpenCode = New-WindowsOpenCodeConfigObject `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'old-model' -ModelName 'Old model' -ContextLimit 32768
+    Set-OpenCodeObjectProperty -Target $customOpenCode.agent.build `
+        -Name 'model' -Value 'owner/cloud-model'
+    Set-OpenCodeObjectProperty -Target $customOpenCode.agent.plan `
+        -Name 'temperature' -Value 0.2
+    Set-OpenCodeObjectProperty -Target $customOpenCode.agent `
+        -Name 'reviewer' -Value ([pscustomobject]@{ model = 'owner/review-model' })
+    $customOpenCode = Update-WindowsOpenCodeConfigObject `
+        -Config $customOpenCode `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'ods/current' -ModelName 'Current' -ContextLimit 32768
+    Assert-Equal $customOpenCode.agent.build.model `
+        'owner/cloud-model' "OpenCode retains explicit owner Build model"
+    Assert-Equal $customOpenCode.agent.plan.model `
+        'llama-server/ods/current' "OpenCode Plan follows prior ODS route"
+    Assert-Equal $customOpenCode.agent.plan.temperature 0.2 `
+        "OpenCode retains owner Plan settings"
+    Assert-Equal $customOpenCode.agent.reviewer.model `
+        'owner/review-model' "OpenCode retains other agents"
+
+    $legacyOpenCode = New-WindowsOpenCodeConfigObject `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'old-model' -ModelName 'Old model' -ContextLimit 32768
+    $legacyOpenCode.PSObject.Properties.Remove('agent')
+    $legacyOpenCode = Update-WindowsOpenCodeConfigObject `
+        -Config $legacyOpenCode `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'ods/current' -ModelName 'Current' -ContextLimit 32768
+    Assert-Equal $legacyOpenCode.agent.build.model `
+        'llama-server/ods/current' "OpenCode upgrade seeds missing Build agent"
+    Assert-Equal $legacyOpenCode.agent.plan.model `
+        'llama-server/ods/current' "OpenCode upgrade seeds missing Plan agent"
+
+    $cloudOpenCode = New-WindowsOpenCodeConfigObject `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'old-model' -ModelName 'Old model' -ContextLimit 32768
+    Set-OpenCodeObjectProperty -Target $cloudOpenCode -Name 'model' -Value 'owner/cloud-model'
+    Set-OpenCodeObjectProperty -Target $cloudOpenCode.agent.build `
+        -Name 'model' -Value 'owner/cloud-model'
+    $cloudOpenCode = Update-WindowsOpenCodeConfigObject `
+        -Config $cloudOpenCode `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'ods/current' -ModelName 'Current' -ContextLimit 32768
+    Assert-Equal $cloudOpenCode.agent.build.model `
+        'owner/cloud-model' "OpenCode does not adopt a prior cloud agent route"
+
+    $caseDistinctOpenCode = New-WindowsOpenCodeConfigObject `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'old-model' -ModelName 'Old model' -ContextLimit 32768
+    Set-OpenCodeObjectProperty -Target $caseDistinctOpenCode.agent.build `
+        -Name 'model' -Value 'llama-server/OLD-MODEL'
+    $caseDistinctOpenCode = Update-WindowsOpenCodeConfigObject `
+        -Config $caseDistinctOpenCode `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'ods/current' -ModelName 'Current' -ContextLimit 32768
+    Assert-Equal $caseDistinctOpenCode.agent.build.model `
+        'llama-server/OLD-MODEL' "OpenCode retains case-distinct owner model"
 
     Set-Content -LiteralPath (Join-Path $openCodeInstall ".env") -Value @(
         "LLM_URL=http://127.0.0.1:11435"
