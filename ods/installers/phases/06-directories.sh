@@ -143,6 +143,10 @@ else
     source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"
     # shellcheck source=../lib/searxng-locale.sh
     source "$SCRIPT_DIR/installers/lib/searxng-locale.sh"
+    # Validate before any directory repair, including in-place installs.
+    # shellcheck source=../lib/source-copy.sh
+    source "$SCRIPT_DIR/installers/lib/source-copy.sh"
+    ods_validate_searxng_settings_path "$INSTALL_DIR" || return 1
 
     # shellcheck source=../../lib/dotenv-quote.sh
     source "$SCRIPT_DIR/lib/dotenv-quote.sh"
@@ -153,8 +157,6 @@ else
     # Normalize only verified owner-private provider paths before that check;
     # waiting until source copy makes legacy 0775 roots fail too early.
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
-        # shellcheck source=../lib/source-copy.sh
-        source "$SCRIPT_DIR/installers/lib/source-copy.sh"
         ods_prepare_retained_cloud_provider "$INSTALL_DIR" || return 1
     fi
 
@@ -2024,12 +2026,32 @@ ENV_EOF
     # Generate SearXNG config with randomized secret key
     # Fix ownership from previous container runs (SearXNG writes as uid 977)
     _phase06_step "generate-searxng-config"
+    ods_validate_searxng_settings_path "$INSTALL_DIR" || return 1
     mkdir -p "$INSTALL_DIR/config/searxng"
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
         _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
     fi
     _searxng_lang="$(ods_searxng_default_lang)"
-    cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
+    _searxng_settings="$INSTALL_DIR/config/searxng/settings.yml"
+    _searxng_rewrite=1
+    if [[ "${FORCE:-false}" != true && -f "$_searxng_settings" ]]; then
+        if [[ ! -s "$_searxng_settings" ]]; then
+            error "Existing SearXNG settings are empty; restore the file or use --force to regenerate."
+            return 1
+        fi
+        # Read the whole file: grep -q could hide a later read error after a
+        # match. Only the stock secret scalar triggers default regeneration.
+        _searxng_grep=0
+        grep -E '^[[:space:]]*secret_key:[[:space:]]*("CHANGEME-run-the-installer-to-generate-a-secure-key"|'"'"'CHANGEME-run-the-installer-to-generate-a-secure-key'"'"'|CHANGEME-run-the-installer-to-generate-a-secure-key)[[:space:]]*(#.*)?$' "$_searxng_settings" >/dev/null || _searxng_grep=$?
+        case "$_searxng_grep" in
+            0) ;;
+            1) _searxng_rewrite=0 ;;
+            *) error "Failed to read existing SearXNG settings; configuration was not regenerated."
+               return 1 ;;
+        esac
+    fi
+    if [[ $_searxng_rewrite -eq 1 ]]; then
+        cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true
 server:
   secret_key: "${SEARXNG_SECRET}"
@@ -2064,8 +2086,11 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXNG_EOF
-    ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
-    unset _searxng_lang
+        ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
+    else
+        ai_ok "Preserved existing SearXNG config (use --force to regenerate)"
+    fi
+    unset _searxng_lang _searxng_settings _searxng_rewrite _searxng_grep
 fi
 
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above
