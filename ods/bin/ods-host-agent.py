@@ -17825,6 +17825,7 @@ def _patch_hermes_config_text(
     context_length: int | None = None,
     max_tokens: int = 1024,
     api_key: str | None = None,
+    request_timeout_seconds: int | None = None,
 ) -> tuple[str, bool]:
     """Return Hermes YAML with its routing fields updated line-for-line."""
     lines = text.splitlines()
@@ -17897,6 +17898,18 @@ def _patch_hermes_config_text(
                 yaml_key_path.pop()
             yaml_key_path.append((key_indent, key_match.group(3)))
         current_key_path = tuple(key for _, key in yaml_key_path)
+        if (request_timeout_seconds is not None and key_match
+                and current_key_path == ("providers", "custom", "request_timeout_seconds")):
+            # Library first-start must prepare the same local default as the
+            # installer. Only replace the shipped scalar; retain owner tuning.
+            suffix = line[key_match.end():]
+            replacement = re.sub(r"^(\s*)180(?=\s*(?:#|$))",
+                                 lambda match: match.group(1) + str(request_timeout_seconds),
+                                 suffix, count=1)
+            new_line = line[:key_match.end()] + replacement
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
         if re.match(model_section_pattern, line):
             in_model_block = True
             model_block_found = True
@@ -18017,6 +18030,8 @@ def _prepare_hermes_route_for_start() -> tuple[bool, str]:
         base_url = str(env.get("HERMES_LLM_BASE_URL") or "").strip()
         api_key = str(env.get("HERMES_LLM_API_KEY") or "")
         raw_context = str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip()
+        extended_timeout = (str(env.get("ODS_MODE") or "local").lower() != "cloud"
+                         or str(env.get("ODS_MODEL_SWITCHBOARD") or "enabled").lower() == "enabled")
         try:
             context_length = int(raw_context)
         except ValueError:
@@ -18040,6 +18055,7 @@ def _prepare_hermes_route_for_start() -> tuple[bool, str]:
             updated, changed = _patch_hermes_config_text(
                 original, model_name, base_url=base_url,
                 context_length=context_length, api_key=private_key,
+                request_timeout_seconds=900 if bound and extended_timeout else None,
             )
             if bound:
                 if changed:

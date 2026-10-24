@@ -131,6 +131,20 @@ To bring up Hermes pointing at a different LLM (e.g. OpenRouter, OpenAI, Anthrop
 
 For local backends, keep `model.context_length` and `auxiliary.compression.context_length` aligned with `.env`'s `CTX_SIZE` / `MAX_CONTEXT`. Values below 64000 will make Hermes reject prompts; values above the server's real context can produce `context length exceeded` / `max compression attempts reached` loops.
 
+Local installations use a 900-second provider request timeout so cold starts and
+validated tool responses have time to finish. Older retained installations can
+still contain the former 180-second override in `data/hermes/config.yaml`; this
+override takes precedence over the timeout environment variables. On startup,
+ODS changes `providers.custom.request_timeout_seconds` from 180 to 900 when the
+installed template selects 900. This also changes an intentionally chosen 180,
+which cannot be distinguished from the old shipped default. Other timeout
+values, credentials, routing, comments, file ownership and permissions are kept.
+Shared anchored mappings and explicitly tagged timeout scalars are left
+unchanged. Stop Hermes before
+editing its configuration; the migration detects changes before replacement but
+does not lock out an external editor. Invalid or unwritable configuration stops
+startup with a redacted migration error; inspect it before retrying.
+
 ## Security posture
 
 - **Hermes 0.21.5 requires authentication on non-loopback binds.** ODS uses its supported basic provider, with domain-separated password/signing defaults derived from the persisted `HERMES_DASHBOARD_SESSION_TOKEN`. The deprecated insecure environment option only supports older explicit image overrides; it does not disable the current release's gate. Port 9119 stays internal; the proxy on 9120 honors `BIND_ADDRESS`.

@@ -96,6 +96,8 @@ services:
     volumes:
       - ./data/hermes-auth:/run/ods-hermes-auth:z
       - ./extensions/services/dashboard-api/hermes_auth.py:/opt/hermes/ods-auth-bootstrap.py:ro,z
+      # Refresh the legacy provider timeout in retained data before each start.
+      - ./extensions/services/dashboard-api/hermes_config.py:/opt/hermes/ods-config-migrate.py:ro,z
       # Persistent state: Hermes's HERMES_HOME. Sessions, skills, memories,
       # cron jobs, audit logs all live here.
       - ./data/hermes:/opt/data:z

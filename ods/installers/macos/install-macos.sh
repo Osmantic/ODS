@@ -2289,11 +2289,14 @@ else
             [[ -n "$_hermes_base_url" ]] || _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
             _hermes_model="$GGUF_FILE"
             $CLOUD_MODE && _hermes_model="default"
+            _hermes_request_timeout=900
+            $CLOUD_MODE && _hermes_request_timeout=180
             _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
             if [[ -f "$_hermes_patcher" ]]; then
                 if ! python3 "$_hermes_patcher" "$_hermes_tpl" \
                     --model "$_hermes_model" \
                     --base-url "$_hermes_base_url" \
+                    --request-timeout-seconds "$_hermes_request_timeout" \
                     --context-length "$MAX_CONTEXT" >>"$ODS_LOG_FILE" 2>&1; then
                     ai_err "Hermes template patch failed: ${_hermes_tpl}"
                     exit 1
@@ -2304,6 +2307,7 @@ else
                     -e "s|^  base_url: .*|  base_url: \"${_hermes_base_url}\"|" \
                     -e "s|^  context_length: .*|  context_length: ${MAX_CONTEXT}|" \
                     -e "s|^    context_length: .*|    context_length: ${MAX_CONTEXT}|" \
+                    -e "s|^    request_timeout_seconds: 180[[:space:]]*$|    request_timeout_seconds: ${_hermes_request_timeout}|" \
                     "$_hermes_tpl"
             fi
             if ! grep -Fq "base_url: \"${_hermes_base_url}\"" "$_hermes_tpl" \
