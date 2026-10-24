@@ -7,15 +7,15 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/preflight-llm-route.sh"
 
 ods_inference_http() {
-    local path="$1" timeout="$2" payload="${3:-}" response status
+    local path="$1" timeout="$2" payload="${3:-}" base="${4:-$_ODS_PROBE_API_URL}" response status
     local -a options=(--silent --max-time "$timeout" --write-out $'\n%{http_code}')
     [[ -z "$payload" ]] || options+=(-H 'Content-Type: application/json' --data "$payload")
     _ODS_PROBE_ERROR="HTTP 000"
     if [[ -n "$_ODS_PROBE_TOKEN" ]]; then
         response=$(curl -H @<(printf 'Authorization: Bearer %s\n' "$_ODS_PROBE_TOKEN") \
-            "${options[@]}" "$_ODS_PROBE_API_URL/$path" 2>/dev/null) || return 1
+            "${options[@]}" "$base/$path" 2>/dev/null) || return 1
     else
-        response=$(curl "${options[@]}" "$_ODS_PROBE_API_URL/$path" 2>/dev/null) || return 1
+        response=$(curl "${options[@]}" "$base/$path" 2>/dev/null) || return 1
     fi
     status="${response##*$'\n'}"
     _ODS_PROBE_ERROR="HTTP $status"
@@ -45,6 +45,12 @@ ods_inference_prepare() {
     fi
     _ODS_PROBE_API_URL="${url%/}"
     [[ "$_ODS_PROBE_API_URL" == */v1 ]] || _ODS_PROBE_API_URL+=/v1
+    if [[ "${1:-}" == health ]]; then
+        local health_path=health
+        [[ "$gateway" == false ]] || health_path=health/readiness
+        ods_inference_http "$health_path" "${2:-10}" "" "${_ODS_PROBE_API_URL%/v1}" || return 1
+        _ODS_PROBE_REACHABLE=true
+    fi
     ods_inference_http models 10 || return 1
     _ODS_PROBE_REACHABLE=true
     _ODS_PROBE_MODEL=$(printf '%s' "$_ODS_PROBE_RESPONSE" | jq -er \
@@ -68,7 +74,7 @@ ods_inference_chat() {
         {model: $model, messages: [{role: "user", content: $prompt}], max_tokens: 100}
         + if $kind == "tool" then {tools: [{type: "function", function: {
             name: "get_weather", description: "Get weather", parameters: {
-                type: "object", properties: {city: {type: "string"}}, required: ["city"]
+                type: "object", properties: {city: {type: "string", enum: ["Tokyo"]}}, required: ["city"]
             }}}], tool_choice: "auto"} else {} end') || return 1
     ods_inference_http chat/completions "$timeout" "$payload" || return 1
     _ODS_PROBE_ERROR="no valid assistant answer"

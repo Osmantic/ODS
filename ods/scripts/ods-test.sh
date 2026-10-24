@@ -305,12 +305,12 @@ test_gpu() {
 prepare_inference() {
     # shellcheck source=lib/inference-probe.sh
     . "$_DT_DIR/lib/inference-probe.sh"
-    ods_inference_prepare
+    ods_inference_prepare "${1:-}" "$TIMEOUT"
 }
 
 test_llm() {
     print_section "LLM Inference (installed route)"
-    if ! prepare_inference; then
+    if ! prepare_inference health; then
         if [[ "$_ODS_PROBE_REACHABLE" == true ]]; then
             record_result "LLM Health" "pass"
             record_result "LLM Models API" "fail" "$_ODS_PROBE_ERROR"
@@ -440,7 +440,7 @@ test_voice_roundtrip() {
     if curl -s --max-time 5 "http://${TTS_HOST}:${TTS_PORT}/v1/audio/voices" &>/dev/null; then
         tts_ready=true
     fi
-    if prepare_inference; then
+    if prepare_inference health; then
         llm_ready=true
     fi
     

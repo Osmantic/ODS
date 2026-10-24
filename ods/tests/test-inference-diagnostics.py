@@ -21,6 +21,7 @@ class Endpoint:
         self.token = None
         self.models = None
         self.models_status = 200
+        self.health_status = 200
         self.reply = None
         self.status = 200
         endpoint = self
@@ -43,7 +44,9 @@ class Endpoint:
             def respond(self, body):
                 endpoint.requests.append((self.path, self.headers.get('Authorization'), body))
                 status, reply = 200, {'status': 'ok'}
-                if self.path.startswith('/v1/models'):
+                if self.path in ('/health', '/health/readiness'):
+                    status = endpoint.health_status
+                elif self.path.startswith('/v1/models'):
                     status = endpoint.models_status
                     reply = endpoint.models if endpoint.models is not None else {'data': [{'id': endpoint.model}]}
                 elif self.path == '/v1/chat/completions':
@@ -53,7 +56,9 @@ class Endpoint:
                         status, reply = endpoint.status, endpoint.reply
                     elif body.get('tools'):
                         expected = body['tools'][0]['function']
-                        if expected['name'] != 'get_weather' or 'city' not in expected['parameters']['required']:
+                        if (expected['name'] != 'get_weather'
+                                or 'city' not in expected['parameters']['required']
+                                or expected['parameters']['properties']['city'].get('enum') != ['Tokyo']):
                             status, reply = 400, {'error': 'wrong tool schema'}
                         else:
                             reply = {'choices': [{'message': {'content': None, 'tool_calls': [
@@ -70,7 +75,7 @@ class Endpoint:
                     reply = '[[0.1,0.2]]'
                 elif self.path == '/v1/audio/transcriptions':
                     reply = {'text': 'hello world'}
-                if self.path.startswith('/v1/models') or self.path == '/v1/chat/completions':
+                if self.path.startswith('/v1/models') or self.path in ('/v1/chat/completions', '/health', '/health/readiness'):
                     want = f'Bearer {endpoint.token}' if endpoint.token else None
                     if self.headers.get('Authorization') != want:
                         status, reply = 401, {'error': 'wrong authentication'}
@@ -245,6 +250,27 @@ class InferenceDiagnostics(unittest.TestCase):
         ]}}]}
         result = self.run_probe('tool-calling')
         self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_health_readiness_is_not_replaced_by_model_listing(self):
+        # Loading runtimes can list a model while refusing readiness. Keep the
+        # main/quick/voice health gate; functional/custom APIs only need an
+        # actual generation and need not implement llama.cpp health routes.
+        self.primary.health_status = 503
+        for gateway in (False, True):
+            for consumer, quick in (('llm', False), ('llm', True), ('voice-roundtrip', False)):
+                with self.subTest(gateway=gateway, consumer=consumer, quick=quick):
+                    self.primary.requests.clear()
+                    result = self.run_probe(consumer, gateway=gateway, quick=quick)
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    rows = json.loads(result.stdout)['results']
+                    self.assertEqual(rows[-1]['status'], 'fail')
+                    health = '/health/readiness' if gateway else '/health'
+                    self.assertTrue(any(path == health for path, *_ in self.primary.requests))
+                    self.assertFalse(any(path == '/v1/chat/completions' for path, *_ in self.primary.requests))
+                    self.assertEqual(self.unrelated.requests, [])
+        self.primary.requests.clear()
+        self.assert_llm_result(self.run_probe('functional', gateway=True), 'functional', True)
+        self.assertFalse(any(path.startswith('/health') for path, *_ in self.primary.requests))
 
     def test_explicit_url_and_host_port_keep_direct_override(self):
         # Caller override is deliberate; never send a gateway key to that URL.
