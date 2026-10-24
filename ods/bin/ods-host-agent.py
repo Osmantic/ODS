@@ -3204,10 +3204,13 @@ def _reconcile_interrupted_bootstrap_swap() -> None:
     """Settle a bootstrap upgrade a host reboot cut off mid-swap.
 
     The agent starts on every boot, so it is the one hook that runs after a
-    reboot without the user typing `ods start`. The script no-ops while a
-    bootstrap-upgrade.sh process is alive and defers (exit 75) while the
-    status is still fresh or the lifecycle lock is busy; those cases are
-    rechecked a bounded number of times so a fast reboot still recovers.
+    reboot without the user typing `ods start`. The script starts a
+    llama-server left "created" and marks the run interrupted (failed) for
+    the `ods start`/`ods restart` resume to finish; it never marks it
+    complete. It no-ops while a bootstrap-upgrade.sh process is alive and
+    defers (exit 75) while the status is still fresh, Docker is not answering
+    yet or the lifecycle lock is busy; those cases are rechecked a bounded
+    number of times so a fast reboot still recovers.
     """
     script = INSTALL_DIR / "scripts" / "reconcile-bootstrap-swap.sh"
     if not script.is_file():

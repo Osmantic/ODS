@@ -330,8 +330,9 @@ _ods_cli_reconcile_bootstrap_swap() {
     _ods_cli_macos_native_llama && return 0
     local rc=0
     bash "$script" "$INSTALL_DIR" || rc=$?
-    # 75 = deferred: the status is still fresh or the lifecycle lock is busy.
-    (( rc == 0 || rc == 75 )) || warn "Interrupted model upgrade could not be reconciled (non-fatal)."
+    # 75 = deferred: the status is still fresh, Docker is not answering yet,
+    # or another model lifecycle operation holds the lock.
+    (( rc == 0 || rc == 75 )) || warn "Interrupted model upgrade could not be reconciled (non-fatal; see the message above)."
 }
 
 _ods_cli_bootstrap_download_near_swap() {
@@ -1618,7 +1619,14 @@ cmd_status() {
                 log "  Model Upgrade: $bs_model (${bs_percent:-?}% downloaded)"
             else
                 log "  Model Upgrade: $bs_model interrupted ($bs_status, no upgrade process) — run 'ods start'"
+                echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
             fi
+        elif [[ "$bs_status" == "failed" && "$(_ods_cli_bootstrap_status_field eta)" == interrupted:* ]]; then
+            # reconcile-bootstrap-swap.sh hands an interrupted run to the
+            # start/restart resume; say so until it has finished it.
+            log ""
+            log "  Model Upgrade: $(_ods_cli_bootstrap_status_field model) interrupted before it finished — run 'ods start' to finish it"
+            echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
         fi
     fi
 }
@@ -1929,6 +1937,10 @@ cmd_restart() {
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
+        # Same as start: a dead upgrade's stale status would make the wait
+        # below run 30 minutes and refuse, although the Dashboard tells the
+        # owner to run ods restart to resume it.
+        _ods_cli_reconcile_bootstrap_swap
         _ods_cli_wait_for_bootstrap_compose_safe "restart"
         _ods_cli_reload_model_env
         ensure_llama_cpu_budget
@@ -1985,6 +1997,10 @@ _ods_cli_maybe_resume_bootstrap_upgrade() {
     local retry_reason="previous download failed"
     if [[ "$bs_status" == "failed" || "$bs_status" == "error" ]]; then
         retry_reason="previous download failed"
+        # reconcile-bootstrap-swap.sh marks a run that was cut off this way.
+        if grep -q '"eta"[[:space:]]*:[[:space:]]*"interrupted:' "$status_file"; then
+            retry_reason="previous upgrade was interrupted"
+        fi
     elif [[ "$bs_status" == "starting" || "$bs_status" == "downloading" || "$bs_status" == "verifying" || "$bs_status" == "swapping" ]]; then
         _ods_cli_bootstrap_upgrade_status_is_stale "$status_file" || return 0
         retry_reason="stale download appears stopped"

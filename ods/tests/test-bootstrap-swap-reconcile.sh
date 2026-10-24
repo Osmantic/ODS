@@ -3,6 +3,9 @@
 # llama-server recreate and its start must not leave llama-server "Created",
 # bootstrap-status.json "swapping" and a dead task "running" forever, and
 # `ods status` must show the unstarted container instead of a fake upgrade.
+# The run is handed to the start/restart resume, never marked complete: only
+# bootstrap-upgrade.sh finishes Pixel, Hermes, Perplexica, cleanup and the
+# host-agent notice.
 
 set -euo pipefail
 
@@ -19,6 +22,7 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FULL_MODEL="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
 BOOT_MODEL="Qwen3.5-2B-Q4_K_M.gguf"
+HELP_LINK="https://discord.gg/4ntNp9MAwC"
 
 pass() { printf '  PASS %s\n' "$1"; }
 fail() {
@@ -37,7 +41,6 @@ OUT="$TMP/out"
 DOCKER_LOG="$TMP/docker.log"
 STARTED_FLAG="$TMP/started"
 export DOCKER_LOG STARTED_FLAG
-export ODS_BOOTSTRAP_RECONCILE_HEALTH_ATTEMPTS=2 ODS_BOOTSTRAP_RECONCILE_HEALTH_INTERVAL=0
 mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/logs" "$INSTALL_DIR/scripts" \
     "$INSTALL_DIR/installers/lib" "$INSTALL_DIR/lib" "$BIN_DIR"
 cp "$ROOT_DIR/scripts/reconcile-bootstrap-swap.sh" "$INSTALL_DIR/scripts/" \
@@ -64,7 +67,10 @@ case "${1:-}" in
         [[ " $* " == *" ps -a "* && " $* " == *" llama-server"* ]] \
             && printf '%s\n' "${FAKE_LLAMA_STATE:-}"
         ;;
-    info) echo "8" ;;
+    info)
+        [[ "${FAKE_DOCKER_DOWN:-0}" != 1 ]] || exit 1
+        echo "8"
+        ;;
 esac
 exit 0
 SH
@@ -131,6 +137,22 @@ run_reconcile() {
     [[ "$rc" == "$expected_rc" ]] || fail "reconcile script exited $rc, expected $expected_rc"
 }
 
+# The reconcile hands the run to the resume: failed, with an interrupted
+# message that names the recovery step and the help link.
+expect_handed_to_resume() {
+    local label="$1" eta
+    [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
+        || fail "$label: status is not failed"
+    eta="$(json_get "$INSTALL_DIR/data/bootstrap-status.json" eta)"
+    [[ "$eta" == interrupted:* ]] || fail "$label: status message does not say interrupted: $eta"
+    [[ "$eta" == *"ods start"* ]] || fail "$label: status message gives no recovery step: $eta"
+    [[ "$eta" == *"$HELP_LINK"* ]] || fail "$label: status message gives no help link: $eta"
+    [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" bytesTotal)" == 100 ]] \
+        || fail "$label: status lost its download fields"
+    [[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == interrupted ]] \
+        || fail "$label: dead background task still recorded as running"
+}
+
 echo "=== bootstrap swap reconciliation (#7645) ==="
 
 # 1. Same-file short-circuit: no background swap for the bootstrap GGUF.
@@ -146,47 +168,35 @@ echo "=== bootstrap swap reconciliation (#7645) ==="
 ) || fail "bootstrap_needed must skip the swap only when the full GGUF is the bootstrap GGUF"
 pass "same-file full model skips the bootstrap swap"
 
-# 2. Stale swapping + dead pid + Created container, .env already promoted.
+# 2. Stale swapping + dead pid + Created container, .env already promoted:
+#    start the container, hand the run to the resume, never write complete.
 write_fixture "$FULL_MODEL"
 FAKE_LLAMA_STATE=created FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
 grep -q 'DOCKER_ARGS: start ods-llama-server' "$DOCKER_LOG" || fail "Created llama-server was not started"
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == complete ]] \
-    || fail "promoted swap was not marked complete"
-[[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == interrupted ]] \
-    || fail "dead background task still recorded as running"
-pass "interrupted swap: container started, status complete, task interrupted"
+expect_handed_to_resume "interrupted recreate"
+if [[ "$(uname -s)" == Linux ]]; then
+    [[ "$(stat -c '%a' "$INSTALL_DIR/data/bootstrap-status.json")" == 644 ]] \
+        || fail "status file is not readable to the Dashboard API (want 0644, like bootstrap-upgrade.sh)"
+fi
+pass "interrupted swap: container started, run handed to the resume, task interrupted"
 
-# 2b. Mid-promotion interruption (.env written, models.ini and the runtime not
-#     yet swapped): .env alone is not completion evidence -> failed, resumable.
-write_fixture "$FULL_MODEL" "" "$BOOT_MODEL"
-FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$BOOT_MODEL" run_reconcile
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
-    || fail "mid-promotion interruption was recorded complete from .env alone"
-pass "mid-promotion (.env only): status failed, resumable"
-
-# 2c. Config promoted but the running container still serves the bootstrap GGUF.
+# 2b. Even a fully promoted, running and healthy full model is not complete:
+#     Pixel, Hermes, Perplexica, cleanup and the host-agent notice never ran.
 write_fixture "$FULL_MODEL"
-FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$BOOT_MODEL" run_reconcile
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
-    || fail "stale runtime --model was recorded complete"
-pass "config promoted, runtime stale: status failed"
-
-# 2d. Runtime selected but never healthy -> failed.
-write_fixture "$FULL_MODEL"
-FAKE_HEALTH=down FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]] \
-    || fail "unhealthy runtime was recorded complete"
-pass "runtime not healthy: status failed"
+FAKE_LLAMA_STATE=running FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
+grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "a running llama-server was started again"
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" != complete ]] \
+    || fail "the reconcile wrote complete and skipped bootstrap-upgrade.sh's remaining steps"
+expect_handed_to_resume "promoted and serving"
+pass "promoted and serving: still handed to the resume, never complete"
 
 # 3. Not yet promoted, container exited (maybe `ods stop`) -> left alone,
-#    status settled failed/interrupted.
+#    run handed to the resume.
 write_fixture "$BOOT_MODEL"
 FAKE_LLAMA_STATE=exited run_reconcile
 grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "exited llama-server was started against a possible ods stop"
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]]     || fail "unpromoted swap was not marked failed"
-grep -q 'interrupted' "$INSTALL_DIR/data/bootstrap-status.json" || fail "failed status lacks interrupted message"
-[[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == interrupted ]]     || fail "dead background task still recorded as running (exited case)"
-pass "exited container: not started, status failed (interrupted), task settled"
+expect_handed_to_resume "exited container"
+pass "exited container: not started, run handed to the resume, task settled"
 
 # 3b. Fresh active status, no visible process (installer child not in ps yet).
 write_fixture "$BOOT_MODEL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -199,7 +209,7 @@ pass "fresh active status without a process: untouched, deferred (75)"
 # 3c. Stale active status, no process, no container -> settled.
 write_fixture "$BOOT_MODEL"
 FAKE_LLAMA_STATE="" run_reconcile
-[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == failed ]]     || fail "stale active status was not settled"
+expect_handed_to_resume "no container"
 pass "stale active status without a process: settled"
 
 # 3d. Model lifecycle lock held by another operation -> no action.
@@ -216,6 +226,16 @@ if [[ "$(uname -s)" == "Linux" ]] && command -v flock >/dev/null 2>&1; then
     [[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]]         || fail "reconcile rewrote status while the lifecycle lock was held"
     pass "lifecycle lock busy: no action, deferred (75)"
 fi
+
+# 3e. Docker not up yet (early boot): deferred for a later recheck, not failed.
+write_fixture "$FULL_MODEL"
+FAKE_DOCKER_DOWN=1 FAKE_LLAMA_STATE=created EXPECT_RC=75 run_reconcile
+grep -q 'DOCKER_ARGS: start' "$DOCKER_LOG" && fail "reconcile started llama-server while Docker was down"
+[[ "$(json_get "$INSTALL_DIR/data/bootstrap-status.json" status)" == swapping ]] \
+    || fail "reconcile settled the status while Docker was down"
+[[ "$(json_get "$INSTALL_DIR/logs/background-tasks.json" status)" == running ]] \
+    || fail "reconcile rewrote the task record while Docker was down"
+pass "Docker not answering: untouched, deferred (75)"
 
 # 4. Live upgrade process: nothing is touched.
 write_fixture "$FULL_MODEL"
@@ -247,6 +267,52 @@ grep -q "llama-server: container created but not started" "$OUT" \
 grep -q "downloaded)" "$OUT" && fail "ods status still prints a progress line for a dead upgrade"
 grep -q "Model Upgrade: $FULL_MODEL interrupted" "$OUT" \
     || fail "ods status did not mark the dead upgrade as interrupted"
+grep -qF "$HELP_LINK" "$OUT" || fail "ods status gave no help link for the interrupted upgrade"
 pass "ods status reports the Created container and the interrupted upgrade"
+
+# 5b. After the reconcile the run is failed (interrupted); status still says
+#     how to finish it until the resume has done so.
+write_fixture "$FULL_MODEL"
+FAKE_LLAMA_STATE=created FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
+PATH="$BIN_DIR:$PATH" ODS_HOME="$INSTALL_DIR" FAKE_LLAMA_STATE=running \
+    "$BASH" "$INSTALL_DIR/ods-cli" status > "$OUT" 2>&1 || true # status exit code reflects stub health checks
+grep -q "Model Upgrade: $FULL_MODEL interrupted before it finished — run 'ods start' to finish it" "$OUT" \
+    || fail "ods status hid the interrupted upgrade once it was marked failed"
+grep -qF "$HELP_LINK" "$OUT" || fail "ods status gave no help link for the interrupted upgrade"
+pass "ods status keeps naming the interrupted upgrade and its recovery step"
+
+# 6. The existing start/restart resume picks the reconciled run up and starts
+#    bootstrap-upgrade.sh again with the saved arguments.
+write_fixture "$FULL_MODEL"
+FAKE_LLAMA_STATE=created FAKE_LLAMA_CMD="--model /models/$FULL_MODEL" run_reconcile
+printf '%s\n' "$FULL_MODEL" "https://example.invalid/full.gguf" "abc123" "full-model" "65536" "$BOOT_MODEL" \
+    > "$INSTALL_DIR/data/bootstrap-upgrade.args"
+export RESUME_ARGS_FILE="$TMP/resume-args"
+rm -f "$RESUME_ARGS_FILE"
+cat > "$INSTALL_DIR/scripts/bootstrap-upgrade.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${RESUME_ARGS_FILE:?}"
+SH
+resume_fn="$TMP/resume-fn.sh"
+awk '/^_ods_cli_maybe_resume_bootstrap_upgrade\(\) \{$/ { copy=1 } copy { print } copy && /^}$/ { exit }' \
+    "$ROOT_DIR/ods-cli" > "$resume_fn"
+[[ -s "$resume_fn" ]] || fail "could not extract _ods_cli_maybe_resume_bootstrap_upgrade from ods-cli"
+(
+    log() { printf '%s\n' "$*"; }
+    warn() { printf 'WARN %s\n' "$*"; }
+    # shellcheck source=/dev/null
+    . "$resume_fn"
+    _ods_cli_maybe_resume_bootstrap_upgrade
+) > "$OUT" 2>&1
+for _ in $(seq 1 50); do
+    [[ -s "$RESUME_ARGS_FILE" ]] && break
+    sleep 0.1
+done
+[[ -s "$RESUME_ARGS_FILE" ]] || fail "the start/restart resume did not restart bootstrap-upgrade.sh for the interrupted run"
+[[ "$(sed -n '1p;2p;7p' "$RESUME_ARGS_FILE" | paste -sd ' ' -)" == "$INSTALL_DIR $FULL_MODEL $BOOT_MODEL" ]] \
+    || fail "the resume did not pass the saved upgrade arguments: $(paste -sd ' ' - < "$RESUME_ARGS_FILE")"
+grep -q "previous upgrade was interrupted; retrying in background" "$OUT" \
+    || fail "the resume called an interrupted upgrade a failed download"
+pass "start/restart resume restarts bootstrap-upgrade.sh for the interrupted run"
 
 echo "All bootstrap swap reconciliation checks passed."
