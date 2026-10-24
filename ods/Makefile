@@ -191,6 +191,7 @@ test: ## Run unit and contract tests
 	@echo "=== CLI preset restore user extensions ==="
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
+	@bash tests/test-preset-host-only-and-secrets.sh
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
 	@bash tests/test-update-backup-retention-labels.sh

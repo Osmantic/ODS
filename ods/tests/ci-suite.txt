@@ -193,6 +193,7 @@ tests/test-pre-download-tier-noninteractive.sh
 tests/test-preflight.sh
 tests/test-preset-compatibility.sh
 tests/test-preset-diff.sh
+tests/test-preset-host-only-and-secrets.sh
 tests/test-preset-import-export.sh
 tests/test-preset-import-transaction.sh
 tests/test-preview-inspection.mjs
