@@ -76,3 +76,6 @@ jobs:
 
       - name: Test interrupted Token Spy usage receipts
         run: python -m pytest -q ../token-spy/tests/test_interrupted_usage_receipts.py ../token-spy/tests/test_anthropic_cumulative_usage.py
+
+      - name: Dashboard Authentication Contract
+        run: bash tests/contracts/test-dashboard-auth-contract.sh
