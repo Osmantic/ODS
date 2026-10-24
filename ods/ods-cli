@@ -1657,7 +1657,10 @@ cmd_status_json() {
         _total_mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
         if command -v jq >/dev/null 2>&1; then
             _gpu_cores=$(system_profiler SPDisplaysDataType -json 2>/dev/null \
-                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null)
+                | jq -r '.SPDisplaysDataType[0].sppci_cores // "?"' 2>/dev/null) || {
+                _gpu_cores="?"
+                warn "Apple GPU observation unavailable; reporting memory and service status."
+            }
         else
             _gpu_cores="?"
         fi
@@ -1668,9 +1671,15 @@ cmd_status_json() {
             --argjson gpu_cores "$([[ "$_gpu_cores" =~ ^[0-9]+$ ]] && printf '%s' "$_gpu_cores" || printf 'null')" \
             '{backend: $backend, chip: $chip, unified_memory_gb: $unified_memory_gb, gpu_cores: $gpu_cores}')
     elif [[ "${GPU_BACKEND:-nvidia}" == "nvidia" ]] && command -v nvidia-smi >/dev/null 2>&1; then
-        # Represent each GPU line as raw strings in an array
-        gpu_summary_json=$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
-            --format=csv,noheader,nounits 2>/dev/null | jq -R -s 'split("\n") | map(select(length > 0))')
+        # A failed optional driver query must not discard the service snapshot
+        # or publish partial stdout as a successful GPU observation.
+        local gpu_observation
+        if gpu_observation=$(nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu \
+            --format=csv,noheader,nounits 2>/dev/null); then
+            gpu_summary_json=$(printf '%s\n' "$gpu_observation" | jq -R -s 'split("\n") | map(select(length > 0))')
+        else
+            warn "NVIDIA GPU observation unavailable (nvidia-smi failed); reporting service status."
+        fi
     fi
 
     # Aggregate into a single document
