@@ -5,6 +5,7 @@
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
 
 tests/test-installer-dry-run-jq.sh
+tests/test-phase06-gpu-env-rerun.py
 tests/test-inference-port-admission.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh

@@ -1546,6 +1546,19 @@ SERVICE_PORT_DEFAULTS
     # Keep it aligned with the retained .env port on an upgrade.
     DASHBOARD_API_PORT="$DASHBOARD_API_PORT_VALUE"
 
+    # Resolve GPU runtime overrides before opening .env for writing. Lookups
+    # inside its heredoc would read the already-truncated file on a rerun.
+    HSA_OVERRIDE_GFX_VERSION_VALUE=""
+    ROCBLAS_USE_HIPBLASLT_VALUE=""
+    ONEAPI_DEVICE_SELECTOR_VALUE=""
+    if [[ "$GPU_BACKEND" == "amd" ]]; then
+        HSA_OVERRIDE_GFX_VERSION_VALUE="$(_env_get HSA_OVERRIDE_GFX_VERSION \
+            "$(ods_amd_hsa_override_for_target "$AMD_INFERENCE_BACKEND_VALUE" "${AMD_GFX_TARGET:-}")")"
+        ROCBLAS_USE_HIPBLASLT_VALUE="$(_env_get ROCBLAS_USE_HIPBLASLT "")"
+    elif [[ "$GPU_BACKEND" == "sycl" ]]; then
+        ONEAPI_DEVICE_SELECTOR_VALUE="$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)"
+    fi
+
     # Generate .env file
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
         _phase06_pixel_runtime_layout || {
@@ -1713,17 +1726,13 @@ $(if [[ "$GPU_BACKEND" == "amd" ]]; then
     # HSA_OVERRIDE_GFX_VERSION is read only by the ROCm image, and only a GPU
     # the image was not built for needs it (a wrong value fails model load or
     # hangs the GPU). Vulkan never reads it. An owner-set value is kept.
-    _amd_hsa_override="$(_env_get HSA_OVERRIDE_GFX_VERSION \
-        "$(ods_amd_hsa_override_for_target "$AMD_INFERENCE_BACKEND_VALUE" "${AMD_GFX_TARGET:-}")")"
-
     cat << AMD_ENV
 #=== GPU Group IDs (for container device access) ===
 VIDEO_GID=$(getent group video 2>/dev/null | cut -d: -f3 || echo 44)
 RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
-$(if [[ -n "$_amd_hsa_override" ]]; then printf '\n#=== ROCm gfx override (%s) ===\nHSA_OVERRIDE_GFX_VERSION=%s' "${AMD_GFX_TARGET:-unknown target}" "$(dotenv_value "$_amd_hsa_override")"; fi)
-$(if [[ -n "$(_env_get ROCBLAS_USE_HIPBLASLT "")" ]]; then printf 'ROCBLAS_USE_HIPBLASLT=%s' "$(dotenv_value "$(_env_get ROCBLAS_USE_HIPBLASLT "")")"; fi)
+$(if [[ -n "$HSA_OVERRIDE_GFX_VERSION_VALUE" ]]; then printf '\n#=== ROCm gfx override (%s) ===\nHSA_OVERRIDE_GFX_VERSION=%s' "${AMD_GFX_TARGET:-unknown target}" "$(dotenv_value "$HSA_OVERRIDE_GFX_VERSION_VALUE")"; fi)
+$(if [[ -n "$ROCBLAS_USE_HIPBLASLT_VALUE" ]]; then printf 'ROCBLAS_USE_HIPBLASLT=%s' "$(dotenv_value "$ROCBLAS_USE_HIPBLASLT_VALUE")"; fi)
 AMD_ENV
-    unset _amd_hsa_override
 fi)
 $(if [[ "$GPU_BACKEND" == "sycl" ]]; then cat << INTEL_ENV
 #=== GPU Group IDs (for container device access) ===
@@ -1732,7 +1741,7 @@ RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
 
 #=== Intel Arc / oneAPI SYCL Settings ===
 # Set level_zero:0 on hosts with more than one Intel GPU.
-ONEAPI_DEVICE_SELECTOR=$(dotenv_value "$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)")
+ONEAPI_DEVICE_SELECTOR=$(dotenv_value "$ONEAPI_DEVICE_SELECTOR_VALUE")
 ZES_ENABLE_SYSMAN=1
 INTEL_ENV
 fi)
