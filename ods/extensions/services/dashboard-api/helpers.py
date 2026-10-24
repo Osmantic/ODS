@@ -27,6 +27,7 @@ from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from host_agent_client import AgentClientError, AgentHTTPError, async_request_json as request_agent_json
 from models import ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus
 from service_health_dns import ServiceHealthResolver
+import windows_metrics
 
 
 class _DirSizeCache:
@@ -1557,6 +1558,8 @@ def get_cpu_metrics() -> dict:
         return {**_get_cpu_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_cpu_metrics_darwin(), "scope": "host", "source": "macos-top"}
+    elif _system == "Windows":
+        return {**windows_metrics.get_cpu_metrics(), "scope": "host", "source": "windows-kernel32"}
     return {"percent": None, "temp_c": None}
 
 
@@ -1641,6 +1644,8 @@ def get_ram_metrics() -> dict:
         return {**_get_ram_metrics_linux(), "scope": linux_scope(), "source": "linux-procfs"}
     elif _system == "Darwin":
         return {**_get_ram_metrics_sysctl(), "scope": "host", "source": "macos-vm-stat"}
+    elif _system == "Windows":
+        return {**windows_metrics.get_ram_metrics(), "scope": "host", "source": "windows-kernel32"}
     return {"used_gb": None, "total_gb": None, "percent": None}
 
 

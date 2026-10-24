@@ -49,6 +49,7 @@ from models import (
     FullStatus, PortCheckRequest,
 )
 from security import verify_api_key
+from runtime_profile import RUNTIME_PROFILE
 from gpu import get_gpu_info
 from helpers import (
     get_all_services, get_cached_services, get_services_cache_revision, set_services_cache,
@@ -1274,6 +1275,15 @@ app.include_router(pixel_sharing.router)
 app.include_router(pixel_model_failure.router)
 app.include_router(opencode_app.router)
 
+if RUNTIME_PROFILE.is_desktop:
+    # Validated now so a launcher without its llama-server settings fails at
+    # startup with the variable named, not on the owner's first message.
+    import native_llm
+    from routers import local_chat
+
+    native_llm.configured()
+    app.include_router(local_chat.router)
+
 
 # ================================================================
 # Core Endpoints (health, status, preflight, services)
@@ -1317,6 +1327,9 @@ async def host_agent_diagnostics():
 @app.get("/api/preflight/docker", dependencies=[Depends(verify_api_key)])
 async def preflight_docker():
     """Check if Docker is available."""
+    if RUNTIME_PROFILE.is_desktop:
+        return {"available": False, "applicable": False,
+                "error": "The Windows Desktop profile does not use Docker"}
     if os.path.exists("/.dockerenv"):
         return {"available": True, "version": "available (host)"}
     try:
@@ -1508,6 +1521,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
+            "runtimeProfile": RUNTIME_PROFILE.name,
             "inferenceMode": "cloud" if cloud_mode else "local",
             "inferenceSource": "cloud-mode" if cloud_mode else "unknown",
             "cpu": {"percent": None, "temp_c": None, "scope": "unknown", "source": "unavailable"},
@@ -1699,6 +1713,7 @@ async def _build_api_status() -> dict:
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
+        "runtimeProfile": RUNTIME_PROFILE.name,
         "inferenceMode": inference_mode_value,
         "inferenceSource": inference_source_value,
         "currentModel": current_model_name,
@@ -2005,6 +2020,20 @@ async def _poll_service_health():
         await asyncio.sleep(_SERVICE_POLL_INTERVAL)
 
 
+if RUNTIME_PROFILE.is_desktop:
+    # Windows Desktop has no nginx: when the launcher hands over the built
+    # dashboard, dashboard-api serves it behind the same loopback trust
+    # boundary nginx applies. Starlette matches routes in registration
+    # order, so this "/" mount must stay below every @app route above.
+    import native_front
+    from security import DASHBOARD_API_KEY
+
+    _dashboard_dist = native_front.dist_dir()
+    if _dashboard_dist is not None:
+        app.add_middleware(native_front.DashboardGate, api_key=DASHBOARD_API_KEY)
+        app.mount("/", native_front.DashboardFiles(directory=_dashboard_dist, html=True), name="dashboard")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("DASHBOARD_API_PORT", "3002")))
+    uvicorn.run(app, host=RUNTIME_PROFILE.listen_host, port=int(os.environ.get("DASHBOARD_API_PORT", "3002")))
