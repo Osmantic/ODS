@@ -92,14 +92,15 @@ try {
     Assert-Contract (-not [string]::IsNullOrWhiteSpace($_fsRoot)) '$_fsRoot is resolved from probe path'
 
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
-        # Genuine reproduction of original defect: passing $_fsProbe directly throws on Windows
+        # Genuine reproduction of original defect: querying DriveFormat on $_fsProbe throws on Windows
         $baselineThrew = $false
         try {
-            $null = [IO.DriveInfo]::new($_fsProbe)
-        } catch [ArgumentException] {
+            $baselineDi = [IO.DriveInfo]::new($_fsProbe)
+            $null = $baselineDi.DriveFormat
+        } catch {
             $baselineThrew = $true
         }
-        Assert-Contract $baselineThrew 'Baseline reproduction: passing subdirectory directly to DriveInfo throws ArgumentException'
+        Assert-Contract $baselineThrew 'Baseline reproduction: querying DriveInfo.DriveFormat on subdirectory probe throws'
 
         # Fixed code path: passing $_fsRoot succeeds and retrieves volume DriveFormat
         $fixedDi = [IO.DriveInfo]::new($_fsRoot)
