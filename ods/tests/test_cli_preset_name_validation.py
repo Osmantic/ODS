@@ -75,5 +75,35 @@ class TestCLIPresetNameValidation(unittest.TestCase):
         self.assertTrue((preset_dir / "meta.txt").exists())
 
 
+    def test_aliases_reject_traversal(self):
+        target = self.fixture / "data"
+        target.mkdir()
+        sentinel = target / "sentinel"
+        sentinel.write_text("keep", encoding="utf-8")
+        for action in ("s", "l", "rm", "e"):
+            with self.subTest(action=action):
+                res = self._run_cli("preset", action, "../data", stdin_text="y\n")
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("Invalid preset name", res.stderr)
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep")
+
+    def test_load_and_both_diff_arguments_reject_traversal(self):
+        commands = [("load", "../outside")]
+        for action in ("diff", "d"):
+            commands.extend(((action, "../outside", "good"),
+                             (action, "good", "../outside")))
+        for args in commands:
+            with self.subTest(args=args):
+                res = self._run_cli("preset", *args)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("Invalid preset name", res.stderr)
+
+    def test_save_rejects_dotdot_leading_dash_and_controls(self):
+        for invalid in ("..", "-option", "bad\nname", "bad\x01name", "bad\x7fname"):
+            with self.subTest(name=invalid):
+                res = self._run_cli("preset", "save", invalid)
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("Invalid preset name", res.stderr)
+
 if __name__ == "__main__":
     unittest.main()
