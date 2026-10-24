@@ -131,6 +131,7 @@ tests/test-macos-installer-log-safety.sh
 tests/test-macos-intel-preflight-blocker.sh
 tests/test-macos-lean-feature-selection.sh
 tests/test-macos-native-llama-port.sh
+tests/test-macos-rosetta-bash-handoff.sh
 tests/test-macos-status-optional-opencode.sh
 tests/test-migrate-lemonade-install.py
 tests/test-model-integrity.sh
