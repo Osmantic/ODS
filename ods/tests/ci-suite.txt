@@ -310,6 +310,7 @@ tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
 tests/test-cli-chat-route.py
+tests/test_host_agent_process_shutdown.py
 tests/test-cli-chat-error-exit.py
 tests/test-cli-compose-cache-model-store.sh
 tests/test-update-compose-cache-owner-overlays.sh
