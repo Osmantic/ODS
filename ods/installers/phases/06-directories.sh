@@ -152,6 +152,8 @@ else
     source "$SCRIPT_DIR/lib/dotenv-quote.sh"
     # shellcheck source=../../lib/safe-env.sh
     source "$SCRIPT_DIR/lib/safe-env.sh"
+    # shellcheck source=../../lib/service-urls.sh
+    source "$SCRIPT_DIR/lib/service-urls.sh"
 
     # Pixel validates the install root before inspecting its source journal.
     # Normalize only verified owner-private provider paths before that check;
@@ -1281,7 +1283,7 @@ SERVICE_PORT_DEFAULTS
     export ODS_MODEL_SWITCHBOARD
     # A host-native llama-server is reachable only through LiteLLM, which holds
     # its key; the in-stack llama-server serves every other local install.
-    _default_llm_api_url="$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then echo "http://litellm:4000"; elif [[ "${ODS_MODE:-local}" == "local" ]]; then echo "http://llama-server:8080"; else echo "http://litellm:4000"; fi)"
+    _default_llm_api_url="$(if [[ "$NATIVE_LLM_ACTIVE" == "true" ]]; then ods_service_url litellm; elif [[ "${ODS_MODE:-local}" == "local" ]]; then ods_service_url llama-server; else ods_service_url litellm; fi)"
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         LLM_API_URL_VALUE="http://litellm:4000"
         OPEN_WEBUI_LLM_BASE_URL_VALUE="http://litellm:4000/v1"
