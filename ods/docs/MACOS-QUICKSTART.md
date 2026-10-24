@@ -34,6 +34,12 @@ configuration and data before updating. Existing native
 Pixel installations use the managed native update/migration path; the base
 installer intentionally stops instead of overwriting protected runtime state.
 
+On an existing ODS installation, add OpenCode from **Dashboard → Extensions
+Library → OpenCode → Install**. This installs its reviewed native release and
+LaunchAgent without rerunning the initial installer or replacing native Pixel
+state. The Library also offers Start when an installed OpenCode service is
+stopped.
+
 The installer will:
 
 1. **Detect your chip** — identifies Apple Silicon variant and unified memory
