@@ -10,9 +10,14 @@ Install and enable `it-tools` from the ODS library. Open its launch action or
 Choose a tool and supply its input explicitly. There is no automatic connection
 to Portal conversations, project files, clipboard or the selected model.
 
-The official GPL-3.0 application's static assets are copied from the pinned
-`2024.10.22-7ca5933` image. This was the latest GitHub release found on
-2026-09-20; it does not imply that unreleased source changes are included.
+The official GPL-3.0 application is built from the exact source revision of
+`2024.10.22-7ca5933`, with one CSV serialization patch. JSON-to-CSV preserves
+quotes and line breaks in values and column names instead of emitting literal
+backslash escapes. The build verifies the source checksum, applies the patch
+with zero fuzz and checks ten cases using Python's independent CSV parser.
+The source, patch and license are available through `/ITTOOLS-SOURCE.txt`.
+The first installation needs additional time and memory to compile the static
+application; later builds reuse Docker's dependency cache.
 A separately pinned nginx 1.28 Alpine serves those assets under UID 101,
 read-only except for bounded temporary storage. SPA routes fall back to the
 application entry point so reloading a tool URL works.
@@ -34,8 +39,8 @@ that tool's behavior; this integration does not assert universal offline operati
 ## Verification boundary
 
 Health checks confirm the local HTTP server answers. They do not prove individual
-conversions or browser API functionality. Image build, UI interactions, deep-link
-reload and browser persistence remain runtime-pending. No application was started
-as part of this integration work.
+conversions or browser API functionality. The CSV build check validates data
+round trips; browser interactions, deep-link reload and browser persistence
+require separate runtime checks.
 
 Upstream: https://github.com/CorentinTh/it-tools
