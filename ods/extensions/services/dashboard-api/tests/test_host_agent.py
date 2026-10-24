@@ -7769,6 +7769,50 @@ class TestPrecreateDataDirs:
         assert data_dir.is_dir()
         assert chowns == [(data_dir, 12345, 12345)]
 
+    @pytest.mark.parametrize("user, env_text, expected", [
+        # privacy-shield, ntfy and both extension templates
+        ("${ODS_UID:-1000}:${ODS_GID:-1000}", "", 1000),
+        ("${ODS_UID:-1000}:${ODS_GID:-1000}", "ODS_UID=1001\nODS_GID=1001\n", 1001),
+        # n8n nests the default; native macOS sets the user to node
+        ("${N8N_RUN_USER:-${ODS_UID:-1000}:${ODS_GID:-1000}}", "ODS_UID=1002\n", 1002),
+        ("${N8N_RUN_USER:-${ODS_UID:-1000}:${ODS_GID:-1000}}", "N8N_RUN_USER=node\n", None),
+    ])
+    def test_compose_variable_user_chowns_to_the_uid_compose_uses(
+        self, tmp_path, monkeypatch, user, env_text, expected,
+    ):
+        """A ``${VAR:-N}`` user was split on ':' before its default was read.
+
+        So it never yielded a uid, and a root agent left those bind mounts
+        root-owned. Compose resolves the variable from the install .env.
+        """
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        (install_dir / ".env").write_text(env_text, encoding="utf-8")
+        ext_dir = user_root / "svc-u"
+        self._write_compose_with_user(ext_dir, ["./data/svc:/data"], user)
+        chowns: list[tuple[Path, int, int]] = []
+
+        def record_chown(path, uid, gid):
+            chowns.append((Path(path), uid, gid))
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "_fs_type", lambda path: None)
+        monkeypatch.setattr(_mod.os, "getuid", lambda: 0, raising=False)
+        monkeypatch.setattr(_mod.os, "chown", record_chown, raising=False)
+
+        _mod._precreate_data_dirs("svc-u")
+
+        data_dir = install_dir / "data" / "svc"
+        assert data_dir.is_dir()
+        assert chowns == ([] if expected is None else [(data_dir, expected, expected)])
+
     @pytest.mark.parametrize("trigger", ["compose-user", "manifest-uid"])
     def test_windows_creates_dirs_without_posix_uid(self, tmp_path, monkeypatch, trigger):
         """The agent runs on native Windows Python, which has no os.getuid.
