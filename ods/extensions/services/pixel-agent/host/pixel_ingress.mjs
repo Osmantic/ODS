@@ -945,34 +945,59 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
 // Polling reads host receipts only; it never invokes the model or replays tools.
 async function awaitSubagentDelivery(completion, user, token, gatewayPort, signal, deps) {
   const runId=completion?.id;
-  if (!OPENAI_RUN_ID.test(runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(user ?? '')) throw new HttpError(502,'delegated delivery unavailable');
-  for (;;) {
-    if (signal.aborted) throw new HttpError(502,'delegated delivery interrupted');
-    const response=await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/subagent-delivery`,{
-      method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json',accept:'application/json'},
-      body:JSON.stringify({user,runId}),redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(5000)]),
-    });
-    if (response.status !== 200 || !String(response.headers.get('content-type') ?? '').startsWith('application/json')) {
-      await drain(response.body);throw new HttpError(502,'delegated delivery unavailable');
+  let reason='identity_invalid', status, deadline, requestSignal;
+  try {
+    if (!OPENAI_RUN_ID.test(runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(user ?? '')) throw new HttpError(502,'delegated delivery unavailable');
+    for (;;) {
+      reason='request_aborted';status=undefined;
+      if (signal.aborted) throw new HttpError(502,'delegated delivery interrupted');
+      deadline=AbortSignal.timeout(5000);
+      requestSignal=AbortSignal.any([signal,deadline]);
+      reason='transport_failed';
+      const response=await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/subagent-delivery`,{
+        method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json',accept:'application/json'},
+        body:JSON.stringify({user,runId}),redirect:'error',signal:requestSignal,
+      });
+      status=response.status;
+      reason=status!==200 ? 'http_rejected' : 'content_type_invalid';
+      if (response.status !== 200 || !String(response.headers.get('content-type') ?? '').startsWith('application/json')) {
+        await drain(response.body);throw new HttpError(502,'delegated delivery unavailable');
+      }
+      reason='body_invalid';
+      const body=await readBounded(response.body,MAX_VERIFICATION_RESPONSE);
+      reason='json_invalid';
+      const value=JSON.parse(body.toString('utf8'));
+      reason='schema_invalid';
+      const keys=value && typeof value==='object' && !Array.isArray(value) ? Object.keys(value).sort().join() : '';
+      const baseKeys='kind,runId,schemaVersion,status';
+      if (value?.schemaVersion!==1 || value.kind!=='ods-subagent-delivery' || value.runId!==runId) throw new HttpError(502,'delegated delivery invalid');
+      if (value.status==='not-delegated' && keys===baseKeys) return {completion};
+      if (value.status==='ready' && keys==='kind,runId,schemaVersion,status,text,verification') {
+        if (typeof value.text!=='string' || !value.text.trim() || Buffer.byteLength(value.text)>256*1024
+            || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value.text)) throw new HttpError(502,'delegated delivery invalid');
+        const verification=parseVerificationResponse(value.verification,runId);
+        const {usage,...original}=completion; // Original introduction usage is not the continuation's token measurement.
+        return {completion:{...original,choices:[{index:0,message:{role:'assistant',content:value.text},finish_reason:'stop'}]},verification};
+      }
+      if (value.status==='interrupted') reason='receipt_interrupted';
+      if (value.status!=='waiting' || keys!==baseKeys) throw new HttpError(502,'delegated delivery interrupted');
+      await new Promise(resolve=>{
+        const timer=deps.setTimeout(done,600);
+        function done() {deps.clearTimeout(timer);signal.removeEventListener('abort',done);resolve();}
+        signal.addEventListener('abort',done,{once:true});if(signal.aborted)done();
+      });
     }
-    const value=JSON.parse((await readBounded(response.body,MAX_VERIFICATION_RESPONSE)).toString('utf8'));
-    const keys=value && typeof value==='object' && !Array.isArray(value) ? Object.keys(value).sort().join() : '';
-    const baseKeys='kind,runId,schemaVersion,status';
-    if (value?.schemaVersion!==1 || value.kind!=='ods-subagent-delivery' || value.runId!==runId) throw new HttpError(502,'delegated delivery invalid');
-    if (value.status==='not-delegated' && keys===baseKeys) return {completion};
-    if (value.status==='ready' && keys==='kind,runId,schemaVersion,status,text,verification') {
-      if (typeof value.text!=='string' || !value.text.trim() || Buffer.byteLength(value.text)>256*1024
-          || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value.text)) throw new HttpError(502,'delegated delivery invalid');
-      const verification=parseVerificationResponse(value.verification,runId);
-      const {usage,...original}=completion; // Original introduction usage is not the continuation's token measurement.
-      return {completion:{...original,choices:[{index:0,message:{role:'assistant',content:value.text},finish_reason:'stop'}]},verification};
+  } catch (error) {
+    // Fixed categories only: never inspect/log error text, headers or receipt content.
+    // Bind deadline diagnosis to the signal that actually aborted this receipt read.
+    if ((reason==='transport_failed' || reason==='body_invalid') && requestSignal?.aborted) {
+      if (deadline.aborted && requestSignal.reason===deadline.reason) reason='receipt_deadline';
+      else if (signal.aborted && requestSignal.reason===signal.reason) reason='request_aborted';
     }
-    if (value.status!=='waiting' || keys!==baseKeys) throw new HttpError(502,'delegated delivery interrupted');
-    await new Promise(resolve=>{
-      const timer=deps.setTimeout(done,600);
-      function done() {deps.clearTimeout(timer);signal.removeEventListener('abort',done);resolve();}
-      signal.addEventListener('abort',done,{once:true});if(signal.aborted)done();
-    });
+    const safeRun=typeof runId==='string' && OPENAI_RUN_ID.test(runId) ? runId : 'unavailable';
+    const safeStatus=Number.isInteger(status) && status>=100 && status<=599 ? `; status=${status}` : '';
+    console.warn(`pixel-ingress response failed at subagent-delivery; run=${safeRun}; reason=${reason}${safeStatus}`);
+    throw error;
   }
 }
 
@@ -1415,7 +1440,9 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       } catch {
         // Log only the fixed stage and validated opaque run ID. Never include
         // completion content, tool results, request bodies, or credentials.
-        console.warn(`pixel-ingress response failed at ${deliveryStage}; run=${completionRunId ?? "unavailable"}`);
+        if (deliveryStage !== "subagent-delivery") {
+          console.warn(`pixel-ingress response failed at ${deliveryStage}; run=${completionRunId ?? "unavailable"}`);
+        }
         if (!res.destroyed && !res.writableEnded) {
           res.write('data: {"error":{"message":"upstream stream failed","type":"pixel_ingress_error"}}\n\n');
           res.end("data: [DONE]\n\n");
