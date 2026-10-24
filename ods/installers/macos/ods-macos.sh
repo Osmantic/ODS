@@ -76,6 +76,7 @@ source "${LIB_DIR}/ui.sh"
 source "${LIB_DIR}/bridge-manager.sh"
 source "${LIB_DIR}/native-model.sh"
 source "${LIB_DIR}/detection.sh"
+source "${LIB_DIR}/service-ports.sh"
 
 unset ODS_SCRIPT_HINT
 
@@ -946,23 +947,33 @@ cmd_status() {
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
     # Parallel arrays (Bash 3.2 compatible)
-    local ep_names=("$CLI_LLM_NAME" "Dashboard")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3001")
-    # OpenCode is opt-in; lean installs never create its LaunchAgent, so only
-    # an installed one is expected to answer.
-    if [[ -e "$OPENCODE_PLIST" ]]; then
-        ep_names+=("OpenCode (IDE)")
-        ep_urls+=("http://127.0.0.1:3003")
-    fi
+    local dashboard_port webui_port status_webui=false port_services="dashboard"
     if webui_is_selected "$flags"; then
-        ep_names+=("Chat UI (Open WebUI)")
-        ep_urls+=("http://127.0.0.1:3000")
+        status_webui=true
+        port_services+=" open-webui"
     else
         local selection_rc=$?
         if [[ "$selection_rc" == 2 ]]; then
             ai_err "Cannot resolve Compose configuration for status."
             return 1
         fi
+    fi
+    # Match the existing Compose invocation and resolve ports once for status.
+    # shellcheck disable=SC2086
+    macos_load_service_ports "$INSTALL_DIR" "$port_services" $flags || return 1
+    dashboard_port="$(macos_service_port dashboard)" || return 1
+    local ep_names=("$CLI_LLM_NAME" "Dashboard")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:$dashboard_port")
+    # OpenCode is opt-in; lean installs never create its LaunchAgent, so only
+    # an installed one is expected to answer.
+    if [[ -e "$OPENCODE_PLIST" ]]; then
+        ep_names+=("OpenCode (IDE)")
+        ep_urls+=("http://127.0.0.1:3003")
+    fi
+    if $status_webui; then
+        webui_port="$(macos_service_port open-webui)" || return 1
+        ep_names+=("Chat UI (Open WebUI)")
+        ep_urls+=("http://127.0.0.1:$webui_port")
     fi
 
     for ((i=0; i<${#ep_names[@]}; i++)); do
