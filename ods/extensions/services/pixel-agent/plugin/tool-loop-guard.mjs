@@ -12290,6 +12290,22 @@ export function createToolLoopGuard({
       const summary = compactFailedUnittestText(execEvent.result);
       if (summary) pendingToolRun.nativeUnittestFailure = summary;
     }
+    // A direct script can print its own summary, so keep the failed verdict.
+    // Give the model a recovery path when the owner requested unittest but
+    // did not name a test file for the pre-execution canonicalizer to use.
+    if (verificationFailed && state.workspacePythonUnittestRequested &&
+        verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
+        !execFingerprintRunsUnittestRunner(fingerprint) && !execFailed(execEvent) &&
+        execEvent?.result?.details?.status === 'completed' &&
+        execEvent.result.details.exitCode === 0 &&
+        !Object.hasOwn(execEvent.result.details, 'sessionId') &&
+        boundExecReceipt(state, pendingToolRun, event, context, runId, toolCallId, toolName)) {
+      pendingToolRun.unittestRecoveryInstruction = '[ODS Pixel verification recovery] ' +
+        'This exit-0 command did not establish a clean unittest result. Inspect the reported failures and repair any real defect. ' +
+        'Run the relevant suite with python3 -m unittest -v from the project directory, using its actual test module. ' +
+        'Preserve every requested check and diagnostic; include any custom-runner checks in the suite instead of bypassing them. ' +
+        'Do not remove tests, weaken assertions, or claim success until the new result verifies the work.';
+    }
     // OpenClaw conservatively classifies its deferred `tool_call` wrapper as a
     // mutation. A failed wrapped exec therefore remains its last tool error
     // even after a later wrapped exec succeeds, unlike a native exec. Preserve
@@ -12919,6 +12935,8 @@ export function createToolLoopGuard({
     // Same exact-call binding as the completed-exec receipt above.
     const redirectOrderNote = executionGuidance && !Object.hasOwn(syntaxReceipt.details, 'sessionId')
       ? pending.redirectOrderNote : undefined;
+    const unittestRecoveryInstruction = executionGuidance
+      ? pending.unittestRecoveryInstruction : undefined;
     const sandboxPathCorrection = pending?.sandboxPathCorrection &&
       message.role === 'toolResult' && message.toolName === pending.transport &&
       (!message.toolCallId || message.toolCallId === toolCallId) &&
@@ -13204,6 +13222,8 @@ export function createToolLoopGuard({
       content.push({type:'text',text:executionGuidance});
     if (redirectOrderNote && !content.some(block => block?.type === 'text' && block.text === redirectOrderNote))
       content.push({type:'text',text:redirectOrderNote});
+    if (unittestRecoveryInstruction && !content.some(block => block?.type === 'text' && block.text === unittestRecoveryInstruction))
+      content.push({type:'text',text:unittestRecoveryInstruction});
     if (workspaceStageInstruction && coachingDue('workspace', workspaceStageInstruction)) {
       content.push({ type: "text", text: workspaceStageInstruction });
     }
