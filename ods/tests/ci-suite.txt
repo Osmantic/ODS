@@ -209,6 +209,7 @@ tests/test-windows-opencode-config.sh
 tests/test-windows-phase-abort.sh
 tests/test-windows-port-preflight.sh
 tests/test-windows-stop-native-helpers.sh
+tests/test-windows-switchboard-local-routes.py
 tests/test-windows-whisper-compose-fallback.sh
 tests/test-wsl-agent-address-reason.sh
 tests/test-wsl-bind-recovery-live.py

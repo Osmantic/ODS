@@ -203,6 +203,16 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+function Remove-SwitchboardHybridRoutes {
+    <# Drop the provider routes the runtime renderer adds only in hybrid mode. #>
+    param([Parameter(Mandatory = $true)][string]$Content)
+
+    # tests/test-windows-switchboard-local-routes.py checks this pattern
+    # against the renderer's local and hybrid output.
+    $hybridOnlyRoutePattern = '(?m)^  - model_name: (?:cloud|minimax|minimax-fast)\r?\n(?:    .*\r?\n)*(?:[ \t]*\r?\n)*'
+    return [regex]::Replace($Content, $hybridOnlyRoutePattern, "")
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -905,6 +915,17 @@ litellm_settings:
     )
     $routerPayload = [ordered]@{ endpoints = $routerEndpoints }
     Write-Utf8NoBom -Path (Join-Path $modelRouterDir "endpoints.json") -Content (($routerPayload | ConvertTo-Json -Depth 6) + "`n")
+
+    # The checked-in switchboard.yaml is the hybrid render. Linux and macOS
+    # replace it with the runtime renderer's output for the install's mode;
+    # Windows has no Python at this point, so drop the hybrid-only provider
+    # routes here. Otherwise a local install routes cloud/minimax* to the
+    # providers whenever their keys are in .env.
+    if ($effectiveODSMode -notin @("cloud", "hybrid")) {
+        $switchboardPath = Join-Path (Join-Path (Join-Path $InstallDir "config") "litellm") "switchboard.yaml"
+        $switchboard = Get-Content -LiteralPath $switchboardPath -Raw
+        Write-Utf8NoBom -Path $switchboardPath -Content (Remove-SwitchboardHybridRoutes -Content $switchboard)
+    }
 
     return @{
         SearxngSecret  = $searxngSecret
