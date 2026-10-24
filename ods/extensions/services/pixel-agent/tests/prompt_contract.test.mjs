@@ -998,7 +998,7 @@ test("requested document delivery receives a prioritized route on full and compa
       assert.match(result.prependContext, /preserves names\/bytes/);
       assert.match(result.prependContext, /Never rename source to \.txt/);
       assert.match(result.prependContext, /4 MiB/);
-      assert.match(result.prependContext, /creating a file is not delivery/);
+      assert.match(result.prependContext, /Creating a file is not delivery/);
       assert.match(result.prependContext, /verified receipt BEFORE final reply/);
       assert.match(result.prependContext, /NEW files: non-hidden paths/);
       assert.match(result.prependContext, /preserve requested filenames\/hyphens/);
