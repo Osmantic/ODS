@@ -25,8 +25,6 @@ ACTIVE = {"queued", "running", "waiting", "stopping", "interrupted"}
 TERMINAL = {"completed", "failed", "cancelled", "skipped"}
 MAX_TEAMS = 128
 MAX_BYTES = 4 * 1024 * 1024
-# Matches pixel_chat_results.RETENTION_SECONDS.
-RETENTION_SECONDS = 7 * 24 * 60 * 60
 logger = logging.getLogger(__name__)
 FINISHED_TEAM_STATUSES = {"completed", "failed", "cancelled", "stopped", "interrupted"}
 
@@ -201,13 +199,16 @@ class TeamStore:
         return row["status"] in {"queued", "running", "stopping"} and row.get("instance") != self.instance
 
     def _evict_finished(self):
-        """Prune finished history so the global MAX_TEAMS cap cannot lock out new teams.
+        """Make room for one more team when history is full, so MAX_TEAMS cannot lock out new teams.
 
-        Finished teams older than RETENTION_SECONDS always go; beyond that the
-        oldest finished teams go only as far as needed to admit one more team.
+        Below MAX_TEAMS nothing is deleted. A full store loses only as many of
+        its oldest finished teams as it takes to admit one more team.
         Completed/failed/cancelled/stopped teams go before older interrupted
         ones, and a chat's newest interrupted team is never evicted.
         """
+        total = sum(1 for _ in self.directory.glob("*.json"))
+        if total < MAX_TEAMS:
+            return
         finished: list[tuple[float, Path]] = []
         gates: dict[tuple[str, str], list[tuple[float, Path]]] = {}
         for path in self.directory.glob("*.json"):
@@ -234,11 +235,9 @@ class TeamStore:
         # Only a chat's older gates may go; its newest gate always survives, so
         # pruning never silently lifts the Stop confirmation.
         spare = sorted(item for rows in gates.values() for item in sorted(rows)[:-1])
-        total = sum(1 for _ in self.directory.glob("*.json"))
-        cutoff = time.time() - RETENTION_SECONDS
-        for stamp, path in finished + spare:
-            if stamp >= cutoff and total < MAX_TEAMS:
-                continue
+        for _stamp, path in finished + spare:
+            if total < MAX_TEAMS:
+                break
             path.unlink()
             total -= 1
 
