@@ -337,6 +337,15 @@ jobs:
         shell: powershell
         run: ./tests/test-windows-port-preflight.ps1
 
+      - name: Windows Filesystem Preflight Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-preflight-fs-drive.ps1
+
+      - name: Windows Filesystem Preflight Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-preflight-fs-drive.ps1
+
       - name: Windows Service Port Override Contract (PowerShell 7)
         shell: pwsh
         run: ./tests/test-windows-service-port-overrides.ps1 ${{ runner.os == 'Linux' && '-CheckCompose' || '' }}

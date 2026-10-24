@@ -126,8 +126,11 @@ if (-not $_fsProbe) { $_fsProbe = $installDir }
 
 $_fsType = ""
 try {
-    $_di = [System.IO.DriveInfo]::new($_fsProbe)
-    $_fsType = $_di.DriveFormat
+    $_fsRoot = [System.IO.Path]::GetPathRoot($_fsProbe)
+    if ($_fsRoot) {
+        $_di = [System.IO.DriveInfo]::new($_fsRoot)
+        $_fsType = $_di.DriveFormat
+    }
 } catch {
     # Path is on a non-Windows mount (e.g. WSL 9p) — DriveInfo throws.
     $_fsType = ""
