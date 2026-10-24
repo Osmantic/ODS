@@ -8116,9 +8116,12 @@ class TestInstallRunningStateVerification:
 
     def test_install_polls_docker_inspect_state(self):
         """State-poll loop must run `docker inspect` and check running state."""
+        import inspect
         src = self._install_source()
-        assert "docker" in src and "inspect" in src
-        assert "{{.State.Status}}" in src
+        assert "_runtime_backend.status(container_name)" in src
+        status_src = inspect.getsource(_mod.ComposeBackend.status)
+        assert "docker" in status_src and "inspect" in status_src
+        assert "{{.State.Status}}" in status_src
         assert 'state == "running"' in src
 
     def test_install_writes_error_when_state_not_running(self):
