@@ -8822,11 +8822,12 @@ def validate_service_id(handler, body: dict) -> str | None:
 def _resolve_container_name(service_id: str) -> str:
     """Resolve actual container name via Docker Compose labels.
 
+    Includes stopped containers so logs and restart reach an exited service.
     Falls back to ods-{service_id} convention if label lookup fails.
     """
     try:
         result = subprocess.run(
-            ["docker", "ps", "--filter",
+            ["docker", "ps", "-a", "--filter",
              f"label=com.docker.compose.service={service_id}",
              "--filter", "label=com.docker.compose.project=ods",
              "--format", "{{.Names}}"],
