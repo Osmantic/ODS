@@ -135,6 +135,90 @@ def test_refusal_keeps_private_response_out_of_error(installed, monkeypatch, tmp
     assert len(calls) == 2
 
 
+class ErrorBody(io.BytesIO):
+    def __init__(self, raw, read_error=None):
+        super().__init__(raw)
+        self.read_sizes = []
+        self.read_error = read_error
+
+    def read(self, size=-1):
+        self.read_sizes.append(size)
+        if self.read_error:
+            raise self.read_error
+        return super().read(size)
+
+
+@pytest.mark.parametrize('payload, guidance', [
+    ({'error': 'Model lifecycle is busy'}, 'this repair request was not started'),
+    ({'error': 'Model lifecycle is busy', 'code': 'model_lifecycle_busy'},
+     'this repair request was not started'),
+    ({'pending': True, 'phase': 'unavailable', 'reason': 'current-local-model-repair-unconfirmed'},
+     'native state may already have changed'),
+])
+def test_known_refusal_is_sanitized_and_never_replayed(installed, monkeypatch, tmp_path, payload, guidance):
+    stream = ErrorBody(json.dumps(payload).encode())
+    failure = urllib.error.HTTPError('http://127.0.0.1', 409, 'conflict', Message(), stream)
+    calls = transport(monkeypatch, iter([PENDING, failure]))
+
+    with pytest.raises(client.RecoveryError, match=guidance) as stopped:
+        client.run(tmp_path, apply=True)
+
+    assert 'private-test-key' not in str(stopped.value)
+    assert [call[0].get_method() for call in calls] == ['GET', 'POST']
+    assert stream.read_sizes == [65537] and stream.closed
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize('raw', [
+    b'{"code":"model_lifecycle_busy"}',
+    b'{"error":"Model lifecycle is busy","private":"owner-secret"}',
+    b'{"error":"Model lifecycle is busy","code":"unknown"}',
+    b'{"error":"owner-secret","code":"model_lifecycle_busy"}',
+    b'{"error":"owner-secret","error":"Model lifecycle is busy"}',
+    b'{"pending":1,"phase":"unavailable","reason":"current-local-model-repair-unconfirmed"}',
+    b'{"pending":true,"phase":"applied","reason":"current-local-model-repair-unconfirmed"}',
+    b'{"pending":true,"phase":"unavailable","reason":"current-local-model-repair-unconfirmed","private":"owner-secret"}',
+    b'null', b'[]', b'owner-secret', b'\xff',
+    b'{"error":"Model lifecycle is busy"}' + b' ' * 65536,
+])
+def test_unknown_or_invalid_error_body_stays_generic(installed, monkeypatch, tmp_path, raw):
+    stream = ErrorBody(raw)
+    failure = urllib.error.HTTPError('http://127.0.0.1', 409, 'conflict', Message(), stream)
+    calls = transport(monkeypatch, iter([PENDING, failure]))
+
+    with pytest.raises(client.RecoveryError) as stopped:
+        client.run(tmp_path, apply=True)
+
+    assert str(stopped.value) == 'Host returned HTTP 409; inspect the saved state before retrying'
+    assert len(calls) == 2 and stream.read_sizes == [65537] and stream.closed
+
+
+def test_failed_error_body_read_is_not_retried(installed, monkeypatch, tmp_path):
+    stream = ErrorBody(b'', OSError('owner-secret'))
+    failure = urllib.error.HTTPError('http://127.0.0.1', 409, 'conflict', Message(), stream)
+    calls = transport(monkeypatch, iter([PENDING, failure]))
+    with pytest.raises(client.RecoveryError) as stopped:
+        client.run(tmp_path, apply=True)
+    assert str(stopped.value) == 'Host returned HTTP 409; inspect the saved state before retrying'
+    assert len(calls) == 2 and stream.read_sizes == [65537] and stream.closed
+
+
+@pytest.mark.parametrize('route, body, status', [
+    ('/v1/model/recovery', None, 409),
+    ('/v1/model/recover/current-local', {'transactionId': TX}, 503),
+    ('/v1/model/recover', {}, 409),
+])
+def test_other_operation_or_status_cannot_claim_repair_not_started(monkeypatch, route, body, status):
+    stream = ErrorBody(b'{"error":"Model lifecycle is busy"}')
+    failure = urllib.error.HTTPError('http://127.0.0.1', status, 'conflict', Message(), stream)
+    calls = transport(monkeypatch, iter([failure]))
+    opener = client.urllib.request.build_opener()
+    with pytest.raises(client.RecoveryError) as stopped:
+        client.request(opener, 7710, 'private-test-key', route, body)
+    assert str(stopped.value) == f'Host returned HTTP {status}; inspect the saved state before retrying'
+    assert len(calls) == 1 and stream.read_sizes == [] and stream.closed
+
+
 @pytest.mark.parametrize('fault', ['root', 'linux', 'cloud', 'port', 'key'])
 def test_unsupported_environment_makes_no_network_call(installed, monkeypatch, tmp_path, fault):
     if fault == 'root':
