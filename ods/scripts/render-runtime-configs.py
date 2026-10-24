@@ -614,9 +614,22 @@ def render_litellm_switchboard(inputs: RenderInputs) -> RenderedFile:
 """,
         ])
     routes.append(f'  - model_name: "*"\n{local_route}')
+    # Hybrid promises local-first with cloud fallback; keep the fallback the
+    # non-switchboard hybrid.yaml declares so the default switchboard does not
+    # silently drop it.
+    router_settings = ""
+    if inputs.ods_mode == "hybrid":
+        router_settings = """
+router_settings:
+  num_retries: 2
+  fallbacks:
+    - local:
+        - cloud
+"""
     content = (
         "model_list:\n"
         + "".join(routes)
+        + router_settings
         + """
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
