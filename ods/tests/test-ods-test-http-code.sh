@@ -38,7 +38,7 @@ for manifest in "$ROOT_DIR"/extensions/services/*/manifest.yaml; do
     mkdir -p "$INSTALL/extensions/services/$svc"
     cp "$manifest" "$INSTALL/extensions/services/$svc/"
 done
-printf 'OLLAMA_PORT=1\nWEBUI_PORT=1\n' > "$INSTALL/.env"
+printf 'ODS_MODEL_SWITCHBOARD=disabled\nOLLAMA_PORT=1\nWEBUI_PORT=1\n' > "$INSTALL/.env"
 printf '#!/bin/sh\necho "Cannot connect to the Docker daemon" >&2\nexit 1\n' > "$INSTALL/bin/docker"
 chmod +x "$INSTALL/bin/docker"
 

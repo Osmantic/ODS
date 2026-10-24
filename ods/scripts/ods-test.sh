@@ -23,9 +23,14 @@
 
 set -euo pipefail
 
+# Preserve caller diagnostic overrides separately from installed configuration.
+_ODS_DIAGNOSTIC_URL="${LLM_URL:-}"
+_ODS_DIAGNOSTIC_HOST="${LLM_HOST:-}"
+_ODS_DIAGNOSTIC_PORT="${LLM_PORT:-}"
+
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ODS_DIR="${ODS_DIR:-$HOME/.ods}"
+ODS_DIR="${ODS_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 ENV_FILE="${ENV_FILE:-$ODS_DIR/.env}"
 TIMEOUT=15
 QUICK_TIMEOUT=5
@@ -297,72 +302,55 @@ test_gpu() {
     return 0  # results are tallied by record_result; never surface a status to set -e
 }
 
+prepare_inference() {
+    # shellcheck source=lib/inference-probe.sh
+    . "$_DT_DIR/lib/inference-probe.sh"
+    ods_inference_prepare "${1:-}" "$TIMEOUT"
+}
+
 test_llm() {
-    print_section "LLM Inference (llama-server)"
-
-    # A failed check is already recorded; return 0 so the short-circuit only
-    # skips this section's dependent checks instead of aborting the whole run
-    # under set -e (which lost the summary and the --json document).
-    test_http "LLM Health" "$LLM_URL/health" "200" || return 0
-    test_http "LLM Models API" "$LLM_URL/v1/models" "200" || log "LLM models API check failed"
-
-    if [[ "$QUICK_MODE" == "true" ]]; then
+    print_section "LLM Inference (installed route)"
+    if ! prepare_inference health; then
+        if [[ "$_ODS_PROBE_REACHABLE" == true ]]; then
+            record_result "LLM Health" "pass"
+            record_result "LLM Models API" "fail" "$_ODS_PROBE_ERROR"
+            print_test "LLM Models API" "fail" "$_ODS_PROBE_ERROR"
+        else
+            record_result "LLM Health" "fail" "$_ODS_PROBE_ERROR"
+            print_test "LLM Health" "fail" "$_ODS_PROBE_ERROR"
+        fi
+        return 0
+    fi
+    record_result "LLM Health" "pass"
+    print_test "LLM Health" "pass"
+    record_result "LLM Models API" "pass"
+    print_test "LLM Models API" "pass"
+    if [[ "$QUICK_MODE" == true ]]; then
         record_result "LLM Inference" "skip" "quick mode"
         print_test "LLM Inference" "skip"
-        return 0
-    fi
-
-    local model_id
-    model_id=$(curl -s --max-time 10 "$LLM_URL/v1/models" 2>/dev/null | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4) || model_id=""
-    model_id="${model_id:-local}"
-
-    local payload="{\"model\": \"$model_id\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello\"}], \"max_tokens\": 10}"
-    local response
-
-    response=$(curl -s --max-time 30 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$payload" 2>/dev/null) || response=""
-
-    if echo "$response" | grep -q '"content"'; then
-        local tokens_used
-        tokens_used=$(echo "$response" | grep -o '"total_tokens":[0-9]*' | cut -d: -f2) || tokens_used="unknown"
-        record_result "LLM Inference" "pass" "${tokens_used} tokens"
-        print_test "LLM Inference" "pass" "${tokens_used} tokens"
+    elif ods_inference_chat text "Say hello"; then
+        record_result "LLM Inference" "pass" "assistant answered"
+        print_test "LLM Inference" "pass"
     else
-        record_result "LLM Inference" "fail" "no content in response"
-        print_test "LLM Inference" "fail"
-        return 0
+        record_result "LLM Inference" "fail" "$_ODS_PROBE_ERROR"
+        print_test "LLM Inference" "fail" "$_ODS_PROBE_ERROR"
     fi
-    return 0  # results are tallied by record_result; never surface a status to set -e
+    return 0
 }
 
 test_tool_calling() {
     print_section "Tool Calling M8 Critical"
-    
-    if [[ "$QUICK_MODE" == "true" ]]; then
+    if [[ "$QUICK_MODE" == true ]]; then
         record_result "Tool Calling" "skip" "quick mode"
         print_test "Tool Calling" "skip"
-        return 0
-    fi
-    
-    local tools='[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}}]}'
-    local payload="{\"model\": \"Qwen/Qwen2.5-32B-Instruct-AWQ\", \"messages\": [{\"role\": \"user\", \"content\": \"What is the weather in Tokyo?\"}], \"tools\": $tools, \"tool_choice\": \"auto\", \"max_tokens\": 100}"
-    
-    local response
-    response=$(curl -s --max-time 30 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$payload" 2>/dev/null) || response=""
-    
-    if echo "$response" | grep -q '"tool_calls"'; then
-        record_result "Tool Calling" "pass" "function called"
-        print_test "Tool Calling" "pass" "function called"
+    elif prepare_inference && ods_inference_chat tool "What is the weather in Tokyo?"; then
+        record_result "Tool Calling" "pass" "get_weather arguments validated"
+        print_test "Tool Calling" "pass"
     else
-        record_result "Tool Calling" "fail" "no tool_calls in response"
-        print_test "Tool Calling" "fail" "no tool call"
+        record_result "Tool Calling" "fail" "$_ODS_PROBE_ERROR"
+        print_test "Tool Calling" "fail" "$_ODS_PROBE_ERROR"
     fi
-    return 0  # results are tallied by record_result; never surface a status to set -e
+    return 0
 }
 
 test_whisper() {
@@ -452,7 +440,7 @@ test_voice_roundtrip() {
     if curl -s --max-time 5 "http://${TTS_HOST}:${TTS_PORT}/v1/audio/voices" &>/dev/null; then
         tts_ready=true
     fi
-    if curl -s --max-time 5 "$LLM_URL/health" &>/dev/null; then
+    if prepare_inference health; then
         llm_ready=true
     fi
     
@@ -467,27 +455,20 @@ test_voice_roundtrip() {
         return 0
     fi
     if [[ "$llm_ready" != "true" ]]; then
-        record_result "Voice Round-Trip" "skip" "LLM unavailable"
-        print_test "Voice Round-Trip" "skip" "LLM unavailable"
+        record_result "Voice Round-Trip" "fail" "$_ODS_PROBE_ERROR"
+        print_test "Voice Round-Trip" "fail" "LLM unavailable"
         return 0
     fi
     
     local start_time end_time duration_ms
     start_time=$(_now_ms)
 
-    local llm_payload='{"model": "Qwen/Qwen2.5-32B-Instruct-AWQ", "messages": [{"role": "user", "content": "What is the weather today?"}], "max_tokens": 50}'
-    local llm_response
-    llm_response=$(curl -s --max-time 15 \
-        -X POST "$LLM_URL/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -d "$llm_payload" 2>/dev/null) || llm_response=""
-    
-    if ! echo "$llm_response" | grep -q '"content"'; then
-        record_result "Voice Round-Trip" "fail" "LLM step failed"
+    if ! ods_inference_chat text "What is the weather today?" 15; then
+        record_result "Voice Round-Trip" "fail" "LLM step: $_ODS_PROBE_ERROR"
         print_test "Voice Round-Trip" "fail" "LLM failed"
         return 0
     fi
-    
+
     local tts_text="The weather today is sunny and 75 degrees."
     local tts_payload="{\"model\": \"kokoro\", \"input\": \"$tts_text\", \"voice\": \"af_bella\"}"
     local tts_response
