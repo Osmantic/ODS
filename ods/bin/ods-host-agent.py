@@ -19364,6 +19364,18 @@ def _opencode_prior_systemd_state(user_env: dict[str, str]) -> tuple[bool, bool]
     load = values.get("LoadState")
     unit_file = values.get("UnitFileState")
     active = values.get("ActiveState")
+    if load == "not-found" and unit_file == "" and active == "failed":
+        # The unit file is gone but systemd still holds its last failure,
+        # often start-limit-hit from a crash loop (#7626). Nothing can run, so
+        # clear that record; otherwise the restart below is refused.
+        reset = subprocess.run(
+            ["systemctl", "--user", "reset-failed", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=15, env=user_env,
+        )
+        if reset.returncode != 0:
+            detail = (reset.stderr or reset.stdout or "").strip()
+            raise RuntimeError(f"Could not clear OpenCode's failed systemd state before setup: {detail[:300]}")
+        return False, False
     if load == "not-found" and unit_file == "" and active == "inactive":
         return False, False
     # A unit whose executable is missing ends up failed or looping through

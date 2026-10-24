@@ -3234,6 +3234,7 @@ _ods_cli_reject_host_service() {
         log "Start OpenCode there when it is stopped; on Linux, set it up there when it is not installed."
         log "Or re-run the ODS installer with --opencode to add it, or --no-opencode to remove it."
     fi
+    echo "  Need help? Ask on the ODS Discord: https://discord.gg/4ntNp9MAwC" >&2
     exit 1
 }
 

@@ -49,6 +49,8 @@ for action in enable disable; do
             || fail "'ods $action $name' did not explain that OpenCode is a host service: $output"
         [[ "$output" == *"/apps/opencode"* && "$output" == *"--opencode"* ]] \
             || fail "'ods $action $name' did not say where OpenCode is managed: $output"
+        [[ "$output" == *"https://discord.gg/4ntNp9MAwC"* ]] \
+            || fail "'ods $action $name' did not say where to get help: $output"
     done
 done
 [[ ! -e "$install_dir/extensions/services/opencode/compose.yaml" \

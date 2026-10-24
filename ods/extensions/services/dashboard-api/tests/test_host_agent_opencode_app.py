@@ -340,6 +340,48 @@ def test_setup_accepts_a_broken_unit_it_will_replace(monkeypatch, active_state, 
     assert _mod._opencode_prior_systemd_state({}) == expected
 
 
+def _systemctl_show(stdout, other_returncode=0, other_stderr=""):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[2] == "show":
+            return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(command, other_returncode, stdout="", stderr=other_stderr)
+
+    return run, calls
+
+
+def test_setup_clears_the_failed_record_of_a_removed_unit(monkeypatch):
+    # #7626: the unit file was gone but systemd kept its last failure, and
+    # setup refused "(not-found, unknown, failed)".
+    run, calls = _systemctl_show("LoadState=not-found\nUnitFileState=\nActiveState=failed\n")
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    assert _mod._opencode_prior_systemd_state({}) == (False, False)
+    assert calls[-1] == ["systemctl", "--user", "reset-failed", "opencode-web.service"]
+
+
+def test_setup_reports_a_failed_record_it_cannot_clear(monkeypatch):
+    run, _ = _systemctl_show(
+        "LoadState=not-found\nUnitFileState=\nActiveState=failed\n", other_returncode=1, other_stderr="Access denied",
+    )
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="Could not clear OpenCode's failed systemd state before setup: Access denied"):
+        _mod._opencode_prior_systemd_state({})
+
+
+@pytest.mark.parametrize("load,unit_file,active", [
+    ("masked", "masked", "inactive"),
+    ("not-found", "", "activating"),
+])
+def test_setup_still_refuses_other_unknown_unit_states(monkeypatch, load, unit_file, active):
+    run, calls = _systemctl_show(f"LoadState={load}\nUnitFileState={unit_file}\nActiveState={active}\n")
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="unsupported systemd state"):
+        _mod._opencode_prior_systemd_state({})
+    assert [command[2] for command in calls] == ["show"]
+
+
 # --- setup availability ----------------------------------------------------------
 
 
