@@ -37,9 +37,21 @@ fi
 
 # Config (defaults; .env overrides after load_env_file below)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 
-if [[ -f "$SCRIPT_DIR/lib/service-registry.sh" ]]; then 
-    . "$SCRIPT_DIR/lib/service-registry.sh" 
-    sr_load 
+# sr_load deliberately returns success when a dependency/parser fails so the
+# installer can repair it. A diagnostic cannot trust an incomplete registry.
+if [[ ! -f "$SCRIPT_DIR/lib/service-registry.sh" ]] \
+    || ! . "$SCRIPT_DIR/lib/service-registry.sh" \
+    || ! sr_load \
+    || [[ "${_SR_FAILED:-true}" == "true" || -z "${SERVICE_IDS[*]:-}" ]]; then
+    echo "Error: Could not load the service registry; service health is unknown." >&2
+    echo "Re-run the installer to repair Python/PyYAML and the service manifests, then retry this health check." >&2
+    if $JSON_OUTPUT; then
+        printf '{"timestamp":"%s","status":"critical","services":{"service_registry":"fail"}}\n' \
+            "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    elif ! $QUIET; then
+        echo "Status: CRITICAL - Service registry unavailable"
+    fi
+    exit 2
 fi
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 LLM_HOST="${LLM_HOST:-localhost}"
