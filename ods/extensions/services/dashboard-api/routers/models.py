@@ -54,6 +54,7 @@ from host_agent_client import (
 )
 from models import ModelLibraryGpu, ModelLibraryResponse
 from pixel_runtime_state import pixel_stream_active
+from runtime_projection import active_runtime_projection
 from context_policy import HERMES_MIN_CONTEXT
 from performance_oracle import (
     activation_context_plan,
@@ -2040,6 +2041,11 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["hostRuntime"] = _windows_hosted_runtime()
     if payload["hostRuntime"]:
         payload["modelManagement"] = await asyncio.to_thread(_model_management)
+    # A held transition does not establish which route currently serves chat.
+    payload["activeRuntime"] = (
+        None if payload.get("modelRecoveryPending") or (payload.get("modelLifecycle") or {}).get("active")
+        else active_runtime_projection(agent_status)
+    )
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry
