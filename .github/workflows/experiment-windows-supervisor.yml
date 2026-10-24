@@ -28,6 +28,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install dashboard-api dependencies
+        shell: bash
+        run: |
+          pip install -r ods/extensions/services/dashboard-api/requirements.txt
+
       - name: Run Offline Stub Test Suite
         shell: bash
         run: |

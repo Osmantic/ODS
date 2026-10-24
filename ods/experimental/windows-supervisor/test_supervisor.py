@@ -443,6 +443,13 @@ def run_test_real_dashboard_status_no_false_green():
         def log_message(self, *args):
             pass
 
+    try:
+        import uvicorn  # noqa: F401
+        import fastapi  # noqa: F401
+    except ImportError:
+        print("SKIP: uvicorn/fastapi not installed in current environment; skipping real status test.")
+        return
+
     if not verify_port_available(8080):
         print("Warning: Port 8080 is in use, skipping real status test")
         return
