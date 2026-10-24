@@ -1,0 +1,69 @@
+{
+    "schemaVersion":  1,
+    "status":  "passed-scoped-filtered-ODS-qualification",
+    "date_utc":  "2026-10-23",
+    "scope":  "Windows 10 Sandbox: fresh ODS install and first model acquisition under a manually filtered medium WDAG token; Microsoft prerequisite prepared separately",
+    "os":  {
+               "caption":  "Microsoft Windows 10 Enterprise",
+               "build":  "19041",
+               "architecture":  "64-bit"
+           },
+    "source":  {
+                   "source_equivalence":  "Current desktop PR retains the same production application and Portal source; CLI integration history excluded",
+                   "application_source_head":  "95de936757f58ab7efcf08b9d9fa9c943dffdc6e",
+                   "installer_source_head":  "5edf917986f287625c56ce52a3dcb9cd5d6a5cfa"
+               },
+    "installer":  {
+                      "sha256":  "db67a64152f4bb8b3eb123a17be2819bdc3c891941101be2b16d149b5972a8aa",
+                      "application_sha256":  "11e3e43c78567bbbc6e28a9e1676e1c6e3f046e59fd1d299cc01232f85d2dcd1",
+                      "version":  "0.3.0.0"
+                  },
+    "token":  {
+                  "pipe_smoke":  "Default-token inheritable anonymous pipe create/write/read passed",
+                  "identity":  "Same Sandbox WDAG identity, manually filtered",
+                  "elevated":  false,
+                  "integrity":  "medium",
+                  "default_dacl":  "Explicit current user and SYSTEM access on the newly created token",
+                  "privileges":  [
+                                     "SeChangeNotifyPrivilege"
+                                 ],
+                  "administrators":  "deny-only"
+              },
+    "microsoft_prerequisite":  {
+                                   "after":  "156.0.4314.42",
+                                   "prepared_by":  "Separately elevated guest parent",
+                                   "before":  "141.0.3537.71",
+                                   "bootstrapper_sha256":  "f414de01c4680f0bb0694d1ea7803c6968f3a81bf6bad01b89bfc65dce14c2a2",
+                                   "exit_code":  0
+                               },
+    "checks":  {
+                   "optional_feature_inventory":  "Unavailable; absence of every optional feature is not claimed",
+                   "model_acquisition":  "Downloaded inside guest; no host model cache mapped",
+                   "portal_ready_seconds":  92.4,
+                   "document_bytes":  369,
+                   "chat":  9,
+                   "compiler_exit_code":  0,
+                   "developer_commands":  {
+                                              "git":  false,
+                                              "node":  false,
+                                              "wsl":  true,
+                                              "docker":  false,
+                                              "python":  false
+                                          },
+                   "document_sha256":  "fd62361dec3e8b8b70ebc1e0184e9c7d68f5eb720ca91d832aa225383ddbb688",
+                   "model":  "Qwen3.5-2B Q4_K_M, 4096 context",
+                   "document_and_save":  11
+               },
+    "provenance":  {
+                       "commands":  "Agent-executed",
+                       "frozen_input_files":  9,
+                       "private_audit_sha256":  "657c1a15cd0027adcbb543b6ef411ab47e9add0eac25888872f83b911b366d1c"
+                   },
+    "guest_disposal":  "Only the exact owned Sandbox launcher/client were closed after evidence preservation",
+    "remaining_gates":  [
+                            "Windows 11",
+                            "Separately provisioned ordinary account",
+                            "Non-elevated upgrade of an old shared Microsoft runtime",
+                            "Wider hardware and signed public release"
+                        ]
+}

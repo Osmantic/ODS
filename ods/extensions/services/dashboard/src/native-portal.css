@@ -1,0 +1,8 @@
+.native-portal-shell{display:flex;height:100vh;overflow:hidden}
+.native-portal-sidebar{flex:0 0 248px;overflow-y:auto;border-right:1px solid rgb(var(--theme-border));background:rgb(var(--theme-sidebar));padding:22px 14px}
+.native-portal-brand{display:block;padding:0 10px 22px;font-size:24px;font-weight:650;letter-spacing:-.04em}
+.native-portal-brand span{display:block;margin-top:3px;font-size:11px;font-weight:400;letter-spacing:.02em;color:rgb(var(--theme-text-muted))}
+.native-portal-main{flex:1;min-width:0;height:100%;padding:0}
+.native-portal-main .pixel-chat{height:100%;min-height:0}
+.native-portal-failure{max-width:38rem;margin:4rem auto;padding:2rem;font:16px/1.6 "Segoe UI",sans-serif}
+@media(max-width:800px){.native-portal-sidebar{flex-basis:185px;padding:16px 8px}}

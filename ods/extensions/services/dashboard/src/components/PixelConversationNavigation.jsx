@@ -13,7 +13,7 @@ function LimitedList({items,children,label}) {
   return <>{children(expanded?items:items.slice(0,5))}{items.length>5 && <button type="button" className="rail-show-more" aria-label={`${expanded?'Show fewer':'Show more'} ${label}`} aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>{expanded?'Show fewer':`Show more (${items.length-5})`}</button>}</>
 }
 
-export default function PixelConversationNavigation({ collapsed }) {
+export default function PixelConversationNavigation({ collapsed, nativeChat = false }) {
   const [chats, setChats] = useState(readConversations)
   const [active, setActive] = useState('')
   const [pending, setPending] = useState(null)
@@ -72,6 +72,7 @@ export default function PixelConversationNavigation({ collapsed }) {
     // Checked again when the window regains focus and when Portal becomes
     // available (Pixel sends the refresh event then), so a deleted or renamed
     // folder quietly leaves the list. A failed check keeps the last answer.
+    if (nativeChat) return
     let controller = null
     const load = () => {
       controller?.abort()
@@ -84,8 +85,8 @@ export default function PixelConversationNavigation({ collapsed }) {
     window.addEventListener('focus', load)
     window.addEventListener(EXAMPLE_REFRESH_EVENT, load)
     return () => { controller?.abort(); window.removeEventListener('focus', load); window.removeEventListener(EXAMPLE_REFRESH_EVENT, load) }
-  }, [])
-  if (collapsed) return <button ref={newTask} className="pixel-nav-item" aria-label="New task" title="New task" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/></button>
+  }, [nativeChat])
+  if (collapsed) return <button ref={newTask} className="pixel-nav-item" aria-label={nativeChat?'New chat':'New task'} title={nativeChat?'New chat':'New task'} onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/></button>
   const labeled = chats.map(chat => ({chat, labels:conversationLabels(chat.chatId)}))
   const visible = labeled.filter(item => item.labels.archived === showArchived)
   const pinned = visible.filter(item => item.labels.pinned).map(item => item.chat)
@@ -122,7 +123,7 @@ export default function PixelConversationNavigation({ collapsed }) {
       {deleteError && <p role="alert">{deleteError}</p>}
       <footer><button autoFocus disabled={deleting} onClick={closeDelete}>Cancel</button><button disabled={deleting} onClick={confirmDelete}>{deleting?'Deleting…':'Delete chat'}</button></footer>
     </dialog>
-    <button ref={newTask} className="pixel-nav-item" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
+    <button ref={newTask} className="pixel-nav-item" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>{nativeChat?'New chat':'New task'}</span></button>
     <div className="pixel-original-sections">
       {pinned.length > 0 && <details className="rail-section" open><summary>Pinned{chevron}</summary>{rows(pinned, '')}</details>}
       {projects.length+shipped.length>0 && <details className="rail-section" open>

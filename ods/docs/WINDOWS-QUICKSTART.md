@@ -2,6 +2,12 @@
 
 > **Release channel:** the install commands on this page fetch development `main`, which is not signed. A signed-source path is staged in [Verified Install Preview](VERIFIED_INSTALL_PREVIEW.md); it is not active until the first eligible immutable release is published, and historical `v3.0.0` is not eligible.
 
+Developers exploring a Docker-free native desktop can try the opt-in
+[Windows native Portal preview](../desktop/windows/README.md). It runs the
+existing Portal text-chat interface with a bundled native CPU backend, saved
+history and an unsigned per-user graphical installer.
+The full agent/Portal installation below remains a separate path.
+
 ## Start in Windows PowerShell
 
 Use a normal, non-Administrator PowerShell window. The installer guides Ubuntu/WSL2 preparation and installs Pixel/Portal there. There is no native Windows or Hermes fallback.

@@ -135,6 +135,22 @@ const MAX_STORED_MESSAGE_BYTES = 4 * 1024 * 1024
 const CHAT_STORAGE_KEY = 'ods.pixel.chat.v1'
 const SAFE_CHAT_ID = /^[A-Za-z0-9_-]{1,128}$/
 const STOPPED_NOTICE = 'Stopped by you. Workspace changes completed before cancellation were preserved.'
+const NATIVE_CONTEXT_LIMIT_MESSAGE = 'This message is too large for the local AI context. Shorten the message or start a new chat. Your saved conversation was kept.'
+const NATIVE_STORAGE_FULL_MESSAGE = 'Saved-result storage is full. Export conversations you want to keep, then delete a conversation in Portal before sending again. Restarting local AI does not free this space. No new response was started. Your draft is preserved.'
+const NATIVE_DOCUMENT_FAILURES = new Map([
+  ['document_incomplete', 'The document could not be completed. No file was published. Your saved conversation is preserved. Try a shorter document request.'],
+  ['document_storage_full', 'The document could not be saved because storage is full. No file was published. Export conversations you want to keep, delete an older conversation, then try again. Your earlier history is kept.'],
+])
+
+function nativeResponseFailure(error, nativeChat) {
+  // Only this native-owned public code selects fixed guidance. Provider text
+  // and arbitrary error messages must never become rendered reply content.
+  if (!nativeChat) return null
+  if (error?.type === 'native_document_error') return NATIVE_DOCUMENT_FAILURES.get(error.code) || null
+  return error?.type === 'native_context_error' && error?.code === 'native_context_limit'
+    ? NATIVE_CONTEXT_LIMIT_MESSAGE : null
+}
+
 const MODEL_SWITCH_DETAIL = 'Model switch in progress; Portal will be ready when activation completes'
 const CLEAN_CONTEXT_RECOVERY_REASON = 'operations-unavailable-zero-submissions'
 const CLEAN_CONTEXT_RECOVERY_NOTICE = 'The first attempt did not reach the Operations Broker, and the host verified that no work was submitted. Retrying once with a clean context…'
@@ -430,11 +446,12 @@ function replaceLastAssistant(messages, update) {
   return next
 }
 
-function stoppedContent(content) {
+function stoppedContent(content, nativeChat = false) {
+  const notice = nativeChat ? 'Stopped by you. Your saved conversation was preserved.' : STOPPED_NOTICE
   const partial = typeof content === 'string' ? content.trimEnd() : ''
-  if (!partial) return STOPPED_NOTICE
-  if (partial.includes(STOPPED_NOTICE)) return partial
-  return `${partial}\n\n---\n\n_${STOPPED_NOTICE}_`
+  if (!partial) return notice
+  if (partial.includes(notice)) return partial
+  return `${partial}\n\n---\n\n_${notice}_`
 }
 
 function messagePublication(message) {
@@ -466,7 +483,7 @@ function messageOutcome(message) {
     ? {status:message.status} : {}
 }
 
-function retainedResult(events) {
+function retainedResult(events, nativeChat = false) {
   let content = ''
   let preview = null
   let artifacts = null
@@ -488,6 +505,7 @@ function retainedResult(events) {
         // Only a known public code changes the recovered text; any other
         // failure keeps the wording it had before.
         admissionRejected = isAdmissionRejected(frame.error)
+        failureMessage = nativeResponseFailure(frame.error, nativeChat) || failureMessage
         if (isProviderRateLimit(frame.error) || admissionRejected) failureMessage = portalResponseFailure(frame.error)
         continue
       }
@@ -605,7 +623,7 @@ function boundedHistory(messages, nextUserContent) {
   return selected
 }
 
-export default function Pixel({ systemStatus = null }) {
+export default function Pixel({ systemStatus = null, nativeChat = false }) {
   const profile = useLocalProfile()
   const { displayName } = usePortalIdentity()
   const [initialChat] = useState(loadStoredChat)
@@ -628,6 +646,9 @@ export default function Pixel({ systemStatus = null }) {
   }, [status])
   const [messages, setMessages] = useState(() => initialChat?.messages || [])
   const [input, setInput] = useState(() => initialChat?.draft || '')
+  // A document request needs a fresh, visible owner choice after a restart.
+  // Recovery uses the saved request ID, never a replay of this mode.
+  const [documentMode, setDocumentMode] = useState(false)
   const [persistenceError, setPersistenceError] = useState('')
   const [sending, setSending] = useState(false)
   const [interrupted, setInterrupted] = useState(() => initialChat?.interrupted || false)
@@ -679,8 +700,8 @@ export default function Pixel({ systemStatus = null }) {
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
   const chatScroll = usePixelAutoScroll(messages, chatIdRef.current, scrollRef)
-  const command=agentCommand(input)
-  const goalDraft=goalCommand(input)
+  const command=nativeChat ? null : agentCommand(input)
+  const goalDraft=nativeChat ? null : goalCommand(input)
   const teams=usePortalTeams(chatIdRef.current,Boolean(command || goalDraft || messages.some(m=>m.teamId || m.teamRequestId)))
   function openAgents(selection=null) {
     teams.select(selection)
@@ -806,7 +827,7 @@ export default function Pixel({ systemStatus = null }) {
               }
               let chat = loadStoredChat(readConversations().find(item => item.chatId === chatId))
               if (!chat || chat.chatId !== chatId) throw new Error('Saved conversation is unavailable')
-              const recovered = retainedResult(result.events)
+              const recovered = retainedResult(result.events, nativeChat)
               const successful = result.state === 'complete' && recovered.done && !recovered.failed
               if (chat.requestId === requestId && chat.interrupted) {
                 const source = chat.persistenceSnapshot
@@ -816,7 +837,7 @@ export default function Pixel({ systemStatus = null }) {
                 try {
                   let saved = writer.recover({...source, requestId:null, inFlight:false, interrupted:false,
                     messages:replaceLastAssistant(source.messages, {
-                      content: result.state === 'cancelled' ? stoppedContent(recovered.content)
+                      content: result.state === 'cancelled' ? stoppedContent(recovered.content,nativeChat)
                         : recovered.content || (successful ? 'Completed without a text response.' : 'Portal could not complete the response. Check saved work before continuing.'),
                       status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
                       ...(recovered.task ? {task:recovered.task} : {}),
@@ -879,7 +900,7 @@ export default function Pixel({ systemStatus = null }) {
       controller?.abort()
       if (timer !== null) globalThis.clearTimeout(timer)
     }
-  }, [interrupted, sending, activityRefresh, updateRestoredActivity])
+  }, [interrupted, sending, activityRefresh, updateRestoredActivity,nativeChat])
 
   useEffect(() => {
     let controller = null
@@ -1085,6 +1106,10 @@ export default function Pixel({ systemStatus = null }) {
     if (conversationDeleted) return
     const exactDraft = typeof answerOverride === 'string' ? answerOverride : input
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
+    if(nativeChat && (agentCommand(trimmed) || goalCommand(trimmed) || compactCommand(trimmed) || /^\/extensions?(?:\s|$)/i.test(trimmed))) {
+      setStopError('Agent commands are not available in this native text-chat preview. Your draft is preserved.')
+      return
+    }
     if(compactCommand(trimmed)){await compactConversation();return}
     if(contextControl.busy || contextControl.historyUnknown)return
     if ((!trimmed && !images.items.length) || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
@@ -1170,7 +1195,8 @@ export default function Pixel({ systemStatus = null }) {
       try {
         const requestId = streamAttemptCount++ === 0 && typeof continuationId === 'string' && SAFE_CHAT_ID.test(continuationId)
           ? continuationId : makeChatId()
-        const body=JSON.stringify({chat_id:chatId,request_id:requestId,messages:attemptConversation,history_snapshot:snapshot,...(selectedImageRoute?{image_route:selectedImageRoute}:{})})
+        const body=JSON.stringify({chat_id:chatId,request_id:requestId,messages:attemptConversation,history_snapshot:snapshot,
+          ...(nativeChat && documentMode ? {create_document:true} : {}),...(selectedImageRoute?{image_route:selectedImageRoute}:{})})
         if(new TextEncoder().encode(body).byteLength>8*1024*1024)throw new Error('history-request-too-large')
         requestIdRef.current = requestId
         // Commit the attempt identity before the POST can start tool work.
@@ -1192,6 +1218,15 @@ export default function Pixel({ systemStatus = null }) {
           signal: controller.signal,
         })
         if (!isCurrentTurn()) return { kind: 'obsolete' }
+        if (nativeChat && response.status === 507) {
+          let payload
+          try { payload = await response.json() } catch { /* Unknown responses remain uncertain. */ }
+          if (!isCurrentTurn()) return {kind:'obsolete'}
+          if (payload?.detail?.code === 'native_storage_full') {
+            requestIdRef.current = null
+            return {kind:'native-storage-full'}
+          }
+        }
         if (response.status === 410) {
           // Only this API admission receipt proves the request never started.
           // Provider text, SSE errors and unrecognized 410 bodies stay uncertain.
@@ -1268,7 +1303,7 @@ export default function Pixel({ systemStatus = null }) {
               if (frame?.error) {
                 receivedError = true
                 admissionRejected = !assistantText && isAdmissionRejected(frame.error)
-                const failureMessage = portalResponseFailure(frame.error)
+                const failureMessage = nativeResponseFailure(frame.error, nativeChat) || portalResponseFailure(frame.error)
                 setMessages(previous => replaceLastAssistant(previous, {
                   content: assistantText ? `${assistantText}\n\n_${failureMessage}_` : failureMessage,
                   status: 'error',
@@ -1277,7 +1312,7 @@ export default function Pixel({ systemStatus = null }) {
               }
               // Dashboard HTTP 200 can still contain an Edge admission
               // refusal. Do not start auxiliary work until an accepted frame.
-              if (!extensionInstallationStarted) {
+              if (!nativeChat && !extensionInstallationStarted) {
                 extensionInstallationStarted = true
                 startExtensionInstallation(trimmed, controller.signal, { chatId, requestId })
                 startGithubExtensionRequest(trimmed, { chatId, requestId }, controller.signal)
@@ -1365,6 +1400,14 @@ export default function Pixel({ systemStatus = null }) {
     try {
       let attempt = await streamAttempt(chatIdRef.current, conversation, fullHistory)
       if (!isCurrentTurn()) return
+      if (attempt.kind === 'native-storage-full') {
+        setInput(current => current || exactDraft)
+        contextStartRef.current = originalContextStart
+        setInterrupted(false)
+        updateRestoredActivity('idle')
+        setMessages(previous => replaceLastAssistant(previous, {content:NATIVE_STORAGE_FULL_MESSAGE,status:'error'}))
+        return
+      }
       if (attempt.kind === 'deleted') {
         setInput(current => current || exactDraft)
         contextStartRef.current = originalContextStart
@@ -1493,7 +1536,7 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory,conversationDeleted])
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory,conversationDeleted,nativeChat,documentMode])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1547,7 +1590,7 @@ export default function Pixel({ systemStatus = null }) {
       abortRef.current = null
       requestIdRef.current = null
       setMessages(previous => replaceLastAssistant(previous, {
-        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content),
+        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content,nativeChat),
         status: 'stopped',
       }))
       setSending(false)
@@ -1570,11 +1613,12 @@ export default function Pixel({ systemStatus = null }) {
       }
       settleStop()
     }
-  }, [stopping, interrupted, updateRestoredActivity])
+  }, [stopping, interrupted, updateRestoredActivity,nativeChat])
 
   const startNewChat = useCallback((preserveDraft = false) => {
     if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
     chatIdRef.current = makeChatId()
+    setDocumentMode(false)
     images.replace(chatIdRef.current)
     requestIdRef.current = null
     contextStartRef.current = 0
@@ -1699,6 +1743,7 @@ export default function Pixel({ systemStatus = null }) {
       hydrating.current = true; savedView.current = null; persistenceFailed.current = false
       hydrationAction.current = chat.interrupted || chat.persistenceSnapshot.recoverySource ? 'activate' : 'normalize'
       chatIdRef.current = chat.chatId
+      setDocumentMode(false)
       images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
       requestIdRef.current = chat.requestId
@@ -1746,7 +1791,7 @@ export default function Pixel({ systemStatus = null }) {
     installation: githubExtensionInstallation?.command === integrationCommand ? githubExtensionInstallation : extensionInstallation,
     command: integrationCommand,
     project: conversationProject({messages, preview})?.path,
-    idle: !isDisabled && !interrupted && !input.trim() && !abortRef.current && messages.at(-1)?.status === 'done',
+    idle: !nativeChat && !isDisabled && !interrupted && !input.trim() && !abortRef.current && messages.at(-1)?.status === 'done',
     sendMessage,
   })
   const workingElapsed = formatElapsed(workingElapsedSeconds)
@@ -1807,22 +1852,22 @@ export default function Pixel({ systemStatus = null }) {
         </div>
         <div className="min-w-0">
           <h1 className="text-base font-semibold leading-tight truncate max-w-[40vw]" title={displayName}>{displayName}</h1>
-          <p className="text-[11px] text-theme-text-muted">Your local ODS owner agent</p>
+          <p className="text-[11px] text-theme-text-muted">{nativeChat ? 'Windows native chat and documents' : 'Your local ODS owner agent'}</p>
         </div>
-        <PortalAgentDock controller={teams} onOpen={openAgents}/>
+        {!nativeChat && <PortalAgentDock controller={teams} onOpen={openAgents}/>}
         </div>
 
         <div className="pixel-chat-header-actions">
-          <button type="button" aria-label="Search Portal" title="Search conversations · Ctrl+K" className="pixel-metal-control p-2" onClick={() => window.dispatchEvent(new Event(OPEN_PIXEL_SEARCH))}><Search size={16}/></button>
+          {!nativeChat && <button type="button" aria-label="Search Portal" title="Search conversations · Ctrl+K" className="pixel-metal-control p-2" onClick={() => window.dispatchEvent(new Event(OPEN_PIXEL_SEARCH))}><Search size={16}/></button>}
           <details className="pixel-chat-options"><summary aria-label="Chat options">•••</summary><div className="pixel-chat-options-menu">
-            <PixelConversationImport key={chatIdRef.current} disabled={sending || restoredActive || restoredChecking || stopping || contextControl.busy} onImport={record => {
+            {!nativeChat && <PixelConversationImport key={chatIdRef.current} disabled={sending || restoredActive || restoredChecking || stopping || contextControl.busy} onImport={record => {
               if (sending || restoredActive || restoredChecking || stopping || contextControl.busy) throw new Error('Active task')
               if (pendingImport.current?.record !== record) pendingImport.current = {record, chatId:makeChatId()}
               const imported = {...record, chatId:pendingImport.current.chatId}
               saveConversation(imported)
               pendingImport.current = null
               window.dispatchEvent(new CustomEvent(SELECT_EVENT, {detail:imported.chatId}))
-            }}/>
+            }}/>}
             <label className="block p-2 text-xs">Send shortcut<select className="mt-1 block w-full rounded border border-theme-border bg-theme-bg p-2" aria-label="Send shortcut" value={sendKey.mode} onChange={event => sendKey.change(event.target.value)}><option value="enter">Enter to send</option><option value="mod-enter">Ctrl/⌘+Enter to send</option></select></label>
             {sendKey.error && <p role="alert" className="p-2 text-xs">{sendKey.error}</p>}
 
@@ -1831,16 +1876,16 @@ export default function Pixel({ systemStatus = null }) {
               row?.scrollIntoView?.({block:'start', behavior:'auto'})
               row?.focus?.({preventScroll:true})
             }}/>
-            <PixelHandoffApproval label="Approvals" />
-            <details className="pixel-chat-options-advanced"><summary>Advanced tools</summary><div>
+            {!nativeChat && <PixelHandoffApproval label="Approvals" />}
+            {!nativeChat && <details className="pixel-chat-options-advanced"><summary>Advanced tools</summary><div>
               <PortalRuntimeIdentity identity={runtimeIdentity} runtime={agentRuntime} />
               <PixelAdvice canInsert={!sending && !contextControl.busy} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
-            </div></details>
+            </div></details>}
           </div></details>
-          <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+          {!nativeChat && <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
             <PanelRightOpen size={14}/><span>Workspace</span>
-          </button>
+          </button>}
           {messages.length > 0 && (
             <button
               type="button"
@@ -1872,7 +1917,8 @@ export default function Pixel({ systemStatus = null }) {
           </span>
         </div>
       </header>
-      {status === 'available' && <PortalReadiness readiness={runtimeReadiness} />}
+      {status === 'available' && !nativeChat && <PortalReadiness readiness={runtimeReadiness} />}
+      {nativeChat && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">Local chat and Markdown documents · Context uses the recent messages that fit; full conversation history stays saved on this Windows account. Other agent tools, voice, images and extensions are not available in this preview.</p>}
       <ModelActivationNotice value={modelActivation} pending={status === 'switching'} available={status === 'available'} portal onRefresh={()=>setModelStatusRefresh(value=>value+1)}/>
       {status === 'held' && <p role="status" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail}</p>}
       {status === 'recovery' && <p role="alert" className="shrink-0 border-b border-theme-border px-4 py-2 text-xs text-theme-text-secondary sm:px-6">{statusDetail} <Link to="/settings?section=access" className="underline">Portal permissions</Link></p>}
@@ -1928,7 +1974,7 @@ export default function Pixel({ systemStatus = null }) {
             <div className="pixel-offline-notice" role="status">
             <p className="font-medium text-theme-text">{displayName} is currently unavailable</p>
             {statusDetail && <p className="mt-1 text-sm">{statusDetail}</p>}
-            <p className="mt-4 text-xs">Your other ODS applications remain available while the agent reconnects.</p>
+            <p className="mt-4 text-xs">{nativeChat ? 'Your saved conversations are kept. Use Restart local AI to recover the owned model.' : 'Your other ODS applications remain available while the agent reconnects.'}</p>
             </div>
           </div>
         )}
@@ -1977,7 +2023,7 @@ export default function Pixel({ systemStatus = null }) {
               )}
               {message.role === 'assistant' && <PortalGoalPlan task={message.task} active={message.status==='streaming'} disabled={isDisabled || sending || restoredActive || restoredChecking} onResume={index===messages.length-1 && !message.questions ? ()=>sendMessage(continueGoal(messages,index)) : undefined}/>}
               {message.role === 'assistant' && <PortalAgentActivity task={message.task} active={message.status === 'streaming'} status={message.status}/> }
-              {message.role === 'assistant' && index === messages.length - 1 && messages[index - 1]?.role === 'user' &&
+              {!nativeChat && message.role === 'assistant' && index === messages.length - 1 && messages[index - 1]?.role === 'user' &&
                 <PortalExtensionProgress key={`extension-progress/${chatIdRef.current}/${index}`}
                   command={githubExtensionInstallation?.command || messages[index - 1].content} active={message.status === 'streaming'}
                   installation={githubExtensionInstallation || extensionInstallation}
@@ -1991,7 +2037,7 @@ export default function Pixel({ systemStatus = null }) {
                   <button type="button" disabled={isDisabled || Boolean(input.trim()) || integrationRecovery.checking}
                     onClick={resumeProjectIntegration}>{integrationRecovery.checking ? 'Checking readiness…' : 'Continue integration'}</button>
                 </section>}
-              {message.role === 'assistant' && message.status === 'done' && index === messages.length - 1 &&
+              {!nativeChat && message.role === 'assistant' && message.status === 'done' && index === messages.length - 1 &&
                 messages[index - 1]?.role === 'user' && <PortalExtensionSetup key={`${chatIdRef.current}/${index}`}
                   command={githubExtensionInstallation?.command || messages[index - 1].content} disabled={isDisabled || sending || restoredActive || restoredChecking}
                   installation={githubExtensionInstallation}
@@ -2025,8 +2071,14 @@ export default function Pixel({ systemStatus = null }) {
         <div className={`portal-glass-composer mx-auto max-w-5xl ${messages.length===0 ? 'portal-neon-prompt' : ''}`} onDragOver={event=>{if(!isDisabled && Array.from(event.dataTransfer?.types || []).includes('Files'))event.preventDefault()}} onDrop={event=>{
           if(isDisabled)return
           const files=Array.from(event.dataTransfer?.files || [])
-          if(files.length){event.preventDefault();images.choose(files)}
+          if(files.length){event.preventDefault();if(!nativeChat)images.choose(files)}
         }}>
+          {nativeChat && <fieldset disabled={isDisabled} aria-describedby="native-document-guidance" className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 px-1 text-xs text-theme-text-secondary">
+            <legend className="mb-1 text-theme-text-muted">Response mode</legend>
+            <label className="inline-flex items-center gap-1.5"><input type="radio" name="native-response-mode" checked={!documentMode} onChange={()=>setDocumentMode(false)}/>Chat</label>
+            <label className="inline-flex items-center gap-1.5"><input type="radio" name="native-response-mode" checked={documentMode} onChange={()=>setDocumentMode(true)}/>Create document</label>
+            <p id="native-document-guidance" className="w-full text-theme-text-muted">Choose Create document to request one Markdown (.md) file for download.</p>
+          </fieldset>}
           <PortalImageAttachments attachments={images} chatId={chatIdRef.current} disabled={isDisabled} hasHistory={hasImageHistory} model={imageModel} onRefresh={()=>void contextControl.refresh(true)}/>
           {command && <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-theme-card/70 px-3 py-2 text-xs text-theme-text-secondary" role="group" aria-label="Agent team mode"><span className="font-medium text-theme-text">Agent team</span><span>Describe your task. Portal will choose the team.</span><button type="button" disabled={isDisabled} onClick={()=>setInput(command.task)} className="ml-auto whitespace-nowrap rounded px-2 py-1 hover:bg-theme-border/30">Exit team mode</button></div>}
           {goalDraft && <div className="portal-goal-mode" role="group" aria-label="Goal mode"><span>Goal</span><small>Describe the outcome. Portal will plan, work and check its progress.</small><button type="button" disabled={isDisabled} onClick={()=>setInput(goalDraft.task)}>Exit goal mode</button></div>}
@@ -2036,7 +2088,7 @@ export default function Pixel({ systemStatus = null }) {
             ref={inputRef}
             value={command ? command.task : goalDraft ? goalDraft.task : input}
             onChange={(event) => setInput(command ? `/agents ${event.target.value}` : goalDraft ? `/goal ${event.target.value}` : event.target.value)}
-            onPaste={event=>{const files=Array.from(event.clipboardData?.items || []).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);if(files.length && !isDisabled){event.preventDefault();images.choose(files)}}}
+            onPaste={event=>{const files=Array.from(event.clipboardData?.items || []).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);if(files.length && !isDisabled){event.preventDefault();if(!nativeChat)images.choose(files)}}}
             onKeyDown={(event) => {
               if (shouldSendMessage(event, sendKey.mode)) {
                 event.preventDefault()
@@ -2059,7 +2111,7 @@ export default function Pixel({ systemStatus = null }) {
             }`}
           />
           <div className="pixel-composer-actions">
-          <PixelDictation disabled={isDisabled} conversationId={chatIdRef.current} input={input} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
+          {!nativeChat && <PixelDictation disabled={isDisabled} conversationId={chatIdRef.current} input={input} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>}
           {teams.busy && teams.teams[0] ? <button type="button" onClick={()=>teams.teams[0].mode==='goal'?teams.stop(teams.teams[0].id):openAgents({teamId:teams.teams[0].id,agentId:'0'})} title={teams.teams[0].mode==='goal'?'Stop goal':'View active agent team'} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-0 text-theme-text"><Square size={16}/></button> : sending || restoredActive ? (
             <button
               onClick={stopStreaming}
@@ -2094,18 +2146,18 @@ export default function Pixel({ systemStatus = null }) {
             {['unknown','unavailable'].includes(contextControl.phase) && <button type="button" onClick={compactConversation}>Retry request</button>}
           </div>}
           <div className="pixel-composer-secondary">
-            <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText} onCompact={compactConversation}>
+            {!nativeChat && <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText} onCompact={compactConversation}>
               <PixelTextFileInput key={`file-input-${chatIdRef.current}`} conversationId={chatIdRef.current} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
               <PortalImagePicker disabled={isDisabled} onChoose={images.choose}/>
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={command?.task ?? goalDraft?.task ?? input}/>
-            </PixelComposerTools>
+            </PixelComposerTools>}
             <div className="pixel-composer-limits">
-              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} availability={status} displayScope={chatIdRef.current} runtimeFingerprint={agentRuntime?.routeFingerprint} runtimeObservation={agentRuntime} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
-              <PortalContextRing capacityLabel={activeContext} context={contextControl.context} capacity={contextControl.observedCapacity || agentRuntime?.contextLength} pending={sending || restoredActive || contextControl.busy} onRefresh={()=>void contextControl.refresh()}/>
+              {nativeChat ? <span className="text-xs text-theme-text-muted">{activeModel} · {activeContext}</span> : <><PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} availability={status} displayScope={chatIdRef.current} runtimeFingerprint={agentRuntime?.routeFingerprint} runtimeObservation={agentRuntime} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
+              <PortalContextRing capacityLabel={activeContext} context={contextControl.context} capacity={contextControl.observedCapacity || agentRuntime?.contextLength} pending={sending || restoredActive || contextControl.busy} onRefresh={()=>void contextControl.refresh()}/></>}
             </div>
           </div>
           <div className="mt-1.5 flex items-center justify-between gap-3 px-1 text-[10px] text-theme-text-muted/70">
-            <span>{stopping ? 'Waiting for exact cancellation acknowledgement' : restoredActive ? 'Earlier work is active in this chat; Stop targets only this chat.' : sending ? `${displayName} is using the active ODS model and tools · ${workingElapsed} elapsed` : sendKey.mode === 'mod-enter' ? 'Ctrl/⌘+Enter to send • Enter for a new line' : 'Enter to send • Shift+Enter for a new line'}</span>
+            <span>{stopping ? 'Waiting for exact cancellation acknowledgement' : restoredActive ? 'Earlier work is active in this chat; Stop targets only this chat.' : sending ? `${displayName} is using the active ODS model${nativeChat ? '' : ' and tools'} · ${workingElapsed} elapsed` : sendKey.mode === 'mod-enter' ? 'Ctrl/⌘+Enter to send • Enter for a new line' : 'Enter to send • Shift+Enter for a new line'}</span>
           </div>
         </div>
         {inputOver && (
@@ -2116,7 +2168,7 @@ export default function Pixel({ systemStatus = null }) {
       </div>
         </div>
 
-        <PixelCommandSearch onInsert={insertComposerText} onNewTask={startNewChat}/>
+        {!nativeChat && <PixelCommandSearch onInsert={insertComposerText} onNewTask={startNewChat}/>}
         <PixelSelectionActions disabled={isDisabled} conversationId={chatIdRef.current} onInsert={insertComposerText}/>
         {workspaceOpen && (
           <aside aria-label="Preview panel" style={{'--preview-width':`${previewWidth}px`}} className={`pixel-preview-panel ${previewCollapsed ? 'is-collapsed' : ''} flex shrink-0 flex-col border-theme-border bg-theme-bg`}>
