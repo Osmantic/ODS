@@ -411,6 +411,8 @@ function New-ODSEnv {
 
     # Generate secrets (reuse existing on re-install)
     $webuiSecret     = Get-EnvOrNew "WEBUI_SECRET"       (New-SecureHex -Bytes 32)
+    $webuiAdminEmail = Get-EnvOrNew "WEBUI_ADMIN_EMAIL"  "admin@ods.local"
+    $webuiAdminPass  = Get-EnvOrNew "WEBUI_ADMIN_PASSWORD" (New-SecureHex -Bytes 16)
     $n8nPass         = Get-EnvOrNew "N8N_PASS"           (New-SecureBase64 -Bytes 16)
     $litellmKey      = Get-EnvOrNew "LITELLM_KEY"        "sk-ods-$(New-SecureHex -Bytes 16)"
     # Bearer key of the native Windows llama-server (AMD). Generated once and
@@ -792,6 +794,8 @@ ODS_AUTH_UPSTREAM=ods-dashboard-api:3002
 
 #=== Security (auto-generated, keep secret!) ===
 WEBUI_SECRET=$webuiSecret
+WEBUI_ADMIN_EMAIL=$webuiAdminEmail
+WEBUI_ADMIN_PASSWORD=$webuiAdminPass
 DASHBOARD_API_KEY=$dashboardApiKey
 ODS_AGENT_KEY=$odsAgentKey
 ODS_SESSION_SECRET=$odsSessionSecret
