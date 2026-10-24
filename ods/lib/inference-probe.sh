@@ -28,10 +28,11 @@ ods_inference_prepare() {
     _ODS_PROBE_TOKEN=""
     _ODS_PROBE_MODEL=""
     local url="" gateway=false
+    local port="${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
     if [[ -n "${_ODS_DIAGNOSTIC_URL:-}" ]]; then
         url="$_ODS_DIAGNOSTIC_URL"
     elif [[ -n "${_ODS_DIAGNOSTIC_HOST:-}${_ODS_DIAGNOSTIC_PORT:-}" ]]; then
-        url="http://${_ODS_DIAGNOSTIC_HOST:-localhost}:${_ODS_DIAGNOSTIC_PORT:-${OLLAMA_PORT:-11434}}"
+        url="http://${_ODS_DIAGNOSTIC_HOST:-localhost}:${_ODS_DIAGNOSTIC_PORT:-$port}"
     elif [[ "${ODS_MODEL_SWITCHBOARD:-enabled}" == enabled ]] || ods_preflight_uses_litellm; then
         gateway=true
         url="http://127.0.0.1:${LITELLM_PORT:-4000}"
@@ -41,7 +42,7 @@ ods_inference_prepare() {
             return 1
         fi
     else
-        url="http://localhost:${OLLAMA_PORT:-${LLAMA_SERVER_PORT:-${SERVICE_PORTS[llama-server]:-11434}}}"
+        url="http://localhost:$port"
     fi
     _ODS_PROBE_API_URL="${url%/}"
     [[ "$_ODS_PROBE_API_URL" == */v1 ]] || _ODS_PROBE_API_URL+=/v1

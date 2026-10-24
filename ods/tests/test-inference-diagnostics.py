@@ -123,8 +123,14 @@ class InferenceDiagnostics(unittest.TestCase):
         (self.root / 'bin').mkdir()
         curl = shutil.which('curl')
         self.assertIsNotNone(curl)
+        allowed = [f'http://{host}:{endpoint.port}/*'
+                   for endpoint in (self.primary, self.unrelated) for host in ('127.0.0.1', 'localhost')]
+        guard = '|'.join(allowed)
         (self.root / 'bin/curl').write_text(
-            '#!/bin/bash\nprintf "%s\\0" "$@" >> "$CURL_ARG_LOG"\nexec ' + curl + ' "$@"\n')
+            '#!/bin/bash\nprintf "%s\\0" "$@" >> "$CURL_ARG_LOG"\n'
+            + 'for arg in "$@"; do case "$arg" in http://*|https://*)\n'
+            + f'case "$arg" in {guard}) ;; *) exit 7 ;; esac ;; esac; done\n'
+            + 'exec ' + curl + ' "$@"\n')
         (self.root / 'bin/curl').chmod(0o755)
         self.env['PATH'] = str(self.root / 'bin') + os.pathsep + self.env['PATH']
         self.env['CURL_ARG_LOG'] = str(self.root / 'curl-args')
@@ -304,11 +310,14 @@ class InferenceDiagnostics(unittest.TestCase):
 
     def test_explicit_url_and_host_port_keep_direct_override(self):
         # Caller override is deliberate; never send a gateway key to that URL.
-        for override in ({'LLM_URL': f'http://127.0.0.1:{self.unrelated.port}'},
-                         {'LLM_HOST': '127.0.0.1', 'LLM_PORT': str(self.unrelated.port)}):
-            with self.subTest(override=override):
+        for override, config in (({'LLM_URL': f'http://127.0.0.1:{self.unrelated.port}'}, {}),
+                                 ({'LLM_HOST': '127.0.0.1', 'LLM_PORT': str(self.unrelated.port)}, {}),
+                                 ({'LLM_HOST': '127.0.0.1'}, {'OLLAMA_PORT': str(self.unrelated.port)}),
+                                 ({'LLM_HOST': '127.0.0.1'}, {'OLLAMA_PORT': '',
+                                                                       'LLAMA_SERVER_PORT': str(self.unrelated.port)})):
+            with self.subTest(override=override, config=config):
                 self.primary.requests.clear()
-                self.assert_llm_result(self.run_probe(gateway=True, extra=override), 'llm', True)
+                self.assert_llm_result(self.run_probe(gateway=True, extra=override, config_extra=config), 'llm', True)
                 self.assertEqual(self.primary.requests, [])
                 self.assertTrue(self.unrelated.requests)
 
