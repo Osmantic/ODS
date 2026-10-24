@@ -52,6 +52,10 @@ if sys.argv[1:] == ['--help']:
 # Checksum verification is a read-only dry run, not a retried transfer.
 if '--dry-run' in sys.argv[1:]:
     os.execv(os.environ['ODS_TEST_REAL_RSYNC'], ['rsync', *sys.argv[1:]])
+# macOS openrsync runs its local receiver by re-executing `rsync --server`
+# from PATH. That is the same transfer, not a retry.
+if '--server' in sys.argv[1:]:
+    os.execv(os.environ['ODS_TEST_REAL_RSYNC'], ['rsync', *sys.argv[1:]])
 calls = pathlib.Path(os.environ['ODS_TEST_TRANSFERS'])
 first = not calls.exists()
 with calls.open('a') as stream:

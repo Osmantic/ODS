@@ -211,7 +211,9 @@ fi
 # ---------------------------------------------------------------------------
 rm -rf "$BUILTIN" "$USEREXT"
 write_ext "$BUILTIN" bsvc "[]"
-sed -i 's/category: optional/category: core/' "$BUILTIN/manifest.yaml"
+# -i.bak works with both GNU and BSD sed; BSD reads a bare -i's next argument as the suffix.
+sed -i.bak 's/category: optional/category: core/' "$BUILTIN/manifest.yaml"
+rm -f "$BUILTIN/manifest.yaml.bak"
 mv "$BUILTIN/compose.yaml" "$BUILTIN/compose.yaml.disabled"
 write_ext "$USEREXT" usvc "[bsvc]"
 mv "$USEREXT/compose.yaml" "$USEREXT/compose.yaml.disabled"

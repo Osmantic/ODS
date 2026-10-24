@@ -20,6 +20,7 @@ test: ## Run unit and contract tests
 	@python3 scripts/verify-pixel-bundle.py
 	@python3 tests/test-seeded-content-privacy.py
 	@bash tests/test-pixel-bundled-source.sh
+	@bash tests/test-bootstrap-pixel-catalog-permissions.sh
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
