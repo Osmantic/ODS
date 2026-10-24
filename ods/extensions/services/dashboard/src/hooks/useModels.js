@@ -235,7 +235,7 @@ function modelActivationModeError(effectiveMode, configuredMode, llmBackend, hos
       : management?.reason || 'Model management is temporarily unavailable. Refresh the runtime status.'
   }
   if (activeRuntime?.source === 'remote-provider') {
-    return 'Switch back to a local model in Model connections to use local model controls.'
+    return 'Switch back to a local model in Model connections to use local model activation controls.'
   }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'

@@ -116,7 +116,20 @@ test.each([false, true])('shows the live model API instead of the loaded local e
   expect(within(runtime).getByRole('link', {name: 'Model connections'})).toHaveAttribute('href', '/settings?section=remote')
   expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
   expect(screen.queryByText(/Runtime: Local/)).toBeNull()
+  expect(screen.getByText('Loaded locally')).toBeVisible()
+  expect(screen.queryByText('Active')).toBeNull()
   expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeDisabled()
+})
+
+test('keeps the local Active state when no active remote route is verified', () => {
+  useModelsMock.mockReturnValue(baseState({
+    currentModel: 'qwen3.5-9b-q4',
+    models: [model({status: 'loaded'})],
+  }))
+  renderModels()
+  expect(screen.queryByText('Loaded locally')).toBeNull()
+  expect(screen.getByText('Active')).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Configure context for Qwen 3.5 9B'})).toBeEnabled()
 })
 
 test('keeps the existing diagnostic when no active remote route is verified', () => {
