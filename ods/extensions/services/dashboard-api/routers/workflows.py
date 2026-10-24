@@ -139,6 +139,18 @@ def _installed_n8n_workflows(catalog_name: str, n8n_workflows: list[dict]) -> li
     return [wf for wf in n8n_workflows if str(wf.get("name") or "").casefold() == wanted]
 
 
+def _matching_n8n_workflow(name: str, workflows: list[dict]) -> dict | None:
+    """Resolve a unique exact name using the same predicate as removal."""
+    matches = _installed_n8n_workflows(name, workflows)
+    if len(matches) > 1:
+        # n8n permits duplicate names; the catalog stores no ID with which to
+        # distinguish them. List order is not evidence of the owner's choice.
+        raise HTTPException(status_code=409, detail=(
+            f"Multiple n8n workflows are named {name!r}. Resolve the duplicate names in n8n before using this catalog action."
+        ))
+    return matches[0] if matches else None
+
+
 async def check_workflow_dependencies(deps: list[str], health_cache: dict[str, bool] | None = None) -> dict[str, bool]:
     """Check if required services are running. Uses health_cache to avoid duplicate checks."""
     from helpers import check_service_health
@@ -201,8 +213,15 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
     workflows = []
     health_cache: dict[str, bool] = {}
     for wf in catalog.get("workflows", []):
-        matches = _installed_n8n_workflows(wf["name"], n8n_workflows)
-        installed = matches[0] if matches else None
+        match_error = None
+        try:
+            installed = _matching_n8n_workflow(wf["name"], n8n_workflows)
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            # One ambiguous name must not hide unrelated catalog entries.
+            installed = None
+            match_error = exc.detail
 
         dep_status = await check_workflow_dependencies(wf.get("dependencies", []), health_cache)
         all_deps_met = all(dep_status.values())
@@ -211,7 +230,7 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
         if installed:
             executions = installed.get("statistics", {}).get("executions", {}).get("total", 0)
 
-        workflows.append({
+        workflow = {
             "id": wf["id"],
             "name": wf["name"],
             "description": wf["description"],
@@ -228,7 +247,11 @@ async def api_workflows(api_key: str = Depends(verify_api_key)):
             "setupTime": wf.get("setupTime", "~2 min"),
             "executions": executions,
             "featured": wf.get("featured", False)
-        })
+        }
+        if match_error:
+            workflow["status"] = "ambiguous"
+            workflow["error"] = match_error
+        workflows.append(workflow)
 
     return {
         "workflows": workflows,
@@ -381,10 +404,9 @@ async def workflow_executions(workflow_id: str, limit: int = 20, api_key: str = 
     n8n_workflows = await get_n8n_workflows()
     if n8n_workflows is None:
         return {"executions": [], "error": "n8n workflow inventory is unavailable"}
-    matches = _installed_n8n_workflows(wf_info["name"], n8n_workflows)
-    if not matches:
+    n8n_wf = _matching_n8n_workflow(wf_info["name"], n8n_workflows)
+    if not n8n_wf:
         return {"executions": [], "message": "Workflow not installed"}
-    n8n_wf = matches[0]
 
     try:
         headers = _n8n_headers()

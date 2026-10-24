@@ -78,6 +78,14 @@ Environment variables (set in `.env`):
 | `DELETE` | `/api/workflows/{id}` | Yes | Remove a workflow from n8n |
 | `GET` | `/api/workflows/{id}/executions` | Yes | Recent execution history |
 
+Catalog entries match the complete n8n workflow name, ignoring case. If several
+workflows share that name, the catalog still returns the other entries normally.
+The affected entry has `status: "ambiguous"`, an `error` explaining how to resolve
+the duplicate names in n8n, and no selected `n8nId`. Clients should show that error
+instead of offering normal catalog actions. Both removal aliases (`DELETE` and
+`POST /api/workflows/{id}/disable`) and execution lookup return HTTP 409 for an
+ambiguous target.
+
 ### Features
 
 | Method | Path | Auth | Description |
