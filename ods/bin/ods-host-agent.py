@@ -2707,8 +2707,9 @@ def _active_model_profile(env: dict, catalog_id: object) -> dict | None:
         return None
     traits = _stored_profile_traits(catalog_id)
     if traits is None:
-        return {"state": "not-profiled", "tools": None, "thinkingControl": None}
-    return {"state": "measured", "tools": traits["tools"], "thinkingControl": traits["control"]}
+        return {"state": "not-profiled", "tools": None, "toolsStreamed": None, "thinkingControl": None}
+    return {"state": "measured", "tools": traits["tools"], "toolsStreamed": traits["toolsStreamed"],
+            "thinkingControl": traits["control"]}
 
 
 def _project_switchboard_agent_viability(payload: dict) -> None:
@@ -16685,8 +16686,10 @@ def _summary_traits(summary: object) -> dict:
     if control == "always" and thinking.get("works") is False:
         control = "none"
     tools, vision = summary.get("tools"), summary.get("vision")
+    tools_streamed = summary.get("toolsStreamed")
     return {
         "tools": tools if isinstance(tools, bool) else None,
+        "toolsStreamed": tools_streamed if isinstance(tools_streamed, bool) else None,
         "vision": vision if isinstance(vision, bool) else None,
         "control": control,
     }
