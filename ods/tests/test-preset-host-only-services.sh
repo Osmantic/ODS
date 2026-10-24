@@ -60,9 +60,10 @@ service:
 EOF
     echo "services: {}" > "$dir/$2"
 }
-write_ext on compose.yaml
-write_ext off compose.yaml.disabled
-ON="$FIXTURE/extensions/services/on"
+# Not "on"/"off": YAML reads those ids as booleans and the registry skips them.
+write_ext ext-on compose.yaml
+write_ext ext-off compose.yaml.disabled
+ON="$FIXTURE/extensions/services/ext-on"
 HOST="$FIXTURE/extensions/services/opencode"
 LIST="$FIXTURE/presets/base/extensions.list"
 
@@ -80,7 +81,7 @@ if [[ -f "$LIST" ]] && ! grep -q "opencode" "$LIST"; then
 else
     fail "save listed the host-managed service: $(cat "$LIST" 2>/dev/null) $output"
 fi
-if grep -qx 'enabled:on' "$LIST" 2>/dev/null && grep -qx 'disabled:off' "$LIST"; then
+if grep -qx 'enabled:ext-on' "$LIST" 2>/dev/null && grep -qx 'disabled:ext-off' "$LIST"; then
     pass "save still records enabled and disabled Compose extensions"
 else
     fail "save lost a Compose extension: $(cat "$LIST" 2>/dev/null) $output"
@@ -95,7 +96,7 @@ fi
 
 # A preset saved before this fix lists the host service. Load must skip that
 # entry and still restore the Compose selection and the settings.
-printf 'enabled:on\ndisabled:off\ndisabled:opencode\n' > "$LIST"
+printf 'enabled:ext-on\ndisabled:ext-off\ndisabled:opencode\n' > "$LIST"
 mv "$ON/compose.yaml" "$ON/compose.yaml.disabled"
 printf 'GPU_BACKEND=nvidia\nLLM_MODEL=model-b\n' > "$FIXTURE/.env"
 output=$(printf 'y\n' | run_cli preset load base)
