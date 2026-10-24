@@ -867,6 +867,16 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
         Remove-Item -LiteralPath $envPath -Recurse -Force
         Write-AIWarn "Removed malformed .env directory from a previous partial install."
     }
+    # The template above replaces .env; keep the owner's public URLs
+    # (docs/ODS-PROXY.md) as the Linux installer does.
+    if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+        $publicUrlLines = @(Get-ODSPublicUrlEnvLines -NewContent $envContent `
+            -PreviousLines @(Get-Content -LiteralPath $envPath -Encoding UTF8))
+        if ($publicUrlLines.Count -gt 0) {
+            $nl = $(if ($envContent.Contains("`r`n")) { "`r`n" } else { "`n" })
+            $envContent += "$nl$nl#=== Public URLs (kept from the previous .env) ===$nl" + ($publicUrlLines -join $nl)
+        }
+    }
     Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ($effectiveODSMode -eq "local") {
@@ -934,6 +944,34 @@ litellm_settings:
     return @{
         SearxngSecret  = $searxngSecret
     }
+}
+
+function Get-ODSPublicUrlEnvLines {
+    <# Return the owner's public-URL settings (docs/ODS-PROXY.md:
+       ODS_PUBLIC_URL, ODS_SERVICE_PUBLIC_URLS, <SERVICE>_PUBLIC_URL) from the
+       previous .env that the new content lacks, as Linux's
+       ods_carry_public_url_env_keys does: the last assignment of each key, in
+       first-seen order. #>
+    param(
+        [AllowEmptyCollection()][string[]]$PreviousLines,
+        [AllowEmptyString()][string]$NewContent
+    )
+    $order = [System.Collections.Generic.List[string]]::new()
+    $last = @{}
+    foreach ($line in $PreviousLines) {
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 0) { continue }
+        $key = $line.Substring(0, $eq).Trim()
+        if ($key -cnotmatch '^[A-Z][A-Z0-9_]*_PUBLIC_URLS?$') { continue }
+        if (-not $last.ContainsKey($key)) { $order.Add($key) }
+        $last[$key] = $key + $line.Substring($eq)
+    }
+    $carried = @()
+    foreach ($key in $order) {
+        if ($NewContent -cmatch ("(?m)^\s*" + [regex]::Escape($key) + "\s*=")) { continue }
+        $carried += $last[$key]
+    }
+    return $carried
 }
 
 function Get-SearxngDefaultLanguage {

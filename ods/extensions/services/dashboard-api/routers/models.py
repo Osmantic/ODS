@@ -2084,7 +2084,9 @@ def model_download_status(api_key: str = Depends(verify_api_key)):
             "percent": bootstrap_info.percent,
             "bytesDownloaded": int((bootstrap_info.downloaded_gb or 0) * 1024**3),
             "bytesTotal": int((bootstrap_info.total_gb or 0) * 1024**3),
-            "speedMbps": bootstrap_info.speed_mbps,
+            # Same field and unit as host-agent download status; the Models
+            # page progress hook reads speedBytesPerSec only.
+            "speedBytesPerSec": int((bootstrap_info.speed_mbps or 0) * 1024**2),
             "eta": bootstrap_info.eta_seconds,
         }
     try:

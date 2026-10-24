@@ -3595,3 +3595,31 @@ def test_huggingface_quantization_names_mxfp4_artifacts():
     assert models_router._hf_quantization("Qwen3.6-35B-A3B-MXFP4_MOE.gguf") == "MXFP4_MOE"
     assert models_router._hf_quantization("Qwen3.6-35B-A3B-UD-Q4_K_M.gguf") == "Q4_K_M"
     assert models_router._hf_quantization("model.gguf") is None
+
+
+def test_download_status_bootstrap_fallback_reports_speed_in_bytes(test_client, monkeypatch, tmp_path):
+    """The Models page hook reads speedBytesPerSec; the bootstrap fallback must emit it."""
+    models_router, _install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(models_router, "_get_agent_model_status", lambda *a, **k: {"status": "idle"})
+    monkeypatch.setattr(
+        models_router,
+        "get_bootstrap_status",
+        lambda: BootstrapStatus(
+            active=True,
+            model_name="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+            percent=40.0,
+            downloaded_gb=4.0,
+            total_gb=10.0,
+            speed_mbps=12.5,
+            eta_seconds=480,
+        ),
+    )
+
+    resp = test_client.get("/api/models/download-status", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "downloading"
+    assert body["speedBytesPerSec"] == int(12.5 * 1024**2)
+    assert body["eta"] == 480

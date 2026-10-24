@@ -41,6 +41,7 @@ from config import (
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
+    get_env_file_read_error,
     normalize_ods_mode, read_live_env_value,
 )
 from models import (
@@ -919,11 +920,17 @@ def _active_settings_apply_services() -> set[str]:
     return active
 
 
-def _call_agent_core_recreate(service_ids: list[str]) -> dict[str, Any]:
+def _call_agent_core_recreate(
+    service_ids: list[str],
+    expected_env_revision: Optional[str] = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"service_ids": service_ids}
+    if expected_env_revision is not None:
+        payload["expected_env_revision"] = expected_env_revision
     return request_agent_json(
         "POST",
         "/v1/core/recreate",
-        payload={"service_ids": service_ids},
+        payload=payload,
         timeout=180,
     )
 
@@ -1497,7 +1504,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
         cloud_mode = normalize_ods_mode(read_live_env_value("ODS_MODE")) == "cloud"
         if cloud_mode:
             last_inference = {}
-        return {
+        fallback = {
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
@@ -1518,6 +1525,10 @@ async def api_status(api_key: str = Depends(verify_api_key)):
                           "loadedModel": None, "contextSize": None},
             "manifest_errors": _public_manifest_errors(),
         }
+        env_file_read_error = get_env_file_read_error()
+        if env_file_read_error:
+            fallback["envFileReadError"] = env_file_read_error
+        return fallback
 
 
 @app.get("/api/readiness")
@@ -1710,6 +1721,9 @@ async def _build_api_status() -> dict:
         },
         "manifest_errors": _public_manifest_errors(),
     }
+    env_file_read_error = get_env_file_read_error()
+    if env_file_read_error:
+        result["envFileReadError"] = env_file_read_error
     return result
 
 
@@ -1758,9 +1772,9 @@ async def api_storage(api_key: str = Depends(verify_api_key)):
             "disk": {"used_gb": disk_info.used_gb, "total_gb": disk_info.total_gb, "percent": disk_info.percent}
         }
 
-    result = await asyncio.to_thread(_compute_storage)
-    _cache.set("storage", result, _STORAGE_CACHE_TTL)
-    return result
+    # Settings times out after 12s. Keep one collector and publish its result
+    # even if every browser disconnects, so retries do not launch more walks.
+    return await resources._resource_snapshot("storage", _compute_storage, _STORAGE_CACHE_TTL)
 
 
 @app.get("/api/settings/summary")
@@ -1857,6 +1871,24 @@ async def api_settings_env_save(
                 saved_values[key] = value
         saved_raw_text = _render_env_from_values(saved_values)
 
+    # Bind the authoritative post-write digest to the plan. Without it the
+    # plan cannot be applied safely: the host agent may have enforced values
+    # or another writer may have touched .env between save and apply.
+    env_revision = agent_resp.get("env_revision")
+    if isinstance(apply_plan, dict):
+        if isinstance(env_revision, str) and re.fullmatch(r"[0-9a-f]{64}", env_revision):
+            apply_plan = {**apply_plan, "envRevision": env_revision}
+        elif apply_plan.get("supported") and apply_plan.get("services"):
+            apply_plan = {
+                **apply_plan,
+                "status": "unsupported",
+                "supported": False,
+                "envRevision": None,
+                "summary": (
+                    "Update ODS, then reload the current settings, review your changes, and save again before applying."
+                ),
+            }
+
     _clear_settings_caches()
     result = await asyncio.to_thread(
         _build_settings_env_payload,
@@ -1880,6 +1912,14 @@ async def api_settings_env_apply(
             detail={"message": "service_ids must be a non-empty list."},
         )
 
+    expected_env_revision = payload.get("expected_env_revision")
+    if expected_env_revision is not None:
+        if not isinstance(expected_env_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_env_revision):
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "expected_env_revision must be a 64-character lowercase hex digest."},
+            )
+
     normalized: list[str] = []
     for service_id in sorted(set(service_ids)):
         if not isinstance(service_id, str) or service_id not in _SETTINGS_APPLY_ALLOWED_SERVICES:
@@ -1890,7 +1930,10 @@ async def api_settings_env_apply(
         normalized.append(service_id)
 
     try:
-        await asyncio.to_thread(_call_agent_core_recreate, normalized)
+        if expected_env_revision is None:
+            await asyncio.to_thread(_call_agent_core_recreate, normalized)
+        else:
+            await asyncio.to_thread(_call_agent_core_recreate, normalized, expected_env_revision)
         _clear_settings_caches()
         return {
             "success": True,
@@ -1898,8 +1941,29 @@ async def api_settings_env_apply(
             "message": f"Applied runtime changes to {', '.join(normalized)}.",
         }
     except AgentHTTPError as exc:
-        detail = exc.detail
-        raise HTTPException(status_code=503, detail={"message": detail}) from exc
+        if exc.status_code == 409:
+            try:
+                body = json.loads(exc.response_text) if exc.response_text else None
+            except (ValueError, TypeError):
+                body = None
+            if isinstance(body, dict) and body.get("code") == "model_lifecycle_busy":
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "model_lifecycle_busy",
+                        "message": "ODS is finishing another operation. Wait for it to finish, then choose Apply changes again. If settings changed, ODS will ask you to review them.",
+                    },
+                ) from exc
+            if isinstance(body, dict) and body.get("code") == "env_revision_mismatch":
+                _clear_settings_caches()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "env_revision_mismatch",
+                        "message": "Settings changed while you were waiting. Reload the current settings, then review and save your changes before applying.",
+                    },
+                ) from exc
+        raise HTTPException(status_code=503, detail={"message": exc.detail}) from exc
     except AgentUnavailable as exc:
         raise HTTPException(
             status_code=503,

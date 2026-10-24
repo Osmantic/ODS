@@ -287,6 +287,10 @@ _ALLOWED_CORE_RECREATE_IDS = frozenset({
     "tts", "whisper", "embeddings", "token-spy", "comfyui",
     "ape", "privacy-shield", "model-router",
 })
+# A model switch recreates these itself. Recreating them alongside it races
+# that recreation (Docker name conflict) and leaves the switch held, so their
+# recreation claims the model lifecycle like an update does.
+_MODEL_STACK_RECREATE_IDS = frozenset({"llama-server", "litellm", "model-router"})
 # Pixel's model relay picks its upstream (model-router, or LiteLLM in cloud
 # mode) from ODS_MODE once, when it starts. A remote-provider route change
 # therefore recreates it with LiteLLM, or Portal keeps the old model.
@@ -1038,6 +1042,22 @@ def _artifact_expected_size(metadata: dict) -> int | None:
     return None
 
 
+def _catalog_size_estimate(model: dict) -> int | None:
+    """Approximate download size from the catalog's decimal ``size_mb``.
+
+    Only for the free-space check when the catalog has no exact byte size;
+    integrity is still proved by the checksum after download.
+    """
+    raw = model.get("size_mb")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    try:
+        estimate = int(raw * 1_000_000)
+    except (OverflowError, ValueError):
+        return None
+    return estimate if estimate > 0 else None
+
+
 _DOWNLOAD_DISK_MARGIN_MIN_BYTES = 2 * 1024 ** 3
 _DOWNLOAD_DISK_MARGIN_FRACTION = 0.05
 
@@ -1047,24 +1067,41 @@ def _download_disk_margin(total_bytes: int) -> int:
     return max(_DOWNLOAD_DISK_MARGIN_MIN_BYTES, int(total_bytes * _DOWNLOAD_DISK_MARGIN_FRACTION))
 
 
-def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path]) -> int:
-    """Bytes still to fetch: sized artifacts not already on disk at that size.
+def _download_bytes_needed(artifacts: list[dict], paths: dict[str, Path],
+                           size_estimate: int | None = None,
+                           *, verified_files: set[str] | None = None) -> int:
+    """Additional bytes to fetch, using exact sizes or a total model estimate.
 
-    An artifact of unknown size is not counted; the download verifies it.
+    The request uses cheap stat checks; the worker repeats this after hashing
+    with the set of reusable files. Never hash large files in the request.
+    A total estimate includes reusable artifacts, so subtract their bytes.
     """
     needed = 0
+    reusable_bytes = 0
+    unsized_missing = False
     for artifact in artifacts:
+        filename = artifact["file"]
         expected = artifact.get("size_bytes")
-        if not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0:
-            continue
-        target = paths.get(artifact["file"])
+        sized = isinstance(expected, int) and not isinstance(expected, bool) and expected > 0
+        target = paths.get(filename)
+        present_bytes = 0
         try:
-            if target is not None and target.stat().st_size == expected:
-                continue
+            info = target.stat() if target is not None else None
+            if info is not None and stat_mod.S_ISREG(info.st_mode):
+                present_bytes = info.st_size
         except OSError:
-            # Not present, or not readable here: it still has to be fetched.
             pass
-        needed += expected
+        reusable = present_bytes > 0 and (not sized or present_bytes == expected)
+        if verified_files is not None:
+            reusable = reusable and filename in verified_files
+        if reusable:
+            reusable_bytes += present_bytes
+        elif sized:
+            needed += expected
+        else:
+            unsized_missing = True
+    if unsized_missing and size_estimate:
+        needed = max(needed, size_estimate - reusable_bytes)
     return needed
 
 
@@ -1194,7 +1231,8 @@ def _model_download_manifest(model: dict) -> dict | None:
     filenames = [artifact["file"] for artifact in artifacts]
     if gguf_file not in filenames or len(filenames) != len(set(filenames)):
         return None
-    return {"gguf_file": gguf_file, "artifacts": artifacts}
+    return {"gguf_file": gguf_file, "artifacts": artifacts,
+            "size_estimate_bytes": _catalog_size_estimate(model)}
 
 
 def _library_record_for_gguf(gguf_file: str) -> dict | None:
@@ -12300,6 +12338,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             # the live .env keeps mode 0600 instead of inheriting 0644.
             os.chmod(tmp_path, 0o600)
             os.replace(str(tmp_path), str(env_path))
+            env_revision = hashlib.sha256(env_path.read_bytes()).hexdigest()
         except OSError as exc:
             logger.warning("env_update OSError from %s: %s", client_ip, exc)
             json_response(self, 500, {"error": str(exc)})
@@ -12312,6 +12351,7 @@ class AgentHandler(BaseHTTPRequestHandler):
             "status": "ok",
             "backup_path": backup_relative_path,
             "enforced_values": enforced_values,
+            "env_revision": env_revision,
         })
 
     def _handle_core_recreate(self):
@@ -12331,6 +12371,26 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         unique_service_ids = sorted(set(requested))
 
+        expected_env_revision = body.get("expected_env_revision")
+        if expected_env_revision is not None:
+            if not isinstance(expected_env_revision, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_env_revision):
+                json_response(self, 400, {"error": "expected_env_revision must be a 64-character lowercase hex digest"})
+                return
+
+        # A revision-bound Apply must serialize against env_update for every
+        # service, not only the model stack: the digest it compares is the
+        # same file env_update rewrites. Unbound callers keep the historical
+        # model-stack-only guard.
+        lifecycle_claimed = bool(_MODEL_STACK_RECREATE_IDS.intersection(unique_service_ids)) or expected_env_revision is not None
+        if lifecycle_claimed:
+            acquired, active = _begin_model_lifecycle("core_recreate", ",".join(unique_service_ids))
+            if not acquired:
+                json_response(self, 409, {
+                    "success": False,
+                    **_model_lifecycle_conflict("core service recreation", active),
+                })
+                return
+
         locks = []
         try:
             for service_id in unique_service_ids:
@@ -12339,6 +12399,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                     json_response(self, 409, {"error": f"Operation already in progress for {service_id}"})
                     return
                 locks.append(lock)
+
+            if expected_env_revision is not None:
+                env_path = INSTALL_DIR / ".env"
+                try:
+                    actual_revision = hashlib.sha256(env_path.read_bytes()).hexdigest()
+                except OSError as exc:
+                    logger.warning("core_recreate revision read failed: %s", exc)
+                    json_response(self, 500, {
+                        "success": False,
+                        "code": "env_revision_unavailable",
+                        "error": "Saved settings could not be read. Reload Settings before applying.",
+                    })
+                    return
+                if actual_revision != expected_env_revision:
+                    logger.info("core_recreate refused: saved settings changed")
+                    json_response(self, 409, {
+                        "success": False,
+                        "code": "env_revision_mismatch",
+                        "error": "Environment file changed since this plan was saved; reload Settings and re-save before applying.",
+                    })
+                    return
 
             logger.info("Recreating core services: %s", ", ".join(unique_service_ids))
             ok, err = docker_compose_recreate(unique_service_ids)
@@ -12357,6 +12438,8 @@ class AgentHandler(BaseHTTPRequestHandler):
         finally:
             for lock in reversed(locks):
                 lock.release()
+            if lifecycle_claimed:
+                _end_model_lifecycle("core_recreate")
 
     def _handle_extension(self, action: str):
         if not check_auth(self):
@@ -13608,7 +13691,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return
             artifact_paths[artifact["file"]] = target
 
-        needed_bytes = _download_bytes_needed(manifest["artifacts"], artifact_paths)
+        needed_bytes = _download_bytes_needed(
+            manifest["artifacts"], artifact_paths, manifest.get("size_estimate_bytes"))
         if needed_bytes:
             try:
                 storage = _model_storage_status(models_dir)
@@ -13730,6 +13814,27 @@ class AgentHandler(BaseHTTPRequestHandler):
                         for idx, (fn, url) in enumerate(download_plan, 1)
                         if fn not in valid_preexisting_files
                     ]
+                    # A plausible existing file can fail its checksum and need
+                    # replacing. Recheck after verification, before any network
+                    # activity, and use only files proved reusable above.
+                    if _model_download_cancel.is_set():
+                        _finish_cancelled_download()
+                        return
+                    needed_bytes = _download_bytes_needed(
+                        manifest["artifacts"], artifact_paths,
+                        manifest.get("size_estimate_bytes"),
+                        verified_files=valid_preexisting_files,
+                    )
+                    if needed_bytes:
+                        storage = _model_storage_status(models_dir)
+                        if storage["freeBytes"] < needed_bytes + storage["marginBytes"]:
+                            _write_model_status(
+                                status_path, "failed", gguf_file, 0, 0,
+                                "Not enough free disk space for this model after verification "
+                                f"(required {needed_bytes} bytes plus {storage['marginBytes']} "
+                                f"bytes free-space margin; available {storage['freeBytes']} bytes)",
+                            )
+                            return
                     for _part_idx, part_file_name, part_url in pending_download_plan:
                         url_error = _model_download_url_error(part_url)
                         if url_error:
