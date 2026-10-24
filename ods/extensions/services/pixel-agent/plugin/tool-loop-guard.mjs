@@ -165,6 +165,9 @@ export const CODING_REPEAT_NO_PROGRESS_REASON =
 export const CODING_LOOP_ABORT_REASON =
   "Pixel stopped this response because it requested another coding tool after the repeated-command limit was reached. Start a fresh message to continue from the preserved workspace with a different approach.";
 
+export const CODING_LOOP_DELIVERY_REASON =
+  "Portal stopped this coding task after repeated tool attempts made no progress. The requested work is incomplete. The workspace is preserved; review the reported tool failures before continuing.";
+
 export const VISIBLE_REPLY_REQUIRES_FINAL_REASON =
   "Do not use a tool to deliver the reply and do not send a message to this same session. End the turn now with the requested text as the normal assistant response.";
 
@@ -8068,6 +8071,7 @@ export function createToolLoopGuard({
         researchStopped: false,
         webTerminals: new Map(),
         codingExhausted: false,
+        codingLoopAborted: false,
         codingTerminalBlocks: 0,
         invalidEditCreateBlocks: 0,
         oversizedEditBlocks: 0,
@@ -10227,6 +10231,7 @@ export function createToolLoopGuard({
       warn(
         `Pixel stopped a repeated coding-tool loop for run ${runId}; active run aborted=${aborted}`
       );
+      state.codingLoopAborted ||= aborted;
       return { block: true, blockReason: CODING_LOOP_ABORT_REASON };
     }
 
@@ -14064,6 +14069,16 @@ export function createToolLoopGuard({
     // research result, give ingress the actual cause instead of a generic reply.
     if (state?.webLoopAborted && verification.status === "none") {
       return { status: "failed", text: WEB_LOOP_DELIVERY_REASON };
+    }
+    // The runtime classifies a generic AbortError as a provider timeout. Only
+    // an acknowledged coding-guard abort owns this replacement; keep existing
+    // failed/pending verification, cancellation, deadline and progress-limit
+    // delivery first. A successful scoped receipt cannot complete this task.
+    if (state?.codingLoopAborted && !state.clientCancelled &&
+        ["none", "passed"].includes(verification.status)) {
+      return { ...verification, status: "failed", text: [CODING_LOOP_DELIVERY_REASON,
+        verification.text && `Recorded result:\n${verification.text}`]
+        .filter(Boolean).join("\n\n").slice(0, MAX_INGRESS_VERIFICATION_TEXT) };
     }
     const readOnlyOperations = extensionDiscoveryActive(state) || (state?.operationsRequired &&
       (state.operationsInventoryOnly ||
