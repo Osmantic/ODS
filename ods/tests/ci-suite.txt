@@ -5,6 +5,7 @@
 # .github/scripts/list-unwired-tests.py --check fails CI for a test in none of them.
 
 tests/test-installer-dry-run-jq.sh
+tests/test-phase06-gpu-env-rerun.py
 tests/test-inference-port-admission.sh
 tests/contracts/test-amd-llamacpp-contracts.sh
 tests/contracts/test-host-native-llm-contracts.sh
@@ -49,6 +50,7 @@ tests/test-catalog-invalid-manifest.py
 tests/test-cli-bootstrap-compose-wait.sh
 tests/test-cli-macos-native-llama.sh
 tests/test-cli-preset-restore-user-extensions.sh
+tests/test-cli-relative-path-args.sh
 tests/test-cli-prompts-noninteractive.sh
 tests/test-cli-status-docker-error.sh
 tests/test-cli-status-gpu-backend.sh
@@ -218,6 +220,7 @@ tests/test-tmpfile-cleanup.sh
 tests/test-token-spy-session-manager.sh
 tests/test-ui-missing-container-fast-fail.sh
 tests/test-uninstall-lemonade-leftovers.sh
+tests/test-uninstall-opencode-config.sh
 tests/test-uninstall-refuses-sudo.sh
 tests/test-unix-restart-recreate-env.sh
 tests/test-update-backup-restore-configs.sh
@@ -310,6 +313,7 @@ tests/test-gpu-reassign-preflight.sh
 tests/test_uninstall_validate_install_dir.py
 tests/test-preset-completion.sh
 tests/test-cli-chat-route.py
+tests/test_host_agent_process_shutdown.py
 tests/test-cli-chat-error-exit.py
 tests/test-cli-compose-cache-model-store.sh
 tests/test-update-compose-cache-owner-overlays.sh

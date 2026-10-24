@@ -1287,6 +1287,10 @@ async def _hf_preflight_gate(
     gated = bool(details.get("gated")) and (
         not _hf_token() or header_status.get("reason") == "gated"
     )
+    refusal = model_preflight.refusal(kind, supported, architecture, build, gated=gated)
+    if (refusal is None and kind == "chat" and model_preflight.nextn_layers(header)
+            and model_preflight.nextn_supported(policy, build, architecture) is False):
+        refusal = model_preflight.nextn_refusal(build)
     return {
         "artifact": _hf_artifact_binding(details, artifact),
         "header": header,
@@ -1295,7 +1299,7 @@ async def _hf_preflight_gate(
         "architecture": architecture,
         "runtime": {"key": runtime_key, "build": build, "architectureSupported": supported},
         "modelKind": kind,
-        "refusal": model_preflight.refusal(kind, supported, architecture, build, gated=gated),
+        "refusal": refusal,
     }
 
 
@@ -1769,8 +1773,8 @@ async def _prepare_huggingface_import(body: dict[str, Any]):
             "acknowledgedAt": datetime.now(timezone.utc).isoformat(),
         }
         logger.warning(
-            "Hugging Face import of %s acknowledged an architecture (%s) that llama.cpp %s does not list",
-            repo_id, gate["architecture"], gate["runtime"]["build"],
+            "Hugging Face import of %s acknowledged %s for architecture %s on llama.cpp %s",
+            repo_id, refusal["code"], gate["architecture"], gate["runtime"]["build"],
         )
     tensors = _hf_artifact_tensors(gate, artifact)
     if tensors["status"] == "unsupported":
