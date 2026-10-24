@@ -16,6 +16,22 @@ ods disable jupyter
 
 Your data is preserved when disabling. To re-enable later: `ods enable jupyter`
 
+## Notebook directory permissions
+
+The pinned image runs notebooks as `jovyan` (UID 1000). On root-operated
+Linux/WSL installs, the host agent uses the manifest's container UID to prepare
+`data/jupyter/workspace` and `data/jupyter/notebooks` before starting Jupyter.
+After updating the installed manifest, disable and re-enable Jupyter from
+Extensions to prepare these writable directories again. A plain container
+restart does not prepare mounts.
+
+Preparation changes the two directory owners only; it does not recursively
+change existing notebook files. For imported notebooks owned by another user,
+back them up and grant UID 1000 write access to those files separately. Direct
+Docker Compose users must prepare writable bind directories themselves. Custom
+container users and rootless user mappings require matching host permissions;
+this manifest describes the pinned image's default user.
+
 ## Access
 
 - **URL:** `http://localhost:8889`
