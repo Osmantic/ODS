@@ -7769,6 +7769,39 @@ class TestPrecreateDataDirs:
         assert data_dir.is_dir()
         assert chowns == [(data_dir, 12345, 12345)]
 
+    @pytest.mark.parametrize("trigger", ["compose-user", "manifest-uid"])
+    def test_windows_creates_dirs_without_posix_uid(self, tmp_path, monkeypatch, trigger):
+        """The agent runs on native Windows Python, which has no os.getuid.
+
+        A numeric compose ``user:`` or a manifest ``container_uid`` on a
+        service with a relative bind mount raised AttributeError there before
+        the data dirs were created: an existing GAIA install keeps uid 10001
+        and ./data/gaia (#6896), as can owner-written extensions.
+        """
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = user_root / "svc-w"
+        if trigger == "compose-user":
+            self._write_compose_with_user(ext_dir, ["./data/gaia:/home/gaia/.gaia"], "10001:10001")
+        else:
+            self._write_compose(ext_dir, ["./data/gaia:/home/gaia/.gaia"])
+            self._write_manifest(ext_dir, "svc-w", 10001)
+
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delattr(_mod.os, "getuid", raising=False)
+        monkeypatch.setattr(_mod.os, "chown", lambda *args: pytest.fail("chown on Windows"), raising=False)
+
+        _mod._precreate_data_dirs("svc-w")
+
+        assert (install_dir / "data" / "gaia").is_dir()
+
     def test_skips_named_volumes(self, tmp_path, monkeypatch):
         """Named volumes (no '/') must not trigger filesystem creation."""
         pytest.importorskip("yaml")

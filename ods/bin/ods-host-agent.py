@@ -6785,7 +6785,9 @@ def _precreate_compose_data_dirs(service_id: str, ext_dir: Path, compose_path: P
                 continue
             try:
                 dir_path.mkdir(parents=True, exist_ok=True)
-                if uid is not None and os.getuid() == 0:
+                # Native Windows Python has no os.getuid (or POSIX owners);
+                # Docker Desktop maps bind mounts itself.
+                if uid is not None and hasattr(os, "getuid") and os.getuid() == 0:
                     # Defense-in-depth: the installer preflight already
                     # blocks non-POSIX filesystems at INSTALL_DIR, but
                     # runtime extension installs (post-setup) can still
