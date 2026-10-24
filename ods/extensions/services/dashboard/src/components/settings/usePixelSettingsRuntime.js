@@ -9,7 +9,12 @@ async function request(flight, method, payload) {
   try {
     const response = await fetch(PATH, { method, cache: 'no-store', signal: flight.controller.signal,
       ...(payload ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } : {}) })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    if (!response.ok) {
+      // The host refuses with this code before acting: nothing was changed.
+      const busy = response.status === 409
+        && (await Promise.resolve().then(() => response.json()).catch(() => null))?.detail?.code === 'model_lifecycle_busy'
+      throw Object.assign(new Error(`HTTP ${response.status}`), { busy })
+    }
     return await response.json()
   } finally { clearTimeout(flight.timer) }
 }
@@ -80,8 +85,11 @@ export default function usePixelSettingsRuntime({ savedRevision, saving, blocked
         setNotice(message)
       }
       setStale(false)
-    } catch {
-      if (current()) {
+    } catch (failure) {
+      if (current() && failure?.busy && !controllerReplied) {
+        setStale(false)
+        setError('ODS is busy with a model or Portal change. Nothing was changed; try again in a moment.')
+      } else if (current()) {
         setStale(true)
         setError(operation === 'inspect'
           ? 'Runtime inspection failed. Saved preferences remain separate; refresh runtime status to try again.'
