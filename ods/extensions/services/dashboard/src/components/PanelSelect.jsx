@@ -3,7 +3,15 @@ import { Check, ChevronDown } from 'lucide-react'
 import './panel-select.css'
 
 // Inline (not portalled) so long labels can never expand into the chat pane.
-export default function PanelSelect({ label, value, onChange, options, disabled = false }) {
+export default function PanelSelect({
+  label,
+  value,
+  onChange,
+  options,
+  disabled = false,
+  placeholder = 'Select category',
+  emptyLabel = 'No matching categories'
+}) {
   const id = useId(), root = useRef(null), trigger = useRef(null)
   const [open, setOpen] = useState(false)
   const [activeValue, setActiveValue] = useState(null)
@@ -46,7 +54,11 @@ export default function PanelSelect({ label, value, onChange, options, disabled 
       aria-controls={`${id}-list`} aria-haspopup="listbox" aria-activedescendant={expanded ? `${id}-option-${active}` : undefined}
       disabled={disabled || !options.length} onKeyDown={keyDown}
       onClick={() => { setActiveValue(options[Math.max(0, selected)]?.value); setOpen(!expanded) }}>
-      <span>{options[selected]?.label || 'No matching categories'}</span><ChevronDown size={14} />
+      <div className="panel-select-trigger-content">
+        {options[selected]?.icon && <span className="panel-select-trigger-icon">{options[selected].icon}</span>}
+        <span>{options[selected]?.label || (options.length > 0 ? placeholder : emptyLabel)}</span>
+      </div>
+      <ChevronDown size={14} />
     </button>
     {expanded && <div id={`${id}-list`} role="listbox" aria-label={label} className="panel-select-options">
       {options.map((option, index) => <div key={option.value}>
@@ -54,7 +66,11 @@ export default function PanelSelect({ label, value, onChange, options, disabled 
         <div id={`${id}-option-${index}`} role="option" aria-selected={option.value === value}
           className={active === index ? 'is-highlighted' : ''} onPointerDown={event => event.preventDefault()}
           onMouseEnter={() => setActiveValue(option.value)} onClick={() => choose(index)}>
-          <span>{option.label}</span>{option.value === value && <Check size={13} />}
+          <div className="panel-select-option-content">
+            {option.icon && <span className="panel-select-option-icon">{option.icon}</span>}
+            <span>{option.label}</span>
+          </div>
+          {option.value === value && <Check size={13} />}
         </div>
       </div>)}
     </div>}

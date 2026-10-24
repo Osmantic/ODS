@@ -1814,7 +1814,28 @@ export default function Pixel({ systemStatus = null }) {
 
         <div className="pixel-chat-header-actions">
           <button type="button" aria-label="Search Portal" title="Search conversations · Ctrl+K" className="pixel-metal-control p-2" onClick={() => window.dispatchEvent(new Event(OPEN_PIXEL_SEARCH))}><Search size={16}/></button>
-          <details className="pixel-chat-options"><summary aria-label="Chat options">•••</summary><div className="pixel-chat-options-menu">
+          <details
+            className="pixel-chat-options"
+            onToggle={event => {
+              if (event.currentTarget.open) {
+                const details = event.currentTarget
+                const menu = details.querySelector('.pixel-chat-options-menu')
+                if (menu) {
+                  details.removeAttribute('data-align')
+                  const rect = menu.getBoundingClientRect()
+                  const container = details.closest('.pixel-chat-column') || document.body
+                  const contRect = container.getBoundingClientRect()
+                  if (rect.left < contRect.left + 8 || rect.left < 8) {
+                    details.setAttribute('data-align', 'left')
+                  } else {
+                    details.removeAttribute('data-align')
+                  }
+                }
+              }
+            }}
+          >
+            <summary aria-label="Chat options">•••</summary>
+            <div className="pixel-chat-options-menu">
             <PixelConversationImport key={chatIdRef.current} disabled={sending || restoredActive || restoredChecking || stopping || contextControl.busy} onImport={record => {
               if (sending || restoredActive || restoredChecking || stopping || contextControl.busy) throw new Error('Active task')
               if (pendingImport.current?.record !== record) pendingImport.current = {record, chatId:makeChatId()}

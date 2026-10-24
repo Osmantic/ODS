@@ -1153,7 +1153,7 @@ function DeleteModelDialog({ model, onCancel, onConfirm }) {
           </div>
         </div>
 
-        <div className="mt-5 flex justify-end gap-2">
+        <div className="mt-5 flex justify-end gap-2 bg-transparent">
           <button
             type="button"
             onClick={onCancel}
@@ -1249,7 +1249,7 @@ function ModelActivationDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="m-auto w-full max-w-2xl overflow-hidden rounded-xl border border-theme-accent/25 bg-theme-card shadow-[0_28px_100px_rgba(0,0,0,0.42)]"
+        className="m-auto w-full max-w-4xl overflow-hidden rounded-xl border border-theme-accent/25 bg-theme-card shadow-[0_28px_100px_rgba(0,0,0,0.42)]"
       >
         <div className="flex items-start justify-between gap-4 border-b border-theme-border px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
@@ -1289,7 +1289,14 @@ function ModelActivationDialog({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <div
+            className="model-context-options-grid grid grid-cols-3 gap-2"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              gap: '8px',
+            }}
+          >
             {options.map(option => {
               const active = option.contextLength === selectedContext
               return (
@@ -1298,17 +1305,17 @@ function ModelActivationDialog({
                   type="button"
                   onClick={() => selectContext(option.contextLength)}
                   aria-pressed={active}
-                  className={`relative min-h-[68px] rounded-lg border px-3 py-2 text-left transition-colors ${
+                  className={`relative min-h-[58px] rounded-lg border px-3 py-1.5 text-left transition-colors ${
                     active
                       ? 'border-theme-accent bg-theme-accent/12 text-theme-text'
                       : 'border-theme-border bg-theme-bg/40 text-theme-text-secondary hover:border-theme-accent/35'
                   }`}
                 >
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center justify-between gap-1.5">
                     <span className="font-mono text-sm font-semibold">{formatContext(option.contextLength)}</span>
-                    {active && <Check size={14} className="text-theme-accent" />}
+                    {active && <Check size={13} className="text-theme-accent shrink-0" />}
                   </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
+                  <div className="mt-1.5 flex flex-wrap gap-1">
                     {option.recommended && <Badge tone="green">Recommended</Badge>}
                     {option.fullContext && <Badge>Full context</Badge>}
                   </div>
@@ -1317,28 +1324,30 @@ function ModelActivationDialog({
             })}
           </div>
 
-          <label className="mt-3 block rounded-lg border border-theme-border bg-theme-bg/35 px-3 py-2.5">
-            <span className="flex items-center justify-between gap-3">
+          <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-theme-border bg-theme-bg/35 px-3.5 py-2">
+            <div>
               <span className="text-[11px] font-semibold text-theme-text">Custom context</span>
-              <span className="text-[10px] text-theme-text-muted">Any whole number from 1,024</span>
+              <span className="ml-2 text-[10px] text-theme-text-muted">Any whole number from 1,024</span>
+            </div>
+            <div className="w-full sm:w-48">
+              <input
+                type="number"
+                aria-label="Custom context in tokens"
+                min="1024"
+                step="1024"
+                value={customContext}
+                onChange={updateCustomContext}
+                className="h-8 w-full rounded-md border border-theme-border bg-theme-card px-3 font-mono text-xs text-theme-text outline-none transition-colors focus:border-theme-accent"
+              />
+            </div>
+          </div>
+          {!contextValid && (
+            <span className="mt-1 block text-[11px] text-red-300">
+              Enter a safe whole number of at least 1,024.
             </span>
-            <input
-              type="number"
-              aria-label="Custom context in tokens"
-              min="1024"
-              step="1024"
-              value={customContext}
-              onChange={updateCustomContext}
-              className="mt-2 h-9 w-full rounded-md border border-theme-border bg-theme-card px-3 font-mono text-sm text-theme-text outline-none transition-colors focus:border-theme-accent"
-            />
-            {!contextValid && (
-              <span className="mt-1.5 block text-[11px] text-red-300">
-                Enter a safe whole number of at least 1,024.
-              </span>
-            )}
-          </label>
+          )}
 
-          <div className="mt-5 grid divide-y divide-theme-border border-y border-theme-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+          <div className="mt-4 grid divide-y divide-theme-border border-y border-theme-border sm:grid-cols-3 sm:divide-x sm:divide-y-0">
             <ContextMetric
               label="Estimated memory"
               value={selected?.estimatedRequired ? `~${selected.estimatedRequired} GB` : '--'}
