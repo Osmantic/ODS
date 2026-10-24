@@ -59,7 +59,8 @@ function session(recording, {limits, wrapped = false} = {}) {
   function step(name, args, recorded, id, {afterContext = {}, persistContext = {}, afterParams} = {}) {
     guard.observeModelCall({}, context);
     const toolName = wrapped ? 'tool_call' : name;
-    const params = wrapped ? {id: `openclaw:core:${name}`, args} : args;
+    const sourceName = name === 'pixel_ods_workspace_artifact' ? 'pixel-ods' : 'core';
+    const params = wrapped ? {id: `openclaw:${sourceName}:${name}`, args} : args;
     const ctx = {...context, toolName, toolCallId: id};
     const decision = guard.beforeToolCall({toolName, params, toolCallId: id}, ctx);
     let result, executed = params;
@@ -74,7 +75,7 @@ function session(recording, {limits, wrapped = false} = {}) {
       if (name === 'exec' && inner.details?.status === 'completed' && inner.details.aggregated === undefined) {
         inner.details.aggregated = inner.content[0].text;
       }
-      const envelope = {tool: {id: `openclaw:core:${name}`, name, source: 'openclaw', sourceName: 'core'}, result: inner};
+      const envelope = {tool: {id: `openclaw:${sourceName}:${name}`, name, source: 'openclaw', sourceName}, result: inner};
       result = wrapped ? {content: [{type: 'text', text: JSON.stringify(envelope)}], details: envelope} : inner;
     }
     const isError = decision?.block === true || result.isError === true;
@@ -287,6 +288,47 @@ for (const wrapped of [false, true]) {
   test(`recovery does not reset failed-attempt limits (wrapped=${wrapped})`, () => {
     const s = session(RECOVERY, {wrapped, limits: {...DEFAULT_WEB_TOOL_LIMITS, failedVerificationAttempts: 1}});
     assert.match(s.step('exec', directTest, completedTest(), 'direct').seen, RECOVERY_MARKER);
+    assert.equal(s.step('exec', directTest, completedTest(), 'again').decision?.blockReason, CODING_RETRY_EXHAUSTED_REASON);
+  });
+
+  const artifactArgs = {relativePath: 'temperature.zip', sourcePath: 'project'};
+  const artifactResult = {content: [{type: 'text', text: 'Artifact fixture result; no host operation.'}]};
+  test(`packaging supplies two bounded recovery turns without accepting the failed result (wrapped=${wrapped})`, () => {
+    const s = session(RECOVERY, {wrapped});
+    s.step('exec', directTest, completedTest(), 'direct');
+    for (const id of ['artifact-1', 'artifact-2']) {
+      const result = s.step('pixel_ods_workspace_artifact', artifactArgs, artifactResult, id);
+      assert.equal(result.decision?.block, true);
+      assert.match(result.decision.blockReason, RECOVERY_MARKER);
+      assert.equal(result.status, 'failed');
+    }
+    const third = s.step('pixel_ods_workspace_artifact', artifactArgs, artifactResult, 'artifact-3');
+    assert.equal(third.decision?.block, undefined, 'snapshot delivery is not withheld indefinitely');
+    assert.equal(third.status, 'failed');
+    assert.notEqual(s.deliver('All tests passed.'), undefined);
+  });
+
+  test(`a verified rerun releases packaging after the recovery block (wrapped=${wrapped})`, () => {
+    const s = session(RECOVERY, {wrapped});
+    s.step('exec', directTest, completedTest(), 'direct');
+    assert.match(s.step('pixel_ods_workspace_artifact', artifactArgs, artifactResult, 'artifact-1').decision?.blockReason ?? '', RECOVERY_MARKER);
+    assert.equal(s.step('exec', {command: 'python3 -m unittest -v test_temperature', workdir:'/workspace/project'}, completedTest(), 'runner').status, 'passed');
+    assert.equal(s.step('pixel_ods_workspace_artifact', artifactArgs, artifactResult, 'artifact-2').decision?.block, undefined);
+  });
+
+  test(`a newer actual failure clears stale direct-script recovery (wrapped=${wrapped})`, () => {
+    const s = session(RECOVERY, {wrapped});
+    s.step('exec', directTest, completedTest(), 'direct');
+    s.step('exec', {command:'python3 -m unittest -v test_temperature',workdir:'/workspace/project'}, completedTest(summary(4,'FAILED (failures=1)'),1), 'runner');
+    const next = s.step('pixel_ods_workspace_artifact', artifactArgs, artifactResult, 'artifact');
+    assert.doesNotMatch(next.decision?.blockReason ?? '', RECOVERY_MARKER);
+    assert.equal(next.status, 'failed');
+  });
+
+  test(`packaging correction does not reset the verification retry limit (wrapped=${wrapped})`, () => {
+    const s = session(RECOVERY, {wrapped, limits:{...DEFAULT_WEB_TOOL_LIMITS,failedVerificationAttempts:1}});
+    s.step('exec', directTest, completedTest(), 'direct');
+    s.step('pixel_ods_workspace_artifact', artifactArgs, artifactResult, 'artifact');
     assert.equal(s.step('exec', directTest, completedTest(), 'again').decision?.blockReason, CODING_RETRY_EXHAUSTED_REASON);
   });
 

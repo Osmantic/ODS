@@ -9134,6 +9134,21 @@ export function createToolLoopGuard({
       toolName === "tool_call" && typeof pendingParams?.id === "string"
         ? pendingParams.id.split(":").at(-1)
         : toolName;
+    // A model can ignore result coaching and jump straight to packaging.
+    // Give this exact failed verification two bounded corrective turns here;
+    // finalize revisions cannot resume the pinned harness after file writes.
+    // After the allowance, an unverified snapshot may still be delivered,
+    // but its publication cannot change the failed verification verdict.
+    if (pendingSelectedName === 'pixel_ods_workspace_artifact' &&
+        state?.unittestRecoveryPending && state.latestVerificationStatus === 'failed' &&
+        state.unittestRecoveryPending.fingerprint === state.latestVerificationFingerprint &&
+        !state.clientCancelled && !state.codingExhausted && !state.webLoopAborted &&
+        !state.recursiveDeleteDenied && !state.progressBudget.exhausted &&
+        recordFreeCorrection(state, 'unittest-recovery-artifact',
+          context?.toolCallId ?? event?.toolCallId, toolName)) {
+      return {block: true, blockReason: 'Before packaging this project, complete its requested verification. ' +
+        state.unittestRecoveryPending.instruction};
+    }
     if (pendingSelectedName === WORKSPACE_PREVIEW_TOOL) {
       if (state?.workspaceDocumentDeliveryRequested && !state.workspacePreviewRequired) {
         return {block:true, blockReason:
@@ -12245,6 +12260,7 @@ export function createToolLoopGuard({
     if (!fingerprint && !verificationFingerprint) return;
     if (verificationFingerprint) {
       state.latestVerificationFingerprint = verificationFingerprint;
+      state.unittestRecoveryPending = undefined;
     }
     const pendingSessionId = runningExecSessionId(execEvent);
     if (pendingSessionId) {
@@ -12305,6 +12321,10 @@ export function createToolLoopGuard({
         'Run the relevant suite with python3 -m unittest -v from the project directory, using its actual test module. ' +
         'Preserve every requested check and diagnostic; include any custom-runner checks in the suite instead of bypassing them. ' +
         'Do not remove tests, weaken assertions, or claim success until the new result verifies the work.';
+      state.unittestRecoveryPending = {
+        fingerprint: verificationFingerprint,
+        instruction: pendingToolRun.unittestRecoveryInstruction,
+      };
     }
     // OpenClaw conservatively classifies its deferred `tool_call` wrapper as a
     // mutation. A failed wrapped exec therefore remains its last tool error
