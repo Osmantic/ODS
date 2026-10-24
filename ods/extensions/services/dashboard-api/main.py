@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+import anyio
 import httpx
 from fastapi import FastAPI, Depends, HTTPException, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1324,7 +1325,21 @@ async def preflight_docker():
             "docker", "--version",
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        finally:
+            # wait_for cancels communicate(), not the OS process. Own the
+            # probe through timeout and request cancellation, then drain its
+            # pipes and reap it before returning or propagating cancellation.
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass  # The child exited between the state check and kill.
+                # Starlette cancels request task groups as a scope; shield
+                # cleanup from that repeated cancellation until reaped.
+                with anyio.CancelScope(shield=True):
+                    await proc.communicate()
         if proc.returncode == 0:
             parts = stdout.decode().strip().split()
             version = parts[2].rstrip(",") if len(parts) > 2 else "unknown"
