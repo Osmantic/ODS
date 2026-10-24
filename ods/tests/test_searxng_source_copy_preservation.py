@@ -1,7 +1,6 @@
 """Exercise production source copying followed by phase 06 SearXNG generation."""
 import os
 from pathlib import Path
-import shlex
 import shutil
 import subprocess
 import tempfile
