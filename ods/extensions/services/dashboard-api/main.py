@@ -49,6 +49,7 @@ from models import (
     FullStatus, PortCheckRequest,
 )
 from security import verify_api_key
+from runtime_profile import RUNTIME_PROFILE
 from gpu import get_gpu_info
 from helpers import (
     get_all_services, get_cached_services, get_services_cache_revision, set_services_cache,
@@ -1317,6 +1318,9 @@ async def host_agent_diagnostics():
 @app.get("/api/preflight/docker", dependencies=[Depends(verify_api_key)])
 async def preflight_docker():
     """Check if Docker is available."""
+    if RUNTIME_PROFILE.is_desktop:
+        return {"available": False, "applicable": False,
+                "error": "The Windows Desktop profile does not use Docker"}
     if os.path.exists("/.dockerenv"):
         return {"available": True, "version": "available (host)"}
     try:
@@ -1508,6 +1512,7 @@ async def api_status(api_key: str = Depends(verify_api_key)):
             "gpu": None, "services": [], "model": None,
             "bootstrap": None, "uptime": 0,
             "version": app.version, "tier": "Cloud" if cloud_mode else "Unknown",
+            "runtimeProfile": RUNTIME_PROFILE.name,
             "inferenceMode": "cloud" if cloud_mode else "local",
             "inferenceSource": "cloud-mode" if cloud_mode else "unknown",
             "cpu": {"percent": None, "temp_c": None, "scope": "unknown", "source": "unavailable"},
@@ -1699,6 +1704,7 @@ async def _build_api_status() -> dict:
         "gpu": gpu_data, "services": services_data, "model": model_data,
         "bootstrap": bootstrap_data, "uptime": uptime,
         "version": app.version, "tier": tier,
+        "runtimeProfile": RUNTIME_PROFILE.name,
         "inferenceMode": inference_mode_value,
         "inferenceSource": inference_source_value,
         "currentModel": current_model_name,

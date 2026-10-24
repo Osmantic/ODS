@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from config import AGENT_URL, ODS_AGENT_KEY
+from runtime_profile import RUNTIME_PROFILE
 
 
 class AgentClientError(RuntimeError):
@@ -200,6 +201,15 @@ def _decode_json(response: httpx.Response) -> dict[str, Any]:
     return payload
 
 
+def _refuse_without_host_agent(method: str, path: str) -> None:
+    # Raised before any client exists, so no socket is ever opened. Callers
+    # already map AgentUnavailable to their "unavailable" state.
+    if not RUNTIME_PROFILE.host_agent:
+        raise AgentUnavailable(
+            f"Host agent {method} {path}: the {RUNTIME_PROFILE.name} profile has no host agent"
+        )
+
+
 def _sync_request(
     method: str,
     path: str,
@@ -209,6 +219,7 @@ def _sync_request(
     timeout: float,
 ) -> httpx.Response:
     method = method.upper()
+    _refuse_without_host_agent(method, path)
     stale_connection_retries = 1 if method == "GET" else 0
     connect_retry_index = 0
     while True:
@@ -249,6 +260,7 @@ async def _async_request(
     timeout: float,
 ) -> httpx.Response:
     method = method.upper()
+    _refuse_without_host_agent(method, path)
     stale_connection_retries = 1 if method == "GET" else 0
     connect_retry_index = 0
     while True:
