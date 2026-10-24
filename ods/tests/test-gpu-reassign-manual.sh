@@ -222,6 +222,14 @@ run_cli gpu validate
 [[ $RC -eq 0 ]]
 echo "$OUTPUT" | grep -q "Result: 3 check(s) passed, 0 failed"
 
+# A failed check must fail the command so scripts and health checks see it.
+cp "$FAKE_INSTALL/.env" "$FIXTURE/env.before-validate"
+sed 's/^GPU_COUNT=.*/GPU_COUNT=5/' "$FIXTURE/env.before-validate" > "$FAKE_INSTALL/.env"
+run_cli gpu validate
+[[ $RC -ne 0 ]] || { echo "[FAIL] gpu validate exited 0 with a failed check: $OUTPUT"; exit 1; }
+echo "$OUTPUT" | grep -q "Result: 2 check(s) passed, 1 failed"
+cp "$FIXTURE/env.before-validate" "$FAKE_INSTALL/.env"
+
 before_hash=$(sha256sum "$FAKE_INSTALL/.env" | awk '{print $1}')
 run_manual $'0,3\n\n\n\n'
 [[ $RC -ne 0 ]] || { echo "[FAIL] nonexistent GPU index was accepted"; exit 1; }
