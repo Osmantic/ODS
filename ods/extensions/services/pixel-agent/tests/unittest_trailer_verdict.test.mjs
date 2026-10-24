@@ -121,7 +121,8 @@ test('tower3 replay: the exit-0 run with a clean summary passes and the model an
   // The program under test prints this in a negative-path test that passed.
   assert.match(output, /\nError: Folder '\/nonexistent\/folder\/path' does not exist\.$/);
   // Recorded on d4a61f33: the verdict stayed failed and the answer was replaced.
-  assert.equal(TOWER3.delivered, VERIFICATION_FAILED_DELIVERY_PREFIX);
+  // That build named the product Pixel in this text; it now says Portal.
+  assert.equal(TOWER3.delivered.replaceAll('Pixel', 'Portal'), VERIFICATION_FAILED_DELIVERY_PREFIX);
 
   const s = session(TOWER3);
   const outcomes = TOWER3.calls.map(call => s.replay(call));
