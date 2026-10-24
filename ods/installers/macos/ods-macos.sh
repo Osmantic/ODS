@@ -154,10 +154,16 @@ dashboard_compose_up() {
 _get_base_compose_flags() {
     ensure_hermes_dashboard_session_token
 
-    local flags_file="${INSTALL_DIR}/.compose-flags"
+    local flags_file="${INSTALL_DIR}/.compose-flags" cached_flags
     if [[ -f "$flags_file" ]]; then
-        macos_model_store_compose_flags "$(cat "$flags_file")"
-        return $?
+        cached_flags="$(cat "$flags_file")"
+        # docs/PROFILES.md has owners add docker-compose.override.yml after
+        # install; the cache predates it, so resolve (and scan) it again.
+        if [[ ! -f "${INSTALL_DIR}/docker-compose.override.yml" \
+            || "$cached_flags" == *"docker-compose.override.yml"* ]]; then
+            macos_model_store_compose_flags "$cached_flags"
+            return $?
+        fi
     fi
     # Fallback: dynamic resolution via resolve-compose-stack.sh so user-installed
     # extensions in data/user-extensions/ are discovered when the .compose-flags
