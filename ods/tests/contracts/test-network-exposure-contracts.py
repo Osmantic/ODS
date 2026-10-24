@@ -332,6 +332,15 @@ def test_ods_proxy_caps_request_body_sizes() -> None:
         "ods-proxy api host must cap request body at 50MB (admin surface)",
     )
 
+    # The auth host reaches every dashboard-api endpoint from the LAN before
+    # sign-in; what it is for (magic-link redemption, session checks) takes no
+    # body, so it gets the dashboard nginx's sign-in cap, not the admin one.
+    auth_block = caddy_block_body(caddyfile, "http://auth.{$ODS_DEVICE_NAME:ods}.local {")
+    assert_true(
+        re.search(r"request_body\s*\{\s*max_size\s+4KB\s*\}", auth_block) is not None,
+        "ods-proxy auth host must cap request body at 4KB (bodyless magic-link redemption)",
+    )
+
 
 def test_hermes_proxy_caps_request_body() -> None:
     caddyfile = read(SERVICES / "hermes-proxy" / "Caddyfile")
