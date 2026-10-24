@@ -1121,7 +1121,7 @@ for (const wrap of [false, true]) {
       ...result, content: [{ type: "text", text: "[framework text already truncated]" }],
     });
     const text = persisted.message.content[0].text;
-    assert.ok(text.length < 1400);
+    assert.ok(text.length <= 4096);
     assert.match(text, /Earlier unittest framework frames compacted/);
     assert.match(text, /ERROR: test_wrong_column_count/);
     assert.match(text, /\/workspace\/project\/test_totals\.py/);
@@ -17304,4 +17304,188 @@ test("standalone unittest requires this run's writes and the wrapper's successfu
   const wrapped=standaloneUnittestRun(true);
   wrapped.finish(undefined,{result:{...wrappedCoreResult("exec",standaloneUnittestResult()),isError:true}});
   assert.notEqual(wrapped.guard.verificationStatus("run-1"),"passed");
+});
+
+test("native multi-failure unittest lists every failing test within the multi bound", () => {
+  const { guard, result } = nativeFailureRun();
+  const persisted = persistToolResult(guard, "exec", "native-failure", result);
+  const text = persisted.message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /Earlier unittest framework frames compacted/);
+  assert.match(text, /ERROR: test_wrong_column_count/);
+  assert.match(text, /\/workspace\/project\/test_totals\.py/);
+  assert.match(text, /NameError: name 'sys' is not defined/);
+  assert.match(text, /Ran 36 tests/);
+  assert.match(text, /FAILED \(errors=6\)/);
+  assert.equal(persisted.message.isError, true);
+  assert.equal(persisted.message.details.exitCode, 1);
+  assert.equal(persisted.message.details.durationMs, 147);
+  assert.equal(persisted.message.details.cwd, "/workspace/project");
+  assert.equal(persisted.message.details.aggregated, text);
+});
+
+test("native multi-failure unittest keeps mixed AssertionError and TypeError", () => {
+  const mixed = [
+    "FAIL: test_alpha (test_totals.TotalsTest)",
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 12, in test_alpha",
+    "    self.assertEqual(total, 3)",
+    "AssertionError: 2 != 3",
+    "",
+    "ERROR: test_beta (test_totals.TotalsTest)",
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 20, in test_beta",
+    "    total = None + 1",
+    "TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 2 tests in 0.002s",
+    "",
+    "FAILED (failures=1, errors=1)",
+    "(Command exited with code 1)",
+  ].join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: mixed }],
+    details: { status: "completed", exitCode: 1, durationMs: 12, aggregated: mixed, cwd: "/workspace/project" } } });
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /FAIL: test_alpha/);
+  assert.match(text, /AssertionError: 2 != 3/);
+  assert.match(text, /ERROR: test_beta/);
+  assert.match(text, /TypeError: unsupported operand type/);
+  assert.match(text, /total = None \+ 1/);
+  assert.match(text, /Command exited with code 1/);
+  assert.match(text, /Ran 2 tests/);
+  assert.match(text, /FAILED \(failures=1, errors=1\)/);
+});
+
+test("native multi-failure unittest lists seven distinct failures", () => {
+  const lines = [];
+  for (let index = 1; index <= 7; index += 1) {
+    lines.push(`ERROR: test_case_${index} (test_totals.TotalsTest)`);
+    lines.push("----------------------------------------------------------------------");
+    lines.push("Traceback (most recent call last):");
+    lines.push(`  File "/workspace/project/test_totals.py", line ${index * 10}, in test_case_${index}`);
+    lines.push(`    raise ValueError("boom ${index}")`);
+    lines.push(`ValueError: boom ${index}`);
+    lines.push("");
+  }
+  lines.push("----------------------------------------------------------------------");
+  lines.push("Ran 7 tests in 0.010s");
+  lines.push("");
+  lines.push("FAILED (errors=7)");
+  const source = lines.join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, durationMs: 10, aggregated: source, cwd: "/workspace/project" } } });
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  assert.ok(text.length <= 4096);
+  for (let index = 1; index <= 7; index += 1) {
+    assert.match(text, new RegExp(`ERROR: test_case_${index}\\b`));
+  }
+  assert.match(text, /Ran 7 tests/);
+  assert.match(text, /FAILED \(errors=7\)/);
+});
+
+test("native multi-failure unittest bounds forty failures with explicit omission", () => {
+  const lines = [];
+  for (let index = 1; index <= 40; index += 1) {
+    lines.push(`ERROR: test_case_${index} (test_totals.TotalsTest)`);
+    lines.push("----------------------------------------------------------------------");
+    lines.push("Traceback (most recent call last):");
+    lines.push(`  File "/workspace/project/test_totals.py", line ${index}, in test_case_${index}`);
+    lines.push(`    raise ValueError("boom ${index}")`);
+    lines.push(`ValueError: boom ${index}`);
+    lines.push("");
+  }
+  lines.push("----------------------------------------------------------------------");
+  lines.push("Ran 40 tests in 0.100s");
+  lines.push("");
+  lines.push("FAILED (errors=40)");
+  const source = lines.join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, durationMs: 100, aggregated: source, cwd: "/workspace/project" } } });
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /ERROR: test_case_1\b/);
+  assert.match(text, /more failing test/);
+  assert.match(text, /Ran 40 tests/);
+  assert.match(text, /FAILED \(errors=40\)/);
+});
+
+test("native multi-failure unittest bounds oversized header, error, and trailer", () => {
+  const huge = "x".repeat(5000);
+  const source = [
+    `ERROR: test_huge (test_totals.TotalsTest) ${huge}`,
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 5, in test_huge",
+    `    raise ValueError("${huge}")`,
+    `ValueError: ${huge}`,
+    "",
+    "ERROR: test_other (test_totals.TotalsTest)",
+    "----------------------------------------------------------------------",
+    "Traceback (most recent call last):",
+    "  File \"/workspace/project/test_totals.py\", line 9, in test_other",
+    "    raise TypeError(\"other\")",
+    "TypeError: other",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 2 tests in 0.002s",
+    "",
+    `FAILED (errors=2) ${huge}`,
+    "(Command exited with code 1)",
+  ].join("\n");
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, durationMs: 2, aggregated: source, cwd: "/workspace/project" } } });
+  const persisted = persistToolResult(guard, "exec", "native-failure", result);
+  const text = persisted.message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /Ran 2 tests/);
+  assert.match(text, /FAILED \(errors=2\)/);
+  assert.match(text, /Command exited with code 1/);
+  assert.match(text, /truncated|omitted/);
+  assert.equal(persisted.message.details.exitCode, 1);
+  assert.equal(persisted.message.isError, true);
+});
+
+test("native and catalog multi-failure projections match", () => {
+  const { guard, result } = nativeFailureRun();
+  const text = persistToolResult(guard, "exec", "native-failure", result).message.content[0].text;
+  const catalog = createToolLoopGuard();
+  catalog.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", {
+    prompt: "Work in /workspace/project. Run the existing Python unittest tests and diagnose the failure.",
+  });
+  call(catalog, "tool_call", { event: { toolCallId: "catalog-failure", params: {
+    id: "exec", args: { command: "python3 -m unittest -v test_totals", workdir: "/workspace/project" },
+  } }, context: { toolCallId: "catalog-failure" } });
+  assert.equal(persistToolResult(catalog, "tool_call", "catalog-failure", wrappedCoreResult("exec", result)).message.content[0].text, text);
+});
+
+test("multi-failure syntax repair hint stays within the persisted output bound", () => {
+  const source = Array.from({ length: 40 }, (_, index) => [
+    `ERROR: test_parse_${index} (test_totals.TotalsTest.test_parse_${index})`,
+    "-".repeat(70),
+    "Traceback (most recent call last):",
+    `  File "/workspace/project/example_${index}.py", line 1, in example`,
+    "    x = 1\\nprint(x)",
+    "SyntaxError: unexpected character after line continuation character",
+  ].join("\n")).join("\n") + "\nRan 40 tests in 0.100s\nFAILED (errors=40)\n(Command exited with code 1)";
+  const { guard, result } = nativeFailureRun({ resultOverride: { isError: true,
+    content: [{ type: "text", text: source }],
+    details: { status: "completed", exitCode: 1, aggregated: source, cwd: "/workspace/project" } } });
+  const persisted = persistToolResult(guard, "exec", "native-failure", result);
+  const text = persisted.message.content[0].text;
+  assert.ok(text.length <= 4096);
+  assert.match(text, /\[ODS Pixel repair\]/);
+  assert.match(text, /Keep the requested assertions intact/);
+  assert.match(text, /omitted/);
+  assert.match(text, /Ran 40 tests/);
+  assert.match(text, /FAILED \(errors=40\)/);
+  assert.match(text, /Command exited with code 1/);
+  assert.equal(persisted.message.details.exitCode, 1);
 });
