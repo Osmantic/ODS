@@ -532,9 +532,11 @@ def run(
             raise SelectionError(f"No Compose selection file for {service_id}")
         if action == "check-disable":
             return "ready"
+        stopped_services = {service_id}
         if stop_mode is not None:
+            stopped_services = _stop_targets(install_dir, service_id, enabled)
             _stop_for_disable(install_dir, service_id, stop_mode, compose_flags,
-                              service_names=_stop_targets(install_dir, service_id, enabled))
+                              service_names=stopped_services)
         try:
             cache.unlink(missing_ok=True)
             os.replace(enabled, disabled)
@@ -542,7 +544,8 @@ def run(
             if stop_mode == "compose":
                 try:
                     restarted = subprocess.run(
-                        ["docker", "compose", *shlex.split(compose_flags), "start", service_id],
+                        ["docker", "compose", *shlex.split(compose_flags), "start",
+                         *sorted(stopped_services)],
                         cwd=install_dir, capture_output=True, text=True, timeout=360,
                         check=False,
                     )

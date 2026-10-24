@@ -264,6 +264,42 @@ def test_cli_disable_stops_the_companions_its_fragment_owns(tmp_path, monkeypatc
     assert [args[-4:] for args in calls] == [["stop", "search", "search-db", "search-worker"]]
 
 
+def test_cli_disable_rollback_restarts_every_stopped_companion(tmp_path, monkeypatch):
+    """A failed marker rename must not leave a stopped worker behind."""
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    target = extension(tmp_path, "search")
+    (target / "compose.yaml").write_text(
+        "services:\n"
+        "  search:\n    image: example:latest\n"
+        "  search-db:\n    image: example:latest\n"
+        "  search-worker:\n    image: example:latest\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def record(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    original_replace = selection.os.replace
+
+    def refuse_marker_rename(source, destination):
+        if Path(source) == target / "compose.yaml":
+            raise OSError("read-only extension directory")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(selection.subprocess, "run", record)
+    monkeypatch.setattr(selection.os, "replace", refuse_marker_rename)
+    with pytest.raises(selection.SelectionError, match="selected file remains recoverable"):
+        selection.run("disable", tmp_path, "search", stop_mode="compose",
+                      compose_flags="-f docker-compose.base.yml")
+    assert [args[-4:] for args in calls] == [
+        ["stop", "search", "search-db", "search-worker"],
+        ["start", "search", "search-db", "search-worker"],
+    ]
+    assert (target / "compose.yaml").is_file()
+
+
 def test_cli_stop_failure_preserves_selection_and_cache(tmp_path, monkeypatch):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     target = extension(tmp_path, "search")
