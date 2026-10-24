@@ -6375,6 +6375,7 @@ _gpu_validate() {
 
     echo ""
     echo "  Result: ${pass} check(s) passed, ${fail} failed"
+    [[ "$fail" -eq 0 ]]
 }
 
 # Helper: write AMD-specific env vars from topology JSON for manual assignment
